@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ErrLeaseHeld signals the leader lease is held by another node.
@@ -155,7 +155,7 @@ func registryKey(accountID, clusterName string) string {
 // acquires the lease, and drives Run in a goroutine. Returns ErrLeaseHeld if another node wins.
 func RunClusterReconciler(
 	ctx context.Context,
-	leaderKV, acctKV nats.KeyValue,
+	leaderKV, acctKV jetstream.KeyValue,
 	accountID, clusterName, holderID, healthURL string,
 	opts ...ReconcilerOption,
 ) (func(), <-chan struct{}, error) {
@@ -163,7 +163,7 @@ func RunClusterReconciler(
 	if err != nil {
 		return nil, nil, err
 	}
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(ctx)
 	if !ok {
 		slog.Info("RunClusterReconciler: lease held elsewhere, skipping spawn",
 			"accountID", accountID, "cluster", clusterName)

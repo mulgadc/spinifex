@@ -12,7 +12,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -212,13 +211,13 @@ func accountBucketNames(ctx context.Context, nc *nats.Conn) ([]string, error) {
 // creating it on first use at the given replica count (clamped to a minimum
 // of 1). Idempotent: subsequent calls with the same accountID return the
 // existing handle.
-func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string, replicas int) (nats.KeyValue, error) {
+func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string, replicas int) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucketWithReplicas(js, bucket, KVBucketEKSAccountHistory, replicas)
+	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, bucket, KVBucketEKSAccountHistory, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(bucket, kv, KVBucketEKSAccountVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, bucket, kv, KVBucketEKSAccountVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", bucket, err)
 	}
 	return kv, nil
@@ -228,23 +227,23 @@ func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string, replic
 // bucket used for per-cluster reconciler leader-lease CAS locks, at the given
 // replica count (clamped to a minimum of 1). The bucket is configured with
 // History=1 and a 60s TTL so stale leases expire on their own when a leader
-// dies mid-cycle. utils.GetOrCreateKVBucketWithReplicas doesn't expose a TTL
+// dies mid-cycle. kvutil.GetOrCreateBucketWithReplicas doesn't expose a TTL
 // knob, so this function sets Replicas directly on its own js.CreateKeyValue
 // call and falls back to js.KeyValue on already-exists.
-func InitLeaderBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+func InitLeaderBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.KeyValue, error) {
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   KVBucketEKSLeader,
 		History:  1,
 		TTL:      KVBucketEKSLeaderTTL,
 		Replicas: max(replicas, 1),
 	})
 	if err != nil {
-		kv, err = js.KeyValue(KVBucketEKSLeader)
+		kv, err = js.KeyValue(ctx, KVBucketEKSLeader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create or open EKS leader bucket %s: %w", KVBucketEKSLeader, err)
 		}
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketEKSLeader, kv, KVBucketEKSLeaderVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketEKSLeader, kv, KVBucketEKSLeaderVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketEKSLeader, err)
 	}
 	slog.Info("EKS leader bucket initialized", "bucket", KVBucketEKSLeader, "ttl", KVBucketEKSLeaderTTL)

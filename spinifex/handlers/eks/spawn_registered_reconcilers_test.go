@@ -17,7 +17,7 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 
 	active := sampleClusterMeta("alpha")
 	active.Status = ClusterStatusActive
-	require.NoError(t, PutClusterMeta(f.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, active))
 
 	// CREATING resumes both the bootstrap re-subscribe and the reconciler. Stamp a
 	// recent CreatedAt so the resumed reconciler stays CREATING (the shared fixture
@@ -26,11 +26,11 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 	creating := sampleClusterMeta("beta")
 	creating.Status = ClusterStatusCreating
 	creating.CreatedAt = time.Now()
-	require.NoError(t, PutClusterMeta(f.kv, creating))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, creating))
 
 	failed := sampleClusterMeta("zeta")
 	failed.Status = ClusterStatusFailed
-	require.NoError(t, PutClusterMeta(f.kv, failed))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, failed))
 
 	require.NoError(t, f.svc.SpawnRegisteredReconcilers())
 
@@ -49,7 +49,7 @@ func TestSpawnRegisteredReconcilers_EnumerationFailureIsReported(t *testing.T) {
 
 	active := sampleClusterMeta("alpha")
 	active.Status = ClusterStatusActive
-	require.NoError(t, PutClusterMeta(f.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, active))
 
 	// Closing the connection fails the stream-names request behind the listing.
 	f.svc.deps.NATSConn.Close()

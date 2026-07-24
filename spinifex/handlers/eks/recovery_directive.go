@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // RecoveryAction is the directive a control-plane member applies on its next boot
@@ -69,10 +69,10 @@ type SetRecoveryDirectiveOutput struct {
 
 // LoadRecoveryDirective reads a member's directive from the account KV, returning
 // a zero-epoch none directive when the key is absent.
-func LoadRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string) (RecoveryDirective, error) {
-	entry, err := acctKV.Get(RecoveryDirectiveKey(cluster, instanceID))
+func LoadRecoveryDirective(ctx context.Context, acctKV jetstream.KeyValue, cluster, instanceID string) (RecoveryDirective, error) {
+	entry, err := acctKV.Get(ctx, RecoveryDirectiveKey(cluster, instanceID))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return RecoveryDirective{Epoch: 0, Action: RecoveryActionNone}, nil
 		}
 		return RecoveryDirective{}, err
@@ -89,8 +89,8 @@ func LoadRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string) (Re
 
 // StoreRecoveryDirective writes a member's directive with epoch = previous+1 and
 // returns the stored value. Used by the reconciler escalation and the operator CLI.
-func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, action RecoveryAction, snapshot string, snapshotRequired bool) (RecoveryDirective, error) {
-	prev, err := LoadRecoveryDirective(acctKV, cluster, instanceID)
+func StoreRecoveryDirective(ctx context.Context, acctKV jetstream.KeyValue, cluster, instanceID string, action RecoveryAction, snapshot string, snapshotRequired bool) (RecoveryDirective, error) {
+	prev, err := LoadRecoveryDirective(ctx, acctKV, cluster, instanceID)
 	if err != nil {
 		return RecoveryDirective{}, err
 	}
@@ -99,7 +99,7 @@ func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, ac
 	if err != nil {
 		return RecoveryDirective{}, fmt.Errorf("marshal recovery directive: %w", err)
 	}
-	if _, err := acctKV.Put(RecoveryDirectiveKey(cluster, instanceID), data); err != nil {
+	if _, err := acctKV.Put(ctx, RecoveryDirectiveKey(cluster, instanceID), data); err != nil {
 		return RecoveryDirective{}, fmt.Errorf("kv put recovery directive: %w", err)
 	}
 	return next, nil
@@ -107,15 +107,15 @@ func StoreRecoveryDirective(acctKV nats.KeyValue, cluster, instanceID string, ac
 
 // GetRecoveryDirective serves a member's current recovery directive to the on-VM
 // k3s-recovery agent via the internal-recovery gateway route.
-func (s *EKSServiceImpl) GetRecoveryDirective(_ context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
+func (s *EKSServiceImpl) GetRecoveryDirective(ctx context.Context, input *GetRecoveryDirectiveInput, accountID string) (*GetRecoveryDirectiveOutput, error) {
 	if input == nil || input.ClusterName == "" || input.InstanceID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(accountID, input.ClusterName)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, input.ClusterName)
 	if err != nil {
 		return nil, err
 	}
-	d, err := LoadRecoveryDirective(acctKV, input.ClusterName, input.InstanceID)
+	d, err := LoadRecoveryDirective(ctx, acctKV, input.ClusterName, input.InstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (s *EKSServiceImpl) GetRecoveryDirective(_ context.Context, input *GetRecov
 }
 
 // SetRecoveryDirective records a member's recovery directive (operator CLI path).
-func (s *EKSServiceImpl) SetRecoveryDirective(_ context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
+func (s *EKSServiceImpl) SetRecoveryDirective(ctx context.Context, input *SetRecoveryDirectiveInput, accountID string) (*SetRecoveryDirectiveOutput, error) {
 	if input == nil || input.ClusterName == "" || input.InstanceID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -132,11 +132,11 @@ func (s *EKSServiceImpl) SetRecoveryDirective(_ context.Context, input *SetRecov
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(accountID, input.ClusterName)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, input.ClusterName)
 	if err != nil {
 		return nil, err
 	}
-	d, err := StoreRecoveryDirective(acctKV, input.ClusterName, input.InstanceID, input.Action, input.Snapshot, input.SnapshotRequired)
+	d, err := StoreRecoveryDirective(ctx, acctKV, input.ClusterName, input.InstanceID, input.Action, input.Snapshot, input.SnapshotRequired)
 	if err != nil {
 		return nil, err
 	}

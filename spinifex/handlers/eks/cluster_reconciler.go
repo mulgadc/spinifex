@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -124,8 +125,8 @@ type HTTPDoer interface {
 // ClusterReconciler drives one cluster's CREATING → ACTIVE → DELETING lifecycle
 // under a leader lease. One instance per (accountID, clusterName).
 type ClusterReconciler struct {
-	leaderKV    nats.KeyValue
-	acctKV      nats.KeyValue
+	leaderKV    jetstream.KeyValue
+	acctKV      jetstream.KeyValue
 	accountID   string
 	clusterName string
 	holderID    string
@@ -312,7 +313,7 @@ func WithEtcdResetRecovery(grace, backoff time.Duration, maxAttempts int) Reconc
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
 // fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
 // to skip /healthz probing (CREATING transitions on bootstrap state alone).
-func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName, holderID, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
+func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, clusterName, holderID, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
 	if leaderKV == nil {
 		return nil, errors.New("eks: NewClusterReconciler nil leaderKV")
 	}
@@ -371,16 +372,20 @@ func reconcilerLeaderKey(accountID, clusterName string) string {
 // AcquireLease attempts a CAS Create on the leader bucket. Returns
 // (release, true) on success; (nil, false) otherwise. The bucket TTL reaps
 // stale leases when release does not run.
-func (r *ClusterReconciler) AcquireLease() (func(), bool) {
+func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
 	key := reconcilerLeaderKey(r.accountID, r.clusterName)
-	if _, err := r.leaderKV.Create(key, []byte(r.holderID)); err != nil {
+	if _, err := r.leaderKV.Create(ctx, key, []byte(r.holderID)); err != nil {
 		slog.Debug("ClusterReconciler: lease held by another holder",
 			"key", key, "holderID", r.holderID, "err", err)
 		return nil, false
 	}
 	slog.Info("ClusterReconciler: lease acquired", "key", key, "holderID", r.holderID)
 	return func() {
-		if err := r.leaderKV.Delete(key); err != nil {
+		// The registry cancels the reconciler's context before invoking release, so
+		// the delete runs on its own context — otherwise every release would fail
+		// and leave the lease for the TTL to reap.
+		releaseCtx := context.Background()
+		if err := r.leaderKV.Delete(releaseCtx, key); err != nil {
 			slog.Warn("ClusterReconciler: lease release failed (TTL will reap)",
 				"key", key, "holderID", r.holderID, "err", err)
 		}
@@ -388,9 +393,9 @@ func (r *ClusterReconciler) AcquireLease() (func(), bool) {
 }
 
 // RefreshLease re-asserts ownership via a CAS update. Returns false if another holder won.
-func (r *ClusterReconciler) RefreshLease() bool {
+func (r *ClusterReconciler) RefreshLease(ctx context.Context) bool {
 	key := reconcilerLeaderKey(r.accountID, r.clusterName)
-	entry, err := r.leaderKV.Get(key)
+	entry, err := r.leaderKV.Get(ctx, key)
 	if err != nil {
 		slog.Warn("ClusterReconciler: lease get failed", "key", key, "err", err)
 		return false
@@ -400,7 +405,7 @@ func (r *ClusterReconciler) RefreshLease() bool {
 			"key", key, "holderID", r.holderID, "got", string(entry.Value()))
 		return false
 	}
-	if _, err := r.leaderKV.Update(key, []byte(r.holderID), entry.Revision()); err != nil {
+	if _, err := r.leaderKV.Update(ctx, key, []byte(r.holderID), entry.Revision()); err != nil {
 		slog.Warn("ClusterReconciler: lease CAS update failed",
 			"key", key, "holderID", r.holderID, "err", err)
 		return false
@@ -435,7 +440,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
 				return
 			}
-			r.applyAddonStatusReport(report)
+			r.applyAddonStatusReport(ctx, report)
 		})
 		if err != nil {
 			return fmt.Errorf("subscribe addon status %s: %w", r.addonStatusSubject, err)
@@ -461,7 +466,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-refreshT.C:
-			if !r.RefreshLease() {
+			if !r.RefreshLease(ctx) {
 				return ErrReconcilerLeaseLost
 			}
 		case <-reconcileT.C:
@@ -483,13 +488,13 @@ func terminalReconcileErr(err error) bool {
 }
 
 func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
-	meta, err := GetClusterMeta(r.acctKV, r.clusterName)
+	meta, err := GetClusterMeta(ctx, r.acctKV, r.clusterName)
 	if err != nil {
 		return err
 	}
 	switch meta.Status {
 	case ClusterStatusCreating:
-		ready, reason := r.bootstrapReady(meta)
+		ready, reason := r.bootstrapReady(ctx, meta)
 		if !ready {
 			// Info, not Debug: this is the per-tick reason a CREATING cluster has
 			// not yet flipped ACTIVE. At Debug it is invisible at the default
@@ -497,18 +502,18 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 			// no diagnosable cause. Logged only during the CREATING window.
 			slog.Info("ClusterReconciler: bootstrap not ready",
 				"cluster", r.clusterName, "reason", reason)
-			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
+			return r.failIfCreateTimedOut(ctx, meta, "bootstrap not ready: "+reason)
 		}
 		issue, nodeCount, nodegroupReady := r.observe(ctx)
 		if issue != "" {
 			slog.Info("ClusterReconciler: health not ready",
 				"cluster", r.clusterName, "issue", issue)
-			return r.failIfCreateTimedOut(meta, "healthz not ready: "+issue)
+			return r.failIfCreateTimedOut(ctx, meta, "healthz not ready: "+issue)
 		}
-		if err := SetClusterStatus(r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
+		if err := SetClusterStatus(ctx, r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
 			return err
 		}
-		if err := SetClusterHealthState(r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {
+		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -522,7 +527,7 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 			slog.Warn("ClusterReconciler: health failing for ACTIVE cluster",
 				"cluster", r.clusterName, "issue", issue)
 		}
-		if err := SetClusterHealthState(r.acctKV, r.clusterName, issue, nodeCount, nodegroupReady); err != nil {
+		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, issue, nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -627,7 +632,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 		// re-apply; resetIssued gates it so a steady-healthy cluster never re-bumps
 		// the directive epoch each tick.
 		if r.resetIssued {
-			r.clearRecoveryDirectives(meta)
+			r.clearRecoveryDirectives(ctx, meta)
 			r.resetIssued = false
 		}
 		r.resetSince = time.Time{}
@@ -684,7 +689,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	// consuming an attempt (stopping without the cluster-reset directive would just
 	// reproduce the wedge); a follower failure logs and continues (that member stays
 	// wedged, retried next attempt).
-	if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, "", false); err != nil {
+	if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, "", false); err != nil {
 		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
 			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
 		return
@@ -692,7 +697,7 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 	r.resetAttempts++
 	r.resetIssued = true
 	for _, n := range members[1:] {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, "", false); err != nil {
+		if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, "", false); err != nil {
 			slog.Warn("ClusterReconciler: set wipe-rejoin directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
@@ -725,9 +730,9 @@ func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *Clu
 // epoch) once a cluster has recovered, so a stale cluster-reset cannot re-apply on
 // a later reboot. Best-effort: a failure logs and the epoch guard on the guest
 // still prevents re-application of the already-applied directive.
-func (r *ClusterReconciler) clearRecoveryDirectives(meta *ClusterMeta) {
+func (r *ClusterReconciler) clearRecoveryDirectives(ctx context.Context, meta *ClusterMeta) {
 	for _, n := range cpMemberNodes(meta) {
-		if _, err := StoreRecoveryDirective(r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, "", false); err != nil {
+		if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, "", false); err != nil {
 			slog.Warn("ClusterReconciler: clear recovery directive failed",
 				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
 		}
@@ -925,7 +930,7 @@ func (r *ClusterReconciler) maybeReplaceControlPlaneMember(ctx context.Context, 
 			"cluster", r.clusterName, "lost", deadID, "attempt", r.replaceAttempts, "err", err)
 		return
 	}
-	if err := SwapControlPlaneMember(r.acctKV, r.clusterName, deadID, newNode); err != nil {
+	if err := SwapControlPlaneMember(ctx, r.acctKV, r.clusterName, deadID, newNode); err != nil {
 		slog.Error("ClusterReconciler: CP replacement launched but meta swap failed (leak risk)",
 			"cluster", r.clusterName, "lost", deadID, "newInstanceId", newNode.InstanceID, "err", err)
 		return
@@ -989,7 +994,7 @@ func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCoun
 // failIfCreateTimedOut marks the cluster FAILED once createTimeout has elapsed
 // since meta.CreatedAt. Returns nil while still within the window so the next
 // tick retries. A zero CreatedAt disables the deadline.
-func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason string) error {
+func (r *ClusterReconciler) failIfCreateTimedOut(ctx context.Context, meta *ClusterMeta, reason string) error {
 	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
 		return nil
 	}
@@ -997,7 +1002,7 @@ func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason strin
 		return nil
 	}
 	failReason := fmt.Sprintf("cluster did not become ACTIVE within %s: %s", r.createTimeout, reason)
-	if err := MarkClusterFailed(r.acctKV, r.clusterName, failReason); err != nil {
+	if err := MarkClusterFailed(ctx, r.acctKV, r.clusterName, failReason); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return ErrClusterNotFound
 		}
@@ -1011,7 +1016,7 @@ func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason strin
 // bootstrapReady returns true once the four bootstrap KV artifacts are present:
 // node token, admin kubeconfig, OIDC JWKS verified-marker, and CA on meta.
 // Uses the verified-marker (not OIDCJWKSKey) so ACTIVE always implies a verified key.
-func (r *ClusterReconciler) bootstrapReady(meta *ClusterMeta) (bool, string) {
+func (r *ClusterReconciler) bootstrapReady(ctx context.Context, meta *ClusterMeta) (bool, string) {
 	if meta.CertificateAuthorityB64 == "" {
 		return false, "CA absent on meta"
 	}
@@ -1021,7 +1026,7 @@ func (r *ClusterReconciler) bootstrapReady(meta *ClusterMeta) (bool, string) {
 		OIDCJWKSVerifiedKey(r.clusterName),
 	}
 	for _, k := range keys {
-		if _, err := r.acctKV.Get(k); err != nil {
+		if _, err := r.acctKV.Get(ctx, k); err != nil {
 			return false, fmt.Sprintf("%s missing: %s", k, err)
 		}
 	}

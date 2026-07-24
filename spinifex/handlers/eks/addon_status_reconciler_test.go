@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // acctKVForTest opens the per-account KV bucket the test service is backed by.
-func acctKVForTest(t *testing.T, svc *EKSServiceImpl) nats.KeyValue {
+func acctKVForTest(t *testing.T, svc *EKSServiceImpl) jetstream.KeyValue {
 	t.Helper()
-	js, err := svc.deps.NATSConn.JetStream()
-	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 	return kv
 }
@@ -56,28 +56,28 @@ func TestApplyAddonStatusReport(t *testing.T) {
 	seed := func(t *testing.T) {
 		t.Helper()
 		now := time.Now().UTC()
-		require.NoError(t, PutAddonRecord(acctKV, "c1", &AddonRecord{
+		require.NoError(t, PutAddonRecord(t.Context(), acctKV, "c1", &AddonRecord{
 			AddonName: "coredns", AddonVersion: "1.11.1", Status: AddonStatusCreating,
 			Arn: AddonARN("us-east-1", testAccountID, "c1", "coredns"), CreatedAt: now, ModifiedAt: now,
 		}))
 	}
 	get := func(t *testing.T) *AddonRecord {
 		t.Helper()
-		rec, err := GetAddonRecord(acctKV, "c1", "coredns")
+		rec, err := GetAddonRecord(t.Context(), acctKV, "c1", "coredns")
 		require.NoError(t, err)
 		return rec
 	}
 
 	t.Run("ready flips creating to active and clears health", func(t *testing.T) {
 		seed(t)
-		r.applyAddonStatusReport(AddonStatusReport{Addon: "coredns", Phase: AddonPhaseReady, Message: "ignored", TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseReady, Message: "ignored", TS: time.Now().Unix()})
 		rec := get(t)
 		assert.Equal(t, AddonStatusActive, rec.Status)
 		assert.Empty(t, rec.Health)
 	})
 
 	t.Run("failed on active goes degraded and records message", func(t *testing.T) {
-		r.applyAddonStatusReport(AddonStatusReport{Addon: "coredns", Phase: AddonPhaseFailed, Message: "rollout stalled", TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseFailed, Message: "rollout stalled", TS: time.Now().Unix()})
 		rec := get(t)
 		assert.Equal(t, AddonStatusDegraded, rec.Status)
 		assert.Equal(t, "rollout stalled", rec.Health)
@@ -86,17 +86,17 @@ func TestApplyAddonStatusReport(t *testing.T) {
 	t.Run("applied is a no-op", func(t *testing.T) {
 		seed(t)
 		before := get(t)
-		r.applyAddonStatusReport(AddonStatusReport{Addon: "coredns", Phase: AddonPhaseApplied, TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseApplied, TS: time.Now().Unix()})
 		after := get(t)
 		assert.Equal(t, AddonStatusCreating, after.Status)
 		assert.Equal(t, before.ModifiedAt, after.ModifiedAt, "no-op must not bump ModifiedAt")
 	})
 
 	t.Run("unknown addon is a no-op (no panic)", func(t *testing.T) {
-		r.applyAddonStatusReport(AddonStatusReport{Addon: "not-installed", Phase: AddonPhaseReady, TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "not-installed", Phase: AddonPhaseReady, TS: time.Now().Unix()})
 	})
 
 	t.Run("empty addon is ignored", func(t *testing.T) {
-		r.applyAddonStatusReport(AddonStatusReport{Phase: AddonPhaseReady})
+		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Phase: AddonPhaseReady})
 	})
 }

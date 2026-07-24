@@ -12,6 +12,7 @@ import (
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // errBootstrapPermanent marks failures that retrying won't fix (malformed envelope,
@@ -74,7 +75,7 @@ type BootstrapEnvelope struct {
 // completion via the four KV keys + meta.CertificateAuthorityB64.
 type NATSBootstrap struct {
 	nc          *nats.Conn
-	kv          nats.KeyValue
+	kv          jetstream.KeyValue
 	masterKey   []byte
 	accountID   string
 	clusterName string
@@ -82,7 +83,7 @@ type NATSBootstrap struct {
 
 // NewNATSBootstrap validates inputs and returns a ready subscriber. Run must
 // be called to actually subscribe; constructor is side-effect-free.
-func NewNATSBootstrap(nc *nats.Conn, kv nats.KeyValue, masterKey []byte, accountID, clusterName string) (*NATSBootstrap, error) {
+func NewNATSBootstrap(nc *nats.Conn, kv jetstream.KeyValue, masterKey []byte, accountID, clusterName string) (*NATSBootstrap, error) {
 	if nc == nil {
 		return nil, errors.New("eks: NewNATSBootstrap nil nats conn")
 	}
@@ -111,15 +112,15 @@ func NewNATSBootstrap(nc *nats.Conn, kv nats.KeyValue, masterKey []byte, account
 // a daemon-restart resumes only on pending subjects (K3s publishes each once).
 // JWKS is tracked via OIDCJWKSVerifiedKey (set after cross-check), not OIDCJWKSKey
 // (pre-seeded by the controller), so ACTIVE always implies a verified keypair.
-func BootstrapPendingKinds(kv nats.KeyValue, clusterName string, meta *ClusterMeta) []string {
+func BootstrapPendingKinds(ctx context.Context, kv jetstream.KeyValue, clusterName string, meta *ClusterMeta) []string {
 	var pending []string
-	if _, err := kv.Get(NodeTokenKey(clusterName)); err != nil {
+	if _, err := kv.Get(ctx, NodeTokenKey(clusterName)); err != nil {
 		pending = append(pending, BootstrapSubjectToken)
 	}
-	if _, err := kv.Get(AdminKubeconfigKey(clusterName)); err != nil {
+	if _, err := kv.Get(ctx, AdminKubeconfigKey(clusterName)); err != nil {
 		pending = append(pending, BootstrapSubjectKubeconfig)
 	}
-	if _, err := kv.Get(OIDCJWKSVerifiedKey(clusterName)); err != nil {
+	if _, err := kv.Get(ctx, OIDCJWKSVerifiedKey(clusterName)); err != nil {
 		pending = append(pending, BootstrapSubjectJWKS)
 	}
 	if meta == nil || meta.CertificateAuthorityB64 == "" {
@@ -131,14 +132,14 @@ func BootstrapPendingKinds(kv nats.KeyValue, clusterName string, meta *ClusterMe
 type bootstrapSubjectHandler struct {
 	subject string
 	kind    string
-	handler func([]byte) error
+	handler func(context.Context, []byte) error
 }
 
 // subjectHandlers returns the subject/handler entry for each requested kind.
 // An unknown kind is an error — callers pass kinds from BootstrapSubject*
 // constants. A nil/empty kinds slice means all four.
 func (b *NATSBootstrap) subjectHandlers(kinds []string) ([]bootstrapSubjectHandler, error) {
-	all := map[string]func([]byte) error{
+	all := map[string]func(context.Context, []byte) error{
 		BootstrapSubjectToken:      b.persistToken,
 		BootstrapSubjectKubeconfig: b.persistKubeconfig,
 		BootstrapSubjectJWKS:       b.persistJWKS,
@@ -200,7 +201,7 @@ func (b *NATSBootstrap) RunForKinds(ctx context.Context, kinds []string) error {
 				return
 			}
 			mu.Unlock()
-			if err := persistWithRetry(func() error { return s.handler(m.Data) }); err != nil {
+			if err := persistWithRetry(func() error { return s.handler(ctx, m.Data) }); err != nil {
 				errCh <- fmt.Errorf("persist %s: %w", s.kind, err)
 				return
 			}
@@ -235,7 +236,7 @@ func (b *NATSBootstrap) RunForKinds(ctx context.Context, kinds []string) error {
 	}
 }
 
-func (b *NATSBootstrap) persistToken(data []byte) error {
+func (b *NATSBootstrap) persistToken(ctx context.Context, data []byte) error {
 	env, err := unmarshalBootstrapEnvelope(data)
 	if err != nil {
 		return err
@@ -247,13 +248,13 @@ func (b *NATSBootstrap) persistToken(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("encrypt token: %w", err)
 	}
-	if _, err := b.kv.Put(NodeTokenKey(b.clusterName), []byte(ct)); err != nil {
+	if _, err := b.kv.Put(ctx, NodeTokenKey(b.clusterName), []byte(ct)); err != nil {
 		return fmt.Errorf("kv put %s: %w", NodeTokenKey(b.clusterName), err)
 	}
 	return nil
 }
 
-func (b *NATSBootstrap) persistKubeconfig(data []byte) error {
+func (b *NATSBootstrap) persistKubeconfig(ctx context.Context, data []byte) error {
 	env, err := unmarshalBootstrapEnvelope(data)
 	if err != nil {
 		return err
@@ -265,13 +266,13 @@ func (b *NATSBootstrap) persistKubeconfig(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("encrypt kubeconfig: %w", err)
 	}
-	if _, err := b.kv.Put(AdminKubeconfigKey(b.clusterName), []byte(ct)); err != nil {
+	if _, err := b.kv.Put(ctx, AdminKubeconfigKey(b.clusterName), []byte(ct)); err != nil {
 		return fmt.Errorf("kv put %s: %w", AdminKubeconfigKey(b.clusterName), err)
 	}
 	return nil
 }
 
-func (b *NATSBootstrap) persistJWKS(data []byte) error {
+func (b *NATSBootstrap) persistJWKS(ctx context.Context, data []byte) error {
 	env, err := unmarshalBootstrapEnvelope(data)
 	if err != nil {
 		return err
@@ -279,7 +280,7 @@ func (b *NATSBootstrap) persistJWKS(data []byte) error {
 	if env.JWKS == "" {
 		return fmt.Errorf("%w: jwks envelope empty", errBootstrapPermanent)
 	}
-	existing, err := b.kv.Get(OIDCJWKSKey(b.clusterName))
+	existing, err := b.kv.Get(ctx, OIDCJWKSKey(b.clusterName))
 	if err != nil {
 		return fmt.Errorf("kv get %s: %w", OIDCJWKSKey(b.clusterName), err)
 	}
@@ -287,13 +288,13 @@ func (b *NATSBootstrap) persistJWKS(data []byte) error {
 		return err
 	}
 	// Reconciler gates ACTIVE on this verified-marker, not OIDCJWKSKey (pre-seeded by controller).
-	if _, err := b.kv.Put(OIDCJWKSVerifiedKey(b.clusterName), []byte("verified")); err != nil {
+	if _, err := b.kv.Put(ctx, OIDCJWKSVerifiedKey(b.clusterName), []byte("verified")); err != nil {
 		return fmt.Errorf("kv put %s: %w", OIDCJWKSVerifiedKey(b.clusterName), err)
 	}
 	return nil
 }
 
-func (b *NATSBootstrap) persistCA(data []byte) error {
+func (b *NATSBootstrap) persistCA(ctx context.Context, data []byte) error {
 	env, err := unmarshalBootstrapEnvelope(data)
 	if err != nil {
 		return err
@@ -304,7 +305,7 @@ func (b *NATSBootstrap) persistCA(data []byte) error {
 	if _, err := base64.StdEncoding.DecodeString(env.CertificateAuthority); err != nil {
 		return fmt.Errorf("%w: CA not base64: %w", errBootstrapPermanent, err)
 	}
-	return SetClusterCertificateAuthority(b.kv, b.clusterName, env.CertificateAuthority)
+	return SetClusterCertificateAuthority(ctx, b.kv, b.clusterName, env.CertificateAuthority)
 }
 
 func unmarshalBootstrapEnvelope(data []byte) (BootstrapEnvelope, error) {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +26,7 @@ func TestCreateCluster_EndpointDNSNameUsesOwnerAccount(t *testing.T) {
 	require.NoError(t, err)
 	fixture.svc.WaitLaunches()
 
-	meta, err := GetClusterMeta(fixture.kv, "alpha")
+	meta, err := GetClusterMeta(t.Context(), fixture.kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, "alpha.111122223333.us-east-1.eks.spx3.net", meta.EndpointDNSName)
 	assert.Contains(t, meta.Endpoint, meta.EndpointDNSName)
@@ -39,19 +40,19 @@ func TestDesiredDNSChanges_IncludesEndpointReadyCreatingClusters(t *testing.T) {
 	creating.Status = ClusterStatusCreating
 	creating.EndpointDNSName = "creating.111122223333.us-east-1.eks.spx3.net"
 	creating.EndpointIP = "203.0.113.10"
-	require.NoError(t, PutClusterMeta(fixture.kv, creating))
+	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, creating))
 
 	active := sampleClusterMeta("active")
 	active.Status = ClusterStatusActive
 	active.EndpointDNSName = "active.111122223333.us-east-1.eks.spx3.net"
 	active.EndpointIP = "203.0.113.11"
-	require.NoError(t, PutClusterMeta(fixture.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, active))
 
 	failed := sampleClusterMeta("failed")
 	failed.Status = ClusterStatusFailed
 	failed.EndpointDNSName = "failed.111122223333.us-east-1.eks.spx3.net"
 	failed.EndpointIP = "203.0.113.12"
-	require.NoError(t, PutClusterMeta(fixture.kv, failed))
+	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, failed))
 
 	changes, authoritative := fixture.svc.DesiredDNSChanges()
 	require.True(t, authoritative)
@@ -67,13 +68,12 @@ func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
 	active.Status = ClusterStatusActive
 	active.EndpointDNSName = "healthy.111122223333.us-east-1.eks.spx3.net"
 	active.EndpointIP = "203.0.113.10"
-	require.NoError(t, PutClusterMeta(fixture.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, active))
 
-	js, err := fixture.svc.deps.NATSConn.JetStream()
+	js := testutil.NewJetStream(t, fixture.svc.deps.NATSConn)
+	corruptKV, err := GetOrCreateAccountBucket(t.Context(), js, "444455556666", 1)
 	require.NoError(t, err)
-	corruptKV, err := GetOrCreateAccountBucket(js, "444455556666", 1)
-	require.NoError(t, err)
-	_, err = corruptKV.Put(ClusterMetaKey("unreadable"), []byte("{not json"))
+	_, err = corruptKV.Put(t.Context(), ClusterMetaKey("unreadable"), []byte("{not json"))
 	require.NoError(t, err)
 
 	changes, authoritative := fixture.svc.DesiredDNSChanges()
@@ -89,7 +89,7 @@ func TestDesiredDNSChanges_EnumerationFailureIsNotAuthoritative(t *testing.T) {
 	active.Status = ClusterStatusActive
 	active.EndpointDNSName = "healthy.111122223333.us-east-1.eks.spx3.net"
 	active.EndpointIP = "203.0.113.10"
-	require.NoError(t, PutClusterMeta(fixture.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, active))
 
 	// A failed bucket enumeration must never be mistaken for "no buckets": closing the
 	// connection makes the stream-names request error, and the reconcile must suppress

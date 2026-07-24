@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // deletingReapMinAge is how long a cluster must sit in DELETING before the
@@ -47,7 +47,7 @@ func (r *EKSDeletingReaper) Sweep(ctx context.Context) (int, error) {
 	if !r.svc.depsReadyForOrchestration() {
 		return 0, nil
 	}
-	js, err := r.svc.deps.NATSConn.JetStream()
+	js, err := jetstream.New(r.svc.deps.NATSConn)
 	if err != nil {
 		return 0, fmt.Errorf("jetstream: %w", err)
 	}
@@ -66,16 +66,16 @@ func (r *EKSDeletingReaper) Sweep(ctx context.Context) (int, error) {
 		default:
 		}
 		accountID := strings.TrimPrefix(name, KVBucketEKSAccountPrefix)
-		acctKV, err := js.KeyValue(name)
+		acctKV, err := js.KeyValue(ctx, name)
 		if err != nil {
 			continue
 		}
-		clusters, err := listClusterNames(acctKV)
+		clusters, err := listClusterNames(ctx, acctKV)
 		if err != nil {
 			continue
 		}
 		for _, cluster := range clusters {
-			n, err := r.reapCluster(accountID, acctKV, cluster)
+			n, err := r.reapCluster(ctx, accountID, acctKV, cluster)
 			if err != nil {
 				slog.Warn("eks-deleting: re-drive teardown failed", "cluster", cluster, "err", err)
 			}
@@ -88,8 +88,8 @@ func (r *EKSDeletingReaper) Sweep(ctx context.Context) (int, error) {
 // reapCluster re-drives one cluster's teardown if it is wedged in DELETING past
 // minAge and its leader lease can be acquired. Returns 1 when it completed a
 // teardown, 0 otherwise.
-func (r *EKSDeletingReaper) reapCluster(accountID string, acctKV nats.KeyValue, cluster string) (int, error) {
-	meta, err := GetClusterMeta(acctKV, cluster)
+func (r *EKSDeletingReaper) reapCluster(ctx context.Context, accountID string, acctKV jetstream.KeyValue, cluster string) (int, error) {
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		return 0, nil // gone or unreadable: nothing to re-drive
 	}
@@ -100,7 +100,7 @@ func (r *EKSDeletingReaper) reapCluster(accountID string, acctKV nats.KeyValue, 
 		return 0, nil // still within the in-flight synchronous-delete window
 	}
 
-	release, ok := r.svc.acquireTeardownLease(accountID, cluster)
+	release, ok := r.svc.acquireTeardownLease(ctx, accountID, cluster)
 	if !ok {
 		return 0, nil // a synchronous delete or another node's reaper owns this teardown
 	}

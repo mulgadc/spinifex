@@ -13,11 +13,11 @@ import (
 // DeletingSince so the reaper treats it as wedged (past min-age).
 func markDeleting(t *testing.T, f *deleteClusterFixture, name string, age time.Duration) {
 	t.Helper()
-	require.NoError(t, SetClusterStatus(f.kv, name, ClusterStatusDeleting))
-	meta, err := GetClusterMeta(f.kv, name)
+	require.NoError(t, SetClusterStatus(t.Context(), f.kv, name, ClusterStatusDeleting))
+	meta, err := GetClusterMeta(t.Context(), f.kv, name)
 	require.NoError(t, err)
 	meta.DeletingSince = time.Now().UTC().Add(-age)
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 }
 
 // TestRLC4_DeletingReaperReDrivesWedgedTeardown locks the contract: a cluster
@@ -33,7 +33,7 @@ func TestRLC4_DeletingReaperReDrivesWedgedTeardown(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the wedged DELETING cluster must be re-driven")
 
-	_, getErr := GetClusterMeta(f.kv, "alpha")
+	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	assert.ErrorIs(t, getErr, ErrClusterNotFound, "meta must be swept after the backstop completes teardown")
 	assert.GreaterOrEqual(t, len(f.inst.terminateCalls), 1, "CP VM must be terminated")
 	assert.Len(t, f.eip.releaseCalls, 1, "the billable egress EIP must be released, not stranded")
@@ -50,7 +50,7 @@ func TestDeletingReaperSkipsFreshDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "a freshly-DELETING cluster must be left to its in-flight delete")
 
-	meta, getErr := GetClusterMeta(f.kv, "beta")
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "beta")
 	require.NoError(t, getErr, "meta must survive — the reaper did not re-drive")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
 	assert.Empty(t, f.inst.terminateCalls, "no teardown must run within the min-age window")
@@ -83,7 +83,7 @@ func TestDeletingReaperSkipsNonDeleting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 
-	meta, getErr := GetClusterMeta(f.kv, "gamma")
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "gamma")
 	require.NoError(t, getErr)
 	assert.Equal(t, ClusterStatusCreating, meta.Status)
 	assert.Empty(t, f.inst.terminateCalls)

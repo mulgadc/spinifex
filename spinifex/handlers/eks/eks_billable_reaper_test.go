@@ -87,7 +87,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 // untagged is never reaped (orphan-hood cannot be confirmed).
 func TestRLC5_EKSBillableReaperSpareLiveAndUncertain(t *testing.T) {
 	f := newEKSServiceFixture(t)
-	require.NoError(t, PutClusterMeta(f.kv, sampleClusterMeta("alive")))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("alive")))
 
 	f.vpc.describeByENI = map[string]*ec2.NetworkInterface{
 		"eni-live": cpENI("eni-live", "alive", testAccountID),

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,10 +84,10 @@ func haMeta(nodes []ControlPlaneNode) *ClusterMeta {
 
 // newReplaceReconciler wires a reconciler with the given CP control + provisioner
 // and stores meta in the account KV so SwapControlPlaneMember can CAS it.
-func newReplaceReconciler(t *testing.T, cp CPInstanceControl, prov CPProvisioner, meta *ClusterMeta) (*ClusterReconciler, nats.KeyValue) {
+func newReplaceReconciler(t *testing.T, cp CPInstanceControl, prov CPProvisioner, meta *ClusterMeta) (*ClusterReconciler, jetstream.KeyValue) {
 	t.Helper()
 	r, _, acctKV := newStateReconcilerHarness(t, WithCPInstanceControl(cp), WithCPProvisioner(prov))
-	require.NoError(t, PutClusterMeta(acctKV, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, meta))
 	return r, acctKV
 }
 
@@ -107,7 +107,7 @@ func TestMaybeReplaceCP_ReplacesLostMemberWithHealthyQuorum(t *testing.T) {
 	assert.Equal(t, "10.0.0.12", prov.lastReq.DeadPeerIP, "replacement is asked to prune the dead member's etcd peer")
 	assert.ElementsMatch(t, []string{"node-a", "node-b"}, prov.lastReq.ExcludeHosts, "excludes live-member hosts from placement")
 
-	got, err := GetClusterMeta(acctKV, "alpha")
+	got, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	ids := cpMemberInstanceIDs(got)
 	assert.Contains(t, ids, "i-cp-new", "replacement swapped into meta")
@@ -213,7 +213,7 @@ func TestMaybeReplaceCP_ProvisionFailureLeavesDegraded(t *testing.T) {
 	r.maybeReplaceControlPlaneMember(context.Background(), meta, "")
 
 	assert.Equal(t, 1, prov.calls)
-	got, err := GetClusterMeta(acctKV, "alpha")
+	got, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Contains(t, cpMemberInstanceIDs(got), "i-cp2", "meta unchanged when provision fails")
 }
@@ -251,7 +251,7 @@ func TestMaybeReplaceCP_NilProvisionerIsNoop(t *testing.T) {
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	meta := haMeta(nodes)
 	r, _, acctKV := newStateReconcilerHarness(t, WithCPInstanceControl(cp)) // no provisioner
-	require.NoError(t, PutClusterMeta(acctKV, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, meta))
 	r.replacingSince = time.Now().Add(-10 * time.Minute)
 
 	require.NotPanics(t, func() {
@@ -329,7 +329,7 @@ func TestActiveBranchReplacesLostCPMember(t *testing.T) {
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
 	require.Equal(t, 1, prov.calls, "wedged member replaced through the ACTIVE arm")
-	got, err := GetClusterMeta(acctKV, "alpha")
+	got, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, got.Status, "status stays AWS-faithful ACTIVE")
 	assert.Contains(t, cpMemberInstanceIDs(got), "i-cp-new")

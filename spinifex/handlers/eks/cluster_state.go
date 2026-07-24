@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ClusterStatus is the persisted cluster lifecycle state; values match the AWS EKS status enum.
@@ -152,7 +153,7 @@ var ErrClusterNotFound = errors.New("eks: cluster not found")
 const maxClusterStateCASRetries = 5
 
 // PutClusterMeta writes the meta record unconditionally.
-func PutClusterMeta(kv nats.KeyValue, meta *ClusterMeta) error {
+func PutClusterMeta(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta) error {
 	if meta == nil {
 		return errors.New("eks: PutClusterMeta nil meta")
 	}
@@ -163,7 +164,7 @@ func PutClusterMeta(kv nats.KeyValue, meta *ClusterMeta) error {
 	if err != nil {
 		return fmt.Errorf("marshal cluster meta %s: %w", meta.Name, err)
 	}
-	if _, err := kv.Put(ClusterMetaKey(meta.Name), data); err != nil {
+	if _, err := kv.Put(ctx, ClusterMetaKey(meta.Name), data); err != nil {
 		return fmt.Errorf("kv put %s: %w", ClusterMetaKey(meta.Name), err)
 	}
 	return nil
@@ -171,13 +172,13 @@ func PutClusterMeta(kv nats.KeyValue, meta *ClusterMeta) error {
 
 // GetClusterMeta reads the meta record. Returns ErrClusterNotFound if the
 // key is absent.
-func GetClusterMeta(kv nats.KeyValue, name string) (*ClusterMeta, error) {
+func GetClusterMeta(ctx context.Context, kv jetstream.KeyValue, name string) (*ClusterMeta, error) {
 	if name == "" {
 		return nil, errors.New("eks: GetClusterMeta empty name")
 	}
-	entry, err := kv.Get(ClusterMetaKey(name))
+	entry, err := kv.Get(ctx, ClusterMetaKey(name))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, ErrClusterNotFound
 		}
 		return nil, fmt.Errorf("kv get %s: %w", ClusterMetaKey(name), err)
@@ -192,14 +193,14 @@ func GetClusterMeta(kv nats.KeyValue, name string) (*ClusterMeta, error) {
 // casUpdateMeta does a revision-checked read-modify-write of the cluster meta.
 // mutate returns true when a field changed. Retries on CAS conflict up to
 // maxClusterStateCASRetries. Returns ErrClusterNotFound if deleted concurrently.
-func casUpdateMeta(kv nats.KeyValue, name string, mutate func(*ClusterMeta) bool) error {
+func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, mutate func(*ClusterMeta) bool) error {
 	if name == "" {
 		return errors.New("eks: casUpdateMeta empty name")
 	}
 	for range maxClusterStateCASRetries {
-		entry, err := kv.Get(ClusterMetaKey(name))
+		entry, err := kv.Get(ctx, ClusterMetaKey(name))
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return ErrClusterNotFound
 			}
 			return fmt.Errorf("kv get %s: %w", ClusterMetaKey(name), err)
@@ -215,11 +216,11 @@ func casUpdateMeta(kv nats.KeyValue, name string, mutate func(*ClusterMeta) bool
 		if err != nil {
 			return fmt.Errorf("marshal cluster meta %s: %w", name, err)
 		}
-		_, err = kv.Update(ClusterMetaKey(name), data, entry.Revision())
+		_, err = kv.Update(ctx, ClusterMetaKey(name), data, entry.Revision())
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			continue
 		}
 		return fmt.Errorf("kv update %s: %w", ClusterMetaKey(name), err)
@@ -228,11 +229,11 @@ func casUpdateMeta(kv nats.KeyValue, name string, mutate func(*ClusterMeta) bool
 }
 
 // SetClusterStatus does a CAS update of meta.Status. Returns ErrClusterNotFound if deleted concurrently.
-func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error {
+func SetClusterStatus(ctx context.Context, kv jetstream.KeyValue, name string, status ClusterStatus) error {
 	if name == "" {
 		return errors.New("eks: SetClusterStatus empty name")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		if m.Status == status {
 			return false
 		}
@@ -246,11 +247,11 @@ func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error
 
 // MarkClusterFailed transitions the cluster to FAILED with a reason, but only
 // from CREATING — so a late error cannot clobber a concurrent delete or an active cluster.
-func MarkClusterFailed(kv nats.KeyValue, name, reason string) error {
+func MarkClusterFailed(ctx context.Context, kv jetstream.KeyValue, name, reason string) error {
 	if name == "" {
 		return errors.New("eks: MarkClusterFailed empty name")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		if m.Status != ClusterStatusCreating {
 			return false
 		}
@@ -262,14 +263,14 @@ func MarkClusterFailed(kv nats.KeyValue, name, reason string) error {
 
 // SetClusterCertificateAuthority does a CAS update of meta.CertificateAuthorityB64.
 // Called by the bootstrap subscriber when the K3s VM publishes its CA.
-func SetClusterCertificateAuthority(kv nats.KeyValue, name, caB64 string) error {
+func SetClusterCertificateAuthority(ctx context.Context, kv jetstream.KeyValue, name, caB64 string) error {
 	if name == "" {
 		return errors.New("eks: SetClusterCertificateAuthority empty name")
 	}
 	if caB64 == "" {
 		return errors.New("eks: SetClusterCertificateAuthority empty CA")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		if m.CertificateAuthorityB64 == caB64 {
 			return false
 		}
@@ -280,11 +281,11 @@ func SetClusterCertificateAuthority(kv nats.KeyValue, name, caB64 string) error 
 
 // SetClusterHealth records the latest health outcome; issue="" means healthy.
 // Only writes on a state change, stamping LastHealthProbe at the transition.
-func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
+func SetClusterHealth(ctx context.Context, kv jetstream.KeyValue, name, issue string) error {
 	if name == "" {
 		return errors.New("eks: SetClusterHealth empty name")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		if m.HealthIssue == issue {
 			return false
 		}
@@ -299,11 +300,11 @@ func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
 // change; no KV write when nothing changed. nodegroupReady may be nil (older
 // AMI / no report yet), in which case the persisted per-nodegroup counts are
 // left untouched.
-func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int, nodegroupReady map[string]int) error {
+func SetClusterHealthState(ctx context.Context, kv jetstream.KeyValue, name, issue string, nodeCount int, nodegroupReady map[string]int) error {
 	if name == "" {
 		return errors.New("eks: SetClusterHealthState empty name")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		changed := m.HealthIssue != issue || m.NodeCount != nodeCount
 		if nodegroupReady != nil && !maps.Equal(m.NodegroupNodeCounts, nodegroupReady) {
 			changed = true
@@ -328,11 +329,11 @@ func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int, 
 // never retries EC2/OVN calls against a stale VpcId, which is what turns a
 // single DependencyViolation into a permanent teardown loop. No-op if already
 // cleared. Returns ErrClusterNotFound if the cluster was deleted concurrently.
-func ClearClusterManagedCPVPC(kv nats.KeyValue, name string) error {
+func ClearClusterManagedCPVPC(ctx context.Context, kv jetstream.KeyValue, name string) error {
 	if name == "" {
 		return errors.New("eks: ClearClusterManagedCPVPC empty name")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		if m.ManagedCPVPC == nil {
 			return false
 		}
@@ -346,14 +347,14 @@ func ClearClusterManagedCPVPC(kv nats.KeyValue, name string) error {
 // refreshes the scalar [0] mirrors if the primary changed. A no-op (no error)
 // when the dead member is already gone from the list — a concurrent swap already
 // won. Returns ErrClusterNotFound if the cluster was deleted concurrently.
-func SwapControlPlaneMember(kv nats.KeyValue, name, deadInstanceID string, replacement ControlPlaneNode) error {
+func SwapControlPlaneMember(ctx context.Context, kv jetstream.KeyValue, name, deadInstanceID string, replacement ControlPlaneNode) error {
 	if name == "" {
 		return errors.New("eks: SwapControlPlaneMember empty name")
 	}
 	if replacement.InstanceID == "" {
 		return errors.New("eks: SwapControlPlaneMember empty replacement instance id")
 	}
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		idx := -1
 		for i, n := range m.ControlPlaneNodes {
 			if n.InstanceID == deadInstanceID {
@@ -376,14 +377,14 @@ func SwapControlPlaneMember(kv nats.KeyValue, name, deadInstanceID string, repla
 
 // DeleteClusterPrefix removes every KV key under clusters/{name}/.
 // Returns the first error but continues sweeping.
-func DeleteClusterPrefix(kv nats.KeyValue, name string) error {
+func DeleteClusterPrefix(ctx context.Context, kv jetstream.KeyValue, name string) error {
 	if name == "" {
 		return errors.New("eks: DeleteClusterPrefix empty name")
 	}
 	prefix := fmt.Sprintf("clusters/%s/", name)
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("kv keys: %w", err)
@@ -393,7 +394,7 @@ func DeleteClusterPrefix(kv nats.KeyValue, name string) error {
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		if err := kv.Delete(k); err != nil && firstErr == nil {
+		if err := kv.Delete(ctx, k); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("kv delete %s: %w", k, err)
 		}
 	}

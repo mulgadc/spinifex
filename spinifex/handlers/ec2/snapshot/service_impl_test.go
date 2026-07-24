@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -16,9 +15,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -588,30 +587,12 @@ func TestCopySnapshot_PreservesTags(t *testing.T) {
 }
 
 // setupTestNATSKV creates a NATS JetStream test server and returns a KV bucket for testing.
-func setupTestNATSKV(t *testing.T) nats.KeyValue {
+func setupTestNATSKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	js, err := nc.JetStream()
-	require.NoError(t, err)
-
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
 		Bucket: KVBucketVolumeSnapshots,
 	})
 	require.NoError(t, err)
@@ -622,10 +603,10 @@ func TestAddSnapshotRef(t *testing.T) {
 	kv := setupTestNATSKV(t)
 	svc := &SnapshotServiceImpl{snapKV: kv}
 
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-a"))
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-b"))
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-b"))
 
-	entry, err := kv.Get("vol-1")
+	entry, err := kv.Get(t.Context(), "vol-1")
 	require.NoError(t, err)
 	var snapshots []string
 	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))
@@ -636,23 +617,23 @@ func TestRemoveSnapshotRef(t *testing.T) {
 	kv := setupTestNATSKV(t)
 	svc := &SnapshotServiceImpl{snapKV: kv}
 
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-a"))
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-b"))
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-b"))
 
 	// Remove one
-	require.NoError(t, svc.removeSnapshotRef("vol-1", "snap-a"))
+	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-1", "snap-a"))
 
-	entry, err := kv.Get("vol-1")
+	entry, err := kv.Get(t.Context(), "vol-1")
 	require.NoError(t, err)
 	var snapshots []string
 	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))
 	assert.Equal(t, []string{"snap-b"}, snapshots)
 
 	// Remove last — key should be deleted
-	require.NoError(t, svc.removeSnapshotRef("vol-1", "snap-b"))
+	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-1", "snap-b"))
 
-	_, err = kv.Get("vol-1")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err = kv.Get(t.Context(), "vol-1")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
@@ -660,7 +641,7 @@ func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
 	svc := &SnapshotServiceImpl{snapKV: kv}
 
 	// Should not error on non-existent key
-	require.NoError(t, svc.removeSnapshotRef("vol-nonexistent", "snap-x"))
+	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-nonexistent", "snap-x"))
 }
 
 func TestVolumeHasSnapshots(t *testing.T) {
@@ -668,19 +649,19 @@ func TestVolumeHasSnapshots(t *testing.T) {
 	svc := &SnapshotServiceImpl{snapKV: kv}
 
 	// No entry → false
-	has, err := svc.volumeHasSnapshots("vol-1")
+	has, err := svc.volumeHasSnapshots(t.Context(), "vol-1")
 	require.NoError(t, err)
 	assert.False(t, has)
 
 	// Add one → true
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-a"))
-	has, err = svc.volumeHasSnapshots("vol-1")
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	has, err = svc.volumeHasSnapshots(t.Context(), "vol-1")
 	require.NoError(t, err)
 	assert.True(t, has)
 
 	// Remove it → false
-	require.NoError(t, svc.removeSnapshotRef("vol-1", "snap-a"))
-	has, err = svc.volumeHasSnapshots("vol-1")
+	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	has, err = svc.volumeHasSnapshots(t.Context(), "vol-1")
 	require.NoError(t, err)
 	assert.False(t, has)
 }
@@ -689,9 +670,9 @@ func TestKVNilFallback(t *testing.T) {
 	svc := &SnapshotServiceImpl{snapKV: nil}
 
 	// All methods should be no-ops when KV is nil
-	require.NoError(t, svc.addSnapshotRef("vol-1", "snap-a"))
-	require.NoError(t, svc.removeSnapshotRef("vol-1", "snap-a"))
-	has, err := svc.volumeHasSnapshots("vol-1")
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-1", "snap-a"))
+	has, err := svc.volumeHasSnapshots(t.Context(), "vol-1")
 	require.NoError(t, err)
 	assert.False(t, has)
 }
@@ -716,12 +697,12 @@ func TestCreateSnapshot_WritesKVEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify KV entry exists
-	has, err := svc.volumeHasSnapshots(volumeID)
+	has, err := svc.volumeHasSnapshots(t.Context(), volumeID)
 	require.NoError(t, err)
 	assert.True(t, has)
 
 	// Verify snapshot ID is in the list
-	entry, err := kv.Get(volumeID)
+	entry, err := kv.Get(t.Context(), volumeID)
 	require.NoError(t, err)
 	var snapshots []string
 	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))
@@ -754,7 +735,7 @@ func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	// KV should now be empty for this volume
-	has, err := svc.volumeHasSnapshots(volumeID)
+	has, err := svc.volumeHasSnapshots(t.Context(), volumeID)
 	require.NoError(t, err)
 	assert.False(t, has)
 }
@@ -784,7 +765,7 @@ func TestCopySnapshot_AddsKVEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both snapshot IDs should be in KV
-	entry, err := kv.Get(volumeID)
+	entry, err := kv.Get(t.Context(), volumeID)
 	require.NoError(t, err)
 	var snapshots []string
 	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))

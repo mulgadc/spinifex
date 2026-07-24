@@ -14,10 +14,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -510,30 +512,12 @@ func TestCreateVolume_FromSnapshot_CorruptMetadata(t *testing.T) {
 }
 
 // setupTestVolumeKV creates a NATS JetStream test server and returns a KV bucket.
-func setupTestVolumeKV(t *testing.T) nats.KeyValue {
+func setupTestVolumeKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	js, err := nc.JetStream()
-	require.NoError(t, err)
-
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
 		Bucket: "spinifex-volume-snapshots",
 	})
 	require.NoError(t, err)
@@ -574,7 +558,7 @@ func TestDeleteVolume_BlockedByKV(t *testing.T) {
 	// Put a snapshot ref in KV
 	data, err := json.Marshal([]string{"snap-001"})
 	require.NoError(t, err)
-	_, err = kv.Put(volumeID, data)
+	_, err = kv.Put(t.Context(), volumeID, data)
 	require.NoError(t, err)
 
 	// DeleteVolume should be blocked
@@ -1479,7 +1463,7 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	// clear has already succeeded.
 	snapData, err := json.Marshal([]string{"snap-001"})
 	require.NoError(t, err)
-	_, err = kv.Put(volumeID, snapData)
+	_, err = kv.Put(t.Context(), volumeID, snapData)
 	require.NoError(t, err)
 
 	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")

@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -714,7 +715,7 @@ func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
 
 // UpdateStoppedInstance mimics the real CAS semantics: mutate runs under the
 // store lock against loadByID's entry, and a missing record (e.g. removed by
-// a concurrent ClaimStoppedInstance) returns nats.ErrKeyNotFound instead of
+// a concurrent ClaimStoppedInstance) returns jetstream.ErrKeyNotFound instead of
 // resurrecting it — the same createIfAbsent=false contract as JetStreamManager.
 func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
 	f.mu.Lock()
@@ -725,7 +726,7 @@ func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM))
 	}
 	v, ok := f.loadByID[id]
 	if !ok {
-		return nil, nats.ErrKeyNotFound
+		return nil, jetstream.ErrKeyNotFound
 	}
 	mutate(v)
 	return v, nil

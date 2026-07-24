@@ -29,6 +29,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	s3backend "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -57,13 +58,13 @@ type VolumeServiceImpl struct {
 	store      objectstore.ObjectStore
 	bucketName string
 	natsConn   *nats.Conn
-	snapshotKV nats.KeyValue
+	snapshotKV jetstream.KeyValue
 }
 
 // NewVolumeServiceImpl creates a new daemon-side volume service.
 // snapshotKV is optional — when non-nil, DeleteVolume uses O(1) KV lookup
 // instead of scanning all snapshots in S3.
-func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV nats.KeyValue) *VolumeServiceImpl {
+func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV jetstream.KeyValue) *VolumeServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -81,7 +82,7 @@ func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV na
 }
 
 // NewVolumeServiceImplWithStore creates a volume service with a custom ObjectStore (for testing).
-func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...nats.KeyValue) *VolumeServiceImpl {
+func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...jetstream.KeyValue) *VolumeServiceImpl {
 	bucketName := ""
 	if cfg != nil {
 		bucketName = cfg.Predastore.Bucket
@@ -1562,7 +1563,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	// Check if any snapshots reference this volume via JetStream KV.
 	// Snapshot-backed clones read chunk files from the source volume's
 	// S3 prefix via ReadFrom(). Deleting the source would break all clones.
-	if err := s.checkVolumeHasNoSnapshots(volumeID); err != nil {
+	if err := s.checkVolumeHasNoSnapshots(ctx, volumeID); err != nil {
 		return nil, err
 	}
 
@@ -1676,29 +1677,29 @@ func (s *VolumeServiceImpl) getSnapshotMetadata(ctx context.Context, snapshotID 
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots
 // using the JetStream KV index.
-func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(volumeID string) error {
+func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, volumeID string) error {
 	if s.snapshotKV == nil {
-		slog.Error("checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	has, err := s.volumeHasSnapshotsKV(volumeID)
+	has, err := s.volumeHasSnapshotsKV(ctx, volumeID)
 	if err != nil {
-		slog.Error("checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if has {
-		slog.Error("DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorVolumeInUse)
 	}
 	return nil
 }
 
 // volumeHasSnapshotsKV checks the JetStream KV index for snapshot references.
-func (s *VolumeServiceImpl) volumeHasSnapshotsKV(volumeID string) (bool, error) {
-	entry, err := s.snapshotKV.Get(volumeID)
+func (s *VolumeServiceImpl) volumeHasSnapshotsKV(ctx context.Context, volumeID string) (bool, error) {
+	entry, err := s.snapshotKV.Get(ctx, volumeID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return false, nil
 		}
 		return false, err

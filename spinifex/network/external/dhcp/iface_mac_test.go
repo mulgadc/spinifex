@@ -10,14 +10,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func newIfaceMACManager(t *testing.T, fake *dhcp.Fake, ifaceIPs func(string) ([]net.IP, error)) (*dhcp.Manager, *dhcp.Store, *nats.Conn) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
-	store, err := dhcp.NewStore(js, "az1")
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	store, err := dhcp.NewStore(t.Context(), js, "az1")
 	require.NoError(t, err)
 	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{Client: fake, Store: store, IfaceIPs: ifaceIPs})
 	require.NoError(t, err)
@@ -57,7 +59,7 @@ func TestAcquireUseIfaceMACThreadedAndPersisted(t *testing.T) {
 	assert.True(t, gotReq.UseIfaceMAC, "flag must reach the DHCP client")
 	assert.True(t, lease.UseIfaceMAC, "flag must reflect back on the lease")
 
-	got, err := store.Get("eipalloc-A")
+	got, err := store.Get(t.Context(), "eipalloc-A")
 	require.NoError(t, err)
 	assert.True(t, got.Lease.UseIfaceMAC, "flag must round-trip through KV")
 }
@@ -73,7 +75,7 @@ func TestAcquireDerivedMACDefault(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, lease.UseIfaceMAC)
-	got, err := store.Get("eipalloc-B")
+	got, err := store.Get(t.Context(), "eipalloc-B")
 	require.NoError(t, err)
 	assert.False(t, got.Lease.UseIfaceMAC)
 }
@@ -96,8 +98,8 @@ func TestAcquireIfaceMACCollisionWithOwnIP(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `use source="static"`)
 	assert.Equal(t, 1, fake.ReleaseCount(), "colliding lease must be released")
-	_, err = store.Get("eipalloc-C")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound, "colliding lease must not persist")
+	_, err = store.Get(t.Context(), "eipalloc-C")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "colliding lease must not persist")
 }
 
 // Two client-ids ACKing the same IP means the router ignores option 61.

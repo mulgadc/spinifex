@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -136,7 +137,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.parentCancel = cancel
 	m.mu.Unlock()
 
-	entries, err := m.store.List()
+	entries, err := m.store.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list dhcp leases: %w", err)
 	}
@@ -146,7 +147,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 		if !e.Lease.ExpiresAt().After(now) {
-			if delErr := m.store.Delete(e.Lease.ClientID); delErr != nil {
+			if delErr := m.store.Delete(ctx, e.Lease.ClientID); delErr != nil {
 				slog.Warn("dhcp manager: drop expired lease failed", "client_id", e.Lease.ClientID, "err", delErr)
 			}
 			continue
@@ -318,7 +319,7 @@ func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
 		return err
 	}
 	e.Lease = lease
-	if err := m.store.Put(*e); err != nil {
+	if err := m.store.Put(ctx, *e); err != nil {
 		return fmt.Errorf("persist re-acquired lease: %w", err)
 	}
 	return nil
@@ -376,7 +377,7 @@ func (m *Manager) doRenew(ctx context.Context, e *Entry) error {
 		return err
 	}
 	e.Lease = renewed
-	if err := m.store.Put(*e); err != nil {
+	if err := m.store.Put(ctx, *e); err != nil {
 		return fmt.Errorf("persist renewed lease: %w", err)
 	}
 	return nil
@@ -415,13 +416,17 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 		respondReleaseErr(msg, fmt.Sprintf("decode release: %v", err))
 		return
 	}
+	// A release must run to completion once started — the upstream DHCPRELEASE
+	// and the KV delete have to stay paired — so it is not tied to a caller
+	// deadline or to manager shutdown.
+	ctx := context.Background()
 	clientID := req.ClientID
 	if clientID == "" && req.IP != "" {
-		entry, err := m.store.LookupByIP(req.PoolName, req.IP)
+		entry, err := m.store.LookupByIP(ctx, req.PoolName, req.IP)
 		switch {
 		case err == nil:
 			clientID = entry.Lease.ClientID
-		case errors.Is(err, nats.ErrKeyNotFound):
+		case errors.Is(err, jetstream.ErrKeyNotFound):
 			slog.Warn("dhcp manager: release for unknown IP", "pool", req.PoolName, "ip", req.IP)
 			_ = msg.Respond(emptyReleaseReply)
 			return
@@ -430,7 +435,7 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 			return
 		}
 	}
-	if err := m.handleRelease(context.Background(), clientID); err != nil {
+	if err := m.handleRelease(ctx, clientID); err != nil {
 		respondReleaseErr(msg, err.Error())
 		return
 	}
@@ -458,13 +463,13 @@ func (m *Manager) handleAcquire(ctx context.Context, req acquireWireRequest) (*E
 }
 
 func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*Entry, error) {
-	existing, err := m.store.Get(req.ClientID)
+	existing, err := m.store.Get(ctx, req.ClientID)
 	switch {
 	case err == nil:
 		if existing != nil && existing.Lease != nil && existing.Lease.ExpiresAt().After(m.now()) {
 			return existing, nil
 		}
-	case errors.Is(err, nats.ErrKeyNotFound):
+	case errors.Is(err, jetstream.ErrKeyNotFound):
 		// fall through to fresh acquire
 	default:
 		return nil, fmt.Errorf("look up lease: %w", err)
@@ -486,7 +491,7 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 		return nil, err
 	}
 	if req.UseIfaceMAC {
-		if cerr := m.checkIfaceMACCollision(req.Bridge, req.ClientID, lease.IP); cerr != nil {
+		if cerr := m.checkIfaceMACCollision(ctx, req.Bridge, req.ClientID, lease.IP); cerr != nil {
 			if relErr := m.client.Release(ctx, lease); relErr != nil {
 				slog.Warn("dhcp manager: release of colliding lease failed", "client_id", req.ClientID, "err", relErr)
 			}
@@ -494,7 +499,7 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 		}
 	}
 	entry := Entry{Purpose: req.Purpose, PoolName: req.PoolName, VPCID: req.VPCID, Lease: lease}
-	if err := m.store.Put(entry); err != nil {
+	if err := m.store.Put(ctx, entry); err != nil {
 		return nil, fmt.Errorf("persist new lease: %w", err)
 	}
 	m.spawnLoop(entry, false)
@@ -505,7 +510,7 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 // ignore option 61: every interface-MAC client then ACKs the same IP. The
 // ACK IP matching the interface's own address or another client-id's live
 // lease is a hard error — the operator must switch the pool to a static range.
-func (m *Manager) checkIfaceMACCollision(iface, clientID string, ip net.IP) error {
+func (m *Manager) checkIfaceMACCollision(ctx context.Context, iface, clientID string, ip net.IP) error {
 	if ip == nil {
 		return nil
 	}
@@ -517,7 +522,7 @@ func (m *Manager) checkIfaceMACCollision(iface, clientID string, ip net.IP) erro
 			}
 		}
 	}
-	entries, err := m.store.List()
+	entries, err := m.store.List(ctx)
 	if err != nil {
 		slog.Warn("dhcp manager: lease list for MAC-collision check failed", "err", err)
 		return nil
@@ -556,7 +561,7 @@ func defaultIfaceIPs(name string) ([]net.IP, error) {
 // the KV records. Best-effort (per-lease failures logged, not fatal). Used on
 // destructive teardown; Stop() preserves leases for adopt-on-reboot.
 func (m *Manager) DrainAll(ctx context.Context) (int, error) {
-	entries, err := m.store.List()
+	entries, err := m.store.List(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list leases for drain: %w", err)
 	}
@@ -597,9 +602,9 @@ func (m *Manager) handleRelease(ctx context.Context, clientID string) error {
 	if clientID == "" {
 		return errors.New("client_id required")
 	}
-	entry, err := m.store.Get(clientID)
+	entry, err := m.store.Get(ctx, clientID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.Warn("dhcp manager: release for unknown client", "client_id", clientID)
 			return nil
 		}
@@ -624,7 +629,7 @@ func (m *Manager) handleRelease(ctx context.Context, clientID string) error {
 	if err := m.client.Release(ctx, entry.Lease); err != nil {
 		slog.Warn("dhcp manager: client release failed; deleting KV entry anyway", "client_id", clientID, "err", err)
 	}
-	return m.store.Delete(clientID)
+	return m.store.Delete(ctx, clientID)
 }
 
 // LoopCount returns the number of active renewal goroutines. Test

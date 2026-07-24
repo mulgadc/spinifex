@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Bridge mode selects how the WAN NIC reaches the OVS bridge.
@@ -489,7 +490,7 @@ func launchService(cfg *Config) error {
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
@@ -613,7 +614,7 @@ func launchService(cfg *Config) error {
 	// Elect one vpcd for startup reconcile; without this, concurrent Get-then-Create on Logical_Router
 	// produces duplicate rows that ovn-nbctl rejects. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(nc, reconcile.KVBucketVPCDReconcile, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeader(ctx, nc, reconcile.KVBucketVPCDReconcile, holder)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,
@@ -724,7 +725,7 @@ func pickDNSServer(pools []external.ExternalPoolConfig) string {
 
 // startDHCPManagerIfNeeded starts the per-AZ DHCP Manager when any pool has Source="dhcp".
 // Returns (nil, nil, nil) when not needed.
-func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, cfg *Config) (*dhcp.Manager, []*nats.Subscription, error) {
+func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, cfg *Config) (*dhcp.Manager, []*nats.Subscription, error) {
 	if cfg == nil || cfg.ExternalMode == "" {
 		return nil, nil, nil
 	}
@@ -739,7 +740,7 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js nats.JetStr
 		return nil, nil, nil
 	}
 
-	store, err := dhcp.NewStore(js, cfg.AZ)
+	store, err := dhcp.NewStore(ctx, js, cfg.AZ)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp lease store: %w", err)
 	}

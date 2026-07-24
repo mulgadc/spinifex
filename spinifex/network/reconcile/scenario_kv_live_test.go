@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 
 	"github.com/nats-io/nats.go"
@@ -38,18 +37,18 @@ func seedKV(t *testing.T, js nats.JetStreamContext, bucket, key string, rec any)
 // control-plane KV, loads intent from it, reconciles into a real NB DB, and
 // asserts the expected rows plus idempotency.
 func TestScenario_LoadIntentFromKV_Live(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	seed, js := startKV(t)
 
-	seedKV(t, js, vpc.KVBucketVPCs, "vpc-a", vpc.VPCRecord{
+	seedKV(t, seed, vpc.KVBucketVPCs, "vpc-a", vpc.VPCRecord{
 		VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", VNI: 100,
 	})
-	seedKV(t, js, vpc.KVBucketSubnets, "subnet-a", vpc.SubnetRecord{
+	seedKV(t, seed, vpc.KVBucketSubnets, "subnet-a", vpc.SubnetRecord{
 		SubnetId: "subnet-a", VpcId: "vpc-a", CidrBlock: "10.0.1.0/24",
 	})
-	seedKV(t, js, vpc.KVBucketSecurityGroups, "sg-a", vpc.SecurityGroupRecord{
+	seedKV(t, seed, vpc.KVBucketSecurityGroups, "sg-a", vpc.SecurityGroupRecord{
 		GroupId: "sg-a", VpcId: "vpc-a",
 	})
-	seedKV(t, js, vpc.KVBucketENIs, "eni-a", vpc.ENIRecord{
+	seedKV(t, seed, vpc.KVBucketENIs, "eni-a", vpc.ENIRecord{
 		NetworkInterfaceId: "eni-a", SubnetId: "subnet-a", VpcId: "vpc-a",
 		PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 		SecurityGroupIds: []string{"sg-a"},

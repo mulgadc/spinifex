@@ -388,7 +388,7 @@ func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsC
 	list := handlers_quota.NATSInstanceLister(natsConn, expectedNodes)
 
 	runPass := func() {
-		release, elected := reconcile.AcquireLeader(natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
+		release, elected := reconcile.AcquireLeader(ctx, natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
 		if !elected {
 			return
 		}

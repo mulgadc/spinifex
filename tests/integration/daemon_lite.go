@@ -113,7 +113,7 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(cfg, nc)
 	require.NoError(t, err, "construct VPC service")
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(cfg, nc)
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct route table service")
 
 	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(cfg, nc)

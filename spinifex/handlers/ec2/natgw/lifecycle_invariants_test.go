@@ -1,7 +1,6 @@
 package handlers_ec2_natgw
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +22,7 @@ import (
 func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{
+	_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{
 		NatGatewayId: aws.String("nat-absent00000000"),
 	}, testAccountID)
 
@@ -42,12 +40,12 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 		svc, js := setupTestServiceJS(t)
 		natgwID := createTestNatGateway(t, svc)
 
-		testutil.SeedKV(t, js, kvBucketRouteTables, map[string][]byte{
+		seedKV(t, js, kvBucketRouteTables, map[string][]byte{
 			utils.AccountKey(testAccountID, "rtb-routed"): fmt.Appendf(nil,
 				`{"route_table_id":"rtb-routed","vpc_id":"vpc-test1","routes":[{"destination_cidr_block":"0.0.0.0/0","nat_gateway_id":%q}]}`, natgwID),
 		})
 
-		_, err := svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+		_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
 		require.NoErrorf(t, err,
 			"ADR-0004 §2: DeleteNatGateway must succeed even while a live route table forwards to it (the route blackholes, AWS-faithful)")
 	})
@@ -56,7 +54,7 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 		svc := setupTestService(t)
 		natgwID := createTestNatGateway(t, svc)
 
-		_, err := svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+		_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
 		require.NoErrorf(t, err,
 			"ADR-0004 §2: with no route forwarding to it, DeleteNatGateway must succeed")
 	})
@@ -74,7 +72,7 @@ func TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated(t *testing.T) {
 	require.Equal(t, "associated", assoc.State, "CreateNatGateway must mark the EIP associated so a second NAT GW cannot reuse it")
 	require.NotEmpty(t, assoc.AssociationId)
 
-	_, err := svc.DeleteNatGateway(context.Background(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+	_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
 	require.NoError(t, err)
 
 	eip := readEIP(t, svc, "eipalloc-test1")
@@ -84,7 +82,7 @@ func TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated(t *testing.T) {
 
 func createTestNatGateway(t *testing.T, svc *NatGatewayServiceImpl) string {
 	t.Helper()
-	out, err := svc.CreateNatGateway(context.Background(), &ec2.CreateNatGatewayInput{
+	out, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
 		AllocationId: aws.String("eipalloc-test1"),
 	}, testAccountID)
@@ -94,7 +92,7 @@ func createTestNatGateway(t *testing.T, svc *NatGatewayServiceImpl) string {
 
 func readEIP(t *testing.T, svc *NatGatewayServiceImpl, allocID string) handlers_ec2_eip.EIPRecord {
 	t.Helper()
-	entry, err := svc.eipKV.Get(utils.AccountKey(testAccountID, allocID))
+	entry, err := svc.eipKV.Get(t.Context(), utils.AccountKey(testAccountID, allocID))
 	require.NoError(t, err)
 	var eip handlers_ec2_eip.EIPRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &eip))

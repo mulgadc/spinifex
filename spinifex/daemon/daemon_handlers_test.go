@@ -3756,7 +3756,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(daemon.config, nc)
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 

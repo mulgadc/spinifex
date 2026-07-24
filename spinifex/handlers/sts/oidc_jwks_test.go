@@ -69,17 +69,19 @@ func TestJWKS_FindByKID(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_NotFoundReturnsNil(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	jwks, err := FetchClusterJWKS(js, "123456789012", "missing-cluster")
+	jwks, err := FetchClusterJWKS(t.Context(), js, "123456789012", "missing-cluster")
 	require.NoError(t, err)
 	assert.Nil(t, jwks)
 }
 
 func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012", 1)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "123456789012", 1)
 	require.NoError(t, err)
 
 	want := &JWKS{Keys: []JWK{
@@ -87,10 +89,10 @@ func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 	}}
 	raw, err := json.Marshal(want)
 	require.NoError(t, err)
-	_, err = kv.Put(handlers_eks.OIDCJWKSKey("my-cluster"), raw)
+	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("my-cluster"), raw)
 	require.NoError(t, err)
 
-	got, err := FetchClusterJWKS(js, "123456789012", "my-cluster")
+	got, err := FetchClusterJWKS(t.Context(), js, "123456789012", "my-cluster")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Len(t, got.Keys, 1)
@@ -100,29 +102,31 @@ func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_EmptyKeysIsError(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, "123456789012", 1)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "123456789012", 1)
 	require.NoError(t, err)
 
-	_, err = kv.Put(handlers_eks.OIDCJWKSKey("empty-cluster"), []byte(`{"keys":[]}`))
+	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("empty-cluster"), []byte(`{"keys":[]}`))
 	require.NoError(t, err)
 
-	jwks, err := FetchClusterJWKS(js, "123456789012", "empty-cluster")
+	jwks, err := FetchClusterJWKS(t.Context(), js, "123456789012", "empty-cluster")
 	require.Error(t, err)
 	assert.Nil(t, jwks)
 }
 
 func TestFetchClusterJWKS_NilJetStream(t *testing.T) {
-	_, err := FetchClusterJWKS(nil, "123456789012", "c1")
+	_, err := FetchClusterJWKS(t.Context(), nil, "123456789012", "c1")
 	require.Error(t, err)
 }
 
 func TestFetchClusterJWKS_EmptyArgs(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	_, err := FetchClusterJWKS(js, "", "c1")
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, err := FetchClusterJWKS(t.Context(), js, "", "c1")
 	require.Error(t, err)
-	_, err = FetchClusterJWKS(js, "123456789012", "")
+	_, err = FetchClusterJWKS(t.Context(), js, "123456789012", "")
 	require.Error(t, err)
 }
 

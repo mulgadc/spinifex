@@ -144,7 +144,7 @@ func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sg-new1", "sg-new2"}, aws.StringValueSlice(res.SecurityGroupIds))
 
-	rec, err := svc.store.GetLoadBalancerByArn(arn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), arn)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sg-new1", "sg-new2"}, rec.SecurityGroups)
 }

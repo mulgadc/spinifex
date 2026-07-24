@@ -132,10 +132,10 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
-	stsSvc, err := handlers_sts.NewSTSServiceImpl(nc, iamSvc, masterKey, 1)
+	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 1)
 	require.NoError(t, err)
 
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretAccessKey, masterKey)

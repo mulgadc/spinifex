@@ -24,17 +24,17 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
-	stsSvc, err := NewSTSServiceImpl(nc, iamSvc, masterKey, 1)
+	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 1)
 	require.NoError(t, err)
 	return stsSvc, nc
 }
 
 func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(nil, nopIAMService{}, masterKey, 1)
+	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey, 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NATS")
 }
@@ -42,7 +42,7 @@ func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 func TestNewSTSServiceImpl_RejectsNilIAMService(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(nc, nil, masterKey, 1)
+	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey, 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "IAM")
 }
@@ -51,7 +51,7 @@ func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	for _, size := range []int{0, 1, 16, 31, 33, 64} {
 		t.Run("size", func(t *testing.T) {
-			_, err := NewSTSServiceImpl(nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size), 1)
+			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size), 1)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "master key")
 		})
@@ -68,10 +68,10 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
-	svc, err := NewSTSServiceImpl(nc, iamSvc, masterKey, 0)
+	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 0)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 }
@@ -116,7 +116,7 @@ func TestLookupSessionCredential_HitRoundTrips(t *testing.T) {
 		ExpiresAt:         now.Add(time.Hour),
 		CreatedAt:         now,
 	}
-	require.NoError(t, putSessionCredential(svc.sessionsBucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), svc.sessionsBucket, cred))
 
 	got, err := svc.LookupSessionCredential(cred.AccessKeyID)
 	require.NoError(t, err)
@@ -134,7 +134,7 @@ func TestLookupSessionCredential_UnmarshalFailureSurfacesError(t *testing.T) {
 	// the prefix is valid (so the lookup reaches the bucket) but the JSON
 	// body is garbage. This guards against the "lookup returns nil silently
 	// on parse failure" silent-failure mode.
-	_, err := svc.sessionsBucket.Put(akid, []byte("not json"))
+	_, err := svc.sessionsBucket.Put(t.Context(), akid, []byte("not json"))
 	require.NoError(t, err)
 
 	got, err := svc.LookupSessionCredential(akid)

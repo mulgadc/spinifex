@@ -81,7 +81,7 @@ func TestRegisterTargets_ResolvesPrivateIP(t *testing.T) {
 	require.Len(t, health.TargetHealthDescriptions, 1)
 
 	// The target should have been registered with the resolved IP in the store
-	tg, err := svc.store.GetTargetGroupByArn(*tgArn)
+	tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 	require.NoError(t, err)
 	require.Len(t, tg.Targets, 1)
 	assert.Equal(t, "10.0.1.50", tg.Targets[0].PrivateIP)
@@ -103,7 +103,7 @@ func TestRegisterTargets_UnresolvableIP(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tg, _ := svc.store.GetTargetGroupByArn(*tgArn)
+	tg, _ := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 	require.Len(t, tg.Targets, 1)
 	assert.Empty(t, tg.Targets[0].PrivateIP)
 }
@@ -124,7 +124,7 @@ func TestRegisterTargets_WithoutVPCService(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tg, _ := svc.store.GetTargetGroupByArn(*tgArn)
+	tg, _ := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 	assert.Empty(t, tg.Targets[0].PrivateIP)
 }
 
@@ -156,7 +156,7 @@ func TestRegisterTargets_MultipleInstances(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tg, _ := svc.store.GetTargetGroupByArn(*tgArn)
+	tg, _ := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 	require.Len(t, tg.Targets, 2)
 	assert.Equal(t, "10.0.1.50", tg.Targets[0].PrivateIP)
 	assert.Equal(t, "10.0.1.51", tg.Targets[1].PrivateIP)
@@ -181,11 +181,11 @@ func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testin
 			{Id: "i-i", HealthState: TargetHealthInitial, PrivateIP: "10.0.0.4"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
 	require.NoError(t, svc.ResetTargetHealthOnStartup(t.Context()))
 
-	got, err := store.GetTargetGroup("tg-reset")
+	got, err := store.GetTargetGroup(t.Context(), "tg-reset")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Len(t, got.Targets, 4)

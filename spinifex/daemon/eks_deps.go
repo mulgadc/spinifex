@@ -37,7 +37,7 @@ func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
 	if d.clusterConfig != nil {
 		clusterSize = len(d.clusterConfig.Nodes)
 	}
-	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize)
+	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey, clusterSize)
 	if iamErr != nil {
 		slog.Warn("System role ensurer: IAM service init failed (retried on next launch); system VMs fall back to baked static creds",
 			"err", iamErr)

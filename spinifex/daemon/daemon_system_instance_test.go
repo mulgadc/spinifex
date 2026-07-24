@@ -637,9 +637,9 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
 	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
 
-	seedStore, err := handlers_elbv2.NewStore(nc)
+	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
 		LoadBalancerID: "lb-recover",
 		Name:           "recover-alb",
 		Scheme:         handlers_elbv2.SchemeInternal,
@@ -683,9 +683,9 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 	d, nc, tmpDir := newRefreshTestDaemon(t)
 
-	seedStore, err := handlers_elbv2.NewStore(nc)
+	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
 		LoadBalancerID: "lb-werr",
 		Name:           "werr-alb",
 		Scheme:         handlers_elbv2.SchemeInternal,

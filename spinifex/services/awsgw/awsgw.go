@@ -143,26 +143,28 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("load IAM master key from %s: %w", masterKeyPath, err)
 	}
 
+	// Bound to the process lifetime — the server below blocks until exit, so
+	// cancelling on return is sufficient to let the background goroutines drain.
+	// Every bucket the gateway opens at startup hangs off it too.
+	janitorCtx, cancelJanitor := context.WithCancel(context.Background())
+	defer cancelJanitor()
+
 	// Initialize IAM service with NATS KV backend (required for auth).
 	// On multi-node clusters, JetStream KV requires cluster quorum which may
 	// not be available yet if nodes start concurrently. Retry with backoff.
-	iamService, err := handlers_iam.NewIAMServiceWithRetry(natsConn, masterKey, len(config.Nodes))
+	iamService, err := handlers_iam.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(natsConn, iamService, masterKey, len(config.Nodes))
+	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
 
-	// Janitor sweeps expired session credentials. Bound to the process
-	// lifetime — the server below blocks until exit, so cancelling on return
-	// is sufficient to let the goroutine drain.
-	janitorCtx, cancelJanitor := context.WithCancel(context.Background())
-	defer cancelJanitor()
+	// Janitor sweeps expired session credentials.
 	go stsService.RunJanitor(janitorCtx)
 
 	// IMDS serves 169.254.169.254 to guest VMs from vpcd, which holds the network

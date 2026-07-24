@@ -179,7 +179,7 @@ func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
 		ConfigHash:     "hash123",
 		CertFiles:      map[string]string{"/etc/haproxy/certs/lb-deliver1-lst.pem": "LEAF\nKEY\n"},
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(rec))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), rec))
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-deliver1")}, testAccountID)
 	require.NoError(t, err)

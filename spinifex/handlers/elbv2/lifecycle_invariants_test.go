@@ -90,11 +90,11 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
 	require.NoError(t, err)
 
-	listeners, err := svc.store.ListListenersByLB(*lbArn)
+	listeners, err := svc.store.ListListenersByLB(t.Context(), *lbArn)
 	require.NoError(t, err)
 	require.Emptyf(t, listeners, "ADR-0002 §5 no-orphan completeness: no listener owned by a deleted LB may remain")
 
-	rules, err := svc.store.ListRules()
+	rules, err := svc.store.ListRules(t.Context())
 	require.NoError(t, err)
 	require.Emptyf(t, rules, "ADR-0002 §5 no-orphan completeness: no rule owned by a deleted LB may remain")
 }
@@ -194,7 +194,7 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 
 	danglingListenerArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID +
 		":listener/app/gone/0000000000000000/1111111111111111"
-	require.NoError(t, svc.store.PutRule(&RuleRecord{
+	require.NoError(t, svc.store.PutRule(t.Context(), &RuleRecord{
 		RuleArn:     "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":listener-rule/app/gone/0000000000000000/1111111111111111/2222222222222222",
 		RuleID:      "rule-orphan00000000",
 		ListenerArn: danglingListenerArn,

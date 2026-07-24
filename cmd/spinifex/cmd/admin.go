@@ -2466,7 +2466,9 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 		return nil, nil, nil, nil, fmt.Errorf("load master key: %w", err)
 	}
 
-	svc, err := handlers_iam.NewIAMServiceImpl(nc, masterKey, len(cfg.Nodes))
+	// Background: this runs at CLI top level, where there is no request to
+	// inherit a deadline from and the process exits after the one command.
+	svc, err := handlers_iam.NewIAMServiceImpl(context.Background(), nc, masterKey, len(cfg.Nodes))
 	if err != nil {
 		nc.Close()
 		return nil, nil, nil, nil, fmt.Errorf("init IAM service: %w", err)

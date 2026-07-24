@@ -394,7 +394,7 @@ func TestRemoveUserFromGroup_DanglingPointer(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the group record directly, bypassing the non-empty-group guard.
-	require.NoError(t, svc.groupsBucket.Delete(testAccountID+".doomed"))
+	require.NoError(t, svc.groupsBucket.Delete(t.Context(), testAccountID+".doomed"))
 
 	_, err = svc.RemoveUserFromGroup(testAccountID, &iam.RemoveUserFromGroupInput{
 		GroupName: aws.String("doomed"),
@@ -471,7 +471,7 @@ func TestListGroupsForUser_SkipsMissingGroup(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, svc.groupsBucket.Delete(testAccountID+".vanishing"))
+	require.NoError(t, svc.groupsBucket.Delete(t.Context(), testAccountID+".vanishing"))
 
 	out, err := svc.ListGroupsForUser(testAccountID, &iam.ListGroupsForUserInput{
 		UserName: aws.String("henry"),
@@ -1030,7 +1030,7 @@ func TestGetUserPolicies_SkipsMissingGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the group record directly, leaving a dangling User.Groups pointer.
-	require.NoError(t, svc.groupsBucket.Delete(testAccountID+".soon-gone"))
+	require.NoError(t, svc.groupsBucket.Delete(t.Context(), testAccountID+".soon-gone"))
 
 	docs, err := svc.GetUserPolicies(testAccountID, "kim")
 	require.NoError(t, err, "a missing group must be skipped, not fail closed")
@@ -1050,7 +1050,7 @@ func TestGetUserPolicies_SkipsMissingGroup(t *testing.T) {
 // corrupt stored document that the write path would otherwise reject.
 func putRawGroupInlinePolicy(t *testing.T, svc *IAMServiceImpl, groupName, policyName, raw string) {
 	t.Helper()
-	group, err := svc.getGroup(testAccountID, groupName)
+	group, err := svc.getGroup(t.Context(), testAccountID, groupName)
 	require.NoError(t, err)
 	if group.InlinePolicies == nil {
 		group.InlinePolicies = map[string]string{}
@@ -1058,7 +1058,7 @@ func putRawGroupInlinePolicy(t *testing.T, svc *IAMServiceImpl, groupName, polic
 	group.InlinePolicies[policyName] = raw
 	data, err := json.Marshal(group)
 	require.NoError(t, err)
-	_, err = svc.groupsBucket.Put(testAccountID+"."+groupName, data)
+	_, err = svc.groupsBucket.Put(t.Context(), testAccountID+"."+groupName, data)
 	require.NoError(t, err)
 }
 

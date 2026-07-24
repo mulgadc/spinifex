@@ -47,9 +47,9 @@ func (hc *healthChecker) handleHealthReportDirect(ctx context.Context, report lb
 	var tgs []*TargetGroupRecord
 	var err error
 	if report.LBID != "" {
-		tgs, err = hc.store.TargetGroupsForLB(report.LBID)
+		tgs, err = hc.store.TargetGroupsForLB(ctx, report.LBID)
 	} else {
-		tgs, err = hc.store.ListTargetGroups()
+		tgs, err = hc.store.ListTargetGroups(ctx)
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "healthChecker: failed to list target groups", "lbId", report.LBID, "err", err)
@@ -115,7 +115,7 @@ func (hc *healthChecker) handleHealthReportDirect(ctx context.Context, report lb
 	hc.mu.Unlock()
 
 	for _, tg := range changedTGs {
-		if err := hc.store.PutTargetGroup(tg); err != nil {
+		if err := hc.store.PutTargetGroup(ctx, tg); err != nil {
 			slog.ErrorContext(ctx, "healthChecker: failed to persist target group", "tgId", tg.TargetGroupID, "err", err)
 		}
 	}

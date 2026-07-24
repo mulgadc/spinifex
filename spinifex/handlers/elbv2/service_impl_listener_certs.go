@@ -32,7 +32,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
+	listener, err := s.store.GetListenerByArn(ctx, *input.ListenerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "AddListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -66,7 +66,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 		return nil, err
 	}
 
-	if err := s.store.PutListener(&updated); err != nil {
+	if err := s.store.PutListener(ctx, &updated); err != nil {
 		slog.ErrorContext(ctx, "AddListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -87,7 +87,7 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
+	listener, err := s.store.GetListenerByArn(ctx, *input.ListenerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -118,7 +118,7 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input
 	}
 	updated.Certificates = kept
 
-	if err := s.store.PutListener(&updated); err != nil {
+	if err := s.store.PutListener(ctx, &updated); err != nil {
 		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -132,7 +132,7 @@ func (s *ELBv2ServiceImpl) DescribeListenerCertificates(ctx context.Context, inp
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
+	listener, err := s.store.GetListenerByArn(ctx, *input.ListenerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeListenerCertificates: failed to get listener", "arn", *input.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

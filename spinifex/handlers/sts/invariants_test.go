@@ -34,7 +34,7 @@ func TestInvariant_SessionCredentialsBucket_RejectsNonASIAPrefix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cred := newTestSessionCredential(tc.akid)
-			err := putSessionCredential(bucket, cred)
+			err := putSessionCredential(t.Context(), bucket, cred)
 			require.Error(t, err, "putSessionCredential accepted invalid prefix %q", tc.akid)
 			assert.Contains(t, err.Error(), SessionAccessKeyIDPrefix)
 		})
@@ -46,7 +46,7 @@ func TestInvariant_SessionCredentialsBucket_AcceptsASIAPrefix(t *testing.T) {
 
 	akid := SessionAccessKeyIDPrefix + "0123456789ABCDEF"
 	cred := newTestSessionCredential(akid)
-	require.NoError(t, putSessionCredential(bucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), bucket, cred))
 }
 
 // User sessions (minted by GetSessionToken) write to the same bucket through
@@ -74,12 +74,12 @@ func TestInvariant_SessionCredentialsBucket_UserSessionPrefixEnforced(t *testing
 	}
 
 	// A non-ASIA user AKID is rejected at the writer, same as any other prefix.
-	err := putSessionCredential(bucket, userCred("AKIA0123456789ABCDEF"))
+	err := putSessionCredential(t.Context(), bucket, userCred("AKIA0123456789ABCDEF"))
 	require.Error(t, err, "putSessionCredential accepted a non-ASIA user session")
 	assert.Contains(t, err.Error(), SessionAccessKeyIDPrefix)
 
 	// An ASIA user AKID is accepted, just like an assumed-role session.
-	require.NoError(t, putSessionCredential(bucket, userCred(SessionAccessKeyIDPrefix+"USERSESSION00001")))
+	require.NoError(t, putSessionCredential(t.Context(), bucket, userCred(SessionAccessKeyIDPrefix+"USERSESSION00001")))
 }
 
 // Cross-cluster anti-replay invariant. A presigned sts:GetCallerIdentity URL

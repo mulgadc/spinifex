@@ -7,17 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func setupBucket(t *testing.T) nats.KeyValue {
+func setupBucket(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := initSessionCredentialsBucket(js, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	kv, err := initSessionCredentialsBucket(t.Context(), testutil.NewJetStream(t, nc), 1)
 	require.NoError(t, err)
 	return kv
 }
@@ -40,24 +41,26 @@ func newTestSessionCredential(akid string) *SessionCredential {
 }
 
 func TestInitSessionCredentialsBucket_StampsVersion(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := initSessionCredentialsBucket(js, 1)
+	kv, err := initSessionCredentialsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 
-	version, err := utils.ReadVersion(kv)
+	version, err := kvutil.ReadVersion(t.Context(), kv)
 	require.NoError(t, err)
 	assert.Equal(t, KVBucketSessionCredentialsVersion, version)
 }
 
 func TestInitSessionCredentialsBucket_Idempotent(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := initSessionCredentialsBucket(js, 1)
+	kv1, err := initSessionCredentialsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 
 	// Reopen — must return the same bucket without error.
-	kv2, err := initSessionCredentialsBucket(js, 1)
+	kv2, err := initSessionCredentialsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	assert.Equal(t, kv1.Bucket(), kv2.Bucket())
 }
@@ -66,9 +69,9 @@ func TestPutSessionCredential_RoundTrip(t *testing.T) {
 	bucket := setupBucket(t)
 	cred := newTestSessionCredential("ASIAEXAMPLEAAAAAAAAA")
 
-	require.NoError(t, putSessionCredential(bucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), bucket, cred))
 
-	entry, err := bucket.Get(cred.AccessKeyID)
+	entry, err := bucket.Get(t.Context(), cred.AccessKeyID)
 	require.NoError(t, err)
 
 	var got SessionCredential
@@ -97,7 +100,7 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cred := newTestSessionCredential(tc.akid)
-			err := putSessionCredential(bucket, cred)
+			err := putSessionCredential(t.Context(), bucket, cred)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "ASIA")
 		})
@@ -105,8 +108,8 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 
 	// Bucket must contain no credentials — every put failed before reaching
 	// bucket.Create, so no AKID should be present.
-	keys, err := bucket.Keys()
-	if !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := bucket.Keys(t.Context())
+	if !errors.Is(err, jetstream.ErrNoKeysFound) {
 		require.NoError(t, err)
 		for _, k := range keys {
 			if k == utils.VersionKey {
@@ -119,7 +122,7 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 
 func TestPutSessionCredential_NilCredential(t *testing.T) {
 	bucket := setupBucket(t)
-	err := putSessionCredential(bucket, nil)
+	err := putSessionCredential(t.Context(), bucket, nil)
 	require.Error(t, err)
 }
 
@@ -127,13 +130,13 @@ func TestPutSessionCredential_CollisionReturnsKeyExists(t *testing.T) {
 	bucket := setupBucket(t)
 	cred := newTestSessionCredential("ASIACOLLISIONAAAAAAA")
 
-	require.NoError(t, putSessionCredential(bucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), bucket, cred))
 
-	// Second create with the same AKID must surface nats.ErrKeyExists so the
+	// Second create with the same AKID must surface jetstream.ErrKeyExists so the
 	// mint helper can retry with a freshly generated AKID.
-	err := putSessionCredential(bucket, cred)
+	err := putSessionCredential(t.Context(), bucket, cred)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, nats.ErrKeyExists)
+	assert.ErrorIs(t, err, jetstream.ErrKeyExists)
 }
 
 func TestVerifySessionToken_MatchAndMismatch(t *testing.T) {
@@ -173,7 +176,7 @@ func putCredWithExpiry(t *testing.T, svc *STSServiceImpl, akid string, expiresAt
 	t.Helper()
 	cred := newTestSessionCredential(akid)
 	cred.ExpiresAt = expiresAt
-	require.NoError(t, putSessionCredential(svc.sessionsBucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), svc.sessionsBucket, cred))
 }
 
 func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
@@ -185,24 +188,24 @@ func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
 	putCredWithExpiry(t, svc, "ASIAPASTGRACE0000003", now.Add(-janitorGracePeriod-time.Minute)) // past grace
 	putCredWithExpiry(t, svc, "ASIAANCIENT000000004", now.Add(-24*time.Hour))                   // long past grace
 
-	deleted := svc.sweepExpired(now)
+	deleted := svc.sweepExpired(t.Context(), now)
 	assert.Equal(t, 2, deleted)
 
 	// Live and within-grace must still exist; past-grace must be gone.
-	_, err := svc.sessionsBucket.Get("ASIALIVE000000000001")
+	_, err := svc.sessionsBucket.Get(t.Context(), "ASIALIVE000000000001")
 	require.NoError(t, err)
-	_, err = svc.sessionsBucket.Get("ASIAJUSTEXPIRED00002")
+	_, err = svc.sessionsBucket.Get(t.Context(), "ASIAJUSTEXPIRED00002")
 	require.NoError(t, err)
 
-	_, err = svc.sessionsBucket.Get("ASIAPASTGRACE0000003")
-	require.ErrorIs(t, err, nats.ErrKeyNotFound)
-	_, err = svc.sessionsBucket.Get("ASIAANCIENT000000004")
-	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err = svc.sessionsBucket.Get(t.Context(), "ASIAPASTGRACE0000003")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	_, err = svc.sessionsBucket.Get(t.Context(), "ASIAANCIENT000000004")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestSweepExpired_EmptyBucketIsNoop(t *testing.T) {
 	svc, _ := newTestSetup(t)
-	assert.Equal(t, 0, svc.sweepExpired(time.Now().UTC()))
+	assert.Equal(t, 0, svc.sweepExpired(t.Context(), time.Now().UTC()))
 }
 
 func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
@@ -212,18 +215,18 @@ func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	now := time.Now().UTC()
 
-	_, err := svc.sessionsBucket.Put("ASIACORRUPT000000001", []byte("not json"))
+	_, err := svc.sessionsBucket.Put(t.Context(), "ASIACORRUPT000000001", []byte("not json"))
 	require.NoError(t, err)
 	putCredWithExpiry(t, svc, "ASIAEXPIRED000000002", now.Add(-24*time.Hour))
 
-	deleted := svc.sweepExpired(now)
+	deleted := svc.sweepExpired(t.Context(), now)
 	assert.Equal(t, 1, deleted)
 
-	_, err = svc.sessionsBucket.Get("ASIAEXPIRED000000002")
-	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err = svc.sessionsBucket.Get(t.Context(), "ASIAEXPIRED000000002")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 	// Corrupt record is left in place — janitor is not authorised to delete
 	// data it cannot interpret; an operator must inspect it.
-	_, err = svc.sessionsBucket.Get("ASIACORRUPT000000001")
+	_, err = svc.sessionsBucket.Get(t.Context(), "ASIACORRUPT000000001")
 	require.NoError(t, err)
 }
 
@@ -232,9 +235,9 @@ func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
 	// iterator must skip it (it's not a SessionCredential and unmarshal
 	// would fail every sweep).
 	svc, _ := newTestSetup(t)
-	assert.Equal(t, 0, svc.sweepExpired(time.Now().UTC()))
+	assert.Equal(t, 0, svc.sweepExpired(t.Context(), time.Now().UTC()))
 
-	_, err := svc.sessionsBucket.Get(utils.VersionKey)
+	_, err := svc.sessionsBucket.Get(t.Context(), utils.VersionKey)
 	require.NoError(t, err, "version key must survive the sweep")
 }
 

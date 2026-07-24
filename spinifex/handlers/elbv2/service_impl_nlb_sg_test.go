@@ -137,7 +137,7 @@ func TestCreateNLB_MintsManagedSGAttachedToENI(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-sg", "internal", subnetID)
 	assert.Empty(t, lb.SecurityGroups, "NLB must not surface the managed SG as a customer SG")
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	require.NotEmpty(t, rec.NLBManagedSGID, "NLB record must carry the managed SG id")
 	assert.NotEqual(t, defaultSGID, rec.NLBManagedSGID, "managed SG must be distinct from the VPC default SG")
@@ -186,7 +186,7 @@ func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*out.LoadBalancers[0].LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *out.LoadBalancers[0].LoadBalancerArn)
 	require.NoError(t, err)
 	assert.Equal(t, []string{sgID}, rec.SecurityGroups)
 	assert.Empty(t, rec.NLBManagedSGID, "NLB with customer SGs must not mint a managed SG")
@@ -209,7 +209,7 @@ func TestCreateALB_NoManagedSG(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*out.LoadBalancers[0].LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *out.LoadBalancers[0].LoadBalancerArn)
 	require.NoError(t, err)
 	assert.Empty(t, rec.NLBManagedSGID, "ALB must not mint a managed NLB SG")
 }
@@ -223,7 +223,7 @@ func TestCreateListener_Internal_OpensPortFromVPCCIDR(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-int", "internal", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sg := describeSG(t, vpcSvc, rec.NLBManagedSGID)
 	assert.True(t, sgHasRule(sg, "tcp", 443, "10.0.0.0/16"),
@@ -240,7 +240,7 @@ func TestCreateListener_InternetFacing_OpensPortFromAnywhere(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-pub", "internet-facing", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sg := describeSG(t, vpcSvc, rec.NLBManagedSGID)
 	assert.True(t, sgHasRule(sg, "tcp", 443, "0.0.0.0/0"),
@@ -268,7 +268,7 @@ func TestCreateListener_TCPUDP_OpensBothProtocols(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sg := describeSG(t, vpcSvc, rec.NLBManagedSGID)
 	assert.True(t, sgHasRule(sg, "tcp", 53, "0.0.0.0/0"))
@@ -285,7 +285,7 @@ func TestSetLoadBalancerIngressCIDRs_RewritesListenerRules(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-cidr", "internet-facing", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sgID := rec.NLBManagedSGID
 
@@ -304,7 +304,7 @@ func TestSetLoadBalancerIngressCIDRs_RewritesListenerRules(t *testing.T) {
 	assert.True(t, sgHasRule(sg, "tcp", 443, "203.0.113.0/24"))
 
 	// Persisted override drives the resolved CIDRs.
-	rec, err = svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err = svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"203.0.113.0/24"}, rec.NLBIngressCIDRs)
 }
@@ -340,7 +340,7 @@ func TestDeleteListener_RevokesPort(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, lst.Listeners, 1)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	require.True(t, sgHasRule(describeSG(t, vpcSvc, rec.NLBManagedSGID), "tcp", 443, "0.0.0.0/0"))
 
@@ -358,7 +358,7 @@ func TestDeleteNLB_DeletesManagedSG(t *testing.T) {
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
 	lb := createNLB(t, svc, "nlb-del", "internal", subnetID)
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sgID := rec.NLBManagedSGID
 	require.NotEmpty(t, sgID)
@@ -389,7 +389,7 @@ func TestCreateLoadBalancerSync_LaunchFailure_RollsBackEverything(t *testing.T) 
 	_, err := svc.CreateLoadBalancerSync(nlbSyncInput("nlb-sync-fail", subnetID), testAccountID)
 	require.Error(t, err)
 
-	lbs, err := svc.store.ListLoadBalancers()
+	lbs, err := svc.store.ListLoadBalancers(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, lbs, "failed sync create must leave no LB record")
 	assert.Equal(t, 0, countManagedENIs(t, vpcSvc), "failed sync create must leave no managed ENI")
@@ -438,7 +438,7 @@ func TestCreateLoadBalancer_AsyncLaunchFailure_KeepsFailedRecord(t *testing.T) {
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 	svc.WaitLaunches()
 
-	rec, err := svc.store.GetLoadBalancerByArn(arn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), arn)
 	require.NoError(t, err)
 	require.NotNil(t, rec, "async failed record must remain for the caller to reclaim")
 	assert.Equal(t, StateFailed, rec.State)

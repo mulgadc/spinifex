@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +11,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
+	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 
 	if err := validatePolicyName(profileName); err != nil {
@@ -50,8 +53,8 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 		return nil, fmt.Errorf("marshal instance profile: %w", err)
 	}
 
-	if _, err := s.instanceProfilesBucket.Create(accountID+"."+profileName, data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.instanceProfilesBucket.Create(ctx, accountID+"."+profileName, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store instance profile: %w", err)
@@ -60,7 +63,7 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 	slog.Info("IAM instance profile created",
 		"accountID", accountID, "instanceProfileName", profileName, "instanceProfileID", profile.InstanceProfileID)
 
-	sdkProfile, err := s.profileToSDK(accountID, &profile)
+	sdkProfile, err := s.profileToSDK(ctx, accountID, &profile)
 	if err != nil {
 		return nil, err
 	}
@@ -68,12 +71,13 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 }
 
 func (s *IAMServiceImpl) GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	profile, err := s.getInstanceProfile(accountID, *input.InstanceProfileName)
+	ctx := context.Background()
+	profile, err := s.getInstanceProfile(ctx, accountID, *input.InstanceProfileName)
 	if err != nil {
 		return nil, err
 	}
 
-	sdkProfile, err := s.profileToSDK(accountID, profile)
+	sdkProfile, err := s.profileToSDK(ctx, accountID, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -81,9 +85,10 @@ func (s *IAMServiceImpl) GetInstanceProfile(accountID string, input *iam.GetInst
 }
 
 func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
-	keys, err := s.instanceProfilesBucket.Keys()
+	ctx := context.Background()
+	keys, err := s.instanceProfilesBucket.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListInstanceProfilesOutput{
 				InstanceProfiles: []*iam.InstanceProfile{},
 				IsTruncated:      aws.Bool(false),
@@ -107,9 +112,9 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 			continue
 		}
 
-		entry, err := s.instanceProfilesBucket.Get(key)
+		entry, err := s.instanceProfilesBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListInstanceProfiles: profile key disappeared (concurrent delete)", "key", key)
 			} else {
 				slog.Warn("ListInstanceProfiles: failed to get profile", "key", key, "err", err)
@@ -127,7 +132,7 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 			continue
 		}
 
-		sdkProfile, err := s.profileToSDK(accountID, &profile)
+		sdkProfile, err := s.profileToSDK(ctx, accountID, &profile)
 		if err != nil {
 			return nil, err
 		}
@@ -141,9 +146,10 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 }
 
 func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
+	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 
-	profile, err := s.getInstanceProfile(accountID, profileName)
+	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +158,7 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	if err := s.instanceProfilesBucket.Delete(accountID + "." + profileName); err != nil {
+	if err := s.instanceProfilesBucket.Delete(ctx, accountID+"."+profileName); err != nil {
 		return nil, fmt.Errorf("delete instance profile: %w", err)
 	}
 
@@ -161,14 +167,15 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 }
 
 func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
+	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
-	if _, err := s.getRole(accountID, roleName); err != nil {
+	if _, err := s.getRole(ctx, accountID, roleName); err != nil {
 		return nil, err
 	}
 
-	profile, err := s.getInstanceProfile(accountID, profileName)
+	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +189,7 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance profile: %w", err)
 	}
-	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
 		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
@@ -192,10 +199,11 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 }
 
 func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
-	profile, err := s.getInstanceProfile(accountID, profileName)
+	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +217,7 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance profile: %w", err)
 	}
-	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
 		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
@@ -219,20 +227,21 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 }
 
 func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 
-	if _, err := s.getRole(accountID, roleName); err != nil {
+	if _, err := s.getRole(ctx, accountID, roleName); err != nil {
 		return nil, err
 	}
 
-	profiles, err := s.findInstanceProfilesForRole(accountID, roleName)
+	profiles, err := s.findInstanceProfilesForRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("find instance profiles for role: %w", err)
 	}
 
 	out := make([]*iam.InstanceProfile, 0, len(profiles))
 	for _, p := range profiles {
-		sdkProfile, err := s.profileToSDK(accountID, p)
+		sdkProfile, err := s.profileToSDK(ctx, accountID, p)
 		if err != nil {
 			return nil, err
 		}
@@ -248,12 +257,13 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 // ResolveInstanceProfile resolves an instance-profile name or ARN to its record.
 // When given an ARN, the embedded account ID must match accountID.
 func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error) {
+	ctx := context.Background()
 	if nameOrARN == "" {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 
 	if !strings.HasPrefix(nameOrARN, "arn:") {
-		return s.getInstanceProfile(accountID, nameOrARN)
+		return s.getInstanceProfile(ctx, accountID, nameOrARN)
 	}
 
 	profileAccountID, profileName, err := parseInstanceProfileARN(nameOrARN)
@@ -263,7 +273,7 @@ func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*I
 	if profileAccountID != accountID {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
-	return s.getInstanceProfile(accountID, profileName)
+	return s.getInstanceProfile(ctx, accountID, profileName)
 }
 
 // parseInstanceProfileARN extracts accountID and profile name from an IAM instance-profile ARN.
@@ -293,12 +303,13 @@ func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
 // TagInstanceProfile upserts tags on an instance profile. Blind
 // read-modify-write Put like the other instance-profile writers (no CAS).
 func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(accountID, profileName)
+	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +324,7 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance profile: %w", err)
 	}
-	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
 		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
@@ -324,8 +335,9 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 // UntagInstanceProfile removes the named tag keys from an instance profile;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	ctx := context.Background()
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(accountID, profileName)
+	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +348,7 @@ func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.Untag
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance profile: %w", err)
 	}
-	if _, err := s.instanceProfilesBucket.Put(accountID+"."+profileName, data); err != nil {
+	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
 		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
@@ -347,7 +359,8 @@ func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.Untag
 // ListInstanceProfileTags returns an instance profile's tags. Pagination is
 // not implemented: IsTruncated is always false.
 func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
-	profile, err := s.getInstanceProfile(accountID, *input.InstanceProfileName)
+	ctx := context.Background()
+	profile, err := s.getInstanceProfile(ctx, accountID, *input.InstanceProfileName)
 	if err != nil {
 		return nil, err
 	}
@@ -357,10 +370,10 @@ func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.Li
 	}, nil
 }
 
-func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*InstanceProfile, error) {
-	entry, err := s.instanceProfilesBucket.Get(accountID + "." + profileName)
+func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, profileName string) (*InstanceProfile, error) {
+	entry, err := s.instanceProfilesBucket.Get(ctx, accountID+"."+profileName)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get instance profile: %w", err)
@@ -375,7 +388,7 @@ func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*Ins
 
 // profileToSDK converts the internal InstanceProfile to the AWS SDK shape.
 // Dereferences the attached role when present; propagates lookup errors.
-func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
+func (s *IAMServiceImpl) profileToSDK(ctx context.Context, accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
 	out := &iam.InstanceProfile{
 		InstanceProfileName: aws.String(p.InstanceProfileName),
 		InstanceProfileId:   aws.String(p.InstanceProfileID),
@@ -391,7 +404,7 @@ func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) (*ia
 		})
 	}
 	if p.RoleName != "" {
-		role, err := s.getRole(accountID, p.RoleName)
+		role, err := s.getRole(ctx, accountID, p.RoleName)
 		if err != nil {
 			return nil, fmt.Errorf("resolve attached role %q on profile %q: %w", p.RoleName, p.InstanceProfileName, err)
 		}

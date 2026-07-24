@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 // maxGroupsPerUser caps how many groups a single user may belong to. Mirrors the
@@ -23,6 +25,7 @@ import (
 const maxGroupsPerUser = 10
 
 func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	if err := validateGroupName(groupName); err != nil {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -58,8 +61,8 @@ func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInp
 	}
 
 	kvKey := accountID + "." + groupName
-	if _, err := s.groupsBucket.Create(kvKey, data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.groupsBucket.Create(ctx, kvKey, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store group: %w", err)
@@ -71,12 +74,13 @@ func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInp
 }
 
 func (s *IAMServiceImpl) GetGroup(accountID string, input *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
-	group, err := s.getGroup(accountID, *input.GroupName)
+	ctx := context.Background()
+	group, err := s.getGroup(ctx, accountID, *input.GroupName)
 	if err != nil {
 		return nil, err
 	}
 
-	members, err := s.findGroupMembers(accountID, group.GroupName)
+	members, err := s.findGroupMembers(ctx, accountID, group.GroupName)
 	if err != nil {
 		return nil, fmt.Errorf("find group members: %w", err)
 	}
@@ -101,9 +105,10 @@ func (s *IAMServiceImpl) GetGroup(accountID string, input *iam.GetGroupInput) (*
 }
 
 func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
-	keys, err := s.groupsBucket.Keys()
+	ctx := context.Background()
+	keys, err := s.groupsBucket.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListGroupsOutput{
 				Groups:      []*iam.Group{},
 				IsTruncated: aws.Bool(false),
@@ -127,9 +132,9 @@ func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput
 			continue
 		}
 
-		entry, err := s.groupsBucket.Get(key)
+		entry, err := s.groupsBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListGroups: group key disappeared (concurrent delete)", "key", key)
 			} else {
 				slog.Warn("ListGroups: failed to get group", "key", key, "err", err)
@@ -157,9 +162,10 @@ func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput
 }
 
 func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +178,7 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	members, err := s.findGroupMembers(accountID, groupName)
+	members, err := s.findGroupMembers(ctx, accountID, groupName)
 	if err != nil {
 		return nil, fmt.Errorf("check group members: %w", err)
 	}
@@ -180,7 +186,7 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	if err := s.groupsBucket.Delete(accountID + "." + groupName); err != nil {
+	if err := s.groupsBucket.Delete(ctx, accountID+"."+groupName); err != nil {
 		return nil, fmt.Errorf("delete group: %w", err)
 	}
 
@@ -193,15 +199,16 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) AddUserToGroup(accountID string, input *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	userName := *input.UserName
 	userKVKey := accountID + "." + userName
 
-	if _, err := s.getGroup(accountID, groupName); err != nil {
+	if _, err := s.getGroup(ctx, accountID, groupName); err != nil {
 		return nil, err
 	}
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +226,7 @@ func (s *IAMServiceImpl) AddUserToGroup(accountID string, input *iam.AddUserToGr
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -228,11 +235,12 @@ func (s *IAMServiceImpl) AddUserToGroup(accountID string, input *iam.AddUserToGr
 }
 
 func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	userName := *input.UserName
 	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +258,7 @@ func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.Remove
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -259,14 +267,15 @@ func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.Remove
 }
 
 func (s *IAMServiceImpl) ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
 
 	var groups []*iam.Group
 	for _, name := range user.Groups {
-		group, err := s.getGroup(accountID, name)
+		group, err := s.getGroup(ctx, accountID, name)
 		if err != nil {
 			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 				// A dangling pointer to a vanished group is inert; skip it.
@@ -291,18 +300,19 @@ func (s *IAMServiceImpl) ListGroupsForUser(accountID string, input *iam.ListGrou
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	policyARN := *input.PolicyArn
 	kvKey := accountID + "." + groupName
 
 	// AWS-managed ARNs are stored opaquely (like roles); customer-managed ARNs must exist.
 	if !isAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +327,7 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 		return nil, fmt.Errorf("marshal group: %w", err)
 	}
 
-	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
 		return nil, fmt.Errorf("update group: %w", err)
 	}
 
@@ -326,11 +336,12 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 }
 
 func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	policyARN := *input.PolicyArn
 	kvKey := accountID + "." + groupName
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +357,7 @@ func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGr
 		return nil, fmt.Errorf("marshal group: %w", err)
 	}
 
-	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
 		return nil, fmt.Errorf("update group: %w", err)
 	}
 
@@ -355,7 +366,8 @@ func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGr
 }
 
 func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
-	group, err := s.getGroup(accountID, *input.GroupName)
+	ctx := context.Background()
+	group, err := s.getGroup(ctx, accountID, *input.GroupName)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +381,7 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 			})
 			continue
 		}
-		policy, err := s.getPolicyByARN(accountID, arn)
+		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedGroupPolicies: policy not found for ARN", "arn", arn, "err", err)
 			continue
@@ -394,6 +406,7 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 // Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
 // blind read-modify-write Put like the other group writers (no CAS).
 func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
@@ -406,7 +419,7 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
 	}
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +434,7 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 		return nil, fmt.Errorf("marshal group: %w", err)
 	}
 
-	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
 		return nil, fmt.Errorf("update group: %w", err)
 	}
 
@@ -432,10 +445,11 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 // GetGroupPolicy returns a group's inline policy document by name as a raw JSON
 // string, matching the in-repo convention used by GetRolePolicy.
 func (s *IAMServiceImpl) GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	policyName := *input.PolicyName
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -455,11 +469,12 @@ func (s *IAMServiceImpl) GetGroupPolicy(accountID string, input *iam.GetGroupPol
 // DeleteGroupPolicy removes a group's inline policy by name. A missing name
 // yields NoSuchEntity, matching AWS. Blind Put like the other group writers.
 func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	ctx := context.Background()
 	groupName := *input.GroupName
 	policyName := *input.PolicyName
 	kvKey := accountID + "." + groupName
 
-	group, err := s.getGroup(accountID, groupName)
+	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +489,7 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 		return nil, fmt.Errorf("marshal group: %w", err)
 	}
 
-	if _, err := s.groupsBucket.Put(kvKey, data); err != nil {
+	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
 		return nil, fmt.Errorf("update group: %w", err)
 	}
 
@@ -485,7 +500,8 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 // ListGroupPolicies returns the names of a group's inline policies, sorted for
 // deterministic output. Pagination is not implemented: IsTruncated is always false.
 func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
-	group, err := s.getGroup(accountID, *input.GroupName)
+	ctx := context.Background()
+	group, err := s.getGroup(ctx, accountID, *input.GroupName)
 	if err != nil {
 		return nil, err
 	}
@@ -507,10 +523,10 @@ func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGrou
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (s *IAMServiceImpl) getGroup(accountID, groupName string) (*Group, error) {
-	entry, err := s.groupsBucket.Get(accountID + "." + groupName)
+func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName string) (*Group, error) {
+	entry, err := s.groupsBucket.Get(ctx, accountID+"."+groupName)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get group: %w", err)
@@ -527,10 +543,10 @@ func (s *IAMServiceImpl) getGroup(accountID, groupName string) (*Group, error) {
 // User.Groups references the given group. Fails closed on per-key Get or
 // unmarshal errors so DeleteGroup cannot succeed while a real-but-unreadable
 // member exists. Mirrors findInstanceProfilesForRole.
-func (s *IAMServiceImpl) findGroupMembers(accountID, groupName string) ([]*User, error) {
-	keys, err := s.usersBucket.Keys()
+func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupName string) ([]*User, error) {
+	keys, err := s.usersBucket.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list user keys: %w", err)
@@ -546,9 +562,9 @@ func (s *IAMServiceImpl) findGroupMembers(accountID, groupName string) ([]*User,
 			continue
 		}
 
-		entry, err := s.usersBucket.Get(key)
+		entry, err := s.usersBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("findGroupMembers: user key disappeared", "key", key)
 				continue
 			}

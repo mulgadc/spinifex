@@ -82,7 +82,7 @@ func TestEvaluateHealth_DrainingUnchanged(t *testing.T) {
 func setupTestNATS(t *testing.T) *Store {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store, err := NewStore(nc)
+	store, err := NewStore(t.Context(), nc)
 	require.NoError(t, err)
 	return store
 }
@@ -92,13 +92,13 @@ func setupTestNATS(t *testing.T) *Store {
 func setupLBWithTG(t *testing.T, store *Store, lbID string, tg *TargetGroupRecord) {
 	t.Helper()
 	lbArn := "arn:aws:elasticloadbalancing:us-east-1:000:loadbalancer/app/test/" + lbID
-	require.NoError(t, store.PutLoadBalancer(&LoadBalancerRecord{
+	require.NoError(t, store.PutLoadBalancer(t.Context(), &LoadBalancerRecord{
 		LoadBalancerArn: lbArn,
 		LoadBalancerID:  lbID,
 		Name:            "test-lb",
 		State:           StateActive,
 	}))
-	require.NoError(t, store.PutListener(&ListenerRecord{
+	require.NoError(t, store.PutListener(t.Context(), &ListenerRecord{
 		ListenerArn:     lbArn + "/listener-1",
 		ListenerID:      lbID + "-lis",
 		LoadBalancerArn: lbArn,
@@ -124,7 +124,7 @@ func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
 			{Id: "i-aaa111", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.1.10"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 	setupLBWithTG(t, store, "lb-test1", tg)
 
 	report := lbagent.HealthReport{
@@ -135,7 +135,7 @@ func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
 	}
 	hc.handleHealthReportDirect(context.Background(), report)
 
-	stored, err := store.GetTargetGroup("tg-123")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-123")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }
@@ -157,7 +157,7 @@ func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
 			{Id: "i-bbb222", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.1.11"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 	setupLBWithTG(t, store, "lb-test2", tg)
 
 	srvName := sanitizeName("srv", "i-bbb222")
@@ -173,7 +173,7 @@ func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
 		hc.handleHealthReportDirect(context.Background(), report)
 	}
 
-	stored, err := store.GetTargetGroup("tg-456")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-456")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthUnhealthy, stored.Targets[0].HealthState)
 }
@@ -192,7 +192,7 @@ func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
 			{Id: "i-drain", Port: 80, HealthState: TargetHealthDraining, PrivateIP: "10.0.0.1"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 	setupLBWithTG(t, store, "lb-test3", tg)
 
 	report := lbagent.HealthReport{
@@ -203,7 +203,7 @@ func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
 	}
 	hc.handleHealthReportDirect(context.Background(), report)
 
-	stored, err := store.GetTargetGroup("tg-789")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-789")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthDraining, stored.Targets[0].HealthState)
 }
@@ -245,7 +245,7 @@ func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 			{Id: "i-port0", Port: 0, HealthState: TargetHealthInitial, PrivateIP: "10.0.0.50"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 	setupLBWithTG(t, store, "lb-p0", tg)
 
 	report := lbagent.HealthReport{
@@ -256,7 +256,7 @@ func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 	}
 	hc.handleHealthReportDirect(context.Background(), report)
 
-	stored, err := store.GetTargetGroup("tg-p0")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-p0")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 
@@ -280,7 +280,7 @@ func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
 			{Id: "i-direct1", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.1.20"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 	setupLBWithTG(t, store, "lb-direct", tg)
 
 	// Call handleHealthReportDirect with a struct — no JSON round-trip.
@@ -291,7 +291,7 @@ func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
 		},
 	})
 
-	stored, err := store.GetTargetGroup("tg-direct")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-direct")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }
@@ -318,7 +318,7 @@ func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
 			{Id: "i-shared", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.0.1"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tgA))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tgA))
 	setupLBWithTG(t, store, "lb-A", tgA)
 
 	// TG attached to lb-B — same target ID, different TG
@@ -331,7 +331,7 @@ func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
 			{Id: "i-shared", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.0.2"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tgB))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tgB))
 	setupLBWithTG(t, store, "lb-B", tgB)
 
 	// Report from lb-A — only tg-a should be updated.
@@ -342,11 +342,11 @@ func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
 		},
 	})
 
-	storedA, err := store.GetTargetGroup("tg-a")
+	storedA, err := store.GetTargetGroup(t.Context(), "tg-a")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, storedA.Targets[0].HealthState, "tg-a should be updated")
 
-	storedB, err := store.GetTargetGroup("tg-b")
+	storedB, err := store.GetTargetGroup(t.Context(), "tg-b")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthInitial, storedB.Targets[0].HealthState, "tg-b must NOT be updated by lb-A's report")
 }
@@ -366,7 +366,7 @@ func TestHandleHealthReport_FallbackListTargetGroups(t *testing.T) {
 			{Id: "i-fallback", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.0.99"},
 		},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
 	// Report with empty LBID → should fall back to ListTargetGroups
 	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{
@@ -377,7 +377,7 @@ func TestHandleHealthReport_FallbackListTargetGroups(t *testing.T) {
 		},
 	})
 
-	stored, err := store.GetTargetGroup("tg-fb")
+	stored, err := store.GetTargetGroup(t.Context(), "tg-fb")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }

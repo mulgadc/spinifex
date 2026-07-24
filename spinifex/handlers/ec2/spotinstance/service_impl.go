@@ -68,14 +68,27 @@ func NewSpotInstanceServiceImplWithNATS(ctx context.Context, cfg *config.Config,
 	}, nil
 }
 
-// getOrCreateTerminalBucket creates or updates the terminal bucket with a TTL.
+// getOrCreateTerminalBucket opens the terminal bucket without changing its
+// existing replica or placement configuration, creating it only when absent.
 func getOrCreateTerminalBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+	kv, err := js.KeyValue(ctx, KVBucketSpotRequestsTerminal)
+	if err == nil {
+		return kv, nil
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, err
+	}
+
+	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:      KVBucketSpotRequestsTerminal,
 		Description: "Terminal Spot Instance Requests (auto-expire after 1 hour)",
 		History:     1,
 		TTL:         spotTerminalTTL,
 	})
+	if errors.Is(err, jetstream.ErrBucketExists) {
+		return js.KeyValue(ctx, KVBucketSpotRequestsTerminal)
+	}
+	return kv, err
 }
 
 // PutSpotInstanceRequests stores each request in the active bucket.

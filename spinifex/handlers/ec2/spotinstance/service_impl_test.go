@@ -2,11 +2,13 @@ package handlers_ec2_spotinstance
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +35,25 @@ func TestTerminalBucketTTL(t *testing.T) {
 	status, err := kv.Status(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, spotTerminalTTL, status.TTL())
+}
+
+func TestGetOrCreateTerminalBucketPreservesExistingConfiguration(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	const existingTTL = 2 * time.Hour
+
+	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket:  KVBucketSpotRequestsTerminal,
+		History: 1,
+		TTL:     existingTTL,
+	})
+	require.NoError(t, err)
+
+	kv, err := getOrCreateTerminalBucket(t.Context(), js)
+	require.NoError(t, err)
+	status, err := kv.Status(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, existingTTL, status.TTL())
 }
 
 // makeSIR builds an active/fulfilled Spot Instance Request for tests.

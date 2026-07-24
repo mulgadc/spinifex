@@ -70,6 +70,25 @@ func TestDeletedBucketTTL(t *testing.T) {
 	assert.Equal(t, time.Hour, status.TTL())
 }
 
+func TestGetOrCreateDeletedBucketPreservesExistingConfiguration(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	const existingTTL = 2 * time.Hour
+
+	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket:  KVBucketDeletedNatGateways,
+		History: 1,
+		TTL:     existingTTL,
+	})
+	require.NoError(t, err)
+
+	kv, err := getOrCreateDeletedBucket(t.Context(), js)
+	require.NoError(t, err)
+	status, err := kv.Status(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, existingTTL, status.TTL())
+}
+
 func TestCreateNatGateway(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{

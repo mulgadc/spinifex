@@ -15,9 +15,9 @@ import (
 // container(s) of an existing task record, by container name.
 func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
 	svc, _ := newTestService(t)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", Cluster: "web",
 		Containers: []ContainerState{
 			{Name: "web", Status: "RUNNING"},
@@ -33,7 +33,7 @@ func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
 	assert.Equal(t, "OK", out.Acknowledgment)
 
 	var rec TaskRecord
-	found, err := getJSON(kv, TaskKey("web", "t-1"), &rec)
+	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	for _, c := range rec.Containers {
@@ -61,9 +61,9 @@ func TestReportTaskGPU_UnknownTaskNoop(t *testing.T) {
 // field, once ReportTaskGPU has merged them onto the task record.
 func TestDescribeTasks_GPUIDsPopulatedFromReport(t *testing.T) {
 	svc, _ := newTestService(t)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		Containers: []ContainerState{{Name: "trainer", Status: "RUNNING", GPUIDs: []string{"GPU-aaa", "GPU-bbb"}}},
 	}))
@@ -83,9 +83,9 @@ func TestDescribeTasks_GPUIDsPopulatedFromReport(t *testing.T) {
 // RUNNING report (or ReportTaskGPU) previously set.
 func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	svc, _ := newTestService(t)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "trainer", Status: "PENDING"}},
@@ -99,7 +99,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(kv, TaskKey("web", "t-1"), &rec)
+	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -114,7 +114,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 		Containers: []bus.ContainerStatus{{Name: "trainer", Status: bus.TaskStatusStopped, ExitCode: &exit}},
 	}))
 
-	found, err = getJSON(kv, TaskKey("web", "t-1"), &rec)
+	found, err = getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -135,9 +135,9 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 // pinned set normally (e.g. a corrected report, or GPUs reassigned on a retry).
 func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 	svc, _ := newTestService(t)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "trainer", Status: "RUNNING", GPUIDs: []string{"GPU-aaa"}}},
@@ -150,7 +150,7 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(kv, TaskKey("web", "t-1"), &rec)
+	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -161,9 +161,9 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 // nothing to preserve, and the fallback must not fabricate a value.
 func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
 	svc, _ := newTestService(t)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "web", Status: "PENDING"}},
@@ -183,7 +183,7 @@ func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(kv, TaskKey("web", "t-1"), &rec)
+	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)

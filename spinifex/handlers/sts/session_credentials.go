@@ -11,9 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -57,25 +58,15 @@ type SessionCredential struct {
 
 // initSessionCredentialsBucket opens (or creates) the session-credentials KV bucket.
 // History is fixed at 1: credentials are write-once at mint and delete-once at expiry.
-func initSessionCredentialsBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
-	if replicas < 1 {
-		replicas = 1
-	}
-
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   KVBucketSessionCredentials,
-		History:  1,
-		Replicas: replicas,
-	})
+func initSessionCredentialsBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.KeyValue, error) {
+	// kvutil clamps replicas to a minimum of 1, so a zero clusterSize still creates.
+	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketSessionCredentials, 1, replicas)
 	if err != nil {
-		kv, err = js.KeyValue(KVBucketSessionCredentials)
-		if err != nil {
-			return nil, fmt.Errorf("open session credentials bucket: %w", err)
-		}
+		return nil, fmt.Errorf("open session credentials bucket: %w", err)
 	}
 
 	if err := migrate.DefaultRegistry.RunKV(
-		KVBucketSessionCredentials, kv, KVBucketSessionCredentialsVersion,
+		ctx, KVBucketSessionCredentials, kv, KVBucketSessionCredentialsVersion,
 	); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketSessionCredentials, err)
 	}
@@ -84,8 +75,8 @@ func initSessionCredentialsBucket(js nats.JetStreamContext, replicas int) (nats.
 }
 
 // putSessionCredential persists a SessionCredential via CAS create, enforcing the ASIA-prefix
-// invariant. Returns nats.ErrKeyExists on collision so callers can retry.
-func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
+// invariant. Returns jetstream.ErrKeyExists on collision so callers can retry.
+func putSessionCredential(ctx context.Context, bucket jetstream.KeyValue, cred *SessionCredential) error {
 	if cred == nil {
 		return errors.New("nil session credential")
 	}
@@ -97,7 +88,7 @@ func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
 	if err != nil {
 		return fmt.Errorf("marshal session credential: %w", err)
 	}
-	if _, err := bucket.Create(cred.AccessKeyID, data); err != nil {
+	if _, err := bucket.Create(ctx, cred.AccessKeyID, data); err != nil {
 		return fmt.Errorf("store session credential: %w", err)
 	}
 	return nil
@@ -125,12 +116,13 @@ func (s *STSServiceImpl) VerifySessionToken(cred *SessionCredential, wireToken s
 // LookupSessionCredential resolves an AKID to its stored SessionCredential.
 // Returns (nil, nil) when the AKID lacks the ASIA prefix or has no record.
 func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCredential, error) {
+	ctx := context.Background()
 	if !strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix) {
 		return nil, nil
 	}
-	entry, err := s.sessionsBucket.Get(accessKeyID)
+	entry, err := s.sessionsBucket.Get(ctx, accessKeyID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get session credential: %w", err)
@@ -158,19 +150,19 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 			slog.Info("STS session credential janitor stopped")
 			return
 		case <-ticker.C:
-			s.sweepExpired(time.Now().UTC())
+			s.sweepExpired(ctx, time.Now().UTC())
 		}
 	}
 }
 
 // sweepExpired deletes all records whose ExpiresAt is past the grace period.
 // Per-key errors are logged and skipped; returns the delete count.
-func (s *STSServiceImpl) sweepExpired(now time.Time) int {
+func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 	cutoff := now.Add(-janitorGracePeriod)
 
-	keys, err := s.sessionsBucket.Keys()
+	keys, err := kvutil.Keys(ctx, s.sessionsBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0
 		}
 		slog.Warn("STS janitor: list session credential keys failed", "err", err)
@@ -182,9 +174,9 @@ func (s *STSServiceImpl) sweepExpired(now time.Time) int {
 		if key == utils.VersionKey {
 			continue
 		}
-		entry, err := s.sessionsBucket.Get(key)
+		entry, err := s.sessionsBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.Warn("STS janitor: get session credential failed",
@@ -203,7 +195,7 @@ func (s *STSServiceImpl) sweepExpired(now time.Time) int {
 			continue
 		}
 
-		if err := s.sessionsBucket.Delete(key); err != nil {
+		if err := s.sessionsBucket.Delete(ctx, key); err != nil {
 			slog.Warn("STS janitor: delete expired session credential failed",
 				"key", key, "err", err)
 			continue

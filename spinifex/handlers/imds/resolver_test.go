@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,21 +32,22 @@ func (f *fakeLookup) describe(_ context.Context, accountID, _ string) (*instance
 // fake instance lookup the caller can program.
 func newTestResolver(t *testing.T) (*metadataResolver, *fakeLookup) {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	eniKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvBucketENIs, History: 1})
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	eniKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: kvBucketENIs, History: 1})
 	require.NoError(t, err)
-	sgKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvBucketSecurityGroups, History: 1})
+	sgKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: kvBucketSecurityGroups, History: 1})
 	require.NoError(t, err)
 
 	lookup := &fakeLookup{}
 	return &metadataResolver{eniKV: eniKV, sgKV: sgKV, lookup: lookup}, lookup
 }
 
-func putJSON(t *testing.T, kv nats.KeyValue, key string, v any) {
+func putJSON(t *testing.T, kv jetstream.KeyValue, key string, v any) {
 	t.Helper()
 	data, err := json.Marshal(v)
 	require.NoError(t, err)
-	_, err = kv.Put(key, data)
+	_, err = kv.Put(t.Context(), key, data)
 	require.NoError(t, err)
 }
 
@@ -137,7 +138,7 @@ func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
 
 func TestResolveENIByID_BadJSONErrors(t *testing.T) {
 	r, _ := newTestResolver(t)
-	_, err := r.eniKV.Put("111122223333.eni-aaa", []byte("not json"))
+	_, err := r.eniKV.Put(t.Context(), "111122223333.eni-aaa", []byte("not json"))
 	require.NoError(t, err)
 
 	_, err = r.resolveENIByID(context.Background(), "eni-aaa")
@@ -215,7 +216,7 @@ func TestResolveSGNames_ResolvesAndFallsBack(t *testing.T) {
 
 func TestResolveSGNames_BadJSONFallsBackToID(t *testing.T) {
 	r, _ := newTestResolver(t)
-	_, err := r.sgKV.Put("111122223333.sg-1", []byte("not json"))
+	_, err := r.sgKV.Put(t.Context(), "111122223333.sg-1", []byte("not json"))
 	require.NoError(t, err)
 
 	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1"})

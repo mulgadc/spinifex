@@ -26,7 +26,7 @@ import (
 func StartSpotDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_spotinstance.SpotInstanceServiceImpl {
 	t.Helper()
 
-	svc, err := handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(nil, gw.NATSConn)
+	svc, err := handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), nil, gw.NATSConn)
 	require.NoError(t, err, "construct spot instance service")
 
 	nc := gw.NATSConn

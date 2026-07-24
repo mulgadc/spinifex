@@ -6,6 +6,7 @@
 package gateway_ecrauth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,7 +20,8 @@ import (
 	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -73,17 +75,17 @@ func kidFor(pub *ecdsa.PublicKey) (string, error) {
 // returns the active signing key. On first run it generates and persists one.
 // The active key is the newest by KV creation time (ties broken by kid), so all
 // nodes converge on the same signer and a freshly rotated key takes over.
-func LoadOrCreateSigningKey(js nats.JetStreamContext, masterKey []byte, replicas int) (*SigningKey, map[string]*ecdsa.PublicKey, error) {
-	kv, err := openSigningBucket(js, masterKey, replicas)
+func LoadOrCreateSigningKey(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int) (*SigningKey, map[string]*ecdsa.PublicKey, error) {
+	kv, err := openSigningBucket(ctx, js, masterKey, replicas)
 	if err != nil {
 		return nil, nil, err
 	}
-	active, verify, _, err := reloadKeys(kv, masterKey)
+	active, verify, _, err := reloadKeys(ctx, kv, masterKey)
 	if err != nil {
 		return nil, nil, err
 	}
 	if active == nil {
-		active, err = generateSigningKey(kv, masterKey)
+		active, err = generateSigningKey(ctx, kv, masterKey)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -94,32 +96,22 @@ func LoadOrCreateSigningKey(js nats.JetStreamContext, masterKey []byte, replicas
 
 // openSigningBucket validates inputs and returns the awsgw-keys KV handle,
 // creating the cluster-replicated bucket on first use.
-func openSigningBucket(js nats.JetStreamContext, masterKey []byte, replicas int) (nats.KeyValue, error) {
+func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int) (jetstream.KeyValue, error) {
 	if js == nil {
 		return nil, errors.New("ecrauth: nil JetStream context")
 	}
 	if len(masterKey) == 0 {
 		return nil, errors.New("ecrauth: empty master key")
 	}
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   SigningBucket,
-		History:  signingKeyHistory,
-		Replicas: replicas,
-	})
-	if err != nil {
-		if kv, err = js.KeyValue(SigningBucket); err != nil {
-			return nil, fmt.Errorf("open %s bucket: %w", SigningBucket, err)
-		}
-	}
-	return kv, nil
+	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, SigningBucket, signingKeyHistory, replicas)
 }
 
 // reloadKeys reads every stored signing key, returning the verify set, each
 // key's metadata, and the active (newest) decrypted key. active is nil for an
 // empty bucket. Used by both startup and the rotation scheduler.
-func reloadKeys(kv nats.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, err error) {
-	names, err := kv.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, err error) {
+	names, err := kvutil.Keys(ctx, kv)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil, nil, fmt.Errorf("list signing keys: %w", err)
 	}
 
@@ -129,7 +121,7 @@ func reloadKeys(kv nats.KeyValue, masterKey []byte) (active *SigningKey, verify 
 		if !strings.HasPrefix(name, signingKeyPrefix) {
 			continue
 		}
-		entry, err := kv.Get(name)
+		entry, err := kv.Get(ctx, name)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("kv get %s: %w", name, err)
 		}
@@ -149,8 +141,8 @@ func reloadKeys(kv nats.KeyValue, masterKey []byte) (active *SigningKey, verify 
 
 // deleteSigningKey removes a rotated-out key from the bucket once its retention
 // window has elapsed.
-func deleteSigningKey(kv nats.KeyValue, kid string) error {
-	if err := kv.Delete(signingKeyName(kid)); err != nil {
+func deleteSigningKey(ctx context.Context, kv jetstream.KeyValue, kid string) error {
+	if err := kv.Delete(ctx, signingKeyName(kid)); err != nil {
 		return fmt.Errorf("kv delete %s: %w", signingKeyName(kid), err)
 	}
 	return nil
@@ -172,7 +164,7 @@ func decodeSigningKey(kid string, ciphertext []byte, masterKey []byte) (*Signing
 
 // generateSigningKey creates a fresh ES256 key, persists the encrypted PEM under
 // jwt-signing/{kid}, and returns it.
-func generateSigningKey(kv nats.KeyValue, masterKey []byte) (*SigningKey, error) {
+func generateSigningKey(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (*SigningKey, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ES256 key: %w", err)
@@ -190,7 +182,7 @@ func generateSigningKey(kv nats.KeyValue, masterKey []byte) (*SigningKey, error)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt signing key: %w", err)
 	}
-	if _, err := kv.Put(signingKeyName(kid), []byte(ciphertext)); err != nil {
+	if _, err := kv.Put(ctx, signingKeyName(kid), []byte(ciphertext)); err != nil {
 		return nil, fmt.Errorf("kv put %s: %w", signingKeyName(kid), err)
 	}
 	return &SigningKey{Kid: kid, priv: priv}, nil

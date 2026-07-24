@@ -1,13 +1,14 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // sgBucket mirrors handlers/ec2/vpc.KVBucketSecurityGroups. Duplicated here to
@@ -46,10 +47,10 @@ func init() {
 		FromVersion: 1,
 		ToVersion:   2,
 		Description: "assign sgr- IDs to security group rules",
-		Run: func(ctx KVContext) error {
-			keys, err := ctx.KV.Keys()
+		Run: func(ctx context.Context, kvc KVContext) error {
+			keys, err := kvc.KV.Keys(ctx)
 			if err != nil {
-				if errors.Is(err, nats.ErrNoKeysFound) {
+				if errors.Is(err, jetstream.ErrNoKeysFound) {
 					return nil
 				}
 				return fmt.Errorf("list keys: %w", err)
@@ -59,7 +60,7 @@ func init() {
 				if key == utils.VersionKey {
 					continue
 				}
-				if err := backfillSGRuleIDs(ctx, key); err != nil {
+				if err := backfillSGRuleIDs(ctx, kvc, key); err != nil {
 					return err
 				}
 			}
@@ -70,12 +71,12 @@ func init() {
 
 // backfillSGRuleIDs assigns sgr- IDs to any rule missing one. Skips records
 // already fully populated. CAS conflicts retry up to sgMigrationMaxRetries.
-func backfillSGRuleIDs(ctx KVContext, key string) error {
+func backfillSGRuleIDs(ctx context.Context, kvc KVContext, key string) error {
 	var lastErr error
 	for attempt := range sgMigrationMaxRetries {
-		entry, err := ctx.KV.Get(key)
+		entry, err := kvc.KV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil
 			}
 			return fmt.Errorf("get %s: %w", key, err)
@@ -108,10 +109,10 @@ func backfillSGRuleIDs(ctx KVContext, key string) error {
 		if err != nil {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
-		if _, err := ctx.KV.Update(key, data, entry.Revision()); err != nil {
-			// nats.ErrKeyExists = revision mismatch (JSStreamWrongLastSequence).
-			if errors.Is(err, nats.ErrKeyExists) {
-				ctx.Logger.Warn("SG migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
+		if _, err := kvc.KV.Update(ctx, key, data, entry.Revision()); err != nil {
+			// jetstream.ErrKeyExists = revision mismatch (JSStreamWrongLastSequence).
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				kvc.Logger.Warn("SG migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue
 			}

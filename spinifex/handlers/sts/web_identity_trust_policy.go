@@ -37,7 +37,7 @@ type webIdentityContext struct {
 // evalTrustPolicyForWebIdentity evaluates an AssumeRoleWithWebIdentity trust policy.
 // Explicit-deny wins; a statement matches when Action, Principal.Federated, and all Conditions hold.
 // Returns nil on grant or AccessDenied/error on deny/corruption.
-func evalTrustPolicyForWebIdentity(docJSON string, ctx webIdentityContext) error {
+func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
 		return fmt.Errorf("stored trust policy invalid: %w", err)
@@ -47,7 +47,7 @@ func evalTrustPolicyForWebIdentity(docJSON string, ctx webIdentityContext) error
 		if stmt.Effect != handlers_iam.PolicyEffectDeny {
 			continue
 		}
-		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, ctx)
+		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func evalTrustPolicyForWebIdentity(docJSON string, ctx webIdentityContext) error
 		if stmt.Effect != handlers_iam.PolicyEffectAllow {
 			continue
 		}
-		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, ctx)
+		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
 		if err != nil {
 			return err
 		}
@@ -72,18 +72,18 @@ func evalTrustPolicyForWebIdentity(docJSON string, ctx webIdentityContext) error
 	return errors.New(awserrors.ErrorAccessDenied)
 }
 
-func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json.RawMessage, ctx webIdentityContext) (bool, error) {
+func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json.RawMessage, identity webIdentityContext) (bool, error) {
 	if !matchWebIdentityAction(actions) {
 		return false, nil
 	}
-	principalMatch, err := matchFederatedPrincipal(principalRaw, ctx.federatedPrincipalARN)
+	principalMatch, err := matchFederatedPrincipal(principalRaw, identity.federatedPrincipalARN)
 	if err != nil {
 		return false, err
 	}
 	if !principalMatch {
 		return false, nil
 	}
-	if !conditionsHold(conditionRaw, ctx) {
+	if !conditionsHold(conditionRaw, identity) {
 		return false, nil
 	}
 	return true, nil
@@ -136,7 +136,7 @@ func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, err
 
 // conditionsHold evaluates a Condition block. Only StringEquals is supported;
 // keys are {iss}:sub (equality) and {iss}:aud (set-membership). No Condition = grant.
-func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
+func conditionsHold(raw json.RawMessage, identity webIdentityContext) bool {
 	if !isCondRawNonEmpty(raw) {
 		return true
 	}
@@ -149,7 +149,7 @@ func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 			// Validator rejects other operators at write time; a non-StringEquals here means tampering.
 			return false
 		}
-		issPrefix := strings.TrimSuffix(ctx.issuer, "/")
+		issPrefix := strings.TrimSuffix(identity.issuer, "/")
 		for key, expectedRaw := range kv {
 			expected, ok := unmarshalStringOrArray(expectedRaw)
 			if !ok {
@@ -157,11 +157,11 @@ func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 			}
 			switch key {
 			case issPrefix + ":sub":
-				if !anyEquals(expected, []string{ctx.subject}) {
+				if !anyEquals(expected, []string{identity.subject}) {
 					return false
 				}
 			case issPrefix + ":aud":
-				if !anyEquals(expected, ctx.audience) {
+				if !anyEquals(expected, identity.audience) {
 					return false
 				}
 			default:

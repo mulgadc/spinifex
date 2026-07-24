@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // sharedNATSHarness is the package-wide handle TestMain installs before
@@ -70,12 +71,12 @@ func startSharedNATS() (*sharedNATS, error) {
 // namespace no other test's account can see or collide with. The returned
 // connection is tracked and closed by TestMain once every test has
 // finished, not by the caller — see the TestMain doc comment for why.
-func (h *sharedNATS) connectIsolated(name string) (*nats.Conn, nats.JetStreamContext, error) {
+func (h *sharedNATS) connectIsolated(name string) (*nats.Conn, jetstream.JetStream, error) {
 	nc, err := nats.Connect(h.srv.ClientURL(), nats.UserInfo(name, "x"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		nc.Close()
 		return nil, nil, fmt.Errorf("jetstream: %w", err)

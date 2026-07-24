@@ -47,7 +47,7 @@ func TestReconcileCorrectsOverCount(t *testing.T) {
 
 	// Counter drifted high (e.g. a stale increment); the account truly holds one
 	// m5.xlarge (4) plus one t3.micro (2) = 6.
-	if err := s.AddVCPU(testAccount, 16); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, 16); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
 	lister := staticLister(map[string][]*ec2.Reservation{
@@ -68,7 +68,7 @@ func TestReconcileCorrectsOverCount(t *testing.T) {
 func TestReconcileCorrectsStaleTermination(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	if err := s.AddVCPU(testAccount, 6); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, 6); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
 	lister := staticLister(map[string][]*ec2.Reservation{
@@ -89,7 +89,7 @@ func TestReconcileCorrectsStaleTermination(t *testing.T) {
 func TestReconcileZeroesEmptyAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	if err := s.AddVCPU(testAccount, 8); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
 	lister := staticLister(map[string][]*ec2.Reservation{}, nil) // describes empty
@@ -106,7 +106,7 @@ func TestReconcileSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	// Park a non-zero value directly under the system key; AddVCPU would no-op it.
-	if _, err := s.usage.PutString(utils.GlobalAccountID, "42"); err != nil {
+	if _, err := s.usage.PutString(t.Context(), utils.GlobalAccountID, "42"); err != nil {
 		t.Fatalf("seed system counter: %v", err)
 	}
 	var seen []string
@@ -133,7 +133,7 @@ func TestReconcileContinuesOnDescribeError(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	const bad, good = "111111111111", "222222222222"
-	if err := s.AddVCPU(bad, 8); err != nil {
+	if err := s.AddVCPU(t.Context(), bad, 8); err != nil {
 		t.Fatalf("seed bad: %v", err)
 	}
 	sentinel := errors.New("describe boom")
@@ -160,7 +160,7 @@ func TestReconcileIncompleteSweepDoesNotLower(t *testing.T) {
 
 	// Counter holds 8 (two m5.xlarge across two nodes); a partial sweep sees only
 	// one node's 4 vCPUs and reports complete=false.
-	if err := s.AddVCPU(testAccount, 8); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
 	partial := func(accountID string) ([]*ec2.Reservation, bool, error) {
@@ -200,7 +200,7 @@ func TestReconcileDisabledNoop(t *testing.T) {
 
 func assertCounter(t *testing.T, s *Service, accountID string, want int) {
 	t.Helper()
-	got, _, err := s.readVCPU(accountID)
+	got, _, err := s.readVCPU(t.Context(), accountID)
 	if err != nil {
 		t.Fatalf("readVCPU(%s): %v", accountID, err)
 	}

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // AddonStatus mirrors the AWS EKS addon.status enum verbatim.
@@ -48,7 +49,7 @@ func AddonARN(region, accountID, cluster, addon string) string {
 }
 
 // PutAddonRecord writes the record unconditionally.
-func PutAddonRecord(kv nats.KeyValue, cluster string, rec *AddonRecord) error {
+func PutAddonRecord(ctx context.Context, kv jetstream.KeyValue, cluster string, rec *AddonRecord) error {
 	if rec == nil {
 		return errors.New("eks: PutAddonRecord nil record")
 	}
@@ -60,20 +61,20 @@ func PutAddonRecord(kv nats.KeyValue, cluster string, rec *AddonRecord) error {
 		return fmt.Errorf("marshal addon %s: %w", rec.AddonName, err)
 	}
 	key := AddonKey(cluster, rec.AddonName)
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("kv put %s: %w", key, err)
 	}
 	return nil
 }
 
 // GetAddonRecord reads one record. Returns ErrAddonNotFound if absent.
-func GetAddonRecord(kv nats.KeyValue, cluster, addon string) (*AddonRecord, error) {
+func GetAddonRecord(ctx context.Context, kv jetstream.KeyValue, cluster, addon string) (*AddonRecord, error) {
 	if cluster == "" || addon == "" {
 		return nil, errors.New("eks: GetAddonRecord empty cluster or addon name")
 	}
-	entry, err := kv.Get(AddonKey(cluster, addon))
+	entry, err := kv.Get(ctx, AddonKey(cluster, addon))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, ErrAddonNotFound
 		}
 		return nil, fmt.Errorf("kv get addon: %w", err)
@@ -87,13 +88,13 @@ func GetAddonRecord(kv nats.KeyValue, cluster, addon string) (*AddonRecord, erro
 
 // ListAddonRecords returns all add-on records under a cluster, sorted by name.
 // Staged-manifest sub-keys (one extra path segment) are skipped.
-func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) {
+func ListAddonRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]*AddonRecord, error) {
 	if cluster == "" {
 		return nil, errors.New("eks: ListAddonRecords empty cluster")
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("kv keys: %w", err)
@@ -108,9 +109,9 @@ func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) 
 		if strings.Contains(strings.TrimPrefix(k, prefix), "/") {
 			continue
 		}
-		entry, err := kv.Get(k)
+		entry, err := kv.Get(ctx, k)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("kv get %s: %w", k, err)
@@ -126,20 +127,20 @@ func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) 
 }
 
 // DeleteAddonRecord removes one record and its staged manifest. Returns ErrAddonNotFound if absent.
-func DeleteAddonRecord(kv nats.KeyValue, cluster, addon string) error {
+func DeleteAddonRecord(ctx context.Context, kv jetstream.KeyValue, cluster, addon string) error {
 	key := AddonKey(cluster, addon)
-	if _, err := kv.Get(key); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := kv.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return ErrAddonNotFound
 		}
 		return fmt.Errorf("kv get %s: %w", key, err)
 	}
-	if err := kv.Delete(key); err != nil {
+	if err := kv.Delete(ctx, key); err != nil {
 		return fmt.Errorf("kv delete %s: %w", key, err)
 	}
 	// Best-effort: drop the staged manifest so a re-create starts clean.
 	manifestKey := AddonManifestKey(cluster, addon)
-	if err := kv.Delete(manifestKey); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, manifestKey); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return fmt.Errorf("kv delete %s: %w", manifestKey, err)
 	}
 	return nil
@@ -147,12 +148,12 @@ func DeleteAddonRecord(kv nats.KeyValue, cluster, addon string) error {
 
 // casUpdateAddon does a revision-checked read-modify-write.
 // mutate returns true when a field changed. Returns ErrAddonNotFound if absent.
-func casUpdateAddon(kv nats.KeyValue, cluster, addon string, mutate func(*AddonRecord) bool) (*AddonRecord, error) {
+func casUpdateAddon(ctx context.Context, kv jetstream.KeyValue, cluster, addon string, mutate func(*AddonRecord) bool) (*AddonRecord, error) {
 	key := AddonKey(cluster, addon)
 	for range maxClusterStateCASRetries {
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil, ErrAddonNotFound
 			}
 			return nil, fmt.Errorf("kv get %s: %w", key, err)
@@ -168,11 +169,11 @@ func casUpdateAddon(kv nats.KeyValue, cluster, addon string, mutate func(*AddonR
 		if err != nil {
 			return nil, fmt.Errorf("marshal addon %s: %w", addon, err)
 		}
-		_, err = kv.Update(key, data, entry.Revision())
+		_, err = kv.Update(ctx, key, data, entry.Revision())
 		if err == nil {
 			return &rec, nil
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			continue
 		}
 		return nil, fmt.Errorf("kv update %s: %w", key, err)

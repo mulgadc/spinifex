@@ -14,14 +14,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func newTestManager(t *testing.T, az string, fake *dhcp.Fake, now func() time.Time) (*dhcp.Manager, *dhcp.Store, *nats.Conn) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
-	store, err := dhcp.NewStore(js, az)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	store, err := dhcp.NewStore(t.Context(), js, az)
 	require.NoError(t, err)
 	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{Client: fake, Store: store, Now: now})
 	require.NoError(t, err)
@@ -50,7 +52,7 @@ func TestManagerStartScansAndReaffirms(t *testing.T) {
 		})
 		require.NoError(t, err)
 		held, _ := fake.HeldLease(id)
-		require.NoError(t, store.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: held}))
+		require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: held}))
 	}
 	require.Equal(t, 0, fake.RenewCount())
 
@@ -73,11 +75,11 @@ func TestManagerStartDropsExpiredLeases(t *testing.T) {
 		AcquiredAt:    fixed.Add(-2 * time.Hour),
 		LeaseDuration: time.Hour,
 	}
-	require.NoError(t, store.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: expired}))
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: expired}))
 
 	require.NoError(t, mgr.Start(context.Background()))
-	_, err := store.Get("eipalloc-old")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err := store.Get(t.Context(), "eipalloc-old")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 	assert.Equal(t, 0, fake.RenewCount())
 	assert.Equal(t, 0, mgr.LoopCount())
 }
@@ -113,15 +115,15 @@ func TestNATSClientAcquireReleaseRoundtrip(t *testing.T) {
 	assert.Equal(t, "eipalloc-A", lease.ClientID)
 	assert.NotNil(t, lease.IP)
 
-	got, err := store.Get("eipalloc-A")
+	got, err := store.Get(t.Context(), "eipalloc-A")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "eip", got.Purpose)
 	assert.Equal(t, "default", got.PoolName)
 
 	require.NoError(t, client.RequestRelease(context.Background(), "eipalloc-A"))
-	_, err = store.Get("eipalloc-A")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err = store.Get(t.Context(), "eipalloc-A")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 	assert.Equal(t, 1, fake.ReleaseCount())
 }
 
@@ -137,7 +139,7 @@ func seedLeases(t *testing.T, store *dhcp.Store, ids []string) {
 			AcquiredAt:    time.Now(),
 			LeaseDuration: time.Hour,
 		}
-		require.NoError(t, store.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: lease}))
+		require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: lease}))
 	}
 }
 
@@ -157,7 +159,7 @@ func TestManagerDrainAll(t *testing.T) {
 	assert.Equal(t, len(ids), n)
 	assert.Equal(t, len(ids), fake.ReleaseCount())
 
-	entries, err := store.List()
+	entries, err := store.List(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 	assert.Equal(t, 0, mgr.LoopCount())
@@ -182,7 +184,7 @@ func TestManagerDrainAllBestEffortOnReleaseError(t *testing.T) {
 	assert.Equal(t, len(ids), n)
 	assert.Equal(t, len(ids), fake.ReleaseCount())
 
-	entries, err := store.List()
+	entries, err := store.List(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
@@ -207,7 +209,7 @@ func TestManagerDrainMsgWithoutReplyIsDropped(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	time.Sleep(100 * time.Millisecond)
 
-	entries, err := store.List()
+	entries, err := store.List(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
 	assert.Equal(t, 0, fake.ReleaseCount())
@@ -237,7 +239,7 @@ func TestManagerDrainRPCRoundtrip(t *testing.T) {
 	assert.Empty(t, reply.Error)
 	assert.Equal(t, 2, reply.Released)
 
-	entries, err := store.List()
+	entries, err := store.List(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
@@ -395,8 +397,9 @@ func TestManagerAcquireRetriesUnderBackoff(t *testing.T) {
 	}
 
 	// Compress the schedule to keep the test sub-second.
-	_, nc, js := testutil.StartTestJetStream(t)
-	store, err := dhcp.NewStore(js, "az1")
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	store, err := dhcp.NewStore(t.Context(), js, "az1")
 	require.NoError(t, err)
 	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{
 		Client:          fake,
@@ -430,8 +433,9 @@ func TestManagerAcquireRetriesUnderBackoff(t *testing.T) {
 // Managers against a shared NATS conn. Each acquire must fire exactly one
 // handler (queue-group semantics) — Bug 3 regression.
 func TestManagerSubscribeIsQueueGroup_ExactlyOneHandlerFires(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	store, err := dhcp.NewStore(js, "az1")
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	store, err := dhcp.NewStore(t.Context(), js, "az1")
 	require.NoError(t, err)
 
 	fakeA := dhcp.NewFake()

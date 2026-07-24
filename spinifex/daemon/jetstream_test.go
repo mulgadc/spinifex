@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -343,8 +344,10 @@ func TestJetStreamManager_UpdateReplicas(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify initial replica count
-	js, _ := nc.JetStream()
-	streamInfo, err := js.StreamInfo("KV_" + InstanceStateBucket)
+	js, _ := jetstream.New(nc)
+	stream, err := js.Stream(t.Context(), "KV_"+InstanceStateBucket)
+	require.NoError(t, err)
+	streamInfo, err := stream.Info(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, streamInfo.Config.Replicas, "Should start with 1 replica")
 
@@ -598,7 +601,7 @@ func TestJetStreamManager_UpdateStoppedInstance_ConflictRetry(t *testing.T) {
 }
 
 // TestJetStreamManager_UpdateStoppedInstance_NotFound verifies
-// UpdateStoppedInstance surfaces nats.ErrKeyNotFound rather than silently
+// UpdateStoppedInstance surfaces jetstream.ErrKeyNotFound rather than silently
 // creating a record when nothing exists to update.
 func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -610,7 +613,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	require.NoError(t, jsm.InitKVBucket())
 
 	_, err = jsm.UpdateStoppedInstance("i-does-not-exist", func(v *vm.VM) {})
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 // TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim is the
@@ -646,7 +649,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	_, err = jsm.UpdateStoppedInstance(testVM.ID, func(v *vm.VM) {
 		v.InstanceType = "should-not-land"
 	})
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound, "a claim that deleted the record must not be resurrected by a losing racer's update")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "a claim that deleted the record must not be resurrected by a losing racer's update")
 
 	stillGone, err := jsm.LoadStoppedInstance(testVM.ID)
 	require.NoError(t, err)
@@ -776,7 +779,7 @@ func TestJetStreamManager_WriteServiceManifest(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read the KV entry directly and verify JSON contents
-	entry, err := jsm.clusterKV.Get("node.test-node-svc.services")
+	entry, err := jsm.clusterKV.Get(t.Context(), "node.test-node-svc.services")
 	require.NoError(t, err)
 
 	var manifest map[string]any
@@ -811,7 +814,7 @@ func TestJetStreamManager_WriteServiceManifest_EmptyServices(t *testing.T) {
 	err = jsm.WriteServiceManifest("empty-svc-node", []string{}, "10.0.0.2:4222", "10.0.0.2:8443")
 	require.NoError(t, err)
 
-	entry, err := jsm.clusterKV.Get("node.empty-svc-node.services")
+	entry, err := jsm.clusterKV.Get(t.Context(), "node.empty-svc-node.services")
 	require.NoError(t, err)
 
 	var manifest map[string]any
@@ -847,9 +850,9 @@ func TestJetStreamManager_WriteServiceManifest_ClusterKVNotInitialized(t *testin
 // deleteInstanceStateBucket deletes the underlying JetStream stream for the instance-state KV bucket.
 func deleteInstanceStateBucket(t *testing.T, nc *nats.Conn) {
 	t.Helper()
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	err = js.DeleteStream("KV_" + InstanceStateBucket)
+	err = js.DeleteStream(t.Context(), "KV_"+InstanceStateBucket)
 	require.NoError(t, err)
 }
 
@@ -1006,7 +1009,7 @@ func swapToNonJSContext(t *testing.T, jsm *JetStreamManager) {
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 	jsm.js = js
 }
@@ -1137,12 +1140,12 @@ func TestJetStreamManager_ListStoppedInstances_RecoveryFailure(t *testing.T) {
 
 func TestIsStreamUnavailable(t *testing.T) {
 	assert.False(t, isStreamUnavailable(nil))
-	assert.True(t, isStreamUnavailable(nats.ErrStreamNotFound))
-	assert.True(t, isStreamUnavailable(nats.ErrNoStreamResponse))
+	assert.True(t, isStreamUnavailable(jetstream.ErrStreamNotFound))
+	assert.True(t, isStreamUnavailable(jetstream.ErrNoStreamResponse))
 	assert.True(t, isStreamUnavailable(nats.ErrNoResponders))
 	assert.True(t, isStreamUnavailable(errors.New("nats: stream not found")))
 	assert.False(t, isStreamUnavailable(errors.New("some other error")))
-	assert.False(t, isStreamUnavailable(nats.ErrKeyNotFound))
+	assert.False(t, isStreamUnavailable(jetstream.ErrKeyNotFound))
 }
 
 // --- Terminated instance KV tests ---
@@ -1376,7 +1379,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_NotFound(t *testing.T) {
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
 	_, err = jsm.UpdateTerminatedInstance("i-does-not-exist", func(v *vm.VM) {})
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 // TestJetStreamManager_WriteStoppedInstance_OverwritesConcurrentValue verifies
@@ -1416,9 +1419,9 @@ func TestJetStreamManager_WriteStoppedInstance_OverwritesConcurrentValue(t *test
 // deleteTerminatedInstanceBucket deletes the underlying JetStream stream for the terminated-instances KV bucket.
 func deleteTerminatedInstanceBucket(t *testing.T, nc *nats.Conn) {
 	t.Helper()
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	err = js.DeleteStream("KV_" + TerminatedInstanceBucket)
+	err = js.DeleteStream(t.Context(), "KV_"+TerminatedInstanceBucket)
 	require.NoError(t, err)
 }
 
@@ -1504,15 +1507,15 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 	require.NoError(t, jsm.InitClusterStateBucket())
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
-	v, err := utils.ReadVersion(jsm.kv)
+	v, err := kvutil.ReadVersion(t.Context(), jsm.kv)
 	require.NoError(t, err)
 	assert.Equal(t, InstanceStateBucketVersion, v)
 
-	v, err = utils.ReadVersion(jsm.clusterKV)
+	v, err = kvutil.ReadVersion(t.Context(), jsm.clusterKV)
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStateBucketVersion, v)
 
-	v, err = utils.ReadVersion(jsm.terminatedKV)
+	v, err = kvutil.ReadVersion(t.Context(), jsm.terminatedKV)
 	require.NoError(t, err)
 	assert.Equal(t, TerminatedInstanceBucketVersion, v)
 }
@@ -1653,7 +1656,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
 	require.NoError(t, jsm.InitClusterStateBucket())
 
 	const subnet = "10.99.8.0/24"
-	defer func() { _ = jsm.clusterKV.Delete(mgmtIPAMKeyPrefix + subnet) }()
+	defer func() { _ = jsm.clusterKV.Delete(t.Context(), mgmtIPAMKeyPrefix+subnet) }()
 
 	_, err = jsm.UpdateMgmtIPAM(subnet, func(r *MgmtIPRecord) {
 		r.Subnet = subnet
@@ -1690,7 +1693,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
 }
 
 // TestJetStreamManager_UpdateMgmtIPAM_NotFound verifies createIfAbsent=false
-// surfaces nats.ErrKeyNotFound instead of silently creating a record —
+// surfaces jetstream.ErrKeyNotFound instead of silently creating a record —
 // MgmtIPAllocator.Release relies on this to no-op cleanly when there is
 // nothing to release.
 func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
@@ -1703,7 +1706,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
 	require.NoError(t, jsm.InitClusterStateBucket())
 
 	_, err = jsm.UpdateMgmtIPAM("10.98.8.0/24-nonexistent", func(r *MgmtIPRecord) {}, false)
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 // TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized tests error

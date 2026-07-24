@@ -20,7 +20,7 @@ import (
 func TestEKSServiceImpl_ListClustersPagination(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	for _, n := range []string{"c01", "c02", "c03", "c04", "c05"} {
-		require.NoError(t, PutClusterMeta(f.kv, sampleClusterMeta(n)))
+		require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta(n)))
 	}
 
 	p1, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2)}, testAccountID)
@@ -48,7 +48,7 @@ func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	want := []string{"c01", "c02", "c03"}
 	for _, n := range want {
-		require.NoError(t, PutClusterMeta(f.kv, sampleClusterMeta(n)))
+		require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta(n)))
 	}
 
 	for _, mr := range []int64{0, -5, 250} {

@@ -20,20 +20,21 @@ const (
 // into the per-account EKS bucket, returning a router wired to the same NATS.
 func seedDiscoveryCluster(t *testing.T) http.Handler {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(js, testDiscAccount, 1)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, testDiscAccount, 1)
 	if err != nil {
 		t.Fatalf("account bucket: %v", err)
 	}
-	if err := handlers_eks.PutClusterMeta(kv, &handlers_eks.ClusterMeta{
+	if err := handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
 		Name:       testDiscCluster,
 		Status:     handlers_eks.ClusterStatusActive,
 		OIDCIssuer: testDiscIssuer,
 	}); err != nil {
 		t.Fatalf("put cluster meta: %v", err)
 	}
-	if _, err := kv.Put(handlers_eks.OIDCJWKSKey(testDiscCluster), []byte(`{"keys":[{"kty":"EC","kid":"abc"}]}`)); err != nil {
+	if _, err := kv.Put(t.Context(), handlers_eks.OIDCJWKSKey(testDiscCluster), []byte(`{"keys":[{"kty":"EC","kid":"abc"}]}`)); err != nil {
 		t.Fatalf("put jwks: %v", err)
 	}
 

@@ -17,7 +17,7 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 
 	active := sampleClusterMeta("alpha")
 	active.Status = ClusterStatusActive
-	require.NoError(t, PutClusterMeta(f.kv, active))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, active))
 
 	// CREATING resumes both the bootstrap re-subscribe and the reconciler. Stamp a
 	// recent CreatedAt so the resumed reconciler stays CREATING (the shared fixture
@@ -26,17 +26,36 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 	creating := sampleClusterMeta("beta")
 	creating.Status = ClusterStatusCreating
 	creating.CreatedAt = time.Now()
-	require.NoError(t, PutClusterMeta(f.kv, creating))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, creating))
 
 	failed := sampleClusterMeta("zeta")
 	failed.Status = ClusterStatusFailed
-	require.NoError(t, PutClusterMeta(f.kv, failed))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, failed))
 
 	require.NoError(t, f.svc.SpawnRegisteredReconcilers())
 
 	assert.True(t, f.svc.registry.Has(testAccountID, "alpha"), "ACTIVE cluster must resume a reconciler")
 	assert.True(t, f.svc.registry.Has(testAccountID, "beta"), "CREATING cluster must resume a reconciler")
 	assert.False(t, f.svc.registry.Has(testAccountID, "zeta"), "FAILED cluster must not be resumed")
+}
+
+// TestSpawnRegisteredReconcilers_EnumerationFailureIsReported: the KV bucket
+// lister closes its channel the same way whether the listing completed or
+// failed, so a boot scan that ignored the terminal error would read an
+// unreachable JetStream as "no accounts" and leave every cluster in the fleet
+// without a reconciler until the next daemon restart — with clean boot logs.
+func TestSpawnRegisteredReconcilers_EnumerationFailureIsReported(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	active := sampleClusterMeta("alpha")
+	active.Status = ClusterStatusActive
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, active))
+
+	// Closing the connection fails the stream-names request behind the listing.
+	f.svc.deps.NATSConn.Close()
+
+	require.Error(t, f.svc.SpawnRegisteredReconcilers(), "a failed bucket enumeration must not report a completed scan")
+	assert.False(t, f.svc.registry.Has(testAccountID, "alpha"), "a listing that never completed can resume nothing")
 }
 
 // TestSpawnRegisteredReconcilers_DepsNotReadyNoops confirms the boot scan is a

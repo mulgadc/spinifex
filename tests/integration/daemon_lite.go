@@ -110,19 +110,19 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	keySvc := handlers_ec2_key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(cfg, nc)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(cfg, nc)
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct route table service")
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(cfg, nc)
+	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct IGW service")
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(cfg, nc)
+	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct EIGW service")
 
-	acctSettingsSvc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(cfg, nc)
+	acctSettingsSvc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct account settings service")
 
 	dl := &DaemonLite{

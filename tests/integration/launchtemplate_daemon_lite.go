@@ -28,7 +28,7 @@ func StartLaunchTemplateDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_laun
 	t.Helper()
 
 	cfg := &config.Config{AZ: testAZ}
-	svc, err := handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(cfg, gw.NATSConn)
+	svc, err := handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(t.Context(), cfg, gw.NATSConn)
 	require.NoError(t, err, "construct launch template service")
 
 	nc := gw.NATSConn

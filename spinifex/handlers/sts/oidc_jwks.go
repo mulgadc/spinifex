@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,8 +9,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/nats-io/nats.go"
 )
 
 // JWK is one entry of an RFC 7517 JSON Web Key Set. EKS publishes EC P-256 keys;
@@ -88,7 +90,7 @@ func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error)
 
 // FetchClusterJWKS reads the JWKS for an EKS cluster from the per-account EKS KV bucket.
 // Returns (nil, nil) when the cluster has no JWKS published; callers map that to InvalidIdentityToken.
-func FetchClusterJWKS(js nats.JetStreamContext, accountID, clusterName string) (*JWKS, error) {
+func FetchClusterJWKS(ctx context.Context, js jetstream.JetStream, accountID, clusterName string) (*JWKS, error) {
 	if js == nil {
 		return nil, errors.New("nil JetStream context")
 	}
@@ -97,17 +99,17 @@ func FetchClusterJWKS(js nats.JetStreamContext, accountID, clusterName string) (
 	}
 
 	bucketName := handlers_eks.AccountBucketName(accountID)
-	kv, err := js.KeyValue(bucketName)
+	kv, err := js.KeyValue(ctx, bucketName)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("open EKS account bucket %s: %w", bucketName, err)
 	}
 
-	entry, err := kv.Get(handlers_eks.OIDCJWKSKey(clusterName))
+	entry, err := kv.Get(ctx, handlers_eks.OIDCJWKSKey(clusterName))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read JWKS for cluster %s: %w", clusterName, err)

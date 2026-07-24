@@ -16,6 +16,7 @@ import (
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // targetRegistrar registers/deregisters a service task's awsvpc ENI IP with an
@@ -136,12 +137,12 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	}
 
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var clusterRec ClusterRecord
-	found, err := getJSON(kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +151,13 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	}
 
 	var existing ServiceRecord
-	if ok, gerr := getJSON(kv, ServiceKey(cluster, name), &existing); gerr != nil {
+	if ok, gerr := getJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
 		return nil, gerr
 	} else if ok && existing.Status == ServiceStatusActive {
 		return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &existing)}, nil
 	}
 
-	taskDef, err := s.resolveTaskDef(kv, aws.StringValue(input.TaskDefinition))
+	taskDef, err := s.resolveTaskDef(ctx, kv, aws.StringValue(input.TaskDefinition))
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +191,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	applyDeploymentConfig(&rec, input.DeploymentConfiguration)
 	rec.LastGoodTaskDefARN = taskDef.ARN
 	rec.Deployments = []Deployment{newPrimaryDeployment(rec.DeploymentID, taskDef, rec.DesiredCount)}
-	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 
@@ -204,12 +205,12 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	name := serviceShortName(aws.StringValue(input.Service))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec ServiceRecord
-	found, err := getJSON(kv, ServiceKey(cluster, name), &rec)
+	found, err := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +226,7 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 		rec.DesiredCount = int(aws.Int64Value(input.DesiredCount))
 	}
 	if td := aws.StringValue(input.TaskDefinition); td != "" {
-		taskDef, terr := s.resolveTaskDef(kv, td)
+		taskDef, terr := s.resolveTaskDef(ctx, kv, td)
 		if terr != nil {
 			return nil, terr
 		}
@@ -236,7 +237,7 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 		}
 	}
 	rec.UpdatedAt = time.Now().UTC()
-	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 	if err := s.reconcileService(ctx, kv, accountID, &rec); err != nil {
@@ -250,12 +251,12 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	name := serviceShortName(aws.StringValue(input.Service))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec ServiceRecord
-	found, err := getJSON(kv, ServiceKey(cluster, name), &rec)
+	found, err := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +265,7 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 	}
 
 	rec.DesiredCount = 0
-	tasks, err := s.listServiceTasks(kv, cluster, name)
+	tasks, err := s.listServiceTasks(ctx, kv, cluster, name)
 	if err != nil {
 		return nil, err
 	}
@@ -275,16 +276,16 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 	rec.RunningCount = 0
 	rec.PendingCount = 0
 	rec.UpdatedAt = time.Now().UTC()
-	if err := putJSON(kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.DeleteServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
 // DescribeServices returns the named services; unknown names surface as failures.
-func (s *Service) DescribeServices(_ context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
+func (s *Service) DescribeServices(ctx context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +293,7 @@ func (s *Service) DescribeServices(_ context.Context, input *ecs.DescribeService
 	for _, ref := range awsStringSlice(input.Services) {
 		name := serviceShortName(ref)
 		var rec ServiceRecord
-		found, gerr := getJSON(kv, ServiceKey(cluster, name), &rec)
+		found, gerr := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -306,13 +307,13 @@ func (s *Service) DescribeServices(_ context.Context, input *ecs.DescribeService
 }
 
 // ListServices returns the ARNs of every service in a cluster.
-func (s *Service) ListServices(_ context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
+func (s *Service) ListServices(ctx context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := s.listServiceRecords(kv, cluster)
+	recs, err := s.listServiceRecords(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -330,14 +331,14 @@ func (s *Service) ListServices(_ context.Context, input *ecs.ListServicesInput, 
 // and drains superseded (old) tasks while healthy running stays at/above
 // minimumHealthyPercent, then advances the rollout / circuit-breaker state. Per-
 // deployment and overall counts are refreshed as a side effect.
-func (s *Service) reconcileService(ctx context.Context, kv nats.KeyValue, accountID string, svc *ServiceRecord) error {
+func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, accountID string, svc *ServiceRecord) error {
 	if svc.Status != ServiceStatusActive {
 		return nil
 	}
 	svc.normalizeDeploymentConfig()
 	svc.ensurePrimaryDeployment()
 
-	tasks, err := s.listServiceTasks(kv, svc.Cluster, svc.Name)
+	tasks, err := s.listServiceTasks(ctx, kv, svc.Cluster, svc.Name)
 	if err != nil {
 		return err
 	}
@@ -349,7 +350,7 @@ func (s *Service) reconcileService(ctx context.Context, kv nats.KeyValue, accoun
 		// let the next tick roll the replacement in.
 		if tripCircuitBreaker(svc, primary) {
 			svc.RunningCount, svc.PendingCount = running, pending
-			return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
+			return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
 		}
 		desired := svc.DesiredCount
 		maxCount := desired * svc.MaximumPercent / 100
@@ -365,43 +366,48 @@ func (s *Service) reconcileService(ctx context.Context, kv nats.KeyValue, accoun
 		s.stopSurplusTasks(ctx, kv, accountID, tasks, primary.ID, desired, running, minCount)
 
 		// Re-tally after launch/stop so rollout state + persisted counts are current.
-		if fresh, ferr := s.listServiceTasks(kv, svc.Cluster, svc.Name); ferr == nil {
+		if fresh, ferr := s.listServiceTasks(ctx, kv, svc.Cluster, svc.Name); ferr == nil {
 			running, pending = tallyDeployments(svc, fresh)
 		}
 		updateRolloutState(svc, primary, desired)
 	}
 
 	svc.RunningCount, svc.PendingCount = running, pending
-	return putJSON(kv, ServiceKey(svc.Cluster, svc.Name), svc)
+	return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
 }
 
 // reconcileAllServices is the scheduler-tick fan-out: every ACTIVE service in
 // every ECS account bucket is reconciled. Runs only on the scheduler leader.
-func (s *Service) reconcileAllServices() {
-	ctx := context.Background()
+// Returns an error when the account enumeration could not be completed, so a
+// pass that could not see the whole fleet is reported rather than read as "no
+// services to reconcile" — every unlisted account stalls below its desired count.
+func (s *Service) reconcileAllServices(ctx context.Context) error {
 	js, err := s.js()
 	if err != nil {
-		return
+		return err
 	}
-	for bucket := range js.KeyValueStoreNames() {
-		accountID, ok := accountIDFromBucket(bucket)
-		if !ok {
+	buckets, err := accountBuckets(ctx, s.nc)
+	if err != nil {
+		return err
+	}
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(ctx, bucket.name)
+		if err != nil {
+			slog.Error("ECS reconcile: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
-		kv, err := js.KeyValue(bucket)
+		recs, err := s.allServiceRecords(ctx, kv)
 		if err != nil {
-			continue
-		}
-		recs, err := s.allServiceRecords(kv)
-		if err != nil {
+			slog.Error("ECS reconcile: list services failed", "bucket", bucket.name, "err", err)
 			continue
 		}
 		for i := range recs {
-			if err := s.reconcileService(ctx, kv, accountID, &recs[i]); err != nil {
+			if err := s.reconcileService(ctx, kv, bucket.accountID, &recs[i]); err != nil {
 				slog.Error("ECS reconcile: service failed", "service", recs[i].Name, "err", err)
 			}
 		}
 	}
+	return nil
 }
 
 // launchDeploymentTasks places n tasks for a specific deployment via the standard
@@ -443,7 +449,7 @@ func (s *Service) launchDeploymentTasks(ctx context.Context, accountID string, s
 // deployment tasks toward zero, and the primary's own surplus on a scale-in.
 // PENDING surplus is stopped freely; RUNNING surplus is gated so healthy running
 // never drops below minimumHealthyPercent (minCount).
-func (s *Service) stopSurplusTasks(ctx context.Context, kv nats.KeyValue, accountID string, tasks []TaskRecord, primaryID string, desired, runningTotal, minCount int) {
+func (s *Service) stopSurplusTasks(ctx context.Context, kv jetstream.KeyValue, accountID string, tasks []TaskRecord, primaryID string, desired, runningTotal, minCount int) {
 	var oldPending, oldRunning, primaryPending, primaryRunning []int
 	for i := range tasks {
 		isPrimary := deploymentIDFromStartedBy(tasks[i].StartedBy) == primaryID
@@ -501,9 +507,9 @@ func (s *Service) stopSurplusTasks(ctx context.Context, kv nats.KeyValue, accoun
 // STOPPED nor already requested to stop (DesiredStatus=STOPPED). A cooperatively
 // stopped task lingers RUNNING until the agent reaps it, but it is on its way out,
 // so it must not count toward the service's running total for scaling decisions.
-func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]TaskRecord, error) {
+func (s *Service) listServiceTasks(ctx context.Context, kv jetstream.KeyValue, cluster, name string) ([]TaskRecord, error) {
 	group := serviceTaskGroup(name)
-	all, err := s.listTaskRecords(kv, cluster)
+	all, err := s.listTaskRecords(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -517,15 +523,15 @@ func (s *Service) listServiceTasks(kv nats.KeyValue, cluster, name string) ([]Ta
 }
 
 // listTaskRecords returns every task record in a cluster.
-func (s *Service) listTaskRecords(kv nats.KeyValue, cluster string) ([]TaskRecord, error) {
-	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
+func (s *Service) listTaskRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]TaskRecord, error) {
+	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]TaskRecord, 0, len(keys))
 	for _, k := range keys {
 		var rec TaskRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -537,15 +543,15 @@ func (s *Service) listTaskRecords(kv nats.KeyValue, cluster string) ([]TaskRecor
 }
 
 // listServiceRecords returns every service record in a cluster.
-func (s *Service) listServiceRecords(kv nats.KeyValue, cluster string) ([]ServiceRecord, error) {
-	keys, err := keysWithPrefix(kv, ServicesPrefix(cluster))
+func (s *Service) listServiceRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]ServiceRecord, error) {
+	keys, err := keysWithPrefix(ctx, kv, ServicesPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ServiceRecord, 0, len(keys))
 	for _, k := range keys {
 		var rec ServiceRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -557,8 +563,8 @@ func (s *Service) listServiceRecords(kv nats.KeyValue, cluster string) ([]Servic
 }
 
 // allServiceRecords returns every service record across all clusters in a bucket.
-func (s *Service) allServiceRecords(kv nats.KeyValue) ([]ServiceRecord, error) {
-	keys, err := keysWithPrefix(kv, "clusters/")
+func (s *Service) allServiceRecords(ctx context.Context, kv jetstream.KeyValue) ([]ServiceRecord, error) {
+	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +574,7 @@ func (s *Service) allServiceRecords(kv nats.KeyValue) ([]ServiceRecord, error) {
 			continue
 		}
 		var rec ServiceRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}

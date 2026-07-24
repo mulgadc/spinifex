@@ -23,7 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // defaultNodegroupInstanceType mirrors the AWS EKS managed-nodegroup default
@@ -86,7 +86,7 @@ func NodegroupARN(region, accountID, cluster, ng, id string) string {
 }
 
 // PutNodegroupRecord writes the record unconditionally.
-func PutNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) error {
+func PutNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord) error {
 	if rec == nil {
 		return errors.New("eks: PutNodegroupRecord nil record")
 	}
@@ -98,7 +98,7 @@ func PutNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) error {
 		return fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
 	}
 	key := NodegroupKey(rec.ClusterName, rec.Name)
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("kv put %s: %w", key, err)
 	}
 	return nil
@@ -108,7 +108,7 @@ func PutNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) error {
 // owned=false when a record already exists. This is the idempotency barrier for
 // CreateNodegroup — a duplicate request loses the claim and never launches
 // workers. Owner updates after the claim use PutNodegroupRecord.
-func ClaimNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) (bool, error) {
+func ClaimNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord) (bool, error) {
 	if rec == nil {
 		return false, errors.New("eks: ClaimNodegroupRecord nil record")
 	}
@@ -119,18 +119,18 @@ func ClaimNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
 	}
-	owned, _, _, err := claimKey(kv, NodegroupKey(rec.ClusterName, rec.Name), data)
+	owned, _, _, err := claimKey(ctx, kv, NodegroupKey(rec.ClusterName, rec.Name), data)
 	return owned, err
 }
 
 // GetNodegroupRecord reads one record. Returns ErrNodegroupNotFound if absent.
-func GetNodegroupRecord(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
+func GetNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
 	if cluster == "" || ng == "" {
 		return nil, errors.New("eks: GetNodegroupRecord empty cluster or name")
 	}
-	entry, err := kv.Get(NodegroupKey(cluster, ng))
+	entry, err := kv.Get(ctx, NodegroupKey(cluster, ng))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, ErrNodegroupNotFound
 		}
 		return nil, fmt.Errorf("kv get nodegroup: %w", err)
@@ -144,13 +144,13 @@ func GetNodegroupRecord(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord,
 
 // ListNodegroupRecords returns every nodegroup record under a cluster, sorted
 // by name for stable output.
-func ListNodegroupRecords(kv nats.KeyValue, cluster string) ([]*NodegroupRecord, error) {
+func ListNodegroupRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]*NodegroupRecord, error) {
 	if cluster == "" {
 		return nil, errors.New("eks: ListNodegroupRecords empty cluster")
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("kv keys: %w", err)
@@ -161,9 +161,9 @@ func ListNodegroupRecords(kv nats.KeyValue, cluster string) ([]*NodegroupRecord,
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := kv.Get(k)
+		entry, err := kv.Get(ctx, k)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("kv get %s: %w", k, err)
@@ -180,28 +180,28 @@ func ListNodegroupRecords(kv nats.KeyValue, cluster string) ([]*NodegroupRecord,
 
 // DeleteNodegroupRecord removes one record. A missing key is a no-op so
 // DeleteNodegroup stays idempotent.
-func DeleteNodegroupRecord(kv nats.KeyValue, cluster, ng string) error {
+func DeleteNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) error {
 	key := NodegroupKey(cluster, ng)
-	if err := kv.Delete(key); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return fmt.Errorf("kv delete %s: %w", key, err)
 	}
 	return nil
 }
 
 // nodegroupAcctKV opens the per-account bucket for nodegroup handlers.
-func (s *EKSServiceImpl) nodegroupAcctKV(accountID string) (nats.KeyValue, error) {
-	js, err := s.deps.NATSConn.JetStream()
+func (s *EKSServiceImpl) nodegroupAcctKV(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
 	return acctKV, nil
 }
 
-func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyValue, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
+func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -215,7 +215,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	meta, err := GetClusterMeta(acctKV, cluster)
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -239,7 +239,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
 
-	if _, err := GetNodegroupRecord(acctKV, cluster, ng); err == nil {
+	if _, err := GetNodegroupRecord(ctx, acctKV, cluster, ng); err == nil {
 		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 	} else if !errors.Is(err, ErrNodegroupNotFound) {
 		return nil, err
@@ -300,7 +300,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 	}
 
 	// Atomically claim the record; concurrent/duplicate CreateNodegroup requests lose here.
-	owned, err := ClaimNodegroupRecord(acctKV, rec)
+	owned, err := ClaimNodegroupRecord(ctx, acctKV, rec)
 	if err != nil {
 		return nil, err
 	}
@@ -312,13 +312,16 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV nats.KeyVal
 	// Failures surface as CREATE_FAILED, which DeleteNodegroup reclaims.
 	out := &eks.CreateNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}
 
+	// The launch outlives the request, so it runs on its own background context
+	// rather than the caller's, which is cancelled once this reply is written.
+	launchCtx := context.Background()
 	s.launchWG.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.markNodegroupFailed(acctKV, cluster, ng, fmt.Sprintf("launch panic: %v", r))
+				s.markNodegroupFailed(launchCtx, acctKV, cluster, ng, fmt.Sprintf("launch panic: %v", r))
 			}
 		}()
-		s.launchNodegroupInfra(context.Background(), nodegroupLaunchCtx{
+		s.launchNodegroupInfra(launchCtx, nodegroupLaunchCtx{
 			accountID: accountID,
 			cluster:   cluster,
 			ng:        ng,
@@ -380,7 +383,7 @@ type nodegroupLaunchCtx struct {
 	meta      *ClusterMeta
 	rec       *NodegroupRecord
 	desired   int
-	acctKV    nats.KeyValue
+	acctKV    jetstream.KeyValue
 }
 
 // launchNodegroupInfra runs the slow provisioning tail of createNodegroup on a
@@ -393,23 +396,23 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 
 	cpSGID, ngSGID, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
-		s.markNodegroupFailed(acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
+		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
 		return
 	}
 	if err := EnsureNodegroupSGRules(ctx, s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
-		s.markNodegroupFailed(acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
+		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
 		return
 	}
 
-	token, err := s.decryptNodeToken(acctKV, cluster)
+	token, err := s.decryptNodeToken(ctx, acctKV, cluster)
 	if err != nil {
-		s.markNodegroupFailed(acctKV, cluster, ng, "decrypt node token: "+err.Error())
+		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "decrypt node token: "+err.Error())
 		return
 	}
 
 	amiID, err := resolveWorkerAMI(ctx, s.deps.Image, accountID, rec)
 	if err != nil {
-		s.markNodegroupFailed(acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
+		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
 		return
 	}
 
@@ -423,7 +426,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "launch workers: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
-		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
+		if perr := PutNodegroupRecord(ctx, acctKV, rec); perr != nil {
 			slog.ErrorContext(ctx, "createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
 		}
 		return
@@ -450,11 +453,11 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 	// inflate the count and satisfy the gate early. They go NotReady within
 	// about a minute of termination, whereas baselining on them fails every
 	// replacement permanently.
-	if err := s.waitWorkersReady(acctKV, cluster, ng, 0, lc.desired); err != nil {
+	if err := s.waitWorkersReady(ctx, acctKV, cluster, ng, 0, lc.desired); err != nil {
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "workers did not become Ready: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
-		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
+		if perr := PutNodegroupRecord(ctx, acctKV, rec); perr != nil {
 			slog.ErrorContext(ctx, "createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
 		}
 		return
@@ -462,7 +465,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 
 	rec.Status = eks.NodegroupStatusActive
 	rec.ModifiedAt = time.Now().UTC()
-	if err := PutNodegroupRecord(acctKV, rec); err != nil {
+	if err := PutNodegroupRecord(ctx, acctKV, rec); err != nil {
 		slog.ErrorContext(ctx, "createNodegroup: persist ACTIVE record", "cluster", cluster, "nodegroup", ng, "err", err)
 	}
 }
@@ -476,11 +479,11 @@ func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupL
 // cluster-wide NodeCount total) is deliberate: in a multi-nodegroup cluster,
 // another nodegroup's Ready workers must never let this one falsely reach
 // ACTIVE while its own workers never joined.
-func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster, ng string, baseline, want int) error {
+func (s *EKSServiceImpl) waitWorkersReady(ctx context.Context, acctKV jetstream.KeyValue, cluster, ng string, baseline, want int) error {
 	target := baseline + want
 	deadline := time.Now().Add(s.nodegroupReadyTimeout)
 	for {
-		meta, err := GetClusterMeta(acctKV, cluster)
+		meta, err := GetClusterMeta(ctx, acctKV, cluster)
 		if err != nil {
 			return err
 		}
@@ -504,7 +507,7 @@ func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster, ng stri
 // so each gets a distinct node name + node label in its user-data) and returns
 // the launched instance IDs. On a partial failure it returns the IDs that did
 // launch plus the error so the caller can persist them for teardown.
-func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
+func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV jetstream.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	// base is the worker set already on the record (non-empty on a scale-up).
 	// Each incremental persist below writes base+newly-launched so the durable
 	// record always reflects every live worker, never just this call's additions.
@@ -522,7 +525,7 @@ func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV nats.KeyValue
 		// its claim-time InstanceIDs until the loop's terminal write, which strands
 		// the already-launched workers if the daemon dies in between.
 		rec.InstanceIDs = append(append([]string(nil), base...), ids...)
-		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
+		if perr := PutNodegroupRecord(ctx, acctKV, rec); perr != nil {
 			return ids, fmt.Errorf("persist launched workers %d/%d: %w", i+1, count, perr)
 		}
 	}
@@ -536,7 +539,7 @@ func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV nats.KeyValue
 // already-launched workers are never reissued — until the desired count is
 // reached, workerLaunchRetryTimeout elapses, or bgCtx is cancelled. Every retry
 // is logged so a stuck launch is diagnosable without live-tailing the daemon.
-func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
+func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV jetstream.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	deadline := time.Now().Add(s.workerLaunchRetryTimeout)
 	all := make([]string, 0, count)
 	remaining := count
@@ -772,13 +775,13 @@ func roleNameFromARN(arn string) string {
 	return ""
 }
 
-func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
+func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
 	ng := aws.StringValue(input.NodegroupName)
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -788,18 +791,18 @@ func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.Desc
 	return &eks.DescribeNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
 }
 
-func (s *EKSServiceImpl) listNodegroups(acctKV nats.KeyValue, input *eks.ListNodegroupsInput) (*eks.ListNodegroupsOutput, error) {
+func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.KeyValue, input *eks.ListNodegroupsInput) (*eks.ListNodegroupsOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if _, err := GetClusterMeta(acctKV, cluster); err != nil {
+	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
 	}
-	recs, err := ListNodegroupRecords(acctKV, cluster)
+	recs, err := ListNodegroupRecords(ctx, acctKV, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -810,7 +813,7 @@ func (s *EKSServiceImpl) listNodegroups(acctKV nats.KeyValue, input *eks.ListNod
 	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(names)}, nil
 }
 
-func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV nats.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
+func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetstream.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -819,7 +822,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV nats.
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	meta, err := GetClusterMeta(acctKV, cluster)
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -845,9 +848,9 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV nats.
 // CAS on the record revision, so two overlapping UpdateNodegroupConfig calls can
 // never both launch the same delta — the lost-update that scaled 1 worker to 5
 // (two reconciles each reading current=1 and each launching desired-current=2).
-func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
+func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
 	for range ngCASMaxRetries {
-		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
+		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
 				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -874,7 +877,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.Key
 				return nil, fmt.Errorf("terminate surplus workers: %w", err)
 			}
 			rec.InstanceIDs = rec.InstanceIDs[:desired]
-			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+			if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
 				return nil, err
 			} else if !ok {
 				continue
@@ -884,7 +887,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.Key
 		case desired > current:
 			// Commit the deltas + new desired first, then launch the gap one worker
 			// at a time with a per-VM CAS-append (launchWorkersCAS).
-			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+			if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
 				return nil, err
 			} else if !ok {
 				continue
@@ -892,7 +895,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.Key
 			return s.launchWorkersCAS(ctx, acctKV, accountID, cluster, ng, meta, desired)
 
 		default:
-			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+			if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
 				return nil, err
 			} else if !ok {
 				continue
@@ -907,12 +910,12 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV nats.Key
 // worker at a time and CAS-appending its ID only while len(InstanceIDs) <
 // desired. A worker launched into an already-full record (a concurrent reconcile
 // got there first) is terminated, so the count never overshoots desired.
-func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
-	token, err := s.decryptNodeToken(acctKV, cluster)
+func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
+	token, err := s.decryptNodeToken(ctx, acctKV, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt node token: %w", err)
 	}
-	recForAMI, _, err := getNodegroupEntry(acctKV, cluster, ng)
+	recForAMI, _, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 	if err != nil {
 		return nil, err
 	}
@@ -932,7 +935,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyVa
 	// The target is re-read from the record each pass (not the entry-time desired),
 	// so a concurrent rescale is honored rather than overrun.
 	for range desired + ngCASMaxRetries {
-		rec, _, err := getNodegroupEntry(acctKV, cluster, ng)
+		rec, _, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			return nil, err
 		}
@@ -960,9 +963,9 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV nats.KeyVa
 // recordLaunchedWorker CAS-appends id while the record is below its live
 // ScalingDesired, or terminates the worker when a concurrent reconcile already
 // filled the gap (or lowered the target). Returns true when id was recorded.
-func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv nats.KeyValue, accountID, cluster, ng, id string) (bool, error) {
+func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, ng, id string) (bool, error) {
 	for range ngCASMaxRetries {
-		rec, rev, err := getNodegroupEntry(kv, cluster, ng)
+		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
 		if err != nil {
 			return false, err
 		}
@@ -977,7 +980,7 @@ func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv nats.KeyVa
 		}
 		rec.InstanceIDs = append(rec.InstanceIDs, id)
 		rec.ModifiedAt = time.Now().UTC()
-		if ok, err := s.casPutNodegroup(kv, rec, rev); err != nil {
+		if ok, err := s.casPutNodegroup(ctx, kv, rec, rev); err != nil {
 			return false, err
 		} else if ok {
 			return true, nil
@@ -1008,13 +1011,13 @@ func applyScalingUpdate(rec *NodegroupRecord, scaling *eks.NodegroupScalingConfi
 }
 
 // getNodegroupEntry reads one record with its KV revision for CAS updates.
-func getNodegroupEntry(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord, uint64, error) {
+func getNodegroupEntry(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, uint64, error) {
 	if cluster == "" || ng == "" {
 		return nil, 0, errors.New("eks: getNodegroupEntry empty cluster or name")
 	}
-	entry, err := kv.Get(NodegroupKey(cluster, ng))
+	entry, err := kv.Get(ctx, NodegroupKey(cluster, ng))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, 0, ErrNodegroupNotFound
 		}
 		return nil, 0, fmt.Errorf("kv get nodegroup: %w", err)
@@ -1028,13 +1031,13 @@ func getNodegroupEntry(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord, 
 
 // casPutNodegroup writes rec only if the durable revision still matches rev.
 // ok=false signals a concurrent writer won; the caller re-reads and retries.
-func (s *EKSServiceImpl) casPutNodegroup(kv nats.KeyValue, rec *NodegroupRecord, rev uint64) (bool, error) {
+func (s *EKSServiceImpl) casPutNodegroup(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord, rev uint64) (bool, error) {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
 	}
-	if _, err := kv.Update(NodegroupKey(rec.ClusterName, rec.Name), data, rev); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := kv.Update(ctx, NodegroupKey(rec.ClusterName, rec.Name), data, rev); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return false, nil
 		}
 		return false, fmt.Errorf("kv update nodegroup %s: %w", rec.Name, err)
@@ -1051,7 +1054,7 @@ func (s *EKSServiceImpl) updateNodegroupVersion(input *eks.UpdateNodegroupVersio
 	return nil, notImpl()
 }
 
-func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV nats.KeyValue, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
+func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -1060,7 +1063,7 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV nats.KeyVal
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -1073,7 +1076,7 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV nats.KeyVal
 			return nil, fmt.Errorf("terminate workers: %w", err)
 		}
 	}
-	if err := DeleteNodegroupRecord(acctKV, cluster, ng); err != nil {
+	if err := DeleteNodegroupRecord(ctx, acctKV, cluster, ng); err != nil {
 		return nil, err
 	}
 
@@ -1082,13 +1085,13 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV nats.KeyVal
 }
 
 // decryptNodeToken reads + decrypts the cluster's K3s join token from KV.
-func (s *EKSServiceImpl) decryptNodeToken(kv nats.KeyValue, cluster string) (string, error) {
+func (s *EKSServiceImpl) decryptNodeToken(ctx context.Context, kv jetstream.KeyValue, cluster string) (string, error) {
 	if kv == nil {
 		return "", errors.New("eks: nil KV for node token")
 	}
-	entry, err := kv.Get(NodeTokenKey(cluster))
+	entry, err := kv.Get(ctx, NodeTokenKey(cluster))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return "", errors.New("eks: cluster join token not yet provisioned")
 		}
 		return "", fmt.Errorf("kv get node token: %w", err)
@@ -1111,8 +1114,8 @@ func (s *EKSServiceImpl) decryptNodeToken(kv nats.KeyValue, cluster string) (str
 // state. Such records — and any CREATE_FAILED record still holding worker IDs —
 // have their recorded workers terminated and the record settled to CREATE_FAILED
 // with InstanceIDs cleared, which is idempotent on the next boot.
-func (s *EKSServiceImpl) reclaimOrphanedNodegroups(ctx context.Context, accountID string, acctKV nats.KeyValue, cluster string) {
-	recs, err := ListNodegroupRecords(acctKV, cluster)
+func (s *EKSServiceImpl) reclaimOrphanedNodegroups(ctx context.Context, accountID string, acctKV jetstream.KeyValue, cluster string) {
+	recs, err := ListNodegroupRecords(ctx, acctKV, cluster)
 	if err != nil {
 		slog.WarnContext(ctx, "reclaimOrphanedNodegroups: list records failed", "cluster", cluster, "err", err)
 		return
@@ -1142,7 +1145,7 @@ func (s *EKSServiceImpl) reclaimOrphanedNodegroups(ctx context.Context, accountI
 		rec.StatusReason = reason
 		rec.InstanceIDs = nil
 		rec.ModifiedAt = time.Now().UTC()
-		if err := PutNodegroupRecord(acctKV, rec); err != nil {
+		if err := PutNodegroupRecord(ctx, acctKV, rec); err != nil {
 			slog.WarnContext(ctx, "reclaimOrphanedNodegroups: persist settled record failed",
 				"cluster", cluster, "nodegroup", rec.Name, "err", err)
 			continue
@@ -1152,15 +1155,15 @@ func (s *EKSServiceImpl) reclaimOrphanedNodegroups(ctx context.Context, accountI
 	}
 }
 
-func (s *EKSServiceImpl) markNodegroupFailed(kv nats.KeyValue, cluster, ng, reason string) {
-	rec, err := GetNodegroupRecord(kv, cluster, ng)
+func (s *EKSServiceImpl) markNodegroupFailed(ctx context.Context, kv jetstream.KeyValue, cluster, ng, reason string) {
+	rec, err := GetNodegroupRecord(ctx, kv, cluster, ng)
 	if err != nil {
 		return
 	}
 	rec.Status = eks.NodegroupStatusCreateFailed
 	rec.StatusReason = reason
 	rec.ModifiedAt = time.Now().UTC()
-	if err := PutNodegroupRecord(kv, rec); err != nil {
+	if err := PutNodegroupRecord(ctx, kv, rec); err != nil {
 		slog.Warn("markNodegroupFailed: persist failed", "cluster", cluster, "nodegroup", ng, "err", err)
 	}
 }

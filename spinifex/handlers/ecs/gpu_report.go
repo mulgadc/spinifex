@@ -28,15 +28,15 @@ type ReportTaskGPUOutput struct {
 // container records by name, so DescribeTasks can surface gpuIds. A missing
 // task or container is a silent no-op — the state-report path already owns
 // the task's lifecycle; this only enriches it.
-func (s *Service) ReportTaskGPU(_ context.Context, input *ReportTaskGPUInput, accountID string) (*ReportTaskGPUOutput, error) {
+func (s *Service) ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, accountID string) (*ReportTaskGPUOutput, error) {
 	cluster := clusterShortName(input.Cluster)
 	taskID := taskShortID(input.Task)
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var task TaskRecord
-	found, err := getJSON(kv, TaskKey(cluster, taskID), &task)
+	found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &task)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (s *Service) ReportTaskGPU(_ context.Context, input *ReportTaskGPUInput, ac
 		}
 	}
 	if changed {
-		if err := putJSON(kv, TaskKey(cluster, taskID), &task); err != nil {
+		if err := putJSON(ctx, kv, TaskKey(cluster, taskID), &task); err != nil {
 			return nil, err
 		}
 	}

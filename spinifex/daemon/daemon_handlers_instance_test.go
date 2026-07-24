@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -126,7 +127,7 @@ func (f *fakeStateStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
 
 // UpdateStoppedInstance mimics the real CAS semantics for tests: mutate runs
 // under the store lock against the stored value, and a missing record
-// returns nats.ErrKeyNotFound (matching JetStreamManager's createIfAbsent=false
+// returns jetstream.ErrKeyNotFound (matching JetStreamManager's createIfAbsent=false
 // behavior) rather than resurrecting it.
 func (f *fakeStateStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
 	f.mu.Lock()
@@ -136,7 +137,7 @@ func (f *fakeStateStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (
 	}
 	v, ok := f.stopped[id]
 	if !ok {
-		return nil, nats.ErrKeyNotFound
+		return nil, jetstream.ErrKeyNotFound
 	}
 	mutate(v)
 	return v, nil

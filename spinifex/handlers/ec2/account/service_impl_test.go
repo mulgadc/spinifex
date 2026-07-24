@@ -17,7 +17,7 @@ import (
 func TestNewAccountSettingsServiceImplWithNATS_NoJetStream(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	svc, err := NewAccountSettingsServiceImplWithNATS(nil, nc)
+	svc, err := NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	assert.Error(t, err)
 	assert.Nil(t, svc)
 }
@@ -28,7 +28,7 @@ func setupTestAccountService(t *testing.T) *AccountSettingsServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	svc, err := NewAccountSettingsServiceImplWithNATS(nil, nc)
+	svc, err := NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc
 }

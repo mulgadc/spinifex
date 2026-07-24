@@ -27,13 +27,14 @@ func TestNewStore_Valid(t *testing.T) {
 }
 
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv1, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 
-	kv2, err := GetOrCreateAccountBucket(js, testAccountID)
+	kv2, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 
@@ -42,14 +43,15 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 }
 
 func TestInitLeaderBucket_Idempotent(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := InitLeaderBucket(js)
+	kv1, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 	assert.Equal(t, KVBucketECSLeader, kv1.Bucket())
 
-	kv2, err := InitLeaderBucket(js)
+	kv2, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 	assert.Equal(t, KVBucketECSLeader, kv2.Bucket())

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,7 +15,7 @@ import (
 	"fmt"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // PublicKeyPEMFromPrivate parses a PKCS#8 private-key PEM and returns the PKIX public-key PEM.
@@ -59,7 +60,7 @@ const p256CoordLen = 32
 
 // GenerateClusterOIDCKeypair creates an ECDSA-P256 keypair, encrypts the private key PEM
 // into KV, and writes the JWKS document. Returns plaintext PEM + JWKS for immediate use.
-func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
+func GenerateClusterOIDCKeypair(ctx context.Context, kv jetstream.KeyValue, clusterName string, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
 	if clusterName == "" {
 		return "", nil, errors.New("eks: GenerateClusterOIDCKeypair empty cluster name")
 	}
@@ -82,7 +83,7 @@ func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey 
 	if err != nil {
 		return "", nil, fmt.Errorf("encrypt OIDC private key: %w", err)
 	}
-	if _, err := kv.Put(OIDCSigningKeyKey(clusterName), []byte(ciphertext)); err != nil {
+	if _, err := kv.Put(ctx, OIDCSigningKeyKey(clusterName), []byte(ciphertext)); err != nil {
 		return "", nil, fmt.Errorf("kv put %s: %w", OIDCSigningKeyKey(clusterName), err)
 	}
 
@@ -90,7 +91,7 @@ func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey 
 	if err != nil {
 		return "", nil, err
 	}
-	if _, err := kv.Put(OIDCJWKSKey(clusterName), jwksBytes); err != nil {
+	if _, err := kv.Put(ctx, OIDCJWKSKey(clusterName), jwksBytes); err != nil {
 		return "", nil, fmt.Errorf("kv put %s: %w", OIDCJWKSKey(clusterName), err)
 	}
 	return string(pemBlock), jwksBytes, nil
@@ -98,16 +99,16 @@ func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey 
 
 // LoadClusterOIDCPrivateKey decrypts and parses the cluster OIDC private key from KV.
 // Returns ErrClusterNotFound if absent (supports idempotent DeleteCluster).
-func LoadClusterOIDCPrivateKey(kv nats.KeyValue, clusterName string, masterKey []byte) (*ecdsa.PrivateKey, error) {
+func LoadClusterOIDCPrivateKey(ctx context.Context, kv jetstream.KeyValue, clusterName string, masterKey []byte) (*ecdsa.PrivateKey, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: LoadClusterOIDCPrivateKey empty cluster name")
 	}
 	if len(masterKey) == 0 {
 		return nil, errors.New("eks: LoadClusterOIDCPrivateKey empty master key")
 	}
-	entry, err := kv.Get(OIDCSigningKeyKey(clusterName))
+	entry, err := kv.Get(ctx, OIDCSigningKeyKey(clusterName))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, ErrClusterNotFound
 		}
 		return nil, fmt.Errorf("kv get %s: %w", OIDCSigningKeyKey(clusterName), err)
@@ -137,23 +138,23 @@ func LoadClusterOIDCPrivateKey(kv nats.KeyValue, clusterName string, masterKey [
 // ZeroizeClusterOIDCKey overwrites the encrypted key blob with zeros then purges it.
 // Purge (not Delete) drops all revision history, leaving no recoverable key material.
 // Absent key is a no-op for idempotent DeleteCluster retries.
-func ZeroizeClusterOIDCKey(kv nats.KeyValue, clusterName string) error {
+func ZeroizeClusterOIDCKey(ctx context.Context, kv jetstream.KeyValue, clusterName string) error {
 	if clusterName == "" {
 		return errors.New("eks: ZeroizeClusterOIDCKey empty cluster name")
 	}
 	key := OIDCSigningKeyKey(clusterName)
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil
 		}
 		return fmt.Errorf("kv get %s: %w", key, err)
 	}
 	zero := make([]byte, len(entry.Value()))
-	if _, err := kv.Put(key, zero); err != nil {
+	if _, err := kv.Put(ctx, key, zero); err != nil {
 		return fmt.Errorf("kv put zero %s: %w", key, err)
 	}
-	if err := kv.Purge(key); err != nil {
+	if err := kv.Purge(ctx, key); err != nil {
 		return fmt.Errorf("kv purge %s: %w", key, err)
 	}
 	return nil

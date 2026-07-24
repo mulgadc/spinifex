@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,12 +23,12 @@ type fakeAddonInstaller struct {
 
 var _ AddonInstaller = (*fakeAddonInstaller)(nil)
 
-func (f *fakeAddonInstaller) Install(_, _ string, rec *AddonRecord) error {
+func (f *fakeAddonInstaller) Install(_ context.Context, _, _ string, rec *AddonRecord) error {
 	f.installs = append(f.installs, rec)
 	return f.installErr
 }
 
-func (f *fakeAddonInstaller) Uninstall(_, _, addon string) error {
+func (f *fakeAddonInstaller) Uninstall(_ context.Context, _, _, addon string) error {
 	f.uninstalls = append(f.uninstalls, addon)
 	return nil
 }
@@ -241,11 +242,10 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	js, err := svc.deps.NATSConn.JetStream()
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
-	require.NoError(t, err)
-	entry, err := kv.Get(AddonManifestKey("c1", albController))
+	entry, err := kv.Get(t.Context(), AddonManifestKey("c1", albController))
 	require.NoError(t, err, "installer must stage a manifest for VM-side delivery")
 	assert.Contains(t, string(entry.Value()), albController)
 }

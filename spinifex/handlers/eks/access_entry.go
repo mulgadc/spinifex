@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Access-entry types. v1 supports STANDARD principals only; node types
@@ -45,7 +46,7 @@ func AccessEntryARN(region, accountID, cluster, principalARN string) string {
 }
 
 // PutAccessEntryRecord writes the entry unconditionally.
-func PutAccessEntryRecord(kv nats.KeyValue, rec *AccessEntryRecord) error {
+func PutAccessEntryRecord(ctx context.Context, kv jetstream.KeyValue, rec *AccessEntryRecord) error {
 	if rec == nil {
 		return errors.New("eks: PutAccessEntryRecord nil record")
 	}
@@ -57,20 +58,20 @@ func PutAccessEntryRecord(kv nats.KeyValue, rec *AccessEntryRecord) error {
 		return fmt.Errorf("marshal access entry %s: %w", rec.PrincipalARN, err)
 	}
 	key := AccessEntryKey(rec.ClusterName, rec.PrincipalARN)
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("kv put %s: %w", key, err)
 	}
 	return nil
 }
 
 // GetAccessEntryRecord reads one entry. Returns ErrAccessEntryNotFound if absent.
-func GetAccessEntryRecord(kv nats.KeyValue, cluster, principalARN string) (*AccessEntryRecord, error) {
+func GetAccessEntryRecord(ctx context.Context, kv jetstream.KeyValue, cluster, principalARN string) (*AccessEntryRecord, error) {
 	if cluster == "" || principalARN == "" {
 		return nil, errors.New("eks: GetAccessEntryRecord empty cluster or principal ARN")
 	}
-	entry, err := kv.Get(AccessEntryKey(cluster, principalARN))
+	entry, err := kv.Get(ctx, AccessEntryKey(cluster, principalARN))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, ErrAccessEntryNotFound
 		}
 		return nil, fmt.Errorf("kv get access entry: %w", err)
@@ -83,13 +84,13 @@ func GetAccessEntryRecord(kv nats.KeyValue, cluster, principalARN string) (*Acce
 }
 
 // ListAccessEntryRecords returns all access entries under a cluster, sorted by principal ARN.
-func ListAccessEntryRecords(kv nats.KeyValue, cluster string) ([]*AccessEntryRecord, error) {
+func ListAccessEntryRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]*AccessEntryRecord, error) {
 	if cluster == "" {
 		return nil, errors.New("eks: ListAccessEntryRecords empty cluster")
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("kv keys: %w", err)
@@ -100,9 +101,9 @@ func ListAccessEntryRecords(kv nats.KeyValue, cluster string) ([]*AccessEntryRec
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := kv.Get(k)
+		entry, err := kv.Get(ctx, k)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("kv get %s: %w", k, err)
@@ -118,15 +119,15 @@ func ListAccessEntryRecords(kv nats.KeyValue, cluster string) ([]*AccessEntryRec
 }
 
 // DeleteAccessEntryRecord removes one entry; returns ErrAccessEntryNotFound if absent.
-func DeleteAccessEntryRecord(kv nats.KeyValue, cluster, principalARN string) error {
+func DeleteAccessEntryRecord(ctx context.Context, kv jetstream.KeyValue, cluster, principalARN string) error {
 	key := AccessEntryKey(cluster, principalARN)
-	if _, err := kv.Get(key); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := kv.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return ErrAccessEntryNotFound
 		}
 		return fmt.Errorf("kv get %s: %w", key, err)
 	}
-	if err := kv.Delete(key); err != nil {
+	if err := kv.Delete(ctx, key); err != nil {
 		return fmt.Errorf("kv delete %s: %w", key, err)
 	}
 	return nil
@@ -134,12 +135,12 @@ func DeleteAccessEntryRecord(kv nats.KeyValue, cluster, principalARN string) err
 
 // casUpdateAccessEntry does a revision-checked read-modify-write.
 // mutate returns true when a field changed. Returns ErrAccessEntryNotFound if absent.
-func casUpdateAccessEntry(kv nats.KeyValue, cluster, principalARN string, mutate func(*AccessEntryRecord) bool) (*AccessEntryRecord, error) {
+func casUpdateAccessEntry(ctx context.Context, kv jetstream.KeyValue, cluster, principalARN string, mutate func(*AccessEntryRecord) bool) (*AccessEntryRecord, error) {
 	key := AccessEntryKey(cluster, principalARN)
 	for range maxClusterStateCASRetries {
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil, ErrAccessEntryNotFound
 			}
 			return nil, fmt.Errorf("kv get %s: %w", key, err)
@@ -155,11 +156,11 @@ func casUpdateAccessEntry(kv nats.KeyValue, cluster, principalARN string, mutate
 		if err != nil {
 			return nil, fmt.Errorf("marshal access entry %s: %w", principalARN, err)
 		}
-		_, err = kv.Update(key, data, entry.Revision())
+		_, err = kv.Update(ctx, key, data, entry.Revision())
 		if err == nil {
 			return &rec, nil
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			continue
 		}
 		return nil, fmt.Errorf("kv update %s: %w", key, err)

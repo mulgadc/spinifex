@@ -29,6 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
@@ -116,22 +117,26 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 
 // openAccountUsageBucket opens (or idempotently creates) the gateway-owned
 // per-account vCPU usage bucket. History is 1: each account key holds a single
-// CAS-updated integer counter. It attaches first and creates only when the bucket
-// is genuinely absent, so a transient create error is not masked by the fallback.
-func openAccountUsageBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
-	if replicas < 1 {
-		replicas = 1
+// CAS-updated integer counter, so no revision beyond the latest is worth keeping.
+func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
+	kv, err := js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
+	if err == nil {
+		return kv, nil
 	}
-	kv, err := js.KeyValue(handlers_quota.KVBucketAccountUsage)
-	if errors.Is(err, nats.ErrBucketNotFound) {
-		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket:   handlers_quota.KVBucketAccountUsage,
-			History:  1,
-			Replicas: replicas,
-		})
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, fmt.Errorf("open account usage bucket: %w", err)
+	}
+
+	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   handlers_quota.KVBucketAccountUsage,
+		History:  1,
+		Replicas: max(replicas, 1),
+	})
+	if errors.Is(err, jetstream.ErrBucketExists) {
+		return js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open account usage bucket: %w", err)
+		return nil, fmt.Errorf("create account usage bucket: %w", err)
 	}
 	return kv, nil
 }
@@ -157,26 +162,28 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("load IAM master key from %s: %w", masterKeyPath, err)
 	}
 
+	// Bound to the process lifetime — the server below blocks until exit, so
+	// cancelling on return is sufficient to let the background goroutines drain.
+	// Every bucket the gateway opens at startup hangs off it too.
+	janitorCtx, cancelJanitor := context.WithCancel(context.Background())
+	defer cancelJanitor()
+
 	// Initialize IAM service with NATS KV backend (required for auth).
 	// On multi-node clusters, JetStream KV requires cluster quorum which may
 	// not be available yet if nodes start concurrently. Retry with backoff.
-	iamService, err := handlers_iam.NewIAMServiceWithRetry(natsConn, masterKey, len(config.Nodes))
+	iamService, err := handlers_iam.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(natsConn, iamService, masterKey, len(config.Nodes))
+	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
 
-	// Janitor sweeps expired session credentials. Bound to the process
-	// lifetime — the server below blocks until exit, so cancelling on return
-	// is sufficient to let the goroutine drain.
-	janitorCtx, cancelJanitor := context.WithCancel(context.Background())
-	defer cancelJanitor()
+	// Janitor sweeps expired session credentials.
 	go stsService.RunJanitor(janitorCtx)
 
 	// IMDS serves 169.254.169.254 to guest VMs from vpcd, which holds the network
@@ -256,12 +263,13 @@ func launchService(config *config.ClusterConfig) error {
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
-	// (GetAuthorizationToken) and verifier (/v2 Authorization).
-	js, err := natsConn.JetStream()
+	// (GetAuthorizationToken) and verifier (/v2 Authorization). The bridge reads
+	// and rotates its keys under the janitor lifetime context.
+	js, err := jetstream.New(natsConn)
 	if err != nil {
-		return fmt.Errorf("ECR auth bridge: JetStream context: %w", err)
+		return fmt.Errorf("jetstream client: %w", err)
 	}
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(js, masterKey, len(config.Nodes))
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
@@ -323,7 +331,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := gateway_ecrauth.NewRotator(js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}
@@ -337,9 +345,9 @@ func launchService(config *config.ClusterConfig) error {
 	// Per-account service quotas. Only the enabled path opens the gateway-owned
 	// usage KV bucket, leaving existing default-off gateways untouched; a disabled
 	// config builds a no-op Service whose Exempt short-circuits every check.
-	var usageBucket nats.KeyValue
+	var usageBucket jetstream.KeyValue
 	if quotaCfg.Enabled {
-		usageBucket, err = openAccountUsageBucket(js, max(len(config.Nodes), 1))
+		usageBucket, err = openAccountUsageBucket(janitorCtx, js, len(config.Nodes))
 		if err != nil {
 			return fmt.Errorf("init account usage bucket: %w", err)
 		}
@@ -397,7 +405,7 @@ func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsC
 	list := handlers_quota.NATSInstanceLister(natsConn, expectedNodes)
 
 	runPass := func() {
-		release, elected := reconcile.AcquireLeader(natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
+		release, elected := reconcile.AcquireLeader(ctx, natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
 		if !elected {
 			return
 		}

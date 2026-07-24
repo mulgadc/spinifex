@@ -29,7 +29,7 @@ func setupTestIAMService(t *testing.T) *IAMServiceImpl {
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
 
-	svc, err := NewIAMServiceImpl(nc, masterKey, 1)
+	svc, err := NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 	return svc
 }
@@ -1598,7 +1598,7 @@ func TestSensitiveDataNotLogged_MasterKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
-	_, err = NewIAMServiceImpl(nc, masterKey, 1)
+	_, err = NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
 	logOutput := buf.String()

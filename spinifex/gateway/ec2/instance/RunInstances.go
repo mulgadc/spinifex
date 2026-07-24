@@ -101,7 +101,7 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 	}
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
-	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+	return runInstancesWithClientToken(ctx, store, accountID, token, paramHash, func() (ec2.Reservation, error) {
 		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }

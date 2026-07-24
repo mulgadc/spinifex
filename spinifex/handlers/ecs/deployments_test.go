@@ -7,26 +7,26 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // reloadService re-reads a service record from KV so a test sees writes made by
 // the reconciler / failure accounting.
-func reloadService(t *testing.T, kv nats.KeyValue, cluster, name string) *ServiceRecord {
+func reloadService(t *testing.T, kv jetstream.KeyValue, cluster, name string) *ServiceRecord {
 	t.Helper()
 	var rec ServiceRecord
-	found, err := getJSON(kv, ServiceKey(cluster, name), &rec)
+	found, err := getJSON(t.Context(), kv, ServiceKey(cluster, name), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	return &rec
 }
 
 // driveRunning reports RUNNING for every PENDING task of a service.
-func driveRunning(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name string) {
+func driveRunning(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, name string) {
 	t.Helper()
-	tasks, err := svc.listServiceTasks(kv, cluster, name)
+	tasks, err := svc.listServiceTasks(t.Context(), kv, cluster, name)
 	require.NoError(t, err)
 	for i := range tasks {
 		if tasks[i].LastStatus != TaskStatusPending {
@@ -41,9 +41,9 @@ func driveRunning(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name st
 
 // failPending reports STOPPED (never-RUNNING) for every PENDING task, simulating
 // tasks that fail to start — the deployment circuit-breaker signal.
-func failPending(t *testing.T, svc *Service, kv nats.KeyValue, cluster, name string) {
+func failPending(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, name string) {
 	t.Helper()
-	tasks, err := svc.listServiceTasks(kv, cluster, name)
+	tasks, err := svc.listServiceTasks(t.Context(), kv, cluster, name)
 	require.NoError(t, err)
 	for i := range tasks {
 		if tasks[i].LastStatus != TaskStatusPending {
@@ -73,7 +73,7 @@ func TestDeployment_CreateService_SeedsPrimary(t *testing.T) {
 	assert.Equal(t, defaultMinimumHealthyPercent, rec.MinimumHealthyPercent)
 	assert.Equal(t, defaultMaximumPercent, rec.MaximumPercent)
 	// Every launched task carries the primary deployment id in StartedBy.
-	tasks, err := svc.listServiceTasks(kv, "web", "web")
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
 	for i := range tasks {
@@ -110,7 +110,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 	assert.NotEqual(t, firstDeployID, rec.DeploymentID)
 	// maximumPercent=200 lets 2 new tasks launch alongside the 2 old running ones.
 	newTasks := 0
-	tasks, err := svc.listServiceTasks(kv, "web", "web")
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	for i := range tasks {
 		if deploymentIDFromStartedBy(tasks[i].StartedBy) == rec.DeploymentID {
@@ -128,7 +128,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 	assert.Equal(t, rec.DeploymentID, rec.primaryDeployment().ID)
 
 	// Only new-deployment tasks remain live.
-	tasks, err = svc.listServiceTasks(kv, "web", "web")
+	tasks, err = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
 	for i := range tasks {
@@ -159,7 +159,7 @@ func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
 
 	// Ceiling of 3 tasks total: 2 old running + 1 new pending. No old task drained
 	// yet because healthy running (2) must not drop below minCount (2).
-	tasks, err := svc.listServiceTasks(kv, "web", "web")
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	assert.Len(t, tasks, 3)
 	rec := reloadService(t, kv, "web", "web")
@@ -215,7 +215,7 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 		DesiredCount: 1, Status: ServiceStatusActive,
 		SchedulingStrategy: SchedulingStrategyReplica, DeploymentID: "legacy-dep",
 	}
-	require.NoError(t, putJSON(kv, ServiceKey("web", "legacy"), rec))
+	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "legacy"), rec))
 
 	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, rec))
 	reloaded := reloadService(t, kv, "web", "legacy")

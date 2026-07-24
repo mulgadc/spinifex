@@ -25,7 +25,7 @@ const testAccountID = "000000000001"
 func setupACMService(t *testing.T) *ACMServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewACMServiceImplWithNATS(nil, nc)
+	svc, err := NewACMServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc
 }

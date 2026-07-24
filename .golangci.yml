@@ -26,6 +26,7 @@ linters:
     - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
+    - forbidigo # blocks the legacy JetStream/KV symbols
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
     - godot # checks that declaration comments end in a period
     - goprintffuncname # checks that printf-like functions are named with f at the end
@@ -59,6 +60,16 @@ linters:
   settings:
     embeddedstructfieldcheck:
       forbid-mutex: true
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '\.JetStream$'
+          pkg: '^github\.com/nats-io/nats\.go$'
+          msg: legacy nc.JetStream() is superseded; construct with jetstream.New(nc).
+        - pattern: '^nats\.(JetStreamContext|KeyValue.*|KeyWatcher|Err(KeyNotFound|KeyExists|BucketNotFound|NoKeysFound|StreamNotFound))$'
+          pkg: '^github\.com/nats-io/nats\.go$'
+          msg: legacy nats KV types/sentinels are superseded; use github.com/nats-io/nats.go/jetstream.
 
     depguard:
       rules:

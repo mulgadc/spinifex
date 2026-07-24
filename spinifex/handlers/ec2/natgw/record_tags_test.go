@@ -1,7 +1,6 @@
 package handlers_ec2_natgw
 
 import (
-	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -31,7 +30,7 @@ func TestNatGatewayRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err := svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
+	out, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String(natgwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -47,7 +46,7 @@ func TestNatGatewayRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	out, err = svc.DescribeNatGateways(context.Background(), &ec2.DescribeNatGatewaysInput{
+	out, err = svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String(natgwID)},
 	}, testAccountID)
 	require.NoError(t, err)

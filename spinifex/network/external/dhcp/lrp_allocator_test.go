@@ -35,7 +35,7 @@ func TestDHCPGatewayLRPAllocatorAllocate(t *testing.T) {
 	assert.Equal(t, 24, prefix)
 	assert.Equal(t, "192.0.2.1", nexthop, "nexthop must come from lease.Routers[0]")
 
-	entry, err := store.Get(dhcp.GatewayLRPClientID("vpc-1"))
+	entry, err := store.Get(t.Context(), dhcp.GatewayLRPClientID("vpc-1"))
 	require.NoError(t, err)
 	assert.Equal(t, dhcp.PurposeGatewayLRP, entry.Purpose)
 	assert.Equal(t, "vpc-1", entry.VPCID)
@@ -72,7 +72,7 @@ func TestDHCPGatewayLRPAllocatorRelease(t *testing.T) {
 	require.True(t, ok)
 
 	require.NoError(t, allocator.Release(context.Background(), "vpc-1"))
-	_, err = store.Get(dhcp.GatewayLRPClientID("vpc-1"))
+	_, err = store.Get(t.Context(), dhcp.GatewayLRPClientID("vpc-1"))
 	assert.Error(t, err)
 	assert.Equal(t, 1, fake.ReleaseCount())
 }

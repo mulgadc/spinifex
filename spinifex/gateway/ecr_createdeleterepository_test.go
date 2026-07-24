@@ -20,7 +20,8 @@ import (
 // subjects against an embedded KV-backed service, returning a gateway client.
 func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := handlers_ecr.NewKVMetaService(js)
 	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
 	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)

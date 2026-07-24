@@ -14,9 +14,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure PlacementGroupServiceImpl implements PlacementGroupService.
@@ -46,21 +48,21 @@ type PlacementGroupRecord struct {
 type PlacementGroupServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
-	kv       nats.KeyValue
+	kv       jetstream.KeyValue
 }
 
 // NewPlacementGroupServiceImplWithNATS creates a placement group service with NATS JetStream.
-func NewPlacementGroupServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*PlacementGroupServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewPlacementGroupServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*PlacementGroupServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := utils.GetOrCreateKVBucket(js, KVBucketPlacementGroups, 10)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketPlacementGroups, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketPlacementGroups, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketPlacementGroups, kv, KVBucketPlacementGroupsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketPlacementGroups, kv, KVBucketPlacementGroupsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPlacementGroups, err)
 	}
 
@@ -113,7 +115,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	// Atomic create-if-not-exists to prevent TOCTOU race on duplicate names
-	if _, err := s.kv.Create(key, data); err != nil {
+	if _, err := s.kv.Create(ctx, key, data); err != nil {
 		// Create fails if key already exists
 		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupDuplicate)
 	}
@@ -134,7 +136,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 	groupName := *input.GroupName
 	key := utils.AccountKey(accountID, groupName)
 
-	entry, err := s.kv.Get(key)
+	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
 	}
@@ -153,7 +155,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupInUse)
 	}
 
-	if err := s.kv.Delete(key); err != nil {
+	if err := s.kv.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -195,8 +197,8 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 	}
 
 	prefix := accountID + "."
-	keys, err := s.kv.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.kv.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -209,7 +211,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 			continue
 		}
 
-		entry, err := s.kv.Get(k)
+		entry, err := s.kv.Get(ctx, k)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to get placement group record", "key", k, "error", err)
 			continue
@@ -313,9 +315,9 @@ func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v st
 
 // GetPlacementGroupRecord reads a placement group record from KV with its revision for CAS operations.
 // Returns the record and the KV entry (for revision). Exported for use by gateway spread routing.
-func (s *PlacementGroupServiceImpl) GetPlacementGroupRecord(accountID, groupName string) (*PlacementGroupRecord, nats.KeyValueEntry, error) {
+func (s *PlacementGroupServiceImpl) GetPlacementGroupRecord(ctx context.Context, accountID, groupName string) (*PlacementGroupRecord, jetstream.KeyValueEntry, error) {
 	key := utils.AccountKey(accountID, groupName)
-	entry, err := s.kv.Get(key)
+	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		return nil, nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
 	}
@@ -330,13 +332,13 @@ func (s *PlacementGroupServiceImpl) GetPlacementGroupRecord(accountID, groupName
 
 // UpdatePlacementGroupRecord writes a placement group record using CAS (optimistic concurrency).
 // Returns nil on success or the error on CAS conflict.
-func (s *PlacementGroupServiceImpl) UpdatePlacementGroupRecord(accountID, groupName string, record *PlacementGroupRecord, revision uint64) error {
+func (s *PlacementGroupServiceImpl) UpdatePlacementGroupRecord(ctx context.Context, accountID, groupName string, record *PlacementGroupRecord, revision uint64) error {
 	key := utils.AccountKey(accountID, groupName)
 	data, err := json.Marshal(record)
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Update(key, data, revision); err != nil {
+	if _, err := s.kv.Update(ctx, key, data, revision); err != nil {
 		return err
 	}
 	return nil
@@ -352,7 +354,7 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, inpu
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if err != nil {
 			return nil, err
 		}
@@ -392,7 +394,7 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, inpu
 		}
 
 		// CAS write — retry on conflict
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "ReserveSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
@@ -413,7 +415,7 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context,
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if err != nil {
 			return nil, err
 		}
@@ -421,7 +423,7 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context,
 		// Replace placeholder entries with actual instance IDs per node
 		maps.Copy(record.NodeInstances, input.NodeInstances)
 
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "FinalizeSpreadInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
@@ -447,7 +449,7 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, inpu
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if err != nil {
 			return nil, err
 		}
@@ -460,7 +462,7 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, inpu
 			}
 		}
 
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "ReleaseSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
@@ -482,7 +484,7 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, lookupErr := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, lookupErr := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if lookupErr != nil {
 			// Group may have been deleted already — treat as success
 			slog.DebugContext(ctx, "RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
@@ -509,7 +511,7 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 			record.NodeInstances[input.NodeName] = filtered
 		}
 
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "RemoveInstance: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
@@ -531,7 +533,7 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, inpu
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if err != nil {
 			return nil, err
 		}
@@ -555,7 +557,7 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, inpu
 		targetNode := input.EligibleNodes[0] // first = highest capacity (sorted desc by caller)
 		record.NodeInstances[targetNode] = []string{}
 
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "ReserveClusterNode: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}
@@ -576,7 +578,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 	}
 
 	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(accountID, input.GroupName)
+		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if err != nil {
 			return nil, err
 		}
@@ -586,7 +588,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 			record.NodeInstances[node] = append(record.NodeInstances[node], ids...)
 		}
 
-		if err := s.UpdatePlacementGroupRecord(accountID, input.GroupName, record, entry.Revision()); err != nil {
+		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
 			slog.DebugContext(ctx, "FinalizeClusterInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
 			continue
 		}

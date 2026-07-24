@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -46,10 +48,10 @@ type KVSyncObserver interface {
 
 // JetStreamManager manages JetStream KV store operations for instance state.
 type JetStreamManager struct {
-	js           nats.JetStreamContext
-	kv           nats.KeyValue // spinifex-instance-state
-	clusterKV    nats.KeyValue // spinifex-cluster-state
-	terminatedKV nats.KeyValue // spinifex-terminated-instances
+	js           jetstream.JetStream
+	kv           jetstream.KeyValue // spinifex-instance-state
+	clusterKV    jetstream.KeyValue // spinifex-cluster-state
+	terminatedKV jetstream.KeyValue // spinifex-terminated-instances
 	replicas     int
 	kvMu         sync.Mutex // protects kv during recovery
 	obs          KVSyncObserver
@@ -68,14 +70,14 @@ func (m *JetStreamManager) KVHealthy() bool {
 	if m.js == nil {
 		return false
 	}
-	_, err := m.js.AccountInfo()
+	_, err := m.js.AccountInfo(context.Background())
 	return err == nil
 }
 
 // NewJetStreamManager creates a new JetStreamManager from a NATS connection.
 // replicas specifies the number of replicas for the KV bucket (typically matches cluster node count).
 func NewJetStreamManager(nc *nats.Conn, replicas int) (*JetStreamManager, error) {
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, err
 	}
@@ -88,13 +90,14 @@ func NewJetStreamManager(nc *nats.Conn, replicas int) (*JetStreamManager, error)
 
 // InitKVBucket initializes the KV bucket, creating it if it doesn't exist.
 func (m *JetStreamManager) InitKVBucket() error {
+	ctx := context.Background()
 	// Try to get the existing bucket first
-	kv, err := m.js.KeyValue(InstanceStateBucket)
+	kv, err := m.js.KeyValue(ctx, InstanceStateBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			// Bucket doesn't exist, create it
 			slog.Debug("Creating JetStream KV bucket", "bucket", InstanceStateBucket, "replicas", m.replicas)
-			kv, err = m.js.CreateKeyValue(&nats.KeyValueConfig{
+			kv, err = m.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 				Bucket:      InstanceStateBucket,
 				Description: "Spinifex instance state storage",
 				History:     1,          // Only keep latest value
@@ -111,7 +114,7 @@ func (m *JetStreamManager) InitKVBucket() error {
 	}
 
 	m.kv = kv
-	if err := migrate.DefaultRegistry.RunKV(InstanceStateBucket, kv, InstanceStateBucketVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, InstanceStateBucket, kv, InstanceStateBucketVersion); err != nil {
 		return fmt.Errorf("migrate %s: %w", InstanceStateBucket, err)
 	}
 	return nil
@@ -119,11 +122,12 @@ func (m *JetStreamManager) InitKVBucket() error {
 
 // InitClusterStateBucket initializes the cluster-state KV bucket, creating it if it doesn't exist.
 func (m *JetStreamManager) InitClusterStateBucket() error {
-	kv, err := m.js.KeyValue(ClusterStateBucket)
+	ctx := context.Background()
+	kv, err := m.js.KeyValue(ctx, ClusterStateBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			slog.Debug("Creating JetStream KV bucket", "bucket", ClusterStateBucket, "replicas", m.replicas)
-			kv, err = m.js.CreateKeyValue(&nats.KeyValueConfig{
+			kv, err = m.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 				Bucket:      ClusterStateBucket,
 				Description: "Spinifex cluster state (heartbeats, shutdown markers, service maps)",
 				History:     1,
@@ -141,7 +145,7 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 	}
 
 	m.clusterKV = kv
-	if err := migrate.DefaultRegistry.RunKV(ClusterStateBucket, kv, ClusterStateBucketVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, ClusterStateBucket, kv, ClusterStateBucketVersion); err != nil {
 		return fmt.Errorf("migrate %s: %w", ClusterStateBucket, err)
 	}
 	return nil
@@ -150,11 +154,12 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 // InitTerminatedInstanceBucket initializes the terminated-instances KV bucket with a 1-hour TTL.
 // JetStream automatically purges keys after 1 hour, matching AWS behavior for terminated instances.
 func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
-	kv, err := m.js.KeyValue(TerminatedInstanceBucket)
+	ctx := context.Background()
+	kv, err := m.js.KeyValue(ctx, TerminatedInstanceBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			slog.Debug("Creating JetStream KV bucket", "bucket", TerminatedInstanceBucket, "replicas", m.replicas)
-			kv, err = m.js.CreateKeyValue(&nats.KeyValueConfig{
+			kv, err = m.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 				Bucket:      TerminatedInstanceBucket,
 				Description: "Terminated instances (auto-expire after 1 hour)",
 				History:     1,
@@ -172,7 +177,7 @@ func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
 	}
 
 	m.terminatedKV = kv
-	if err := migrate.DefaultRegistry.RunKV(TerminatedInstanceBucket, kv, TerminatedInstanceBucketVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, TerminatedInstanceBucket, kv, TerminatedInstanceBucketVersion); err != nil {
 		return fmt.Errorf("migrate %s: %w", TerminatedInstanceBucket, err)
 	}
 	return nil
@@ -189,8 +194,8 @@ func isStreamUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, nats.ErrStreamNotFound) ||
-		errors.Is(err, nats.ErrNoStreamResponse) ||
+	if errors.Is(err, jetstream.ErrStreamNotFound) ||
+		errors.Is(err, jetstream.ErrNoStreamResponse) ||
 		errors.Is(err, nats.ErrNoResponders) {
 		return true
 	}
@@ -201,19 +206,19 @@ func isStreamUnavailable(err error) bool {
 // underlying JetStream stream was lost during cluster formation.
 // Returns the recovered KV handle directly so callers avoid a racy re-read.
 // When a bucket is recreated, the schema version is re-stamped.
-func (m *JetStreamManager) recoverBucket(cfg *nats.KeyValueConfig, field *nats.KeyValue, version int) (nats.KeyValue, error) {
+func (m *JetStreamManager) recoverBucket(ctx context.Context, cfg jetstream.KeyValueConfig, field *jetstream.KeyValue, version int) (jetstream.KeyValue, error) {
 	m.kvMu.Lock()
 	defer m.kvMu.Unlock()
 
 	// Try to reconnect to existing bucket first (another goroutine may have recovered it)
-	kv, err := m.js.KeyValue(cfg.Bucket)
+	kv, err := m.js.KeyValue(ctx, cfg.Bucket)
 	if err == nil {
 		*field = kv
 		slog.Info("Reconnected to KV bucket", "bucket", cfg.Bucket)
 		return kv, nil
 	}
 
-	if !errors.Is(err, nats.ErrBucketNotFound) && !isStreamUnavailable(err) {
+	if !errors.Is(err, jetstream.ErrBucketNotFound) && !isStreamUnavailable(err) {
 		return nil, err
 	}
 
@@ -221,13 +226,13 @@ func (m *JetStreamManager) recoverBucket(cfg *nats.KeyValueConfig, field *nats.K
 	slog.Warn("KV bucket stream lost, recreating", "bucket", cfg.Bucket, "replicas", m.replicas)
 	cfg.History = 1
 	cfg.Replicas = m.replicas
-	kv, err = m.js.CreateKeyValue(cfg)
+	kv, err = m.js.CreateKeyValue(ctx, cfg)
 	if err != nil {
 		slog.Error("Failed to recreate KV bucket", "bucket", cfg.Bucket, "err", err)
 		return nil, err
 	}
 
-	if err := migrate.DefaultRegistry.RunKV(cfg.Bucket, kv, version); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, cfg.Bucket, kv, version); err != nil {
 		slog.Error("Failed to run migrations on recreated bucket", "bucket", cfg.Bucket, "err", err)
 		return nil, fmt.Errorf("migrate recreated bucket %s: %w", cfg.Bucket, err)
 	}
@@ -237,15 +242,15 @@ func (m *JetStreamManager) recoverBucket(cfg *nats.KeyValueConfig, field *nats.K
 	return kv, nil
 }
 
-func (m *JetStreamManager) recoverKVBucket() (nats.KeyValue, error) {
-	return m.recoverBucket(&nats.KeyValueConfig{
+func (m *JetStreamManager) recoverKVBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	return m.recoverBucket(ctx, jetstream.KeyValueConfig{
 		Bucket:      InstanceStateBucket,
 		Description: "Spinifex instance state storage",
 	}, &m.kv, InstanceStateBucketVersion)
 }
 
-func (m *JetStreamManager) recoverTerminatedKVBucket() (nats.KeyValue, error) {
-	return m.recoverBucket(&nats.KeyValueConfig{
+func (m *JetStreamManager) recoverTerminatedKVBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	return m.recoverBucket(ctx, jetstream.KeyValueConfig{
 		Bucket:      TerminatedInstanceBucket,
 		Description: "Terminated instances (auto-expire after 1 hour)",
 		TTL:         1 * time.Hour,
@@ -260,10 +265,10 @@ const maxCASRetries = 5
 // isRevisionConflict reports whether err is the nats.go "wrong last
 // sequence" error that KeyValue.Update/Create return when the key's
 // revision no longer matches what the caller expected, i.e. a concurrent
-// writer won the race. nats.go surfaces this as nats.ErrKeyExists for both
-// Update (stale revision) and Create (key already present).
+// writer won the race. The jetstream package surfaces this as
+// jetstream.ErrKeyExists for both Update (stale revision) and Create (key already present).
 func isRevisionConflict(err error) bool {
-	return errors.Is(err, nats.ErrKeyExists)
+	return errors.Is(err, jetstream.ErrKeyExists)
 }
 
 // casUpdate performs an optimistic-concurrency read-modify-write against kv:
@@ -272,20 +277,20 @@ func isRevisionConflict(err error) bool {
 // Update/Create using the observed revision. A concurrent writer that changes
 // the key between Get and Update/Create is detected via a revision conflict
 // and retried, bounded by maxCASRetries.
-func casUpdate[T any](kv nats.KeyValue, key string, mutate func(*T), createIfAbsent bool) (*T, error) {
+func casUpdate[T any](ctx context.Context, kv jetstream.KeyValue, key string, mutate func(*T), createIfAbsent bool) (*T, error) {
 	var lastErr error
 	for range maxCASRetries {
 		var value T
 		var revision uint64
 
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		switch {
 		case err == nil:
 			if uerr := json.Unmarshal(entry.Value(), &value); uerr != nil {
 				return nil, uerr
 			}
 			revision = entry.Revision()
-		case errors.Is(err, nats.ErrKeyNotFound) && createIfAbsent:
+		case errors.Is(err, jetstream.ErrKeyNotFound) && createIfAbsent:
 			revision = 0
 		default:
 			return nil, err
@@ -299,9 +304,9 @@ func casUpdate[T any](kv nats.KeyValue, key string, mutate func(*T), createIfAbs
 		}
 
 		if revision == 0 {
-			_, err = kv.Create(key, data)
+			_, err = kv.Create(ctx, key, data)
 		} else {
-			_, err = kv.Update(key, data, revision)
+			_, err = kv.Update(ctx, key, data, revision)
 		}
 		if err == nil {
 			return &value, nil
@@ -322,25 +327,25 @@ func casUpdate[T any](kv nats.KeyValue, key string, mutate func(*T), createIfAbs
 // counterpart to casUpdate, for values (like vm.VM, which embeds a
 // sync.Mutex) that cannot be safely decoded into and copied out of a shared
 // struct value.
-func casPut(kv nats.KeyValue, key string, data []byte, createIfAbsent bool) error {
+func casPut(ctx context.Context, kv jetstream.KeyValue, key string, data []byte, createIfAbsent bool) error {
 	var lastErr error
 	for range maxCASRetries {
 		var revision uint64
 
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		switch {
 		case err == nil:
 			revision = entry.Revision()
-		case errors.Is(err, nats.ErrKeyNotFound) && createIfAbsent:
+		case errors.Is(err, jetstream.ErrKeyNotFound) && createIfAbsent:
 			revision = 0
 		default:
 			return err
 		}
 
 		if revision == 0 {
-			_, err = kv.Create(key, data)
+			_, err = kv.Create(ctx, key, data)
 		} else {
-			_, err = kv.Update(key, data, revision)
+			_, err = kv.Update(ctx, key, data, revision)
 		}
 		if err == nil {
 			return nil
@@ -363,12 +368,12 @@ func casPut(kv nats.KeyValue, key string, data []byte, createIfAbsent bool) erro
 // detected via a revision conflict and retried, bounded by maxCASRetries,
 // so a losing racer only fails outright when the key is truly gone
 // (notFound) or retries are exhausted.
-func casClaim[T any](kv nats.KeyValue, key string) (value *T, notFound bool, err error) {
+func casClaim[T any](ctx context.Context, kv jetstream.KeyValue, key string) (value *T, notFound bool, err error) {
 	var lastErr error
 	for range maxCASRetries {
-		entry, gerr := kv.Get(key)
+		entry, gerr := kv.Get(ctx, key)
 		if gerr != nil {
-			if errors.Is(gerr, nats.ErrKeyNotFound) {
+			if errors.Is(gerr, jetstream.ErrKeyNotFound) {
 				return nil, true, nil
 			}
 			return nil, false, gerr
@@ -379,7 +384,7 @@ func casClaim[T any](kv nats.KeyValue, key string) (value *T, notFound bool, err
 			return nil, false, uerr
 		}
 
-		if derr := kv.Delete(key, nats.LastRevision(entry.Revision())); derr != nil {
+		if derr := kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); derr != nil {
 			if isRevisionConflict(derr) {
 				lastErr = derr
 				continue
@@ -422,7 +427,7 @@ func (m *JetStreamManager) WriteHeartbeat(h *Heartbeat) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.clusterKV.Put("heartbeat."+h.Node, data)
+	_, err = m.clusterKV.Put(context.Background(), "heartbeat."+h.Node, data)
 	return err
 }
 
@@ -431,7 +436,7 @@ func (m *JetStreamManager) ReadHeartbeat(nodeID string) (*Heartbeat, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	entry, err := m.clusterKV.Get("heartbeat." + nodeID)
+	entry, err := m.clusterKV.Get(context.Background(), "heartbeat."+nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +466,7 @@ func (m *JetStreamManager) WriteClusterShutdown(state *ClusterShutdownState) err
 	if m.clusterKV == nil {
 		return errors.New("cluster state KV not initialized")
 	}
-	_, err := casUpdate(m.clusterKV, "cluster.shutdown", func(s *ClusterShutdownState) {
+	_, err := casUpdate(context.Background(), m.clusterKV, "cluster.shutdown", func(s *ClusterShutdownState) {
 		*s = *state
 	}, true)
 	return err
@@ -470,12 +475,12 @@ func (m *JetStreamManager) WriteClusterShutdown(state *ClusterShutdownState) err
 // UpdateClusterShutdown atomically applies mutate to the current cluster
 // shutdown state (e.g. merging a node's ack into NodesAcked) and writes it
 // back with optimistic concurrency, retrying on a concurrent writer's
-// revision conflict. Returns nats.ErrKeyNotFound if no shutdown is in progress.
+// revision conflict. Returns jetstream.ErrKeyNotFound if no shutdown is in progress.
 func (m *JetStreamManager) UpdateClusterShutdown(mutate func(*ClusterShutdownState)) (*ClusterShutdownState, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	return casUpdate(m.clusterKV, "cluster.shutdown", mutate, false)
+	return casUpdate(context.Background(), m.clusterKV, "cluster.shutdown", mutate, false)
 }
 
 // UpdateMgmtIPAM atomically applies mutate to the mgmt-ipam record for
@@ -491,7 +496,7 @@ func (m *JetStreamManager) UpdateMgmtIPAM(subnet string, mutate func(*MgmtIPReco
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	return casUpdate(m.clusterKV, mgmtIPAMKeyPrefix+subnet, mutate, createIfAbsent)
+	return casUpdate(context.Background(), m.clusterKV, mgmtIPAMKeyPrefix+subnet, mutate, createIfAbsent)
 }
 
 // ReadClusterShutdown reads the cluster shutdown state from KV.
@@ -499,7 +504,7 @@ func (m *JetStreamManager) ReadClusterShutdown() (*ClusterShutdownState, error) 
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	entry, err := m.clusterKV.Get("cluster.shutdown")
+	entry, err := m.clusterKV.Get(context.Background(), "cluster.shutdown")
 	if err != nil {
 		return nil, err
 	}
@@ -515,8 +520,8 @@ func (m *JetStreamManager) DeleteClusterShutdown() error {
 	if m.clusterKV == nil {
 		return errors.New("cluster state KV not initialized")
 	}
-	err := m.clusterKV.Delete("cluster.shutdown")
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	err := m.clusterKV.Delete(context.Background(), "cluster.shutdown")
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return err
 	}
 	return nil
@@ -534,7 +539,7 @@ func (m *JetStreamManager) WriteShutdownMarker(nodeID string) error {
 	if err != nil {
 		return fmt.Errorf("marshal shutdown marker: %w", err)
 	}
-	_, err = m.clusterKV.Put("shutdown."+nodeID, data)
+	_, err = m.clusterKV.Put(context.Background(), "shutdown."+nodeID, data)
 	return err
 }
 
@@ -543,8 +548,8 @@ func (m *JetStreamManager) ReadShutdownMarker(nodeID string) (bool, error) {
 	if m.clusterKV == nil {
 		return false, errors.New("cluster state KV not initialized")
 	}
-	_, err := m.clusterKV.Get("shutdown." + nodeID)
-	if errors.Is(err, nats.ErrKeyNotFound) {
+	_, err := m.clusterKV.Get(context.Background(), "shutdown."+nodeID)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -558,8 +563,8 @@ func (m *JetStreamManager) DeleteShutdownMarker(nodeID string) error {
 	if m.clusterKV == nil {
 		return errors.New("cluster state KV not initialized")
 	}
-	err := m.clusterKV.Delete("shutdown." + nodeID)
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	err := m.clusterKV.Delete(context.Background(), "shutdown."+nodeID)
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return err
 	}
 	return nil
@@ -580,7 +585,7 @@ func (m *JetStreamManager) WriteServiceManifest(nodeID string, services []string
 	if err != nil {
 		return fmt.Errorf("marshal service manifest: %w", err)
 	}
-	_, err = m.clusterKV.Put("node."+nodeID+".services", data)
+	_, err = m.clusterKV.Put(context.Background(), "node."+nodeID+".services", data)
 	return err
 }
 
@@ -597,15 +602,15 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 	}
 
 	key := InstanceStatePrefix + nodeID
-	_, err = m.kv.Put(key, jsonData)
+	_, err = m.kv.Put(context.Background(), key, jsonData)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteState", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
-			if _, retryErr := kv.Put(key, jsonData); retryErr != nil {
+			if _, retryErr := kv.Put(context.Background(), key, jsonData); retryErr != nil {
 				return retryErr
 			}
 			slog.Debug("Wrote state to JetStream KV (after recovery)", "key", key, "instances", len(vms))
@@ -623,43 +628,32 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 // blocks the caller past `timeout` and never returns an error. Used when the
 // local state file is the source of truth and KV is a best-effort cache; hot
 // paths marshal under a short-lived lock and commit lock-free.
-//
-// Note: kv.Put has no context API. On timeout, the in-flight Put goroutine
-// continues and completes (or fails) on its own. This leaks at most one
-// goroutine per write; under sustained partition the leak is bounded by
-// WriteState call cadence (per-state-transition, not a tight loop).
 func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []byte, timeout time.Duration) {
 	if m.kv == nil {
 		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)
 		return
 	}
 
-	key := InstanceStatePrefix + nodeID
-	done := make(chan error, 1)
-	go func() {
-		_, putErr := m.kv.Put(key, jsonData)
-		done <- putErr
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	select {
-	case putErr := <-done:
-		if putErr != nil {
-			if m.obs != nil {
-				m.obs.RecordKVSyncFailure(InstanceStateBucket, putErr)
-			}
-			slog.Warn("KV sync failed (best-effort)", "key", key, "err", putErr)
+	key := InstanceStatePrefix + nodeID
+	_, err := m.kv.Put(ctx, key, jsonData)
+	if err != nil {
+		if m.obs != nil {
+			m.obs.RecordKVSyncFailure(InstanceStateBucket, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("KV sync timed out (best-effort)", "key", key, "timeout", timeout)
 			return
 		}
-		if m.obs != nil {
-			m.obs.RecordKVSyncSuccess(InstanceStateBucket)
-		}
-		slog.Debug("Wrote state to KV (best-effort)", "key", key, "bytes", len(jsonData))
-	case <-time.After(timeout):
-		if m.obs != nil {
-			m.obs.RecordKVSyncFailure(InstanceStateBucket, fmt.Errorf("kv sync timeout after %s", timeout))
-		}
-		slog.Warn("KV sync timed out (best-effort)", "key", key, "timeout", timeout)
+		slog.Warn("KV sync failed (best-effort)", "key", key, "err", err)
+		return
 	}
+	if m.obs != nil {
+		m.obs.RecordKVSyncSuccess(InstanceStateBucket)
+	}
+	slog.Debug("Wrote state to KV (best-effort)", "key", key, "bytes", len(jsonData))
 }
 
 // marshalInstanceState produces the JSON wire form of vms.
@@ -680,22 +674,22 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, error) {
 	}
 
 	key := InstanceStatePrefix + nodeID
-	entry, err := m.kv.Get(key)
+	entry, err := m.kv.Get(context.Background(), key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.Debug("No existing state in JetStream KV, returning empty state", "key", key)
 			return make(map[string]*vm.VM), nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadState", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
 			// Retry the read — if we reconnected, data may still exist
-			entry, err = kv.Get(key)
+			entry, err = kv.Get(context.Background(), key)
 			if err != nil {
-				if errors.Is(err, nats.ErrKeyNotFound) {
+				if errors.Is(err, jetstream.ErrKeyNotFound) {
 					slog.Warn("No state found after KV recovery", "key", key)
 					return make(map[string]*vm.VM), nil
 				}
@@ -728,16 +722,16 @@ func (m *JetStreamManager) DeleteState(nodeID string) error {
 	}
 
 	key := InstanceStatePrefix + nodeID
-	err := m.kv.Delete(key)
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	err := m.kv.Delete(context.Background(), key)
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteState", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
 			// Retry — if we reconnected the key may still exist
-			if retryErr := kv.Delete(key); retryErr != nil && !errors.Is(retryErr, nats.ErrKeyNotFound) {
+			if retryErr := kv.Delete(context.Background(), key); retryErr != nil && !errors.Is(retryErr, jetstream.ErrKeyNotFound) {
 				return retryErr
 			}
 			return nil
@@ -760,14 +754,21 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 
 	m.replicas = newReplicas
 
+	ctx := context.Background()
 	// Iterate all streams and update any KV-backed stream (prefixed "KV_")
 	updated := 0
-	for name := range m.js.StreamNames() {
+	lister := m.js.StreamNames(ctx)
+	for name := range lister.Name() {
 		if !strings.HasPrefix(name, "KV_") {
 			continue
 		}
 
-		info, err := m.js.StreamInfo(name)
+		stream, err := m.js.Stream(ctx, name)
+		if err != nil {
+			slog.Warn("Failed to open stream", "stream", name, "error", err)
+			continue
+		}
+		info, err := stream.Info(ctx)
 		if err != nil {
 			slog.Warn("Failed to get stream info", "stream", name, "error", err)
 			continue
@@ -779,7 +780,7 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 
 		oldReplicas := info.Config.Replicas
 		info.Config.Replicas = newReplicas
-		if _, err := m.js.UpdateStream(&info.Config); err != nil {
+		if _, err := m.js.UpdateStream(ctx, info.Config); err != nil {
 			slog.Warn("Failed to update KV bucket replicas", "stream", name, "error", err)
 			continue
 		}
@@ -787,6 +788,9 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 		bucket := strings.TrimPrefix(name, "KV_")
 		slog.Info("Updated KV bucket replicas", "bucket", bucket, "oldReplicas", oldReplicas, "newReplicas", newReplicas)
 		updated++
+	}
+	if err := lister.Err(); err != nil {
+		return fmt.Errorf("list JetStream streams: %w", err)
 	}
 
 	if updated > 0 {
@@ -813,15 +817,15 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	err = casPut(m.kv, key, jsonData, true)
+	err = casPut(context.Background(), m.kv, key, jsonData, true)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteStoppedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
-			if retryErr := casPut(kv, key, jsonData, true); retryErr != nil {
+			if retryErr := casPut(context.Background(), kv, key, jsonData, true); retryErr != nil {
 				return retryErr
 			}
 			slog.Debug("Wrote stopped instance to JetStream KV (after recovery)", "key", key, "instanceId", instanceID)
@@ -842,21 +846,21 @@ func (m *JetStreamManager) LoadStoppedInstance(instanceID string) (*vm.VM, error
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	entry, err := m.kv.Get(key)
+	entry, err := m.kv.Get(context.Background(), key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadStoppedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
 			// Retry — if we reconnected, data may still exist
-			entry, err = kv.Get(key)
+			entry, err = kv.Get(context.Background(), key)
 			if err != nil {
-				if errors.Is(err, nats.ErrKeyNotFound) {
+				if errors.Is(err, jetstream.ErrKeyNotFound) {
 					return nil, nil
 				}
 				return nil, err
@@ -883,16 +887,16 @@ func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	err := m.kv.Delete(key)
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	err := m.kv.Delete(context.Background(), key)
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteStoppedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
 			// Retry — if we reconnected the key may still exist
-			if retryErr := kv.Delete(key); retryErr != nil && !errors.Is(retryErr, nats.ErrKeyNotFound) {
+			if retryErr := kv.Delete(context.Background(), key); retryErr != nil && !errors.Is(retryErr, jetstream.ErrKeyNotFound) {
 				return retryErr
 			}
 			return nil
@@ -919,15 +923,15 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	instance, notFound, err := casClaim[vm.VM](m.kv, key)
+	instance, notFound, err := casClaim[vm.VM](context.Background(), m.kv, key)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ClaimStoppedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
-			instance, notFound, err = casClaim[vm.VM](kv, key)
+			instance, notFound, err = casClaim[vm.VM](context.Background(), kv, key)
 			if err != nil {
 				return nil, err
 			}
@@ -947,25 +951,25 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 // stopped record for instanceID and writes it back using optimistic
 // concurrency (CAS), retrying on a concurrent writer's revision conflict.
 // createIfAbsent is false: if a winning ClaimStoppedInstance deletes the
-// record mid-flight, the CAS write fails with nats.ErrKeyNotFound instead of
+// record mid-flight, the CAS write fails with jetstream.ErrKeyNotFound instead of
 // resurrecting it. Used by tag/attribute mutations that read-modify-write a
 // stopped instance so they cannot race a claim into recreating a stale
-// record. Returns nats.ErrKeyNotFound if no record exists.
+// record. Returns jetstream.ErrKeyNotFound if no record exists.
 func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
 	if m.kv == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	updated, err := casUpdate(m.kv, key, mutate, false)
+	updated, err := casUpdate(context.Background(), m.kv, key, mutate, false)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateStoppedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
-			return casUpdate(kv, key, mutate, false)
+			return casUpdate(context.Background(), kv, key, mutate, false)
 		}
 		return nil, err
 	}
@@ -978,21 +982,21 @@ func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 		return nil, errors.New("KV bucket not initialized")
 	}
 
-	keys, err := m.kv.Keys()
+	keys, err := m.kv.Keys(context.Background())
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ListStoppedInstances", "err", err)
-			kv, recoverErr := m.recoverKVBucket()
+			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
 			// Retry — if we reconnected, data may still exist
-			keys, err = kv.Keys()
+			keys, err = kv.Keys(context.Background())
 			if err != nil {
-				if errors.Is(err, nats.ErrNoKeysFound) {
+				if errors.Is(err, jetstream.ErrNoKeysFound) {
 					return nil, nil
 				}
 				return nil, err
@@ -1012,9 +1016,9 @@ func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 			continue
 		}
 
-		entry, err := m.kv.Get(key)
+		entry, err := m.kv.Get(context.Background(), key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, err
@@ -1051,15 +1055,15 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	err = casPut(m.terminatedKV, key, jsonData, true)
+	err = casPut(context.Background(), m.terminatedKV, key, jsonData, true)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteTerminatedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverTerminatedKVBucket()
+			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
-			if retryErr := casPut(kv, key, jsonData, true); retryErr != nil {
+			if retryErr := casPut(context.Background(), kv, key, jsonData, true); retryErr != nil {
 				return retryErr
 			}
 			slog.Debug("Wrote terminated instance to JetStream KV (after recovery)", "key", key, "instanceId", instanceID)
@@ -1077,22 +1081,22 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 // optimistic concurrency (CAS), retrying on a concurrent writer's revision
 // conflict. Used by the teardown reaper to merge per-dependent Teardown
 // progress without clobbering marks written by a concurrent update to the
-// same record. Returns nats.ErrKeyNotFound if no record exists yet.
+// same record. Returns jetstream.ErrKeyNotFound if no record exists yet.
 func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
 	if m.terminatedKV == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	updated, err := casUpdate(m.terminatedKV, key, mutate, false)
+	updated, err := casUpdate(context.Background(), m.terminatedKV, key, mutate, false)
 	if err != nil {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateTerminatedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverTerminatedKVBucket()
+			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
-			return casUpdate(kv, key, mutate, false)
+			return casUpdate(context.Background(), kv, key, mutate, false)
 		}
 		return nil, err
 	}
@@ -1105,20 +1109,20 @@ func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
 
-	keys, err := m.terminatedKV.Keys()
+	keys, err := m.terminatedKV.Keys(context.Background())
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ListTerminatedInstances", "err", err)
-			kv, recoverErr := m.recoverTerminatedKVBucket()
+			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
-			keys, err = kv.Keys()
+			keys, err = kv.Keys(context.Background())
 			if err != nil {
-				if errors.Is(err, nats.ErrNoKeysFound) {
+				if errors.Is(err, jetstream.ErrNoKeysFound) {
 					return nil, nil
 				}
 				return nil, err
@@ -1137,9 +1141,9 @@ func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 			continue
 		}
 
-		entry, err := m.terminatedKV.Get(key)
+		entry, err := m.terminatedKV.Get(context.Background(), key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, err
@@ -1164,15 +1168,15 @@ func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	err := m.terminatedKV.Delete(key)
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	err := m.terminatedKV.Delete(context.Background(), key)
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteTerminatedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverTerminatedKVBucket()
+			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
 				return err
 			}
-			if retryErr := kv.Delete(key); retryErr != nil && !errors.Is(retryErr, nats.ErrKeyNotFound) {
+			if retryErr := kv.Delete(context.Background(), key); retryErr != nil && !errors.Is(retryErr, jetstream.ErrKeyNotFound) {
 				return retryErr
 			}
 			return nil
@@ -1192,20 +1196,20 @@ func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, er
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	entry, err := m.terminatedKV.Get(key)
+	entry, err := m.terminatedKV.Get(context.Background(), key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadTerminatedInstance", "key", key, "err", err)
-			kv, recoverErr := m.recoverTerminatedKVBucket()
+			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
 				return nil, err
 			}
-			entry, err = kv.Get(key)
+			entry, err = kv.Get(context.Background(), key)
 			if err != nil {
-				if errors.Is(err, nats.ErrKeyNotFound) {
+				if errors.Is(err, jetstream.ErrKeyNotFound) {
 					return nil, nil
 				}
 				return nil, err

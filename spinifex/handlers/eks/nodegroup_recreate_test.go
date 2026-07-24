@@ -29,7 +29,7 @@ func TestCreateNodegroup_RecreateDoesNotBaselineOnPriorWorkers(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng", 2)
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng")
 	require.NoError(t, err)
 	require.Equal(t, eks.NodegroupStatusActive, rec.Status)
 
@@ -37,7 +37,7 @@ func TestCreateNodegroup_RecreateDoesNotBaselineOnPriorWorkers(t *testing.T) {
 	// The CP's Ready report lags the delete, so the previous incarnation's two
 	// workers are still counted Ready when the create begins — exactly the state
 	// that produced "want >= 4 (baseline 2 + 2 workers)" in the field.
-	require.NoError(t, DeleteNodegroupRecord(f.kv, "c1", "ng"))
+	require.NoError(t, DeleteNodegroupRecord(t.Context(), f.kv, "c1", "ng"))
 	markWorkersReady(t, f, "c1", "ng", 2)
 
 	_, err = f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng", 2), testAccountID)
@@ -49,7 +49,7 @@ func TestCreateNodegroup_RecreateDoesNotBaselineOnPriorWorkers(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng", 2)
 	f.svc.WaitLaunches()
 
-	rec, err = GetNodegroupRecord(f.kv, "c1", "ng")
+	rec, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, rec.Status,
 		"a re-created nodegroup whose own workers are Ready must reach ACTIVE, not CREATE_FAILED")

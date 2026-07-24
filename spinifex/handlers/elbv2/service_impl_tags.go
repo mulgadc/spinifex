@@ -21,7 +21,7 @@ type taggable struct {
 // resolveTaggable loads the ELBv2 resource by ARN and returns a tag read/write handle.
 // found is false when the resource doesn't exist; notFoundError is the per-type error.
 // Store failures are logged and returned as ErrorServerInternal.
-func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundError string, found bool, err error) {
+func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h taggable, notFoundError string, found bool, err error) {
 	resourceType, terr := elbv2ResourceTypeFromArn(arn)
 	if terr != nil {
 		return taggable{}, "", false, terr
@@ -30,7 +30,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 	switch resourceType {
 	case elbv2ResourceLoadBalancer:
 		notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
-		lb, e := s.store.GetLoadBalancerByArn(arn)
+		lb, e := s.store.GetLoadBalancerByArn(ctx, arn)
 		if e != nil {
 			slog.Error("resolveTaggable: failed to get LB", "arn", arn, "err", e)
 			return taggable{}, notFoundError, false, errors.New(awserrors.ErrorServerInternal)
@@ -39,12 +39,12 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 			found = true
 			h = taggable{tags: lb.Tags, owner: lb.AccountID, save: func(t map[string]string) error {
 				lb.Tags = t
-				return s.store.PutLoadBalancer(lb)
+				return s.store.PutLoadBalancer(ctx, lb)
 			}}
 		}
 	case elbv2ResourceTargetGroup:
 		notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
-		tg, e := s.store.GetTargetGroupByArn(arn)
+		tg, e := s.store.GetTargetGroupByArn(ctx, arn)
 		if e != nil {
 			slog.Error("resolveTaggable: failed to get target group", "arn", arn, "err", e)
 			return taggable{}, notFoundError, false, errors.New(awserrors.ErrorServerInternal)
@@ -53,12 +53,12 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 			found = true
 			h = taggable{tags: tg.Tags, owner: tg.AccountID, save: func(t map[string]string) error {
 				tg.Tags = t
-				return s.store.PutTargetGroup(tg)
+				return s.store.PutTargetGroup(ctx, tg)
 			}}
 		}
 	case elbv2ResourceListener:
 		notFoundError = awserrors.ErrorELBv2ListenerNotFound
-		l, e := s.store.GetListenerByArn(arn)
+		l, e := s.store.GetListenerByArn(ctx, arn)
 		if e != nil {
 			slog.Error("resolveTaggable: failed to get listener", "arn", arn, "err", e)
 			return taggable{}, notFoundError, false, errors.New(awserrors.ErrorServerInternal)
@@ -67,12 +67,12 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 			found = true
 			h = taggable{tags: l.Tags, owner: l.AccountID, save: func(t map[string]string) error {
 				l.Tags = t
-				return s.store.PutListener(l)
+				return s.store.PutListener(ctx, l)
 			}}
 		}
 	case elbv2ResourceListenerRule:
 		notFoundError = awserrors.ErrorELBv2RuleNotFound
-		r, e := s.store.GetRuleByArn(arn)
+		r, e := s.store.GetRuleByArn(ctx, arn)
 		if e != nil {
 			slog.Error("resolveTaggable: failed to get rule", "arn", arn, "err", e)
 			return taggable{}, notFoundError, false, errors.New(awserrors.ErrorServerInternal)
@@ -81,7 +81,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 			found = true
 			h = taggable{tags: r.Tags, owner: r.AccountID, save: func(t map[string]string) error {
 				r.Tags = t
-				return s.store.PutRule(r)
+				return s.store.PutRule(ctx, r)
 			}}
 		}
 	}
@@ -115,7 +115,7 @@ func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInpu
 		}
 		arn := *arnPtr
 
-		h, notFoundError, found, err := s.resolveTaggable(arn)
+		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +159,7 @@ func (s *ELBv2ServiceImpl) RemoveTags(ctx context.Context, input *elbv2.RemoveTa
 		}
 		arn := *arnPtr
 
-		h, notFoundError, found, err := s.resolveTaggable(arn)
+		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
 		if err != nil {
 			return nil, err
 		}

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Rotation defaults (ecr-v1 Q3): rotate the active signing key every 30 days,
@@ -17,6 +17,10 @@ const (
 	DefaultRetainFor             = 24 * time.Hour
 	DefaultRetainCount           = 2
 	DefaultRotationCheckInterval = time.Hour
+
+	// rotationCycleTimeout bounds the KV work of one rotation cycle, so a wedged
+	// JetStream stalls a single tick instead of the whole loop until shutdown.
+	rotationCycleTimeout = 30 * time.Second
 )
 
 // rotationParams holds the rotation/retention policy.
@@ -61,7 +65,7 @@ func planRotation(metas []keyMeta, now time.Time, p rotationParams) (mint bool, 
 // safe to run on every awsgw instance — mint and delete on the shared KV bucket
 // converge, and a delete of an already-gone key is a no-op.
 type Rotator struct {
-	kv        nats.KeyValue
+	kv        jetstream.KeyValue
 	masterKey []byte
 	issuer    *Issuer
 	verifier  *Verifier
@@ -73,8 +77,8 @@ type Rotator struct {
 // NewRotator opens the signing-key bucket and builds a rotator that keeps issuer
 // and verifier current. replicas matches the cluster size for first-run bucket
 // creation.
-func NewRotator(js nats.JetStreamContext, masterKey []byte, replicas int, issuer *Issuer, verifier *Verifier) (*Rotator, error) {
-	kv, err := openSigningBucket(js, masterKey, replicas)
+func NewRotator(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int, issuer *Issuer, verifier *Verifier) (*Rotator, error) {
+	kv, err := openSigningBucket(ctx, js, masterKey, replicas)
 	if err != nil {
 		return nil, err
 	}
@@ -105,15 +109,17 @@ func (r *Rotator) Run(ctx context.Context) {
 			slog.Info("ECR signing-key rotator stopped")
 			return
 		case <-ticker.C:
-			r.rotateOnce(r.now())
+			cycleCtx, cancel := context.WithTimeout(ctx, rotationCycleTimeout)
+			r.rotateOnce(cycleCtx, r.now())
+			cancel()
 		}
 	}
 }
 
 // rotateOnce runs one rotation/prune cycle and refreshes the issuer/verifier.
 // Errors are logged and skipped so a transient KV fault never crashes the loop.
-func (r *Rotator) rotateOnce(now time.Time) {
-	_, _, metas, err := reloadKeys(r.kv, r.masterKey)
+func (r *Rotator) rotateOnce(ctx context.Context, now time.Time) {
+	_, _, metas, err := reloadKeys(ctx, r.kv, r.masterKey)
 	if err != nil {
 		slog.Warn("ECR signing-key rotation: load keys failed", "err", err)
 		return
@@ -121,7 +127,7 @@ func (r *Rotator) rotateOnce(now time.Time) {
 
 	mint, prune := planRotation(metas, now, r.params)
 	if mint {
-		newKey, err := generateSigningKey(r.kv, r.masterKey)
+		newKey, err := generateSigningKey(ctx, r.kv, r.masterKey)
 		if err != nil {
 			slog.Warn("ECR signing-key rotation: mint failed", "err", err)
 			return
@@ -129,19 +135,19 @@ func (r *Rotator) rotateOnce(now time.Time) {
 		slog.Info("ECR signing-key rotated", "kid", newKey.Kid)
 	}
 	for _, kid := range prune {
-		if err := deleteSigningKey(r.kv, kid); err != nil {
+		if err := deleteSigningKey(ctx, r.kv, kid); err != nil {
 			slog.Warn("ECR signing-key rotation: prune failed", "kid", kid, "err", err)
 			continue
 		}
 		slog.Info("ECR signing-key pruned", "kid", kid)
 	}
 
-	r.refresh()
+	r.refresh(ctx)
 }
 
 // refresh reloads the canonical key set and installs it on the issuer/verifier.
-func (r *Rotator) refresh() {
-	active, verify, _, err := reloadKeys(r.kv, r.masterKey)
+func (r *Rotator) refresh(ctx context.Context) {
+	active, verify, _, err := reloadKeys(ctx, r.kv, r.masterKey)
 	if err != nil {
 		slog.Warn("ECR signing-key rotation: refresh failed", "err", err)
 		return

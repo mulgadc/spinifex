@@ -1,46 +1,52 @@
 package handlers_ecs
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // sweepStoppedTasks prunes stale STOPPED task records across every ECS account
 // bucket. Leader-only (scheduler is the single KV writer); runs on the sweep
-// tick. Mirrors reap()'s bucket walk.
-func (sc *Scheduler) sweepStoppedTasks() {
-	js, err := sc.nc.JetStream()
+// tick. Mirrors reap()'s bucket walk. Returns an error when the account
+// enumeration could not be completed, so a pass that saw only part of the fleet
+// is reported rather than passing for a clean sweep.
+func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) error {
+	js, err := jetstream.New(sc.nc)
 	if err != nil {
-		return
+		return err
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
-	for bucket := range js.KeyValueStoreNames() {
-		if _, ok := accountIDFromBucket(bucket); !ok {
-			continue
-		}
-		kv, err := js.KeyValue(bucket)
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(ctx, bucket.name)
 		if err != nil {
+			slog.Error("ECS sweep: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
-		pruned, serr := sc.svc.sweepStoppedBucket(kv, now, stoppedTaskRetention)
+		pruned, serr := sc.svc.sweepStoppedBucket(ctx, kv, now, stoppedTaskRetention)
 		if serr != nil {
-			slog.Error("ECS sweep: bucket failed", "bucket", bucket, "err", serr)
+			slog.Error("ECS sweep: bucket failed", "bucket", bucket.name, "err", serr)
 			continue
 		}
 		if pruned > 0 {
-			slog.Info("ECS sweep: pruned stale STOPPED tasks", "bucket", bucket, "count", pruned)
+			slog.Info("ECS sweep: pruned stale STOPPED tasks", "bucket", bucket.name, "count", pruned)
 		}
 	}
+	return nil
 }
 
 // sweepStoppedBucket deletes task records that have been STOPPED longer than
 // retention. A task missing its StoppedAt timestamp is never pruned (defensive:
 // it would otherwise look infinitely old). Returns the number deleted.
-func (s *Service) sweepStoppedBucket(kv nats.KeyValue, now time.Time, retention time.Duration) (int, error) {
-	keys, err := keysWithPrefix(kv, "clusters/")
+func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue, now time.Time, retention time.Duration) (int, error) {
+	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return 0, err
 	}
@@ -50,7 +56,7 @@ func (s *Service) sweepStoppedBucket(kv nats.KeyValue, now time.Time, retention 
 			continue
 		}
 		var task TaskRecord
-		found, gerr := getJSON(kv, k, &task)
+		found, gerr := getJSON(ctx, kv, k, &task)
 		if gerr != nil || !found {
 			continue
 		}
@@ -60,7 +66,7 @@ func (s *Service) sweepStoppedBucket(kv nats.KeyValue, now time.Time, retention 
 		if now.Sub(task.StoppedAt) <= retention {
 			continue
 		}
-		if derr := kv.Delete(k); derr != nil {
+		if derr := kv.Delete(ctx, k); derr != nil {
 			slog.Warn("ECS sweep: delete failed", "key", k, "err", derr)
 			continue
 		}

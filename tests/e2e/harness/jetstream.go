@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // KVReplicaFactors connects to the cluster NATS and returns the configured
@@ -22,14 +23,18 @@ func KVReplicaFactors(t *testing.T, env *Env, buckets ...string) map[string]int 
 	}
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream context: %v", err)
 	}
 
 	out := make(map[string]int, len(buckets))
 	for _, b := range buckets {
-		info, err := js.StreamInfo("KV_" + b)
+		stream, err := js.Stream(t.Context(), "KV_"+b)
+		if err != nil {
+			t.Fatalf("open stream for KV bucket %q: %v", b, err)
+		}
+		info, err := stream.Info(t.Context())
 		if err != nil {
 			t.Fatalf("stream info for KV bucket %q: %v", b, err)
 		}

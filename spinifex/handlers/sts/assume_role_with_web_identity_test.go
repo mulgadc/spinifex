@@ -18,7 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,20 +74,20 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	federatedARN := handlers_iam.OIDCProviderARN(accountID, issuerHostPath)
 
 	// Publish JWKS to the per-cluster EKS bucket.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, accountID, 1)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), svc.js, accountID, 1)
 	require.NoError(t, err)
 	raw, err := json.Marshal(jwks)
 	require.NoError(t, err)
-	_, err = kv.Put(handlers_eks.OIDCJWKSKey(testWebClusterName), raw)
+	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey(testWebClusterName), raw)
 	require.NoError(t, err)
 
 	// Register the OIDC provider on the role-account's IAM bucket. Bucket is
 	// created on-the-fly here — the IAM CreateOpenIDConnectProvider API lands
 	// in Sprint 6e.
-	iamKV, err := utils.GetOrCreateKVBucket(svc.js,
+	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
 		handlers_iam.IAMAccountBucketName(accountID), handlers_iam.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
 
 	return &webIdentityFixture{
@@ -364,14 +364,14 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 	federatedARN := handlers_iam.OIDCProviderARN(testCallerAccountID, issuerHostPath)
 
 	// Publish JWKS — but skip the IAM provider registration.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(svc.js, testCallerAccountID, 1)
+	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), svc.js, testCallerAccountID, 1)
 	require.NoError(t, err)
 	jwk := signingJWK(t, &priv.PublicKey)
 	jwk.Alg, jwk.Use, jwk.Kid = "ES256", "sig", kid
 	jwks := &JWKS{Keys: []JWK{*jwk}}
 	raw, err := json.Marshal(jwks)
 	require.NoError(t, err)
-	_, err = kv.Put(handlers_eks.OIDCJWKSKey("unregistered-cluster"), raw)
+	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("unregistered-cluster"), raw)
 	require.NoError(t, err)
 
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-unreg",

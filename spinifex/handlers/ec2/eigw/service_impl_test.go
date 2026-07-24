@@ -26,7 +26,7 @@ func setupTestEIGWService(t *testing.T) *EgressOnlyIGWServiceImpl {
 	}
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, vpcEntries)
 
-	svc, err := NewEgressOnlyIGWServiceImplWithNATS(nil, nc)
+	svc, err := NewEgressOnlyIGWServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc
 }
@@ -285,7 +285,7 @@ func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create EIGW service (VPC KV will be populated since we created it before EIGW init)
-	svc, err := NewEgressOnlyIGWServiceImplWithNATS(nil, nc)
+	svc, err := NewEgressOnlyIGWServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	// Other account tries to create EIGW in testAccountID's VPC — should fail

@@ -72,7 +72,7 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 			}
 			continue
 		}
-		if err := s.reconcileVCPU(accountID, sumReservationVCPUs(reservations), complete); err != nil {
+		if err := s.reconcileVCPU(ctx, accountID, sumReservationVCPUs(reservations), complete); err != nil {
 			slog.Warn("quota reconcile: counter overwrite failed", "account", accountID, "err", err)
 			if firstErr == nil {
 				firstErr = err

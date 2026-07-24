@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ErrNotFound is returned by MetaStore reads when the requested record is absent.
@@ -109,26 +109,26 @@ type MetaStore interface {
 // KVMetaStore is the JetStream-KV-backed MetaStore. Per-account buckets are
 // created lazily on first write and cached per process.
 type KVMetaStore struct {
-	js      nats.JetStreamContext
+	js      jetstream.JetStream
 	mu      sync.Mutex
-	buckets map[string]nats.KeyValue
+	buckets map[string]jetstream.KeyValue
 }
 
 var _ MetaStore = (*KVMetaStore)(nil)
 
-// NewKVMetaStore constructs a KVMetaStore over the supplied JetStream context.
-func NewKVMetaStore(js nats.JetStreamContext) *KVMetaStore {
-	return &KVMetaStore{js: js, buckets: make(map[string]nats.KeyValue)}
+// NewKVMetaStore constructs a KVMetaStore over the supplied JetStream handle.
+func NewKVMetaStore(js jetstream.JetStream) *KVMetaStore {
+	return &KVMetaStore{js: js, buckets: make(map[string]jetstream.KeyValue)}
 }
 
-func (s *KVMetaStore) bucket(accountID string) (nats.KeyValue, error) {
+func (s *KVMetaStore) bucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if kv, ok := s.buckets[accountID]; ok {
 		return kv, nil
 	}
 	name := KVAccountBucket(accountID)
-	kv, err := utils.GetOrCreateKVBucket(s.js, name, KVBucketAccountHistory)
+	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, name, KVBucketAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("ecr: open account bucket %s: %w", name, err)
 	}
@@ -136,8 +136,8 @@ func (s *KVMetaStore) bucket(accountID string) (nats.KeyValue, error) {
 	return kv, nil
 }
 
-func (s *KVMetaStore) PutRepo(_ context.Context, accountID string, meta RepoMeta) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutRepo(ctx context.Context, accountID string, meta RepoMeta) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -145,16 +145,16 @@ func (s *KVMetaStore) PutRepo(_ context.Context, accountID string, meta RepoMeta
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(KVRepoMetaKey(meta.Name), data)
+	_, err = kv.Put(ctx, KVRepoMetaKey(meta.Name), data)
 	return err
 }
 
-func (s *KVMetaStore) GetRepo(_ context.Context, accountID, repo string) (RepoMeta, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetRepo(ctx context.Context, accountID, repo string) (RepoMeta, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return RepoMeta{}, err
 	}
-	entry, err := kv.Get(KVRepoMetaKey(repo))
+	entry, err := kv.Get(ctx, KVRepoMetaKey(repo))
 	if err != nil {
 		return RepoMeta{}, mapKVErr(err)
 	}
@@ -165,14 +165,14 @@ func (s *KVMetaStore) GetRepo(_ context.Context, accountID, repo string) (RepoMe
 	return m, nil
 }
 
-func (s *KVMetaStore) ListRepos(_ context.Context, accountID string) ([]string, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) ListRepos(ctx context.Context, accountID string) ([]string, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -195,17 +195,17 @@ func (s *KVMetaStore) ListRepos(_ context.Context, accountID string) ([]string, 
 // tags, and all manifest records. Predastore blob garbage collection is out of
 // scope here (deferred); only the per-account KV records are removed. Returns
 // ErrNotFound when the repository meta is absent.
-func (s *KVMetaStore) DeleteRepo(_ context.Context, accountID, repo string) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteRepo(ctx context.Context, accountID, repo string) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	if _, err := kv.Get(KVRepoMetaKey(repo)); err != nil {
+	if _, err := kv.Get(ctx, KVRepoMetaKey(repo)); err != nil {
 		return mapKVErr(err)
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return err
@@ -215,7 +215,7 @@ func (s *KVMetaStore) DeleteRepo(_ context.Context, accountID, repo string) erro
 	for _, k := range keys {
 		if k == metaKey || k == policyKey || k == lifecycleKey ||
 			strings.HasPrefix(k, tagsPrefix) || strings.HasPrefix(k, manifestsPrefix) {
-			if err := kv.Delete(k); err != nil {
+			if err := kv.Delete(ctx, k); err != nil {
 				return mapKVErr(err)
 			}
 		}
@@ -223,14 +223,14 @@ func (s *KVMetaStore) DeleteRepo(_ context.Context, accountID, repo string) erro
 	return nil
 }
 
-func (s *KVMetaStore) ListManifests(_ context.Context, accountID, repo string) ([]string, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) ListManifests(ctx context.Context, accountID, repo string) ([]string, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -246,127 +246,127 @@ func (s *KVMetaStore) ListManifests(_ context.Context, accountID, repo string) (
 	return digests, nil
 }
 
-func (s *KVMetaStore) PutRepoPolicy(_ context.Context, accountID, repo string, policyText []byte) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutRepoPolicy(ctx context.Context, accountID, repo string, policyText []byte) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(KVRepoPolicyKey(repo), policyText)
+	_, err = kv.Put(ctx, KVRepoPolicyKey(repo), policyText)
 	return err
 }
 
-func (s *KVMetaStore) GetRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	entry, err := kv.Get(KVRepoPolicyKey(repo))
+	entry, err := kv.Get(ctx, KVRepoPolicyKey(repo))
 	if err != nil {
 		return nil, mapKVErr(err)
 	}
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) DeleteRepoPolicy(_ context.Context, accountID, repo string) ([]byte, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteRepoPolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	// JetStream KV Delete is silently idempotent, so the value is read first to
 	// surface a real not-found and return the deleted document to the caller.
-	entry, err := kv.Get(KVRepoPolicyKey(repo))
+	entry, err := kv.Get(ctx, KVRepoPolicyKey(repo))
 	if err != nil {
 		return nil, mapKVErr(err)
 	}
-	if err := kv.Delete(KVRepoPolicyKey(repo)); err != nil {
+	if err := kv.Delete(ctx, KVRepoPolicyKey(repo)); err != nil {
 		return nil, mapKVErr(err)
 	}
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) PutLifecyclePolicy(_ context.Context, accountID, repo string, policyText []byte) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutLifecyclePolicy(ctx context.Context, accountID, repo string, policyText []byte) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(KVLifecyclePolicyKey(repo), policyText)
+	_, err = kv.Put(ctx, KVLifecyclePolicyKey(repo), policyText)
 	return err
 }
 
-func (s *KVMetaStore) GetLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	entry, err := kv.Get(KVLifecyclePolicyKey(repo))
+	entry, err := kv.Get(ctx, KVLifecyclePolicyKey(repo))
 	if err != nil {
 		return nil, mapKVErr(err)
 	}
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) DeleteLifecyclePolicy(_ context.Context, accountID, repo string) ([]byte, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteLifecyclePolicy(ctx context.Context, accountID, repo string) ([]byte, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	// JetStream KV Delete is silently idempotent, so the value is read first to
 	// surface a real not-found and return the deleted document to the caller.
-	entry, err := kv.Get(KVLifecyclePolicyKey(repo))
+	entry, err := kv.Get(ctx, KVLifecyclePolicyKey(repo))
 	if err != nil {
 		return nil, mapKVErr(err)
 	}
-	if err := kv.Delete(KVLifecyclePolicyKey(repo)); err != nil {
+	if err := kv.Delete(ctx, KVLifecyclePolicyKey(repo)); err != nil {
 		return nil, mapKVErr(err)
 	}
 	return entry.Value(), nil
 }
 
-func (s *KVMetaStore) PutTag(_ context.Context, accountID, repo, tag, digest string) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutTag(ctx context.Context, accountID, repo, tag, digest string) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(KVTagKey(repo, tag), []byte(digest))
+	_, err = kv.Put(ctx, KVTagKey(repo, tag), []byte(digest))
 	return err
 }
 
-func (s *KVMetaStore) GetTag(_ context.Context, accountID, repo, tag string) (string, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetTag(ctx context.Context, accountID, repo, tag string) (string, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return "", err
 	}
-	entry, err := kv.Get(KVTagKey(repo, tag))
+	entry, err := kv.Get(ctx, KVTagKey(repo, tag))
 	if err != nil {
 		return "", mapKVErr(err)
 	}
 	return string(entry.Value()), nil
 }
 
-func (s *KVMetaStore) DeleteTag(_ context.Context, accountID, repo, tag string) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteTag(ctx context.Context, accountID, repo, tag string) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
 	// JetStream KV Delete is silently idempotent, so existence is checked first
 	// to surface a real not-found to the caller.
-	if _, err := kv.Get(KVTagKey(repo, tag)); err != nil {
+	if _, err := kv.Get(ctx, KVTagKey(repo, tag)); err != nil {
 		return mapKVErr(err)
 	}
-	if err := kv.Delete(KVTagKey(repo, tag)); err != nil {
+	if err := kv.Delete(ctx, KVTagKey(repo, tag)); err != nil {
 		return mapKVErr(err)
 	}
 	return nil
 }
 
-func (s *KVMetaStore) ListTags(_ context.Context, accountID, repo string) ([]string, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) ListTags(ctx context.Context, accountID, repo string) ([]string, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -382,8 +382,8 @@ func (s *KVMetaStore) ListTags(_ context.Context, accountID, repo string) ([]str
 	return tags, nil
 }
 
-func (s *KVMetaStore) PutManifestMeta(_ context.Context, accountID, repo string, meta ManifestMeta) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutManifestMeta(ctx context.Context, accountID, repo string, meta ManifestMeta) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -391,16 +391,16 @@ func (s *KVMetaStore) PutManifestMeta(_ context.Context, accountID, repo string,
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(KVManifestKey(repo, meta.Digest), data)
+	_, err = kv.Put(ctx, KVManifestKey(repo, meta.Digest), data)
 	return err
 }
 
-func (s *KVMetaStore) GetManifestMeta(_ context.Context, accountID, repo, digest string) (ManifestMeta, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetManifestMeta(ctx context.Context, accountID, repo, digest string) (ManifestMeta, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return ManifestMeta{}, err
 	}
-	entry, err := kv.Get(KVManifestKey(repo, digest))
+	entry, err := kv.Get(ctx, KVManifestKey(repo, digest))
 	if err != nil {
 		return ManifestMeta{}, mapKVErr(err)
 	}
@@ -411,19 +411,19 @@ func (s *KVMetaStore) GetManifestMeta(_ context.Context, accountID, repo, digest
 	return m, nil
 }
 
-func (s *KVMetaStore) DeleteManifestMeta(_ context.Context, accountID, repo, digest string) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteManifestMeta(ctx context.Context, accountID, repo, digest string) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	if _, err := kv.Get(KVManifestKey(repo, digest)); err != nil {
+	if _, err := kv.Get(ctx, KVManifestKey(repo, digest)); err != nil {
 		return mapKVErr(err)
 	}
-	return kv.Delete(KVManifestKey(repo, digest))
+	return kv.Delete(ctx, KVManifestKey(repo, digest))
 }
 
-func (s *KVMetaStore) PutUpload(_ context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) PutUpload(ctx context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -431,15 +431,15 @@ func (s *KVMetaStore) PutUpload(_ context.Context, accountID, uploadID string, s
 	if err != nil {
 		return 0, err
 	}
-	return kv.Put(KVUploadKey(uploadID), data)
+	return kv.Put(ctx, KVUploadKey(uploadID), data)
 }
 
-func (s *KVMetaStore) GetUpload(_ context.Context, accountID, uploadID string) (UploadState, uint64, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) GetUpload(ctx context.Context, accountID, uploadID string) (UploadState, uint64, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return UploadState{}, 0, err
 	}
-	entry, err := kv.Get(KVUploadKey(uploadID))
+	entry, err := kv.Get(ctx, KVUploadKey(uploadID))
 	if err != nil {
 		return UploadState{}, 0, mapKVErr(err)
 	}
@@ -450,8 +450,8 @@ func (s *KVMetaStore) GetUpload(_ context.Context, accountID, uploadID string) (
 	return st, entry.Revision(), nil
 }
 
-func (s *KVMetaStore) UpdateUpload(_ context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) UpdateUpload(ctx context.Context, accountID, uploadID string, state UploadState, rev uint64) (uint64, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -459,9 +459,9 @@ func (s *KVMetaStore) UpdateUpload(_ context.Context, accountID, uploadID string
 	if err != nil {
 		return 0, err
 	}
-	newRev, err := kv.Update(KVUploadKey(uploadID), data, rev)
+	newRev, err := kv.Update(ctx, KVUploadKey(uploadID), data, rev)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return 0, ErrConflict
 		}
 		return 0, err
@@ -469,17 +469,17 @@ func (s *KVMetaStore) UpdateUpload(_ context.Context, accountID, uploadID string
 	return newRev, nil
 }
 
-func (s *KVMetaStore) DeleteUpload(_ context.Context, accountID, uploadID string) error {
-	kv, err := s.bucket(accountID)
+func (s *KVMetaStore) DeleteUpload(ctx context.Context, accountID, uploadID string) error {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
 	// JetStream KV Delete is silently idempotent, so existence is checked first
 	// to surface a real not-found to the caller.
-	if _, err := kv.Get(KVUploadKey(uploadID)); err != nil {
+	if _, err := kv.Get(ctx, KVUploadKey(uploadID)); err != nil {
 		return mapKVErr(err)
 	}
-	if err := kv.Delete(KVUploadKey(uploadID)); err != nil {
+	if err := kv.Delete(ctx, KVUploadKey(uploadID)); err != nil {
 		return mapKVErr(err)
 	}
 	return nil
@@ -763,7 +763,7 @@ func (m *MemoryMetaStore) DeleteUpload(_ context.Context, accountID, uploadID st
 
 // mapKVErr normalizes JetStream KV errors to the MetaStore error vocabulary.
 func mapKVErr(err error) error {
-	if errors.Is(err, nats.ErrKeyNotFound) {
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return ErrNotFound
 	}
 	return err

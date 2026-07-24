@@ -13,7 +13,16 @@ import (
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// startKV returns a jetstream handle onto an embedded server, used both to seed
+// the control-plane buckets and to load intent through them.
+func startKV(t *testing.T) jetstream.JetStream {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	return js
+}
 
 func TestMatchesLocalAZ(t *testing.T) {
 	cases := []struct {
@@ -33,7 +42,7 @@ func TestMatchesLocalAZ(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_AZFilter(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	localVPC := handlers_ec2_vpc.VPCRecord{
 		VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
@@ -67,7 +76,7 @@ func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -101,7 +110,7 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -133,7 +142,7 @@ func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -166,7 +175,7 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 // specs for associated *private* subnets, not the NATGW's own public home subnet.
 // Wrong CIDR corrupts conntrack reverse-NAT and causes 100% packet loss.
 func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -217,7 +226,7 @@ func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 // TestLoadIntentFromKV_NATGWNoAssociationSkips guards against SNAT install for
 // a NATGW with no route-table association; emitting the home-subnet CIDR would corrupt the SNAT table.
 func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -244,7 +253,7 @@ func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
 	if err != nil {
@@ -259,7 +268,7 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 // dropped before subscribers attach; reconcile must re-derive per-subnet egress
 // intent from the main RT, including implicit-main subnets.
 func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -311,7 +320,7 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 // TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet with no
 // 0.0.0.0/0 route in an IGW-attached VPC must produce a DropGates intent.
 func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
@@ -367,7 +376,7 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 // TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC with no IGW has no router-wide
 // default static route; lr_in_ip_routing already drops, so no drop policy needed.
 func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-air-gapped": mustJSON(t, handlers_ec2_vpc.VPCRecord{

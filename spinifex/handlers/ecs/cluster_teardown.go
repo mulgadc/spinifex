@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // clusterKeyPrefix is the KV subtree holding all of a cluster's records.
@@ -23,12 +23,12 @@ func clusterKeyPrefix(cluster string) string {
 // the cluster with Status INACTIVE.
 func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec ClusterRecord
-	found, err := getJSON(kv, ClusterMetaKey(cluster), &rec)
+	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 
-	tasks, err := s.listTaskRecords(kv, cluster)
+	tasks, err := s.listTaskRecords(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 		s.forceStopTask(ctx, kv, accountID, &tasks[i], "Cluster deleted")
 	}
 
-	if err := deleteKeysWithPrefix(kv, clusterKeyPrefix(cluster)); err != nil {
+	if err := deleteKeysWithPrefix(ctx, kv, clusterKeyPrefix(cluster)); err != nil {
 		return nil, err
 	}
 
@@ -60,12 +60,12 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
 	id := containerInstanceShortID(aws.StringValue(input.ContainerInstance))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec InstanceRecord
-	found, err := getJSON(kv, InstanceKey(cluster, id), &rec)
+	found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 
-	active, err := s.instanceActiveTasks(kv, cluster, id)
+	active, err := s.instanceActiveTasks(ctx, kv, cluster, id)
 	if err != nil {
 		return nil, err
 	}
@@ -84,10 +84,10 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		s.forceStopTask(ctx, kv, accountID, &active[i], "Container instance deregistered")
 	}
 
-	if derr := deleteKeysWithPrefix(kv, AssignmentsPrefix(cluster, id)); derr != nil {
+	if derr := deleteKeysWithPrefix(ctx, kv, AssignmentsPrefix(cluster, id)); derr != nil {
 		return nil, derr
 	}
-	if derr := kv.Delete(InstanceKey(cluster, id)); derr != nil {
+	if derr := kv.Delete(ctx, InstanceKey(cluster, id)); derr != nil {
 		return nil, derr
 	}
 	rec.Status = ClusterStatusInactive
@@ -104,7 +104,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 	if status != InstanceStatusActive && status != InstanceStatusDraining {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		id := containerInstanceShortID(ref)
 		var rec InstanceRecord
-		found, gerr := getJSON(kv, InstanceKey(cluster, id), &rec)
+		found, gerr := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -122,7 +122,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 		}
 		rec.Status = status
 		rec.Reaped = false
-		if perr := putJSON(kv, InstanceKey(cluster, id), &rec); perr != nil {
+		if perr := putJSON(ctx, kv, InstanceKey(cluster, id), &rec); perr != nil {
 			return nil, perr
 		}
 		if status == InstanceStatusDraining {
@@ -134,8 +134,8 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 }
 
 // instanceActiveTasks returns a cluster's non-STOPPED tasks placed on instanceID.
-func (s *Service) instanceActiveTasks(kv nats.KeyValue, cluster, instanceID string) ([]TaskRecord, error) {
-	all, err := s.listTaskRecords(kv, cluster)
+func (s *Service) instanceActiveTasks(ctx context.Context, kv jetstream.KeyValue, cluster, instanceID string) ([]TaskRecord, error) {
+	all, err := s.listTaskRecords(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +151,8 @@ func (s *Service) instanceActiveTasks(kv nats.KeyValue, cluster, instanceID stri
 // drainInstanceServiceTasks force-stops the instance's service-owned tasks on an
 // intentional DRAINING; the service reconciler then relaunches them on another
 // instance. Standalone tasks are left running (AWS DRAINING semantics).
-func (s *Service) drainInstanceServiceTasks(ctx context.Context, kv nats.KeyValue, accountID, cluster, instanceID string) {
-	active, err := s.instanceActiveTasks(kv, cluster, instanceID)
+func (s *Service) drainInstanceServiceTasks(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string) {
+	active, err := s.instanceActiveTasks(ctx, kv, cluster, instanceID)
 	if err != nil {
 		return
 	}

@@ -40,6 +40,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,7 +133,7 @@ func initAccountServiceForTest(t *testing.T, daemon *Daemon) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(nil, nc)
+	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	daemon.accountService = svc
 }
@@ -2295,11 +2296,11 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(daemon.config, nc)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(daemon.config, nc)
+	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
 
@@ -2611,7 +2612,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(daemon.config, nc)
+	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.eigwService = eigwSvc
 
@@ -3563,14 +3564,14 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(nc, ipam, daemon.vpcService)
+	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 
@@ -3756,7 +3757,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(daemon.config, nc)
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
@@ -3889,7 +3890,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(daemon.config, nc)
+	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.placementGroupService = pgSvc
 

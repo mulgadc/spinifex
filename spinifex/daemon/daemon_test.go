@@ -54,6 +54,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1565,9 +1566,9 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	jsConn, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { jsConn.Close() })
-	js, err := jsConn.JetStream()
+	js, err := jetstream.New(jsConn)
 	require.NoError(t, err)
-	snapKV, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	snapKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)
@@ -1659,9 +1660,9 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	daemon.stateStore = newStateStoreAdapter(jsManager)
 
 	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV.
-	js, err := daemon.natsConn.JetStream()
+	js, err := jetstream.New(daemon.natsConn)
 	require.NoError(t, err)
-	snapKV, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	snapKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)

@@ -11,13 +11,14 @@ import (
 const testAccountID = "111122223333"
 
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	kv1, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 
-	kv2, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	kv2, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 
@@ -32,26 +33,30 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 // path (replicas <= 0 -> 1) is exercisable end-to-end here; multi-node
 // replica counts are exercised live (see the associated bug doc).
 func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 0)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 0)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
 
-	si, err := js.StreamInfo("KV_" + AccountBucketName(testAccountID))
+	stream, err := js.Stream(t.Context(), "KV_"+AccountBucketName(testAccountID))
+	require.NoError(t, err)
+	si, err := stream.Info(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, si.Config.Replicas)
 }
 
 func TestInitLeaderBucket_Idempotent(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := InitLeaderBucket(js, 1)
+	kv1, err := InitLeaderBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 	assert.Equal(t, KVBucketEKSLeader, kv1.Bucket())
 
-	kv2, err := InitLeaderBucket(js, 1)
+	kv2, err := InitLeaderBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 	assert.Equal(t, KVBucketEKSLeader, kv2.Bucket())
@@ -60,13 +65,16 @@ func TestInitLeaderBucket_Idempotent(t *testing.T) {
 // TestInitLeaderBucket_ReplicasClamped confirms the leader bucket is created
 // with the requested replica count, clamped to a minimum of 1.
 func TestInitLeaderBucket_ReplicasClamped(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	kv, err := InitLeaderBucket(js, -1)
+	kv, err := InitLeaderBucket(t.Context(), js, -1)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
 
-	si, err := js.StreamInfo("KV_" + KVBucketEKSLeader)
+	stream, err := js.Stream(t.Context(), "KV_"+KVBucketEKSLeader)
+	require.NoError(t, err)
+	si, err := stream.Info(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, si.Config.Replicas)
 }

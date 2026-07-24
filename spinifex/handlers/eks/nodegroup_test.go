@@ -159,11 +159,11 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 			VpcId:     "vpc-aaa",
 		},
 	}
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	ct, err := handlers_iam.EncryptSecret("K10node-join-token::server:abc", bootstrapTestMasterKey)
 	require.NoError(t, err)
-	_, err = f.kv.Put(NodeTokenKey(cluster), []byte(ct))
+	_, err = f.kv.Put(t.Context(), NodeTokenKey(cluster), []byte(ct))
 	require.NoError(t, err)
 }
 
@@ -174,7 +174,7 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 // baseline (0) plus the worker count the test expects Ready.
 func markWorkersReady(t *testing.T, f *eksServiceFixture, cluster, ng string, n int) {
 	t.Helper()
-	require.NoError(t, SetClusterHealthState(f.kv, cluster, "", n, map[string]int{ng: n}))
+	require.NoError(t, SetClusterHealthState(t.Context(), f.kv, cluster, "", n, map[string]int{ng: n}))
 }
 
 func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput {
@@ -197,19 +197,19 @@ func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
 	seedActiveClusterWithToken(t, f, cluster)
 
 	// CREATING left behind by a crashed launcher, workers already recorded.
-	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+	require.NoError(t, PutNodegroupRecord(t.Context(), f.kv, &NodegroupRecord{
 		ClusterName: cluster, Name: "ng-stuck",
 		Status:      eks.NodegroupStatusCreating,
 		InstanceIDs: []string{"i-worker1", "i-worker2"},
 	}))
 	// CREATE_FAILED that still holds a partially-launched worker.
-	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+	require.NoError(t, PutNodegroupRecord(t.Context(), f.kv, &NodegroupRecord{
 		ClusterName: cluster, Name: "ng-failed",
 		Status:      eks.NodegroupStatusCreateFailed,
 		InstanceIDs: []string{"i-worker3"},
 	}))
 	// ACTIVE must be left untouched.
-	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+	require.NoError(t, PutNodegroupRecord(t.Context(), f.kv, &NodegroupRecord{
 		ClusterName: cluster, Name: "ng-active",
 		Status:      eks.NodegroupStatusActive,
 		InstanceIDs: []string{"i-worker9"},
@@ -224,21 +224,22 @@ func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
 	assert.ElementsMatch(t, []string{"i-worker1", "i-worker2", "i-worker3"}, terminated)
 
 	for _, ng := range []string{"ng-stuck", "ng-failed"} {
-		got, err := GetNodegroupRecord(f.kv, cluster, ng)
+		got, err := GetNodegroupRecord(t.Context(), f.kv, cluster, ng)
 		require.NoError(t, err)
 		assert.Equal(t, eks.NodegroupStatusCreateFailed, got.Status, ng)
 		assert.Empty(t, got.InstanceIDs, ng)
 	}
 
-	got, err := GetNodegroupRecord(f.kv, cluster, "ng-active")
+	got, err := GetNodegroupRecord(t.Context(), f.kv, cluster, "ng-active")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, got.Status)
 	assert.Equal(t, []string{"i-worker9"}, got.InstanceIDs)
 }
 
 func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
 	rec := &NodegroupRecord{
@@ -253,24 +254,24 @@ func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
 		ScalingDesired: 2,
 		InstanceIDs:    []string{"i-1", "i-2"},
 	}
-	require.NoError(t, PutNodegroupRecord(kv, rec))
+	require.NoError(t, PutNodegroupRecord(t.Context(), kv, rec))
 
-	got, err := GetNodegroupRecord(kv, "c1", "ng1")
+	got, err := GetNodegroupRecord(t.Context(), kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, rec.InstanceIDs, got.InstanceIDs)
 	assert.Equal(t, int64(2), got.ScalingDesired)
 
-	list, err := ListNodegroupRecords(kv, "c1")
+	list, err := ListNodegroupRecords(t.Context(), kv, "c1")
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	assert.Equal(t, "ng1", list[0].Name)
 
-	require.NoError(t, DeleteNodegroupRecord(kv, "c1", "ng1"))
-	_, err = GetNodegroupRecord(kv, "c1", "ng1")
+	require.NoError(t, DeleteNodegroupRecord(t.Context(), kv, "c1", "ng1"))
+	_, err = GetNodegroupRecord(t.Context(), kv, "c1", "ng1")
 	assert.ErrorIs(t, err, ErrNodegroupNotFound)
 
 	// Delete of an absent record is idempotent.
-	require.NoError(t, DeleteNodegroupRecord(kv, "c1", "ng1"))
+	require.NoError(t, DeleteNodegroupRecord(t.Context(), kv, "c1", "ng1"))
 }
 
 func TestBuildAgentUserData_Shape(t *testing.T) {
@@ -345,13 +346,13 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	f.svc.WaitLaunches()
 
 	// The async launch transitions the record to ACTIVE once workers run.
-	active, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	active, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, active.Status)
 
 	// Two workers launched and tracked.
 	assert.Len(t, f.worker.runCalls, 2)
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Len(t, rec.InstanceIDs, 2)
 
@@ -385,7 +386,7 @@ func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, int64(defaultNodegroupDiskSizeGiB), rec.DiskSize)
 
@@ -412,7 +413,7 @@ func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
 	require.NoError(t, err)
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng-gpu")
 	require.NoError(t, err)
 	assert.True(t, rec.GPUEnabled)
 	assert.Equal(t, "nvidia", rec.GPUVendor)
@@ -436,7 +437,7 @@ func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 
-	rec, err := GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
+	rec, err := GetAddonRecord(t.Context(), f.kv, "c1", nvidiaDevicePluginAddonName)
 	require.NoError(t, err, "nvidia-device-plugin must be staged for a GPU nodegroup")
 	assert.Equal(t, "0.17.4", rec.AddonVersion)
 }
@@ -453,7 +454,7 @@ func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing
 	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
-	_, err = GetAddonRecord(f.kv, "c1", nvidiaDevicePluginAddonName)
+	_, err = GetAddonRecord(t.Context(), f.kv, "c1", nvidiaDevicePluginAddonName)
 	require.ErrorIs(t, err, ErrAddonNotFound)
 }
 
@@ -466,7 +467,7 @@ func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.False(t, rec.GPUEnabled)
 	assert.Empty(t, rec.GPUVendor)
@@ -543,7 +544,7 @@ func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng-gpu")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, rec.Status)
 
@@ -570,7 +571,7 @@ func TestCreateNodegroup_GPUWorkerLaunchNoGPUAMINoFallback(t *testing.T) {
 
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng-gpu")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng-gpu")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
 	assert.Contains(t, rec.StatusReason, "resolve eks-node AMI")
@@ -590,7 +591,7 @@ func TestCreateNodegroup_WorkersNeverReady_CreateFailed(t *testing.T) {
 	// No markWorkersReady → NodeCount stays at the baseline; the Ready-gate times out.
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
 	assert.Contains(t, rec.StatusReason, "did not become Ready")
@@ -618,11 +619,11 @@ func TestCreateNodegroup_ReadyGateScopedPerNodegroupNotGlobal(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng-a", 1)
 	f.svc.WaitLaunches()
 
-	ngA, err := GetNodegroupRecord(f.kv, "c1", "ng-a")
+	ngA, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng-a")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, ngA.Status, "ng-a's own Ready worker must activate it")
 
-	ngB, err := GetNodegroupRecord(f.kv, "c1", "ng-b")
+	ngB, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng-b")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, ngB.Status,
 		"ng-b must not be marked ACTIVE by ng-a's Ready nodes — its own workers never registered")
@@ -647,7 +648,7 @@ func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusActive, rec.Status,
 		"the retried launch must converge to ACTIVE, not CREATE_FAILED")
@@ -668,7 +669,7 @@ func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
 	assert.Contains(t, rec.StatusReason, "worker launch shortfall after")
@@ -696,7 +697,7 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 
 func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
 	f := newEKSServiceFixture(t)
-	require.NoError(t, PutClusterMeta(f.kv, &ClusterMeta{
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, &ClusterMeta{
 		Name:               "c1",
 		Status:             ClusterStatusCreating,
 		ControlPlaneENIIP:  "10.0.1.42",
@@ -756,7 +757,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, eks.UpdateStatusSuccessful, aws.StringValue(upOut.Update.Status))
 	assert.Len(t, f.worker.runCalls, 3)
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Len(t, rec.InstanceIDs, 3)
 
@@ -769,7 +770,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, f.worker.terminateCalls, 1)
 	assert.Len(t, f.worker.terminateCalls[0], 2)
-	rec, err = GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Len(t, rec.InstanceIDs, 1)
 }
@@ -809,7 +810,7 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 		require.NoError(t, e)
 	}
 
-	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Len(t, rec.InstanceIDs, 3, "record must converge to desired=3, not overshoot")
 
@@ -879,7 +880,7 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	require.Len(t, f.worker.terminateCalls, 1)
 	assert.Len(t, f.worker.terminateCalls[0], 2)
 
-	_, err = GetNodegroupRecord(f.kv, "c1", "ng1")
+	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	assert.ErrorIs(t, err, ErrNodegroupNotFound)
 
 	// Second delete → ResourceNotFoundException (record already gone).

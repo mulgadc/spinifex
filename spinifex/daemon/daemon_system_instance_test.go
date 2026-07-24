@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -637,9 +638,9 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
 	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
 
-	seedStore, err := handlers_elbv2.NewStore(nc)
+	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
 		LoadBalancerID: "lb-recover",
 		Name:           "recover-alb",
 		Scheme:         handlers_elbv2.SchemeInternal,
@@ -683,9 +684,9 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 	d, nc, tmpDir := newRefreshTestDaemon(t)
 
-	seedStore, err := handlers_elbv2.NewStore(nc)
+	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
 		LoadBalancerID: "lb-werr",
 		Name:           "werr-alb",
 		Scheme:         handlers_elbv2.SchemeInternal,
@@ -747,9 +748,9 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { jsNC.Close() })
 
-	js, err := jsNC.JetStream()
+	js, err := jetstream.New(jsNC)
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
@@ -869,15 +870,15 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { jsNC.Close() })
 
-	js, err := jsNC.JetStream()
+	js, err := jetstream.New(jsNC)
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 	d.externalIPAM = ipam
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(jsNC, ipam, d.vpcService)
+	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
 	require.NoError(t, err)
 	d.eipService = eipSvc
 

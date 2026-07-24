@@ -411,11 +411,11 @@ func TestTargetGroupsForLB_IncludesRuleTGs(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	lb, err := env.svc.store.GetLoadBalancerByArn(env.lbArn)
+	lb, err := env.svc.store.GetLoadBalancerByArn(t.Context(), env.lbArn)
 	require.NoError(t, err)
 	require.NotNil(t, lb)
 
-	tgs, err := env.svc.store.TargetGroupsForLB(lb.LoadBalancerID)
+	tgs, err := env.svc.store.TargetGroupsForLB(t.Context(), lb.LoadBalancerID)
 	require.NoError(t, err)
 
 	arns := make(map[string]bool, len(tgs))

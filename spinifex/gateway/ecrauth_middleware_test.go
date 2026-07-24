@@ -32,8 +32,9 @@ func ecrTestMasterKey(t *testing.T) []byte {
 // newECRAuth builds a wired issuer+verifier over a freshly generated signing key.
 func newECRAuth(t *testing.T) (*gateway_ecrauth.Issuer, *gateway_ecrauth.Verifier) {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := gateway_ecrauth.LoadOrCreateSigningKey(js, ecrTestMasterKey(t), 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, ecrTestMasterKey(t), 1)
 	require.NoError(t, err)
 	return gateway_ecrauth.NewIssuer(key, ecrTestAudience), gateway_ecrauth.NewVerifier(verify, ecrTestAudience)
 }

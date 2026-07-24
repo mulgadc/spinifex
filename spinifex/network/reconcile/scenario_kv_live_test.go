@@ -11,25 +11,24 @@ import (
 	"testing"
 
 	vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // seedKV marshals rec and stores it under key in the named JetStream KV bucket,
 // creating the bucket if absent — mirroring how the VPC handlers persist state.
-func seedKV(t *testing.T, js nats.JetStreamContext, bucket, key string, rec any) {
+func seedKV(t *testing.T, js jetstream.JetStream, bucket, key string, rec any) {
 	t.Helper()
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, 10)
+	kv, err := kvutil.GetOrCreateBucket(t.Context(), js, bucket, 10)
 	if err != nil {
-		t.Fatalf("GetOrCreateKVBucket %s: %v", bucket, err)
+		t.Fatalf("GetOrCreateBucket %s: %v", bucket, err)
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatalf("marshal %s/%s: %v", bucket, key, err)
 	}
-	if _, err := kv.Put(key, b); err != nil {
+	if _, err := kv.Put(t.Context(), key, b); err != nil {
 		t.Fatalf("kv.Put %s/%s: %v", bucket, key, err)
 	}
 }
@@ -38,7 +37,7 @@ func seedKV(t *testing.T, js nats.JetStreamContext, bucket, key string, rec any)
 // control-plane KV, loads intent from it, reconciles into a real NB DB, and
 // asserts the expected rows plus idempotency.
 func TestScenario_LoadIntentFromKV_Live(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	js := startKV(t)
 
 	seedKV(t, js, vpc.KVBucketVPCs, "vpc-a", vpc.VPCRecord{
 		VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", VNI: 100,

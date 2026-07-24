@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/viper"
 )
 
@@ -27,15 +28,15 @@ func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) s
 	}
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := js.KeyValue(handlers_eks.AccountBucketName(accountID))
+	kv, err := js.KeyValue(t.Context(), handlers_eks.AccountBucketName(accountID))
 	if err != nil {
 		t.Fatalf("open EKS account KV for %s: %v", accountID, err)
 	}
-	meta, err := handlers_eks.GetClusterMeta(kv, clusterName)
+	meta, err := handlers_eks.GetClusterMeta(t.Context(), kv, clusterName)
 	if err != nil {
 		t.Fatalf("get cluster meta %s: %v", clusterName, err)
 	}

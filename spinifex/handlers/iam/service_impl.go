@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -15,12 +16,15 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -54,12 +58,12 @@ const (
 
 // putAccessKey writes an access-key record after enforcing the AKIA-prefix
 // invariant. All writers to accessKeysBucket MUST go through this helper.
-func (s *IAMServiceImpl) putAccessKey(accessKeyID string, data []byte) error {
+func (s *IAMServiceImpl) putAccessKey(ctx context.Context, accessKeyID string, data []byte) error {
 	if !strings.HasPrefix(accessKeyID, LongLivedAccessKeyIDPrefix) {
 		return fmt.Errorf("access key ID must start with %q, got %q",
 			LongLivedAccessKeyIDPrefix, accessKeyID)
 	}
-	if _, err := s.accessKeysBucket.Put(accessKeyID, data); err != nil {
+	if _, err := s.accessKeysBucket.Put(ctx, accessKeyID, data); err != nil {
 		return err
 	}
 	return nil
@@ -67,29 +71,36 @@ func (s *IAMServiceImpl) putAccessKey(accessKeyID string, data []byte) error {
 
 // createAccessKey writes an access-key record with CAS semantics (fails if the
 // key already exists). Enforces the AKIA-prefix invariant.
-func (s *IAMServiceImpl) createAccessKey(accessKeyID string, data []byte) error {
+func (s *IAMServiceImpl) createAccessKey(ctx context.Context, accessKeyID string, data []byte) error {
 	if !strings.HasPrefix(accessKeyID, LongLivedAccessKeyIDPrefix) {
 		return fmt.Errorf("access key ID must start with %q, got %q",
 			LongLivedAccessKeyIDPrefix, accessKeyID)
 	}
-	if _, err := s.accessKeysBucket.Create(accessKeyID, data); err != nil {
+	if _, err := s.accessKeysBucket.Create(ctx, accessKeyID, data); err != nil {
 		return err
 	}
 	return nil
 }
 
 // IAMServiceImpl implements IAM operations using NATS JetStream KV.
+//
+// IAMService carries no context: the gateway calls it in-process and vpcd over
+// NATS, and neither boundary passes one through. Each exported method therefore
+// binds context.Background() for its KV work, which leaves the jetstream
+// package's own 5s API timeout in force — the same wait the legacy KV API
+// applied. Every helper below it takes the context as its leading parameter, so
+// the day the contract gains one only those binding lines change.
 type IAMServiceImpl struct {
-	js                     nats.JetStreamContext
+	js                     jetstream.JetStream
 	natsConn               *nats.Conn
-	usersBucket            nats.KeyValue
-	accessKeysBucket       nats.KeyValue
-	policiesBucket         nats.KeyValue
-	accountsBucket         nats.KeyValue
-	accountCounterBucket   nats.KeyValue
-	rolesBucket            nats.KeyValue
-	instanceProfilesBucket nats.KeyValue
-	groupsBucket           nats.KeyValue
+	usersBucket            jetstream.KeyValue
+	accessKeysBucket       jetstream.KeyValue
+	policiesBucket         jetstream.KeyValue
+	accountsBucket         jetstream.KeyValue
+	accountCounterBucket   jetstream.KeyValue
+	rolesBucket            jetstream.KeyValue
+	instanceProfilesBucket jetstream.KeyValue
+	groupsBucket           jetstream.KeyValue
 	key                    *masterkey.Key
 	// replicas is the JetStream replication factor for lazily-created per-account buckets.
 	replicas int
@@ -99,79 +110,80 @@ var _ IAMService = (*IAMServiceImpl)(nil)
 
 // NewIAMServiceImpl creates a new IAM service backed by NATS JetStream KV.
 // clusterSize sets the replication factor; pass 1 for single-node or test setups.
-func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
+// The context bounds bucket creation and the schema migrations only.
+func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
 	if len(masterKey) != 32 {
 		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(masterKey))
 	}
 
 	replicas := max(clusterSize, 1)
 
-	js, err := natsConn.JetStream()
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	usersBucket, err := getOrCreateBucket(js, KVBucketUsers, 10, replicas)
+	usersBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketUsers, 10, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init users bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketUsers, usersBucket, KVBucketUsersVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketUsers, usersBucket, KVBucketUsersVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketUsers, err)
 	}
 
-	accessKeysBucket, err := getOrCreateBucket(js, KVBucketAccessKeys, 5, replicas)
+	accessKeysBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccessKeys, 5, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init access keys bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketAccessKeys, accessKeysBucket, KVBucketAccessKeysVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketAccessKeys, accessKeysBucket, KVBucketAccessKeysVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccessKeys, err)
 	}
 
-	policiesBucket, err := getOrCreateBucket(js, KVBucketPolicies, 10, replicas)
+	policiesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketPolicies, 10, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init policies bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketPolicies, policiesBucket, KVBucketPoliciesVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketPolicies, policiesBucket, KVBucketPoliciesVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPolicies, err)
 	}
 
-	accountsBucket, err := getOrCreateBucket(js, KVBucketAccounts, 5, replicas)
+	accountsBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccounts, 5, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init accounts bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketAccounts, accountsBucket, KVBucketAccountsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketAccounts, accountsBucket, KVBucketAccountsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccounts, err)
 	}
 
-	accountCounterBucket, err := getOrCreateBucket(js, KVBucketAccountCounter, 5, replicas)
+	accountCounterBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccountCounter, 5, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init account counter bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketAccountCounter, accountCounterBucket, KVBucketAccountCounterVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketAccountCounter, accountCounterBucket, KVBucketAccountCounterVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccountCounter, err)
 	}
 
-	rolesBucket, err := getOrCreateBucket(js, KVBucketRoles, 10, replicas)
+	rolesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketRoles, 10, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init roles bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketRoles, rolesBucket, KVBucketRolesVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketRoles, rolesBucket, KVBucketRolesVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketRoles, err)
 	}
 
-	instanceProfilesBucket, err := getOrCreateBucket(js, KVBucketInstanceProfiles, 10, replicas)
+	instanceProfilesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketInstanceProfiles, 10, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init instance profiles bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketInstanceProfiles, instanceProfilesBucket, KVBucketInstanceProfilesVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketInstanceProfiles, instanceProfilesBucket, KVBucketInstanceProfilesVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
-	groupsBucket, err := getOrCreateBucket(js, KVBucketGroups, 10, replicas)
+	groupsBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketGroups, 10, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init groups bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketGroups, groupsBucket, KVBucketGroupsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketGroups, groupsBucket, KVBucketGroupsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketGroups, err)
 	}
 
@@ -204,21 +216,6 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		key:                    key,
 		replicas:               replicas,
 	}, nil
-}
-
-func getOrCreateBucket(js nats.JetStreamContext, name string, history uint8, replicas int) (nats.KeyValue, error) {
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   name,
-		History:  history,
-		Replicas: replicas,
-	})
-	if err != nil {
-		kv, err = js.KeyValue(name)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return kv, nil
 }
 
 // copyTags converts SDK IAM tags into the stored Tag slice, skipping entries
@@ -313,6 +310,7 @@ func removeTagKeys(existing []Tag, keys []*string) []Tag {
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	if err := validateUserName(userName); err != nil {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -351,8 +349,8 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 	}
 
 	// Atomic create — fails if key already exists (race-safe)
-	if _, err := s.usersBucket.Create(kvKey, data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.usersBucket.Create(ctx, kvKey, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store user: %w", err)
@@ -373,7 +371,8 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 }
 
 func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
@@ -392,9 +391,10 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 }
 
 func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	keys, err := s.usersBucket.Keys()
+	ctx := context.Background()
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListUsersOutput{
 				Users:       []*iam.User{},
 				IsTruncated: aws.Bool(false),
@@ -418,9 +418,9 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 			continue
 		}
 
-		entry, err := s.usersBucket.Get(key)
+		entry, err := s.usersBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListUsers: user key disappeared (concurrent delete)", "key", key)
 			} else {
 				slog.Warn("ListUsers: failed to get user", "key", key, "err", err)
@@ -455,10 +455,11 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 }
 
 func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	kvKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +477,7 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	if err := s.usersBucket.Delete(kvKey); err != nil {
+	if err := s.usersBucket.Delete(ctx, kvKey); err != nil {
 		return nil, fmt.Errorf("delete user: %w", err)
 	}
 
@@ -489,10 +490,11 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -529,21 +531,21 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("marshal access key: %w", err)
 	}
 
-	if err := s.putAccessKey(accessKeyID, akData); err != nil {
+	if err := s.putAccessKey(ctx, accessKeyID, akData); err != nil {
 		return nil, fmt.Errorf("store access key: %w", err)
 	}
 
 	user.AccessKeys = append(user.AccessKeys, accessKeyID)
 	userData, err := json.Marshal(user)
 	if err != nil {
-		if rbErr := s.accessKeysBucket.Delete(accessKeyID); rbErr != nil {
+		if rbErr := s.accessKeysBucket.Delete(ctx, accessKeyID); rbErr != nil {
 			slog.Error("Rollback failed: orphaned access key", "accessKeyID", accessKeyID, "err", rbErr)
 		}
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
-		if rbErr := s.accessKeysBucket.Delete(accessKeyID); rbErr != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
+		if rbErr := s.accessKeysBucket.Delete(ctx, accessKeyID); rbErr != nil {
 			slog.Error("Rollback failed: orphaned access key", "accessKeyID", accessKeyID, "err", rbErr)
 		}
 		return nil, fmt.Errorf("update user: %w", err)
@@ -564,16 +566,17 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 }
 
 func (s *IAMServiceImpl) ListAccessKeys(accountID string, input *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
 
 	var metadata []*iam.AccessKeyMetadata
 	for _, keyID := range user.AccessKeys {
-		entry, err := s.accessKeysBucket.Get(keyID)
+		entry, err := s.accessKeysBucket.Get(ctx, keyID)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListAccessKeys: access key disappeared (concurrent delete)", "keyID", keyID)
 			} else {
 				slog.Warn("ListAccessKeys: failed to get access key", "keyID", keyID, "err", err)
@@ -603,11 +606,12 @@ func (s *IAMServiceImpl) ListAccessKeys(accountID string, input *iam.ListAccessK
 }
 
 func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	accessKeyID := *input.AccessKeyId
 	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -624,11 +628,11 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
-	if err := s.accessKeysBucket.Delete(accessKeyID); err != nil {
+	if err := s.accessKeysBucket.Delete(ctx, accessKeyID); err != nil {
 		return nil, fmt.Errorf("delete access key: %w", err)
 	}
 
@@ -637,6 +641,7 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 }
 
 func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
+	ctx := context.Background()
 	status := *input.Status
 	if status != AccessKeyStatusActive && status != AccessKeyStatusInactive {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -644,9 +649,9 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 
 	accessKeyID := *input.AccessKeyId
 
-	entry, err := s.accessKeysBucket.Get(accessKeyID)
+	entry, err := s.accessKeysBucket.Get(ctx, accessKeyID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get access key: %w", err)
@@ -667,7 +672,7 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 		return nil, fmt.Errorf("marshal access key: %w", err)
 	}
 
-	if err := s.putAccessKey(accessKeyID, data); err != nil {
+	if err := s.putAccessKey(ctx, accessKeyID, data); err != nil {
 		return nil, fmt.Errorf("update access key: %w", err)
 	}
 
@@ -682,9 +687,10 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 // LookupAccessKey retrieves an access key by its ID. Returns the full record
 // including the encrypted secret, for use by the SigV4 middleware.
 func (s *IAMServiceImpl) LookupAccessKey(accessKeyID string) (*AccessKey, error) {
-	entry, err := s.accessKeysBucket.Get(accessKeyID)
+	ctx := context.Background()
+	entry, err := s.accessKeysBucket.Get(ctx, accessKeyID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("lookup access key: %w", err)
@@ -706,6 +712,7 @@ func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
 // SeedBootstrap seeds the system root user and optional admin account into NATS KV.
 // Uses conditional create for multi-node safety; first node wins, others skip silently.
 func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
+	ctx := context.Background()
 	// --- Seed system account (000000000000) ---
 	systemAccount := Account{
 		AccountID:   utils.GlobalAccountID,
@@ -717,7 +724,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal system account: %w", err)
 	}
-	if _, err := s.accountsBucket.Create(utils.GlobalAccountID, accountData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.accountsBucket.Create(ctx, utils.GlobalAccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("seed system account: %w", err)
 	}
 
@@ -741,8 +748,8 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	}
 
 	// Conditional create — fails if key already exists (another node seeded first)
-	_, err = s.usersBucket.Create(kvKey, userData)
-	if errors.Is(err, nats.ErrKeyExists) {
+	_, err = s.usersBucket.Create(ctx, kvKey, userData)
+	if errors.Is(err, jetstream.ErrKeyExists) {
 		slog.Info("Root user already seeded by another node, skipping")
 	} else if err != nil {
 		return fmt.Errorf("seed root user: %w", err)
@@ -763,8 +770,8 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		return fmt.Errorf("marshal root access key: %w", err)
 	}
 
-	err = s.createAccessKey(data.AccessKeyID, akData)
-	if errors.Is(err, nats.ErrKeyExists) {
+	err = s.createAccessKey(ctx, data.AccessKeyID, akData)
+	if errors.Is(err, jetstream.ErrKeyExists) {
 		slog.Info("Root access key already seeded by another node, skipping")
 	} else if err != nil {
 		return fmt.Errorf("seed root access key: %w", err)
@@ -774,7 +781,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 
 	// --- Seed admin account (000000000001) if present ---
 	if data.Admin != nil {
-		if err := s.seedAdminAccount(data.Admin); err != nil {
+		if err := s.seedAdminAccount(ctx, data.Admin); err != nil {
 			return fmt.Errorf("seed admin account: %w", err)
 		}
 	}
@@ -784,7 +791,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 
 // seedAdminAccount creates the default admin account, user, access key,
 // AdministratorAccess policy, and sets the account counter to 2.
-func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
+func (s *IAMServiceImpl) seedAdminAccount(ctx context.Context, admin *AdminBootstrapData) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Create admin account record
@@ -798,12 +805,12 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal admin account: %w", err)
 	}
-	if _, err := s.accountsBucket.Create(admin.AccountID, accountData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.accountsBucket.Create(ctx, admin.AccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("store admin account: %w", err)
 	}
 
 	// Set account counter to 2 so next CreateAccount gets 000000000002
-	if _, err := s.accountCounterBucket.Create("next_id", []byte("2")); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.accountCounterBucket.Create(ctx, "next_id", []byte("2")); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("seed account counter: %w", err)
 	}
 
@@ -830,7 +837,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 		return fmt.Errorf("marshal admin policy: %w", err)
 	}
 	policyKVKey := admin.AccountID + ".AdministratorAccess"
-	if _, err := s.policiesBucket.Create(policyKVKey, policyData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.policiesBucket.Create(ctx, policyKVKey, policyData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("store admin policy: %w", err)
 	}
 
@@ -857,7 +864,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal admin user: %w", err)
 	}
-	if _, err := s.usersBucket.Create(kvKey, userData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.usersBucket.Create(ctx, kvKey, userData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("store admin user: %w", err)
 	}
 
@@ -874,7 +881,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal admin access key: %w", err)
 	}
-	if err := s.createAccessKey(admin.AccessKeyID, akData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if err := s.createAccessKey(ctx, admin.AccessKeyID, akData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("store admin access key: %w", err)
 	}
 
@@ -902,9 +909,10 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 
 // IsEmpty returns true if the users bucket has no entries.
 func (s *IAMServiceImpl) IsEmpty() (bool, error) {
-	keys, err := s.usersBucket.Keys()
+	ctx := context.Background()
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return true, nil
 		}
 		return false, fmt.Errorf("check users bucket: %w", err)
@@ -923,18 +931,19 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 
 // CreateAccount creates a new account with a sequentially assigned 12-digit ID using a CAS loop.
 func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
+	ctx := context.Background()
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 
 	var accountID string
 	for {
-		entry, err := s.accountCounterBucket.Get("next_id")
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		entry, err := s.accountCounterBucket.Get(ctx, "next_id")
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// First account ever; 000000000000 is the global account.
 			accountID = fmt.Sprintf("%012d", 1)
-			if _, err := s.accountCounterBucket.Create("next_id", []byte("2")); err != nil {
-				if errors.Is(err, nats.ErrKeyExists) {
+			if _, err := s.accountCounterBucket.Create(ctx, "next_id", []byte("2")); err != nil {
+				if errors.Is(err, jetstream.ErrKeyExists) {
 					continue // Another node raced us, retry
 				}
 				return nil, fmt.Errorf("init account counter: %w", err)
@@ -952,8 +961,8 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 		accountID = fmt.Sprintf("%012d", nextID)
 
 		newVal := []byte(strconv.FormatInt(nextID+1, 10))
-		if _, err := s.accountCounterBucket.Update("next_id", newVal, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
+		if _, err := s.accountCounterBucket.Update(ctx, "next_id", newVal, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
 				continue // CAS conflict, retry
 			}
 			return nil, fmt.Errorf("update account counter: %w", err)
@@ -973,7 +982,7 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 		return nil, fmt.Errorf("marshal account: %w", err)
 	}
 
-	if _, err := s.accountsBucket.Create(accountID, data); err != nil {
+	if _, err := s.accountsBucket.Create(ctx, accountID, data); err != nil {
 		return nil, fmt.Errorf("store account: %w", err)
 	}
 
@@ -996,9 +1005,10 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 
 // GetAccount retrieves an account by its 12-digit ID.
 func (s *IAMServiceImpl) GetAccount(accountID string) (*Account, error) {
-	entry, err := s.accountsBucket.Get(accountID)
+	ctx := context.Background()
+	entry, err := s.accountsBucket.Get(ctx, accountID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get account: %w", err)
@@ -1013,9 +1023,10 @@ func (s *IAMServiceImpl) GetAccount(accountID string) (*Account, error) {
 
 // ListAccounts returns all accounts.
 func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
-	keys, err := s.accountsBucket.Keys()
+	ctx := context.Background()
+	keys, err := kvutil.Keys(ctx, s.accountsBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return []*Account{}, nil
 		}
 		return nil, fmt.Errorf("list account keys: %w", err)
@@ -1026,9 +1037,9 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 		if key == utils.VersionKey {
 			continue
 		}
-		entry, err := s.accountsBucket.Get(key)
+		entry, err := s.accountsBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("get account %s: %w", key, err)
@@ -1049,6 +1060,7 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
+	ctx := context.Background()
 	policyName := *input.PolicyName
 	if err := validatePolicyName(policyName); err != nil {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -1089,8 +1101,8 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 		return nil, fmt.Errorf("marshal policy: %w", err)
 	}
 
-	if _, err := s.policiesBucket.Create(kvKey, data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.policiesBucket.Create(ctx, kvKey, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store policy: %w", err)
@@ -1115,12 +1127,13 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 }
 
 func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
 
-	counts, err := s.buildAttachmentCounts(accountID)
+	counts, err := s.buildAttachmentCounts(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
@@ -1143,7 +1156,8 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 }
 
 func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
@@ -1165,7 +1179,8 @@ func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicy
 }
 
 func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,9 +1198,10 @@ func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPol
 }
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	keys, err := s.policiesBucket.Keys()
+	ctx := context.Background()
+	keys, err := kvutil.Keys(ctx, s.policiesBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListPoliciesOutput{
 				Policies:    []*iam.Policy{},
 				IsTruncated: aws.Bool(false),
@@ -1194,7 +1210,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 		return nil, fmt.Errorf("list policy keys: %w", err)
 	}
 
-	attachCounts, err := s.buildAttachmentCounts(accountID)
+	attachCounts, err := s.buildAttachmentCounts(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("build attachment counts: %w", err)
 	}
@@ -1209,9 +1225,9 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 			continue
 		}
 
-		entry, err := s.policiesBucket.Get(key)
+		entry, err := s.policiesBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListPolicies: policy key disappeared (concurrent delete)", "key", key)
 			} else {
 				slog.Warn("ListPolicies: failed to get policy", "key", key, "err", err)
@@ -1245,12 +1261,13 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 }
 
 func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
 
-	counts, err := s.buildAttachmentCounts(accountID)
+	counts, err := s.buildAttachmentCounts(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
@@ -1259,7 +1276,7 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 	}
 
 	kvKey := accountID + "." + policy.PolicyName
-	if err := s.policiesBucket.Delete(kvKey); err != nil {
+	if err := s.policiesBucket.Delete(ctx, kvKey); err != nil {
 		return nil, fmt.Errorf("delete policy: %w", err)
 	}
 
@@ -1272,6 +1289,7 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	policyARN := *input.PolicyArn
 	userKVKey := accountID + "." + userName
@@ -1281,12 +1299,12 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	// grant document is modeled in builtinManagedPolicyDoc and resolved at
 	// evaluation time. Customer-managed ARNs must still exist.
 	if !isAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1301,7 +1319,7 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1310,11 +1328,12 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 }
 
 func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	policyARN := *input.PolicyArn
 	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,7 +1349,7 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1339,7 +1358,8 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 }
 
 func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
@@ -1355,7 +1375,7 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 			})
 			continue
 		}
-		policy, err := s.getPolicyByARN(accountID, arn)
+		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedUserPolicies: policy not found for ARN", "arn", arn, "err", err)
 			continue
@@ -1380,6 +1400,7 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 // Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
 // blind read-modify-write Put like the other user writers (no CAS).
 func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
@@ -1392,7 +1413,7 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
 	}
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1407,7 +1428,7 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1418,10 +1439,11 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 // GetUserPolicy returns a user's inline policy document by name as a raw JSON
 // string, matching the in-repo convention used by GetGroupPolicy.
 func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	policyName := *input.PolicyName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1441,11 +1463,12 @@ func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolic
 // DeleteUserPolicy removes a user's inline policy by name. A missing name
 // yields NoSuchEntity, matching AWS. Blind Put like the other user writers.
 func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
 	policyName := *input.PolicyName
 	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1460,7 +1483,7 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
 
-	if _, err := s.usersBucket.Put(userKVKey, userData); err != nil {
+	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1471,7 +1494,8 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 // ListUserPolicies returns the names of a user's inline policies, sorted for
 // deterministic output. Pagination is not implemented: IsTruncated is always false.
 func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
@@ -1496,12 +1520,13 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 // TagUser upserts tags on a user. Blind read-modify-write Put like the other
 // user writers (no CAS).
 func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
 	userName := *input.UserName
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1516,7 +1541,7 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
-	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+	if _, err := s.usersBucket.Put(ctx, accountID+"."+userName, data); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1526,8 +1551,9 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 
 // UntagUser removes the named tag keys from a user; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	ctx := context.Background()
 	userName := *input.UserName
-	user, err := s.getUser(accountID, userName)
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1538,7 +1564,7 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 	if err != nil {
 		return nil, fmt.Errorf("marshal user: %w", err)
 	}
-	if _, err := s.usersBucket.Put(accountID+"."+userName, data); err != nil {
+	if _, err := s.usersBucket.Put(ctx, accountID+"."+userName, data); err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
@@ -1549,7 +1575,8 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 // ListUserTags returns a user's tags. Pagination is not implemented:
 // IsTruncated is always false.
 func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
-	user, err := s.getUser(accountID, *input.UserName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
 	if err != nil {
 		return nil, err
 	}
@@ -1561,11 +1588,12 @@ func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsI
 
 // TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
 func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
+	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
@@ -1580,7 +1608,7 @@ func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) 
 	if err != nil {
 		return nil, fmt.Errorf("marshal policy: %w", err)
 	}
-	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
 		return nil, fmt.Errorf("update policy: %w", err)
 	}
 
@@ -1590,7 +1618,8 @@ func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) 
 
 // UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
@@ -1601,7 +1630,7 @@ func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInp
 	if err != nil {
 		return nil, fmt.Errorf("marshal policy: %w", err)
 	}
-	if _, err := s.policiesBucket.Put(accountID+"."+policy.PolicyName, data); err != nil {
+	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
 		return nil, fmt.Errorf("update policy: %w", err)
 	}
 
@@ -1612,7 +1641,8 @@ func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInp
 // ListPolicyTags returns a policy's tags. Pagination is not implemented:
 // IsTruncated is always false.
 func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
-	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	ctx := context.Background()
+	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
 	if err != nil {
 		return nil, err
 	}
@@ -1625,7 +1655,8 @@ func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyT
 // GetUserPolicies resolves all policy documents attached to a user.
 // Used internally by the gateway for policy evaluation.
 func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDocument, error) {
-	user, err := s.getUser(accountID, userName)
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
 		return nil, err
 	}
@@ -1633,7 +1664,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	var docs []PolicyDocument
 	// Direct user-attached managed policies.
 	for _, arn := range user.AttachedPolicies {
-		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(ctx, accountID, arn)
 		if err != nil {
 			// Fail closed: unresolvable policy means we cannot make a safe access decision.
 			return nil, err
@@ -1660,7 +1691,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	// grants — never over-permitting. A missing/corrupt policy within a
 	// resolvable group still fails closed, mirroring the direct-policy handling.
 	for _, groupName := range user.Groups {
-		group, err := s.getGroup(accountID, groupName)
+		group, err := s.getGroup(ctx, accountID, groupName)
 		if err != nil {
 			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 				slog.Warn("GetUserPolicies: member references missing group; skipping",
@@ -1670,7 +1701,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 			return nil, err // transient/corrupt → fail closed
 		}
 		for _, arn := range group.AttachedPolicies {
-			doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+			doc, include, err := s.resolveAttachedPolicy(ctx, accountID, arn)
 			if err != nil {
 				return nil, err // fail closed
 			}
@@ -1696,7 +1727,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, error) {
+func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyARN string) (*Policy, error) {
 	parts := strings.SplitN(policyARN, ":policy", 2)
 	if len(parts) != 2 || parts[1] == "" {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
@@ -1708,9 +1739,9 @@ func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, e
 	}
 
 	kvKey := accountID + "." + policyName
-	entry, err := s.policiesBucket.Get(kvKey)
+	entry, err := s.policiesBucket.Get(ctx, kvKey)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get policy: %w", err)
@@ -1731,10 +1762,10 @@ func (s *IAMServiceImpl) getPolicyByARN(accountID, policyARN string) (*Policy, e
 // buildAttachmentCounts fetches all users for the account once and returns a
 // map of policyARN -> number of users that have it attached, avoiding a
 // per-policy full scan when listing or inspecting policies.
-func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int64, error) {
-	keys, err := s.usersBucket.Keys()
+func (s *IAMServiceImpl) buildAttachmentCounts(ctx context.Context, accountID string) (map[string]int64, error) {
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("build attachment counts: %w", err)
@@ -1750,9 +1781,9 @@ func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int
 			continue
 		}
 
-		entry, err := s.usersBucket.Get(key)
+		entry, err := s.usersBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("buildAttachmentCounts: user key disappeared", "key", key)
 				continue
 			}
@@ -1771,11 +1802,11 @@ func (s *IAMServiceImpl) buildAttachmentCounts(accountID string) (map[string]int
 	return counts, nil
 }
 
-func (s *IAMServiceImpl) getUser(accountID, userName string) (*User, error) {
+func (s *IAMServiceImpl) getUser(ctx context.Context, accountID, userName string) (*User, error) {
 	kvKey := accountID + "." + userName
-	entry, err := s.usersBucket.Get(kvKey)
+	entry, err := s.usersBucket.Get(ctx, kvKey)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get user: %w", err)
@@ -1931,10 +1962,10 @@ var summaryQuotaDefaults = map[string]int64{
 // are keyed "accountID.name"; counting is by key prefix only (no Get/unmarshal)
 // so it stays cheap with many resources. The version key is skipped and a
 // missing bucket counts as zero.
-func countBucket(bucket nats.KeyValue, accountID string) (int64, error) {
-	keys, err := bucket.Keys()
+func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID string) (int64, error) {
+	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
 		}
 		return 0, err
@@ -1957,7 +1988,8 @@ func countBucket(bucket nats.KeyValue, accountID string) (int64, error) {
 // values as a SummaryMap. Counts are scoped to accountID by key prefix; quota
 // values are static informational constants (see summaryQuotaDefaults).
 func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
-	counted := map[string]nats.KeyValue{
+	ctx := context.Background()
+	counted := map[string]jetstream.KeyValue{
 		"Users":            s.usersBucket,
 		"Groups":           s.groupsBucket,
 		"Roles":            s.rolesBucket,
@@ -1970,7 +2002,7 @@ func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSu
 		summary[key] = aws.Int64(value)
 	}
 	for key, bucket := range counted {
-		n, err := countBucket(bucket, accountID)
+		n, err := countBucket(ctx, bucket, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("count %s: %w", key, err)
 		}

@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // reservePlacementRetries bounds the CAS retry loop when concurrent RunTask calls
@@ -26,13 +26,13 @@ const reservePlacementRetries = 5
 // are returned as RunTask failures; already-placed tasks in the same call stay.
 func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 
 	var clusterRec ClusterRecord
-	found, err := getJSON(kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 
-	taskDef, err := s.resolveTaskDef(kv, aws.StringValue(input.TaskDefinition))
+	taskDef, err := s.resolveTaskDef(ctx, kv, aws.StringValue(input.TaskDefinition))
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewString()
-		inst, err := s.reservePlacement(kv, cluster, taskID, cpu, mem, gpu, strategy)
+		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, strategy)
 		if err != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{
 				Reason: aws.String("RESOURCE:placement"),
@@ -82,10 +82,10 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 			}
 		}
 
-		if err := putJSON(kv, TaskKey(cluster, taskID), rec); err != nil {
+		if err := putJSON(ctx, kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
-		if err := s.publishAssign(kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
+		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
@@ -97,9 +97,9 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 // identity onto rec. On any failure it rolls back (releases a half-allocated ENI
 // and the placement reservation) and returns a RunTask failure for this task —
 // the caller skips it without leaking the ENI or the reserved capacity.
-func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
+func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
 	rollback := func(reason string, err error) *ecs.Failure {
-		if rerr := s.releaseReservation(kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
+		if rerr := s.releaseReservation(ctx, kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
 		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
@@ -126,9 +126,9 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv nats.KeyValue, accoun
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
 // reservation under a KV CAS, retrying on contention.
-func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
+func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
-		instances, err := s.listInstanceRecords(kv, cluster)
+		instances, err := s.listInstanceRecords(ctx, kv, cluster)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +138,7 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 		}
 
 		// Re-read the chosen instance for its current revision, then CAS-update.
-		entry, err := kv.Get(InstanceKey(cluster, chosen.InstanceID))
+		entry, err := kv.Get(ctx, InstanceKey(cluster, chosen.InstanceID))
 		if err != nil {
 			continue
 		}
@@ -157,7 +157,7 @@ func (s *Service) reservePlacement(kv nats.KeyValue, cluster, taskID string, cpu
 		if merr != nil {
 			return nil, merr
 		}
-		if _, uerr := kv.Update(InstanceKey(cluster, live.InstanceID), data, entry.Revision()); uerr != nil {
+		if _, uerr := kv.Update(ctx, InstanceKey(cluster, live.InstanceID), data, entry.Revision()); uerr != nil {
 			continue // lost the CAS race; retry placement
 		}
 		return &live, nil
@@ -194,7 +194,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 // agent drains it by polling the gateway (PollAssignments) rather than
 // subscribing to NATS, so the bus stays host-internal. Durable + restart-safe:
 // an unacked assign survives an agent crash and is re-delivered on the next poll.
-func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
+func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
 	msg := bus.Assign{
 		AccountID:        accountID,
 		ClusterName:      cluster,
@@ -214,13 +214,13 @@ func (s *Service) publishAssign(kv nats.KeyValue, accountID, cluster, instanceID
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, c.toAssignContainer())
 	}
-	return putJSON(kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
+	return putJSON(ctx, kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.
-func (s *Service) DescribeTasks(_ context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
+func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (s *Service) DescribeTasks(_ context.Context, input *ecs.DescribeTasksInput
 	for _, ref := range awsStringSlice(input.Tasks) {
 		taskID := containerInstanceShortID(ref)
 		var rec TaskRecord
-		found, err := getJSON(kv, TaskKey(cluster, taskID), &rec)
+		found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -242,20 +242,20 @@ func (s *Service) DescribeTasks(_ context.Context, input *ecs.DescribeTasksInput
 }
 
 // ListTasks returns the ARNs of all tasks in a cluster.
-func (s *Service) ListTasks(_ context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
+func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
+	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := &ecs.ListTasksOutput{}
 	for _, k := range keys {
 		var rec TaskRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}

@@ -10,7 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,10 +155,10 @@ func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
 	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.Error(t, err, "teardown failure must surface")
 
-	_, getErr := f.kv.Get(OIDCSigningKeyKey("alpha"))
-	assert.ErrorIs(t, getErr, nats.ErrKeyNotFound, "OIDC key must be zeroized before teardown, even when teardown fails")
+	_, getErr := f.kv.Get(t.Context(), OIDCSigningKeyKey("alpha"))
+	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "OIDC key must be zeroized before teardown, even when teardown fails")
 
-	meta, metaErr := GetClusterMeta(f.kv, "alpha")
+	meta, metaErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.NoError(t, metaErr, "meta must survive a failed teardown for retry")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
 }
@@ -193,11 +193,10 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 // bucket so the AccessEntry handlers (which gate on cluster existence) can run.
 func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
 	t.Helper()
-	js, err := svc.deps.NATSConn.JetStream()
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
-	require.NoError(t, err)
-	require.NoError(t, PutClusterMeta(kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
 }
 
 const testPrincipalARN = "arn:aws:iam::111122223333:role/dev"
@@ -372,13 +371,12 @@ func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 
 func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
-	js, err := svc.deps.NATSConn.JetStream()
-	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:cluster/c1"
-	require.NoError(t, PutClusterMeta(kv, &ClusterMeta{
+	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{
 		Name:   "c1",
 		Status: ClusterStatusActive,
 		Tags:   map[string]string{"env": "prod"},
@@ -415,13 +413,12 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 
 func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
-	js, err := svc.deps.NATSConn.JetStream()
-	require.NoError(t, err)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
-	require.NoError(t, PutNodegroupRecord(kv, &NodegroupRecord{
+	require.NoError(t, PutNodegroupRecord(t.Context(), kv, &NodegroupRecord{
 		ClusterName: "c1",
 		Name:        "ng1",
 		Arn:         arn,

@@ -2466,7 +2466,9 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 		return nil, nil, nil, nil, fmt.Errorf("load master key: %w", err)
 	}
 
-	svc, err := handlers_iam.NewIAMServiceImpl(nc, masterKey, len(cfg.Nodes))
+	// Background: this runs at CLI top level, where there is no request to
+	// inherit a deadline from and the process exits after the one command.
+	svc, err := handlers_iam.NewIAMServiceImpl(context.Background(), nc, masterKey, len(cfg.Nodes))
 	if err != nil {
 		nc.Close()
 		return nil, nil, nil, nil, fmt.Errorf("init IAM service: %w", err)
@@ -2500,7 +2502,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	// Create default VPC for the new account (belt-and-suspenders: daemon also
 	// does this via iam.account.created event, but daemon may not be running).
 	nodeConfig := cfg.Nodes[cfg.Node]
-	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(&nodeConfig, nc)
+	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(context.Background(), &nodeConfig, nc)
 	if vpcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC service: %v\n", vpcErr)
 	} else if _, vpcErr = vpcSvc.EnsureDefaultVPC(accountID); vpcErr != nil {

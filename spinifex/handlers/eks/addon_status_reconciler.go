@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"time"
@@ -11,12 +12,12 @@ import (
 // report names an unknown add-on (DeleteAddon already removed the record) or
 // when the status would not change, so a steady stream of "applied"/"ready"
 // reports is cheap and idempotent.
-func (r *ClusterReconciler) applyAddonStatusReport(report AddonStatusReport) {
+func (r *ClusterReconciler) applyAddonStatusReport(ctx context.Context, report AddonStatusReport) {
 	if report.Addon == "" {
 		return
 	}
 	now := time.Now().UTC()
-	_, err := casUpdateAddon(r.acctKV, r.clusterName, report.Addon, func(rec *AddonRecord) bool {
+	_, err := casUpdateAddon(ctx, r.acctKV, r.clusterName, report.Addon, func(rec *AddonRecord) bool {
 		next, changed := nextAddonStatus(rec.Status, report.Phase)
 		// Surface the agent's message as the add-on health on failure, and clear
 		// it once the add-on recovers to ACTIVE.

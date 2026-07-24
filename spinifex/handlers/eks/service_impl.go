@@ -28,6 +28,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // SubnetVPCResolver resolves a subnet to its VPC ID and CIDR.
@@ -228,7 +229,7 @@ type eipProvisioner interface {
 // EKSServiceImpl is the daemon-side EKSService implementation.
 type EKSServiceImpl struct {
 	deps     EKSServiceDeps
-	leaderKV nats.KeyValue
+	leaderKV jetstream.KeyValue
 	registry *ReconcilerRegistry
 
 	mu       sync.Mutex
@@ -272,15 +273,18 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
 	}
-	js, err := deps.NATSConn.JetStream()
+	js, err := jetstream.New(deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
-	leaderKV, err := InitLeaderBucket(js, max(deps.ClusterSize, 1))
+	// The leader bucket outlives every request, so its open is bounded by the
+	// service's own background context rather than a caller's.
+	ctx, cancel := context.WithCancel(context.Background())
+	leaderKV, err := InitLeaderBucket(ctx, js, max(deps.ClusterSize, 1))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
 		deps:                     deps,
 		leaderKV:                 leaderKV,
@@ -319,47 +323,59 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 		slog.Debug("SpawnRegisteredReconcilers: deps not ready, skipping")
 		return nil
 	}
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 	prev := -1
+	var scanErr error
 	for attempt := range spawnScanMaxAttempts {
-		observed := s.spawnRegisteredReconcilersScan(js)
-		if observed <= prev {
-			break
+		observed, err := s.spawnRegisteredReconcilersScan(s.bgCtx, js)
+		switch {
+		// A failed enumeration is not a settled one. Reading an unreachable
+		// JetStream as "no clusters" would leave every cluster without its
+		// reconciler until the next daemon restart, so the pass is retried and the
+		// last failure surfaces to the caller.
+		case err != nil:
+			slog.Warn("SpawnRegisteredReconcilers: scan failed", "attempt", attempt, "err", err)
+		case observed <= prev:
+			return nil
+		default:
+			prev = observed
 		}
-		prev = observed
+		scanErr = err
 		if attempt < spawnScanMaxAttempts-1 {
 			time.Sleep(s.spawnScanRetryBackoff)
 		}
 	}
-	return nil
+	return scanErr
 }
 
 // spawnRegisteredReconcilersScan runs one enumeration pass and resumes reconcilers
 // for every CREATING/ACTIVE cluster it can see, returning the count observed so the
-// caller can detect when a lagging JetStream enumeration has settled.
-func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext) int {
+// caller can detect when a lagging JetStream enumeration has settled. An
+// incomplete enumeration is reported rather than counted, so a truncated pass is
+// never mistaken for a settled one.
+func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(ctx context.Context, js jetstream.JetStream) (int, error) {
+	names, err := accountBucketNames(ctx, s.deps.NATSConn)
+	if err != nil {
+		return 0, fmt.Errorf("enumerate account buckets: %w", err)
+	}
 	observed := 0
-	buckets := js.KeyValueStoreNames()
-	for name := range buckets {
-		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
-			continue
-		}
+	for _, name := range names {
 		accountID := strings.TrimPrefix(name, KVBucketEKSAccountPrefix)
-		acctKV, err := js.KeyValue(name)
+		acctKV, err := js.KeyValue(ctx, name)
 		if err != nil {
 			slog.Warn("SpawnRegisteredReconcilers: open bucket failed", "bucket", name, "err", err)
 			continue
 		}
-		clusters, err := listClusterNames(acctKV)
+		clusters, err := listClusterNames(ctx, acctKV)
 		if err != nil {
 			slog.Warn("SpawnRegisteredReconcilers: list clusters failed", "bucket", name, "err", err)
 			continue
 		}
 		for _, cluster := range clusters {
-			meta, err := GetClusterMeta(acctKV, cluster)
+			meta, err := GetClusterMeta(ctx, acctKV, cluster)
 			if err != nil {
 				continue
 			}
@@ -371,10 +387,10 @@ func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext
 			// was in flight when the prior process died left a CREATING (or
 			// partially-launched CREATE_FAILED) record whose workers nothing else
 			// will ever terminate.
-			s.reclaimOrphanedNodegroups(context.Background(), accountID, acctKV, cluster)
+			s.reclaimOrphanedNodegroups(ctx, accountID, acctKV, cluster)
 			// Re-subscribe to missing artifacts; K3s publishes each one-shot message once.
 			if meta.Status == ClusterStatusCreating {
-				if pending := BootstrapPendingKinds(acctKV, cluster, meta); len(pending) > 0 {
+				if pending := BootstrapPendingKinds(ctx, acctKV, cluster, meta); len(pending) > 0 {
 					slog.Info("SpawnRegisteredReconcilers: resuming bootstrap",
 						"cluster", cluster, "pending", pending)
 					s.spawnBootstrap(accountID, cluster, acctKV, pending)
@@ -383,7 +399,7 @@ func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
-	return observed
+	return observed, nil
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
@@ -474,11 +490,11 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	name := aws.StringValue(input.Name)
 	subnetIDs := aws.StringValueSlice(input.ResourcesVpcConfig.SubnetIds)
 
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "jetstream", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
@@ -521,13 +537,16 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	// Respond CREATING immediately; run the slow launch on a background goroutine.
 	// The goroutine owns meta from here on — do not touch it after this point.
 	out := &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}
+	// The launch outlives the request, so it runs on its own background context
+	// rather than the caller's, which is cancelled once this reply is written.
+	launchCtx := context.Background()
 	s.launchWG.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.failClusterLaunch(context.Background(), acctKV, name, accountID, meta, "launch panic", fmt.Errorf("%v", r))
+				s.failClusterLaunch(launchCtx, acctKV, name, accountID, meta, "launch panic", fmt.Errorf("%v", r))
 			}
 		}()
-		s.launchClusterInfra(context.Background(), clusterLaunchCtx{
+		s.launchClusterInfra(launchCtx, clusterLaunchCtx{
 			accountID:          accountID,
 			callerPrincipalARN: callerPrincipalARN,
 			name:               name,
@@ -585,7 +604,7 @@ type clusterLaunchCtx struct {
 	publicCidrs        []string
 	input              *eks.CreateClusterInput
 	meta               *ClusterMeta
-	acctKV             nats.KeyValue
+	acctKV             jetstream.KeyValue
 }
 
 // failClusterLaunch records an asynchronous control-plane launch failure: it
@@ -593,7 +612,7 @@ type clusterLaunchCtx struct {
 // and the 267.3 reclaim path can recreate cleanly) and logs the stage. The
 // launch runs after the CREATING response was already sent, so a failure can
 // only surface as status, never as the CreateCluster return value.
-func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv nats.KeyValue, name, accountID string, meta *ClusterMeta, stage string, err error) {
+func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv jetstream.KeyValue, name, accountID string, meta *ClusterMeta, stage string, err error) {
 	_ = logCreateErr(name, accountID, stage, err)
 	// Release any billable infra already provisioned this launch (LB VM + its
 	// associated EIP, egress EIP, NLB, CP VMs, OIDC) so a failed create never
@@ -608,7 +627,7 @@ func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv nats.KeyValue
 			slog.WarnContext(ctx, "failClusterLaunch: infra purge incomplete", "cluster", name, "stage", stage, "err", perr)
 		}
 	}
-	if mErr := MarkClusterFailed(kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
+	if mErr := MarkClusterFailed(ctx, kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
 		slog.WarnContext(ctx, "launchClusterInfra: MarkClusterFailed failed", "cluster", name, "err", mErr)
 	}
 }
@@ -643,7 +662,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	meta.ManagedCPVPC = managedCPVPCFromRefs(cpRefs)
 	// Persist the CP VPC refs before any further fallible step so teardown can
 	// reclaim the VPC/subnets/IGW/NAT GW even if the launch fails after here.
-	if err := PutClusterMeta(acctKV, meta); err != nil {
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist managed CP VPC", err)
 		return
 	}
@@ -687,7 +706,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		}
 		meta.PrivateEndpointENIID = pe.ENIID
 		meta.PrivateEndpointIP = pe.ENIIP
-		if err := PutClusterMeta(acctKV, meta); err != nil {
+		if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist private endpoint refs", err)
 			return
 		}
@@ -739,7 +758,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 
 	// Persist the endpoint before publishing it so reconcile never observes a DNS
 	// record whose creating cluster lacks its desired endpoint metadata.
-	if err := PutClusterMeta(acctKV, meta); err != nil {
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist endpoint metadata", err)
 		return
 	}
@@ -753,7 +772,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	}
 	meta.OIDCIssuer = oidcIssuer
 
-	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
+	privPEM, _, err := GenerateClusterOIDCKeypair(ctx, acctKV, name, s.deps.MasterKey)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "generate OIDC keypair", err)
 		return
@@ -851,7 +870,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// failure between here and the next PutClusterMeta leaves them launched but
 	// unrecorded, so neither DeleteCluster nor the FAILED-cluster reclaim could
 	// reach them and the sys.medium VMs leak.
-	if err := PutClusterMeta(acctKV, meta); err != nil {
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist control-plane ids", err)
 		return
 	}
@@ -875,7 +894,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	if err := PutClusterMeta(acctKV, meta); err != nil {
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist final meta", err)
 		return
 	}
@@ -884,7 +903,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
 		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
 			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
-		if err := PutAccessEntryRecord(acctKV, rec); err != nil {
+		if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
 		}
@@ -921,15 +940,15 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
-	meta, err := GetClusterMeta(acctKV, name)
+	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -940,15 +959,15 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 }
 
 func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "jetstream")
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "get account bucket")
 	}
-	names, err := listClusterNames(acctKV)
+	names, err := listClusterNames(ctx, acctKV)
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
@@ -987,16 +1006,16 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
 
-	meta, err := GetClusterMeta(acctKV, name)
+	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			// Idempotent: a cluster already swept from KV is "deleted". Returning
@@ -1013,14 +1032,14 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	// risking a double-release on the billable NAT-GW EIP). The loser returns the
 	// cluster as DELETING — AWS-async delete semantics — and the winner (or the
 	// DELETING backstop reaper) drives the teardown to completion.
-	release, ok := s.acquireTeardownLease(accountID, name)
+	release, ok := s.acquireTeardownLease(ctx, accountID, name)
 	if !ok {
 		meta.Status = ClusterStatusDeleting
 		return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
 	}
 	defer release()
 
-	if err := SetClusterStatus(acctKV, name, ClusterStatusDeleting); err != nil {
+	if err := SetClusterStatus(ctx, acctKV, name, ClusterStatusDeleting); err != nil {
 		return nil, fmt.Errorf("set DELETING: %w", err)
 	}
 	meta.Status = ClusterStatusDeleting
@@ -1049,16 +1068,18 @@ func teardownLeaderKey(accountID, clusterName string) string {
 // DELETING backstop reaper. CAS Create fails when another holder owns it. A nil
 // leaderKV (single-node/test) skips gating; the bucket TTL reaps a lease whose
 // release never runs.
-func (s *EKSServiceImpl) acquireTeardownLease(accountID, clusterName string) (func(), bool) {
+func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, clusterName string) (func(), bool) {
 	if s.leaderKV == nil {
 		return func() {}, true
 	}
 	key := teardownLeaderKey(accountID, clusterName)
-	if _, err := s.leaderKV.Create(key, []byte(s.deps.HolderID)); err != nil {
+	if _, err := s.leaderKV.Create(ctx, key, []byte(s.deps.HolderID)); err != nil {
 		return nil, false
 	}
 	return func() {
-		if err := s.leaderKV.Delete(key); err != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.leaderKV.Delete(releaseCtx, key); err != nil {
 			slog.Warn("eks: teardown lease release failed (TTL will reap)", "key", key, "err", err)
 		}
 	}, true
@@ -1066,23 +1087,23 @@ func (s *EKSServiceImpl) acquireTeardownLease(accountID, clusterName string) (fu
 
 // claimClusterName atomically claims the cluster meta key before any launch work.
 // A prior FAILED attempt is reclaimed via CAS (FAILED→CREATING); live clusters reject with ResourceInUse.
-func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string, acctKV nats.KeyValue, meta *ClusterMeta) error {
+func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string, acctKV jetstream.KeyValue, meta *ClusterMeta) error {
 	name := meta.Name
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return logCreateErr(name, accountID, "marshal initial meta", err)
 	}
 
-	if _, cerr := acctKV.Create(ClusterMetaKey(name), data); cerr == nil {
+	if _, cerr := acctKV.Create(ctx, ClusterMetaKey(name), data); cerr == nil {
 		return nil // won a fresh claim
-	} else if !errors.Is(cerr, nats.ErrKeyExists) {
+	} else if !errors.Is(cerr, jetstream.ErrKeyExists) {
 		return logCreateErr(name, accountID, "claim cluster name", cerr)
 	}
 
 	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for teardown.
 	var oldRefs *ClusterMeta
 	reclaimed := false
-	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+	if err := casUpdateMeta(ctx, acctKV, name, func(m *ClusterMeta) bool {
 		// casUpdateMeta re-runs this closure on every CAS-conflict retry, so reset
 		// the outputs each pass: a retry that now observes CREATING (a concurrent
 		// reclaimer won) must leave reclaimed=false, or we double-own the cluster.
@@ -1115,12 +1136,12 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 	// Purge the failed attempt's infra but KEEP the meta claim (deleteMeta=false)
 	// — the CREATING record is our lock for the rest of this create.
 	if perr := s.purgeClusterInfra(ctx, accountID, name, oldRefs, acctKV, false); perr != nil {
-		s.markFailed(acctKV, name)
+		s.markFailed(ctx, acctKV, name)
 		return logCreateErr(name, accountID, "reclaim failed cluster", perr)
 	}
 	// Infra gone: overwrite with the fresh CREATING meta (clears the old refs).
-	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.markFailed(acctKV, name)
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+		s.markFailed(ctx, acctKV, name)
 		return logCreateErr(name, accountID, "persist reclaimed meta", err)
 	}
 	return nil
@@ -1134,7 +1155,7 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 // its IDs. The cluster SGs sit in the customer VPC, so a leaked SG pins the VPC
 // on DependencyViolation — leaving the cluster DELETING for a retry is correct.
 // Shared by DeleteCluster and the FAILED-cluster reclaim path in CreateCluster.
-func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue, deleteMeta bool) error {
+func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV jetstream.KeyValue, deleteMeta bool) error {
 	s.registry.Stop(accountID, name)
 
 	// infraAcct owns the NLB, CP VMs, and CP VPC. Clusters built with the managed
@@ -1147,7 +1168,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 
 	var teardownErrs []error
 
-	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
+	if err := ZeroizeClusterOIDCKey(ctx, acctKV, name); err != nil {
 		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
 	}
 
@@ -1273,7 +1294,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			// SG/VPC API calls against a stale VpcId forever, turning a single
 			// DependencyViolation into a permanent DELETING loop.
 			meta.ManagedCPVPC = nil
-			if perr := ClearClusterManagedCPVPC(acctKV, name); perr != nil && !errors.Is(perr, ErrClusterNotFound) {
+			if perr := ClearClusterManagedCPVPC(ctx, acctKV, name); perr != nil && !errors.Is(perr, ErrClusterNotFound) {
 				teardownErrs = append(teardownErrs, fmt.Errorf("clear managed CP VPC state: %w", perr))
 			}
 		}
@@ -1308,7 +1329,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// meta key (status CREATING) as its lock for the recreate, so the key must
 	// survive — only the failed attempt's infra is purged here.
 	if deleteMeta {
-		if err := DeleteClusterPrefix(acctKV, name); err != nil {
+		if err := DeleteClusterPrefix(ctx, acctKV, name); err != nil {
 			return fmt.Errorf("delete cluster prefix: %w", err)
 		}
 	}
@@ -1329,7 +1350,7 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 	if err := s.requireOrchestrationDeps("CreateNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(accountID)
+	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1340,29 +1361,29 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(accountID)
+	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	return s.describeNodegroup(acctKV, input)
+	return s.describeNodegroup(ctx, acctKV, input)
 }
 
 func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(accountID)
+	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	return s.listNodegroups(acctKV, input)
+	return s.listNodegroups(ctx, acctKV, input)
 }
 
 func (s *EKSServiceImpl) UpdateNodegroupConfig(ctx context.Context, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
 	if err := s.requireOrchestrationDeps("UpdateNodegroupConfig"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(accountID)
+	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1377,7 +1398,7 @@ func (s *EKSServiceImpl) DeleteNodegroup(ctx context.Context, input *eks.DeleteN
 	if err := s.requireOrchestrationDeps("DeleteNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(accountID)
+	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1387,19 +1408,19 @@ func (s *EKSServiceImpl) DeleteNodegroup(ctx context.Context, input *eks.DeleteN
 // --- AccessEntry + AccessPolicy ---
 
 // acctKVForCluster opens the per-account bucket and verifies the cluster exists.
-func (s *EKSServiceImpl) acctKVForCluster(accountID, cluster string) (nats.KeyValue, error) {
+func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluster string) (jetstream.KeyValue, error) {
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
-	if _, err := GetClusterMeta(acctKV, cluster); err != nil {
+	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
@@ -1425,11 +1446,11 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := GetAccessEntryRecord(acctKV, cluster, principalARN); err == nil {
+	if _, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN); err == nil {
 		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 	} else if !errors.Is(err, ErrAccessEntryNotFound) {
 		return nil, err
@@ -1437,7 +1458,7 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 	rec := newAccessEntryRecord(s.deps.Region, accountID, cluster, principalARN,
 		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups),
 		entryType, aws.StringValueMap(input.Tags), time.Now().UTC())
-	if err := PutAccessEntryRecord(acctKV, rec); err != nil {
+	if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
 		return nil, err
 	}
 	return &eks.CreateAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
@@ -1449,11 +1470,11 @@ func (s *EKSServiceImpl) DescribeAccessEntry(ctx context.Context, input *eks.Des
 	}
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(acctKV, cluster, principalARN)
+	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
 	if err != nil {
 		if errors.Is(err, ErrAccessEntryNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -1468,11 +1489,11 @@ func (s *EKSServiceImpl) ListAccessEntries(ctx context.Context, input *eks.ListA
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	cluster := aws.StringValue(input.ClusterName)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ListAccessEntryRecords(acctKV, cluster)
+	recs, err := ListAccessEntryRecords(ctx, acctKV, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,12 +1514,12 @@ func (s *EKSServiceImpl) UpdateAccessEntry(ctx context.Context, input *eks.Updat
 	}
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	rec, err := casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+	rec, err := casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
 		if input.KubernetesGroups != nil {
 			r.KubernetesGroups = aws.StringValueSlice(input.KubernetesGroups)
 		}
@@ -1523,11 +1544,11 @@ func (s *EKSServiceImpl) DeleteAccessEntry(ctx context.Context, input *eks.Delet
 	}
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
-	if err := DeleteAccessEntryRecord(acctKV, cluster, principalARN); err != nil {
+	if err := DeleteAccessEntryRecord(ctx, acctKV, cluster, principalARN); err != nil {
 		if errors.Is(err, ErrAccessEntryNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
@@ -1550,13 +1571,13 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	var assoc AssociatedAccessPolicy
-	_, err = casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
 		assoc = AssociatedAccessPolicy{PolicyARN: policyARN, AccessScope: scope, AssociatedAt: now, ModifiedAt: now}
 		for i := range r.AssociatedPolicies {
 			if r.AssociatedPolicies[i].PolicyARN == policyARN {
@@ -1590,12 +1611,12 @@ func (s *EKSServiceImpl) DisassociateAccessPolicy(ctx context.Context, input *ek
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
 	policyARN := aws.StringValue(input.PolicyArn)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	_, err = casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
 		for i := range r.AssociatedPolicies {
 			if r.AssociatedPolicies[i].PolicyARN == policyARN {
 				r.AssociatedPolicies = append(r.AssociatedPolicies[:i], r.AssociatedPolicies[i+1:]...)
@@ -1620,11 +1641,11 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 	}
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
-	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(acctKV, cluster, principalARN)
+	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
 	if err != nil {
 		if errors.Is(err, ErrAccessEntryNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -1706,11 +1727,11 @@ func (s *EKSServiceImpl) TagResource(ctx context.Context, input *eks.TagResource
 	add := aws.StringValueMap(input.Tags)
 
 	if name, ok := clusterNameFromARN(arn); ok {
-		acctKV, err := s.accountBucket(accountID)
+		acctKV, err := s.accountBucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+		if err := casUpdateMeta(ctx, acctKV, name, func(m *ClusterMeta) bool {
 			if len(add) == 0 {
 				return false
 			}
@@ -1726,7 +1747,7 @@ func (s *EKSServiceImpl) TagResource(ctx context.Context, input *eks.TagResource
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			if len(add) == 0 {
 				return tags, false
 			}
@@ -1749,11 +1770,11 @@ func (s *EKSServiceImpl) UntagResource(ctx context.Context, input *eks.UntagReso
 	keys := aws.StringValueSlice(input.TagKeys)
 
 	if name, ok := clusterNameFromARN(arn); ok {
-		acctKV, err := s.accountBucket(accountID)
+		acctKV, err := s.accountBucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+		if err := casUpdateMeta(ctx, acctKV, name, func(m *ClusterMeta) bool {
 			changed := false
 			for _, k := range keys {
 				if _, ok := m.Tags[k]; ok {
@@ -1769,7 +1790,7 @@ func (s *EKSServiceImpl) UntagResource(ctx context.Context, input *eks.UntagReso
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			changed := false
 			for _, k := range keys {
 				if _, ok := tags[k]; ok {
@@ -1791,11 +1812,11 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	arn := aws.StringValue(input.ResourceArn)
 
 	if name, ok := clusterNameFromARN(arn); ok {
-		acctKV, err := s.accountBucket(accountID)
+		acctKV, err := s.accountBucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		meta, err := GetClusterMeta(acctKV, name)
+		meta, err := GetClusterMeta(ctx, acctKV, name)
 		if err != nil {
 			return nil, eksTagErr(err)
 		}
@@ -1803,11 +1824,11 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		acctKV, err := s.accountBucket(accountID)
+		acctKV, err := s.accountBucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+		rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
 				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -1823,13 +1844,13 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 // casUpdateNodegroupTags applies mutate to the nodegroup record's tag map under
 // compare-and-swap. mutate returns the new tag map and whether it changed; a
 // no-op skips the write. A missing nodegroup surfaces as ResourceNotFound.
-func (s *EKSServiceImpl) casUpdateNodegroupTags(accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
-	acctKV, err := s.accountBucket(accountID)
+func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return err
 	}
 	for range ngCASMaxRetries {
-		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
+		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
 				return errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -1842,7 +1863,7 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(accountID, cluster, ng string, m
 		}
 		rec.Tags = tags
 		rec.ModifiedAt = time.Now().UTC()
-		if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+		if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
 			return err
 		} else if ok {
 			return nil
@@ -1852,12 +1873,12 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(accountID, cluster, ng string, m
 }
 
 // accountBucket returns the per-account KV bucket for accountID.
-func (s *EKSServiceImpl) accountBucket(accountID string) (nats.KeyValue, error) {
-	js, err := s.deps.NATSConn.JetStream()
+func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	return GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN
@@ -2018,29 +2039,26 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 	if s == nil || s.baseDomain == "" {
 		return nil, false
 	}
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, false
 	}
-	names, err := kvBucketNames(s.deps.NATSConn)
+	names, err := accountBucketNames(s.bgCtx, s.deps.NATSConn)
 	if err != nil {
 		slog.Warn("DesiredDNSChanges: enumerate account buckets", "err", err)
 		return nil, false
 	}
 	for _, name := range names {
-		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
-			continue
-		}
-		acctKV, err := js.KeyValue(name)
+		acctKV, err := js.KeyValue(s.bgCtx, name)
 		if err != nil {
 			return nil, false
 		}
-		clusters, err := listClusterNames(acctKV)
+		clusters, err := listClusterNames(s.bgCtx, acctKV)
 		if err != nil {
 			return nil, false
 		}
 		for _, cluster := range clusters {
-			meta, err := GetClusterMeta(acctKV, cluster)
+			meta, err := GetClusterMeta(s.bgCtx, acctKV, cluster)
 			if err != nil {
 				slog.Warn("DesiredDNSChanges: read cluster metadata", "bucket", name, "cluster", cluster, "err", err)
 				return nil, false
@@ -2057,48 +2075,8 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 	return changes, true
 }
 
-// kvBucketNames enumerates KV bucket names via a paginated $JS.API.STREAM.NAMES
-// request that surfaces the terminal error, unlike js.KeyValueStoreNames() whose
-// channel closes on any API/transport error and cannot signal a truncated listing.
-func kvBucketNames(nc *nats.Conn) ([]string, error) {
-	type namesReq struct {
-		Offset  int    `json:"offset"`
-		Subject string `json:"subject"`
-	}
-	type namesResp struct {
-		Total   int            `json:"total"`
-		Streams []string       `json:"streams"`
-		Error   *nats.APIError `json:"error"`
-	}
-	var names []string
-	for offset := 0; ; {
-		body, err := json.Marshal(namesReq{Offset: offset, Subject: "$KV.*.>"})
-		if err != nil {
-			return nil, fmt.Errorf("marshal stream-names request: %w", err)
-		}
-		msg, err := nc.Request("$JS.API.STREAM.NAMES", body, 5*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("stream-names request: %w", err)
-		}
-		var resp namesResp
-		if err := json.Unmarshal(msg.Data, &resp); err != nil {
-			return nil, fmt.Errorf("decode stream-names response: %w", err)
-		}
-		if resp.Error != nil {
-			return nil, fmt.Errorf("stream-names api: %w", resp.Error)
-		}
-		for _, stream := range resp.Streams {
-			names = append(names, strings.TrimPrefix(stream, "KV_"))
-		}
-		offset += len(resp.Streams)
-		if offset >= resp.Total || len(resp.Streams) == 0 {
-			return names, nil
-		}
-	}
-}
-
-func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
-	if err := SetClusterStatus(kv, name, ClusterStatusFailed); err != nil {
+func (s *EKSServiceImpl) markFailed(ctx context.Context, kv jetstream.KeyValue, name string) {
+	if err := SetClusterStatus(ctx, kv, name, ClusterStatusFailed); err != nil {
 		slog.Warn("CreateCluster: SetClusterStatus(FAILED) failed", "cluster", name, "err", err)
 	}
 }
@@ -2106,7 +2084,7 @@ func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
 // spawnBootstrap launches the one-shot NATS bootstrap subscriber for a cluster.
 // kinds nil means a fresh CreateCluster (wait on all four subjects); a non-nil
 // subset is a daemon-restart resume that waits only on the missing artifacts.
-func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.KeyValue, kinds []string) {
+func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstream.KeyValue, kinds []string) {
 	boot, err := NewNATSBootstrap(s.deps.NATSConn, kv, s.deps.MasterKey, accountID, clusterName)
 	if err != nil {
 		slog.Error("spawnBootstrap: NewNATSBootstrap failed", "cluster", clusterName, "err", err)
@@ -2122,7 +2100,7 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 		// DescribeCluster surfaces the cause and DeleteCluster can reclaim the
 		// resources.
 		slog.Warn("NATSBootstrap exited; marking cluster FAILED", "cluster", clusterName, "err", err)
-		if markErr := MarkClusterFailed(kv, clusterName, "bootstrap failed: "+err.Error()); markErr != nil &&
+		if markErr := MarkClusterFailed(s.bgCtx, kv, clusterName, "bootstrap failed: "+err.Error()); markErr != nil &&
 			!errors.Is(markErr, ErrClusterNotFound) {
 			slog.Error("spawnBootstrap: MarkClusterFailed", "cluster", clusterName, "err", markErr)
 		}
@@ -2130,12 +2108,12 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 }
 
 func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
-	js, err := s.deps.NATSConn.JetStream()
+	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		slog.Error("spawnReconciler: jetstream", "err", err)
 		return
 	}
-	acctKV, err := GetOrCreateAccountBucket(js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID, max(s.deps.ClusterSize, 1))
 	if err != nil {
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return
@@ -2252,10 +2230,10 @@ func eksReadUnavailableOr(err error, op string) error {
 	return fmt.Errorf("%s: %w", op, err)
 }
 
-func listClusterNames(kv nats.KeyValue) ([]string, error) {
-	keys, err := kv.Keys()
+func listClusterNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("kv keys: %w", err)

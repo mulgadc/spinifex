@@ -24,7 +24,7 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.Se
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
-	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
+	lb, err := s.store.GetLoadBalancerByArn(ctx, *input.LoadBalancerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "SetIpAddressType: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -35,7 +35,7 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.Se
 
 	if lb.IPAddressType != IPAddressTypeIPv4 {
 		lb.IPAddressType = IPAddressTypeIPv4
-		if err := s.store.PutLoadBalancer(lb); err != nil {
+		if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
 			slog.ErrorContext(ctx, "SetIpAddressType: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -56,7 +56,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(ctx context.Context, input *elbv2.S
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
+	lb, err := s.store.GetLoadBalancerByArn(ctx, *input.LoadBalancerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "SetSecurityGroups: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -98,7 +98,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(ctx context.Context, input *elbv2.S
 	}
 
 	lb.SecurityGroups = sgs
-	if err := s.store.PutLoadBalancer(lb); err != nil {
+	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
 		slog.ErrorContext(ctx, "SetSecurityGroups: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -120,7 +120,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
+	lb, err := s.store.GetLoadBalancerByArn(ctx, *input.LoadBalancerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "SetSubnets: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -155,7 +155,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 	if s.VPCService == nil {
 		lb.Subnets = desired
 		lb.AvailZones = rebuildAvailZones(desired, lb.AvailZones, nil)
-		if err := s.store.PutLoadBalancer(lb); err != nil {
+		if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
 			slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -235,7 +235,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 	lb.HostPorts = launch.hostPorts
 	lb.State, lb.StateReason = s.lbStateAfterLaunch(launch, lb.Scheme)
 
-	if err := s.store.PutLoadBalancer(lb); err != nil {
+	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
 		slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

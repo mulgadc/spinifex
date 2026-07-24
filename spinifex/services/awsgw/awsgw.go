@@ -278,11 +278,7 @@ func launchService(config *config.ClusterConfig) error {
 	if key := os.Getenv("OCHRE_ANTHROPIC_API_KEY"); key != "" {
 		bedrockPlatformDefaults["anthropic"] = key
 	}
-	bedrockJS, err := natsConn.JetStream()
-	if err != nil {
-		return fmt.Errorf("bedrock credentials: JetStream context: %w", err)
-	}
-	bedrockCredentials := gateway_bedrock.NewCredentialStore(bedrockJS, masterKey, len(config.Nodes), bedrockPlatformDefaults)
+	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
 
 	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS

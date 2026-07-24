@@ -51,12 +51,15 @@ func (r *EKSDeletingReaper) Sweep(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("jetstream: %w", err)
 	}
+	// A truncated bucket listing would silently leave a wedged teardown in place
+	// for another sweep interval, so an incomplete enumeration fails the sweep.
+	names, err := accountBucketNames(ctx, r.svc.deps.NATSConn)
+	if err != nil {
+		return 0, fmt.Errorf("enumerate account buckets: %w", err)
+	}
 
 	reaped := 0
-	for name := range js.KeyValueStoreNames() {
-		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
-			continue
-		}
+	for _, name := range names {
 		select {
 		case <-ctx.Done():
 			return reaped, ctx.Err()

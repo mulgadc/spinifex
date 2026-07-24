@@ -1,16 +1,20 @@
 package handlers_eks
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // JetStream KV bucket and key-path constants for the EKS control plane.
@@ -178,6 +182,30 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 // given AWS account ID.
 func AccountBucketName(accountID string) string {
 	return KVBucketEKSAccountPrefix + accountID
+}
+
+// accountBucketNames returns the name of every EKS per-account KV bucket. It
+// fails rather than returning a short list when the enumeration could not be
+// completed: the lister behind it closes its channel identically on success and
+// on error, so a caller that ignored the failure would read an unreachable
+// JetStream as "no accounts" — and prune every tenant's endpoint record on that
+// empty view.
+func accountBucketNames(ctx context.Context, nc *nats.Conn) ([]string, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	all, err := kvutil.BucketNames(ctx, js)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(all))
+	for _, name := range all {
+		if strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // GetOrCreateAccountBucket returns the per-account KV bucket for accountID,

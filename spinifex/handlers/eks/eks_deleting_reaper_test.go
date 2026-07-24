@@ -56,6 +56,24 @@ func TestDeletingReaperSkipsFreshDelete(t *testing.T) {
 	assert.Empty(t, f.inst.terminateCalls, "no teardown must run within the min-age window")
 }
 
+// TestDeletingReaper_EnumerationFailureIsReported: the KV bucket lister closes
+// its channel the same way whether the listing completed or failed, so a sweep
+// that ignored the terminal error would report "nothing wedged" for an
+// unreachable JetStream — leaving a stuck teardown holding its billable EIP with
+// nothing to say the sweep never looked.
+func TestDeletingReaper_EnumerationFailureIsReported(t *testing.T) {
+	f := newDeleteClusterFixture(t, "delta")
+	markDeleting(t, f, "delta", 10*time.Minute)
+
+	// Closing the connection fails the stream-names request behind the listing.
+	f.svc.deps.NATSConn.Close()
+
+	reaper := f.svc.NewDeletingReaper()
+	n, err := reaper.Sweep(context.Background())
+	require.Error(t, err, "a failed bucket enumeration must not report a completed sweep")
+	assert.Zero(t, n)
+}
+
 // TestDeletingReaperSkipsNonDeleting: a CREATING/ACTIVE cluster is never touched.
 func TestDeletingReaperSkipsNonDeleting(t *testing.T) {
 	f := newDeleteClusterFixture(t, "gamma") // stays CREATING

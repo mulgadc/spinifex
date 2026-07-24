@@ -324,29 +324,41 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 	prev := -1
+	var scanErr error
 	for attempt := range spawnScanMaxAttempts {
-		observed := s.spawnRegisteredReconcilersScan(js)
-		if observed <= prev {
-			break
+		observed, err := s.spawnRegisteredReconcilersScan(s.bgCtx, js)
+		switch {
+		// A failed enumeration is not a settled one. Reading an unreachable
+		// JetStream as "no clusters" would leave every cluster without its
+		// reconciler until the next daemon restart, so the pass is retried and the
+		// last failure surfaces to the caller.
+		case err != nil:
+			slog.Warn("SpawnRegisteredReconcilers: scan failed", "attempt", attempt, "err", err)
+		case observed <= prev:
+			return nil
+		default:
+			prev = observed
 		}
-		prev = observed
+		scanErr = err
 		if attempt < spawnScanMaxAttempts-1 {
 			time.Sleep(s.spawnScanRetryBackoff)
 		}
 	}
-	return nil
+	return scanErr
 }
 
 // spawnRegisteredReconcilersScan runs one enumeration pass and resumes reconcilers
 // for every CREATING/ACTIVE cluster it can see, returning the count observed so the
-// caller can detect when a lagging JetStream enumeration has settled.
-func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext) int {
+// caller can detect when a lagging JetStream enumeration has settled. An
+// incomplete enumeration is reported rather than counted, so a truncated pass is
+// never mistaken for a settled one.
+func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(ctx context.Context, js nats.JetStreamContext) (int, error) {
+	names, err := accountBucketNames(ctx, s.deps.NATSConn)
+	if err != nil {
+		return 0, fmt.Errorf("enumerate account buckets: %w", err)
+	}
 	observed := 0
-	buckets := js.KeyValueStoreNames()
-	for name := range buckets {
-		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
-			continue
-		}
+	for _, name := range names {
 		accountID := strings.TrimPrefix(name, KVBucketEKSAccountPrefix)
 		acctKV, err := js.KeyValue(name)
 		if err != nil {
@@ -383,7 +395,7 @@ func (s *EKSServiceImpl) spawnRegisteredReconcilersScan(js nats.JetStreamContext
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
-	return observed
+	return observed, nil
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
@@ -2022,15 +2034,12 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 	if err != nil {
 		return nil, false
 	}
-	names, err := kvBucketNames(s.deps.NATSConn)
+	names, err := accountBucketNames(s.bgCtx, s.deps.NATSConn)
 	if err != nil {
 		slog.Warn("DesiredDNSChanges: enumerate account buckets", "err", err)
 		return nil, false
 	}
 	for _, name := range names {
-		if !strings.HasPrefix(name, KVBucketEKSAccountPrefix) {
-			continue
-		}
 		acctKV, err := js.KeyValue(name)
 		if err != nil {
 			return nil, false
@@ -2055,46 +2064,6 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 		}
 	}
 	return changes, true
-}
-
-// kvBucketNames enumerates KV bucket names via a paginated $JS.API.STREAM.NAMES
-// request that surfaces the terminal error, unlike js.KeyValueStoreNames() whose
-// channel closes on any API/transport error and cannot signal a truncated listing.
-func kvBucketNames(nc *nats.Conn) ([]string, error) {
-	type namesReq struct {
-		Offset  int    `json:"offset"`
-		Subject string `json:"subject"`
-	}
-	type namesResp struct {
-		Total   int            `json:"total"`
-		Streams []string       `json:"streams"`
-		Error   *nats.APIError `json:"error"`
-	}
-	var names []string
-	for offset := 0; ; {
-		body, err := json.Marshal(namesReq{Offset: offset, Subject: "$KV.*.>"})
-		if err != nil {
-			return nil, fmt.Errorf("marshal stream-names request: %w", err)
-		}
-		msg, err := nc.Request("$JS.API.STREAM.NAMES", body, 5*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("stream-names request: %w", err)
-		}
-		var resp namesResp
-		if err := json.Unmarshal(msg.Data, &resp); err != nil {
-			return nil, fmt.Errorf("decode stream-names response: %w", err)
-		}
-		if resp.Error != nil {
-			return nil, fmt.Errorf("stream-names api: %w", resp.Error)
-		}
-		for _, stream := range resp.Streams {
-			names = append(names, strings.TrimPrefix(stream, "KV_"))
-		}
-		offset += len(resp.Streams)
-		if offset >= resp.Total || len(resp.Streams) == 0 {
-			return names, nil
-		}
-	}
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {

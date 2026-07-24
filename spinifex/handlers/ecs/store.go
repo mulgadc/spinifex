@@ -1,14 +1,17 @@
 package handlers_ecs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // JetStream KV bucket and key-path constants for the ECS control plane.
@@ -167,6 +170,36 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 // given AWS account ID.
 func AccountBucketName(accountID string) string {
 	return KVBucketECSAccountPrefix + accountID
+}
+
+// accountBucket pairs a per-account KV bucket name with the account it belongs
+// to, so the sweeps that walk every account do not each re-derive the ID.
+type accountBucket struct {
+	name      string
+	accountID string
+}
+
+// accountBuckets returns every ECS per-account bucket. It fails rather than
+// returning a short list when the enumeration could not be completed: the lister
+// behind it closes its channel identically on success and on error, so a sweep
+// that ignored the failure would read an unreachable JetStream as an empty fleet
+// and silently skip every account it could not see.
+func accountBuckets(ctx context.Context, nc *nats.Conn) ([]accountBucket, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	names, err := kvutil.BucketNames(ctx, js)
+	if err != nil {
+		return nil, err
+	}
+	buckets := make([]accountBucket, 0, len(names))
+	for _, name := range names {
+		if accountID, ok := accountIDFromBucket(name); ok {
+			buckets = append(buckets, accountBucket{name: name, accountID: accountID})
+		}
+	}
+	return buckets, nil
 }
 
 // GetOrCreateAccountBucket returns the per-account KV bucket for accountID,

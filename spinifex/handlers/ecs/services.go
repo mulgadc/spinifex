@@ -377,31 +377,36 @@ func (s *Service) reconcileService(ctx context.Context, kv nats.KeyValue, accoun
 
 // reconcileAllServices is the scheduler-tick fan-out: every ACTIVE service in
 // every ECS account bucket is reconciled. Runs only on the scheduler leader.
-func (s *Service) reconcileAllServices() {
-	ctx := context.Background()
+// Returns an error when the account enumeration could not be completed, so a
+// pass that could not see the whole fleet is reported rather than read as "no
+// services to reconcile" — every unlisted account stalls below its desired count.
+func (s *Service) reconcileAllServices(ctx context.Context) error {
 	js, err := s.js()
 	if err != nil {
-		return
+		return err
 	}
-	for bucket := range js.KeyValueStoreNames() {
-		accountID, ok := accountIDFromBucket(bucket)
-		if !ok {
-			continue
-		}
-		kv, err := js.KeyValue(bucket)
+	buckets, err := accountBuckets(ctx, s.nc)
+	if err != nil {
+		return err
+	}
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(bucket.name)
 		if err != nil {
+			slog.Error("ECS reconcile: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
 		recs, err := s.allServiceRecords(kv)
 		if err != nil {
+			slog.Error("ECS reconcile: list services failed", "bucket", bucket.name, "err", err)
 			continue
 		}
 		for i := range recs {
-			if err := s.reconcileService(ctx, kv, accountID, &recs[i]); err != nil {
+			if err := s.reconcileService(ctx, kv, bucket.accountID, &recs[i]); err != nil {
 				slog.Error("ECS reconcile: service failed", "service", recs[i].Name, "err", err)
 			}
 		}
 	}
+	return nil
 }
 
 // launchDeploymentTasks places n tasks for a specific deployment via the standard

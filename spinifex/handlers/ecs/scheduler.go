@@ -70,18 +70,24 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-leaseTicker.C:
 			sc.evaluateLeadership(ctx)
 		case <-reaperTicker.C:
-			if sc.isLeader() {
-				sc.reap()
-			}
+			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })
 		case <-reconcileTicker.C:
-			if sc.isLeader() {
-				sc.svc.reconcileAllServices()
-			}
+			sc.runIfLeader("service reconcile", func() error { return sc.svc.reconcileAllServices(ctx) })
 		case <-sweepTicker.C:
-			if sc.isLeader() {
-				sc.sweepStoppedTasks()
-			}
+			sc.runIfLeader("stopped-task sweep", func() error { return sc.sweepStoppedTasks(ctx) })
 		}
+	}
+}
+
+// runIfLeader runs one leader-only pass, logging a pass that could not complete.
+// A pass errors only when it could not observe the whole fleet, so this log is
+// the operator's signal that a tick was skipped rather than found nothing to do.
+func (sc *Scheduler) runIfLeader(pass string, run func() error) {
+	if !sc.isLeader() {
+		return
+	}
+	if err := run(); err != nil {
+		slog.Error("ECS scheduler: pass failed", "pass", pass, "err", err)
 	}
 }
 
@@ -227,25 +233,29 @@ func (sc *Scheduler) onTaskState(msg *nats.Msg) {
 }
 
 // reap marks instances that have missed their heartbeat window DRAINING and stops
-// their tasks, releasing capacity. Iterates every ECS account bucket.
-func (sc *Scheduler) reap() {
-	ctx := context.Background()
+// their tasks, releasing capacity. Iterates every ECS account bucket. Returns an
+// error when the account enumeration could not be completed, so a pass that
+// could not see the whole fleet is reported rather than read as "nothing to
+// reap" — every unlisted account keeps its dead instances' capacity held.
+func (sc *Scheduler) reap(ctx context.Context) error {
 	js, err := sc.nc.JetStream()
 	if err != nil {
-		return
+		return err
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
-	for bucket := range js.KeyValueStoreNames() {
-		accountID, ok := accountIDFromBucket(bucket)
-		if !ok {
-			continue
-		}
-		kv, err := js.KeyValue(bucket)
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(bucket.name)
 		if err != nil {
+			slog.Error("ECS scheduler: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
-		sc.reapBucket(ctx, kv, accountID, now)
+		sc.reapBucket(ctx, kv, bucket.accountID, now)
 	}
+	return nil
 }
 
 func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID string, now time.Time) {

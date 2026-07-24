@@ -39,6 +39,25 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 	assert.False(t, f.svc.registry.Has(testAccountID, "zeta"), "FAILED cluster must not be resumed")
 }
 
+// TestSpawnRegisteredReconcilers_EnumerationFailureIsReported: the KV bucket
+// lister closes its channel the same way whether the listing completed or
+// failed, so a boot scan that ignored the terminal error would read an
+// unreachable JetStream as "no accounts" and leave every cluster in the fleet
+// without a reconciler until the next daemon restart — with clean boot logs.
+func TestSpawnRegisteredReconcilers_EnumerationFailureIsReported(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	active := sampleClusterMeta("alpha")
+	active.Status = ClusterStatusActive
+	require.NoError(t, PutClusterMeta(f.kv, active))
+
+	// Closing the connection fails the stream-names request behind the listing.
+	f.svc.deps.NATSConn.Close()
+
+	require.Error(t, f.svc.SpawnRegisteredReconcilers(), "a failed bucket enumeration must not report a completed scan")
+	assert.False(t, f.svc.registry.Has(testAccountID, "alpha"), "a listing that never completed can resume nothing")
+}
+
 // TestSpawnRegisteredReconcilers_DepsNotReadyNoops confirms the boot scan is a
 // safe no-op when orchestration deps are absent (the shim construction path),
 // so it never panics or registers phantom holders on a half-wired daemon.

@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
@@ -10,30 +11,35 @@ import (
 
 // sweepStoppedTasks prunes stale STOPPED task records across every ECS account
 // bucket. Leader-only (scheduler is the single KV writer); runs on the sweep
-// tick. Mirrors reap()'s bucket walk.
-func (sc *Scheduler) sweepStoppedTasks() {
+// tick. Mirrors reap()'s bucket walk. Returns an error when the account
+// enumeration could not be completed, so a pass that saw only part of the fleet
+// is reported rather than passing for a clean sweep.
+func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) error {
 	js, err := sc.nc.JetStream()
 	if err != nil {
-		return
+		return err
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
-	for bucket := range js.KeyValueStoreNames() {
-		if _, ok := accountIDFromBucket(bucket); !ok {
-			continue
-		}
-		kv, err := js.KeyValue(bucket)
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(bucket.name)
 		if err != nil {
+			slog.Error("ECS sweep: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
 		pruned, serr := sc.svc.sweepStoppedBucket(kv, now, stoppedTaskRetention)
 		if serr != nil {
-			slog.Error("ECS sweep: bucket failed", "bucket", bucket, "err", serr)
+			slog.Error("ECS sweep: bucket failed", "bucket", bucket.name, "err", serr)
 			continue
 		}
 		if pruned > 0 {
-			slog.Info("ECS sweep: pruned stale STOPPED tasks", "bucket", bucket, "count", pruned)
+			slog.Info("ECS sweep: pruned stale STOPPED tasks", "bucket", bucket.name, "count", pruned)
 		}
 	}
+	return nil
 }
 
 // sweepStoppedBucket deletes task records that have been STOPPED longer than

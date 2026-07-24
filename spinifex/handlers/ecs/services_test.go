@@ -120,7 +120,7 @@ func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
 	require.Len(t, live, 1) // STOPPED task drops out of the active set
 
 	// Reconcile launches a replacement back to desired=2.
-	svc.reconcileAllServices()
+	require.NoError(t, svc.reconcileAllServices(t.Context()))
 	live, err = svc.listServiceTasks(kv, "web", "web")
 	require.NoError(t, err)
 	assert.Len(t, live, 2)
@@ -172,7 +172,7 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Services, 1)
-	svc.reconcileAllServices()
+	require.NoError(t, svc.reconcileAllServices(t.Context()))
 	live, _ = svc.listServiceTasks(kv, "web", "web")
 	assert.Empty(t, live)
 }

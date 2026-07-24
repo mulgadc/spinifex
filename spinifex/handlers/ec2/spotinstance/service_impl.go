@@ -14,9 +14,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure SpotInstanceServiceImpl implements SpotInstanceService.
@@ -28,30 +30,30 @@ var _ SpotInstanceService = (*SpotInstanceServiceImpl)(nil)
 type SpotInstanceServiceImpl struct {
 	config     *config.Config
 	natsConn   *nats.Conn
-	activeKV   nats.KeyValue
-	terminalKV nats.KeyValue
+	activeKV   jetstream.KeyValue
+	terminalKV jetstream.KeyValue
 }
 
 // NewSpotInstanceServiceImplWithNATS creates a spot instance service with NATS JetStream.
-func NewSpotInstanceServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*SpotInstanceServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewSpotInstanceServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*SpotInstanceServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	activeKV, err := utils.GetOrCreateKVBucket(js, KVBucketSpotRequests, 10)
+	activeKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketSpotRequests, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSpotRequests, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketSpotRequests, activeKV, KVBucketSpotRequestsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketSpotRequests, activeKV, KVBucketSpotRequestsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketSpotRequests, err)
 	}
 
-	terminalKV, err := getOrCreateTerminalBucket(js)
+	terminalKV, err := getOrCreateTerminalBucket(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSpotRequestsTerminal, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketSpotRequestsTerminal, terminalKV, KVBucketSpotRequestsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketSpotRequestsTerminal, terminalKV, KVBucketSpotRequestsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketSpotRequestsTerminal, err)
 	}
 
@@ -66,17 +68,9 @@ func NewSpotInstanceServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn)
 	}, nil
 }
 
-// getOrCreateTerminalBucket creates the terminal bucket with a TTL, mirroring
-// the terminated-instances bucket; GetOrCreateKVBucket cannot set a TTL.
-func getOrCreateTerminalBucket(js nats.JetStreamContext) (nats.KeyValue, error) {
-	kv, err := js.KeyValue(KVBucketSpotRequestsTerminal)
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, nats.ErrBucketNotFound) {
-		return nil, err
-	}
-	return js.CreateKeyValue(&nats.KeyValueConfig{
+// getOrCreateTerminalBucket creates or updates the terminal bucket with a TTL.
+func getOrCreateTerminalBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
+	return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:      KVBucketSpotRequestsTerminal,
 		Description: "Terminal Spot Instance Requests (auto-expire after 1 hour)",
 		History:     1,
@@ -96,7 +90,7 @@ func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(ctx context.Context, i
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.activeKV.Put(utils.AccountKey(accountID, sirID), data); err != nil {
+		if _, err := s.activeKV.Put(ctx, utils.AccountKey(accountID, sirID), data); err != nil {
 			slog.ErrorContext(ctx, "PutSpotInstanceRequests: KV put failed", "sirId", sirID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -133,11 +127,11 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 		}
 	}
 
-	active, err := s.listRequests(s.activeKV, accountID)
+	active, err := s.listRequests(ctx, s.activeKV, accountID)
 	if err != nil {
 		return nil, err
 	}
-	terminal, err := s.listRequests(s.terminalKV, accountID)
+	terminal, err := s.listRequests(ctx, s.terminalKV, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -183,15 +177,15 @@ func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(ctx context.Context
 		sirID := aws.StringValue(idPtr)
 		key := utils.AccountKey(accountID, sirID)
 
-		record, err := s.readRecord(s.activeKV, key)
+		record, err := s.readRecord(ctx, s.activeKV, key)
 		if err == nil {
 			record.Request.State = aws.String(ec2.SpotInstanceStateCancelled)
 			setSpotStatus(record.Request, SpotStatusCodeCanceledInstanceRunning,
 				"Spot Instance request cancelled; the instance is still running.")
-			if err := s.moveToTerminal(key, record); err != nil {
+			if err := s.moveToTerminal(ctx, key, record); err != nil {
 				return nil, err
 			}
-		} else if !errors.Is(err, nats.ErrKeyNotFound) {
+		} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -213,9 +207,9 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 		return nil
 	}
 
-	keys, err := s.activeKV.Keys()
+	keys, err := s.activeKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return errors.New(awserrors.ErrorServerInternal)
@@ -226,7 +220,7 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		record, err := s.readRecord(s.activeKV, key)
+		record, err := s.readRecord(ctx, s.activeKV, key)
 		if err != nil {
 			continue
 		}
@@ -237,7 +231,7 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 		record.Request.State = aws.String(ec2.SpotInstanceStateClosed)
 		setSpotStatus(record.Request, SpotStatusCodeInstanceTerminatedByUser,
 			"Spot Instance request closed; the instance was terminated by the user.")
-		if err := s.moveToTerminal(key, record); err != nil {
+		if err := s.moveToTerminal(ctx, key, record); err != nil {
 			return err
 		}
 		slog.InfoContext(ctx, "CloseForInstance moved SIR to terminal", "instanceId", instanceID,
@@ -249,10 +243,10 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 }
 
 // listRequests reads all account-scoped requests from a bucket.
-func (s *SpotInstanceServiceImpl) listRequests(kv nats.KeyValue, accountID string) ([]*ec2.SpotInstanceRequest, error) {
-	keys, err := kv.Keys()
+func (s *SpotInstanceServiceImpl) listRequests(ctx context.Context, kv jetstream.KeyValue, accountID string) ([]*ec2.SpotInstanceRequest, error) {
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -264,7 +258,7 @@ func (s *SpotInstanceServiceImpl) listRequests(kv nats.KeyValue, accountID strin
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		record, err := s.readRecord(kv, key)
+		record, err := s.readRecord(ctx, kv, key)
 		if err != nil {
 			slog.Warn("Failed to read spot request record", "key", key, "err", err)
 			continue
@@ -275,9 +269,9 @@ func (s *SpotInstanceServiceImpl) listRequests(kv nats.KeyValue, accountID strin
 }
 
 // readRecord fetches and unmarshals a single record. The KV Get error (e.g.
-// nats.ErrKeyNotFound) is returned unwrapped so callers can match on it.
-func (s *SpotInstanceServiceImpl) readRecord(kv nats.KeyValue, key string) (*SpotRequestRecord, error) {
-	entry, err := kv.Get(key)
+// jetstream.ErrKeyNotFound) is returned unwrapped so callers can match on it.
+func (s *SpotInstanceServiceImpl) readRecord(ctx context.Context, kv jetstream.KeyValue, key string) (*SpotRequestRecord, error) {
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -289,16 +283,16 @@ func (s *SpotInstanceServiceImpl) readRecord(kv nats.KeyValue, key string) (*Spo
 }
 
 // moveToTerminal writes the record to the terminal bucket and deletes it from active.
-func (s *SpotInstanceServiceImpl) moveToTerminal(key string, record *SpotRequestRecord) error {
+func (s *SpotInstanceServiceImpl) moveToTerminal(ctx context.Context, key string, record *SpotRequestRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.terminalKV.Put(key, data); err != nil {
+	if _, err := s.terminalKV.Put(ctx, key, data); err != nil {
 		slog.Error("moveToTerminal: terminal put failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.activeKV.Delete(key); err != nil {
+	if err := s.activeKV.Delete(ctx, key); err != nil {
 		slog.Error("moveToTerminal: active delete failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}

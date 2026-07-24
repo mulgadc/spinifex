@@ -1377,7 +1377,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
-		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize spot instance service: %w", err)
@@ -1395,7 +1395,7 @@ func (d *Daemon) startCluster() error {
 	d.vpcService.SetDefaultPublicIPMapping(d.hasPublicIPPools())
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
-		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
@@ -1405,7 +1405,7 @@ func (d *Daemon) startCluster() error {
 	d.igwService.SetGatePublisher(d.routeTableService)
 
 	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*handlers_ec2_natgw.NatGatewayServiceImpl, error) {
-		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.natsConn)
+		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)

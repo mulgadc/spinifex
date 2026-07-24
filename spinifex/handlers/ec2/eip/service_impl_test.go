@@ -35,7 +35,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
-	svc, err := NewEIPServiceImpl(nc, ipam, nil)
+	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, nil)
 	require.NoError(t, err)
 
 	return svc, ipam
@@ -118,7 +118,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	// To test the associated path, we need to manipulate the KV directly.
 
 	// Get the KV entry and update state to "associated"
-	entry, err := svc.eipKV.Get(testAccountID + "." + allocID)
+	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	require.NoError(t, err)
 
 	var record EIPRecord
@@ -130,7 +130,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = svc.eipKV.Update(testAccountID+"."+allocID, data, entry.Revision())
+	_, err = svc.eipKV.Update(t.Context(), testAccountID+"."+allocID, data, entry.Revision())
 	require.NoError(t, err)
 
 	// Now try to release — should fail
@@ -150,7 +150,7 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 
 	// Mark the EIP associated with a system instance, as an internet-facing ALB
 	// leaves it. ENIId stays empty so disassociate skips the VPC-service lookup.
-	entry, err := svc.eipKV.Get(testAccountID + "." + allocID)
+	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	require.NoError(t, err)
 	var record EIPRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))
@@ -159,7 +159,7 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 	record.InstanceId = "i-alb-test"
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = svc.eipKV.Update(testAccountID+"."+allocID, data, entry.Revision())
+	_, err = svc.eipKV.Update(t.Context(), testAccountID+"."+allocID, data, entry.Revision())
 	require.NoError(t, err)
 
 	// Backstop release by instance disassociates then frees the allocation.
@@ -180,7 +180,7 @@ func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
 	// An instance with no recorded EIP must leave existing allocations untouched.
 	require.NoError(t, svc.ReleaseAddressByInstanceID("i-unrelated"))
 
-	_, err = svc.eipKV.Get(testAccountID + "." + allocID)
+	_, err = svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	assert.NoError(t, err)
 
 	// Empty instance ID is a no-op too.
@@ -316,7 +316,7 @@ func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
 func TestEIP_FindByAssociationID_NotFound(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
-	_, _, _, err := svc.findByAssociationID(testAccountID, "eipassoc-nonexistent")
+	_, _, _, err := svc.findByAssociationID(t.Context(), testAccountID, "eipassoc-nonexistent")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidAssociationID.NotFound")
 }
@@ -463,7 +463,7 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 	require.NoError(t, err)
 
 	// Manually set instance-id on the record
-	entry, err := svc.eipKV.Get(testAccountID + "." + *out.AllocationId)
+	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+*out.AllocationId)
 	require.NoError(t, err)
 	var record EIPRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))
@@ -471,7 +471,7 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 	record.State = "associated"
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = svc.eipKV.Update(testAccountID+"."+*out.AllocationId, data, entry.Revision())
+	_, err = svc.eipKV.Update(t.Context(), testAccountID+"."+*out.AllocationId, data, entry.Revision())
 	require.NoError(t, err)
 
 	// Allocate another without association

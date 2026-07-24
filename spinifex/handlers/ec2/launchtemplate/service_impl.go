@@ -17,9 +17,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure LaunchTemplateServiceImpl implements LaunchTemplateService.
@@ -48,21 +50,21 @@ const (
 type LaunchTemplateServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
-	kv       nats.KeyValue
+	kv       jetstream.KeyValue
 }
 
 // NewLaunchTemplateServiceImplWithNATS creates a launch template service with NATS JetStream.
-func NewLaunchTemplateServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*LaunchTemplateServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewLaunchTemplateServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*LaunchTemplateServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := utils.GetOrCreateKVBucket(js, KVBucketLaunchTemplates, 10)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketLaunchTemplates, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketLaunchTemplates, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketLaunchTemplates, kv, KVBucketLaunchTemplatesVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketLaunchTemplates, kv, KVBucketLaunchTemplatesVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketLaunchTemplates, err)
 	}
 
@@ -102,8 +104,8 @@ func versionPrefix(accountID, ltID string) string {
 // --- record load helpers ---
 
 // getHeaderByID reads a header and its KV entry (for CAS) by launch template id.
-func (s *LaunchTemplateServiceImpl) getHeaderByID(accountID, ltID string) (*LaunchTemplateHeader, nats.KeyValueEntry, error) {
-	entry, err := s.kv.Get(headerKey(accountID, ltID))
+func (s *LaunchTemplateServiceImpl) getHeaderByID(ctx context.Context, accountID, ltID string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
+	entry, err := s.kv.Get(ctx, headerKey(accountID, ltID))
 	if err != nil {
 		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
 	}
@@ -116,13 +118,13 @@ func (s *LaunchTemplateServiceImpl) getHeaderByID(accountID, ltID string) (*Laun
 
 // getHeaderByName resolves a template name to its header via the name index.
 // A dangling name index (header missing) is treated as not-found.
-func (s *LaunchTemplateServiceImpl) getHeaderByName(accountID, name string) (*LaunchTemplateHeader, nats.KeyValueEntry, error) {
-	entry, err := s.kv.Get(nameKey(accountID, name))
+func (s *LaunchTemplateServiceImpl) getHeaderByName(ctx context.Context, accountID, name string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
+	entry, err := s.kv.Get(ctx, nameKey(accountID, name))
 	if err != nil {
 		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
 	}
 	ltID := string(entry.Value())
-	h, hentry, err := s.getHeaderByID(accountID, ltID)
+	h, hentry, err := s.getHeaderByID(ctx, accountID, ltID)
 	if err != nil {
 		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
 	}
@@ -131,7 +133,7 @@ func (s *LaunchTemplateServiceImpl) getHeaderByName(accountID, name string) (*La
 
 // resolveHeader resolves a template by id or name (mutually exclusive) and
 // returns the header plus its KV entry for CAS operations.
-func (s *LaunchTemplateServiceImpl) resolveHeader(accountID string, ltID, name *string) (*LaunchTemplateHeader, nats.KeyValueEntry, error) {
+func (s *LaunchTemplateServiceImpl) resolveHeader(ctx context.Context, accountID string, ltID, name *string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
 	id := aws.StringValue(ltID)
 	nm := aws.StringValue(name)
 	switch {
@@ -141,9 +143,9 @@ func (s *LaunchTemplateServiceImpl) resolveHeader(accountID string, ltID, name *
 		if err := validateTemplateID(id); err != nil {
 			return nil, nil, err
 		}
-		return s.getHeaderByID(accountID, id)
+		return s.getHeaderByID(ctx, accountID, id)
 	case nm != "":
-		return s.getHeaderByName(accountID, nm)
+		return s.getHeaderByName(ctx, accountID, nm)
 	default:
 		return nil, nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -151,8 +153,8 @@ func (s *LaunchTemplateServiceImpl) resolveHeader(accountID string, ltID, name *
 
 // getVersion loads an immutable version body. A missing body is the read-side
 // guard that turns a dangling default or deleted version into VersionNotFound.
-func (s *LaunchTemplateServiceImpl) getVersion(accountID, ltID string, n int64) (*LaunchTemplateVersionRec, error) {
-	entry, err := s.kv.Get(versionKey(accountID, ltID, n))
+func (s *LaunchTemplateServiceImpl) getVersion(ctx context.Context, accountID, ltID string, n int64) (*LaunchTemplateVersionRec, error) {
+	entry, err := s.kv.Get(ctx, versionKey(accountID, ltID, n))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
 	}
@@ -165,10 +167,10 @@ func (s *LaunchTemplateServiceImpl) getVersion(accountID, ltID string, n int64) 
 
 // listVersionNumbers returns the existing version numbers for a template,
 // derived by scanning its version keys (sorted ascending).
-func (s *LaunchTemplateServiceImpl) listVersionNumbers(accountID, ltID string) ([]int64, error) {
-	keys, err := s.kv.Keys()
+func (s *LaunchTemplateServiceImpl) listVersionNumbers(ctx context.Context, accountID, ltID string) ([]int64, error) {
+	keys, err := s.kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -190,8 +192,8 @@ func (s *LaunchTemplateServiceImpl) listVersionNumbers(accountID, ltID string) (
 }
 
 // latestVersionNumber returns the highest existing version number, or 0 if none.
-func (s *LaunchTemplateServiceImpl) latestVersionNumber(accountID, ltID string) (int64, error) {
-	nums, err := s.listVersionNumbers(accountID, ltID)
+func (s *LaunchTemplateServiceImpl) latestVersionNumber(ctx context.Context, accountID, ltID string) (int64, error) {
+	nums, err := s.listVersionNumbers(ctx, accountID, ltID)
 	if err != nil {
 		return 0, err
 	}
@@ -235,12 +237,12 @@ func latestVersionsFromKeys(keys []string, prefix string) map[string]int64 {
 // resolveVersionNumber maps a selector ("", $Default, $Latest, or numeric) to a
 // concrete version number. It does not verify the body exists — callers load the
 // body and surface VersionNotFound when it is missing.
-func (s *LaunchTemplateServiceImpl) resolveVersionNumber(accountID string, h *LaunchTemplateHeader, sel string) (int64, error) {
+func (s *LaunchTemplateServiceImpl) resolveVersionNumber(ctx context.Context, accountID string, h *LaunchTemplateHeader, sel string) (int64, error) {
 	switch sel {
 	case "", versionDefault:
 		return h.DefaultVersionNumber, nil
 	case versionLatest:
-		return s.latestVersionNumber(accountID, h.LaunchTemplateId)
+		return s.latestVersionNumber(ctx, accountID, h.LaunchTemplateId)
 	default:
 		n, err := strconv.ParseInt(sel, 10, 64)
 		if err != nil {
@@ -270,7 +272,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 	}
 
 	ltID := utils.GenerateResourceID("lt")
-	if err := s.claimName(accountID, name, ltID); err != nil {
+	if err := s.claimName(ctx, accountID, name, ltID); err != nil {
 		return nil, err
 	}
 
@@ -282,7 +284,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 		CreatedBy:          accountID,
 		Data:               data,
 	}
-	if err := s.putVersion(accountID, ltID, &rec); err != nil {
+	if err := s.putVersion(ctx, accountID, ltID, &rec); err != nil {
 		return nil, err
 	}
 
@@ -295,7 +297,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 		DefaultVersionNumber: 1,
 		Tags:                 utils.ExtractTags(input.TagSpecifications, launchTemplateTagResourceType),
 	}
-	if err := s.putHeader(accountID, &header); err != nil {
+	if err := s.putHeader(ctx, accountID, &header); err != nil {
 		return nil, err
 	}
 
@@ -310,12 +312,12 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 // repair-on-write: if the name already exists but its header is gone (a crash
 // orphan), reclaim it via a revision-guarded CAS update. Only a name whose header
 // still exists returns AlreadyExists.
-func (s *LaunchTemplateServiceImpl) claimName(accountID, name, ltID string) error {
+func (s *LaunchTemplateServiceImpl) claimName(ctx context.Context, accountID, name, ltID string) error {
 	key := nameKey(accountID, name)
-	if _, err := s.kv.Create(key, []byte(ltID)); err == nil {
+	if _, err := s.kv.Create(ctx, key, []byte(ltID)); err == nil {
 		return nil
 	}
-	entry, err := s.kv.Get(key)
+	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -323,36 +325,36 @@ func (s *LaunchTemplateServiceImpl) claimName(accountID, name, ltID string) erro
 	// header means the name is taken; any other read error (transient fault, or a
 	// concurrent in-flight create whose header is not yet written) fails closed so
 	// the name is never stolen from a possibly-live template.
-	_, herr := s.kv.Get(headerKey(accountID, string(entry.Value())))
+	_, herr := s.kv.Get(ctx, headerKey(accountID, string(entry.Value())))
 	switch {
 	case herr == nil:
 		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
-	case !errors.Is(herr, nats.ErrKeyNotFound):
+	case !errors.Is(herr, jetstream.ErrKeyNotFound):
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Update(key, []byte(ltID), entry.Revision()); err != nil {
+	if _, err := s.kv.Update(ctx, key, []byte(ltID), entry.Revision()); err != nil {
 		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
 	}
 	return nil
 }
 
-func (s *LaunchTemplateServiceImpl) putHeader(accountID string, h *LaunchTemplateHeader) error {
+func (s *LaunchTemplateServiceImpl) putHeader(ctx context.Context, accountID string, h *LaunchTemplateHeader) error {
 	data, err := json.Marshal(h)
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Put(headerKey(accountID, h.LaunchTemplateId), data); err != nil {
+	if _, err := s.kv.Put(ctx, headerKey(accountID, h.LaunchTemplateId), data); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
 }
 
-func (s *LaunchTemplateServiceImpl) putVersion(accountID, ltID string, rec *LaunchTemplateVersionRec) error {
+func (s *LaunchTemplateServiceImpl) putVersion(ctx context.Context, accountID, ltID string, rec *LaunchTemplateVersionRec) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Put(versionKey(accountID, ltID, rec.VersionNumber), data); err != nil {
+	if _, err := s.kv.Put(ctx, versionKey(accountID, ltID, rec.VersionNumber), data); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
@@ -364,7 +366,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	if input.LaunchTemplateData == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	header, _, err := s.resolveHeader(accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +382,11 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	// SourceVersion clones-and-overrides; without it the new version is the data as given.
 	data := override
 	if src := aws.StringValue(input.SourceVersion); src != "" {
-		n, err := s.resolveVersionNumber(accountID, header, src)
+		n, err := s.resolveVersionNumber(ctx, accountID, header, src)
 		if err != nil {
 			return nil, err
 		}
-		base, err := s.getVersion(accountID, header.LaunchTemplateId, n)
+		base, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n)
 		if err != nil {
 			return nil, err
 		}
@@ -401,7 +403,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	// Assign the number with an atomic kv.Create in a bounded retry loop: on
 	// collision another writer took n, so rescan and try the next number.
 	for attempt := range maxVersionRetries {
-		latest, err := s.latestVersionNumber(accountID, header.LaunchTemplateId)
+		latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
 		if err != nil {
 			return nil, err
 		}
@@ -411,8 +413,8 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.kv.Create(versionKey(accountID, header.LaunchTemplateId, next), body); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
+		if _, err := s.kv.Create(ctx, versionKey(accountID, header.LaunchTemplateId, next), body); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
 				slog.DebugContext(ctx, "CreateLaunchTemplateVersion: version-number collision, retrying", "attempt", attempt, "next", next)
 				continue
 			}
@@ -432,12 +434,12 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 // --- ModifyLaunchTemplate ---
 
 func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, input *ec2.ModifyLaunchTemplateInput, accountID string) (*ec2.ModifyLaunchTemplateOutput, error) {
-	header, entry, err := s.resolveHeader(accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, entry, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
 	if aws.BoolValue(input.DryRun) {
-		latest, err := s.latestVersionNumber(accountID, header.LaunchTemplateId)
+		latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
 		if err != nil {
 			return nil, err
 		}
@@ -445,13 +447,13 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 	}
 
 	if sel := aws.StringValue(input.DefaultVersion); sel != "" {
-		n, err := s.resolveVersionNumber(accountID, header, sel)
+		n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
 		if err != nil {
 			return nil, err
 		}
 		// Verify the target body exists immediately before the header CAS so a
 		// concurrent delete degrades to VersionNotFound, never a dangling default.
-		if _, err := s.getVersion(accountID, header.LaunchTemplateId, n); err != nil {
+		if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
 			return nil, err
 		}
 		header.DefaultVersionNumber = n
@@ -459,12 +461,12 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.kv.Update(headerKey(accountID, header.LaunchTemplateId), data, entry.Revision()); err != nil {
+		if _, err := s.kv.Update(ctx, headerKey(accountID, header.LaunchTemplateId), data, entry.Revision()); err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	latest, err := s.latestVersionNumber(accountID, header.LaunchTemplateId)
+	latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
 	if err != nil {
 		return nil, err
 	}
@@ -475,19 +477,19 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 // --- DeleteLaunchTemplate ---
 
 func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, input *ec2.DeleteLaunchTemplateInput, accountID string) (*ec2.DeleteLaunchTemplateOutput, error) {
-	header, _, err := s.resolveHeader(accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
 	if aws.BoolValue(input.DryRun) {
-		latest, err := s.latestVersionNumber(accountID, header.LaunchTemplateId)
+		latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
 		if err != nil {
 			return nil, err
 		}
 		return &ec2.DeleteLaunchTemplateOutput{LaunchTemplate: headerToEC2(header, latest)}, nil
 	}
 
-	latest, err := s.latestVersionNumber(accountID, header.LaunchTemplateId)
+	latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
 	if err != nil {
 		return nil, err
 	}
@@ -495,18 +497,18 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 
 	// Delete the header first: the template immediately vanishes from every
 	// describe. Version bodies and the name index are best-effort cleanup.
-	if err := s.kv.Delete(headerKey(accountID, header.LaunchTemplateId)); err != nil {
+	if err := s.kv.Delete(ctx, headerKey(accountID, header.LaunchTemplateId)); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.kv.Delete(nameKey(accountID, header.LaunchTemplateName)); err != nil {
+	if err := s.kv.Delete(ctx, nameKey(accountID, header.LaunchTemplateName)); err != nil {
 		slog.WarnContext(ctx, "DeleteLaunchTemplate: name index cleanup failed", "name", header.LaunchTemplateName, "err", err)
 	}
-	nums, err := s.listVersionNumbers(accountID, header.LaunchTemplateId)
+	nums, err := s.listVersionNumbers(ctx, accountID, header.LaunchTemplateId)
 	if err != nil {
 		slog.WarnContext(ctx, "DeleteLaunchTemplate: version enumeration failed, bodies left in place", "launchTemplateId", header.LaunchTemplateId, "err", err)
 	}
 	for _, n := range nums {
-		if err := s.kv.Delete(versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
+		if err := s.kv.Delete(ctx, versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
 			slog.WarnContext(ctx, "DeleteLaunchTemplate: version cleanup failed", "launchTemplateId", header.LaunchTemplateId, "version", n, "err", err)
 		}
 	}
@@ -518,7 +520,7 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 // --- DeleteLaunchTemplateVersions ---
 
 func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Context, input *ec2.DeleteLaunchTemplateVersionsInput, accountID string) (*ec2.DeleteLaunchTemplateVersionsOutput, error) {
-	header, _, err := s.resolveHeader(accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
@@ -544,12 +546,12 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Con
 				deleteErrorItem(header, n, awserrors.ErrorInvalidParameterValue, "cannot delete the default version of a launch template"))
 			continue
 		}
-		if _, err := s.getVersion(accountID, header.LaunchTemplateId, n); err != nil {
+		if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
 			out.UnsuccessfullyDeletedLaunchTemplateVersions = append(out.UnsuccessfullyDeletedLaunchTemplateVersions,
 				deleteErrorItem(header, n, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, "version does not exist"))
 			continue
 		}
-		if err := s.kv.Delete(versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
+		if err := s.kv.Delete(ctx, versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
 			out.UnsuccessfullyDeletedLaunchTemplateVersions = append(out.UnsuccessfullyDeletedLaunchTemplateVersions,
 				deleteErrorItem(header, n, awserrors.ErrorServerInternal, "failed to delete version"))
 			continue
@@ -604,8 +606,8 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 	idSet := stringSet(input.LaunchTemplateIds)
 
 	prefix := accountID + "."
-	keys, err := s.kv.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.kv.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -620,7 +622,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		if !isHeaderKey(k, prefix) {
 			continue
 		}
-		entry, err := s.kv.Get(k)
+		entry, err := s.kv.Get(ctx, k)
 		if err != nil {
 			slog.WarnContext(ctx, "DescribeLaunchTemplates: header read failed", "key", k, "err", err)
 			continue
@@ -713,19 +715,19 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.C
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	header, _, err := s.resolveHeader(accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
 
-	numbers, err := s.selectVersionNumbers(accountID, header, input)
+	numbers, err := s.selectVersionNumbers(ctx, accountID, header, input)
 	if err != nil {
 		return nil, err
 	}
 
 	var versions []*ec2.LaunchTemplateVersion
 	for _, n := range numbers {
-		rec, err := s.getVersion(accountID, header.LaunchTemplateId, n)
+		rec, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n)
 		if err != nil {
 			return nil, err
 		}
@@ -742,16 +744,16 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.C
 // selectVersionNumbers resolves the requested Versions/MinVersion/MaxVersion into
 // a concrete, ordered list of version numbers. Explicit Versions each resolve and
 // must exist; otherwise all versions within the optional [Min,Max] range.
-func (s *LaunchTemplateServiceImpl) selectVersionNumbers(accountID string, header *LaunchTemplateHeader, input *ec2.DescribeLaunchTemplateVersionsInput) ([]int64, error) {
+func (s *LaunchTemplateServiceImpl) selectVersionNumbers(ctx context.Context, accountID string, header *LaunchTemplateHeader, input *ec2.DescribeLaunchTemplateVersionsInput) ([]int64, error) {
 	if len(input.Versions) > 0 {
 		seen := make(map[int64]bool)
 		var out []int64
 		for _, v := range input.Versions {
-			n, err := s.resolveVersionNumber(accountID, header, aws.StringValue(v))
+			n, err := s.resolveVersionNumber(ctx, accountID, header, aws.StringValue(v))
 			if err != nil {
 				return nil, err
 			}
-			if _, err := s.getVersion(accountID, header.LaunchTemplateId, n); err != nil {
+			if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
 				return nil, err
 			}
 			if !seen[n] {
@@ -762,7 +764,7 @@ func (s *LaunchTemplateServiceImpl) selectVersionNumbers(accountID string, heade
 		return out, nil
 	}
 
-	all, err := s.listVersionNumbers(accountID, header.LaunchTemplateId)
+	all, err := s.listVersionNumbers(ctx, accountID, header.LaunchTemplateId)
 	if err != nil {
 		return nil, err
 	}

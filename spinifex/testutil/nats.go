@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,6 +59,16 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, nats.JetStrea
 	js, err := nc.JetStream()
 	require.NoError(t, err)
 	return ns, nc, js
+}
+
+// NewJetStream returns a jetstream package handle for an existing test
+// connection. Pairs with StartTestJetStream, whose legacy context cannot be
+// passed to code on the jetstream API.
+func NewJetStream(t *testing.T, nc *nats.Conn) jetstream.JetStream {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	return js
 }
 
 // vpcdStubTopics lists every synchronous vpcd topic the stub auto-replies to.

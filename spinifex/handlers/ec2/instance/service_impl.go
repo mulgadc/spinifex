@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // VolumeInfo holds volume information returned from GenerateVolumes
@@ -374,14 +375,14 @@ func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID
 	// CAS the tag mutation into the shared KV record instead of a wholesale
 	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
 	// the record between the Load above and this write fails cleanly with
-	// nats.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	// jetstream.ErrKeyNotFound rather than resurrecting a stale stopped entry.
 	newTags := instance.Instance.Tags
 	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
 		if v.Instance != nil {
 			v.Instance.Tags = newTags
 		}
 	}); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.WarnContext(ctx, "TagStoppedInstance: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
@@ -2056,7 +2057,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 	// CAS the mutations into the shared KV record instead of a wholesale
 	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
 	// the record between the Load above and this write fails cleanly with
-	// nats.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	// jetstream.ErrKeyNotFound rather than resurrecting a stale stopped entry.
 	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
 		if input.InstanceType != nil && input.InstanceType.Value != nil && v.Instance != nil {
 			newType := *input.InstanceType.Value
@@ -2085,7 +2086,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 		}
 	})
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// The record existed moments ago (Load above) but a concurrent
 			// claim removed it: the instance is mid-transition, not gone.
 			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance claimed concurrently, not resurrecting", "instanceId", instanceID)

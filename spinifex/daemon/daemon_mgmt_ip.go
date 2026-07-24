@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // mgmtIPAMKeyPrefix namespaces mgmt-IP allocation records within the shared
@@ -38,7 +38,7 @@ func updateMgmtIPAMWithRetry(jsManager *JetStreamManager, subnet string, mutate 
 		if err == nil {
 			return record, nil
 		}
-		if !errors.Is(err, nats.ErrKeyExists) {
+		if !errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, err
 		}
 		lastErr = err
@@ -247,7 +247,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 
 	// createIfAbsent=false: releasing an instance this node never allocated
 	// (or that no node has a record for) must not conjure an empty record
-	// into existence — nats.ErrKeyNotFound just means there was nothing to
+	// into existence — jetstream.ErrKeyNotFound just means there was nothing to
 	// release.
 	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
 		for i, e := range r.Allocated {
@@ -257,7 +257,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 			}
 		}
 	}, false)
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
 			"instance", instanceID, "err", err)
 	}

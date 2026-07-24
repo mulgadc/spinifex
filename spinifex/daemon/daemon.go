@@ -57,6 +57,7 @@ import (
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -1297,8 +1298,8 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
-	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
-		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
+	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
+		if err := kvutil.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
 			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
 		}
 	}
@@ -1334,10 +1335,10 @@ func (d *Daemon) startCluster() error {
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl
-		kv  nats.KeyValue
+		kv  jetstream.KeyValue
 	}
 	snap, err := initServiceWithRetry("snapshot service", func() (snapResult, error) {
-		svc, kv, err := handlers_ec2_snapshot.NewSnapshotServiceImplWithNATS(d.config, d.natsConn)
+		svc, kv, err := handlers_ec2_snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 		return snapResult{svc, kv}, err
 	})
 	if err != nil {
@@ -1349,28 +1350,28 @@ func (d *Daemon) startCluster() error {
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
-		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EIGW service: %w", err)
 	}
 
 	d.igwService, err = initServiceWithRetry("IGW service", func() (*handlers_ec2_igw.IGWServiceImpl, error) {
-		return handlers_ec2_igw.NewIGWServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize IGW service: %w", err)
 	}
 
 	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*handlers_ec2_placementgroup.PlacementGroupServiceImpl, error) {
-		return handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
 	}
 
 	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*handlers_ec2_launchtemplate.LaunchTemplateServiceImpl, error) {
-		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize launch template service: %w", err)
@@ -1384,7 +1385,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.vpcService, err = initServiceWithRetry("VPC service", func() (*handlers_ec2_vpc.VPCServiceImpl, error) {
-		return handlers_ec2_vpc.NewVPCServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
@@ -1415,7 +1416,7 @@ func (d *Daemon) startCluster() error {
 	// mode with a public pool alongside the transit segment). The transit pool
 	// never enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
 	if d.hasPublicIPPools() {
-		js, jsErr := d.natsConn.JetStream()
+		js, jsErr := jetstream.New(d.natsConn)
 		if jsErr != nil {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
@@ -1441,7 +1442,7 @@ func (d *Daemon) startCluster() error {
 					anyDHCP = true
 				}
 			}
-			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(js, pools)
+			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(d.ctx, js, pools)
 			if err != nil {
 				slog.Warn("Failed to initialize external IPAM", "err", err)
 			} else {
@@ -1458,7 +1459,7 @@ func (d *Daemon) startCluster() error {
 
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
-		eipSvc, eipErr := handlers_ec2_eip.NewEIPServiceImpl(d.natsConn, d.externalIPAM, d.vpcService)
+		eipSvc, eipErr := handlers_ec2_eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
 		if eipErr != nil {
 			slog.Warn("Failed to initialize EIP service", "err", eipErr)
 		} else {
@@ -1468,11 +1469,11 @@ func (d *Daemon) startCluster() error {
 
 		// Inject external IPAM + EIP KV into VPC service so DeleteNetworkInterface
 		// can release auto-assigned public IPs and NAT rules.
-		eipJS, eipJSErr := d.natsConn.JetStream()
+		eipJS, eipJSErr := jetstream.New(d.natsConn)
 		if eipJSErr != nil {
 			slog.Warn("Failed to get JetStream for VPC external IPAM injection", "err", eipJSErr)
 		} else {
-			eipKV, eipKVErr := utils.GetOrCreateKVBucket(eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
+			eipKV, eipKVErr := kvutil.GetOrCreateBucket(d.ctx, eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
 			if eipKVErr != nil {
 				slog.Warn("Failed to get EIP KV bucket for VPC service", "err", eipKVErr)
 			} else {
@@ -1496,7 +1497,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.accountService, err = initServiceWithRetry("account settings service", func() (*handlers_ec2_account.AccountSettingsServiceImpl, error) {
-		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
@@ -1548,9 +1549,9 @@ func (d *Daemon) startCluster() error {
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
 	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix).WithDeps(d.buildECSServiceDeps())
-	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
-	} else if _, lbErr := handlers_ecs.InitLeaderBucket(js); lbErr != nil {
+	} else if _, lbErr := handlers_ecs.InitLeaderBucket(d.ctx, js); lbErr != nil {
 		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
 	} else {
 		d.ecsScheduler = handlers_ecs.NewScheduler(d.natsConn, d.ecsService, d.node)

@@ -29,10 +29,11 @@ func testPool() external.ExternalPoolConfig {
 
 func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
 	pool := testPool()
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, nil)

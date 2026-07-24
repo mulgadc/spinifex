@@ -29,7 +29,7 @@ func StartPlacementGroupDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_plac
 	t.Helper()
 
 	cfg := &config.Config{AZ: testAZ}
-	svc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(cfg, gw.NATSConn)
+	svc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), cfg, gw.NATSConn)
 	require.NoError(t, err, "construct placement group service")
 
 	nc := gw.NATSConn

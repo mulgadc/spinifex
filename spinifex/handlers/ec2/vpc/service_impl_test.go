@@ -586,13 +586,13 @@ func TestCreateMainRouteTable_Idempotent(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.99.0.0/16") // CreateVpc auto-calls createMainRouteTable
 
-	firstID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	firstID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	require.NotEmpty(t, firstID, "CreateVpc should have created a main route table")
 
 	require.NoError(t, svc.createMainRouteTable(context.Background(), testAccountID, vpcID, "10.99.0.0/16"))
 
-	secondID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	secondID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	assert.Equal(t, firstID, secondID, "second call must be a no-op")
 
@@ -608,7 +608,7 @@ func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.77.0.0/16") // auto-creates the main RT
 
-	rtbID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	rtbID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	require.NotEmpty(t, rtbID, "CreateVpc should have created a main route table")
 	require.Equal(t, 1, countMainRouteTablesForVPC(t, svc, vpcID))
@@ -616,7 +616,7 @@ func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
 	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.NoError(t, err)
 
-	gone, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	gone, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	assert.Empty(t, gone, "DeleteVpc must reap the main route table, not leak it")
 	assert.Equal(t, 0, countMainRouteTablesForVPC(t, svc, vpcID))

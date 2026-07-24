@@ -124,7 +124,7 @@ func TestHeartbeatKVContract(t *testing.T) {
 
 	// Verify the KV key prefix and the JSON tag names directly. Reading back
 	// via ReadHeartbeat alone would also pass against a typo'd tag.
-	entry, err := jsm.clusterKV.Get("heartbeat." + h.Node)
+	entry, err := jsm.clusterKV.Get(t.Context(), "heartbeat."+h.Node)
 	require.NoError(t, err)
 
 	var raw map[string]any

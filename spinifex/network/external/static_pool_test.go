@@ -14,8 +14,9 @@ import (
 
 func newStaticAllocator(t *testing.T, pools []ExternalPoolConfig) *StaticPoolAllocator {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	a, err := NewStaticPoolAllocator(js, pools)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	a, err := NewStaticPoolAllocator(t.Context(), js, pools)
 	require.NoError(t, err)
 	return a
 }
@@ -53,7 +54,7 @@ func TestStaticPool_AllocateSequential(t *testing.T) {
 func TestStaticPool_GatewayReserved(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
 
-	rec, err := a.GetPoolRecord("wan")
+	rec, err := a.GetPoolRecord(t.Context(), "wan")
 	require.NoError(t, err)
 	alloc, ok := rec.Allocated["192.168.1.150"]
 	require.True(t, ok)
@@ -161,7 +162,7 @@ func TestStaticPool_Release_OwnershipScoped(t *testing.T) {
 
 	// Stale teardown of a prior owner must not free the live lease.
 	require.NoError(t, a.Release(ctx, "wan", ip, "eni-stale"))
-	rec, err := a.GetPoolRecord("wan")
+	rec, err := a.GetPoolRecord(ctx, "wan")
 	require.NoError(t, err)
 	alloc, ok := rec.Allocated[ip.String()]
 	require.True(t, ok, "foreign-ENI release must not free the live lease")
@@ -169,7 +170,7 @@ func TestStaticPool_Release_OwnershipScoped(t *testing.T) {
 
 	// The current owner releases it.
 	require.NoError(t, a.Release(ctx, "wan", ip, "eni-live"))
-	rec, err = a.GetPoolRecord("wan")
+	rec, err = a.GetPoolRecord(ctx, "wan")
 	require.NoError(t, err)
 	_, ok = rec.Allocated[ip.String()]
 	assert.False(t, ok, "owner-scoped release must free the lease")

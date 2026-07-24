@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -38,7 +39,7 @@ func newTestMgmtJSM(t *testing.T) *JetStreamManager {
 func cleanupMgmtIPAM(t *testing.T, jsm *JetStreamManager, a *MgmtIPAllocator) {
 	t.Helper()
 	t.Cleanup(func() {
-		_ = jsm.clusterKV.Delete(mgmtIPAMKeyPrefix + a.subnet)
+		_ = jsm.clusterKV.Delete(context.Background(), mgmtIPAMKeyPrefix+a.subnet)
 	})
 }
 

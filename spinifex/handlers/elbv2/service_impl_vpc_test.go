@@ -25,7 +25,7 @@ func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	testutil.StubVpcdSGResponder(t, nc)
 
 	// Create VPC service
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	// Create ELBv2 service with VPC wired in.

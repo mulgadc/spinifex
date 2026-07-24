@@ -1118,14 +1118,14 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 // IsDefault=true (production code keys off IsDefault, not GroupName).
 func findDefaultSGInVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) string {
 	t.Helper()
-	keys, err := svc.sgKV.Keys()
+	keys, err := svc.sgKV.Keys(t.Context())
 	require.NoError(t, err)
 	var matches []string
 	for _, k := range keys {
 		if k == utils.VersionKey {
 			continue
 		}
-		entry, err := svc.sgKV.Get(k)
+		entry, err := svc.sgKV.Get(t.Context(), k)
 		require.NoError(t, err)
 		var rec SecurityGroupRecord
 		require.NoError(t, json.Unmarshal(entry.Value(), &rec))
@@ -1611,7 +1611,7 @@ func TestFindDefaultSGForVPC_SkipsMalformedRecord(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	_, err := svc.sgKV.Put(testAccountID+".sg-corrupt0000000", []byte("{not json"))
+	_, err := svc.sgKV.Put(t.Context(), testAccountID+".sg-corrupt0000000", []byte("{not json"))
 	require.NoError(t, err)
 
 	// CreateVpc above already provisioned the default SG; FindDefaultSGForVPC
@@ -1651,7 +1651,7 @@ func TestDeleteSecurityGroup_FailsClosedOnCorruptENI(t *testing.T) {
 
 	// Inject a malformed ENI record into the bucket; checkSGDependencies must
 	// reject the delete rather than silently treating it as "no dependent ENI".
-	_, err := svc.eniKV.Put(testAccountID+".eni-corrupt", []byte("{not json"))
+	_, err := svc.eniKV.Put(t.Context(), testAccountID+".eni-corrupt", []byte("{not json"))
 	require.NoError(t, err)
 
 	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
@@ -1669,7 +1669,7 @@ func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
 	rec := VPCRecord{VpcId: vpcID, CidrBlock: "10.0.0.0/16", State: "available"}
 	data, err := json.Marshal(rec)
 	require.NoError(t, err)
-	_, err = svc.vpcKV.Put(utils.AccountKey(testAccountID, vpcID), data)
+	_, err = svc.vpcKV.Put(t.Context(), utils.AccountKey(testAccountID, vpcID), data)
 	require.NoError(t, err)
 }
 
@@ -1894,7 +1894,7 @@ func TestAuthorizeSecurityGroupIngress_AssignsRuleIDs(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	entry, err := svc.sgKV.Get(utils.AccountKey(testAccountID, sgID))
+	entry, err := svc.sgKV.Get(t.Context(), utils.AccountKey(testAccountID, sgID))
 	require.NoError(t, err)
 	var record SecurityGroupRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))

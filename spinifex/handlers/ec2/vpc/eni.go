@@ -15,7 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -91,7 +91,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	subnetId := *input.SubnetId
 
 	// Verify subnet exists and belongs to this account
-	subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, subnetId))
+	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetId))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 	}
@@ -109,13 +109,13 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	}
 	if len(sgIdsIn) == 0 {
 		// AWS attaches the per-VPC default SG when the caller omits Groups.
-		defaultSGId, err := s.FindDefaultSGForVPC(accountID, subnet.VpcId)
+		defaultSGId, err := s.findDefaultSGForVPC(ctx, accountID, subnet.VpcId)
 		if err != nil || defaultSGId == "" {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		sgIdsIn = []string{defaultSGId}
 	}
-	if err := s.validateSGAttachment(accountID, sgIdsIn, subnet.VpcId); err != nil {
+	if err := s.validateSGAttachment(ctx, accountID, sgIdsIn, subnet.VpcId); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +127,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		// TODO: validate the requested IP is in the subnet range and not already allocated
 		privateIP = *input.PrivateIpAddress
 	} else {
-		ip, err := s.ipam.AllocateIP(subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId)
+		ip, err := s.ipam.AllocateIP(ctx, subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -160,7 +160,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Put(utils.AccountKey(accountID, eniId), data); err != nil {
+	if _, err := s.eniKV.Put(ctx, utils.AccountKey(accountID, eniId), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -205,9 +205,9 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	key := utils.AccountKey(accountID, eniId)
 
 	// Get the ENI record
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// Internal teardown (force) tolerates an already-gone ENI so
 			// instance terminate converges (ADR-0003 §2); the public API is
 			// AWS-faithful and returns NotFound.
@@ -232,7 +232,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	}
 
 	// Release the private IP back to the IPAM pool
-	if err := s.ipam.ReleaseIP(record.SubnetId, record.PrivateIpAddress); err != nil {
+	if err := s.ipam.ReleaseIP(ctx, record.SubnetId, record.PrivateIpAddress); err != nil {
 		slog.WarnContext(ctx, "Failed to release IP during ENI delete", "eni", eniId, "ip", record.PrivateIpAddress, "err", err)
 	}
 
@@ -255,7 +255,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 		}
 	}
 
-	if err := s.eniKV.Delete(key); err != nil {
+	if err := s.eniKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -286,7 +286,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 	eniId := *input.NetworkInterfaceId
 	key := utils.AccountKey(accountID, eniId)
 
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
@@ -305,7 +305,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 				sgIds = append(sgIds, *id)
 			}
 		}
-		if err := s.validateSGAttachment(accountID, sgIds, record.VpcId); err != nil {
+		if err := s.validateSGAttachment(ctx, accountID, sgIds, record.VpcId); err != nil {
 			return nil, err
 		}
 		record.SecurityGroupIds = sgIds
@@ -321,7 +321,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 		slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: failed to marshal ENI record", "eniId", eniId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		slog.ErrorContext(ctx, "ModifyNetworkInterfaceAttribute: KV update failed", "eniId", eniId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -371,8 +371,8 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	}
 
 	prefix := accountID + "."
-	keys, err := s.eniKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.eniKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -384,7 +384,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 			continue
 		}
 
-		entry, err := s.eniKV.Get(key)
+		entry, err := s.eniKV.Get(ctx, key)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to get ENI record", "key", key, "error", err)
 			continue
@@ -504,8 +504,12 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 // AttachENI marks an ENI as attached to an instance (internal use by RunInstances).
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex)
+}
+
+func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
 	key := utils.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
@@ -529,11 +533,11 @@ func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIn
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return "", errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("ENI attached", "eniId", eniId, "instanceId", instanceId, "attachmentId", attachmentId)
+	slog.InfoContext(ctx, "ENI attached", "eniId", eniId, "instanceId", instanceId, "attachmentId", attachmentId)
 	return attachmentId, nil
 }
 
@@ -541,7 +545,7 @@ func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIn
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string) error {
 	key := utils.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
@@ -560,7 +564,7 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 	if err != nil {
 		return fmt.Errorf("failed to marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -572,8 +576,12 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 // hot-plug handlers that need the record's MAC + AttachmentId before
 // running the QMP pipeline.
 func (s *VPCServiceImpl) GetENIRecord(accountID, eniId string) (ENIRecord, error) {
+	return s.getENIRecord(context.Background(), accountID, eniId)
+}
+
+func (s *VPCServiceImpl) getENIRecord(ctx context.Context, accountID, eniId string) (ENIRecord, error) {
 	key := utils.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return ENIRecord{}, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
@@ -588,8 +596,12 @@ func (s *VPCServiceImpl) GetENIRecord(accountID, eniId string) (ENIRecord, error
 // the result under the same revision token (compare-and-swap). fn must
 // not block on external I/O; the KV update slot is contended.
 func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord)) error {
+	return s.updateENI(context.Background(), accountID, eniId, fn)
+}
+
+func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string, fn func(*ENIRecord)) error {
 	key := utils.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
 	}
@@ -602,7 +614,7 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 	if err != nil {
 		return fmt.Errorf("marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
@@ -612,9 +624,13 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 // instanceID. Used by the hot-plug reconciler to converge a node's instances
 // against KV on restart.
 func (s *VPCServiceImpl) ListInstanceENIs(accountID, instanceID string) ([]ENIRecord, error) {
-	keys, err := s.eniKV.Keys()
+	return s.listInstanceENIs(context.Background(), accountID, instanceID)
+}
+
+func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instanceID string) ([]ENIRecord, error) {
+	keys, err := s.eniKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -625,7 +641,7 @@ func (s *VPCServiceImpl) ListInstanceENIs(accountID, instanceID string) ([]ENIRe
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.eniKV.Get(key)
+		entry, err := s.eniKV.Get(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -643,8 +659,12 @@ func (s *VPCServiceImpl) ListInstanceENIs(accountID, instanceID string) ([]ENIRe
 // FindENIByAttachment scans the ENI bucket for the record with the given
 // AttachmentId. Used by DetachNetworkInterface which identifies by attachment ID.
 func (s *VPCServiceImpl) FindENIByAttachment(accountID, attachmentId string) (ENIRecord, error) {
-	keys, err := s.eniKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	return s.findENIByAttachment(context.Background(), accountID, attachmentId)
+}
+
+func (s *VPCServiceImpl) findENIByAttachment(ctx context.Context, accountID, attachmentId string) (ENIRecord, error) {
+	keys, err := s.eniKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return ENIRecord{}, errors.New(awserrors.ErrorServerInternal)
 	}
 	prefix := accountID + "."
@@ -652,7 +672,7 @@ func (s *VPCServiceImpl) FindENIByAttachment(accountID, attachmentId string) (EN
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.eniKV.Get(key)
+		entry, err := s.eniKV.Get(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -669,8 +689,12 @@ func (s *VPCServiceImpl) FindENIByAttachment(accountID, attachmentId string) (EN
 
 // UpdateENIPublicIP updates the PublicIpAddress and PublicIpPool on an ENI record.
 func (s *VPCServiceImpl) UpdateENIPublicIP(accountID, eniId, publicIP, poolName string) error {
+	return s.updateENIPublicIP(context.Background(), accountID, eniId, publicIP, poolName)
+}
+
+func (s *VPCServiceImpl) updateENIPublicIP(ctx context.Context, accountID, eniId, publicIP, poolName string) error {
 	key := utils.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(key)
+	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("ENI %s not found: %w", eniId, err)
 	}
@@ -687,11 +711,11 @@ func (s *VPCServiceImpl) UpdateENIPublicIP(accountID, eniId, publicIP, poolName 
 	if err != nil {
 		return fmt.Errorf("marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("update ENI record: %w", err)
 	}
 
-	slog.Info("Updated ENI with public IP", "eniId", eniId, "publicIp", publicIP, "pool", poolName)
+	slog.InfoContext(ctx, "Updated ENI with public IP", "eniId", eniId, "publicIp", publicIP, "pool", poolName)
 	return nil
 }
 
@@ -832,7 +856,7 @@ func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, po
 // or MissingParameter per AWS contract.
 const sgPerInterfaceLimit = 5
 
-func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, vpcId string) error {
+func (s *VPCServiceImpl) validateSGAttachment(ctx context.Context, accountID string, sgIds []string, vpcId string) error {
 	if len(sgIds) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -840,13 +864,13 @@ func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, 
 		return errors.New(awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded)
 	}
 
-	if err := s.requireVPCExists(accountID, vpcId); err != nil {
+	if err := s.requireVPCExists(ctx, accountID, vpcId); err != nil {
 		return err
 	}
 
 	// Each SG must exist in the caller's account and belong to the same VPC.
 	for _, sgId := range sgIds {
-		sgEntry, err := s.sgKV.Get(utils.AccountKey(accountID, sgId))
+		sgEntry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, sgId))
 		if err != nil {
 			return errors.New(awserrors.ErrorInvalidGroupNotFound)
 		}
@@ -868,9 +892,9 @@ func (s *VPCServiceImpl) isEIPOwned(ctx context.Context, eniId, accountID string
 	if s.eipKV == nil {
 		return false, nil
 	}
-	keys, err := s.eipKV.Keys()
+	keys, err := s.eipKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("eipKV.Keys: %w", err)
@@ -880,7 +904,7 @@ func (s *VPCServiceImpl) isEIPOwned(ctx context.Context, eniId, accountID string
 		if len(k) < len(prefix) || k[:len(prefix)] != prefix {
 			continue
 		}
-		entry, err := s.eipKV.Get(k)
+		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			return false, fmt.Errorf("eipKV.Get(%s): %w", k, err)
 		}

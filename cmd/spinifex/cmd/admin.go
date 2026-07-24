@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -339,6 +340,7 @@ func init() {
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -355,6 +357,7 @@ func init() {
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 	adminJoinCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
 	adminJoinCmd.MarkFlagRequired("node")
 	adminJoinCmd.MarkFlagRequired("host")
@@ -1208,10 +1211,31 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Detect DNS servers from the host for VM DHCP
+	// Validate IP address format
+	if net.ParseIP(bindIP) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
+		os.Exit(1)
+	}
+
+	// Resolve the off-host advertise IP before detecting DNS. DetectNetwork may
+	// have failed earlier, so retry lazily when the listener still needs a WAN IP.
+	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
+		if d, derr := admin.DetectNetwork(); derr == nil {
+			detectedNet = d
+		}
+	}
+	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Exclude the node-local Northstar listener from its own upstreams. On a
+	// forced re-init, resolvconf may still list this address first; forwarding it
+	// back to Northstar creates a recursive DNS loop.
 	var dnsServers []string
 	if externalMode != "" {
-		dnsServers = detectDNSServers(externalIface)
+		dnsServers = detectDNSServers(externalIface, advertiseIP)
 		if len(dnsServers) > 0 {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
@@ -1245,25 +1269,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			Start: poolStart, End: poolEnd, Gateway: externalGateway,
 			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
 		})
-	}
-
-	// Validate IP address format
-	if net.ParseIP(bindIP) == nil {
-		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
-		os.Exit(1)
-	}
-
-	// Resolve the off-host advertise IP. DetectNetwork may have failed earlier;
-	// detect lazily if we still need the WAN IP.
-	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
-		if d, derr := admin.DetectNetwork(); derr == nil {
-			detectedNet = d
-		}
-	}
-	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
-		os.Exit(1)
 	}
 
 	// Validate port range
@@ -1651,6 +1656,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
 	if nodeHostname == "" {
@@ -1894,6 +1902,9 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2362,6 +2373,9 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
 
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
 	// Print cluster summary
 	fmt.Println("\n🎉 Node successfully joined cluster!")
 	fmt.Printf("   Cluster: %s (%d nodes)\n", creds.ClusterName, len(statusResp.Nodes))
@@ -2722,6 +2736,45 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 	return admin.GenerateConfigFiles(configs, settings)
 }
 
+// hostDNSParams derives the resolver target from the settings just rendered into
+// northstar.toml and reports whether host DNS should be configured at all. Host
+// DNS is pointed at the node's own northstar only when a northstar config was
+// rendered (scoped DNS credentials present) and the operator did not opt out.
+// The resolver is the node AdvertiseIP, falling back to BindIP.
+func hostDNSParams(settings admin.ConfigSettings, skip bool) (hostdns.Params, bool) {
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled || skip {
+		return hostdns.Params{}, false
+	}
+	resolverIP := settings.AdvertiseIP
+	if resolverIP == "" {
+		resolverIP = settings.BindIP
+	}
+	return hostdns.Params{
+		ResolverIP:     resolverIP,
+		BaseDomain:     settings.NorthstarDefaultDomain,
+		InternalDomain: settings.NorthstarInternalDomain,
+	}, true
+}
+
+// configureHostDNS points this node's host resolver at its own northstar so the
+// Spinifex authoritative zones (ELB/EKS names) resolve from the node itself on
+// every install path. Failures are surfaced loudly but never abort a formed
+// cluster, mirroring installCACertificate.
+func configureHostDNS(settings admin.ConfigSettings, skip bool) {
+	params, ok := hostDNSParams(settings, skip)
+	if !ok {
+		return
+	}
+	fmt.Println("\n🔧 Configuring host DNS for Spinifex zones...")
+	if err := hostdns.Configure(params); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not configure host DNS: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    LB/EKS names may not resolve from this node until the host resolver points at %s:53.\n", params.ResolverIP)
+		return
+	}
+	fmt.Printf("✅ Host DNS: %s + %s -> %s:53 (northstar)\n", params.BaseDomain, params.InternalDomain, params.ResolverIP)
+}
+
 // finalizeNodeSetup configures AWS credentials, creates service directories,
 // and sets ownership when running as root.
 func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP string) {
@@ -3027,15 +3080,36 @@ func bridgeModeFor(externalMode string) string {
 	return ""
 }
 
-// detectDNSServers auto-detects DNS servers from the host for the specified
-// interface. Uses resolvectl (systemd-resolved) first, then falls back to
-// /etc/resolv.conf. Returns up to 3 servers. Falls back to public DNS if none found.
-func detectDNSServers(iface string) []string {
+// dnsDetectionCommandTimeout prevents a wedged resolver manager from blocking init.
+const dnsDetectionCommandTimeout = 5 * time.Second
+
+// dnsDetectionSources isolates host resolver discovery for deterministic tests.
+type dnsDetectionSources struct {
+	queryResolvectl func(args ...string) (string, error)
+	readResolvConf  func() (string, error)
+}
+
+// detectDNSServers auto-detects up to three host DNS servers, preferring
+// systemd-resolved before resolv.conf and public fallbacks.
+func detectDNSServers(iface string, excludedIPs ...string) []string {
+	return detectDNSServersWithSources(iface, excludedIPs, dnsDetectionSources{
+		queryResolvectl: func(args ...string) (string, error) {
+			return utils.RunCommandWithTimeout(dnsDetectionCommandTimeout, "resolvectl", args...)
+		},
+		readResolvConf: func() (string, error) {
+			data, err := os.ReadFile("/etc/resolv.conf")
+			return string(data), err
+		},
+	})
+}
+
+// detectDNSServersWithSources finds usable upstreams in resolver-manager order.
+func detectDNSServersWithSources(iface string, excludedIPs []string, sources dnsDetectionSources) []string {
 	// Try resolvectl for the specific link first (most reliable on modern systems)
 	if iface != "" {
-		out, err := exec.Command("resolvectl", "dns", iface).CombinedOutput()
+		out, err := sources.queryResolvectl("dns", iface)
 		if err == nil {
-			servers := parseDNSFromResolvectl(string(out))
+			servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
 			if len(servers) > 0 {
 				return servers
 			}
@@ -3043,38 +3117,66 @@ func detectDNSServers(iface string) []string {
 	}
 
 	// Try resolvectl global
-	out, err := exec.Command("resolvectl", "dns").CombinedOutput()
+	out, err := sources.queryResolvectl("dns")
 	if err == nil {
-		servers := parseDNSFromResolvectl(string(out))
+		servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
 		if len(servers) > 0 {
 			return servers
 		}
 	}
 
 	// Fall back to /etc/resolv.conf
-	data, err := os.ReadFile("/etc/resolv.conf")
+	resolvConf, err := sources.readResolvConf()
 	if err == nil {
 		var servers []string
-		for line := range strings.SplitSeq(string(data), "\n") {
+		for line := range strings.SplitSeq(resolvConf, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "nameserver ") {
-				ip := strings.TrimSpace(strings.TrimPrefix(line, "nameserver"))
-				// Skip localhost (systemd-resolved stub)
-				if ip != "127.0.0.53" && ip != "127.0.0.1" && net.ParseIP(ip) != nil {
-					servers = append(servers, ip)
-				}
+				servers = append(servers, strings.TrimSpace(strings.TrimPrefix(line, "nameserver")))
 			}
 		}
-		if len(servers) > 0 {
-			if len(servers) > 3 {
-				servers = servers[:3]
-			}
+		if servers = filterDNSServers(servers, excludedIPs...); len(servers) > 0 {
 			return servers
 		}
 	}
 
 	// Fallback to well-known public DNS
-	return []string{"8.8.8.8", "1.1.1.1"}
+	return filterDNSServers([]string{"8.8.8.8", "1.1.1.1"}, excludedIPs...)
+}
+
+// filterDNSServers removes local, duplicate, and invalid resolver addresses and
+// caps the upstream list at the three entries supported by generated configs.
+func filterDNSServers(servers []string, excludedIPs ...string) []string {
+	excluded := make(map[string]struct{}, len(excludedIPs)+2)
+	excluded["127.0.0.1"] = struct{}{}
+	excluded["127.0.0.53"] = struct{}{}
+	for _, value := range excludedIPs {
+		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+			excluded[ip.String()] = struct{}{}
+		}
+	}
+
+	filtered := make([]string, 0, min(len(servers), 3))
+	seen := make(map[string]struct{}, len(servers))
+	for _, value := range servers {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil {
+			continue
+		}
+		normalized := ip.String()
+		if _, skip := excluded[normalized]; skip {
+			continue
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		filtered = append(filtered, normalized)
+		if len(filtered) == 3 {
+			break
+		}
+	}
+	return filtered
 }
 
 // parseDNSFromResolvectl extracts IP addresses from resolvectl dns output.
@@ -3089,13 +3191,10 @@ func parseDNSFromResolvectl(output string) []string {
 		}
 		fields := strings.FieldsSeq(after)
 		for f := range fields {
-			if net.ParseIP(f) != nil && f != "127.0.0.53" && f != "127.0.0.1" {
+			if net.ParseIP(f) != nil {
 				servers = append(servers, f)
 			}
 		}
-	}
-	if len(servers) > 3 {
-		servers = servers[:3]
 	}
 	return servers
 }

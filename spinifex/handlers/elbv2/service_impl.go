@@ -149,13 +149,6 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 		return nil, fmt.Errorf("failed to create ELBv2 store: %w", err)
 	}
 
-	// ACM store shares JetStream KV. Non-fatal: failure only disables HTTPS termination.
-	acmStore, acmErr := handlers_acm.NewStore(nc)
-	if acmErr != nil {
-		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
-		acmStore = nil
-	}
-
 	region := "us-east-1"
 	nodeID := ""
 	if cfg != nil {
@@ -166,6 +159,15 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// ACM store shares JetStream KV; its bucket opens under the service lifetime
+	// context. Non-fatal: failure only disables HTTPS termination.
+	acmStore, acmErr := handlers_acm.NewStore(ctx, nc)
+	if acmErr != nil {
+		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
+		acmStore = nil
+	}
+
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
@@ -680,7 +682,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		}
 	}
 
-	certPEMByArn, err := s.resolveListenerCerts(listeners, lb.AccountID)
+	certPEMByArn, err := s.resolveListenerCerts(ctx, listeners, lb.AccountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "updateStoredConfig: failed to resolve certs", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("resolve certs: %w", err)
@@ -715,14 +717,14 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 
 // resolveListenerCerts resolves each distinct certificate ARN to its combined PEM.
 // Returns nil for HTTP-only listeners.
-func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, accountID string) (map[string]string, error) {
+func (s *ELBv2ServiceImpl) resolveListenerCerts(ctx context.Context, listeners []*ListenerRecord, accountID string) (map[string]string, error) {
 	var out map[string]string
 	for _, l := range listeners {
 		for _, c := range l.Certificates {
 			if _, ok := out[c.CertificateArn]; ok {
 				continue
 			}
-			pem, err := s.resolveCertPEM(c.CertificateArn, accountID)
+			pem, err := s.resolveCertPEM(ctx, c.CertificateArn, accountID)
 			if err != nil {
 				return nil, fmt.Errorf("cert %s: %w", c.CertificateArn, err)
 			}
@@ -737,11 +739,11 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, acc
 
 // resolveCertPEM loads a certificate from ACM and returns its combined PEM
 // (leaf + chain + key). Cross-account certs are treated as absent.
-func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error) {
+func (s *ELBv2ServiceImpl) resolveCertPEM(ctx context.Context, arn, accountID string) (string, error) {
 	if s.acmStore == nil {
 		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
 	}
-	rec, err := s.acmStore.GetCert(arn)
+	rec, err := s.acmStore.GetCert(ctx, arn)
 	if err != nil {
 		return "", fmt.Errorf("get cert: %w", err)
 	}
@@ -764,12 +766,12 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error)
 // validateListenerCerts confirms every certificate ARN resolves in the ACM store
 // and is owned by the account. Rejects at the API boundary to avoid silently
 // freezing data-plane convergence at config-render time.
-func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, accountID string) error {
+func (s *ELBv2ServiceImpl) validateListenerCerts(ctx context.Context, certs []ListenerCertificate, accountID string) error {
 	if s.acmStore == nil {
 		return nil
 	}
 	for _, c := range certs {
-		if _, err := s.resolveCertPEM(c.CertificateArn, accountID); err != nil {
+		if _, err := s.resolveCertPEM(ctx, c.CertificateArn, accountID); err != nil {
 			return errors.New(awserrors.ErrorELBv2CertificateNotFound)
 		}
 	}
@@ -2455,7 +2457,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateListenerCerts(certs, accountID); err != nil {
+	if err := s.validateListenerCerts(ctx, certs, accountID); err != nil {
 		return nil, err
 	}
 
@@ -2734,7 +2736,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 		if certErr != nil {
 			return nil, certErr
 		}
-		if certErr := s.validateListenerCerts(certs, accountID); certErr != nil {
+		if certErr := s.validateListenerCerts(ctx, certs, accountID); certErr != nil {
 			return nil, certErr
 		}
 		updated.Certificates = certs

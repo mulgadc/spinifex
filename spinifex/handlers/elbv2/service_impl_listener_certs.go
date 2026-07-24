@@ -62,7 +62,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 	}
 	updated.Certificates = certs
 
-	if err := s.validateListenerCerts(certs, accountID); err != nil {
+	if err := s.validateListenerCerts(ctx, certs, accountID); err != nil {
 		return nil, err
 	}
 

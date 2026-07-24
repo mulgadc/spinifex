@@ -45,7 +45,8 @@ func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn fun
 // metadata subjects served, returning the gateway NATS connection.
 func newPolicyTestConn(t *testing.T) *nats.Conn {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := handlers_ecr.NewKVMetaService(js)
 	serveMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
 	serveMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)

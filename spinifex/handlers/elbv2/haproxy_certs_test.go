@@ -93,7 +93,7 @@ func TestConfigCertHash_ChangesOnRotation(t *testing.T) {
 
 func putTestCert(t *testing.T, svc *ELBv2ServiceImpl, arn, account, leaf, chain, key string) {
 	t.Helper()
-	require.NoError(t, svc.acmStore.PutCert(&handlers_acm.CertRecord{
+	require.NoError(t, svc.acmStore.PutCert(t.Context(), &handlers_acm.CertRecord{
 		CertificateArn:   arn,
 		AccountID:        account,
 		Certificate:      leaf,
@@ -108,16 +108,16 @@ func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
 	require.NotNil(t, svc.acmStore)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "CHAIN", "KEY")
 
-	pem, err := svc.resolveCertPEM(certTestArn, testAccountID)
+	pem, err := svc.resolveCertPEM(t.Context(), certTestArn, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "LEAF\nCHAIN\nKEY\n", pem)
 
 	// Wrong account → treated as not found.
-	_, err = svc.resolveCertPEM(certTestArn, "999999999999")
+	_, err = svc.resolveCertPEM(t.Context(), certTestArn, "999999999999")
 	require.Error(t, err)
 
 	// Unknown ARN → not found.
-	_, err = svc.resolveCertPEM("arn:aws:acm:ap-southeast-2:123456789012:certificate/missing", testAccountID)
+	_, err = svc.resolveCertPEM(t.Context(), "arn:aws:acm:ap-southeast-2:123456789012:certificate/missing", testAccountID)
 	require.Error(t, err)
 }
 
@@ -126,22 +126,22 @@ func TestValidateListenerCerts_RejectsUnknownAndWrongAccount(t *testing.T) {
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
 	// Known, owned cert → accepted.
-	require.NoError(t, svc.validateListenerCerts(
+	require.NoError(t, svc.validateListenerCerts(t.Context(),
 		[]ListenerCertificate{{CertificateArn: certTestArn}}, testAccountID))
 
 	// Unknown ARN → CertificateNotFound, rejected at the API boundary.
-	err := svc.validateListenerCerts(
+	err := svc.validateListenerCerts(t.Context(),
 		[]ListenerCertificate{{CertificateArn: "arn:aws:acm:ap-southeast-2:123456789012:certificate/missing"}}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorELBv2CertificateNotFound)
 
 	// Cert owned by another account → not found.
-	err = svc.validateListenerCerts(
+	err = svc.validateListenerCerts(t.Context(),
 		[]ListenerCertificate{{CertificateArn: certTestArn}}, "999999999999")
 	require.EqualError(t, err, awserrors.ErrorELBv2CertificateNotFound)
 
 	// No ACM store (degraded) → validation skipped, never blocks.
 	svc.acmStore = nil
-	require.NoError(t, svc.validateListenerCerts(
+	require.NoError(t, svc.validateListenerCerts(t.Context(),
 		[]ListenerCertificate{{CertificateArn: certTestArn}}, testAccountID))
 }
 
@@ -149,7 +149,7 @@ func TestResolveCertPEM_NoChain(t *testing.T) {
 	svc := setupTestService(t)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
-	pem, err := svc.resolveCertPEM(certTestArn, testAccountID)
+	pem, err := svc.resolveCertPEM(t.Context(), certTestArn, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "LEAF\nKEY\n", pem)
 }
@@ -159,13 +159,13 @@ func TestResolveListenerCerts_DedupAndResolve(t *testing.T) {
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
 	// Two listeners share the same cert ARN — resolved once.
-	got, err := svc.resolveListenerCerts([]*ListenerRecord{httpsListener(), httpsListener()}, testAccountID)
+	got, err := svc.resolveListenerCerts(t.Context(), []*ListenerRecord{httpsListener(), httpsListener()}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "LEAF\nKEY\n", got[certTestArn])
 
 	// HTTP-only listeners → nil map, no error.
-	got, err = svc.resolveListenerCerts([]*ListenerRecord{{Protocol: ProtocolHTTP}}, testAccountID)
+	got, err = svc.resolveListenerCerts(t.Context(), []*ListenerRecord{{Protocol: ProtocolHTTP}}, testAccountID)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }

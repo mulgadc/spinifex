@@ -37,42 +37,46 @@ func samplePrincipal() Principal {
 }
 
 func TestLoadOrCreateSigningKey_CreatesThenReloads(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	key1, verify1, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	key1, verify1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 	require.NotEmpty(t, key1.Kid)
 	require.Contains(t, verify1, key1.Kid)
 
 	// Second call must reload the same persisted key, not mint a new one.
-	key2, verify2, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	key2, verify2, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 	assert.Equal(t, key1.Kid, key2.Kid, "persisted signing key must be reused")
 	assert.Len(t, verify2, 1)
 }
 
 func TestLoadOrCreateSigningKey_StoresEncrypted(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, _, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
-	kv, err := js.KeyValue(SigningBucket)
+	kv, err := js.KeyValue(t.Context(), SigningBucket)
 	require.NoError(t, err)
-	entry, err := kv.Get(signingKeyName(key.Kid))
+	entry, err := kv.Get(t.Context(), signingKeyName(key.Kid))
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "PRIVATE KEY",
 		"signing key must be encrypted at rest")
 }
 
 func TestLoadOrCreateSigningKey_EmptyMasterKeyRejected(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	_, _, err := LoadOrCreateSigningKey(js, nil, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, _, err := LoadOrCreateSigningKey(t.Context(), js, nil, 1)
 	require.Error(t, err)
 }
 
 func TestIssuerVerifier_RoundTrip(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	iss := NewIssuer(key, testAudience)
@@ -88,8 +92,9 @@ func TestIssuerVerifier_RoundTrip(t *testing.T) {
 }
 
 func TestIssuer_MintRequiresAccountID(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, _, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	p := samplePrincipal()
@@ -103,8 +108,9 @@ func TestIssuer_MintRequiresAccountID(t *testing.T) {
 // accessKeyID, an unsupported principalType) must fail to mint at all, since
 // a token that can't name a lookup key can never be safely rehydrated.
 func TestMint_RequiresCompleteIdentityPointer(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, _, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 	iss := NewIssuer(key, testAudience)
 
@@ -136,8 +142,9 @@ func TestSupportedPrincipalType(t *testing.T) {
 }
 
 func TestVerifier_RejectsWrongAudience(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	tok, _, err := NewIssuer(key, testAudience).Mint(samplePrincipal())
@@ -148,8 +155,9 @@ func TestVerifier_RejectsWrongAudience(t *testing.T) {
 }
 
 func TestVerifier_RejectsUnknownKid(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, _, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	tok, _, err := NewIssuer(key, testAudience).Mint(samplePrincipal())
@@ -161,8 +169,9 @@ func TestVerifier_RejectsUnknownKid(t *testing.T) {
 }
 
 func TestVerifier_RejectsExpiredToken(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	// Hand-mint an already-expired token with the same signing key.
@@ -188,8 +197,9 @@ func TestVerifier_RejectsExpiredToken(t *testing.T) {
 // Mint's own checks, proving Verify itself refuses a claim set missing any
 // part of the identity pointer even if it were signed by some other path.
 func TestVerifier_RejectsIncompleteIdentityPointer(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	base := func() Claims {
@@ -234,8 +244,9 @@ func TestVerifier_RejectsIncompleteIdentityPointer(t *testing.T) {
 }
 
 func TestVerifier_RejectsNonES256(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	_, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	// HS256 token must be refused regardless of signature.

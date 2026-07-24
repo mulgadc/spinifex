@@ -29,6 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
@@ -259,9 +260,16 @@ func launchService(config *config.ClusterConfig) error {
 	// (GetAuthorizationToken) and verifier (/v2 Authorization).
 	js, err := natsConn.JetStream()
 	if err != nil {
-		return fmt.Errorf("ECR auth bridge: JetStream context: %w", err)
+		return fmt.Errorf("JetStream context: %w", err)
 	}
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(js, masterKey, len(config.Nodes))
+
+	// The auth bridge reads and rotates its keys under the janitor lifetime
+	// context; js above still serves the bedrock and quota buckets.
+	authJS, err := jetstream.New(natsConn)
+	if err != nil {
+		return fmt.Errorf("ECR auth bridge: jetstream client: %w", err)
+	}
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, authJS, masterKey, len(config.Nodes))
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
@@ -323,7 +331,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := gateway_ecrauth.NewRotator(js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, authJS, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}

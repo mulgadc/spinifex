@@ -66,6 +66,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ResourceManager handles the allocation and tracking of system resources.
@@ -1564,7 +1565,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
-		return handlers_acm.NewACMServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
@@ -1573,7 +1574,7 @@ func (d *Daemon) startCluster() error {
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS
 	// timeouts) when JetStream is unavailable.
-	if js, jsErr := d.natsConn.JetStream(); jsErr != nil {
+	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
 	} else {
 		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)

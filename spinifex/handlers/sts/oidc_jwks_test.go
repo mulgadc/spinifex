@@ -6,7 +6,6 @@ import (
 
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,10 +140,3 @@ func TestJWK_RSAFieldsRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &got))
 	assert.Equal(t, src, got)
 }
-
-// Ensure that a NATS error other than ErrBucketNotFound / ErrKeyNotFound is
-// surfaced rather than masked. Without an injected JetStream stub there's no
-// fault-injection path here, so the negative-cache cases above cover the two
-// expected misses; this test documents the contract by exercising the nil
-// pre-conditions only.
-var _ = nats.ErrBucketNotFound

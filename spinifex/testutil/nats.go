@@ -34,9 +34,9 @@ func StartTestNATS(t *testing.T) (*server.Server, *nats.Conn) {
 }
 
 // StartTestJetStream starts an embedded NATS server with JetStream enabled
-// and returns the server, a connected client, and a JetStream context.
+// and returns the server, a connected client, and a jetstream package handle.
 // All resources are cleaned up via t.Cleanup.
-func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, nats.JetStreamContext) {
+func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	opts := &server.Options{
 		Host:      "127.0.0.1",
@@ -56,14 +56,14 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, nats.JetStrea
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 	return ns, nc, js
 }
 
 // NewJetStream returns a jetstream package handle for an existing test
-// connection. Pairs with StartTestJetStream, whose legacy context cannot be
-// passed to code on the jetstream API.
+// connection, for tests that hold a *nats.Conn without the tuple
+// StartTestJetStream returns.
 func NewJetStream(t *testing.T, nc *nats.Conn) jetstream.JetStream {
 	t.Helper()
 	js, err := jetstream.New(nc)
@@ -144,12 +144,12 @@ func registerVpcdStub(t *testing.T, nc *nats.Conn, defaultPayload []byte) {
 
 // SeedKV creates a KV bucket and populates it with the given entries.
 // Returns the KV handle for further use.
-func SeedKV(t *testing.T, js nats.JetStreamContext, bucket string, entries map[string][]byte) nats.KeyValue {
+func SeedKV(t *testing.T, js jetstream.JetStream, bucket string, entries map[string][]byte) jetstream.KeyValue {
 	t.Helper()
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, History: 1})
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
 	require.NoError(t, err)
 	for k, v := range entries {
-		_, err := kv.Put(k, v)
+		_, err := kv.Put(t.Context(), k, v)
 		require.NoError(t, err)
 	}
 	return kv

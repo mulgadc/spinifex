@@ -13,19 +13,15 @@ import (
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// startKV returns two handles onto one embedded server: the legacy context the
-// seeding helper still takes, and the jetstream handle the loader reads through.
-// Seeding through the old API and loading through the new one is deliberate —
-// every case below doubles as a check that the two remain wire-compatible while
-// the migration is in flight.
-func startKV(t *testing.T) (nats.JetStreamContext, jetstream.JetStream) {
+// startKV returns a jetstream handle onto an embedded server, used both to seed
+// the control-plane buckets and to load intent through them.
+func startKV(t *testing.T) jetstream.JetStream {
 	t.Helper()
-	_, nc, seed := testutil.StartTestJetStream(t)
-	return seed, testutil.NewJetStream(t, nc)
+	_, _, js := testutil.StartTestJetStream(t)
+	return js
 }
 
 func TestMatchesLocalAZ(t *testing.T) {
@@ -46,7 +42,7 @@ func TestMatchesLocalAZ(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_AZFilter(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
 	localVPC := handlers_ec2_vpc.VPCRecord{
 		VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
@@ -57,7 +53,7 @@ func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 	legacyVPC := handlers_ec2_vpc.VPCRecord{
 		VpcId: "vpc-legacy", CidrBlock: "10.2.0.0/16", State: "available", VNI: 102, CreatedAt: time.Now(),
 	}
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/" + localVPC.VpcId:   mustJSON(t, localVPC),
 		"acct/" + foreignVPC.VpcId: mustJSON(t, foreignVPC),
 		"acct/" + legacyVPC.VpcId:  mustJSON(t, legacyVPC),
@@ -80,9 +76,9 @@ func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
 		}),
@@ -91,7 +87,7 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 		}),
 	})
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
 			SubnetId: "subnet-local", VpcId: "vpc-local", CidrBlock: "10.0.1.0/24",
 		}),
@@ -114,14 +110,14 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
 		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
 			AllocationId: "eipalloc-a", PublicIp: "203.0.113.10", PrivateIp: "10.0.1.5",
 			VpcId: "vpc-local", State: "associated",
@@ -146,14 +142,14 @@ func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
 		"acct/igw-attached": mustJSON(t, handlers_ec2_igw.IGWRecord{
 			InternetGatewayId: "igw-attached", VpcId: "vpc-local", State: "available",
 		}),
@@ -179,24 +175,24 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 // specs for associated *private* subnets, not the NATGW's own public home subnet.
 // Wrong CIDR corrupts conntrack reverse-NAT and causes 100% packet loss.
 func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-pub":  mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
 		"acct/subnet-priv": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-priv", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20"}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
 		"acct/nat-1": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
 			NatGatewayId: "nat-1", VpcId: "vpc-local", SubnetId: "subnet-pub",
 			PublicIp: "203.0.113.50", State: "available",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
 		"acct/rtb-priv": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
 			RouteTableId: "rtb-priv", VpcId: "vpc-local",
 			Routes: []handlers_ec2_routetable.RouteRecord{
@@ -230,17 +226,17 @@ func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 // TestLoadIntentFromKV_NATGWNoAssociationSkips guards against SNAT install for
 // a NATGW with no route-table association; emitting the home-subnet CIDR would corrupt the SNAT table.
 func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-pub": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
 		"acct/nat-orphan": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
 			NatGatewayId: "nat-orphan", VpcId: "vpc-local", SubnetId: "subnet-pub",
 			PublicIp: "203.0.113.51", State: "available",
@@ -257,7 +253,7 @@ func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
-	_, js := startKV(t)
+	js := startKV(t)
 
 	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
 	if err != nil {
@@ -272,14 +268,14 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 // dropped before subscribers attach; reconcile must re-derive per-subnet egress
 // intent from the main RT, including implicit-main subnets.
 func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-implicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
 			SubnetId: "subnet-implicit", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
 		}),
@@ -287,7 +283,7 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 			SubnetId: "subnet-explicit", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
 		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
 			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
 			Routes: []handlers_ec2_routetable.RouteRecord{
@@ -324,14 +320,14 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 // TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet with no
 // 0.0.0.0/0 route in an IGW-attached VPC must produce a DropGates intent.
 func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-routed": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
 			SubnetId: "subnet-routed", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
 		}),
@@ -339,12 +335,12 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 			SubnetId: "subnet-isolated", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
 		"acct/igw-1": mustJSON(t, handlers_ec2_igw.IGWRecord{
 			InternetGatewayId: "igw-1", VpcId: "vpc-local", State: "available",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
 		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
 			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
 			Associations: []handlers_ec2_routetable.AssociationRecord{
@@ -380,14 +376,14 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 // TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC with no IGW has no router-wide
 // default static route; lr_in_ip_routing already drops, so no drop policy needed.
 func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
-	seed, js := startKV(t)
+	js := startKV(t)
 
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-air-gapped": mustJSON(t, handlers_ec2_vpc.VPCRecord{
 			VpcId: "vpc-air-gapped", CidrBlock: "10.99.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, seed, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
 		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
 			SubnetId: "subnet-local", VpcId: "vpc-air-gapped", CidrBlock: "10.99.1.0/24",
 		}),

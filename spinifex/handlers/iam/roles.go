@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -111,7 +112,7 @@ func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*ia
 
 func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
 	ctx := context.Background()
-	keys, err := s.rolesBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.rolesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListRolesOutput{
@@ -613,7 +614,7 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 // per-key Get or unmarshal errors so DeleteRole cannot succeed while a
 // real-but-unreadable reference exists.
 func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accountID, roleName string) ([]*InstanceProfile, error) {
-	keys, err := s.instanceProfilesBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.instanceProfilesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil

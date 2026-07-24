@@ -38,6 +38,7 @@ var _ SnapshotService = (*SnapshotServiceImpl)(nil)
 const (
 	KVBucketVolumeSnapshots        = "spinifex-volume-snapshots"
 	KVBucketVolumeSnapshotsVersion = 1
+	snapshotCleanupTimeout         = 5 * time.Second
 )
 
 // SnapshotServiceImpl implements SnapshotService with S3-backed storage.
@@ -280,7 +281,9 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 
 	if err := s.putSnapshotConfig(snapshotID, snapshotCfg); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
-		_ = s.removeSnapshotRef(ctx, volumeID, snapshotID) // best-effort cleanup
+		if cleanupErr := s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID); cleanupErr != nil {
+			slog.Error("CreateSnapshot failed to roll back snapshot reference", "snapshotId", snapshotID, "volumeId", volumeID, "err", cleanupErr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -592,8 +595,8 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 
 	// Remove from KV after S3 cleanup. Failure is logged but not fatal —
 	// a phantom entry safely blocks volume deletion rather than allowing it.
-	if err := s.removeSnapshotRef(ctx, cfg.VolumeID, snapshotID); err != nil {
-		slog.WarnContext(ctx, "DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
+	if err := s.removeSnapshotRefForCleanup(ctx, cfg.VolumeID, snapshotID); err != nil {
+		slog.Warn("DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
 	}
 
 	slog.InfoContext(ctx, "DeleteSnapshot completed", "snapshotId", snapshotID)
@@ -654,7 +657,9 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 
 	if err := s.putSnapshotConfig(newSnapshotID, newCfg); err != nil {
 		slog.ErrorContext(ctx, "CopySnapshot failed to write config", "snapshotId", newSnapshotID, "err", err)
-		_ = s.removeSnapshotRef(ctx, sourceCfg.VolumeID, newSnapshotID) // best-effort cleanup
+		if cleanupErr := s.removeSnapshotRefForCleanup(ctx, sourceCfg.VolumeID, newSnapshotID); cleanupErr != nil {
+			slog.Error("CopySnapshot failed to roll back snapshot reference", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", cleanupErr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -720,6 +725,14 @@ func (s *SnapshotServiceImpl) addSnapshotRef(ctx context.Context, volumeID, snap
 	}
 
 	return fmt.Errorf("addSnapshotRef: exhausted retries for KV key %s", volumeID)
+}
+
+// removeSnapshotRefForCleanup removes a reference with a bounded context that
+// survives request cancellation after the snapshot operation has committed.
+func (s *SnapshotServiceImpl) removeSnapshotRefForCleanup(ctx context.Context, volumeID, snapshotID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
+	defer cancel()
+	return s.removeSnapshotRef(cleanupCtx, volumeID, snapshotID)
 }
 
 // removeSnapshotRef removes snapshotID from the volume's snapshot list in KV.

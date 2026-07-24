@@ -3,6 +3,7 @@ package awsgw
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,7 +25,6 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -119,7 +119,26 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 // per-account vCPU usage bucket. History is 1: each account key holds a single
 // CAS-updated integer counter, so no revision beyond the latest is worth keeping.
 func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, handlers_quota.KVBucketAccountUsage, 1, replicas)
+	kv, err := js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
+	if err == nil {
+		return kv, nil
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, fmt.Errorf("open account usage bucket: %w", err)
+	}
+
+	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   handlers_quota.KVBucketAccountUsage,
+		History:  1,
+		Replicas: max(replicas, 1),
+	})
+	if errors.Is(err, jetstream.ErrBucketExists) {
+		return js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create account usage bucket: %w", err)
+	}
+	return kv, nil
 }
 
 func launchService(config *config.ClusterConfig) error {

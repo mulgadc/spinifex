@@ -172,7 +172,7 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 
-	keys, err := kv.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return out, nil

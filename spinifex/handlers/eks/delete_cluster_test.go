@@ -381,6 +381,19 @@ func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
 	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
 }
 
+func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	ctx, cancel := context.WithCancel(t.Context())
+
+	release, acquired := f.svc.acquireTeardownLease(ctx, testAccountID, "alpha")
+	require.True(t, acquired)
+	cancel()
+	release()
+
+	_, err := f.svc.leaderKV.Get(t.Context(), teardownLeaderKey(testAccountID, "alpha"))
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
 // TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs guards the contract: in
 // the managed control-plane VPC topology the nodegroup's worker-side security
 // groups are created by launchNodegroupInfra in the CUSTOMER VPC

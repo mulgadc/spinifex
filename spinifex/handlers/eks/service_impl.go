@@ -1077,7 +1077,9 @@ func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, cl
 		return nil, false
 	}
 	return func() {
-		if err := s.leaderKV.Delete(ctx, key); err != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.leaderKV.Delete(releaseCtx, key); err != nil {
 			slog.Warn("eks: teardown lease release failed (TTL will reap)", "key", key, "err", err)
 		}
 	}, true

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -83,6 +84,20 @@ func BucketNames(ctx context.Context, js jetstream.KeyValueManager) ([]string, e
 		return nil, fmt.Errorf("enumerate KV buckets: %w", err)
 	}
 	return names, nil
+}
+
+// Keys lists a bucket's keys with the five-second bound used by the legacy API.
+// The explicit timeout is required because the new Keys watcher otherwise uses
+// a deadline-free Background context indefinitely.
+func Keys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	keys, err := kv.Keys(listCtx)
+	if ctxErr := listCtx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	return keys, err
 }
 
 // WriteVersion writes the schema version to a bucket, only if missing or older.

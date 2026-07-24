@@ -160,7 +160,7 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 	cutoff := now.Add(-janitorGracePeriod)
 
-	keys, err := s.sessionsBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.sessionsBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0

@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -86,7 +87,7 @@ func (s *IAMServiceImpl) GetInstanceProfile(accountID string, input *iam.GetInst
 
 func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
 	ctx := context.Background()
-	keys, err := s.instanceProfilesBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.instanceProfilesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListInstanceProfilesOutput{

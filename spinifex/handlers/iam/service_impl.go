@@ -392,7 +392,7 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 
 func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
 	ctx := context.Background()
-	keys, err := s.usersBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListUsersOutput{
@@ -910,7 +910,7 @@ func (s *IAMServiceImpl) seedAdminAccount(ctx context.Context, admin *AdminBoots
 // IsEmpty returns true if the users bucket has no entries.
 func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 	ctx := context.Background()
-	keys, err := s.usersBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return true, nil
@@ -1024,7 +1024,7 @@ func (s *IAMServiceImpl) GetAccount(accountID string) (*Account, error) {
 // ListAccounts returns all accounts.
 func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 	ctx := context.Background()
-	keys, err := s.accountsBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.accountsBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return []*Account{}, nil
@@ -1199,7 +1199,7 @@ func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPol
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	ctx := context.Background()
-	keys, err := s.policiesBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.policiesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListPoliciesOutput{
@@ -1763,7 +1763,7 @@ func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyAR
 // map of policyARN -> number of users that have it attached, avoiding a
 // per-policy full scan when listing or inspecting policies.
 func (s *IAMServiceImpl) buildAttachmentCounts(ctx context.Context, accountID string) (map[string]int64, error) {
-	keys, err := s.usersBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
@@ -1963,7 +1963,7 @@ var summaryQuotaDefaults = map[string]int64{
 // so it stays cheap with many resources. The version key is skipped and a
 // missing bucket counts as zero.
 func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID string) (int64, error) {
-	keys, err := bucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil

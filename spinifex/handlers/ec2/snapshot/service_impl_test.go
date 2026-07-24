@@ -644,6 +644,19 @@ func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
 	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-nonexistent", "snap-x"))
 }
 
+func TestRemoveSnapshotRefForCleanupSurvivesCancellation(t *testing.T) {
+	kv := setupTestNATSKV(t)
+	svc := &SnapshotServiceImpl{snapKV: kv}
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.NoError(t, svc.removeSnapshotRefForCleanup(ctx, "vol-1", "snap-a"))
+
+	_, err := kv.Get(t.Context(), "vol-1")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
 func TestVolumeHasSnapshots(t *testing.T) {
 	kv := setupTestNATSKV(t)
 	svc := &SnapshotServiceImpl{snapKV: kv}

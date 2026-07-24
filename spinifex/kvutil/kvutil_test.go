@@ -137,6 +137,24 @@ func TestBucketNames_SurfacesEnumerationFailure(t *testing.T) {
 	assert.Nil(t, names)
 }
 
+func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {
+	js := startJetStream(t)
+	kv, err := GetOrCreateBucket(t.Context(), js, "bounded-keys", 1)
+	require.NoError(t, err)
+	_, err = kv.PutString(t.Context(), "key", "value")
+	require.NoError(t, err)
+
+	keys, err := Keys(t.Context(), kv)
+	require.NoError(t, err)
+	require.Equal(t, []string{"key"}, keys)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	keys, err = Keys(ctx, kv)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, keys)
+}
+
 // TestVersionStateMachine covers unset→0, first write, idempotent same write, upgrade, and no-downgrade.
 // One bucket is reused so each step runs against the prior state — the only way to catch unconditional-overwrite regressions.
 func TestVersionStateMachine(t *testing.T) {

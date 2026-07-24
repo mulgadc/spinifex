@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -106,7 +107,7 @@ func (s *IAMServiceImpl) GetGroup(accountID string, input *iam.GetGroupInput) (*
 
 func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
 	ctx := context.Background()
-	keys, err := s.groupsBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.groupsBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListGroupsOutput{
@@ -544,7 +545,7 @@ func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName stri
 // unmarshal errors so DeleteGroup cannot succeed while a real-but-unreadable
 // member exists. Mirrors findInstanceProfilesForRole.
 func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupName string) ([]*User, error) {
-	keys, err := s.usersBucket.Keys(ctx)
+	keys, err := kvutil.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil

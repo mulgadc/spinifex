@@ -1163,9 +1163,13 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 				Main:          assoc.Main,
 			})
 			if err := s.putRouteTable(ctx, accountID, newRecord); err != nil {
-				// Compensate: restore association to old table to avoid data loss
+				// Restore the old association even when the request context caused the
+				// failed write, otherwise cancellation turns a rollback into a no-op.
 				oldRecord.Associations = append(oldRecord.Associations, assoc)
-				if restoreErr := s.putRouteTable(ctx, accountID, &oldRecord); restoreErr != nil {
+				restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				restoreErr := s.putRouteTable(restoreCtx, accountID, &oldRecord)
+				cancel()
+				if restoreErr != nil {
 					slog.ErrorContext(ctx, "CRITICAL: ReplaceRouteTableAssociation partial failure, association lost",
 						"associationId", assocID, "oldRouteTableId", oldRecord.RouteTableId,
 						"newRouteTableId", newRtbID, "restoreErr", restoreErr, "originalErr", err)

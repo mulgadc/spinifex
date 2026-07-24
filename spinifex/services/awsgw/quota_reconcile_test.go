@@ -29,6 +29,22 @@ func respondJSON(t *testing.T, nc *nats.Conn, subject string, out *ec2.DescribeI
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
+func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket:  handlers_quota.KVBucketAccountUsage,
+		History: 5,
+	})
+	require.NoError(t, err)
+
+	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	status, err := bucket.Status(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 5, status.History())
+}
+
 // TestRunQuotaReconcile drives the leader-locked reconcile loop end to end: the
 // startup pass elects this gateway, describes the account's instances over NATS
 // via the production NATSInstanceLister, and writes the recomputed vCPU counter.

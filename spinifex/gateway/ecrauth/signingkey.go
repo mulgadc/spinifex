@@ -110,7 +110,7 @@ func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []
 // key's metadata, and the active (newest) decrypted key. active is nil for an
 // empty bucket. Used by both startup and the rotation scheduler.
 func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, err error) {
-	names, err := kv.Keys(ctx)
+	names, err := kvutil.Keys(ctx, kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil, nil, fmt.Errorf("list signing keys: %w", err)
 	}

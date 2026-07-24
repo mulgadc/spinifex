@@ -1,12 +1,13 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // extIPAMBucket mirrors handlers/ec2/vpc.KVBucketExternalIPAM. Duplicated to
@@ -57,10 +58,10 @@ func init() {
 		FromVersion: 1,
 		ToVersion:   2,
 		Description: "rename ExternalIPAllocation.Type → .Purpose with enum mapping",
-		Run: func(ctx KVContext) error {
-			keys, err := ctx.KV.Keys()
+		Run: func(ctx context.Context, kvc KVContext) error {
+			keys, err := kvc.KV.Keys(ctx)
 			if err != nil {
-				if errors.Is(err, nats.ErrNoKeysFound) {
+				if errors.Is(err, jetstream.ErrNoKeysFound) {
 					return nil
 				}
 				return fmt.Errorf("list keys: %w", err)
@@ -70,7 +71,7 @@ func init() {
 				if key == utils.VersionKey {
 					continue
 				}
-				if err := renameExternalIPAMType(ctx, key); err != nil {
+				if err := renameExternalIPAMType(ctx, kvc, key); err != nil {
 					return err
 				}
 			}
@@ -79,12 +80,12 @@ func init() {
 	})
 }
 
-func renameExternalIPAMType(ctx KVContext, key string) error {
+func renameExternalIPAMType(ctx context.Context, kvc KVContext, key string) error {
 	var lastErr error
 	for attempt := range extIPAMMaxRetries {
-		entry, err := ctx.KV.Get(key)
+		entry, err := kvc.KV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil
 			}
 			return fmt.Errorf("get %s: %w", key, err)
@@ -102,7 +103,7 @@ func renameExternalIPAMType(ctx KVContext, key string) error {
 			}
 			purpose := extLegacyTypeToPurpose[alloc.Type]
 			if purpose == "" {
-				ctx.Logger.Warn("external IPAM v1→v2 migration: unknown legacy type, tagging unknown",
+				kvc.Logger.Warn("external IPAM v1→v2 migration: unknown legacy type, tagging unknown",
 					"pool", key, "ip", ip, "legacy_type", alloc.Type)
 				purpose = "unknown"
 			}
@@ -120,9 +121,9 @@ func renameExternalIPAMType(ctx KVContext, key string) error {
 		if err != nil {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
-		if _, err := ctx.KV.Update(key, data, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
-				ctx.Logger.Warn("external IPAM migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
+		if _, err := kvc.KV.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				kvc.Logger.Warn("external IPAM migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue
 			}

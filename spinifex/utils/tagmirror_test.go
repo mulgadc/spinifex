@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +16,22 @@ import (
 type tagMirrorRecord struct {
 	Name string            `json:"name"`
 	Tags map[string]string `json:"tags"`
+}
+
+// seedKV creates a bucket on the jetstream API and populates it. Package utils
+// cannot use kvutil's helpers — kvutil imports utils — so the bucket is created
+// here directly.
+func seedKV(t *testing.T, bucket string, entries map[string][]byte) jetstream.KeyValue {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
+	require.NoError(t, err)
+	for k, v := range entries {
+		_, err := kv.Put(t.Context(), k, v)
+		require.NoError(t, err)
+	}
+	return kv
 }
 
 func TestMergeTagsMut(t *testing.T) {
@@ -62,19 +79,18 @@ func TestRemoveTagsMut(t *testing.T) {
 }
 
 func TestUpdateKVRecordTags(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
 	rec, err := json.Marshal(&tagMirrorRecord{Name: "r1", Tags: map[string]string{"a": "1"}})
 	require.NoError(t, err)
-	kv := testutil.SeedKV(t, js, "tagmirror-test", map[string][]byte{
+	kv := seedKV(t, "tagmirror-test", map[string][]byte{
 		AccountKey("acct", "res-1"):   rec,
 		AccountKey("acct", "res-bad"): []byte("not-json"),
 	})
 
 	t.Run("mutates and persists", func(t *testing.T) {
-		require.NoError(t, UpdateKVRecordTags(kv, "acct", "res-1", func(r *tagMirrorRecord) {
+		require.NoError(t, UpdateKVRecordTags(t.Context(), kv, "acct", "res-1", func(r *tagMirrorRecord) {
 			r.Tags["b"] = "2"
 		}))
-		entry, err := kv.Get(AccountKey("acct", "res-1"))
+		entry, err := kv.Get(t.Context(), AccountKey("acct", "res-1"))
 		require.NoError(t, err)
 		var got tagMirrorRecord
 		require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -83,25 +99,24 @@ func TestUpdateKVRecordTags(t *testing.T) {
 	})
 
 	t.Run("absent key is a no-op", func(t *testing.T) {
-		require.NoError(t, UpdateKVRecordTags(kv, "acct", "res-missing", func(r *tagMirrorRecord) {
+		require.NoError(t, UpdateKVRecordTags(t.Context(), kv, "acct", "res-missing", func(r *tagMirrorRecord) {
 			t.Fatal("mutator must not run for absent record")
 		}))
 	})
 
 	t.Run("corrupt record returns internal error", func(t *testing.T) {
-		err := UpdateKVRecordTags(kv, "acct", "res-bad", func(r *tagMirrorRecord) {})
+		err := UpdateKVRecordTags(t.Context(), kv, "acct", "res-bad", func(r *tagMirrorRecord) {})
 		require.Error(t, err)
 		assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	})
 }
 
 func TestMirrorKVRecordTags(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
 	withTags, err := json.Marshal(&tagMirrorRecord{Tags: map[string]string{"drop": "v", "keep": "yes"}})
 	require.NoError(t, err)
 	nilTags, err := json.Marshal(&tagMirrorRecord{})
 	require.NoError(t, err)
-	kv := testutil.SeedKV(t, js, "tagmirror-mirror-test", map[string][]byte{
+	kv := seedKV(t, "tagmirror-mirror-test", map[string][]byte{
 		AccountKey("acct", "vol-1"): withTags,
 		AccountKey("acct", "vol-2"): nilTags,
 	})
@@ -109,7 +124,7 @@ func TestMirrorKVRecordTags(t *testing.T) {
 	tagsOf := func(r *tagMirrorRecord) *map[string]string { return &r.Tags }
 
 	readTags := func(t *testing.T, id string) map[string]string {
-		entry, err := kv.Get(AccountKey("acct", id))
+		entry, err := kv.Get(t.Context(), AccountKey("acct", id))
 		require.NoError(t, err)
 		var got tagMirrorRecord
 		require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -124,14 +139,14 @@ func TestMirrorKVRecordTags(t *testing.T) {
 		nil,
 	}
 
-	require.NoError(t, MirrorKVRecordTags(kv, "acct", "vol-", resources, tagsOf,
+	require.NoError(t, MirrorKVRecordTags(t.Context(), kv, "acct", "vol-", resources, tagsOf,
 		MergeTagsMut(&ec2.CreateTagsInput{Tags: []*ec2.Tag{
 			{Key: aws.String("added"), Value: aws.String("1")},
 		}})))
 	assert.Equal(t, map[string]string{"drop": "v", "keep": "yes", "added": "1"}, readTags(t, "vol-1"))
 	assert.Equal(t, map[string]string{"added": "1"}, readTags(t, "vol-2"), "nil tag map initialized in place")
 
-	require.NoError(t, MirrorKVRecordTags(kv, "acct", "vol-", resources, tagsOf,
+	require.NoError(t, MirrorKVRecordTags(t.Context(), kv, "acct", "vol-", resources, tagsOf,
 		RemoveTagsMut(&ec2.DeleteTagsInput{Tags: []*ec2.Tag{
 			{Key: aws.String("drop"), Value: aws.String("v")},
 			{Key: aws.String("keep"), Value: aws.String("wrong")},
@@ -142,9 +157,9 @@ func TestMirrorKVRecordTags(t *testing.T) {
 	// must never be touched even though it exists in this bucket.
 	otherRec, err := json.Marshal(&tagMirrorRecord{Tags: map[string]string{"x": "y"}})
 	require.NoError(t, err)
-	_, err = kv.Put(AccountKey("acct", "snap-other"), otherRec)
+	_, err = kv.Put(t.Context(), AccountKey("acct", "snap-other"), otherRec)
 	require.NoError(t, err)
-	require.NoError(t, MirrorKVRecordTags(kv, "acct", "vol-", resources, tagsOf,
+	require.NoError(t, MirrorKVRecordTags(t.Context(), kv, "acct", "vol-", resources, tagsOf,
 		MergeTagsMut(&ec2.CreateTagsInput{Tags: []*ec2.Tag{
 			{Key: aws.String("added"), Value: aws.String("2")},
 		}})))

@@ -17,7 +17,7 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 			TaskID: id, Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", id),
 			LastStatus: status, DesiredStatus: status, StoppedAt: stoppedAt,
 		}
-		require.NoError(t, putJSON(kv, TaskKey("web", id), &rec))
+		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
 	}
 
 	put("stale", TaskStatusStopped, now.Add(-2*time.Hour))   // older than retention -> prune
@@ -25,13 +25,13 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 	put("running", TaskStatusRunning, time.Time{})           // not stopped -> keep
 	put("nostamp", TaskStatusStopped, time.Time{})           // STOPPED but no timestamp -> keep (defensive)
 
-	pruned, err := svc.sweepStoppedBucket(kv, now, time.Hour)
+	pruned, err := svc.sweepStoppedBucket(t.Context(), kv, now, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, 1, pruned)
 
 	exists := func(id string) bool {
 		var rec TaskRecord
-		found, gerr := getJSON(kv, TaskKey("web", id), &rec)
+		found, gerr := getJSON(t.Context(), kv, TaskKey("web", id), &rec)
 		require.NoError(t, gerr)
 		return found
 	}

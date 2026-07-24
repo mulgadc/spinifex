@@ -9,7 +9,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -205,13 +204,13 @@ func accountBuckets(ctx context.Context, nc *nats.Conn) ([]accountBucket, error)
 // GetOrCreateAccountBucket returns the per-account KV bucket for accountID,
 // creating it on first use. Idempotent: subsequent calls with the same accountID
 // return the existing handle.
-func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.KeyValue, error) {
+func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketECSAccountHistory)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketECSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ECS per-account KV bucket %s: %w", bucket, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(bucket, kv, KVBucketECSAccountVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, bucket, kv, KVBucketECSAccountVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", bucket, err)
 	}
 	return kv, nil
@@ -220,22 +219,22 @@ func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.
 // InitLeaderBucket creates (or attaches to) the shared spinifex-ecs-leader bucket
 // used for per-cluster scheduler leader-lease CAS locks. The bucket is configured
 // with History=1 and a 60s TTL so stale leases expire on their own when a leader
-// dies mid-cycle. utils.GetOrCreateKVBucket doesn't expose a TTL knob, so this
+// dies mid-cycle. kvutil.GetOrCreateBucket doesn't expose a TTL knob, so this
 // takes the direct js.CreateKeyValue path and falls back to js.KeyValue on
 // already-exists.
-func InitLeaderBucket(js nats.JetStreamContext) (nats.KeyValue, error) {
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:  KVBucketECSLeader,
 		History: 1,
 		TTL:     KVBucketECSLeaderTTL,
 	})
 	if err != nil {
-		kv, err = js.KeyValue(KVBucketECSLeader)
+		kv, err = js.KeyValue(ctx, KVBucketECSLeader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create or open ECS leader bucket %s: %w", KVBucketECSLeader, err)
 		}
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketECSLeader, kv, KVBucketECSLeaderVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketECSLeader, kv, KVBucketECSLeaderVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketECSLeader, err)
 	}
 	slog.Info("ECS leader bucket initialized", "bucket", KVBucketECSLeader, "ttl", KVBucketECSLeaderTTL)

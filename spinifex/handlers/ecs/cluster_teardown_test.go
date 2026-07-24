@@ -26,7 +26,7 @@ func TestService_DeleteCluster_CascadesAndSweeps(t *testing.T) {
 	list, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, list.ClusterArns)
-	keys, err := keysWithPrefix(kv, clusterKeyPrefix("web"))
+	keys, err := keysWithPrefix(t.Context(), kv, clusterKeyPrefix("web"))
 	require.NoError(t, err)
 	assert.Empty(t, keys)
 }
@@ -81,7 +81,7 @@ func TestService_DeregisterContainerInstance_ForceStopsAndRemoves(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusInactive, aws.StringValue(out.ContainerInstance.Status))
 
-	active, err := svc.instanceActiveTasks(kv, "web", "i-1")
+	active, err := svc.instanceActiveTasks(t.Context(), kv, "web", "i-1")
 	require.NoError(t, err)
 	assert.Empty(t, active)
 
@@ -111,7 +111,7 @@ func TestService_UpdateContainerInstancesState_DrainsServiceTasks(t *testing.T) 
 	assert.Equal(t, InstanceStatusDraining, aws.StringValue(out.ContainerInstances[0].Status))
 
 	// Service-owned tasks on the drained instance are stopped.
-	live, err := svc.listServiceTasks(kv, "web", "web")
+	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	assert.Empty(t, live)
 }

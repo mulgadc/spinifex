@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ECSService is the ECS control-plane contract implemented by the daemon and
@@ -151,26 +152,26 @@ func NewService(nc *nats.Conn, region, suffix string) *Service {
 // defaultCluster is the implicit cluster name when a request omits one.
 const defaultCluster = "default"
 
-func (s *Service) js() (nats.JetStreamContext, error) {
+func (s *Service) js() (jetstream.JetStream, error) {
 	if s.nc == nil {
 		return nil, errors.New("ecs service: nil nats connection")
 	}
-	return s.nc.JetStream()
+	return jetstream.New(s.nc)
 }
 
 // bucket returns the per-account KV handle, creating it on first use.
-func (s *Service) bucket(accountID string) (nats.KeyValue, error) {
+func (s *Service) bucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
 	js, err := s.js()
 	if err != nil {
 		return nil, err
 	}
-	return GetOrCreateAccountBucket(js, accountID)
+	return GetOrCreateAccountBucket(ctx, js, accountID)
 }
 
 // getJSON reads key into out. Returns (false, nil) when the key is absent.
-func getJSON(kv nats.KeyValue, key string, out any) (bool, error) {
-	entry, err := kv.Get(key)
-	if errors.Is(err, nats.ErrKeyNotFound) {
+func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
+	entry, err := kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -183,12 +184,12 @@ func getJSON(kv nats.KeyValue, key string, out any) (bool, error) {
 }
 
 // putJSON marshals v and writes it at key.
-func putJSON(kv nats.KeyValue, key string, v any) error {
+func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("put %s: %w", key, err)
 	}
 	return nil
@@ -198,14 +199,14 @@ func putJSON(kv nats.KeyValue, key string, v any) error {
 // to sweep a cluster's whole key subtree (meta/instances/tasks/services/
 // assignments) after its tasks are stopped. Best-effort per key; the first
 // delete error is returned after attempting the rest.
-func deleteKeysWithPrefix(kv nats.KeyValue, prefix string) error {
-	keys, err := keysWithPrefix(kv, prefix)
+func deleteKeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) error {
+	keys, err := keysWithPrefix(ctx, kv, prefix)
 	if err != nil {
 		return err
 	}
 	var firstErr error
 	for _, k := range keys {
-		if derr := kv.Delete(k); derr != nil && firstErr == nil {
+		if derr := kv.Delete(ctx, k); derr != nil && firstErr == nil {
 			firstErr = derr
 		}
 	}
@@ -213,9 +214,9 @@ func deleteKeysWithPrefix(kv nats.KeyValue, prefix string) error {
 }
 
 // keysWithPrefix returns all KV keys under prefix.
-func keysWithPrefix(kv nats.KeyValue, prefix string) ([]string, error) {
-	keys, err := kv.Keys()
-	if errors.Is(err, nats.ErrNoKeysFound) {
+func keysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -235,18 +236,18 @@ func keysWithPrefix(kv nats.KeyValue, prefix string) ([]string, error) {
 
 // CreateCluster persists a cluster meta record. Idempotent: re-creating an
 // existing cluster returns the existing ACTIVE record.
-func (s *Service) CreateCluster(_ context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
+func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
 	name := aws.StringValue(input.ClusterName)
 	if name == "" {
 		name = defaultCluster
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 
 	var rec ClusterRecord
-	found, err := getJSON(kv, ClusterMetaKey(name), &rec)
+	found, err := getJSON(ctx, kv, ClusterMetaKey(name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +264,7 @@ func (s *Service) CreateCluster(_ context.Context, input *ecs.CreateClusterInput
 				rec.Tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 			}
 		}
-		if err := putJSON(kv, ClusterMetaKey(name), &rec); err != nil {
+		if err := putJSON(ctx, kv, ClusterMetaKey(name), &rec); err != nil {
 			return nil, err
 		}
 	}
@@ -272,8 +273,8 @@ func (s *Service) CreateCluster(_ context.Context, input *ecs.CreateClusterInput
 
 // DescribeClusters returns meta for the named clusters; unknown names are
 // silently skipped (AWS returns them under "failures", omitted here in v1).
-func (s *Service) DescribeClusters(_ context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
-	kv, err := s.bucket(accountID)
+func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +286,7 @@ func (s *Service) DescribeClusters(_ context.Context, input *ecs.DescribeCluster
 	for _, name := range names {
 		name = clusterShortName(name)
 		var rec ClusterRecord
-		found, err := getJSON(kv, ClusterMetaKey(name), &rec)
+		found, err := getJSON(ctx, kv, ClusterMetaKey(name), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -297,12 +298,12 @@ func (s *Service) DescribeClusters(_ context.Context, input *ecs.DescribeCluster
 }
 
 // ListClusters returns the ARNs of all clusters in the account.
-func (s *Service) ListClusters(_ context.Context, _ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
-	kv, err := s.bucket(accountID)
+func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := keysWithPrefix(kv, "clusters/")
+	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +313,7 @@ func (s *Service) ListClusters(_ context.Context, _ *ecs.ListClustersInput, acco
 			continue
 		}
 		var rec ClusterRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -384,12 +385,12 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		return nil, err
 	}
 	warnUnsupportedLogDrivers(ctx, family, input.ContainerDefinitions)
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 
-	rev, err := s.nextRevision(kv, family)
+	rev, err := s.nextRevision(ctx, kv, family)
 	if err != nil {
 		return nil, err
 	}
@@ -408,10 +409,10 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		RegisteredAt:     time.Now().UTC(),
 		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
 	}
-	if err := putJSON(kv, TaskDefRevKey(family, rev), &rec); err != nil {
+	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
 		return nil, err
 	}
-	if err := putJSON(kv, TaskDefLatestRevKey(family), rev); err != nil {
+	if err := putJSON(ctx, kv, TaskDefLatestRevKey(family), rev); err != nil {
 		return nil, err
 	}
 	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
@@ -447,9 +448,9 @@ func warnUnsupportedLogDrivers(ctx context.Context, family string, defs []*ecs.C
 }
 
 // nextRevision reads the family's latest-rev and returns latest+1 (1 if absent).
-func (s *Service) nextRevision(kv nats.KeyValue, family string) (int, error) {
+func (s *Service) nextRevision(ctx context.Context, kv jetstream.KeyValue, family string) (int, error) {
 	var latest int
-	found, err := getJSON(kv, TaskDefLatestRevKey(family), &latest)
+	found, err := getJSON(ctx, kv, TaskDefLatestRevKey(family), &latest)
 	if err != nil {
 		return 0, err
 	}
@@ -462,17 +463,17 @@ func (s *Service) nextRevision(kv nats.KeyValue, family string) (int, error) {
 // DeregisterTaskDefinition marks a specific task-definition revision INACTIVE.
 // AWS requires an explicit family:revision (a bare family is rejected); the
 // revision stays describable, matching AWS. Idempotent.
-func (s *Service) DeregisterTaskDefinition(_ context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
+func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
 	family, rev := parseTaskDefRef(aws.StringValue(input.TaskDefinition))
 	if family == "" || rev == 0 {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec TaskDefRecord
-	found, err := getJSON(kv, TaskDefRevKey(family, rev), &rec)
+	found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -480,19 +481,19 @@ func (s *Service) DeregisterTaskDefinition(_ context.Context, input *ecs.Deregis
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	rec.Status = TaskDefStatusInactive
-	if err := putJSON(kv, TaskDefRevKey(family, rev), &rec); err != nil {
+	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
 }
 
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
-func (s *Service) DescribeTaskDefinition(_ context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
-	kv, err := s.bucket(accountID)
+func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.resolveTaskDef(kv, aws.StringValue(input.TaskDefinition))
+	rec, err := s.resolveTaskDef(ctx, kv, aws.StringValue(input.TaskDefinition))
 	if err != nil {
 		return nil, err
 	}
@@ -502,8 +503,8 @@ func (s *Service) DescribeTaskDefinition(_ context.Context, input *ecs.DescribeT
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and
 // by status. Matching AWS, the status defaults to ACTIVE when unset, so
 // deregistered (INACTIVE) revisions drop off the default listing.
-func (s *Service) ListTaskDefinitions(_ context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
-	kv, err := s.bucket(accountID)
+func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +516,7 @@ func (s *Service) ListTaskDefinitions(_ context.Context, input *ecs.ListTaskDefi
 	if fam := aws.StringValue(input.FamilyPrefix); fam != "" {
 		prefix = TaskDefRevsPrefix(fam)
 	}
-	keys, err := keysWithPrefix(kv, prefix)
+	keys, err := keysWithPrefix(ctx, kv, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +526,7 @@ func (s *Service) ListTaskDefinitions(_ context.Context, input *ecs.ListTaskDefi
 			continue
 		}
 		var rec TaskDefRecord
-		found, err := getJSON(kv, k, &rec)
+		found, err := getJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -538,14 +539,14 @@ func (s *Service) ListTaskDefinitions(_ context.Context, input *ecs.ListTaskDefi
 
 // resolveTaskDef loads the TaskDefRecord named by ref ("family", "family:rev",
 // or a task-definition ARN). A bare family resolves to its latest revision.
-func (s *Service) resolveTaskDef(kv nats.KeyValue, ref string) (*TaskDefRecord, error) {
+func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*TaskDefRecord, error) {
 	family, rev := parseTaskDefRef(ref)
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	if rev == 0 {
 		var latest int
-		found, err := getJSON(kv, TaskDefLatestRevKey(family), &latest)
+		found, err := getJSON(ctx, kv, TaskDefLatestRevKey(family), &latest)
 		if err != nil {
 			return nil, err
 		}
@@ -555,7 +556,7 @@ func (s *Service) resolveTaskDef(kv nats.KeyValue, ref string) (*TaskDefRecord, 
 		rev = latest
 	}
 	var rec TaskDefRecord
-	found, err := getJSON(kv, TaskDefRevKey(family, rev), &rec)
+	found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
 	if err != nil {
 		return nil, err
 	}

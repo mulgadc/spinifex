@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mulgadc/spinifex/cmd/installer/branding"
 	"github.com/mulgadc/spinifex/cmd/installer/install"
+	"github.com/mulgadc/spinifex/cmd/installer/netprobe"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 )
 
@@ -24,46 +25,13 @@ const (
 	screenWelcome screen = iota
 	screenDisk
 	screenDiskConfirm
-	screenNetworkWAN
-	screenNetworkLAN
+	screenNetworkRoles
+	screenNetworkRole
 	screenIdentity
 	screenPassword
 	screenJoinConfig
 	screenConfirm
 	screenDone // signals completion; program exits
-)
-
-// nicInfo holds display info for a network interface.
-type nicInfo struct {
-	Name   string
-	IsWiFi bool
-}
-
-// wanField tracks which element is focused on the WAN network screen.
-type wanField int
-
-const (
-	wanFieldNIC      wanField = iota // NIC picker
-	wanFieldMethod                   // DHCP / Static toggle
-	wanFieldIP                       // static only
-	wanFieldMask                     // static only
-	wanFieldGateway                  // static only
-	wanFieldDNS                      // static only
-	wanFieldSSID                     // WiFi NIC only
-	wanFieldWiFiPass                 // WiFi NIC only
-)
-
-// lanField tracks which element is focused on the LAN network screen.
-type lanField int
-
-const (
-	lanFieldNIC      lanField = iota // NIC picker (WAN NIC shown greyed)
-	lanFieldMethod                   // DHCP / Static toggle
-	lanFieldIP                       // static only
-	lanFieldMask                     // static only
-	lanFieldDNS                      // static only
-	lanFieldSSID                     // WiFi NIC only
-	lanFieldWiFiPass                 // WiFi NIC only
 )
 
 // model is the top-level bubbletea model for the installer wizard.
@@ -77,30 +45,14 @@ type model struct {
 	diskCursor int
 	eraseInput textinput.Model
 
-	// NIC list (shared between WAN and LAN screens)
-	nics []nicInfo
+	// Detected interfaces, shared by every role screen.
+	nics []netprobe.NIC
 
-	// WAN network screen
-	wanNicCursor      int
-	wanNicManualInput textinput.Model // used when no NICs are auto-detected
-	wanDHCP           bool
-	wanFocus          wanField
-	wanIP             textinput.Model
-	wanMask           textinput.Model
-	wanGateway        textinput.Model
-	wanDNS            textinput.Model
-	wanSSID           textinput.Model
-	wanWiFiPass       textinput.Model
-
-	// LAN network screen (only shown when len(nics) > 1)
-	lanNicCursor int
-	lanDHCP      bool
-	lanFocus     lanField
-	lanIP        textinput.Model
-	lanMask      textinput.Model
-	lanDNS       textinput.Model
-	lanSSID      textinput.Model
-	lanWiFiPass  textinput.Model
+	// Network planes. roleCursor indexes roles, or continueRow for the
+	// Continue action; advanced reveals VLAN and MTU on every role.
+	roles      [3]roleForm
+	roleCursor int
+	advanced   bool
 
 	// Identity
 	hostnameInput textinput.Model
@@ -135,7 +87,7 @@ func Run(ttyPath string) (*install.Config, error) {
 		return nil, errors.New("no block devices found")
 	}
 
-	nics, err := availableNICs()
+	nics, err := netprobe.Probe()
 	if err != nil {
 		return nil, fmt.Errorf("listing network interfaces: %w", err)
 	}
@@ -175,53 +127,10 @@ func Run(ttyPath string) (*install.Config, error) {
 	return fm.result, nil
 }
 
-func newModel(disks []diskInfo, nics []nicInfo) model {
+func newModel(disks []diskInfo, nics []netprobe.NIC) model {
 	eraseIn := textinput.New()
 	eraseIn.Placeholder = "yes"
 	eraseIn.CharLimit = 3
-
-	wanNicManualIn := textinput.New()
-	wanNicManualIn.Placeholder = "e.g. eth0, enp0s1"
-	wanNicManualIn.CharLimit = 32
-
-	wanIPIn := textinput.New()
-	wanIPIn.Placeholder = "192.168.1.10"
-
-	wanMaskIn := textinput.New()
-	wanMaskIn.Placeholder = "255.255.255.0 or 24"
-
-	wanGWIn := textinput.New()
-	wanGWIn.Placeholder = "192.168.1.1"
-
-	wanDNSIn := textinput.New()
-	wanDNSIn.Placeholder = "1.1.1.1, 8.8.8.8"
-
-	wanSSIDIn := textinput.New()
-	wanSSIDIn.Placeholder = "Network SSID"
-	wanSSIDIn.CharLimit = 64
-
-	wanWiFiPassIn := textinput.New()
-	wanWiFiPassIn.Placeholder = "WiFi password"
-	wanWiFiPassIn.EchoMode = textinput.EchoPassword
-	wanWiFiPassIn.CharLimit = 128
-
-	lanIPIn := textinput.New()
-	lanIPIn.Placeholder = "10.10.8.2"
-
-	lanMaskIn := textinput.New()
-	lanMaskIn.Placeholder = "255.255.255.0 or 24"
-
-	lanDNSIn := textinput.New()
-	lanDNSIn.Placeholder = "1.1.1.1, 8.8.8.8"
-
-	lanSSIDIn := textinput.New()
-	lanSSIDIn.Placeholder = "Network SSID"
-	lanSSIDIn.CharLimit = 64
-
-	lanWiFiPassIn := textinput.New()
-	lanWiFiPassIn.Placeholder = "WiFi password"
-	lanWiFiPassIn.EchoMode = textinput.EchoPassword
-	lanWiFiPassIn.CharLimit = 128
 
 	hostnameIn := textinput.New()
 	hostnameIn.Placeholder = "node1"
@@ -249,10 +158,20 @@ func newModel(disks []diskInfo, nics []nicInfo) model {
 	passConfirmIn.EchoMode = textinput.EchoPassword
 	passConfirmIn.CharLimit = 128
 
-	// Initial LAN cursor: first NIC that is not the WAN NIC (cursor 0).
-	lanCursor := 0
+	// Pre-fill the roles from the NIC count: one NIC folds everything onto
+	// wan, two dedicates the second to lan with vpc folded onto it, and three
+	// or more give each plane its own interface.
+	lanNIC, vpcNIC := foldedNIC, foldedNIC
 	if len(nics) > 1 {
-		lanCursor = 1 // wanNicCursor starts at 0
+		lanNIC = 1
+	}
+	if len(nics) > 2 {
+		vpcNIC = 2
+	}
+	roles := [3]roleForm{
+		newRoleForm(install.PlaneWAN, 0),
+		newRoleForm(install.PlaneLAN, lanNIC),
+		newRoleForm(install.PlaneVPC, vpcNIC),
 	}
 
 	return model{
@@ -260,21 +179,7 @@ func newModel(disks []diskInfo, nics []nicInfo) model {
 		disks:                disks,
 		nics:                 nics,
 		eraseInput:           eraseIn,
-		wanNicManualInput:    wanNicManualIn,
-		wanDHCP:              true, // DHCP is the default
-		wanIP:                wanIPIn,
-		wanMask:              wanMaskIn,
-		wanGateway:           wanGWIn,
-		wanDNS:               wanDNSIn,
-		wanSSID:              wanSSIDIn,
-		wanWiFiPass:          wanWiFiPassIn,
-		lanNicCursor:         lanCursor,
-		lanDHCP:              true, // DHCP is the default
-		lanIP:                lanIPIn,
-		lanMask:              lanMaskIn,
-		lanDNS:               lanDNSIn,
-		lanSSID:              lanSSIDIn,
-		lanWiFiPass:          lanWiFiPassIn,
+		roles:                roles,
 		hostnameInput:        hostnameIn,
 		emailInput:           emailIn,
 		passwordInput:        passIn,
@@ -389,9 +294,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.validationErr = "Type 'yes' to confirm disk erasure"
 				return m, nil
 			}
-			m.screen = screenNetworkWAN
-			m.wanFocus = wanFieldNIC
-			m = m.withFocusedWANField()
+			m.screen = screenNetworkRoles
+			m.roleCursor = 0
 		case "esc":
 			m.screen = screenDisk
 			return m, nil
@@ -401,23 +305,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-	case screenNetworkWAN:
-		return m.handleWANKey(key, msg)
+	case screenNetworkRoles:
+		return m.handleRolesKey(key)
 
-	case screenNetworkLAN:
-		return m.handleLANKey(key, msg)
+	case screenNetworkRole:
+		return m.handleRoleKey(key, msg)
 
 	case screenIdentity:
 		switch key {
 		case "esc":
 			m.hostnameInput.Blur()
-			if len(m.nics) > 1 {
-				m.screen = screenNetworkLAN
-				m = m.withFocusedLANField()
-			} else {
-				m.screen = screenNetworkWAN
-				m = m.withFocusedWANField()
-			}
+			m.screen = screenNetworkRoles
 		case "tab", "down":
 			if m.hostnameInput.Focused() {
 				m.hostnameInput.Blur()
@@ -609,486 +507,15 @@ func (m model) setCredsFocus(i int) model {
 	return m
 }
 
-// ── WAN screen key handling ───────────────────────────────────────────────────
-
-func (m model) handleWANKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	isWiFi := len(m.nics) > 0 && m.nics[m.wanNicCursor].IsWiFi
-
-	switch key {
-	case "tab", "down":
-		m.wanFocus = m.wanNextFocus(m.wanFocus, true)
-		m = m.withFocusedWANField()
-	case "shift+tab", "up":
-		m.wanFocus = m.wanNextFocus(m.wanFocus, false)
-		m = m.withFocusedWANField()
-
-	case "left", "h":
-		switch m.wanFocus {
-		case wanFieldNIC:
-			if len(m.nics) > 0 && m.wanNicCursor > 0 {
-				m.wanNicCursor--
-			}
-		case wanFieldMethod:
-			m.wanDHCP = true
-			// If current focus would be invalid in DHCP mode, snap back.
-			m.wanFocus = m.wanClampFocus(m.wanFocus)
-			m = m.withFocusedWANField()
-		}
-	case "right", "l":
-		switch m.wanFocus {
-		case wanFieldNIC:
-			if len(m.nics) > 0 && m.wanNicCursor < len(m.nics)-1 {
-				m.wanNicCursor++
-			}
-		case wanFieldMethod:
-			m.wanDHCP = false
-			m = m.withFocusedWANField()
-		}
-
-	case "esc":
-		m.screen = screenDiskConfirm
-		m = m.withFocusedWANField()
-		return m, nil
-
-	case "enter":
-		// Always check last-field first: if we're on it, validate and advance screen.
-		if m.wanFocus == m.wanLastFocus() {
-			if errMsg := m.validateWAN(); errMsg != "" {
-				m.validationErr = errMsg
-				return m, nil
-			}
-			if len(m.nics) > 1 {
-				m.screen = screenNetworkLAN
-				m.lanFocus = lanFieldNIC
-				m.lanNicCursor = m.initialLANCursor()
-				m = m.withFocusedLANField()
-			} else {
-				m.screen = screenIdentity
-				m.hostnameInput.Focus()
-			}
-			return m, nil
-		}
-		// Otherwise advance to the next field.
-		m.wanFocus = m.wanNextFocus(m.wanFocus, true)
-		m = m.withFocusedWANField()
-
-	default:
-		// Forward keystrokes to the active text input.
-		switch m.wanFocus {
-		case wanFieldIP:
-			var cmd tea.Cmd
-			m.wanIP, cmd = m.wanIP.Update(msg)
-			return m, cmd
-		case wanFieldMask:
-			var cmd tea.Cmd
-			m.wanMask, cmd = m.wanMask.Update(msg)
-			return m, cmd
-		case wanFieldGateway:
-			var cmd tea.Cmd
-			m.wanGateway, cmd = m.wanGateway.Update(msg)
-			return m, cmd
-		case wanFieldDNS:
-			var cmd tea.Cmd
-			m.wanDNS, cmd = m.wanDNS.Update(msg)
-			return m, cmd
-		case wanFieldSSID:
-			if isWiFi {
-				var cmd tea.Cmd
-				m.wanSSID, cmd = m.wanSSID.Update(msg)
-				return m, cmd
-			}
-		case wanFieldWiFiPass:
-			if isWiFi {
-				var cmd tea.Cmd
-				m.wanWiFiPass, cmd = m.wanWiFiPass.Update(msg)
-				return m, cmd
-			}
-		case wanFieldNIC:
-			if len(m.nics) == 0 {
-				var cmd tea.Cmd
-				m.wanNicManualInput, cmd = m.wanNicManualInput.Update(msg)
-				return m, cmd
-			}
-		}
-	}
-	return m, nil
-}
-
-// wanNextFocus returns the next valid focus index, skipping fields that are
-// hidden in the current DHCP/WiFi configuration.
-func (m model) wanNextFocus(current wanField, forward bool) wanField {
-	return nextFocusInList[wanField](current, m.wanVisibleFields(), forward)
-}
-
-func (m model) wanLastFocus() wanField {
-	fields := m.wanVisibleFields()
-	return fields[len(fields)-1]
-}
-
-func (m model) wanVisibleFields() []wanField {
-	isWiFi := len(m.nics) > 0 && m.nics[m.wanNicCursor].IsWiFi
-	fields := []wanField{wanFieldNIC, wanFieldMethod}
-	if !m.wanDHCP {
-		fields = append(fields, wanFieldIP, wanFieldMask, wanFieldGateway, wanFieldDNS)
-	}
-	if isWiFi {
-		fields = append(fields, wanFieldSSID, wanFieldWiFiPass)
-	}
-	return fields
-}
-
-// wanClampFocus snaps the current focus to the nearest visible field (used
-// when toggling between DHCP and static removes visible fields).
-func (m model) wanClampFocus(current wanField) wanField {
-	for _, f := range m.wanVisibleFields() {
-		if f >= current {
-			return f
-		}
-	}
-	fields := m.wanVisibleFields()
-	return fields[len(fields)-1]
-}
-
-func (m model) withFocusedWANField() model {
-	m.wanIP.Blur()
-	m.wanMask.Blur()
-	m.wanGateway.Blur()
-	m.wanDNS.Blur()
-	m.wanSSID.Blur()
-	m.wanWiFiPass.Blur()
-	m.wanNicManualInput.Blur()
-	switch m.wanFocus {
-	case wanFieldIP:
-		m.wanIP.Focus()
-	case wanFieldMask:
-		m.wanMask.Focus()
-	case wanFieldGateway:
-		m.wanGateway.Focus()
-	case wanFieldDNS:
-		m.wanDNS.Focus()
-	case wanFieldSSID:
-		m.wanSSID.Focus()
-	case wanFieldWiFiPass:
-		m.wanWiFiPass.Focus()
-	case wanFieldNIC:
-		if len(m.nics) == 0 {
-			m.wanNicManualInput.Focus()
-		}
-	}
-	return m
-}
-
-func (m model) validateWAN() string {
-	if len(m.nics) == 0 && strings.TrimSpace(m.wanNicManualInput.Value()) == "" {
-		return "Enter interface name (e.g. eth0, enp0s1)"
-	}
-	if !m.wanDHCP {
-		ip := strings.TrimSpace(m.wanIP.Value())
-		mask := strings.TrimSpace(m.wanMask.Value())
-		gw := strings.TrimSpace(m.wanGateway.Value())
-		dns := strings.TrimSpace(m.wanDNS.Value())
-		if net.ParseIP(ip) == nil {
-			return "Invalid WAN IP address"
-		}
-		if !validSubnetMask(mask) {
-			return "Invalid subnet mask (e.g. 255.255.255.0 or 24)"
-		}
-		if net.ParseIP(gw) == nil {
-			return "Invalid gateway address"
-		}
-		if dns == "" {
-			return "Enter at least one DNS nameserver"
-		}
-	}
-	isWiFi := len(m.nics) > 0 && m.nics[m.wanNicCursor].IsWiFi
-	if isWiFi && strings.TrimSpace(m.wanSSID.Value()) == "" {
-		return "WiFi SSID is required"
-	}
-	return ""
-}
-
-// ── LAN screen key handling ───────────────────────────────────────────────────
-
-func (m model) handleLANKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	isWiFi := len(m.nics) > m.lanNicCursor && m.nics[m.lanNicCursor].IsWiFi
-
-	switch key {
-	case "tab", "down":
-		m.lanFocus = m.lanNextFocus(m.lanFocus, true)
-		m = m.withFocusedLANField()
-	case "shift+tab", "up":
-		m.lanFocus = m.lanNextFocus(m.lanFocus, false)
-		m = m.withFocusedLANField()
-
-	case "left", "h":
-		switch m.lanFocus {
-		case lanFieldNIC:
-			m = m.moveLANCursorLeft()
-		case lanFieldMethod:
-			m.lanDHCP = true
-			m.lanFocus = m.lanClampFocus(m.lanFocus)
-			m = m.withFocusedLANField()
-		}
-	case "right", "l":
-		switch m.lanFocus {
-		case lanFieldNIC:
-			m = m.moveLANCursorRight()
-		case lanFieldMethod:
-			m.lanDHCP = false
-			m = m.withFocusedLANField()
-		}
-
-	case "esc":
-		m.screen = screenNetworkWAN
-		m = m.withFocusedWANField()
-		return m, nil
-
-	case "enter":
-		if m.lanFocus == m.lanLastFocus() {
-			if errMsg := m.validateLAN(); errMsg != "" {
-				m.validationErr = errMsg
-				return m, nil
-			}
-			m.screen = screenIdentity
-			m.hostnameInput.Focus()
-			return m, nil
-		}
-		m.lanFocus = m.lanNextFocus(m.lanFocus, true)
-		m = m.withFocusedLANField()
-
-	default:
-		switch m.lanFocus {
-		case lanFieldIP:
-			var cmd tea.Cmd
-			m.lanIP, cmd = m.lanIP.Update(msg)
-			return m, cmd
-		case lanFieldMask:
-			var cmd tea.Cmd
-			m.lanMask, cmd = m.lanMask.Update(msg)
-			return m, cmd
-		case lanFieldDNS:
-			var cmd tea.Cmd
-			m.lanDNS, cmd = m.lanDNS.Update(msg)
-			return m, cmd
-		case lanFieldSSID:
-			if isWiFi {
-				var cmd tea.Cmd
-				m.lanSSID, cmd = m.lanSSID.Update(msg)
-				return m, cmd
-			}
-		case lanFieldWiFiPass:
-			if isWiFi {
-				var cmd tea.Cmd
-				m.lanWiFiPass, cmd = m.lanWiFiPass.Update(msg)
-				return m, cmd
-			}
-		}
-	}
-	return m, nil
-}
-
-func (m model) lanNextFocus(current lanField, forward bool) lanField {
-	return nextFocusInList[lanField](current, m.lanVisibleFields(), forward)
-}
-
-func (m model) lanLastFocus() lanField {
-	fields := m.lanVisibleFields()
-	return fields[len(fields)-1]
-}
-
-func (m model) lanVisibleFields() []lanField {
-	isWiFi := len(m.nics) > m.lanNicCursor && m.nics[m.lanNicCursor].IsWiFi
-	fields := []lanField{lanFieldNIC, lanFieldMethod}
-	if !m.lanDHCP {
-		fields = append(fields, lanFieldIP, lanFieldMask, lanFieldDNS)
-	}
-	if isWiFi {
-		fields = append(fields, lanFieldSSID, lanFieldWiFiPass)
-	}
-	return fields
-}
-
-func (m model) lanClampFocus(current lanField) lanField {
-	for _, f := range m.lanVisibleFields() {
-		if f >= current {
-			return f
-		}
-	}
-	fields := m.lanVisibleFields()
-	return fields[len(fields)-1]
-}
-
-func (m model) withFocusedLANField() model {
-	m.lanIP.Blur()
-	m.lanMask.Blur()
-	m.lanDNS.Blur()
-	m.lanSSID.Blur()
-	m.lanWiFiPass.Blur()
-	switch m.lanFocus {
-	case lanFieldIP:
-		m.lanIP.Focus()
-	case lanFieldMask:
-		m.lanMask.Focus()
-	case lanFieldDNS:
-		m.lanDNS.Focus()
-	case lanFieldSSID:
-		m.lanSSID.Focus()
-	case lanFieldWiFiPass:
-		m.lanWiFiPass.Focus()
-	}
-	return m
-}
-
-// initialLANCursor returns the first NIC index that is not the WAN NIC.
-func (m model) initialLANCursor() int {
-	for i := range m.nics {
-		if i != m.wanNicCursor {
-			return i
-		}
-	}
-	return 0
-}
-
-// moveLANCursorLeft/Right skip the WAN NIC so it can never be selected.
-// If no valid position exists in that direction, the cursor stays put.
-func (m model) moveLANCursorLeft() model {
-	for i := m.lanNicCursor - 1; i >= 0; i-- {
-		if i != m.wanNicCursor {
-			m.lanNicCursor = i
-			return m
-		}
-	}
-	return m
-}
-
-func (m model) moveLANCursorRight() model {
-	for i := m.lanNicCursor + 1; i < len(m.nics); i++ {
-		if i != m.wanNicCursor {
-			m.lanNicCursor = i
-			return m
-		}
-	}
-	return m
-}
-
-func (m model) validateLAN() string {
-	if !m.lanDHCP {
-		ip := strings.TrimSpace(m.lanIP.Value())
-		mask := strings.TrimSpace(m.lanMask.Value())
-		dns := strings.TrimSpace(m.lanDNS.Value())
-		if net.ParseIP(ip) == nil {
-			return "Invalid LAN IP address"
-		}
-		if !validSubnetMask(mask) {
-			return "Invalid subnet mask (e.g. 255.255.255.0 or 24)"
-		}
-		if dns == "" {
-			return "Enter at least one DNS nameserver"
-		}
-	}
-	isWiFi := len(m.nics) > m.lanNicCursor && m.nics[m.lanNicCursor].IsWiFi
-	if isWiFi && strings.TrimSpace(m.lanSSID.Value()) == "" {
-		return "WiFi SSID is required"
-	}
-	return ""
-}
-
-// nextFocusInList finds current in the list and returns the next/prev entry,
-// wrapping around. Used by both WAN and LAN focus helpers.
-func nextFocusInList[T ~int](current T, list []T, forward bool) T {
-	for i, v := range list {
-		if v == current {
-			if forward {
-				return list[(i+1)%len(list)]
-			}
-			return list[(i-1+len(list))%len(list)]
-		}
-	}
-	// current not in list (e.g. after a mode change) — return first/last
-	if forward {
-		return list[0]
-	}
-	return list[len(list)-1]
-}
-
 func (m model) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenDiskConfirm:
 		var cmd tea.Cmd
 		m.eraseInput, cmd = m.eraseInput.Update(msg)
 		return m, cmd
-	case screenNetworkWAN:
-		switch m.wanFocus {
-		case wanFieldIP:
-			var cmd tea.Cmd
-			m.wanIP, cmd = m.wanIP.Update(msg)
-			return m, cmd
-		case wanFieldMask:
-			var cmd tea.Cmd
-			m.wanMask, cmd = m.wanMask.Update(msg)
-			return m, cmd
-		case wanFieldGateway:
-			var cmd tea.Cmd
-			m.wanGateway, cmd = m.wanGateway.Update(msg)
-			return m, cmd
-		case wanFieldDNS:
-			var cmd tea.Cmd
-			m.wanDNS, cmd = m.wanDNS.Update(msg)
-			return m, cmd
-		case wanFieldSSID:
-			var cmd tea.Cmd
-			m.wanSSID, cmd = m.wanSSID.Update(msg)
-			return m, cmd
-		case wanFieldWiFiPass:
-			var cmd tea.Cmd
-			m.wanWiFiPass, cmd = m.wanWiFiPass.Update(msg)
-			return m, cmd
-		case wanFieldNIC:
-			if len(m.nics) == 0 {
-				var cmd tea.Cmd
-				m.wanNicManualInput, cmd = m.wanNicManualInput.Update(msg)
-				return m, cmd
-			}
-		}
-	case screenNetworkLAN:
-		switch m.lanFocus {
-		case lanFieldIP:
-			var cmd tea.Cmd
-			m.lanIP, cmd = m.lanIP.Update(msg)
-			return m, cmd
-		case lanFieldMask:
-			var cmd tea.Cmd
-			m.lanMask, cmd = m.lanMask.Update(msg)
-			return m, cmd
-		case lanFieldDNS:
-			var cmd tea.Cmd
-			m.lanDNS, cmd = m.lanDNS.Update(msg)
-			return m, cmd
-		case lanFieldSSID:
-			var cmd tea.Cmd
-			m.lanSSID, cmd = m.lanSSID.Update(msg)
-			return m, cmd
-		case lanFieldWiFiPass:
-			var cmd tea.Cmd
-			m.lanWiFiPass, cmd = m.lanWiFiPass.Update(msg)
-			return m, cmd
-		}
 	case screenIdentity:
-		if m.hostnameInput.Focused() {
-			var cmd tea.Cmd
-			m.hostnameInput, cmd = m.hostnameInput.Update(msg)
-			return m, cmd
-		}
-	case screenPassword:
 		var cmd tea.Cmd
-		switch m.credsFocus {
-		case 0:
-			m.emailInput, cmd = m.emailInput.Update(msg)
-		case 1:
-			m.passwordInput, cmd = m.passwordInput.Update(msg)
-		default:
-			m.passwordConfirmInput, cmd = m.passwordConfirmInput.Update(msg)
-		}
+		m.hostnameInput, cmd = m.hostnameInput.Update(msg)
 		return m, cmd
 	}
 	return m, nil
@@ -1110,10 +537,10 @@ func (m model) View() string {
 		content = m.viewDisk(w)
 	case screenDiskConfirm:
 		content = m.viewDiskConfirm(w)
-	case screenNetworkWAN:
-		content = m.viewNetworkWAN(w)
-	case screenNetworkLAN:
-		content = m.viewNetworkLAN(w)
+	case screenNetworkRoles:
+		content = m.viewNetworkRoles(w)
+	case screenNetworkRole:
+		content = m.viewNetworkRole(w)
 	case screenIdentity:
 		content = m.viewIdentity(w)
 	case screenPassword:
@@ -1191,164 +618,6 @@ func (m model) viewDiskConfirm(w int) string {
 	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
 		styleBox.Width(min(w-4, 64)).Render(body),
 	)
-}
-
-// renderNICPicker renders a horizontal NIC selector. disabledIdx is the index
-// to show as greyed/unavailable (-1 to disable none).
-func (m model) renderNICPicker(cursor, disabledIdx int, focused bool) string {
-	if len(m.nics) == 0 {
-		return ""
-	}
-	var parts []string
-	for i, nic := range m.nics {
-		tag := "[ETH]"
-		if nic.IsWiFi {
-			tag = "[WIFI]"
-		}
-		label := fmt.Sprintf("%s %s", tag, nic.Name)
-		switch {
-		case i == disabledIdx:
-			parts = append(parts, styleMuted.Render("("+label+")"))
-		case i == cursor && focused:
-			parts = append(parts, styleSelected.Render(" "+label+" "))
-		case i == cursor:
-			parts = append(parts, styleLabel.Render("["+label+"]"))
-		default:
-			parts = append(parts, styleMuted.Render(label))
-		}
-	}
-	return strings.Join(parts, "  ")
-}
-
-func (m model) viewNetworkWAN(w int) string {
-	title := styleTitle.Render("WAN Network  (Step 1 of " + m.networkStepCount() + ")")
-	subtitle := styleMuted.Render("The management IP is assigned to a bridge (br-wan) over this NIC.")
-
-	var lines []string
-	lines = append(lines, title, subtitle, "")
-
-	// NIC picker
-	nicLabel := styleLabel.Render("WAN network interface")
-	var nicLine string
-	if len(m.nics) == 0 {
-		nicLine = m.wanNicManualInput.View()
-	} else {
-		nicLine = m.renderNICPicker(m.wanNicCursor, -1, m.wanFocus == wanFieldNIC)
-	}
-	lines = append(lines, nicLabel, nicLine, "")
-
-	// IP method toggle
-	methodLabel := styleLabel.Render("IP method")
-	methods := []string{"DHCP (automatic)", "Static"}
-	dhcpIdx := 0
-	if !m.wanDHCP {
-		dhcpIdx = 1
-	}
-	var methodParts []string
-	for i, s := range methods {
-		if i == dhcpIdx && m.wanFocus == wanFieldMethod {
-			methodParts = append(methodParts, styleSelected.Render(" "+s+" "))
-		} else if i == dhcpIdx {
-			methodParts = append(methodParts, styleLabel.Render("["+s+"]"))
-		} else {
-			methodParts = append(methodParts, styleMuted.Render(s))
-		}
-	}
-	lines = append(lines, methodLabel, strings.Join(methodParts, "  "), "")
-
-	// Static fields
-	if !m.wanDHCP {
-		lines = append(lines,
-			styleLabel.Render("IP address"), m.wanIP.View(), "",
-			styleLabel.Render("Subnet mask"), m.wanMask.View(), "",
-			styleLabel.Render("Default gateway"), m.wanGateway.View(), "",
-			styleLabel.Render("DNS nameservers"), m.wanDNS.View(), "",
-		)
-	}
-
-	// WiFi fields
-	if len(m.nics) > 0 && m.nics[m.wanNicCursor].IsWiFi {
-		lines = append(lines,
-			styleLabel.Render("WiFi SSID"), m.wanSSID.View(), "",
-			styleLabel.Render("WiFi password"), m.wanWiFiPass.View(), "",
-		)
-	}
-
-	if m.validationErr != "" {
-		lines = append(lines, styleError.Render(m.validationErr), "")
-	}
-	lines = append(lines, styleHelp.Render("Tab/↑↓ to move • ←/→ to select • Enter to proceed"))
-
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
-		styleBox.Width(min(w-4, 68)).Render(body),
-	)
-}
-
-func (m model) viewNetworkLAN(w int) string {
-	title := styleTitle.Render("LAN Network  (Step 2 of " + m.networkStepCount() + ")")
-	subtitle := styleMuted.Render("Internal interface for EC2/VPC and Geneve tunnel traffic (br-lan).")
-
-	var lines []string
-	lines = append(lines, title, subtitle, "")
-
-	// NIC picker — WAN NIC shown greyed
-	nicLabel := styleLabel.Render("LAN network interface")
-	nicLine := m.renderNICPicker(m.lanNicCursor, m.wanNicCursor, m.lanFocus == lanFieldNIC)
-	lines = append(lines, nicLabel, nicLine, "")
-
-	// IP method toggle
-	methodLabel := styleLabel.Render("IP method")
-	methods := []string{"DHCP (automatic)", "Static"}
-	dhcpIdx := 0
-	if !m.lanDHCP {
-		dhcpIdx = 1
-	}
-	var methodParts []string
-	for i, s := range methods {
-		if i == dhcpIdx && m.lanFocus == lanFieldMethod {
-			methodParts = append(methodParts, styleSelected.Render(" "+s+" "))
-		} else if i == dhcpIdx {
-			methodParts = append(methodParts, styleLabel.Render("["+s+"]"))
-		} else {
-			methodParts = append(methodParts, styleMuted.Render(s))
-		}
-	}
-	lines = append(lines, methodLabel, strings.Join(methodParts, "  "), "")
-
-	// Static fields (no gateway for LAN)
-	if !m.lanDHCP {
-		lines = append(lines,
-			styleLabel.Render("IP address"), m.lanIP.View(), "",
-			styleLabel.Render("Subnet mask"), m.lanMask.View(), "",
-			styleLabel.Render("DNS nameservers"), m.lanDNS.View(), "",
-		)
-	}
-
-	// WiFi fields
-	if len(m.nics) > m.lanNicCursor && m.nics[m.lanNicCursor].IsWiFi {
-		lines = append(lines,
-			styleLabel.Render("WiFi SSID"), m.lanSSID.View(), "",
-			styleLabel.Render("WiFi password"), m.lanWiFiPass.View(), "",
-		)
-	}
-
-	if m.validationErr != "" {
-		lines = append(lines, styleError.Render(m.validationErr), "")
-	}
-	lines = append(lines, styleHelp.Render("Tab/↑↓ to move • ←/→ to select • Enter to proceed"))
-
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
-		styleBox.Width(min(w-4, 68)).Render(body),
-	)
-}
-
-func (m model) networkStepCount() string {
-	if len(m.nics) > 1 {
-		return "2"
-	}
-	return "1"
 }
 
 func (m model) viewIdentity(w int) string {
@@ -1511,39 +780,9 @@ func (m model) buildConfig() *install.Config {
 		cfg.Disk = m.disks[m.diskCursor].Path
 	}
 
-	// wan — always bound; a node without an uplink cannot be installed.
-	if len(m.nics) > m.wanNicCursor {
-		cfg.WAN.Interface = m.nics[m.wanNicCursor].Name
-		if m.nics[m.wanNicCursor].IsWiFi {
-			cfg.WAN.WiFiSSID = strings.TrimSpace(m.wanSSID.Value())
-			cfg.WAN.WiFiPass = m.wanWiFiPass.Value()
-		}
-	} else {
-		cfg.WAN.Interface = strings.TrimSpace(m.wanNicManualInput.Value())
-	}
-	cfg.WAN.DHCPMode = m.wanDHCP
-	if !m.wanDHCP {
-		cfg.WAN.Address = strings.TrimSpace(m.wanIP.Value())
-		cfg.WAN.Mask = strings.TrimSpace(m.wanMask.Value())
-		cfg.WAN.Gateway = strings.TrimSpace(m.wanGateway.Value())
-		cfg.WAN.DNS = parseDNS(m.wanDNS.Value())
-	}
-
-	// lan — bound only when a second NIC exists; otherwise it stays folded and
-	// Config.Resolve collapses it onto wan.
-	if len(m.nics) > 1 && m.lanNicCursor < len(m.nics) {
-		cfg.LAN.Interface = m.nics[m.lanNicCursor].Name
-		cfg.LAN.DHCPMode = m.lanDHCP
-		if !m.lanDHCP {
-			cfg.LAN.Address = strings.TrimSpace(m.lanIP.Value())
-			cfg.LAN.Mask = strings.TrimSpace(m.lanMask.Value())
-			cfg.LAN.DNS = parseDNS(m.lanDNS.Value())
-		}
-		if m.nics[m.lanNicCursor].IsWiFi {
-			cfg.LAN.WiFiSSID = strings.TrimSpace(m.lanSSID.Value())
-			cfg.LAN.WiFiPass = m.lanWiFiPass.Value()
-		}
-	}
+	cfg.WAN = m.roles[0].toRole(m.nics)
+	cfg.LAN = m.roles[1].toRole(m.nics)
+	cfg.VPC = m.roles[2].toRole(m.nics)
 
 	cfg.Hostname = strings.TrimSpace(m.hostnameInput.Value())
 	if m.clusterRole == 0 {
@@ -1637,28 +876,4 @@ func validSubnetMask(s string) bool {
 		return prefix >= 0 && prefix <= 32
 	}
 	return net.ParseIP(s) != nil
-}
-
-func availableNICs() ([]nicInfo, error) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-	var nics []nicInfo
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		nics = append(nics, nicInfo{
-			Name:   iface.Name,
-			IsWiFi: isWiFiNIC(iface.Name),
-		})
-	}
-	return nics, nil
-}
-
-// isWiFiNIC returns true if the interface has a wireless subdirectory in sysfs.
-func isWiFiNIC(name string) bool {
-	_, err := os.Stat("/sys/class/net/" + name + "/wireless")
-	return err == nil
 }

@@ -81,40 +81,42 @@ func buildConfig() (*install.Config, error) {
 		RootPassword: password,
 		// Optional on the headless path — empty means no --email passed to
 		// spx admin init, which omits the operator identity from telemetry.
-		Email:        strings.TrimSpace(os.Getenv("SPINIFEX_EMAIL")),
-		WANInterface: wanIface,
-		WANDHCPMode:  strings.ToLower(os.Getenv("SPINIFEX_WAN_MODE")) != "static",
+		Email: strings.TrimSpace(os.Getenv("SPINIFEX_EMAIL")),
 	}
 
-	if !cfg.WANDHCPMode {
-		ip := os.Getenv("SPINIFEX_WAN_IP")
-		mask := os.Getenv("SPINIFEX_WAN_MASK")
-		gw := os.Getenv("SPINIFEX_WAN_GW")
-		if ip == "" || mask == "" || gw == "" {
-			return nil, fmt.Errorf("SPINIFEX_WAN_IP, SPINIFEX_WAN_MASK, SPINIFEX_WAN_GW required for static mode")
-		}
-		cfg.WANAddress = ip
-		cfg.WANMask = mask
-		cfg.WANGateway = gw
-		if dns := os.Getenv("SPINIFEX_WAN_DNS"); dns != "" {
-			cfg.WANDNS = strings.Split(dns, ",")
-		}
+	cfg.WAN, err = parseRole("WAN", wanIface)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.WAN.DHCPMode {
+		cfg.WAN.Gateway = ""
+	} else if cfg.WAN.Gateway == "" {
+		return nil, fmt.Errorf("SPINIFEX_WAN_IP, SPINIFEX_WAN_MASK, SPINIFEX_WAN_GW required for static mode")
 	}
 
-	if lanIface := os.Getenv("SPINIFEX_LAN_IFACE"); lanIface != "" {
-		lan, err := resolveNIC(lanIface, wanIface)
+	// lan and vpc are optional: an unset _IFACE leaves the role folded, which
+	// is how a single- or two-NIC node collapses onto the planes above it.
+	for _, r := range []struct {
+		plane string
+		dst   *install.NetworkRole
+	}{{"LAN", &cfg.LAN}, {"VPC", &cfg.VPC}} {
+		name := os.Getenv("SPINIFEX_" + r.plane + "_IFACE")
+		if name == "" {
+			continue
+		}
+		iface, err := resolveNIC(name, wanIface)
 		if err != nil {
-			return nil, fmt.Errorf("LAN NIC: %w", err)
+			return nil, fmt.Errorf("%s NIC: %w", r.plane, err)
 		}
-		cfg.LANInterface = lan
-		cfg.LANDHCPMode = strings.ToLower(os.Getenv("SPINIFEX_LAN_MODE")) != "static"
-		if !cfg.LANDHCPMode {
-			cfg.LANAddress = os.Getenv("SPINIFEX_LAN_IP")
-			cfg.LANMask = os.Getenv("SPINIFEX_LAN_MASK")
-			if dns := os.Getenv("SPINIFEX_LAN_DNS"); dns != "" {
-				cfg.LANDNS = strings.Split(dns, ",")
-			}
+		if *r.dst, err = parseRole(r.plane, iface); err != nil {
+			return nil, err
 		}
+		// Only the wan plane installs a default route.
+		r.dst.Gateway = ""
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("network roles: %w", err)
 	}
 
 	if os.Getenv("SPINIFEX_GPU_PASSTHROUGH") == "1" {
@@ -297,6 +299,42 @@ var virtualNICPrefixes = []string{
 
 // resolveNIC returns the interface name to use. "auto" or empty picks the
 // first physical (non-loopback, non-virtual) interface that is not exclude.
+// parseRole reads the SPINIFEX_<PLANE>_* kernel-cmdline vars for one plane.
+// iface is the already-resolved interface name; _VLAN and _MTU are optional
+// and default to untagged at the link MTU.
+func parseRole(plane, iface string) (install.NetworkRole, error) {
+	role := install.NetworkRole{
+		Interface: iface,
+		DHCPMode:  strings.ToLower(os.Getenv("SPINIFEX_"+plane+"_MODE")) != "static",
+	}
+	if v := os.Getenv("SPINIFEX_" + plane + "_VLAN"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil {
+			return role, fmt.Errorf("SPINIFEX_%s_VLAN: %w", plane, err)
+		}
+		role.VLAN = id
+	}
+	if v := os.Getenv("SPINIFEX_" + plane + "_MTU"); v != "" {
+		mtu, err := strconv.Atoi(v)
+		if err != nil {
+			return role, fmt.Errorf("SPINIFEX_%s_MTU: %w", plane, err)
+		}
+		role.MTU = mtu
+	}
+	if !role.DHCPMode {
+		role.Address = os.Getenv("SPINIFEX_" + plane + "_IP")
+		role.Mask = os.Getenv("SPINIFEX_" + plane + "_MASK")
+		role.Gateway = os.Getenv("SPINIFEX_" + plane + "_GW")
+		if role.Address == "" || role.Mask == "" {
+			return role, fmt.Errorf("SPINIFEX_%s_IP and SPINIFEX_%s_MASK required for static mode", plane, plane)
+		}
+	}
+	if dns := os.Getenv("SPINIFEX_" + plane + "_DNS"); dns != "" {
+		role.DNS = strings.Split(dns, ",")
+	}
+	return role, nil
+}
+
 func resolveNIC(name, exclude string) (string, error) {
 	if name != "" && name != "auto" {
 		return name, nil

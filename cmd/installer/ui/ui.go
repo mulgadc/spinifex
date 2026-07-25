@@ -1434,24 +1434,35 @@ func (m model) viewConfirm(w int) string {
 		role = fmt.Sprintf("Join cluster at %s", cfg.JoinAddr)
 	}
 
-	wanNet := "DHCP"
-	if !cfg.WANDHCPMode {
-		wanNet = fmt.Sprintf("%s/%s via %s", cfg.WANAddress, cfg.WANMask, cfg.WANGateway)
-	}
-
-	summary := []struct{ k, v string }{
-		{"Disk", cfg.Disk},
-		{"WAN interface", fmt.Sprintf("%s → br-wan", cfg.WANInterface)},
-		{"WAN address", wanNet},
-	}
-	if cfg.LANInterface != "" {
-		lanNet := "DHCP"
-		if !cfg.LANDHCPMode {
-			lanNet = fmt.Sprintf("%s/%s", cfg.LANAddress, cfg.LANMask)
+	summary := []struct{ k, v string }{{"Disk", cfg.Disk}}
+	// Folded roles are shown explicitly rather than omitted, so the operator
+	// sees which plane a collapsed role landed on before committing.
+	for _, p := range []install.Plane{install.PlaneWAN, install.PlaneLAN, install.PlaneVPC} {
+		var role install.NetworkRole
+		switch p {
+		case install.PlaneWAN:
+			role = cfg.WAN
+		case install.PlaneLAN:
+			role = cfg.LAN
+		case install.PlaneVPC:
+			role = cfg.VPC
+		}
+		name := strings.ToUpper(string(p))
+		if role.Folded() {
+			_, landed := cfg.Resolve(p)
+			summary = append(summary, struct{ k, v string }{name, fmt.Sprintf("folded onto %s", landed)})
+			continue
+		}
+		addr := "DHCP"
+		if !role.DHCPMode {
+			addr = role.Address + "/" + role.Mask
+			if role.Gateway != "" {
+				addr += " via " + role.Gateway
+			}
 		}
 		summary = append(summary,
-			struct{ k, v string }{"LAN interface", fmt.Sprintf("%s → br-lan", cfg.LANInterface)},
-			struct{ k, v string }{"LAN address", lanNet},
+			struct{ k, v string }{name + " interface", fmt.Sprintf("%s → %s", role.Link(), p.Bridge())},
+			struct{ k, v string }{name + " address", addr},
 		)
 	}
 	summary = append(summary,
@@ -1500,36 +1511,37 @@ func (m model) buildConfig() *install.Config {
 		cfg.Disk = m.disks[m.diskCursor].Path
 	}
 
-	// WAN
+	// wan — always bound; a node without an uplink cannot be installed.
 	if len(m.nics) > m.wanNicCursor {
-		cfg.WANInterface = m.nics[m.wanNicCursor].Name
+		cfg.WAN.Interface = m.nics[m.wanNicCursor].Name
 		if m.nics[m.wanNicCursor].IsWiFi {
-			cfg.WANWiFiSSID = strings.TrimSpace(m.wanSSID.Value())
-			cfg.WANWiFiPass = m.wanWiFiPass.Value()
+			cfg.WAN.WiFiSSID = strings.TrimSpace(m.wanSSID.Value())
+			cfg.WAN.WiFiPass = m.wanWiFiPass.Value()
 		}
 	} else {
-		cfg.WANInterface = strings.TrimSpace(m.wanNicManualInput.Value())
+		cfg.WAN.Interface = strings.TrimSpace(m.wanNicManualInput.Value())
 	}
-	cfg.WANDHCPMode = m.wanDHCP
+	cfg.WAN.DHCPMode = m.wanDHCP
 	if !m.wanDHCP {
-		cfg.WANAddress = strings.TrimSpace(m.wanIP.Value())
-		cfg.WANMask = strings.TrimSpace(m.wanMask.Value())
-		cfg.WANGateway = strings.TrimSpace(m.wanGateway.Value())
-		cfg.WANDNS = parseDNS(m.wanDNS.Value())
+		cfg.WAN.Address = strings.TrimSpace(m.wanIP.Value())
+		cfg.WAN.Mask = strings.TrimSpace(m.wanMask.Value())
+		cfg.WAN.Gateway = strings.TrimSpace(m.wanGateway.Value())
+		cfg.WAN.DNS = parseDNS(m.wanDNS.Value())
 	}
 
-	// LAN (only when 2+ NICs)
+	// lan — bound only when a second NIC exists; otherwise it stays folded and
+	// Config.Resolve collapses it onto wan.
 	if len(m.nics) > 1 && m.lanNicCursor < len(m.nics) {
-		cfg.LANInterface = m.nics[m.lanNicCursor].Name
-		cfg.LANDHCPMode = m.lanDHCP
+		cfg.LAN.Interface = m.nics[m.lanNicCursor].Name
+		cfg.LAN.DHCPMode = m.lanDHCP
 		if !m.lanDHCP {
-			cfg.LANAddress = strings.TrimSpace(m.lanIP.Value())
-			cfg.LANMask = strings.TrimSpace(m.lanMask.Value())
-			cfg.LANDNS = parseDNS(m.lanDNS.Value())
+			cfg.LAN.Address = strings.TrimSpace(m.lanIP.Value())
+			cfg.LAN.Mask = strings.TrimSpace(m.lanMask.Value())
+			cfg.LAN.DNS = parseDNS(m.lanDNS.Value())
 		}
 		if m.nics[m.lanNicCursor].IsWiFi {
-			cfg.LANWiFiSSID = strings.TrimSpace(m.lanSSID.Value())
-			cfg.LANWiFiPass = m.lanWiFiPass.Value()
+			cfg.LAN.WiFiSSID = strings.TrimSpace(m.lanSSID.Value())
+			cfg.LAN.WiFiPass = m.lanWiFiPass.Value()
 		}
 	}
 

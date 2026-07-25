@@ -14,10 +14,16 @@ import (
 // Config holds the values the firstboot service needs to configure the node.
 type Config struct {
 	Hostname string
-	// EncapIP is the Geneve tunnel IP for OVN. Set to the LAN bridge IP when a
-	// dedicated LAN NIC is present, otherwise the WAN bridge IP. Empty when DHCP
-	// is used — setup-ovn.sh auto-detects the IP from the default route in that case.
+	// EncapIP is the Geneve tunnel IP for OVN, taken from the vpc plane after
+	// collapsing (vpc <- lan <- wan). Empty when that plane uses DHCP —
+	// setup-ovn.sh auto-detects the IP from the default route in that case.
 	EncapIP string
+	// LANIP is the internal cluster address, taken from the lan plane after
+	// collapsing. Passed as --bind and --cluster-bind so predastore replication,
+	// the NATS mesh and OVN control traffic stay off the public interface.
+	// Empty leaves the 0.0.0.0 wildcard default, which is correct for a
+	// single-NIC node where lan folds onto wan.
+	LANIP string
 	// ClusterRole is "init" or "join".
 	ClusterRole string
 	// JoinAddr is host:port of the primary node, only used when ClusterRole is "join".
@@ -244,11 +250,21 @@ func buildClusterCmd(cfg Config) string {
 	if cfg.GPUPassthrough {
 		gpuFlag = " --gpu-passthrough"
 	}
+	// Without these the node takes the 0.0.0.0 wildcard default and every
+	// internal service resolves onto the auto-detected WAN address, which is
+	// exactly what the three-plane model exists to prevent. --advertise is
+	// deliberately left to auto-detect: it means the public address that
+	// off-host clients dial, not the peer address.
+	bindFlags := ""
+	if cfg.LANIP != "" {
+		bindFlags = fmt.Sprintf(" --bind %s --cluster-bind %s", cfg.LANIP, cfg.LANIP)
+	}
+
 	switch cfg.ClusterRole {
 	case "join":
-		return fmt.Sprintf("spx admin join --node %s --host %s%s", cfg.Hostname, cfg.JoinAddr, emailFlag)
+		return fmt.Sprintf("spx admin join --node %s --host %s%s%s", cfg.Hostname, cfg.JoinAddr, bindFlags, emailFlag)
 	default:
-		return fmt.Sprintf("spx admin init --node %s --nodes 1%s%s", cfg.Hostname, emailFlag, gpuFlag)
+		return fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
 	}
 }
 

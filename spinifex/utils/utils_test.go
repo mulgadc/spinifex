@@ -1611,9 +1611,10 @@ func TestAvailableImages_Rocky(t *testing.T) {
 			// Rocky 10 cloud images are UEFI-only on both architectures.
 			assert.Equal(t, "uefi", img.BootMode)
 			assert.Equal(t, "sha256", img.ChecksumType)
-			// URL must be pinned to a dated build (no moving "latest" symlink)
-			// and the checksum URL must be the BSD-style .CHECKSUM companion.
-			assert.NotContains(t, img.URL, "latest")
+			// URL must track the moving .latest. alias — Rocky prunes dated
+			// builds, so a pinned dated URL 404s once it ages out. The checksum
+			// URL must be the BSD-style .CHECKSUM companion of that same alias.
+			assert.Contains(t, img.URL, ".latest.")
 			assert.Contains(t, img.URL, tc.filenameSub)
 			assert.True(t, strings.HasSuffix(img.Checksum, ".CHECKSUM"),
 				"Rocky publishes BSD-style .CHECKSUM files; got %q", img.Checksum)

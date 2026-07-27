@@ -53,6 +53,7 @@ OUTPUT_DIR="${MKOSI_OUTPUT_DIR:-${IMAGE_DIR}/output}"
 image_profiles() {
     case "$1" in
         ubuntu-gpu-nvidia)     echo "gpu-nvidia docker" ;;
+        ubuntu-gpu-amd)        echo "gpu-amd docker" ;;
         spinifex-eks-node-gpu) echo "gpu-nvidia eks-common eks-agent" ;;
         spinifex-ecs-node-gpu) echo "gpu-nvidia ecs" ;;
         *)                     return 1 ;;
@@ -125,7 +126,7 @@ if [[ -n "${IMAGE}" ]]; then
     fi
     if ! expanded="$(image_profiles "${IMAGE}")"; then
         echo "mkosi-build: unknown image: ${IMAGE}" >&2
-        echo "mkosi-build: known images: ubuntu-gpu-nvidia spinifex-eks-node-gpu spinifex-ecs-node-gpu" >&2
+        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd spinifex-eks-node-gpu spinifex-ecs-node-gpu" >&2
         exit 2
     fi
     read -r -a PROFILES <<< "${expanded}"

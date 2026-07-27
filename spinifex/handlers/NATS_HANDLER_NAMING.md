@@ -69,7 +69,11 @@ AssociateIamInstanceProfile, SetSpotLineage
 SetInstanceTags, RemoveInstanceTags
 ```
 
-`DrainVolume` exists because `ec2.CreateSnapshot` is queue-grouped but the drain socket that flushes in-flight writes is served by the NBD plugin on the node hosting the volume. The node answering the snapshot routes the drain here and waits for the ack before reading the live checkpoint; an attached volume whose drain does not ack fails the snapshot rather than capturing stale data.
+`DrainVolume` exists because `ec2.CreateSnapshot` is queue-grouped but the drain socket that flushes in-flight writes is served by the NBD plugin on the node hosting the volume. The node answering the snapshot routes the drain here and waits for the ack before reading the live checkpoint; a volume with a live writer that does not ack fails the snapshot rather than capturing stale data.
+
+Establishing that there *is* a live writer is the subject's job, because the attachment record alone does not say so — stop deliberately leaves a boot volume attached while tearing down both the plugin and this subscription. Two replies therefore mean "nothing is writing, the sealed checkpoint stands" rather than failure: `DrainVolumeStatusNotRunning`, from a node that still holds the instance but is not running it, and `nats.ErrNoResponders`, meaning no node runs it at all.
+
+The drain is dispatched on its own goroutine. It is bounded by the volume's dirty set, and nats.go delivers a subscription's messages serially, so running it inline would stall every other command for that instance for the length of the flush.
 
 ### VPC Networking
 ```go

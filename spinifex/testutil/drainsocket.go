@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,30 @@ func SocketTempDir(t *testing.T) string {
 // that reached S3, "ERR\n" for one that did not) and closed.
 func StartDrainSocket(t *testing.T, dataDir, volumeID, ack string) {
 	t.Helper()
+	serveDrainSocket(t, dataDir, volumeID, ack, nil, nil)
+}
+
+// StartBlockingDrainSocket stands in for a plugin whose flush is still running:
+// it accepts but does not ack until release is called. accepted closes on the
+// first connection, so a test can be sure the drain is in flight before
+// asserting on what happens alongside it.
+func StartBlockingDrainSocket(t *testing.T, dataDir, volumeID, ack string) (accepted <-chan struct{}, release func()) {
+	t.Helper()
+
+	acceptedCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	serveDrainSocket(t, dataDir, volumeID, ack, acceptedCh, releaseCh)
+
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(releaseCh) }) })
+
+	return acceptedCh, func() { once.Do(func() { close(releaseCh) }) }
+}
+
+// serveDrainSocket answers every connection with ack, optionally closing
+// accepted on the first one and waiting for release before it replies.
+func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan struct{}, release <-chan struct{}) {
+	t.Helper()
 
 	dir := filepath.Join(dataDir, "viperblock", volumeID)
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -39,10 +64,17 @@ func StartDrainSocket(t *testing.T, dataDir, volumeID, ack string) {
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
+		var once sync.Once
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return // listener closed by the cleanup above
+			}
+			if accepted != nil {
+				once.Do(func() { close(accepted) })
+			}
+			if release != nil {
+				<-release
 			}
 			_, _ = conn.Write([]byte(ack))
 			_ = conn.Close()

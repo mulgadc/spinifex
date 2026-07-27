@@ -17,10 +17,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // TestAttachDetachErrorCode locks down the manager-error → AWS-API-code
@@ -334,16 +337,50 @@ func drainCommandFor(t *testing.T, instanceID, volumeID string) []byte {
 // short enough to hold the drain socket path.
 func drainTestDaemon(t *testing.T, instanceID string) *Daemon {
 	t.Helper()
+	return drainTestDaemonInState(t, instanceID, vm.StateRunning)
+}
+
+// drainTestDaemonInState is drainTestDaemon for an instance the node still
+// holds in some other state.
+func drainTestDaemonInState(t *testing.T, instanceID string, status vm.InstanceState) *Daemon {
+	t.Helper()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.config.DataDir = testutil.SocketTempDir(t)
 	daemon.vmMgr.Insert(&vm.VM{
 		ID:           instanceID,
-		Status:       vm.StateRunning,
+		Status:       status,
 		AccountID:    testAccountID,
 		InstanceType: getTestInstanceType(t),
 		Instance:     &ec2.Instance{},
 	})
 	return daemon
+}
+
+// drainRequest issues a drain on the instance's command subject, returning the
+// raw reply.
+func drainRequest(t *testing.T, daemon *Daemon, instanceID, volumeID string) *nats.Msg {
+	t.Helper()
+	reply, err := sendDrainCommand(daemon, instanceID, drainCommandFor(t, instanceID, volumeID))
+	require.NoError(t, err)
+	return reply
+}
+
+// sendDrainCommand is drainRequest without the assertions, so a test can issue
+// one from a goroutine and assert on the result back on the test goroutine.
+func sendDrainCommand(daemon *Daemon, instanceID string, command []byte) (*nats.Msg, error) {
+	msg := nats.NewMsg("ec2.cmd." + instanceID)
+	msg.Data = command
+	msg.Header.Set(utils.AccountIDHeader, testAccountID)
+	return daemon.natsConn.RequestMsg(msg, 5*time.Second)
+}
+
+// subscribeEC2Commands wires the daemon's real dispatcher onto the per-instance
+// command subject, so tests exercise the same serial delivery production has.
+func subscribeEC2Commands(t *testing.T, daemon *Daemon, instanceID string) {
+	t.Helper()
+	sub, err := daemon.natsConn.Subscribe("ec2.cmd."+instanceID, daemon.handleEC2Events)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
 // A drain routed to the node hosting the instance reaches the local socket and
@@ -417,4 +454,90 @@ func TestDrainVolume_ForeignAccountRejected(t *testing.T) {
 		"999988887777", drainCommandFor(t, instanceID, volumeID))
 
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, replyErrCode(t, resp.Data))
+}
+
+// A node that still holds the instance but is not running it has no plugin and
+// no writer, so the absent socket is not a failure — the volume's sealed
+// checkpoint is already current. Failing here would make a stopped instance's
+// volumes unsnapshottable, and the caller cannot tell an absent socket from a
+// wedged one on its own.
+func TestDrainVolume_NotRunningInstanceAcksNotRunning(t *testing.T) {
+	const instanceID, volumeID = "i-drain-stopped", "vol-drain-stopped"
+	daemon := drainTestDaemonInState(t, instanceID, vm.StateStopped)
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+	var ack types.DrainVolumeResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &ack))
+	assert.Equal(t, volumeID, ack.VolumeID)
+	assert.Equal(t, types.DrainVolumeStatusNotRunning, ack.Status)
+}
+
+// nats.go delivers a subscription's messages serially, so a drain run inline
+// would hold ec2.cmd.{instanceID} for the length of the flush — stalling stop,
+// terminate and hot-plug for that instance. A drain still flushing must not
+// keep the next command waiting.
+func TestDrainVolume_SlowDrainDoesNotBlockTheCommandSubject(t *testing.T) {
+	const instanceID = "i-drain-parallel"
+	daemon := drainTestDaemon(t, instanceID)
+	accepted, release := testutil.StartBlockingDrainSocket(t, daemon.config.DataDir, "vol-drain-slow", "OK\n")
+	testutil.StartDrainSocket(t, daemon.config.DataDir, "vol-drain-fast", "OK\n")
+	subscribeEC2Commands(t, daemon, instanceID)
+
+	type reply struct {
+		msg *nats.Msg
+		err error
+	}
+	slowCommand := drainCommandFor(t, instanceID, "vol-drain-slow")
+	slow := make(chan reply, 1)
+	go func() {
+		msg, err := sendDrainCommand(daemon, instanceID, slowCommand)
+		slow <- reply{msg, err}
+	}()
+
+	// Only assert once the slow drain is genuinely mid-flush.
+	select {
+	case <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the slow drain never reached its socket")
+	}
+
+	fast := drainRequest(t, daemon, instanceID, "vol-drain-fast")
+	var ack types.DrainVolumeResponse
+	require.NoError(t, json.Unmarshal(fast.Data, &ack))
+	assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+
+	release()
+	select {
+	case got := <-slow:
+		require.NoError(t, got.err)
+		require.NoError(t, json.Unmarshal(got.msg.Data, &ack))
+		assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the released drain never replied")
+	}
+}
+
+// Running the drain off the delivery goroutine must not leak it: the goroutine
+// has to be gone once the ack is on the wire, or a snapshot loop against a
+// wedged plugin accumulates them.
+func TestDrainVolume_DispatchedGoroutineDoesNotLeak(t *testing.T) {
+	const instanceID, volumeID = "i-drain-leak", "vol-drain-leak"
+	daemon := drainTestDaemon(t, instanceID)
+	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "OK\n")
+	subscribeEC2Commands(t, daemon, instanceID)
+
+	// Take the baseline after one full round trip: the first request is what
+	// makes nats.go stand up its long-lived response-inbox goroutine, which
+	// would otherwise read as the leak.
+	var ack types.DrainVolumeResponse
+	require.NoError(t, json.Unmarshal(drainRequest(t, daemon, instanceID, volumeID).Data, &ack))
+	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	ignoreExisting := goleak.IgnoreCurrent()
+
+	require.NoError(t, json.Unmarshal(drainRequest(t, daemon, instanceID, volumeID).Data, &ack))
+	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+
+	goleak.VerifyNone(t, ignoreExisting)
 }

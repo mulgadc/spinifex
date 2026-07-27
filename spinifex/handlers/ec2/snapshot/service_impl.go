@@ -320,6 +320,12 @@ const (
 	drainRequestTimeout = 35 * time.Second
 )
 
+// ErrNoDrainSocket reports that this node has no drain socket for the volume,
+// which is how a node learns it does not serve it. It is deliberately distinct
+// from a socket that answered badly: only the former is worth routing onward,
+// and conflating the two makes a node re-run a drain that has already failed.
+var ErrNoDrainSocket = errors.New("no drain socket on this node")
+
 // DrainVolumeSocket asks the NBD plugin serving volumeID on this node to flush
 // its WAL chunks and live checkpoint to S3, then waits for the ack. The plugin
 // creates the socket under {dataDir}/viperblock/{volumeID}/, so this only
@@ -329,7 +335,7 @@ func DrainVolumeSocket(dataDir, volumeID string) error {
 	sockPath := filepath.Join(dataDir, "viperblock", volumeID, "snapshot.sock")
 	conn, err := net.DialTimeout("unix", sockPath, drainDialTimeout)
 	if err != nil {
-		return fmt.Errorf("dial drain socket %s: %w", sockPath, err)
+		return fmt.Errorf("%w: dial %s: %w", ErrNoDrainSocket, sockPath, err)
 	}
 	defer conn.Close()
 
@@ -366,6 +372,15 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 		return err
 	}
 
+	// Nothing is writing to an unattached volume: the checkpoint its Close()
+	// left behind is the current one. Decide this before touching the socket —
+	// dialing it is not a probe, it makes the plugin run a full flush.
+	if state != "in-use" || instanceID == "" {
+		slog.InfoContext(ctx, "drainVolume: volume not attached, snapshotting the checkpoint left by Close (stopped instance path)",
+			"volumeId", volumeID, "state", state, "attachedInstance", instanceID)
+		return nil
+	}
+
 	// Fast path: the volume is served by this node, so no hop is needed. This is
 	// every single-node deployment, and the node hosting the instance on a
 	// cluster.
@@ -374,16 +389,15 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 		return nil
 	}
 
-	// Nothing is writing to an unattached volume: the checkpoint its Close()
-	// left behind is the current one.
-	if state != "in-use" || instanceID == "" {
-		slog.InfoContext(ctx, "snapshotVolume: volume not attached, snapshotting the checkpoint left by Close (stopped instance path)",
-			"volumeId", volumeID, "state", state, "attachedInstance", instanceID, "err", localErr)
-		return nil
+	// A socket that answered but did not ack means this node does serve the
+	// volume and the flush itself failed. Routing that onward would land back on
+	// this same node and repeat the drain that has already failed.
+	if !errors.Is(localErr, ErrNoDrainSocket) {
+		return fmt.Errorf("drain volume %s on this node: %w", volumeID, localErr)
 	}
 
-	slog.InfoContext(ctx, "snapshotVolume: volume attached, routing drain to the node hosting it",
-		"volumeId", volumeID, "instanceId", instanceID, "localErr", localErr)
+	slog.InfoContext(ctx, "drainVolume: volume attached, routing drain to the node hosting it",
+		"volumeId", volumeID, "instanceId", instanceID)
 	return s.drainOnHostNode(ctx, volumeID, instanceID, accountID)
 }
 
@@ -405,6 +419,13 @@ func (s *SnapshotServiceImpl) volumeAttachment(ctx context.Context, volumeID str
 // drainOnHostNode issues the drain on the node hosting instanceID. Only that
 // node subscribes ec2.cmd.{instanceID}, so the command is self-routing and no
 // volume-to-node resolution is needed here.
+//
+// An attachment record is not proof of a live writer: stop deliberately leaves
+// a boot volume attached (daemon/vm_adapters.go's volumeMounterAdapter.Unmount)
+// while tearing down both the NBD plugin and this subscription. The two
+// not-running signals below are therefore the stopped-instance path, not a
+// failure — treating them as one would make every stopped instance's root
+// volume permanently unsnapshottable.
 func (s *SnapshotServiceImpl) drainOnHostNode(ctx context.Context, volumeID, instanceID, accountID string) error {
 	command := types.EC2InstanceCommand{
 		ID:              instanceID,
@@ -415,12 +436,33 @@ func (s *SnapshotServiceImpl) drainOnHostNode(ctx context.Context, volumeID, ins
 	resp, err := utils.NATSRequest[types.DrainVolumeResponse](ctx, s.natsConn,
 		"ec2.cmd."+instanceID, command, drainRequestTimeout, accountID)
 	if err != nil {
+		// No subscriber at all: the instance runs nowhere in the cluster, so it
+		// was stopped (stop migrates it to shared KV before unsubscribing) and
+		// its volumes were sealed by Close. Warn rather than Info because the
+		// same shape appears if the hosting node has lost NATS while its VM
+		// keeps writing, which yields a stale snapshot as it did before routing
+		// existed. A live host that answers and fails is still a hard error.
+		if errors.Is(err, nats.ErrNoResponders) {
+			slog.WarnContext(ctx, "drainVolume: no node hosts the instance, treating the volume as stopped and snapshotting its sealed checkpoint",
+				"volumeId", volumeID, "instanceId", instanceID)
+			return nil
+		}
 		return fmt.Errorf("drain volume %s on the node hosting %s: %w", volumeID, instanceID, err)
 	}
-	if resp.Status != types.DrainVolumeStatusDrained {
+
+	switch resp.Status {
+	case types.DrainVolumeStatusDrained:
+		return nil
+	// The host still holds the instance but it is not running: nothing is
+	// writing, so there is nothing to flush. This is a host-drain stop, which
+	// keeps the VM (and this subscription) in place after unmounting.
+	case types.DrainVolumeStatusNotRunning:
+		slog.InfoContext(ctx, "drainVolume: instance is not running on its host, snapshotting the volume's sealed checkpoint",
+			"volumeId", volumeID, "instanceId", instanceID)
+		return nil
+	default:
 		return fmt.Errorf("drain volume %s on the node hosting %s: unexpected ack %q", volumeID, instanceID, resp.Status)
 	}
-	return nil
 }
 
 // snapshotVolume opens a read-only viperblock instance, reads the live checkpoint from S3

@@ -144,7 +144,14 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 // drain socket the local NBD plugin serves. ec2.CreateSnapshot is answered by
 // any node in the cluster, but only the node hosting the instance subscribes
 // ec2.cmd.{instanceID}, so routing the drain here lands it where the writes are.
-func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) {
+//
+// Runs on its own goroutine (see handleEC2Events) so a long flush cannot hold
+// the instance's command subscription.
+func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+	ctx, span := startOpSpan(ctx, "ec2.DrainVolume", command.ID)
+	var err error
+	defer func() { endOpSpan(span, err) }()
+
 	if command.DrainVolumeData == nil || command.DrainVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "DrainVolume: missing drain volume data", "instanceId", command.ID)
 		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
@@ -152,12 +159,24 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	}
 
 	volumeID := command.DrainVolumeData.VolumeID
+
+	// This node holds the instance but it is not running, so the plugin is gone
+	// and nothing is writing: the seal its unmount performed is already the
+	// current checkpoint. Say so explicitly instead of failing on the absent
+	// socket, which the caller cannot tell from a wedged one.
+	if instance.Status != vm.StateRunning {
+		slog.InfoContext(ctx, "DrainVolume: instance is not running, nothing to drain",
+			"volumeId", volumeID, "instanceId", command.ID, "status", instance.Status)
+		respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
+		return
+	}
+
 	slog.InfoContext(ctx, "Draining volume before snapshot", "volumeId", volumeID, "instanceId", command.ID)
 
-	// A missing or unresponsive socket on the node that owns the instance means
-	// the writes cannot be made current, so the caller must fail its snapshot
-	// rather than read a stale checkpoint.
-	if err := handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
+	// A missing or unresponsive socket under a running instance means the writes
+	// cannot be made current, so the caller must fail its snapshot rather than
+	// read a stale checkpoint.
+	if err = handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
 		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
 		respondWithError(msg, awserrors.ErrorServerInternal)
 		return

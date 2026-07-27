@@ -84,6 +84,23 @@ func drainedAck(t *testing.T, volumeID string) []byte {
 	return data
 }
 
+// requireReturnsWithin fails the test if fn has not returned successfully by
+// limit, so a drain that blocks on a socket it should not have dialed reports
+// as a failure rather than as a slow test.
+func requireReturnsWithin(t *testing.T, limit time.Duration, fn func() error) {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(limit):
+		t.Fatalf("drain did not return within %s", limit)
+	}
+}
+
 // awaitDrainCommand returns the command the hosting node received, failing the
 // test if none arrives.
 func awaitDrainCommand(t *testing.T, got chan *nats.Msg) types.EC2InstanceCommand {
@@ -116,16 +133,31 @@ func TestDrainVolume_AttachedRoutesToHostingNode(t *testing.T) {
 	assert.Equal(t, "vol-attached", command.DrainVolumeData.VolumeID)
 }
 
-// No responder on the command subject means the drain never reached the writes.
-// Failing here is the whole point: the alternative is a snapshot of whatever
-// checkpoint the hosting node last flushed.
-func TestDrainVolume_AttachedWithNoHostFails(t *testing.T) {
+// No responder on the command subject means no node is running the instance,
+// which is what a stopped instance looks like: stop tears down both the plugin
+// and the subscription but deliberately leaves a boot volume attached. Failing
+// here would make every stopped instance's root volume unsnapshottable.
+func TestDrainVolume_AttachedToStoppedInstanceTakesStoppedPath(t *testing.T) {
 	svc, store, _ := setupDrainService(t)
 	seedVolumeAttachment(t, store, "vol-no-host", "in-use", drainInstanceID)
 
-	err := svc.drainVolume(context.Background(), "vol-no-host", viperblock.VolumeMetadata{}, testAccountID)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, nats.ErrNoResponders)
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-no-host", viperblock.VolumeMetadata{}, testAccountID))
+}
+
+// A host that still holds the instance but reports it not running has nothing
+// to flush, so the sealed checkpoint stands. This is the host-drain stop, which
+// unmounts the volumes but keeps the subscription.
+func TestDrainVolume_NotRunningAckTakesStoppedPath(t *testing.T) {
+	svc, store, nc := setupDrainService(t)
+	seedVolumeAttachment(t, store, "vol-not-running", "in-use", drainInstanceID)
+	ack, err := json.Marshal(types.DrainVolumeResponse{
+		VolumeID: "vol-not-running", Status: types.DrainVolumeStatusNotRunning,
+	})
+	require.NoError(t, err)
+	got := drainResponder(t, nc, drainInstanceID, ack)
+
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-not-running", viperblock.VolumeMetadata{}, testAccountID))
+	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }
 
 // A hosting node that reports the drain failed (wedged plugin, socket gone
@@ -153,15 +185,23 @@ func TestDrainVolume_AttachedWithUnexpectedAckFails(t *testing.T) {
 }
 
 // Nothing writes to an unattached volume, so the checkpoint its Close() left
-// behind is current and no drain is attempted.
-func TestDrainVolume_AvailableTakesStoppedPath(t *testing.T) {
+// behind is current and no drain is attempted — not even locally. Dialing the
+// socket is not a probe: it makes the plugin run a full flush, so an available
+// volume must be decided from the record without touching it.
+func TestDrainVolume_AvailableDoesNotDialLocalSocket(t *testing.T) {
 	svc, store, _ := setupDrainService(t)
 	seedVolumeAttachment(t, store, "vol-available", "available", "")
+
+	// A socket that never answers: a dial would park here until the read
+	// deadline, so returning promptly is what proves none was made.
+	testutil.StartBlockingDrainSocket(t, svc.config.DataDir, "vol-available", "OK\n")
 
 	// A nil connection proves no command was issued: routing one would error.
 	svc.natsConn = nil
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-available", viperblock.VolumeMetadata{}, testAccountID))
+	requireReturnsWithin(t, 2*time.Second, func() error {
+		return svc.drainVolume(context.Background(), "vol-available", viperblock.VolumeMetadata{}, testAccountID)
+	})
 }
 
 // A volume recorded as in-use but with no instance (drifted state) has no node
@@ -188,15 +228,19 @@ func TestDrainVolume_LocalSocketShortCircuits(t *testing.T) {
 	require.NoError(t, svc.drainVolume(context.Background(), "vol-local", viperblock.VolumeMetadata{}, testAccountID))
 }
 
-// A local socket that refuses the drain is not an ack, so an attached volume
-// still has to be drained through its host — and fails when it cannot be.
-func TestDrainVolume_LocalSocketErrorAckDoesNotSatisfyDrain(t *testing.T) {
-	svc, store, _ := setupDrainService(t)
+// A socket that answers without acking means this node does serve the volume
+// and the flush failed. Routing that onward would come back to this same node
+// and re-run the drain that has already failed, so it fails here instead.
+func TestDrainVolume_LocalSocketErrorAckFailsWithoutRouting(t *testing.T) {
+	svc, store, nc := setupDrainService(t)
 	seedVolumeAttachment(t, store, "vol-local-err", "in-use", drainInstanceID)
 	testutil.StartDrainSocket(t, svc.config.DataDir, "vol-local-err", "ERR\n")
+	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-local-err"))
 
 	err := svc.drainVolume(context.Background(), "vol-local-err", viperblock.VolumeMetadata{}, testAccountID)
 	require.Error(t, err)
+
+	assert.Empty(t, got, "a local drain that failed must not be re-issued to the host node")
 }
 
 // state.json is the control-plane-owned attachment record; the copy inside
@@ -254,15 +298,19 @@ func TestCreateSnapshot_DrainsAttachedVolume(t *testing.T) {
 	assert.Equal(t, "vol-snap-drain", command.DrainVolumeData.VolumeID)
 }
 
-// An attached volume whose drain cannot be delivered fails the snapshot: a
+// An attached volume whose host reports the drain failed fails the snapshot: a
 // retryable error is strictly better than a successful snapshot of stale data.
 func TestCreateSnapshot_UndrainableAttachedVolumeFails(t *testing.T) {
-	svc, store, _ := setupDrainService(t)
+	svc, store, nc := setupDrainService(t)
 	createTestVolume(t, store, "vol-snap-nodrain", 10)
 	seedVolumeAttachment(t, store, "vol-snap-nodrain", "in-use", drainInstanceID)
+	got := drainResponder(t, nc, drainInstanceID,
+		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"drain failed"}`))
 
 	_, err := svc.CreateSnapshot(context.Background(),
 		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-snap-nodrain")}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }

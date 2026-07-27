@@ -12,9 +12,9 @@
 # profiles.
 #
 # Usage:
-#   scripts/mkosi-publish.sh --name <object-base> [--image <raw>] [--dry-run]
+#   scripts/mkosi-publish.sh --name <object-base> --image <image|raw> [--dry-run]
 #
-#   scripts/mkosi-publish.sh --name eks-node-x86_64 --dry-run
+#   scripts/mkosi-publish.sh --name eks-node-x86_64 --image spinifex-eks-node-gpu --dry-run
 #
 # Env (required unless --dry-run):
 #   R2_ENDPOINT            https://<account>.r2.cloudflarestorage.com
@@ -30,20 +30,34 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mkosi-common.sh"
 
 OUTPUT_DIR="${MKOSI_OUTPUT_DIR:-${MKOSI_REPO_ROOT}/images/output}"
-RAW_NAME="spinifex.raw"
+RAW_NAME=""
 OBJECT_BASE=""
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --name)    OBJECT_BASE="$2"; shift 2 ;;
-        --image)   RAW_NAME="$2"; shift 2 ;;
+        # Accepts the image name (spinifex-eks-node-gpu) or the raw filename;
+        # mkosi-build writes <image>.raw, so the two differ only by suffix.
+        --image)   RAW_NAME="$2"; [[ "${RAW_NAME}" == *.raw ]] || RAW_NAME="${RAW_NAME}.raw"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         *) echo "mkosi-publish: unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
 [[ -n "${OBJECT_BASE}" ]] || { echo "mkosi-publish: --name is required" >&2; exit 2; }
+
+# Deliberately no default. --name is the published object and --image is the
+# local artefact, and nothing ties one to the other: defaulting the input meant
+# a publish could take whichever image happened to be sitting in the output
+# directory and upload it under the name the caller asked for. The failure is
+# silent and lands on the live catalog, so the caller has to say both.
+[[ -n "${RAW_NAME}" ]] || {
+    echo "mkosi-publish: --image is required (which built image to publish)" >&2
+    echo "mkosi-publish: available:" >&2
+    find "${OUTPUT_DIR}" -maxdepth 1 -name '*.raw' -printf '  %f\n' >&2 2>/dev/null || true
+    exit 2
+}
 [[ -f "${OUTPUT_DIR}/${RAW_NAME}" ]] || {
     echo "mkosi-publish: no raw image at ${OUTPUT_DIR}/${RAW_NAME} — run mkosi-build.sh first" >&2
     exit 1

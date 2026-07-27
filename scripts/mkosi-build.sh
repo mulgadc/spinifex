@@ -11,12 +11,19 @@
 #   scripts/mkosi-build.sh --image <name> [--shell] [-- <mkosi options>]
 #   scripts/mkosi-build.sh --profile <name> [--profile <name>...] [--shell] [-- <mkosi options>]
 #
-#   scripts/mkosi-build.sh --image spinifex-eks-node-gpu -- --force
+#   scripts/mkosi-build.sh --image spinifex-eks-node-gpu
 #   MKOSI_VERB=clean scripts/mkosi-build.sh
 #
 # --image is the interface to prefer: it names an output and expands to the
 # right ordered profile list. --profile is the escape hatch for ad-hoc builds
 # and puts the ordering rule below on the caller.
+#
+# --image also names the artefact: the build writes <image>.raw, so what a
+# composition produced is legible from the output rather than inferred from
+# which build ran last. Profile-mode builds keep the base config's ImageId.
+#
+# Builds are always forced; see the --force note further down for why mkosi's
+# own skip logic is not a cache worth having here.
 #
 # Args after `--` are mkosi OPTIONS only; the verb comes from MKOSI_VERB.
 #
@@ -224,10 +231,59 @@ CMD=(mkosi --output-dir /work/output --workspace-dir /work/output/.mkosi-workspa
 for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
     CMD+=(--profile "${p}")
 done
+
+# What the caller already asked for, so neither default below overrides an
+# explicit choice.
+CALLER_SET_IMAGE_ID=0
+CALLER_SET_FORCE=0
+for arg in "${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}"; do
+    case "${arg}" in
+        --image-id|--image-id=*) CALLER_SET_IMAGE_ID=1 ;;
+        --force|-f)              CALLER_SET_FORCE=1 ;;
+    esac
+done
+
+# Name the output after the image, not after the base config's ImageId. Every
+# composition otherwise lands on the same spinifex.raw, so the artefact carries
+# no record of which profiles produced it and the only thing distinguishing an
+# EKS image from an ECS one is which build ran last. Publishing then picks a
+# name by hand, which is how the wrong image gets shipped under the right one.
+if [[ -n "${IMAGE}" && "${CALLER_SET_IMAGE_ID}" -eq 0 ]]; then
+    CMD+=(--image-id "${IMAGE}")
+fi
+
+# Always rebuild. mkosi skips the build whenever the output path merely exists
+# — it does not compare inputs — so its "cache" never notices an edited
+# mkosi.conf or a restaged binary, and it exits 0 while doing nothing. That
+# makes a stale image indistinguishable from a fresh one, and the next step
+# imports and boot-tests last week's build. The cache worth keeping is the
+# package download volume, which --force does not touch.
+if [[ "${CALLER_SET_FORCE}" -eq 0 ]]; then
+    CMD+=(--force)
+fi
+
 CMD+=("${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}" "${VERB}")
+
+BUILD_STARTED_AT="$(date +%s)"
 
 echo "[mkosi-build] ${CMD[*]}"
 docker run "${DOCKER_ARGS[@]}" "${BUILDER_TAG}" "${CMD[@]}"
+
+# Belt and braces on the above: prove this run actually wrote the image rather
+# than trusting the exit status, which mkosi reports as 0 for a build it
+# declined to do. Only checked when the output name is ours to predict.
+if [[ "${VERB}" == "build" && "${CALLER_SET_IMAGE_ID}" -eq 0 ]]; then
+    EXPECTED_RAW="${OUTPUT_DIR}/${IMAGE:-spinifex}.raw"
+    if [[ ! -f "${EXPECTED_RAW}" ]]; then
+        echo "mkosi-build: build reported success but ${EXPECTED_RAW} does not exist" >&2
+        exit 1
+    fi
+    if [[ "$(stat -c %Y "${EXPECTED_RAW}")" -lt "${BUILD_STARTED_AT}" ]]; then
+        echo "mkosi-build: ${EXPECTED_RAW} predates this run — the build was skipped, not performed" >&2
+        exit 1
+    fi
+    echo "[mkosi-build] built ${EXPECTED_RAW}"
+fi
 
 echo "[mkosi-build] artefacts in ${OUTPUT_DIR}:"
 ls -la "${OUTPUT_DIR}"

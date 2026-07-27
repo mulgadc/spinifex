@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
@@ -119,7 +120,7 @@ func TestGetVolumeConfig_FallsBackWhenNoStateJSON(t *testing.T) {
 }
 
 // getStoredState reads and decodes the raw state.json from the memory store.
-func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) volumeStateRecord {
+func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) volumestate.Record {
 	t.Helper()
 	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
@@ -127,7 +128,7 @@ func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID
 	})
 	require.NoError(t, err)
 	defer res.Body.Close()
-	var rec volumeStateRecord
+	var rec volumestate.Record
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&rec))
 	return rec
 }

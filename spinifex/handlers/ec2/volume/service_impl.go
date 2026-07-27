@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -1030,67 +1031,19 @@ type volumeConfigWrapper struct {
 	VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 }
 
-// volumeStateRecord is the control-plane-owned attachment state, persisted to a
-// per-volume state.json object kept out of config.json. config.json is rewritten
-// by the live nbdkit VB on every SaveState (clobbering any State the control
-// plane wrote there) and is a sealed object for encrypted volumes (a second
-// writer reuses the AES-GCM nonce). state.json is plaintext, viperblock never
-// touches it, so the control plane is its single writer.
-type volumeStateRecord struct {
-	State            string    `json:"state"`
-	AttachedInstance string    `json:"attachedInstance"`
-	DeviceName       string    `json:"deviceName"`
-	AttachedAt       time.Time `json:"attachedAt"`
-}
-
-// volumeStateKey is the S3 key for a volume's control-plane state object.
-func volumeStateKey(volumeID string) string { return volumeID + "/state.json" }
-
 // volumeTagsKey is the S3 key for a volume's control-plane tags object.
 func volumeTagsKey(volumeID string) string { return volumeID + "/tags.json" }
 
 // putVolumeState writes the control-plane attachment state to state.json.
-func (s *VolumeServiceImpl) putVolumeState(ctx context.Context, volumeID string, rec volumeStateRecord) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("marshal volume state: %w", err)
-	}
-	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(volumeStateKey(volumeID)),
-		Body:   bytes.NewReader(data),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to write volume state to S3: %w", err)
-	}
-	return nil
+func (s *VolumeServiceImpl) putVolumeState(ctx context.Context, volumeID string, rec volumestate.Record) error {
+	return volumestate.Write(ctx, s.store, s.bucketName, volumeID, rec)
 }
 
 // getVolumeState reads state.json. found=false with a nil error means the object
 // is absent (a volume predating the state.json split), in which case the caller
 // falls back to the State embedded in config.json.
-func (s *VolumeServiceImpl) getVolumeState(ctx context.Context, volumeID string) (volumeStateRecord, bool, error) {
-	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(volumeStateKey(volumeID)),
-	})
-	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) {
-			return volumeStateRecord{}, false, nil
-		}
-		return volumeStateRecord{}, false, fmt.Errorf("failed to get volume state: %w", err)
-	}
-	defer getResult.Body.Close()
-
-	body, err := io.ReadAll(getResult.Body)
-	if err != nil {
-		return volumeStateRecord{}, false, fmt.Errorf("failed to read volume state body: %w", err)
-	}
-	var rec volumeStateRecord
-	if err := json.Unmarshal(body, &rec); err != nil {
-		return volumeStateRecord{}, false, fmt.Errorf("failed to unmarshal volume state: %w", err)
-	}
-	return rec, true, nil
+func (s *VolumeServiceImpl) getVolumeState(ctx context.Context, volumeID string) (volumestate.Record, bool, error) {
+	return volumestate.Read(ctx, s.store, s.bucketName, volumeID)
 }
 
 // putVolumeTags writes the control-plane-owned tag set to tags.json.
@@ -1387,7 +1340,7 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 		state = "available"
 	}
 
-	rec := volumeStateRecord{
+	rec := volumestate.Record{
 		State:            state,
 		AttachedInstance: attachedInstance,
 		DeviceName:       deviceName,

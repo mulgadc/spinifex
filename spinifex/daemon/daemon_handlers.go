@@ -160,6 +160,13 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		d.handleAttachVolume(ctx, msg, command, instance)
 	case command.Attributes.DetachVolume:
 		d.handleDetachVolume(ctx, msg, command, instance)
+	case command.Attributes.DrainVolume:
+		// A drain flushes the volume's whole dirty set to S3, so it is bounded by
+		// the dirty set rather than by a unit of work. nats.go delivers a
+		// subscription's messages serially, so running it inline would stall
+		// every other command for this instance — stop, terminate, hot-plug —
+		// for the duration. It touches no VM state, so it is safe off-thread.
+		go d.handleDrainVolume(ctx, msg, command, instance)
 	case command.Attributes.AttachENI:
 		d.handleAttachNetworkInterface(ctx, msg, command, instance)
 	case command.Attributes.DetachENI:

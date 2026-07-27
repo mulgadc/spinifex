@@ -166,6 +166,19 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		return nil
 	}
 
+	// Make the routing record durable before QEMU can write. If persistence
+	// fails, unmounting seals the untouched backend and keeps the launch from
+	// exposing a writer that snapshots would classify as available.
+	if stateErr := m.markAttachedVolumesInUse(instance); stateErr != nil {
+		if unmountErr := m.deps.VolumeMounter.Unmount(instance); unmountErr != nil {
+			return errors.Join(
+				fmt.Errorf("persist attached volume state: %w", stateErr),
+				fmt.Errorf("rollback mounted volumes: %w", unmountErr),
+			)
+		}
+		return fmt.Errorf("persist attached volume state: %w", stateErr)
+	}
+
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
 	qemuErr := m.startQEMU(instance)
 	endSpanWithError(qemuSpan, qemuErr)
@@ -212,9 +225,6 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		}
 	}
 
-	// Mark attached volumes as "in-use" now that instance is confirmed running.
-	m.markAttachedVolumesInUse(instance)
-
 	if m.deps.Hooks.OnInstanceUp != nil {
 		// Launch path: per-instance subscribe failures are logged and the
 		// launch still succeeds. The instance is reachable via cluster
@@ -229,27 +239,28 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	return nil
 }
 
-// markAttachedVolumesInUse re-asserts "in-use" status for every volume an
-// instance currently has attached (boot and non-boot) once it is confirmed
-// running. Used by the launch path and the daemon-restart reconnect path so
-// both keep volume state consistent with a running instance — otherwise a
-// non-boot volume (e.g. an EKS stateful-pod data volume) can read "available"
-// while the instance still has it attached. Errors are logged, not fatal.
-func (m *Manager) markAttachedVolumesInUse(instance *VM) {
-	if m.deps.VolumeStateUpdater == nil {
-		return
-	}
+// markAttachedVolumesInUse persists routing state for every attached EBS
+// volume before a launch exposes them to QEMU. Callers must abort or fail
+// recovery when an update fails; logging and continuing would let snapshots
+// mistake a live writer for an available volume.
+func (m *Manager) markAttachedVolumesInUse(instance *VM) error {
 	instance.EBSRequests.Mu.Lock()
-	defer instance.EBSRequests.Mu.Unlock()
-	for _, ebsReq := range instance.EBSRequests.Requests {
+	requests := append([]types.EBSRequest(nil), instance.EBSRequests.Requests...)
+	instance.EBSRequests.Mu.Unlock()
+
+	for _, ebsReq := range requests {
 		// EFI pflash is not a KV-tracked EBS volume; skip it like the unmount gate.
 		if ebsReq.EFI {
 			continue
 		}
+		if m.deps.VolumeStateUpdater == nil {
+			return errors.New("volume state updater not wired")
+		}
 		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ebsReq.DeviceName); err != nil {
-			slog.Error("Failed to update volume state to in-use", "volumeId", ebsReq.Name, "err", err)
+			return fmt.Errorf("persist in-use state for volume %s: %w", ebsReq.Name, err)
 		}
 	}
+	return nil
 }
 
 const (

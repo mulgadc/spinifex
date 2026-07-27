@@ -160,13 +160,13 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 
 	volumeID := command.DrainVolumeData.VolumeID
 
-	// This node holds the instance but it is not running, so the plugin is gone
-	// and nothing is writing: the seal its unmount performed is already the
-	// current checkpoint. Say so explicitly instead of failing on the absent
-	// socket, which the caller cannot tell from a wedged one.
-	if instance.Status != vm.StateRunning {
-		slog.InfoContext(ctx, "DrainVolume: instance is not running, nothing to drain",
-			"volumeId", volumeID, "instanceId", command.ID, "status", instance.Status)
+	// Only stable post-teardown states prove the volume was sealed. Transitional
+	// states still have a live or shutting-down writer, so they must drain or
+	// fail rather than acknowledge an older checkpoint as current.
+	status := d.vmMgr.Status(instance)
+	if status == vm.StateStopped || status == vm.StateTerminated {
+		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
+			"volumeId", volumeID, "instanceId", command.ID, "status", status)
 		respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
 		return
 	}

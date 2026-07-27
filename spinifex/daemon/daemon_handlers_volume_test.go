@@ -456,22 +456,50 @@ func TestDrainVolume_ForeignAccountRejected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, replyErrCode(t, resp.Data))
 }
 
-// A node that still holds the instance but is not running it has no plugin and
-// no writer, so the absent socket is not a failure — the volume's sealed
-// checkpoint is already current. Failing here would make a stopped instance's
-// volumes unsnapshottable, and the caller cannot tell an absent socket from a
-// wedged one on its own.
-func TestDrainVolume_NotRunningInstanceAcksNotRunning(t *testing.T) {
-	const instanceID, volumeID = "i-drain-stopped", "vol-drain-stopped"
-	daemon := drainTestDaemonInState(t, instanceID, vm.StateStopped)
+// Only stable post-teardown states prove the volume is sealed. These states
+// acknowledge not-running without touching the absent plugin socket.
+func TestDrainVolume_CompletedTeardownAcksNotRunning(t *testing.T) {
+	for _, status := range []vm.InstanceState{vm.StateStopped, vm.StateTerminated} {
+		t.Run(string(status), func(t *testing.T) {
+			instanceID := "i-drain-" + string(status)
+			volumeID := "vol-drain-" + string(status)
+			daemon := drainTestDaemonInState(t, instanceID, status)
 
-	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
-		testAccountID, drainCommandFor(t, instanceID, volumeID))
+			resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+				testAccountID, drainCommandFor(t, instanceID, volumeID))
 
-	var ack types.DrainVolumeResponse
-	require.NoError(t, json.Unmarshal(resp.Data, &ack))
-	assert.Equal(t, volumeID, ack.VolumeID)
-	assert.Equal(t, types.DrainVolumeStatusNotRunning, ack.Status)
+			var ack types.DrainVolumeResponse
+			require.NoError(t, json.Unmarshal(resp.Data, &ack))
+			assert.Equal(t, volumeID, ack.VolumeID)
+			assert.Equal(t, types.DrainVolumeStatusNotRunning, ack.Status)
+		})
+	}
+}
+
+// Transitional and uncertain states are not proof of a sealed checkpoint. An
+// absent socket in any of them must fail rather than silently snapshot stale
+// data while launch or teardown may still own the volume.
+func TestDrainVolume_UnsealedStatesRequireDrain(t *testing.T) {
+	statuses := []vm.InstanceState{
+		vm.StateRunning,
+		vm.StateStopping,
+		vm.StateShuttingDown,
+		vm.StatePending,
+		vm.StateProvisioning,
+		vm.StateError,
+	}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			instanceID := "i-drain-" + string(status)
+			volumeID := "vol-drain-" + string(status)
+			daemon := drainTestDaemonInState(t, instanceID, status)
+
+			resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+				testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+			assert.Equal(t, awserrors.ErrorServerInternal, replyErrCode(t, resp.Data))
+		})
+	}
 }
 
 // nats.go delivers a subscription's messages serially, so a drain run inline

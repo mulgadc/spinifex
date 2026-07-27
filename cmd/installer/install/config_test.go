@@ -294,3 +294,67 @@ func TestWriteNetworkdBridgeKeepsDNSOnWAN(t *testing.T) {
 		t.Errorf("wan bridge must carry the resolver:\n%s", got)
 	}
 }
+
+func TestSwapSize(t *testing.T) {
+	dir := t.TempDir()
+
+	// Without an override, RAM drives the size and the disk caps it.
+	ram, err := totalRAM()
+	if err != nil {
+		t.Fatalf("totalRAM: %v", err)
+	}
+	got, err := swapSize(dir)
+	if err != nil {
+		t.Fatalf("swapSize: %v", err)
+	}
+	want := ram / 2
+	if ram >= swapRAMThreshold {
+		want = swapLargeBytes
+	}
+	if got > want {
+		t.Errorf("swapSize = %d, must not exceed what RAM implies (%d)", got, want)
+	}
+	if got != 0 && got < swapMinBytes {
+		t.Errorf("swapSize = %d, must be 0 rather than below the %d floor", got, int64(swapMinBytes))
+	}
+
+	// An explicit size wins, so a large node can be told to take the full 32G
+	// and a constrained one can opt out entirely.
+	for _, tt := range []struct {
+		env  string
+		want int64
+	}{
+		{"32G", 32 << 30},
+		{"512M", 512 << 20},
+		{"0", 0},
+		{"1073741824", 1 << 30},
+	} {
+		t.Setenv("SPINIFEX_SWAP_SIZE", tt.env)
+		got, err := swapSize(dir)
+		if err != nil {
+			t.Fatalf("swapSize(%s): %v", tt.env, err)
+		}
+		if got != tt.want {
+			t.Errorf("swapSize(%s) = %d, want %d", tt.env, got, tt.want)
+		}
+	}
+
+	t.Setenv("SPINIFEX_SWAP_SIZE", "banana")
+	if _, err := swapSize(dir); err == nil {
+		t.Error("an unparseable size must be reported, not silently ignored")
+	}
+}
+
+// The swap line must only appear when the file backing it exists — systemd
+// fails the boot's swap unit on a missing file rather than skipping it.
+func TestFstabSwapLineTracksTheFile(t *testing.T) {
+	if _, err := parseSize("8G"); err != nil {
+		t.Fatalf("parseSize: %v", err)
+	}
+	if n, _ := parseSize("2G"); n != 2<<30 {
+		t.Errorf("parseSize(2G) = %d, want %d", n, int64(2)<<30)
+	}
+	if _, err := parseSize("-5G"); err == nil {
+		t.Error("negative sizes must be rejected")
+	}
+}

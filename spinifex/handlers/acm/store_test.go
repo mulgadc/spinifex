@@ -12,22 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// setupACMStore returns a Store wired with a master key, mirroring how
+// NewACMServiceImplWithNATS constructs one for the ACM service. A Store is
+// never unkeyed, so there is no plain variant.
 func setupACMStore(t *testing.T) *Store {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store, err := NewStore(t.Context(), nc)
-	require.NoError(t, err)
-	return store
-}
-
-// setupStore returns a Store wired with a master key, mirroring how
-// NewACMServiceImplWithNATS constructs one for the ACM service.
-func setupStore(t *testing.T) *Store {
-	t.Helper()
-	store := setupACMStore(t)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	store.SetMasterKey(masterKey)
+	store, err := NewStore(t.Context(), nc, masterKey)
+	require.NoError(t, err)
 	return store
 }
 
@@ -140,7 +134,7 @@ func TestRemoveInUseBy_NoopWhenAbsentOrMissingCert(t *testing.T) {
 }
 
 func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/enc"
 	rec := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: plaintext}
@@ -161,7 +155,7 @@ func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
 }
 
 func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	const plaintext = "-----BEGIN RSA PRIVATE KEY-----\nYmFy\n-----END RSA PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/legacy"
 
@@ -190,7 +184,7 @@ func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
 // as a PEM private key block must be a hard error, never silently trusted as
 // legacy plaintext.
 func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/garbage"
 
 	garbage := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: "not-pem-and-not-ciphertext"}
@@ -203,20 +197,12 @@ func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
 	require.Error(t, err, "garbage that is neither valid ciphertext nor PEM must not be silently treated as plaintext")
 }
 
-// TestStore_NoMasterKey_NeverEncryptsOrDecrypts covers ELBv2's independent,
-// read-only acmStore: constructed via NewStore directly with SetMasterKey
-// never called. It must behave exactly as before this change — PutCert and
-// GetCert pass PrivateKey through unmodified.
-func TestStore_NoMasterKey_NeverEncryptsOrDecrypts(t *testing.T) {
+// TestNewStore_RequiresMasterKey guards against a Store ever being
+// constructed unkeyed: a keyed writer and an unkeyed reader of the same
+// bucket would disagree silently, with the reader getting ciphertext where
+// it expects PEM.
+func TestNewStore_RequiresMasterKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store, err := NewStore(t.Context(), nc)
-	require.NoError(t, err)
-
-	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/nokey"
-	rec := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: "opaque-value"}
-	require.NoError(t, store.PutCert(t.Context(), rec))
-
-	got, err := store.GetCert(t.Context(), arn)
-	require.NoError(t, err)
-	assert.Equal(t, "opaque-value", got.PrivateKey, "a Store without a master key must pass PrivateKey through unchanged")
+	_, err := NewStore(t.Context(), nc, nil)
+	require.Error(t, err)
 }

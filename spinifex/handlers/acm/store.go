@@ -55,25 +55,24 @@ type CertRecord struct {
 type Store struct {
 	kv jetstream.KeyValue
 	// masterKey encrypts/decrypts CertRecord.PrivateKey at rest (AES-256-GCM via
-	// handlers_iam.EncryptSecret/DecryptSecret). nil disables encryption entirely
-	// — PutCert stores PrivateKey verbatim and GetCert/ListCerts return it
-	// unchanged. That is the case for ELBv2's independent read-only Store
-	// (constructed via NewStore directly, never wired with a key): it resolves
-	// certs for HAProxy and must not gain a decrypt dependency here.
+	// handlers_iam.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
+	// — the ACM service and ELBv2's independent read-only Store alike — must be
+	// constructed with the same deployment key: a keyed writer and an unkeyed (or
+	// differently keyed) reader of the same bucket disagree silently, with the
+	// reader getting ciphertext where it expects PEM. NewStore therefore requires
+	// a non-empty key; there is no unkeyed Store.
 	masterKey []byte
 }
 
-// SetMasterKey wires the AES-256 key used to encrypt CertRecord.PrivateKey on
-// write and decrypt it on read. Callers that persist certificates (the ACM
-// service) must call this before any PutCert; a Store left without a key never
-// encrypts and never attempts to decrypt.
-func (s *Store) SetMasterKey(key []byte) {
-	s.masterKey = key
-}
-
 // NewStore creates an ACM store using the provided NATS connection. ctx bounds
-// the bucket get-or-create only; each operation carries its own.
-func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
+// the bucket get-or-create only; each operation carries its own. masterKey
+// encrypts CertRecord.PrivateKey on write and decrypts it on read; it must be
+// non-empty so every caller sharing the bucket agrees on the same key.
+func NewStore(ctx context.Context, nc *nats.Conn, masterKey []byte) (*Store, error) {
+	if len(masterKey) == 0 {
+		return nil, fmt.Errorf("ACM store requires a master key to encrypt certificate private keys at rest; none provided")
+	}
+
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
@@ -85,7 +84,7 @@ func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
 	}
 
 	slog.Info("ACM store initialized", "bucket", KVBucketACM)
-	return &Store{kv: kv}, nil
+	return &Store{kv: kv, masterKey: masterKey}, nil
 }
 
 // certKey derives the KV key from a certificate ARN using the UUID after "certificate/".
@@ -97,25 +96,21 @@ func certKey(certArn string) string {
 	return KeyPrefixCert + id
 }
 
-// PutCert stores (or replaces) a certificate record. When the Store has a
-// master key, PrivateKey is AES-256-GCM encrypted before it is written; a
-// plaintext record read back via the legacy-passthrough path in
-// decryptPrivateKey is therefore re-encrypted the next time it is put.
+// PutCert stores (or replaces) a certificate record. PrivateKey is
+// AES-256-GCM encrypted before it is written; a plaintext record read back
+// via the legacy-passthrough path in decryptPrivateKey is therefore
+// re-encrypted the next time it is put.
 func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
-	toStore := rec
-	if s.masterKey != nil {
-		ciphertext, err := handlers_iam.EncryptSecret(rec.PrivateKey, s.masterKey)
-		if err != nil {
-			return fmt.Errorf("encrypt private key: %w", err)
-		}
-		// Encrypt a copy so the caller's in-memory record keeps holding
-		// plaintext — ImportCertificate and the tag handlers reuse *rec after
-		// this call.
-		clone := *rec
-		clone.PrivateKey = ciphertext
-		toStore = &clone
+	ciphertext, err := handlers_iam.EncryptSecret(rec.PrivateKey, s.masterKey)
+	if err != nil {
+		return fmt.Errorf("encrypt private key: %w", err)
 	}
-	data, err := json.Marshal(toStore)
+	// Encrypt a copy so the caller's in-memory record keeps holding
+	// plaintext — ImportCertificate and the tag handlers reuse *rec after
+	// this call.
+	clone := *rec
+	clone.PrivateKey = ciphertext
+	data, err := json.Marshal(&clone)
 	if err != nil {
 		return fmt.Errorf("marshal cert: %w", err)
 	}
@@ -169,21 +164,15 @@ func isPlaintextPrivateKeyPEM(raw string) bool {
 
 // decryptPrivateKey resolves rec.PrivateKey to plaintext PEM in place.
 //
-// No master key configured: the Store never encrypts either (see
-// SetMasterKey), so the stored value already is plaintext — return unchanged.
-//
-// Master key configured: attempt AES-256-GCM decryption first. A successful
-// decrypt is the common case once a record has been through PutCert under
-// this Store. A failed decrypt falls back to legacy-plaintext ONLY when the
-// raw value is unambiguously a PEM private key (isPlaintextPrivateKeyPEM) —
-// i.e. a record written before encryption was wired up. It is re-encrypted
-// automatically the next time PutCert runs. Anything else (wrong key,
-// truncated/tampered ciphertext, garbage) is a hard error rather than a
-// silent plaintext fallback.
+// Attempts AES-256-GCM decryption first. A successful decrypt is the common
+// case once a record has been through PutCert under this Store. A failed
+// decrypt falls back to legacy-plaintext ONLY when the raw value is
+// unambiguously a PEM private key (isPlaintextPrivateKeyPEM) — i.e. a record
+// written before encryption was wired up. It is re-encrypted automatically
+// the next time PutCert runs. Anything else (wrong key, truncated/tampered
+// ciphertext, garbage) is a hard error rather than a silent plaintext
+// fallback.
 func (s *Store) decryptPrivateKey(rec *CertRecord) error {
-	if s.masterKey == nil {
-		return nil
-	}
 	if plaintext, err := handlers_iam.DecryptSecret(rec.PrivateKey, s.masterKey); err == nil {
 		rec.PrivateKey = plaintext
 		return nil

@@ -1550,8 +1550,17 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
 	}
 
+	// ELBv2 resolves listener certificate private keys through its own ACM
+	// Store over the same JetStream bucket the ACM service writes, so it needs
+	// the identical master key: unlike EKS/ECS's IAM dependency, there is no
+	// safe degraded mode for certificate private keys, so a missing key must
+	// fail daemon startup rather than leave HTTPS listeners uncreatable.
 	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*handlers_elbv2.ELBv2ServiceImpl, error) {
-		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
+		}
+		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)

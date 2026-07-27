@@ -143,7 +143,10 @@ type ELBv2ServiceImpl struct {
 func (s *ELBv2ServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
-func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2ServiceImpl, error) {
+// masterKey is the same deployment key the ACM service is constructed with;
+// ELBv2 needs it to decrypt CertRecord.PrivateKey when resolving listener
+// certificates, since it opens its own Store over the shared ACM bucket.
+func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []byte) (*ELBv2ServiceImpl, error) {
 	region := "us-east-1"
 	nodeID := ""
 	if cfg != nil {
@@ -164,11 +167,14 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	}
 
 	// ACM store shares JetStream KV; its bucket opens under the service lifetime
-	// context. Non-fatal: failure only disables HTTPS termination.
-	acmStore, acmErr := handlers_acm.NewStore(ctx, nc)
+	// context. Fatal: a nil acmStore is indistinguishable from "certificate not
+	// found" everywhere it is consulted (resolveCertPEM, validateListenerCerts),
+	// so a construction failure here must fail the whole service rather than
+	// silently degrade every HTTPS listener.
+	acmStore, acmErr := handlers_acm.NewStore(ctx, nc, masterKey)
 	if acmErr != nil {
-		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
-		acmStore = nil
+		cancel()
+		return nil, fmt.Errorf("failed to create ELBv2 ACM store: %w", acmErr)
 	}
 
 	hc := newHealthChecker(store)

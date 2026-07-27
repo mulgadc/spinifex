@@ -57,11 +57,10 @@ func NewACMServiceImplWithNATS(ctx context.Context, cfg *config.Config, nc *nats
 	if len(masterKey) == 0 {
 		return nil, fmt.Errorf("ACM service requires a master key to encrypt certificate private keys at rest; none provided")
 	}
-	store, err := NewStore(ctx, nc)
+	store, err := NewStore(ctx, nc, masterKey)
 	if err != nil {
 		return nil, err
 	}
-	store.SetMasterKey(masterKey)
 	region := defaultRegion
 	if cfg != nil && cfg.Region != "" {
 		region = cfg.Region

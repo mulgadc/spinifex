@@ -24,6 +24,13 @@ type Config struct {
 	// Empty leaves the 0.0.0.0 wildcard default, which is correct for a
 	// single-NIC node where lan folds onto wan.
 	LANIP string
+	// WANIP is the public address, taken from the wan plane. Passed as
+	// --advertise so northstar's :53 listener, the awsgw registry host and the
+	// dial target recorded for off-host clients stay on the public interface.
+	// Without it a concrete --bind is echoed back as the advertise address,
+	// which would move all three onto the internal plane. Empty when wan uses
+	// DHCP, leaving spx to auto-detect from the default route.
+	WANIP string
 	// ClusterRole is "init" or "join".
 	ClusterRole string
 	// JoinAddr is host:port of the primary node, only used when ClusterRole is "join".
@@ -252,12 +259,17 @@ func buildClusterCmd(cfg Config) string {
 	}
 	// Without these the node takes the 0.0.0.0 wildcard default and every
 	// internal service resolves onto the auto-detected WAN address, which is
-	// exactly what the three-plane model exists to prevent. --advertise is
-	// deliberately left to auto-detect: it means the public address that
-	// off-host clients dial, not the peer address.
+	// exactly what the three-plane model exists to prevent.
 	bindFlags := ""
 	if cfg.LANIP != "" {
 		bindFlags = fmt.Sprintf(" --bind %s --cluster-bind %s", cfg.LANIP, cfg.LANIP)
+	}
+	// --advertise must be explicit whenever --bind is: spx echoes a concrete
+	// bind address straight back as the advertise address and never reaches its
+	// WAN auto-detection, which would silently publish the internal plane as
+	// this node's public dial target.
+	if cfg.WANIP != "" && bindFlags != "" {
+		bindFlags += " --advertise " + cfg.WANIP
 	}
 
 	switch cfg.ClusterRole {

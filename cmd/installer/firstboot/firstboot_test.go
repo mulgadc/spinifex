@@ -146,3 +146,53 @@ func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 		t.Error("curl must appear after done marker write")
 	}
 }
+
+// A multi-NIC node must keep cluster traffic on the internal plane while still
+// publishing the public one. --advertise has to be explicit to do that: spx
+// returns a concrete --bind verbatim as the advertise address and never reaches
+// its WAN auto-detection, so omitting it moves northstar's :53 listener and the
+// off-host dial target onto the internal plane.
+func TestBuildClusterCmdSeparatesBindFromAdvertise(t *testing.T) {
+	cmd := buildClusterCmd(Config{
+		Hostname:    "hydrogen",
+		ClusterRole: "init",
+		LANIP:       "10.0.0.3",
+		WANIP:       "216.218.163.99",
+	})
+	for _, want := range []string{
+		"--bind 10.0.0.3",
+		"--cluster-bind 10.0.0.3",
+		"--advertise 216.218.163.99",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("missing %q in:\n%s", want, cmd)
+		}
+	}
+
+	// Joining nodes carry the same split — peers record the public address.
+	cmd = buildClusterCmd(Config{
+		Hostname:    "radon",
+		ClusterRole: "join",
+		JoinAddr:    "10.0.0.2:4432",
+		LANIP:       "10.0.0.4",
+		WANIP:       "216.218.163.100",
+	})
+	if !strings.Contains(cmd, "--advertise 216.218.163.100") {
+		t.Errorf("join must advertise the public plane:\n%s", cmd)
+	}
+}
+
+// Without a bind address there is nothing to correct: spx auto-detects both,
+// and a stray --advertise would pin the node to an address the installer only
+// guessed at. A single-NIC node also collapses wan and lan onto one address,
+// where the split is meaningless.
+func TestBuildClusterCmdOmitsAdvertiseWithoutBind(t *testing.T) {
+	cmd := buildClusterCmd(Config{
+		Hostname:    "node1",
+		ClusterRole: "init",
+		WANIP:       "216.218.163.99",
+	})
+	if strings.Contains(cmd, "--advertise") {
+		t.Errorf("advertise must not be passed without a bind address:\n%s", cmd)
+	}
+}

@@ -746,6 +746,7 @@ func (c *Config) toFirstbootConfig() firstboot.Config {
 		Hostname:        c.Hostname,
 		EncapIP:         c.PlaneAddress(PlaneVPC),
 		LANIP:           c.PlaneAddress(PlaneLAN),
+		WANIP:           c.PlaneAddress(PlaneWAN),
 		ClusterRole:     c.ClusterRole,
 		JoinAddr:        c.JoinAddr,
 		Email:           c.Email,

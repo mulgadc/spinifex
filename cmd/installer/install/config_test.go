@@ -226,12 +226,18 @@ func TestToFirstbootConfigSourcesPlanes(t *testing.T) {
 	if fb.LANIP != "10.0.0.3" {
 		t.Errorf("LANIP = %q, want the lan plane address", fb.LANIP)
 	}
+	// The public address has to travel separately: spx echoes a concrete --bind
+	// back as the advertise address, so leaving this empty would publish the
+	// internal plane as the node's public dial target.
+	if fb.WANIP != "216.218.163.99" {
+		t.Errorf("WANIP = %q, want the wan plane address", fb.WANIP)
+	}
 
-	// On a single-NIC node both collapse onto wan.
+	// On a single-NIC node all three collapse onto wan.
 	single := &Config{WAN: NetworkRole{Interface: "eth0", Address: "192.168.1.10", Mask: "255.255.255.0"}}
 	fb = single.toFirstbootConfig()
-	if fb.EncapIP != "192.168.1.10" || fb.LANIP != "192.168.1.10" {
-		t.Errorf("single-NIC collapse wrong: EncapIP=%q LANIP=%q", fb.EncapIP, fb.LANIP)
+	if fb.EncapIP != "192.168.1.10" || fb.LANIP != "192.168.1.10" || fb.WANIP != "192.168.1.10" {
+		t.Errorf("single-NIC collapse wrong: EncapIP=%q LANIP=%q WANIP=%q", fb.EncapIP, fb.LANIP, fb.WANIP)
 	}
 }
 

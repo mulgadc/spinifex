@@ -89,7 +89,11 @@ gpu_passthrough = true
 {{- end}}
 
 [nodes.{{.Node}}.awsgw]
-host = "{{.BindIP}}:9999"
+# Wildcard rather than the bind IP: the gateway is the public AWS-API surface and
+# has to answer on the wan plane as well as internally, while --bind names only
+# the internal plane. TLS + SigV4 gate it, and the ECR registry host falls back
+# to the advertise address when the listener is unspecified.
+host = "0.0.0.0:9999"
 tlskey = "config/server.key"
 tlscert = "config/server.pem"
 debug = false

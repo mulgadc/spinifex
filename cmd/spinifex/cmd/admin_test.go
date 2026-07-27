@@ -148,6 +148,39 @@ func TestSpinifexTomlTemplate_AdvertiseField(t *testing.T) {
 	assert.Contains(t, content, `advertise = "192.168.1.21"`, "off-host dial target")
 }
 
+// The gateway is the public AWS-API surface, so its listener must stay on the
+// wildcard even when --bind names a single internal plane; pinning it to BindIP
+// makes a multi-NIC node unreachable from the wan side. The internal services
+// around it still follow BindIP.
+func TestSpinifexTomlTemplate_GatewayListensOnAllPlanes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:        "hydrogen",
+		Az:          "us-west-1a",
+		Port:        "4432",
+		Region:      "us-west-1",
+		BindIP:      "10.0.0.3",
+		AdvertiseIP: "216.218.163.99",
+		AccessKey:   "AKIATEST",
+		SecretKey:   "SECRET",
+		AccountID:   "123456789012",
+		NatsToken:   "token",
+		ConfigDir:   dir,
+		OVNNBAddr:   "tcp:10.0.0.3:6641",
+		OVNSBAddr:   "tcp:10.0.0.3:6642",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `host = "0.0.0.0:9999"`, "gateway must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:9999"`, "gateway must not be pinned to the internal plane")
+	assert.Contains(t, content, `host = "10.0.0.3:4222"`, "nats stays internal")
+	assert.Contains(t, content, `host = "10.0.0.3:8443"`, "predastore peer address stays internal")
+}
+
 // Empty AdvertiseIP (e.g. loading an existing cluster pre-siv-8) must NOT
 // render an empty advertise = "" line — downstream fallback to Host kicks in.
 func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {

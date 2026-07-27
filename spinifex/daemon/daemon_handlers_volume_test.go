@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -313,4 +314,107 @@ func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Contains(t, string(resp.Data), awserrors.ErrorVolumeInUse)
+}
+
+// drainCommandFor builds the drain command a snapshot addresses to the node
+// hosting instanceID.
+func drainCommandFor(t *testing.T, instanceID, volumeID string) []byte {
+	t.Helper()
+	command := types.EC2InstanceCommand{
+		ID:              instanceID,
+		Attributes:      types.EC2CommandAttributes{DrainVolume: true},
+		DrainVolumeData: &types.DrainVolumeData{VolumeID: volumeID},
+	}
+	data, err := json.Marshal(command)
+	require.NoError(t, err)
+	return data
+}
+
+// drainTestDaemon returns a daemon owning a running instance, with a data dir
+// short enough to hold the drain socket path.
+func drainTestDaemon(t *testing.T, instanceID string) *Daemon {
+	t.Helper()
+	daemon := createTestDaemon(t, sharedNATSURL)
+	daemon.config.DataDir = testutil.SocketTempDir(t)
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:           instanceID,
+		Status:       vm.StateRunning,
+		AccountID:    testAccountID,
+		InstanceType: getTestInstanceType(t),
+		Instance:     &ec2.Instance{},
+	})
+	return daemon
+}
+
+// A drain routed to the node hosting the instance reaches the local socket and
+// acks, which is what lets a snapshot answered elsewhere read a current
+// checkpoint.
+func TestDrainVolume_HostNodeAcksLocalSocket(t *testing.T) {
+	const instanceID, volumeID = "i-drain-ok", "vol-drain-ok"
+	daemon := drainTestDaemon(t, instanceID)
+	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "OK\n")
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+	var ack types.DrainVolumeResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &ack))
+	assert.Equal(t, volumeID, ack.VolumeID)
+	assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+}
+
+// The owning node having no socket for the volume means the writes cannot be
+// flushed. That must reach the caller as an error, never as a silent success:
+// the caller would otherwise snapshot a stale checkpoint.
+func TestDrainVolume_HostNodeWithoutSocketFails(t *testing.T) {
+	const instanceID, volumeID = "i-drain-nosock", "vol-drain-nosock"
+	daemon := drainTestDaemon(t, instanceID)
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+	assert.Equal(t, awserrors.ErrorServerInternal, replyErrCode(t, resp.Data))
+}
+
+// A plugin that refuses the drain (ERR rather than OK) is a failure, not an ack.
+func TestDrainVolume_HostNodeRelaysSocketFailure(t *testing.T) {
+	const instanceID, volumeID = "i-drain-err", "vol-drain-err"
+	daemon := drainTestDaemon(t, instanceID)
+	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "ERR\n")
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+	assert.Equal(t, awserrors.ErrorServerInternal, replyErrCode(t, resp.Data))
+}
+
+// A drain command with no volume is a caller error, not a server fault.
+func TestDrainVolume_MissingVolumeDataIsInvalidParameter(t *testing.T) {
+	const instanceID = "i-drain-novol"
+	daemon := drainTestDaemon(t, instanceID)
+
+	command := types.EC2InstanceCommand{
+		ID:         instanceID,
+		Attributes: types.EC2CommandAttributes{DrainVolume: true},
+	}
+	data, err := json.Marshal(command)
+	require.NoError(t, err)
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, data)
+
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, replyErrCode(t, resp.Data))
+}
+
+// Only the instance's owner may drain its volume: the command carries the same
+// ownership gate as every other per-instance command.
+func TestDrainVolume_ForeignAccountRejected(t *testing.T) {
+	const instanceID, volumeID = "i-drain-foreign", "vol-drain-foreign"
+	daemon := drainTestDaemon(t, instanceID)
+	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "OK\n")
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		"999988887777", drainCommandFor(t, instanceID, volumeID))
+
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, replyErrCode(t, resp.Data))
 }

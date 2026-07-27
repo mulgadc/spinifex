@@ -54,6 +54,23 @@ handleEC2CreateSnapshot     → ec2.CreateSnapshot       // Create volume snapsh
 handleEC2DeleteSnapshot     → ec2.DeleteSnapshot       // Remove snapshot
 ```
 
+### Per-instance commands (`ec2.cmd.{instanceID}`)
+
+Actions that must run on the node hosting a VM do not use the `spinifex-workers` queue group, which answers on any node. They travel on `ec2.cmd.{instanceID}`, subscribed only by the node running that instance, so the command is self-routing: the publisher never resolves instance → node.
+
+The subject carries a single `types.EC2InstanceCommand`, dispatched by `handleEC2Events` on the boolean set in `EC2CommandAttributes`:
+
+```go
+AttachVolume, DetachVolume    // QMP hot-plug of an EBS volume
+DrainVolume                   // flush the volume's in-flight writes to S3
+AttachENI, DetachENI          // ENI hot-plug (awsvpc tasks)
+StartInstance, StopInstance, TerminateInstance, RebootInstance
+AssociateIamInstanceProfile, SetSpotLineage
+SetInstanceTags, RemoveInstanceTags
+```
+
+`DrainVolume` exists because `ec2.CreateSnapshot` is queue-grouped but the drain socket that flushes in-flight writes is served by the NBD plugin on the node hosting the volume. The node answering the snapshot routes the drain here and waits for the ack before reading the live checkpoint; an attached volume whose drain does not ack fails the snapshot rather than capturing stale data.
+
 ### VPC Networking
 ```go
 handleEC2CreateVpc          → ec2.CreateVpc            // Create VPC

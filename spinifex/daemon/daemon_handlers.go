@@ -160,6 +160,8 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		d.handleAttachVolume(ctx, msg, command, instance)
 	case command.Attributes.DetachVolume:
 		d.handleDetachVolume(ctx, msg, command, instance)
+	case command.Attributes.DrainVolume:
+		d.handleDrainVolume(ctx, msg, command)
 	case command.Attributes.AttachENI:
 		d.handleAttachNetworkInterface(ctx, msg, command, instance)
 	case command.Attributes.DetachENI:

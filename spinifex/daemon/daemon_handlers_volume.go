@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -137,6 +138,32 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 	}
 
 	d.respondWithVolumeAttachment(msg, command.DetachVolumeData.VolumeID, command.ID, deviceName, "detaching")
+}
+
+// handleDrainVolume flushes the volume's in-flight writes to S3 by dialing the
+// drain socket the local NBD plugin serves. ec2.CreateSnapshot is answered by
+// any node in the cluster, but only the node hosting the instance subscribes
+// ec2.cmd.{instanceID}, so routing the drain here lands it where the writes are.
+func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) {
+	if command.DrainVolumeData == nil || command.DrainVolumeData.VolumeID == "" {
+		slog.ErrorContext(ctx, "DrainVolume: missing drain volume data", "instanceId", command.ID)
+		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
+		return
+	}
+
+	volumeID := command.DrainVolumeData.VolumeID
+	slog.InfoContext(ctx, "Draining volume before snapshot", "volumeId", volumeID, "instanceId", command.ID)
+
+	// A missing or unresponsive socket on the node that owns the instance means
+	// the writes cannot be made current, so the caller must fail its snapshot
+	// rather than read a stale checkpoint.
+	if err := handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
+		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
+		respondWithError(msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
 }
 
 // attachDetachErrorCode maps a vm.Manager error returned by AttachVolume

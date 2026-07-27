@@ -2,6 +2,7 @@ package firstboot
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -194,5 +195,68 @@ func TestBuildClusterCmdOmitsAdvertiseWithoutBind(t *testing.T) {
 	})
 	if strings.Contains(cmd, "--advertise") {
 		t.Errorf("advertise must not be passed without a bind address:\n%s", cmd)
+	}
+}
+
+// A DHCP wan has no address at install time, so the advertise value has to be
+// resolved at boot. Shipping --bind alone here would republish the internal
+// plane as the node's public dial target, which is the case the static path
+// already guards against.
+func TestBuildClusterCmdResolvesDHCPWanAtBoot(t *testing.T) {
+	cmd := buildClusterCmd(Config{
+		Hostname:    "hydrogen",
+		ClusterRole: "init",
+		LANIP:       "10.0.0.3",
+		// WANIP empty — the wan plane is on DHCP.
+	})
+	if !strings.Contains(cmd, "ip -4 -o addr show br-wan") {
+		t.Errorf("must read the wan address off the bridge:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "$SPX_ADVERTISE") {
+		t.Errorf("resolved address must reach the command:\n%s", cmd)
+	}
+	// The preamble has to run before the command that consumes it.
+	if strings.Index(cmd, "SPX_ADVERTISE=\"\"") > strings.Index(cmd, "spx admin init") {
+		t.Errorf("preamble must precede the spx invocation:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "--bind 10.0.0.3") {
+		t.Errorf("bind still comes from the lan plane:\n%s", cmd)
+	}
+}
+
+// With no bind address there is nothing to correct, so neither the literal flag
+// nor the boot-time lookup should appear — spx auto-detects both ends.
+func TestBuildClusterCmdSkipsWanLookupWithoutBind(t *testing.T) {
+	cmd := buildClusterCmd(Config{Hostname: "node1", ClusterRole: "init"})
+	if strings.Contains(cmd, "SPX_ADVERTISE") || strings.Contains(cmd, "--advertise") {
+		t.Errorf("no bind means no advertise handling at all:\n%s", cmd)
+	}
+}
+
+// The advertise handling injects a shell preamble into the generated script, so
+// the permutations that change its shape are syntax-checked rather than only
+// string-matched — a broken quote here bricks first boot with no installer error.
+func TestGeneratedScriptIsValidShell(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"dhcp wan resolves at boot", Config{Hostname: "hydrogen", ClusterRole: "init", LANIP: "10.0.0.3"}},
+		{"static wan is inlined", Config{Hostname: "hydrogen", ClusterRole: "init", LANIP: "10.0.0.3", WANIP: "216.218.163.99"}},
+		{"join with dhcp wan", Config{Hostname: "radon", ClusterRole: "join", JoinAddr: "10.0.0.2:4432", LANIP: "10.0.0.4"}},
+		{"single nic, nothing pinned", Config{Hostname: "node1", ClusterRole: "init"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			makeRootDirs(t, root)
+			if err := Write(root, tc.cfg); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
+			if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+				script, _ := os.ReadFile(path)
+				t.Fatalf("generated script is not valid shell: %v\n%s\n---\n%s", err, out, script)
+			}
+		})
 	}
 }

@@ -268,17 +268,56 @@ func buildClusterCmd(cfg Config) string {
 	// bind address straight back as the advertise address and never reaches its
 	// WAN auto-detection, which would silently publish the internal plane as
 	// this node's public dial target.
-	if cfg.WANIP != "" && bindFlags != "" {
+	preamble := ""
+	switch {
+	case bindFlags == "":
+		// Nothing pinned, so spx auto-detects both and a guessed advertise
+		// address would only get in the way.
+	case cfg.WANIP != "":
 		bindFlags += " --advertise " + cfg.WANIP
+	default:
+		// A DHCP wan has no address at install time, but it does by the time
+		// firstboot runs, so read it off the bridge instead of shipping the
+		// bind address as the public one.
+		preamble = wanAdvertisePreamble
+		bindFlags += ` $SPX_ADVERTISE`
 	}
 
+	var cmd string
 	switch cfg.ClusterRole {
 	case "join":
-		return fmt.Sprintf("spx admin join --node %s --host %s%s%s", cfg.Hostname, cfg.JoinAddr, bindFlags, emailFlag)
+		cmd = fmt.Sprintf("spx admin join --node %s --host %s%s%s", cfg.Hostname, cfg.JoinAddr, bindFlags, emailFlag)
 	default:
-		return fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
+		cmd = fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
 	}
+	return preamble + cmd
 }
+
+// wanAdvertisePreamble resolves the wan plane's DHCP lease into $SPX_ADVERTISE
+// just before formation. br-wan is always the wan bridge — that plane is the one
+// role that cannot fold — so its address is the node's public identity.
+//
+// Falling through with SPX_ADVERTISE empty is deliberate: no lease means there
+// is no public address to advertise yet, and spx echoing the bind address is
+// still better than formation failing outright.
+const wanAdvertisePreamble = `# The wan plane leases its address, so it is only knowable at boot. Without this
+# spx would echo --bind back as the advertise address and publish the internal
+# plane as this node's public dial target.
+SPX_ADVERTISE=""
+echo "[firstboot] waiting for the wan plane to acquire an address..."
+for _i in $(seq 1 60); do
+    _wan_ip=$(ip -4 -o addr show br-wan scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    if [ -n "$_wan_ip" ]; then
+        SPX_ADVERTISE=" --advertise $_wan_ip"
+        echo "[firstboot] wan address $_wan_ip (${_i}s)"
+        break
+    fi
+    sleep 1
+done
+if [ -z "$SPX_ADVERTISE" ]; then
+    echo "[firstboot] warning: br-wan has no address after 60s — this node will advertise its bind address"
+fi
+`
 
 // shellEscapeSingle wraps s in single quotes with any embedded single
 // quotes escaped. Minimal — we only need this because the email value is

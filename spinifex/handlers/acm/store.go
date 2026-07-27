@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,6 +41,11 @@ type CertRecord struct {
 	NotAfter         time.Time         `json:"not_after"`
 	ImportedAt       time.Time         `json:"imported_at"`
 	Tags             map[string]string `json:"tags,omitempty"`
+	// InUseBy is the set of load balancer ARNs whose listeners currently
+	// reference this certificate. Maintained by handlers/elbv2 as listeners are
+	// created, modified and deleted; also surfaces as the public
+	// CertificateDetail.InUseBy field.
+	InUseBy []string `json:"in_use_by,omitempty"`
 }
 
 // Store provides CRUD for ACM certificate records backed by JetStream KV.
@@ -141,4 +147,37 @@ func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord,
 		out = append(out, &rec)
 	}
 	return out, nil
+}
+
+// AddInUseBy adds resourceArn (a load balancer ARN) to certArn's InUseBy set.
+// No-op if the certificate does not exist or already lists resourceArn.
+func (s *Store) AddInUseBy(ctx context.Context, certArn, resourceArn string) error {
+	rec, err := s.GetCert(ctx, certArn)
+	if err != nil {
+		return err
+	}
+	if rec == nil || slices.Contains(rec.InUseBy, resourceArn) {
+		return nil
+	}
+	rec.InUseBy = append(rec.InUseBy, resourceArn)
+	slices.Sort(rec.InUseBy)
+	return s.PutCert(ctx, rec)
+}
+
+// RemoveInUseBy removes resourceArn from certArn's InUseBy set. No-op if the
+// certificate or the entry does not exist.
+func (s *Store) RemoveInUseBy(ctx context.Context, certArn, resourceArn string) error {
+	rec, err := s.GetCert(ctx, certArn)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return nil
+	}
+	idx := slices.Index(rec.InUseBy, resourceArn)
+	if idx == -1 {
+		return nil
+	}
+	rec.InUseBy = slices.Delete(rec.InUseBy, idx, idx+1)
+	return s.PutCert(ctx, rec)
 }

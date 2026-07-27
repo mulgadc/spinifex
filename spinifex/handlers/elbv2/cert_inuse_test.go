@@ -1,0 +1,385 @@
+package handlers_elbv2
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/acm"
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// activeLB persists a LoadBalancerRecord directly with an InstanceID set,
+// mirroring the LBAgentHeartbeat test helpers, so updateStoredConfig actually
+// renders instead of no-opping on a still-provisioning LB.
+func activeLB(t *testing.T, svc *ELBv2ServiceImpl, id, name string) *LoadBalancerRecord {
+	t.Helper()
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/" + name + "/" + id,
+		LoadBalancerID:  id,
+		Name:            name,
+		State:           StateActive,
+		InstanceID:      "i-sys-" + id,
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(context.Background(), lb))
+	return lb
+}
+
+func httpsListenerInput(lbArn, certArn string, port int64) *elbv2.CreateListenerInput {
+	return &elbv2.CreateListenerInput{
+		LoadBalancerArn: aws.String(lbArn),
+		Protocol:        aws.String(ProtocolHTTPS),
+		Port:            aws.Int64(port),
+		Certificates:    []*elbv2.Certificate{{CertificateArn: aws.String(certArn)}},
+		DefaultActions:  fixedResponseAction(),
+	}
+}
+
+func TestCreateListener_AddsToInUseByIndex(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx1", "idx-lb1")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy)
+}
+
+func TestCreateListener_TwoListenersSameCert_SingleInUseByEntry(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx2", "idx-lb2")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 8443), testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy,
+		"two listeners on the same LB referencing the same cert must dedupe to one entry")
+}
+
+func TestDeleteListener_RemovesFromInUseByIndex(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx3", "idx-lb3")
+
+	out, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
+		ListenerArn: out.Listeners[0].ListenerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Empty(t, rec.InUseBy, "deleting the sole listener must clear the index entry")
+}
+
+func TestDeleteListener_KeepsInUseByWhenAnotherListenerSharesCert(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx4", "idx-lb4")
+
+	out1, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 8443), testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
+		ListenerArn: out1.Listeners[0].ListenerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy, "the other listener still references the cert")
+}
+
+func TestModifyListener_SwitchesCertInInUseByIndex(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx5", "idx-lb5")
+
+	out, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
+		ListenerArn:  out.Listeners[0].ListenerArn,
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	oldRec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Empty(t, oldRec.InUseBy, "old cert must drop the LB once no listener references it")
+
+	newRec, err := svc.acmStore.GetCert(context.Background(), testCertArn2)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, newRec.InUseBy)
+}
+
+func TestDeleteLoadBalancer_RemovesFromInUseByIndex(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx6", "idx-lb6")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Empty(t, rec.InUseBy, "deleting the LB must remove it from the index via the listener cascade")
+}
+
+func TestAddRemoveListenerCertificates_MaintainInUseByIndex(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-idx7", "idx-lb7")
+
+	out, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	listenerArn := out.Listeners[0].ListenerArn
+
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  listenerArn,
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec2, err := svc.acmStore.GetCert(context.Background(), testCertArn2)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec2.InUseBy)
+
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
+		ListenerArn:  listenerArn,
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec2, err = svc.acmStore.GetCert(context.Background(), testCertArn2)
+	require.NoError(t, err)
+	assert.Empty(t, rec2.InUseBy)
+
+	// The default cert (testCertArn) is still referenced.
+	rec1, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec1.InUseBy)
+}
+
+func TestUpdateStoredConfigForCert_ZeroInUseBy_NoOp(t *testing.T) {
+	svc := setupTestService(t)
+	require.NoError(t, svc.UpdateStoredConfigForCert(context.Background(), testCertArn))
+}
+
+func TestUpdateStoredConfigForCert_UnknownCert_NoOp(t *testing.T) {
+	svc := setupTestService(t)
+	require.NoError(t, svc.UpdateStoredConfigForCert(context.Background(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/does-not-exist"))
+}
+
+// TestUpdateStoredConfigForCert_SkipsMissingOrInactiveLB covers both halves of
+// the "must not fail the certificate write" edge case: an InUseBy entry whose
+// LB was deleted out from under the index, and one whose LB exists but never
+// went active (empty InstanceID, so updateStoredConfig itself no-ops).
+func TestUpdateStoredConfigForCert_SkipsMissingOrInactiveLB(t *testing.T) {
+	svc := setupTestService(t)
+
+	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn,
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/gone/lb-gone"))
+
+	provisioning := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prov/lb-prov1",
+		LoadBalancerID:  "lb-prov1",
+		Name:            "prov-lb",
+		State:           StateProvisioning,
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(context.Background(), provisioning))
+	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn, provisioning.LoadBalancerArn))
+
+	require.NoError(t, svc.UpdateStoredConfigForCert(context.Background(), testCertArn))
+
+	stored, err := svc.store.GetLoadBalancer(context.Background(), "lb-prov1")
+	require.NoError(t, err)
+	assert.Empty(t, stored.ConfigHash, "a still-provisioning LB must not get a config built for it")
+}
+
+// genLeafCertPEM returns a self-signed leaf certificate + private key as PEM,
+// mirroring handlers_acm's own test helper (unexported, different package).
+func genLeafCertPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+// TestACMReimport_FansOutToInUseLoadBalancer is the end-to-end regression test
+// for the silent re-import bug: ACMServiceImpl.ImportCertificate on an
+// existing, in-use ARN must fan out to every load balancer referencing it and
+// re-render its stored config, exactly as wired in daemon.go. It exercises
+// the real ImportCertificate path (not a direct store write), the real
+// CreateListener path (which builds the InUseBy index), and the real
+// UpdateStoredConfigForCert fan-out.
+func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc)
+	require.NoError(t, err)
+	// Mirrors the daemon.go wiring between the two services.
+	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
+
+	origLeaf, origKey := genLeafCertPEM(t, "orig.example.com")
+	importOut, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: origLeaf,
+		PrivateKey:  origKey,
+	}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(importOut.CertificateArn)
+
+	lb := activeLB(t, elbv2Svc, "lb-reimport1", "reimport-lb")
+
+	_, err = elbv2Svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, certArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	before, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-reimport1")
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ConfigHash, "CreateListener must have rendered a config")
+
+	var beforePEM string
+	for _, pemContent := range before.CertFiles {
+		beforePEM = pemContent
+	}
+	assert.Contains(t, beforePEM, string(origLeaf))
+
+	// Re-import new leaf material under the same ARN — the bug being fixed.
+	newLeaf, newKey := genLeafCertPEM(t, "rotated.example.com")
+	_, err = acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    newLeaf,
+		PrivateKey:     newKey,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-reimport1")
+	require.NoError(t, err)
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash, "ConfigHash must change after re-import fans out")
+
+	var afterPEM string
+	for _, pemContent := range after.CertFiles {
+		afterPEM = pemContent
+	}
+	assert.Contains(t, afterPEM, string(newLeaf), "the rendered cert file must carry the new leaf")
+	assert.NotContains(t, afterPEM, string(origLeaf), "the old leaf must not still be served")
+}
+
+// TestConcurrentCertReimportAndListenerModification exercises the edge case
+// where a certificate re-import and a listener mutation race on the same LB.
+// Neither operation depends on the other's outcome to succeed, and both the
+// LB config and the InUseBy index are recomputed from current store state on
+// every mutation, so the system must converge without deadlocking, panicking,
+// or corrupting either the LB record or the cert record.
+func TestConcurrentCertReimportAndListenerModification(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc)
+	require.NoError(t, err)
+	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
+
+	leaf, key := genLeafCertPEM(t, "race.example.com")
+	importOut, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: leaf,
+		PrivateKey:  key,
+	}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(importOut.CertificateArn)
+
+	lb := activeLB(t, elbv2Svc, "lb-race1", "race-lb")
+	out, err := elbv2Svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, certArn, 443), testAccountID)
+	require.NoError(t, err)
+	listenerArn := out.Listeners[0].ListenerArn
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+
+	for i := range 10 {
+		wg.Add(2)
+		// Generated on the test goroutine: genLeafCertPEM uses require, which
+		// must not run inside a spawned goroutine.
+		rotatedLeaf, rotatedKey := genLeafCertPEM(t, "race-rotated.example.com")
+		go func(i int) {
+			defer wg.Done()
+			_, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+				Certificate:    rotatedLeaf,
+				PrivateKey:     rotatedKey,
+				CertificateArn: aws.String(certArn),
+			}, testAccountID)
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			_, err := elbv2Svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
+				ListenerArn: listenerArn,
+				Certificates: []*elbv2.Certificate{
+					{CertificateArn: aws.String(certArn)},
+				},
+			}, testAccountID)
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent operation failed: %v", err)
+	}
+
+	// Both records must still be well-formed and readable after the race.
+	rec, err := elbv2Svc.acmStore.GetCert(context.Background(), certArn)
+	require.NoError(t, err)
+	assert.NotNil(t, rec)
+
+	stored, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-race1")
+	require.NoError(t, err)
+	assert.NotNil(t, stored)
+}

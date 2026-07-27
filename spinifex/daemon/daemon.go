@@ -1635,6 +1635,10 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
 	}
+	// Re-importing to an existing ARN must fan out to every load balancer that
+	// references it; otherwise HAProxy keeps serving the old leaf until it
+	// expires while the API reports success. ELBv2 is already up (above).
+	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
 
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS

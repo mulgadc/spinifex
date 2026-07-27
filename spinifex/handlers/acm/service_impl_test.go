@@ -154,6 +154,95 @@ func TestDeleteCertificate(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
 }
 
+func TestImportCertificate_ReimportPreservesInUseBy(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "inuse.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(out.CertificateArn)
+
+	require.NoError(t, svc.store.AddInUseBy(context.Background(), certArn, "arn:lb/one"))
+
+	// Re-import different material under the same ARN.
+	c2, k2 := genCert(t, "inuse-rotated.example.com")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c2,
+		PrivateKey:     k2,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: aws.String(certArn)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "inuse-rotated.example.com", aws.StringValue(desc.Certificate.DomainName), "material must be replaced")
+	assert.Equal(t, []string{"arn:lb/one"}, aws.StringValueSlice(desc.Certificate.InUseBy), "InUseBy must survive re-import")
+}
+
+func TestImportCertificate_ReimportInvokesFanoutHook(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "hook.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(out.CertificateArn)
+	require.NoError(t, svc.store.AddInUseBy(context.Background(), certArn, "arn:lb/one"))
+
+	var calledWith string
+	svc.CertMaterialUpdated = func(ctx context.Context, arn string) error {
+		calledWith = arn
+		return nil
+	}
+
+	c2, k2 := genCert(t, "hook-rotated.example.com")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c2,
+		PrivateKey:     k2,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, certArn, calledWith, "re-import to an in-use ARN must invoke the fan-out hook")
+}
+
+func TestImportCertificate_ReimportZeroInUseBy_HookNotCalled(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "unused.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(out.CertificateArn)
+
+	called := false
+	svc.CertMaterialUpdated = func(ctx context.Context, arn string) error {
+		called = true
+		return nil
+	}
+
+	// Re-import with zero load balancers referencing the ARN — a no-op fan-out.
+	c2, k2 := genCert(t, "unused-rotated.example.com")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c2,
+		PrivateKey:     k2,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.False(t, called, "a certificate referenced by zero load balancers must not trigger a fan-out")
+}
+
+func TestImportCertificate_FreshImportDoesNotInvokeHook(t *testing.T) {
+	svc := setupACMService(t)
+	called := false
+	svc.CertMaterialUpdated = func(ctx context.Context, arn string) error {
+		called = true
+		return nil
+	}
+
+	c1, k1 := genCert(t, "fresh.example.com")
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	assert.False(t, called, "a brand-new ARN cannot yet be in use by anything")
+}
+
 func TestImportCertificate_ReimportUnknownArnRejected(t *testing.T) {
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "re.example.com")

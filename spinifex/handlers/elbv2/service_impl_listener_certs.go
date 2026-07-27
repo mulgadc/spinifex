@@ -66,10 +66,18 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 		return nil, err
 	}
 
+	// Snapshot cert usage before persisting so the InUseBy index can be
+	// reconciled against it once the added certs are in the store.
+	certsBefore, certsBeforeErr := s.certsUsedByLB(ctx, listener.LoadBalancerArn)
+	if certsBeforeErr != nil {
+		slog.ErrorContext(ctx, "AddListenerCertificates: failed to snapshot cert usage", "lbArn", listener.LoadBalancerArn, "err", certsBeforeErr)
+	}
+
 	if err := s.store.PutListener(ctx, &updated); err != nil {
 		slog.ErrorContext(ctx, "AddListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.syncCertInUseIndex(ctx, listener.LoadBalancerArn, certsBefore)
 
 	return &elbv2.AddListenerCertificatesOutput{
 		Certificates: listenerCertsToSDK(certs),
@@ -118,10 +126,18 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input
 	}
 	updated.Certificates = kept
 
+	// Snapshot cert usage before persisting so the InUseBy index can be
+	// reconciled against it once the removed certs are gone from the store.
+	certsBefore, certsBeforeErr := s.certsUsedByLB(ctx, listener.LoadBalancerArn)
+	if certsBeforeErr != nil {
+		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to snapshot cert usage", "lbArn", listener.LoadBalancerArn, "err", certsBeforeErr)
+	}
+
 	if err := s.store.PutListener(ctx, &updated); err != nil {
 		slog.ErrorContext(ctx, "RemoveListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.syncCertInUseIndex(ctx, listener.LoadBalancerArn, certsBefore)
 
 	return &elbv2.RemoveListenerCertificatesOutput{}, nil
 }

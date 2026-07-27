@@ -33,6 +33,15 @@ const (
 type ACMServiceImpl struct {
 	store  *Store
 	region string
+
+	// CertMaterialUpdated, when set, is invoked after new certificate material
+	// is written under an existing ARN so the caller can re-render every load
+	// balancer that references it (see handlers/elbv2.UpdateStoredConfigForCert).
+	// Wired by the daemon post-construction to avoid an elbv2 -> acm import
+	// cycle; nil-safe — skipped in tests and whenever ELBv2 isn't wired up.
+	// Fan-out errors are logged, never propagated: a rendering problem on one
+	// load balancer must not fail the certificate write that already succeeded.
+	CertMaterialUpdated func(ctx context.Context, certArn string) error
 }
 
 var _ ACMService = (*ACMServiceImpl)(nil)
@@ -75,6 +84,8 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	}
 
 	certArn := aws.StringValue(input.CertificateArn)
+	var inUseBy []string
+	reimport := certArn != ""
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
@@ -86,6 +97,9 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		if existing == nil || existing.AccountID != accountID {
 			return nil, errors.New(awserrors.ErrorResourceNotFound)
 		}
+		// Carry the InUseBy index forward — new material under the same ARN
+		// must not silently drop the load balancers that reference it.
+		inUseBy = existing.InUseBy
 	}
 
 	rec := &CertRecord{
@@ -104,10 +118,20 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		NotAfter:         leaf.NotAfter,
 		ImportedAt:       time.Now().UTC(),
 		Tags:             tagsToMap(input.Tags),
+		InUseBy:          inUseBy,
 	}
 	if err := s.store.PutCert(ctx, rec); err != nil {
 		slog.ErrorContext(ctx, "ImportCertificate: store failed", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	// Fan the new material out to every load balancer already referencing this
+	// ARN so HAProxy picks it up on its next poll instead of silently serving
+	// the old leaf until it expires. Zero load balancers in use is a no-op.
+	if reimport && len(inUseBy) > 0 && s.CertMaterialUpdated != nil {
+		if fanErr := s.CertMaterialUpdated(ctx, certArn); fanErr != nil {
+			slog.ErrorContext(ctx, "ImportCertificate: fan-out to load balancers failed", "arn", certArn, "err", fanErr)
+		}
 	}
 
 	slog.InfoContext(ctx, "ImportCertificate: stored", "arn", certArn, "domain", rec.DomainName, "account", accountID)
@@ -189,7 +213,7 @@ func recordToDetail(rec *CertRecord) *acm.CertificateDetail {
 		NotBefore:      timePtr(rec.NotBefore),
 		NotAfter:       timePtr(rec.NotAfter),
 		ImportedAt:     timePtr(rec.ImportedAt),
-		InUseBy:        []*string{},
+		InUseBy:        aws.StringSlice(rec.InUseBy),
 	}
 	if len(rec.SubjectAltNames) > 0 {
 		detail.SubjectAlternativeNames = aws.StringSlice(rec.SubjectAltNames)

@@ -124,6 +124,26 @@ func WaitForNewGuestDisk(t *testing.T, tgt SSHTarget, before map[string]struct{}
 	return found
 }
 
+// LsblkDeviceBytes returns the raw byte size of /dev/<dev> as the guest kernel
+// sees it. Byte-exact rather than GiB-rounded (unlike LsblkRootGiB) so a resize
+// that lands short by less than 1 GiB still fails a caller's comparison.
+func LsblkDeviceBytes(t *testing.T, tgt SSHTarget, dev string) int64 {
+	t.Helper()
+	out, err := GuestExec(tgt, fmt.Sprintf("lsblk -b -d -n -o SIZE /dev/%s", dev))
+	if err != nil {
+		t.Fatalf("LsblkDeviceBytes(%s): %v\n%s", dev, err, out)
+	}
+	// Read the last non-empty line rather than the whole output: an SSH banner
+	// or sudo notice ahead of the size would otherwise break the parse.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	raw := strings.TrimSpace(lines[len(lines)-1])
+	size, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("LsblkDeviceBytes(%s): parse %q: %v\nfull output:\n%s", dev, raw, err, out)
+	}
+	return size
+}
+
 // GuestFormatWriteSentinel formats /dev/<dev> as ext4 with the given label,
 // mounts it, writes sizeMiB of random data to the sentinel file, fsyncs, and
 // returns the file's sha256. Unmounts before returning so the volume can be

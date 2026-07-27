@@ -170,7 +170,7 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 
 	var wantSha string
 	writeOK := t.Run("WriteSentinel", func(t *testing.T) {
-		tgt := resolveGuestChurnTarget(t, fix, instanceID, keyPath)
+		tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 
 		harness.Step(t, "create-volume size=1 az=%s", az)
 		// e2e:allow-create — the sentinel volume is the subject under test.
@@ -219,7 +219,7 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 	// invalidates every later perturbation's result.
 	verifySentinel := func(t *testing.T, stage string) {
 		t.Helper()
-		tgt := resolveGuestChurnTarget(t, fix, instanceID, keyPath)
+		tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 		gotSha := harness.GuestReadSentinelSha(t, tgt, "/dev/disk/by-label/"+guestChurnSentinelLabel, guestChurnSentinelLabel)
 		require.Equalf(t, wantSha, gotSha, "sentinel sha256 mismatch after %s", stage)
 		harness.Detail(t, "sentinel_verified_after", stage, "sha256", gotSha)
@@ -251,7 +251,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		harness.SkipIfNoOVN(t)
 		requireSSHHealthy(t)
 
-		tgt := resolveGuestChurnTarget(t, fix, instanceID, keyPath)
+		tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 		def := harness.EnsureDefaultVPC(t, fix.Harness)
 		require.NotEmpty(t, def.SubnetID, "default subnet ID required")
 		require.NotEmpty(t, def.SGID, "default SG ID required")
@@ -343,7 +343,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 
 	if eniAttached {
 		t.Run("DaemonRestartReadoptsSlot", func(t *testing.T) {
-			tgt := resolveGuestChurnTarget(t, fix, instanceID, keyPath)
+			tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 
 			// Restart the daemon; the guest must survive.
 			harness.Step(t, "restart spinifex-daemon (guest QEMU survives)")
@@ -359,7 +359,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		verifySentinel(t, "DaemonRestartReadoptsSlot")
 
 		t.Run("DetachENI", func(t *testing.T) {
-			tgt := resolveGuestChurnTarget(t, fix, instanceID, keyPath)
+			tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 
 			// Detach: succeeds only if the reconciler re-adopted the slot.
 			harness.Step(t, "detach-network-interface %s (proves slot re-adoption)", attachmentID)
@@ -527,7 +527,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 	})
 
 	t.Run("Reboot", func(t *testing.T) {
-		inst := describeGuestChurnInstance(t, fix, instanceID)
+		inst := describeSingletonInstance(t, fix, instanceID)
 		host, port := harness.InstancePublicSSHHost(t, inst)
 		waitForSSHReady(t, host, port, keyPath)
 
@@ -591,11 +591,11 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 	verifySentinel(t, "Reboot")
 }
 
-// describeGuestChurnInstance returns the current *ec2.Instance for
-// instanceID. Every perturbation this scenario drives can change the
-// instance's public hostfwd endpoint (type change, reboot, stop/start), so
-// stages re-describe rather than trust an *ec2.Instance captured earlier.
-func describeGuestChurnInstance(t *testing.T, fix *Fixture, instanceID string) *ec2.Instance {
+// describeSingletonInstance returns the current *ec2.Instance for
+// instanceID. Any perturbation of the singleton can change its public hostfwd
+// endpoint (type change, reboot, stop/start), so callers re-describe rather
+// than trust an *ec2.Instance captured earlier.
+func describeSingletonInstance(t *testing.T, fix *Fixture, instanceID string) *ec2.Instance {
 	t.Helper()
 	out, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
@@ -606,14 +606,13 @@ func describeGuestChurnInstance(t *testing.T, fix *Fixture, instanceID string) *
 	return out.Reservations[0].Instances[0]
 }
 
-// resolveGuestChurnTarget re-describes instanceID and returns a fresh SSH
+// resolveGuestSSHTarget re-describes instanceID and returns a fresh SSH
 // target, waiting for the handshake to succeed. The public hostfwd port can
-// rebind across every perturbation this scenario drives, so every stage
-// re-discovers it rather than trusting a target captured before the
-// perturbation.
-func resolveGuestChurnTarget(t *testing.T, fix *Fixture, instanceID, keyPath string) harness.SSHTarget {
+// rebind across any perturbation of the guest, so callers re-discover it
+// rather than trusting a target captured before the perturbation.
+func resolveGuestSSHTarget(t *testing.T, fix *Fixture, instanceID, keyPath string) harness.SSHTarget {
 	t.Helper()
-	inst := describeGuestChurnInstance(t, fix, instanceID)
+	inst := describeSingletonInstance(t, fix, instanceID)
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	waitForSSHReady(t, host, port, keyPath)
 	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}

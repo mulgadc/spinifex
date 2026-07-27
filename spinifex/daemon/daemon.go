@@ -1629,8 +1629,19 @@ func (d *Daemon) startCluster() error {
 		d.rdsReconciler.Run(d.ctx)
 	})
 
+	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
+	// (which degrades to "feature disabled" without a master key) there is no
+	// safe degraded mode here: a missing key must fail daemon startup, not
+	// silently persist keys unencrypted. initServiceWithRetry still retries with
+	// backoff — the key file can legitimately not be written yet during a
+	// concurrent boot — but a master key that never arrives fails startCluster
+	// after the retry window instead of leaving acmService permanently nil.
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
-		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
+		}
+		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)

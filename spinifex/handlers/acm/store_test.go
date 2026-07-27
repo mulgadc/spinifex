@@ -1,10 +1,12 @@
 package handlers_acm
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
 
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +17,17 @@ func setupACMStore(t *testing.T) *Store {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	store, err := NewStore(t.Context(), nc)
 	require.NoError(t, err)
+	return store
+}
+
+// setupStore returns a Store wired with a master key, mirroring how
+// NewACMServiceImplWithNATS constructs one for the ACM service.
+func setupStore(t *testing.T) *Store {
+	t.Helper()
+	store := setupACMStore(t)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	store.SetMasterKey(masterKey)
 	return store
 }
 
@@ -124,4 +137,86 @@ func TestRemoveInUseBy_NoopWhenAbsentOrMissingCert(t *testing.T) {
 
 	// Removing against a nonexistent cert must not error.
 	require.NoError(t, store.RemoveInUseBy(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing", "arn:lb/one"))
+}
+
+func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
+	store := setupStore(t)
+	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/enc"
+	rec := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: plaintext}
+	require.NoError(t, store.PutCert(t.Context(), rec))
+
+	// The raw bytes landed in KV must not contain the plaintext key.
+	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	require.NoError(t, err)
+	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY")
+
+	// GetCert decrypts back to the original plaintext.
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, got.PrivateKey)
+
+	// PutCert must not mutate the caller's record in place.
+	assert.Equal(t, plaintext, rec.PrivateKey)
+}
+
+func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
+	store := setupStore(t)
+	const plaintext = "-----BEGIN RSA PRIVATE KEY-----\nYmFy\n-----END RSA PRIVATE KEY-----\n"
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/legacy"
+
+	// Simulate a pre-encryption record written before this Store ever had a
+	// master key: plaintext PEM landed directly in KV via json.Marshal, the
+	// same shape PutCert produced before this change.
+	legacy := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: plaintext}
+	data, err := json.Marshal(legacy)
+	require.NoError(t, err)
+	_, err = store.kv.Put(t.Context(), certKey(arn), data)
+	require.NoError(t, err)
+
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, got.PrivateKey, "legacy plaintext record must still be readable with no migration step")
+
+	// The next write re-encrypts it — no operator action required.
+	require.NoError(t, store.PutCert(t.Context(), got))
+	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	require.NoError(t, err)
+	assert.NotContains(t, string(entry.Value()), "BEGIN RSA PRIVATE KEY", "record must be re-encrypted after the next PutCert")
+}
+
+// TestStore_GetCert_RejectsGarbageAsLegacyPlaintext is the downgrade-vector
+// guard: a value that decrypts under no key and does not unambiguously parse
+// as a PEM private key block must be a hard error, never silently trusted as
+// legacy plaintext.
+func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
+	store := setupStore(t)
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/garbage"
+
+	garbage := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: "not-pem-and-not-ciphertext"}
+	data, err := json.Marshal(garbage)
+	require.NoError(t, err)
+	_, err = store.kv.Put(t.Context(), certKey(arn), data)
+	require.NoError(t, err)
+
+	_, err = store.GetCert(t.Context(), arn)
+	require.Error(t, err, "garbage that is neither valid ciphertext nor PEM must not be silently treated as plaintext")
+}
+
+// TestStore_NoMasterKey_NeverEncryptsOrDecrypts covers ELBv2's independent,
+// read-only acmStore: constructed via NewStore directly with SetMasterKey
+// never called. It must behave exactly as before this change — PutCert and
+// GetCert pass PrivateKey through unmodified.
+func TestStore_NoMasterKey_NeverEncryptsOrDecrypts(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store, err := NewStore(t.Context(), nc)
+	require.NoError(t, err)
+
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/nokey"
+	rec := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: "opaque-value"}
+	require.NoError(t, store.PutCert(t.Context(), rec))
+
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, "opaque-value", got.PrivateKey, "a Store without a master key must pass PrivateKey through unchanged")
 }

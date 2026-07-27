@@ -7,14 +7,18 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +29,9 @@ const testAccountID = "000000000001"
 func setupACMService(t *testing.T) *ACMServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewACMServiceImplWithNATS(t.Context(), nil, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := NewACMServiceImplWithNATS(t.Context(), nil, nc, masterKey)
 	require.NoError(t, err)
 	return svc
 }
@@ -253,4 +259,83 @@ func TestImportCertificate_ReimportUnknownArnRejected(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
+}
+
+// TestImportCertificate_PrivateKeyEncryptedAtRest is the core regression for
+// mulga-ubkoz: the raw bytes ImportCertificate lands in JetStream KV must not
+// contain the plaintext PEM key, and reading it back through the Store must
+// still recover the original plaintext.
+func TestImportCertificate_PrivateKeyEncryptedAtRest(t *testing.T) {
+	svc := setupACMService(t)
+	certPEM, keyPEM := genCert(t, "atrest.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	entry, err := svc.store.kv.Get(context.Background(), certKey(aws.StringValue(out.CertificateArn)))
+	require.NoError(t, err)
+
+	var raw CertRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &raw))
+	assert.NotEqual(t, string(keyPEM), raw.PrivateKey, "private key must not be stored as plaintext PEM")
+	assert.NotContains(t, string(entry.Value()), "PRIVATE KEY", "raw KV bytes must not contain a PEM private key marker")
+
+	got, err := svc.store.GetCert(context.Background(), aws.StringValue(out.CertificateArn))
+	require.NoError(t, err)
+	assert.Equal(t, string(keyPEM), got.PrivateKey, "GetCert must decrypt back to the original plaintext")
+}
+
+// TestDescribeCertificate_DoesNotLeakPrivateKey asserts the public
+// CertificateDetail response can never carry key material, however the
+// record is stored. Precedent: TestSensitiveDataNotLogged_MasterKey in
+// handlers/iam/service_impl_test.go.
+func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
+	svc := setupACMService(t)
+	certPEM, keyPEM := genCert(t, "noleak.example.com")
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{
+		CertificateArn: out.CertificateArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	b, err := json.Marshal(desc)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "PRIVATE KEY", "DescribeCertificate response must never carry key material")
+}
+
+// TestSensitiveDataNotLogged_ACMPrivateKey asserts ImportCertificate and
+// DescribeCertificate never place the raw private key PEM in log output.
+// Precedent: TestSensitiveDataNotLogged_MasterKey in
+// handlers/iam/service_impl_test.go.
+func TestSensitiveDataNotLogged_ACMPrivateKey(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.DiscardHandler))
+	})
+
+	svc := setupACMService(t)
+	certPEM, keyPEM := genCert(t, "quiet.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{
+		CertificateArn: out.CertificateArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.NotContains(t, buf.String(), string(keyPEM), "raw private key PEM must not appear in log output")
 }

@@ -48,11 +48,20 @@ var _ ACMService = (*ACMServiceImpl)(nil)
 
 // NewACMServiceImplWithNATS builds an ACM service backed by a JetStream KV
 // store. cfg may be nil (tests); region then falls back to the default.
-func NewACMServiceImplWithNATS(ctx context.Context, cfg *config.Config, nc *nats.Conn) (*ACMServiceImpl, error) {
+// masterKey encrypts certificate private keys at rest and is required: unlike
+// EKS/ECS's IAM dependency (which degrades to "feature disabled" when the key
+// is missing), ACM has no safe degraded mode for a value this sensitive, so a
+// missing or malformed key fails construction outright rather than starting
+// the service without at-rest protection.
+func NewACMServiceImplWithNATS(ctx context.Context, cfg *config.Config, nc *nats.Conn, masterKey []byte) (*ACMServiceImpl, error) {
+	if len(masterKey) == 0 {
+		return nil, fmt.Errorf("ACM service requires a master key to encrypt certificate private keys at rest; none provided")
+	}
 	store, err := NewStore(ctx, nc)
 	if err != nil {
 		return nil, err
 	}
+	store.SetMasterKey(masterKey)
 	region := defaultRegion
 	if cfg != nil && cfg.Region != "" {
 		region = cfg.Region

@@ -53,6 +53,13 @@ func TestMultinodeCrossNodeGateway(t *testing.T) {
 	runCrossNodeGateway(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeInstanceStatusFanout is sequential and declared before
+// CrossNodeOps (which stops trio[0]) so the trio is still spread across nodes
+// when the fan-out spread is measured.
+func TestMultinodeInstanceStatusFanout(t *testing.T) {
+	runInstanceStatusFanout(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeCrossNodeOps is sequential: stops/starts trio[0].
 func TestMultinodeCrossNodeOps(t *testing.T) {
 	runCrossNodeOps(t, requireMultiNodeFixture(t))

@@ -114,6 +114,13 @@ func TestSpotInstanceLifecycle(t *testing.T) {
 	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
 }
 
+// TestInstanceStatus drives DescribeInstanceStatus and the real SDK
+// instance-status-ok waiter. Sequential: it launches, stops and terminates its
+// own short-lived guest, which the initializing → ok transition requires.
+func TestInstanceStatus(t *testing.T) {
+	runInstanceStatus(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: shared-state / sub-test-parallel Tests ---
 
 func TestNegativeErrorPaths(t *testing.T) {

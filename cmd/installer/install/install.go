@@ -441,10 +441,15 @@ type parentNIC struct {
 func writeParentNIC(dir, iface string, p *parentNIC) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[Match]\nName=%s\n\n", iface)
+	// A physical NIC here is either a bridge port or a VLAN trunk, and neither
+	// carries the address — the bridge above it does. Such a link never reaches
+	// the "degraded" state systemd-networkd-wait-online requires, so leaving it
+	// required makes that unit fail on every boot and stall until it times out.
+	b.WriteString("[Link]\nRequiredForOnline=no\n")
 	if p.mtu > 0 {
-		fmt.Fprintf(&b, "[Link]\nMTUBytes=%d\n\n", p.mtu)
+		fmt.Fprintf(&b, "MTUBytes=%d\n", p.mtu)
 	}
-	b.WriteString("[Network]\n")
+	b.WriteString("\n[Network]\n")
 	if p.bridge != "" {
 		fmt.Fprintf(&b, "Bridge=%s\n", p.bridge)
 	}
@@ -481,10 +486,12 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 		}
 		var v strings.Builder
 		fmt.Fprintf(&v, "[Match]\nName=%s\n\n", link)
+		// Enslaved to the bridge below, so it is not what "online" means here.
+		v.WriteString("[Link]\nRequiredForOnline=no\n")
 		if role.MTU > 0 {
-			fmt.Fprintf(&v, "[Link]\nMTUBytes=%d\n\n", role.MTU)
+			fmt.Fprintf(&v, "MTUBytes=%d\n", role.MTU)
 		}
-		fmt.Fprintf(&v, "[Network]\nBridge=%s\nIPv6AcceptRA=no\n", bridgeName)
+		fmt.Fprintf(&v, "\n[Network]\nBridge=%s\nIPv6AcceptRA=no\n", bridgeName)
 		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("11-spinifex-%s-vlan.network", name)), []byte(v.String()), 0o644); err != nil {
 			return err
 		}

@@ -358,3 +358,49 @@ func TestFstabSwapLineTracksTheFile(t *testing.T) {
 		t.Error("negative sizes must be rejected")
 	}
 }
+
+// Bridge ports and VLAN trunks never reach the "degraded" state
+// systemd-networkd-wait-online requires — the address sits on the bridge above
+// them. Leaving them required makes that unit fail on every boot and stall
+// until it times out, which is what a three-NIC node was doing.
+func TestSlaveLinksAreNotRequiredForOnline(t *testing.T) {
+	dir := t.TempDir()
+
+	// Untagged bridge port.
+	if err := writeParentNIC(dir, "ens4", &parentNIC{bridge: "br-lan", mtu: 9000}); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, dir, "05-spinifex-nic-ens4.network")
+	if !strings.Contains(got, "RequiredForOnline=no") {
+		t.Errorf("bridge port must not gate network-online:\n%s", got)
+	}
+	if !strings.Contains(got, "MTUBytes=9000") {
+		t.Errorf("MTU must survive alongside it:\n%s", got)
+	}
+
+	// VLAN trunk carrying tagged planes.
+	if err := writeParentNIC(dir, "enp129s0np0", &parentNIC{vlans: []string{"enp129s0np0.10"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, dir, "05-spinifex-nic-enp129s0np0.network"); !strings.Contains(got, "RequiredForOnline=no") {
+		t.Errorf("VLAN trunk must not gate network-online:\n%s", got)
+	}
+
+	// The VLAN device itself is enslaved too.
+	cfg := vlanSplit()
+	if err := writeNetworkdBridge(dir, PlaneVPC, cfg.VPC, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, dir, "11-spinifex-vpc-vlan.network"); !strings.Contains(got, "RequiredForOnline=no") {
+		t.Errorf("VLAN device must not gate network-online:\n%s", got)
+	}
+
+	// The wan bridge is what should gate it, and still does.
+	three := threeNIC()
+	if err := writeNetworkdBridge(dir, PlaneWAN, three.WAN, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, dir, "20-spinifex-wan.network"); strings.Contains(got, "RequiredForOnline=no") {
+		t.Errorf("wan bridge must remain required for network-online:\n%s", got)
+	}
+}

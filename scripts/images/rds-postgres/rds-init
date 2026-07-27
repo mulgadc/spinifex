@@ -1,0 +1,333 @@
+#!/bin/sh
+# rds-init — PostgreSQL bootstrap for the spinifex-rds-postgres AMI.
+#
+# Runs as a boot oneshot ordered before the postgresql service. It reads the
+# bootstrap handoff rds-agent fetched from the control plane, initialises the
+# cluster on the attached data volume, sets the master password, creates the
+# initial database, installs the resolved parameters and the cluster-CA-signed
+# serving cert, and then exits — the postgresql service starts the engine.
+#
+# This is the PostgreSQL half of the engine seam: initdb, ALTER ROLE ...
+# PASSWORD, the /var/lib/postgresql datadir and the 5432 default live here and
+# nowhere else in the platform. A MySQL preset is a sibling of this file.
+#
+# Handoff contract (rds-agent writes it after GetDBBootstrapConfig; a Mode of
+# `initialize` carries the master password, `attach` — every later boot — does
+# not). All files are root-owned; the directory is tmpfs:
+#
+#   /run/spinifex-rds/bootstrap.env    0600  KEY=value shell fragment:
+#       RDS_MODE=initialize|attach
+#       RDS_MASTER_USERNAME=<master role name>
+#       RDS_MASTER_PASSWORD=<present only when RDS_MODE=initialize>
+#       RDS_DB_NAME=<initial database; optional, as on AWS>
+#       RDS_PORT=<listen port; defaults to 5432>
+#   /run/spinifex-rds/parameters.conf  0600  resolved parameter-group values in
+#                                            postgresql.conf syntax
+#   /run/spinifex-rds/server.crt       0600  serving cert, cluster-CA-signed
+#   /run/spinifex-rds/server.key       0600  its private key
+#
+# Nothing in that directory survives a reboot, which is the point: the next boot
+# re-fetches in `attach` mode and the cert is re-minted rather than persisted.
+# The master password is dropped from the handoff as soon as it has been applied.
+#
+# rds-init keys off the datadir, never off RDS_MODE. An initialised datadir means
+# skip initdb and only refresh config, so crash recovery replays WAL and a
+# replaced VM comes back on its existing data volume without re-bootstrapping.
+set -eu
+
+PG_VERSION="${RDS_PG_VERSION:-16}"
+PG_BIN="${RDS_PG_BIN:-/usr/libexec/postgresql${PG_VERSION}}"
+PG_USER="${RDS_PG_USER:-postgres}"
+
+# Mount point of the data volume, and the datadir one level inside it. The
+# datadir is deliberately not the mount point itself: initdb refuses a non-empty
+# directory and a freshly formatted ext4 volume already holds lost+found.
+DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/postgresql}"
+PGDATA="${RDS_PGDATA:-${DATA_MOUNT}/${PG_VERSION}/data}"
+
+HANDOFF_DIR="${RDS_HANDOFF_DIR:-/run/spinifex-rds}"
+ENV_FILE="${HANDOFF_DIR}/bootstrap.env"
+SOCKET_DIR="${RDS_SOCKET_DIR:-/run/postgresql}"
+TLS_DIR="${RDS_TLS_DIR:-${SOCKET_DIR}/tls}"
+LOG_DIR="${RDS_LOG_DIR:-/var/log/postgresql}"
+
+# The bootstrap server (init only) listens on a unix socket in this directory
+# and nowhere else. It is 0700 and owned by the postgres user, so only postgres
+# and root can reach the short trust-authenticated window before the master
+# password exists.
+BOOTSTRAP_DIR="${RDS_BOOTSTRAP_DIR:-/run/rds-init}"
+
+MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
+
+log() { echo "[rds-init] $*"; }
+fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
+
+# as_pg runs a command as the postgres user; the server refuses to run as root.
+as_pg() { su "${PG_USER}" -c "$1"; }
+
+# load_handoff sources the bootstrap config rds-agent delivered and applies the
+# defaults for the optional fields.
+load_handoff() {
+    [ -f "${ENV_FILE}" ] || fail "no bootstrap handoff at ${ENV_FILE} — rds-agent has not delivered the bootstrap config"
+
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+
+    RDS_MODE="${RDS_MODE:-}"
+    RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME:-}"
+    RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD:-}"
+    RDS_DB_NAME="${RDS_DB_NAME:-}"
+    RDS_PORT="${RDS_PORT:-5432}"
+
+    [ -n "${RDS_MASTER_USERNAME}" ] || fail "bootstrap config has no RDS_MASTER_USERNAME"
+    case "${RDS_PORT}" in
+        '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
+    esac
+
+    log "bootstrap config loaded (mode=${RDS_MODE:-unset}, port=${RDS_PORT})"
+}
+
+# require_data_volume refuses to bootstrap onto the boot volume. Every VM replace
+# boots a fresh COW clone of this AMI, so a datadir that is not on the attached
+# data volume is data that disappears at the next class change, storage grow or
+# recovery — silently, because the engine would come up perfectly healthy on it.
+require_data_volume() {
+    if awk -v mnt="${DATA_MOUNT}" '$2 == mnt { found = 1 } END { exit !found }' "${MOUNTS_FILE}"; then
+        return 0
+    fi
+    [ "${RDS_ALLOW_LOCAL_DATADIR:-0}" = "1" ] ||
+        fail "${DATA_MOUNT} is not a mount point — the data volume is not attached; refusing to initialise on the boot volume"
+    log "warning: ${DATA_MOUNT} is not a mount point; data will not survive a VM replace (RDS_ALLOW_LOCAL_DATADIR=1)"
+}
+
+# initialise_cluster runs initdb into an empty datadir and lays down the parts of
+# the cluster config that are written once: the include_dir hook and pg_hba.
+initialise_cluster() {
+    # An empty datadir in `attach` mode means the data volume did not come back.
+    # Creating a fresh empty cluster there would report success and hand the
+    # customer an empty database in place of theirs.
+    if [ "${RDS_MODE}" = "attach" ]; then
+        fail "datadir ${PGDATA} is empty but the bootstrap config is Mode=attach — the existing data volume is missing; refusing to create an empty cluster"
+    fi
+    [ -n "${RDS_MASTER_PASSWORD}" ] || fail "Mode=${RDS_MODE:-unset} carries no master password; cannot initialise the cluster"
+
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "$(dirname "${PGDATA}")" "${PGDATA}"
+
+    log "initialising PostgreSQL ${PG_VERSION} cluster at ${PGDATA}"
+    # ICU collation, not libc: musl has no locale support, so a libc-provider
+    # cluster would silently behave as C regardless of what was asked for.
+    # Local peer auth keeps root/postgres administration working after the
+    # bootstrap server is gone; remote connections are scram-authenticated.
+    if ! as_pg "'${PG_BIN}/initdb' --pgdata='${PGDATA}' -E UTF-8 \
+        --locale-provider=icu --icu-locale=en-001-x-icu --data-checksums \
+        --auth-local=peer --auth-host=scram-sha-256"; then
+        # A half-written datadir carries PG_VERSION and would look initialised on
+        # the next boot, starting a broken engine on it forever. Clear it so the
+        # retry runs initdb from scratch.
+        rm -rf -- "${PGDATA}"
+        fail "initdb failed"
+    fi
+
+    cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
+
+# Managed by rds-init. Clients reach the instance over its customer ENI and are
+# gated by the DB security group, as on AWS RDS; every remote connection
+# authenticates with scram-sha-256. TLS is offered, not enforced — clients opt
+# in with sslmode=require and up.
+host all all 0.0.0.0/0 scram-sha-256
+host all all ::/0     scram-sha-256
+EOF
+}
+
+# install_parameters copies the resolved parameter-group values into the datadir.
+# They live beside the data rather than in /etc because a class change or an
+# auto-recovery boots a fresh root volume: on /etc the instance would quietly
+# revert to engine defaults while the API still reported the customer's values.
+install_parameters() {
+    if [ -f "${HANDOFF_DIR}/parameters.conf" ]; then
+        install -m 0600 -o "${PG_USER}" -g "${PG_USER}" \
+            "${HANDOFF_DIR}/parameters.conf" "${PGDATA}/conf.d/10-rds-parameters.conf"
+        return 0
+    fi
+    # Keeping the previous include is the conservative answer to a handoff that
+    # arrived without parameters: dropping it would silently reset the instance
+    # to engine defaults.
+    if [ -f "${PGDATA}/conf.d/10-rds-parameters.conf" ]; then
+        log "warning: no parameters in the handoff — keeping the parameters already installed"
+    fi
+}
+
+# install_tls moves the delivered serving cert + key out of the handoff into a
+# postgres-owned tmpfs directory and sets SSL_MODE to what the config should
+# carry. The key stays on tmpfs deliberately: it is re-minted on every bootstrap
+# fetch, so persisting it would only spread a private key onto the data volume
+# and into every snapshot taken of it.
+install_tls() {
+    if [ -f "${HANDOFF_DIR}/server.crt" ] && [ -f "${HANDOFF_DIR}/server.key" ]; then
+        install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${TLS_DIR}"
+        install -m 0600 -o "${PG_USER}" -g "${PG_USER}" "${HANDOFF_DIR}/server.crt" "${TLS_DIR}/server.crt"
+        install -m 0600 -o "${PG_USER}" -g "${PG_USER}" "${HANDOFF_DIR}/server.key" "${TLS_DIR}/server.key"
+        rm -f "${HANDOFF_DIR}/server.crt" "${HANDOFF_DIR}/server.key"
+        SSL_MODE="on"
+        return 0
+    fi
+    # A re-run after the cert was consumed must not turn TLS off underneath
+    # clients connecting with sslmode=require.
+    if [ -f "${TLS_DIR}/server.crt" ] && [ -f "${TLS_DIR}/server.key" ]; then
+        SSL_MODE="on"
+        return 0
+    fi
+    log "warning: no serving cert in the handoff — the engine will start without TLS"
+    SSL_MODE="off"
+}
+
+# write_rds_conf regenerates the platform's own settings on every boot. The 90-
+# prefix sorts last within include_dir and the last setting wins, so a resolved
+# parameter can never move the port the endpoint points at or turn off the TLS
+# the control plane just issued a certificate for.
+write_rds_conf() {
+    _ssl="$1"
+    _tmp="${PGDATA}/conf.d/.90-rds-init.conf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by rds-init — regenerated on every boot from the bootstrap config.
+# Edits here are lost; instance parameters belong in the parameter group.
+listen_addresses = '*'
+port = ${RDS_PORT}
+unix_socket_directories = '${SOCKET_DIR}'
+ssl = ${_ssl}
+EOF
+    if [ "${_ssl}" = "on" ]; then
+        cat >> "${_tmp}" <<EOF
+ssl_cert_file = '${TLS_DIR}/server.crt'
+ssl_key_file = '${TLS_DIR}/server.key'
+EOF
+    fi
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${PGDATA}/conf.d/90-rds-init.conf"
+}
+
+# install_runtime_config lays down everything that is refreshed on every boot:
+# the include hook, the resolved parameters, the serving cert and the platform's
+# own connectivity settings.
+install_runtime_config() {
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${PGDATA}/conf.d"
+    install -d -m 1775 -o "${PG_USER}" -g "${PG_USER}" "${SOCKET_DIR}"
+    install -d -m 0755 -o "${PG_USER}" -g "${PG_USER}" "${LOG_DIR}"
+
+    # postgresql.conf is on the data volume, so the hook is asserted every boot
+    # rather than only at initdb — a restored volume may predate it.
+    if ! grep -q "^include_dir = 'conf.d'" "${PGDATA}/postgresql.conf"; then
+        printf "\n# Managed by rds-init: parameter-group values (10-) then platform settings (90-).\ninclude_dir = 'conf.d'\n" \
+            >> "${PGDATA}/postgresql.conf"
+    fi
+
+    install_parameters
+    install_tls
+    write_rds_conf "${SSL_MODE}"
+}
+
+# start_bootstrap_server brings the cluster up on a private socket only, with
+# trust auth and no TLS, so the master password can be set before the engine is
+# reachable by anyone. It never listens on TCP.
+start_bootstrap_server() {
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${BOOTSTRAP_DIR}"
+    printf 'local all all trust\n' > "${BOOTSTRAP_DIR}/pg_hba.conf"
+    chown "${PG_USER}:${PG_USER}" "${BOOTSTRAP_DIR}/pg_hba.conf"
+    chmod 0600 "${BOOTSTRAP_DIR}/pg_hba.conf"
+
+    as_pg "'${PG_BIN}/pg_ctl' --pgdata='${PGDATA}' --wait --timeout=60 \
+        --log='${LOG_DIR}/rds-init.log' \
+        -o \"-c listen_addresses='' -c unix_socket_directories='${BOOTSTRAP_DIR}' \
+             -c unix_socket_permissions=0700 -c hba_file='${BOOTSTRAP_DIR}/pg_hba.conf' -c ssl=off\" \
+        start"
+}
+
+stop_bootstrap_server() {
+    as_pg "'${PG_BIN}/pg_ctl' --pgdata='${PGDATA}' --wait --timeout=60 --mode=fast stop"
+    rm -f "${BOOTSTRAP_DIR}/pg_hba.conf"
+}
+
+# psql_bootstrap talks to the bootstrap server as the initdb superuser over the
+# private socket, reading SQL from stdin. Identifiers and the password are passed
+# through the environment and re-quoted by psql (:"var" / :'var'), so neither
+# reaches a shell word or a process argument list.
+psql_bootstrap() {
+    RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
+    RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
+    RDS_DB_NAME="${RDS_DB_NAME}" \
+        "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
+            -v ON_ERROR_STOP=1 \
+            -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f -
+}
+
+# bootstrap_master creates the master role with its password and the initial
+# database, on the freshly initialised cluster only.
+bootstrap_master() {
+    log "starting bootstrap server on ${BOOTSTRAP_DIR}"
+    start_bootstrap_server
+
+    _rc=0
+    apply_master_role || _rc=$?
+    if [ "${_rc}" -eq 0 ] && [ -n "${RDS_DB_NAME}" ]; then
+        create_database || _rc=$?
+    fi
+
+    stop_bootstrap_server
+    [ "${_rc}" -eq 0 ] || fail "bootstrapping the master role/database failed"
+}
+
+# apply_master_role creates the master role if initdb did not already make it the
+# bootstrap superuser (a master username of "postgres"), then sets its password.
+apply_master_role() {
+    log "setting the master password for role ${RDS_MASTER_USERNAME}"
+    psql_bootstrap <<'SQL'
+\getenv master RDS_MASTER_USERNAME
+\getenv password RDS_MASTER_PASSWORD
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'master') AS create_role \gset
+\if :create_role
+CREATE ROLE :"master" WITH LOGIN SUPERUSER;
+\endif
+ALTER ROLE :"master" WITH LOGIN SUPERUSER PASSWORD :'password';
+SQL
+}
+
+# create_database creates the initial database owned by the master role. As on
+# AWS, an instance created without a DBName gets no initial database.
+create_database() {
+    log "creating database ${RDS_DB_NAME}"
+    psql_bootstrap <<'SQL'
+\getenv master RDS_MASTER_USERNAME
+\getenv dbname RDS_DB_NAME
+SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dbname') AS create_db \gset
+\if :create_db
+CREATE DATABASE :"dbname" OWNER :"master";
+\endif
+SQL
+}
+
+# consume_secrets drops the master password from the handoff once it has been
+# applied, so it is not left readable for the life of the boot. The rest of the
+# handoff is tmpfs and goes at reboot, when the next fetch returns `attach`.
+consume_secrets() {
+    [ -f "${ENV_FILE}" ] || return 0
+    _tmp="${ENV_FILE}.new"
+    install -m 0600 /dev/null "${_tmp}"
+    grep -v '^RDS_MASTER_PASSWORD=' "${ENV_FILE}" >> "${_tmp}" || true
+    mv -f "${_tmp}" "${ENV_FILE}"
+}
+
+load_handoff
+require_data_volume
+
+if [ -s "${PGDATA}/PG_VERSION" ]; then
+    log "datadir ${PGDATA} is already initialised — attaching"
+    install_runtime_config
+else
+    initialise_cluster
+    install_runtime_config
+    bootstrap_master
+fi
+
+consume_secrets
+log "bootstrap complete; handing off to the postgresql service"

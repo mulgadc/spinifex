@@ -492,6 +492,25 @@ var AvailableImages = map[string]Images{
 		BootMode: "uefi",
 		Tags:     map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
 	},
+
+	// RDS PostgreSQL system AMI. Resolved by spinifex:managed-by=rds plus the
+	// engine tags — CreateDBInstance maps an Engine/EngineVersion request onto
+	// them, so the pinned major version is recorded here rather than parsed out
+	// of the image name.
+	"spinifex-rds-postgres": {
+		Name:         "spinifex-rds-postgres",
+		Description:  "Mulga RDS PostgreSQL image — Alpine 3.21.7 + PostgreSQL 16 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
+		Distro:       "alpine",
+		Version:      "3.21.7",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "16"},
+	},
 }
 
 func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string, err error) {

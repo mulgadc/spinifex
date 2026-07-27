@@ -1,0 +1,25 @@
+# /etc/conf.d/postgresql — Spinifex RDS overrides for the stock Alpine
+# postgresql service. Replaces the package's copy at image build time.
+
+# PostgreSQL 16 is pinned for v1, so the version is stated here rather than
+# resolved through `pg_versions get-default` at every boot.
+pg_version=16
+
+# The datadir sits under /var/lib/postgresql, which is the mount point for the
+# instance's Viperblock data volume. Everything that must survive a VM replace —
+# the datadir, pg_wal inside it, and the resolved-parameter include — is
+# therefore on the data volume rather than the disposable boot volume.
+data_dir="/var/lib/postgresql/16/data"
+
+# Config lives in the datadir for the same reason: on the boot volume a class
+# change or an overnight auto-recovery would silently revert the instance to
+# engine defaults while the API still reported the customer's parameter values.
+conf_dir="/var/lib/postgresql/16/data"
+
+# Never initdb from the service. An empty datadir means the data volume did not
+# attach, and auto-setup would answer that by silently creating an empty cluster
+# on whatever is mounted there. rds-init owns cluster creation; the service
+# failing to start is the correct, visible outcome.
+auto_setup="no"
+
+logfile="/var/log/postgresql/postmaster.log"

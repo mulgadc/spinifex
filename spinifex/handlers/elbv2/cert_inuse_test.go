@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"sync"
 	"testing"
 	"time"
 
@@ -308,78 +307,13 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 	assert.NotContains(t, afterPEM, string(origLeaf), "the old leaf must not still be served")
 }
 
-// TestConcurrentCertReimportAndListenerModification exercises the edge case
-// where a certificate re-import and a listener mutation race on the same LB.
-// Neither operation depends on the other's outcome to succeed, and both the
-// LB config and the InUseBy index are recomputed from current store state on
-// every mutation, so the system must converge without deadlocking, panicking,
-// or corrupting either the LB record or the cert record.
-func TestConcurrentCertReimportAndListenerModification(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-
-	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
-	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc)
-	require.NoError(t, err)
-	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
-
-	leaf, key := genLeafCertPEM(t, "race.example.com")
-	importOut, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
-		Certificate: leaf,
-		PrivateKey:  key,
-	}, testAccountID)
-	require.NoError(t, err)
-	certArn := aws.StringValue(importOut.CertificateArn)
-
-	lb := activeLB(t, elbv2Svc, "lb-race1", "race-lb")
-	out, err := elbv2Svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, certArn, 443), testAccountID)
-	require.NoError(t, err)
-	listenerArn := out.Listeners[0].ListenerArn
-
-	var wg sync.WaitGroup
-	errs := make(chan error, 20)
-
-	for i := range 10 {
-		wg.Add(2)
-		// Generated on the test goroutine: genLeafCertPEM uses require, which
-		// must not run inside a spawned goroutine.
-		rotatedLeaf, rotatedKey := genLeafCertPEM(t, "race-rotated.example.com")
-		go func(i int) {
-			defer wg.Done()
-			_, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
-				Certificate:    rotatedLeaf,
-				PrivateKey:     rotatedKey,
-				CertificateArn: aws.String(certArn),
-			}, testAccountID)
-			if err != nil {
-				errs <- err
-			}
-		}(i)
-		go func(i int) {
-			defer wg.Done()
-			_, err := elbv2Svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
-				ListenerArn: listenerArn,
-				Certificates: []*elbv2.Certificate{
-					{CertificateArn: aws.String(certArn)},
-				},
-			}, testAccountID)
-			if err != nil {
-				errs <- err
-			}
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Errorf("concurrent operation failed: %v", err)
-	}
-
-	// Both records must still be well-formed and readable after the race.
-	rec, err := elbv2Svc.acmStore.GetCert(context.Background(), certArn)
-	require.NoError(t, err)
-	assert.NotNil(t, rec)
-
-	stored, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-race1")
-	require.NoError(t, err)
-	assert.NotNil(t, stored)
-}
+// Concurrency coverage for the InUseBy index itself — N goroutines each
+// adding a distinct resource ARN to the same certificate, asserting the
+// final set contains exactly all N — lives at the store layer, where the
+// property actually belongs: see
+// TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive in
+// handlers/acm/store_test.go. An earlier version of this test asserted only
+// "no errors/panics" across a concurrent re-import/ModifyListener race,
+// which cannot detect a lost index entry: a dropped update produces a
+// correct-looking record with a missing entry, not an error, so that
+// assertion passed whether or not the underlying race was fixed.

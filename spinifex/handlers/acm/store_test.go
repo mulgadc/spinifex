@@ -1,6 +1,8 @@
 package handlers_acm
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -62,6 +64,47 @@ func TestRemoveInUseBy_RemovesEntry(t *testing.T) {
 	got, err := store.GetCert(t.Context(), rec.CertificateArn)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"arn:lb/two"}, got.InUseBy)
+}
+
+// TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive is the correctness
+// regression test for the InUseBy index: it asserts final state, not merely
+// "no error/panic". A plain get-modify-put loses concurrent writers silently
+// — every goroutine reads the same starting record, mutates its own copy,
+// and the last Put wins, discarding the others' additions with no error
+// raised anywhere. That failure mode is exactly what makes this bug
+// dangerous: the record still looks well-formed, just short an entry, and
+// the missing load balancer never gets a fan-out re-render when its
+// certificate is renewed — it silently expires in HAProxy while ACM reports
+// a healthy, renewed certificate. Only asserting the exact final set
+// catches that; asserting "no errors" does not.
+func TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive(t *testing.T) {
+	store := setupACMStore(t)
+	certArn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/inuse-concurrent"
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{CertificateArn: certArn, AccountID: testAccountID}))
+
+	const n = 20
+	want := make([]string, n)
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		want[i] = fmt.Sprintf("arn:lb/concurrent-%02d", i)
+		wg.Add(1)
+		go func(resourceArn string) {
+			defer wg.Done()
+			if err := store.AddInUseBy(t.Context(), certArn, resourceArn); err != nil {
+				errs <- err
+			}
+		}(want[i])
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("AddInUseBy failed: %v", err)
+	}
+
+	got, err := store.GetCert(t.Context(), certArn)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, want, got.InUseBy, "every concurrent AddInUseBy call must survive, none silently lost")
 }
 
 func TestRemoveInUseBy_NoopWhenAbsentOrMissingCert(t *testing.T) {

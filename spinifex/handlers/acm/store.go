@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"time"
@@ -149,35 +150,101 @@ func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord,
 	return out, nil
 }
 
+// maxInUseByCASAttempts bounds the AddInUseBy/RemoveInUseBy optimistic-
+// concurrency retry loop so a pathologically contended key fails loudly
+// instead of retrying forever. Set high enough to ride out a burst of
+// listeners referencing the same certificate all writing at once (e.g. a
+// load balancer created with several HTTPS listeners in short succession).
+const maxInUseByCASAttempts = 50
+
+// inUseByCASBackoffBase is the base delay between CAS retries. A small
+// jittered backoff spreads out contending writers instead of having every
+// retry immediately re-collide on the same revision.
+const inUseByCASBackoffBase = 2 * time.Millisecond
+
 // AddInUseBy adds resourceArn (a load balancer ARN) to certArn's InUseBy set.
 // No-op if the certificate does not exist or already lists resourceArn.
+//
+// InUseBy is the sole mechanism by which a re-imported certificate reaches
+// the data plane (see UpdateStoredConfigForCert in handlers/elbv2), so a lost
+// update here is not a cosmetic race: it silently drops a load balancer from
+// fan-out, and that load balancer's certificate expires in HAProxy while ACM
+// still reports it as renewed. Two listeners on different load balancers can
+// legitimately attach the same certificate concurrently, so this uses
+// JetStream KV revision-based compare-and-swap rather than a plain
+// get/mutate/put, retrying on a conflicting concurrent writer.
 func (s *Store) AddInUseBy(ctx context.Context, certArn, resourceArn string) error {
-	rec, err := s.GetCert(ctx, certArn)
-	if err != nil {
-		return err
-	}
-	if rec == nil || slices.Contains(rec.InUseBy, resourceArn) {
-		return nil
-	}
-	rec.InUseBy = append(rec.InUseBy, resourceArn)
-	slices.Sort(rec.InUseBy)
-	return s.PutCert(ctx, rec)
+	return s.updateInUseByCAS(ctx, certArn, func(cur []string) []string {
+		if slices.Contains(cur, resourceArn) {
+			return nil // no-op: already present
+		}
+		next := append(slices.Clone(cur), resourceArn)
+		slices.Sort(next)
+		return next
+	})
 }
 
 // RemoveInUseBy removes resourceArn from certArn's InUseBy set. No-op if the
-// certificate or the entry does not exist.
+// certificate or the entry does not exist. See AddInUseBy for why this uses
+// CAS rather than get/mutate/put.
 func (s *Store) RemoveInUseBy(ctx context.Context, certArn, resourceArn string) error {
-	rec, err := s.GetCert(ctx, certArn)
-	if err != nil {
-		return err
-	}
-	if rec == nil {
+	return s.updateInUseByCAS(ctx, certArn, func(cur []string) []string {
+		idx := slices.Index(cur, resourceArn)
+		if idx == -1 {
+			return nil // no-op: not present
+		}
+		return slices.Delete(slices.Clone(cur), idx, idx+1)
+	})
+}
+
+// updateInUseByCAS applies mutate to certArn's current InUseBy set and writes
+// the result back with a revision-checked kv.Update, retrying against the
+// latest revision whenever a concurrent writer wins the race. mutate returns
+// nil to mean "no change needed", in which case nothing is written. Returns
+// nil (no-op, no retry) if the certificate does not exist.
+func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate func(cur []string) []string) error {
+	key := certKey(certArn)
+	for attempt := range maxInUseByCASAttempts {
+		entry, err := s.kv.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return nil
+			}
+			return err
+		}
+		var rec CertRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return fmt.Errorf("unmarshal cert: %w", err)
+		}
+
+		next := mutate(rec.InUseBy)
+		if next == nil {
+			return nil
+		}
+		rec.InUseBy = next
+
+		data, err := json.Marshal(&rec)
+		if err != nil {
+			return fmt.Errorf("marshal cert: %w", err)
+		}
+		if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				// Another writer updated the record between our Get and
+				// Update; back off briefly (jittered, so contending writers
+				// don't all re-collide on the same revision) and retry
+				// against whatever is there now.
+				backoff := inUseByCASBackoffBase * time.Duration(attempt+1)
+				jitter := time.Duration(rand.Int64N(int64(backoff))) //nolint:gosec // jitter, not cryptographic
+				select {
+				case <-time.After(backoff/2 + jitter):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			return err
+		}
 		return nil
 	}
-	idx := slices.Index(rec.InUseBy, resourceArn)
-	if idx == -1 {
-		return nil
-	}
-	rec.InUseBy = slices.Delete(rec.InUseBy, idx, idx+1)
-	return s.PutCert(ctx, rec)
+	return fmt.Errorf("acm store: exceeded %d CAS attempts updating InUseBy for %s", maxInUseByCASAttempts, certArn)
 }

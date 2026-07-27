@@ -1,0 +1,52 @@
+name: Resolve OTEL job id
+description: >-
+  Append ci.job_id to SPINIFEX_OTEL_ATTRS so telemetry emitted by this job can
+  be pivoted straight back to its GitHub job log. Must run before the step that
+  bakes SPINIFEX_OTEL_ATTRS into a VM's telemetry.env, and requires
+  `actions: read` on the calling job.
+
+inputs:
+  job-name:
+    description: >-
+      Rendered name of the calling job, exactly as it appears in the Actions UI.
+      github.job is only the YAML key and no context exposes the numeric id, so
+      the id has to be looked up by name.
+    required: true
+  token:
+    description: Token used for the Actions jobs API lookup.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve CI job id (best-effort)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        JOB_NAME: ${{ inputs.job-name }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        # Never fail the caller: on any lookup error or name mismatch ci.job_id
+        # is simply omitted and the run proceeds with the labels it already has.
+        set +e
+
+        if [ -z "${SPINIFEX_OTEL_ATTRS:-}" ]; then
+          echo "SPINIFEX_OTEL_ATTRS is unset or empty — telemetry is disabled, nothing to label"
+          exit 0
+        fi
+
+        # env.JOB_NAME rather than shell interpolation into the jq filter: job
+        # names carry quotes, slashes and non-ASCII separators that would
+        # otherwise break the expression.
+        JOB_ID=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" --paginate \
+          --jq '.jobs[] | select(.name == env.JOB_NAME) | .id' 2>/dev/null | head -n1)
+
+        if [ -n "$JOB_ID" ]; then
+          echo "SPINIFEX_OTEL_ATTRS=${SPINIFEX_OTEL_ATTRS},ci.job_id=${JOB_ID}" >> "$GITHUB_ENV"
+          echo "resolved ci.job_id=${JOB_ID} for job '${JOB_NAME}'"
+        else
+          echo "::warning::could not resolve numeric job id for '${JOB_NAME}' — continuing without ci.job_id"
+        fi
+        exit 0

@@ -21,7 +21,7 @@ const (
 func setupTestService(t *testing.T) *LaunchTemplateServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewLaunchTemplateServiceImplWithNATS(nil, nc)
+	svc, err := NewLaunchTemplateServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc
 }
@@ -129,7 +129,7 @@ func TestCreateLaunchTemplate_OrphanNameReclaim(t *testing.T) {
 	lt := createTemplate(t, svc, "orphan", "t3.micro")
 
 	// Simulate a crash after the name claim but with the header lost.
-	require.NoError(t, svc.kv.Delete(headerKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
+	require.NoError(t, svc.kv.Delete(t.Context(), headerKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
 
 	// The name index still points at the now-orphaned id; create must reclaim it.
 	out, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{
@@ -459,10 +459,10 @@ func TestDeleteLaunchTemplate_RemovesEverything(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, err.Error())
 
 	// Version bodies and name index gone.
-	nums, err := svc.listVersionNumbers(testAccountID, id)
+	nums, err := svc.listVersionNumbers(t.Context(), testAccountID, id)
 	require.NoError(t, err)
 	assert.Empty(t, nums)
-	_, err = svc.kv.Get(nameKey(testAccountID, "web"))
+	_, err = svc.kv.Get(t.Context(), nameKey(testAccountID, "web"))
 	require.Error(t, err)
 
 	// Name is reusable after delete.

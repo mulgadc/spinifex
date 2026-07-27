@@ -25,7 +25,7 @@ func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	testutil.StubVpcdSGResponder(t, nc)
 
 	// Create VPC service
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	// Create ELBv2 service with VPC wired in.
@@ -1006,7 +1006,7 @@ func TestCreateClusterNLBSync_CarriesCrossAccountENI(t *testing.T) {
 	assert.Equal(t, "02:0a:01:23:45:67", launch.NICs[2].MAC)
 
 	// And it is persisted for host-reboot recovery.
-	record, err := svc.store.GetLoadBalancerByName("eks-alpha", testAccountID)
+	record, err := svc.store.GetLoadBalancerByName(t.Context(), "eks-alpha", testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	require.Len(t, record.CrossAccountENIs, 1)

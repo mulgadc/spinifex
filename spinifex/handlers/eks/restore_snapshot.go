@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // eksBackupsBucket is the predastore bucket the guest etcd-snapshot cron PUTs
@@ -142,8 +142,8 @@ func validateSnapshotExists(ctx context.Context, store objectstore.ObjectStore, 
 // (service_impl.go CreateCluster). restore-snapshot only ever targets a
 // single-CP cluster (isHAControlPlane guards the caller), so this replaces
 // wholesale rather than matching a dead instance ID like SwapControlPlaneMember.
-func replaceControlPlaneForRestore(kv nats.KeyValue, name string, newNode ControlPlaneNode) error {
-	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+func replaceControlPlaneForRestore(ctx context.Context, kv jetstream.KeyValue, name string, newNode ControlPlaneNode) error {
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
 		m.ControlPlaneNodes = []ControlPlaneNode{newNode}
 		m.ControlPlaneInstanceID = newNode.InstanceID
 		m.ControlPlaneENIID = newNode.ENIID
@@ -214,11 +214,11 @@ func (s *EKSServiceImpl) RestoreSnapshot(ctx context.Context, input *RestoreSnap
 	if input == nil || input.ClusterName == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(accountID, input.ClusterName)
+	acctKV, err := s.acctKVForCluster(ctx, accountID, input.ClusterName)
 	if err != nil {
 		return nil, err
 	}
-	meta, err := GetClusterMeta(acctKV, input.ClusterName)
+	meta, err := GetClusterMeta(ctx, acctKV, input.ClusterName)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
@@ -285,7 +285,7 @@ func (s *EKSServiceImpl) RestoreSnapshot(ctx context.Context, input *RestoreSnap
 	// Persist the new CP into meta BEFORE re-pointing the NLB. Once committed the
 	// new CP is canonical, so a later NLB failure is convergeable by the reconciler
 	// (provisional success) rather than a bare error implying nothing happened.
-	if perr := replaceControlPlaneForRestore(acctKV, input.ClusterName, newNode); perr != nil {
+	if perr := replaceControlPlaneForRestore(ctx, acctKV, input.ClusterName, newNode); perr != nil {
 		s.unwindFreshCP(ctx, accountID, input.ClusterName, newNode)
 		return nil, fmt.Errorf("eks: persist replacement control plane: %w", perr)
 	}

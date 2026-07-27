@@ -77,6 +77,90 @@ func TestAnthropicInvokeAdapter_InvokeModel_401ReturnsAccessDenied(t *testing.T)
 // hardcodes the real Anthropic base URL, so — same package as production code
 // — the test reaches into the unexported inner client to redirect it at an
 // httptest stub instead of the network.
+func TestAnthropicInvokeAdapter_InvokeModelWithResponseStream_ForwardsSSEVerbatim(t *testing.T) {
+	const raw = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1"}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	var captured map[string]json.RawMessage
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(raw))
+	}))
+	defer ts.Close()
+
+	a := &anthropicInvokeAdapter{httpClient: ts.Client(), baseURL: ts.URL}
+	reqBody := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	src, err := a.InvokeModelWithResponseStream(context.Background(), "anthropic.claude-3-5-sonnet-20240620-v1:0", reqBody, "sk-test-key")
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	var streamField bool
+	require.NoError(t, json.Unmarshal(captured["stream"], &streamField))
+	assert.True(t, streamField)
+	_, hasVersion := captured["anthropic_version"]
+	assert.False(t, hasVersion)
+
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 3, "ping is skipped; message_start, content_block_delta, message_stop forward verbatim")
+	assert.JSONEq(t, `{"type":"message_start","message":{"id":"msg_1"}}`, string(chunks[0]))
+	assert.JSONEq(t, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`, string(chunks[1]))
+	assert.JSONEq(t, `{"type":"message_stop"}`, string(chunks[2]))
+}
+
+func TestAnthropicInvokeAdapter_InvokeModelWithResponseStream_401ReturnsAccessDenied(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error": {"message": "invalid x-api-key"}}`))
+	}))
+	defer ts.Close()
+
+	a := &anthropicInvokeAdapter{httpClient: ts.Client(), baseURL: ts.URL}
+	_, err := a.InvokeModelWithResponseStream(context.Background(), "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{"anthropic_version":"bedrock-2023-05-31","messages":[]}`), "bad-key")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
+}
+
+func TestBoundAnthropicInvokeAdapter_InvokeModelWithResponseStream(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "sk-bound-test", r.Header.Get("X-Api-Key"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer ts.Close()
+
+	adapter := newAnthropicInvokeAdapter("sk-bound-test")
+	bound, ok := adapter.(*boundAnthropicInvokeAdapter)
+	require.True(t, ok)
+	bound.inner.httpClient = ts.Client()
+	bound.inner.baseURL = ts.URL
+
+	sa, ok := adapter.(InvokeStreamAdapter)
+	require.True(t, ok)
+
+	src, err := sa.InvokeModelWithResponseStream(context.Background(), "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{"anthropic_version":"bedrock-2023-05-31","messages":[]}`))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 1)
+	assert.JSONEq(t, `{"type":"message_stop"}`, string(chunks[0]))
+}
+
 func TestBoundAnthropicInvokeAdapter_InvokeModel(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "sk-bound-test", r.Header.Get("X-Api-Key"))

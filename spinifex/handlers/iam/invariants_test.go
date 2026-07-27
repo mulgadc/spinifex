@@ -36,11 +36,11 @@ func TestInvariant_AccessKeysBucket_RejectsNonAKIAPrefix(t *testing.T) {
 	payload := []byte(`{}`)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := svc.putAccessKey(tc.akid, payload)
+			err := svc.putAccessKey(t.Context(), tc.akid, payload)
 			require.Error(t, err, "putAccessKey accepted invalid prefix %q", tc.akid)
 			assert.Contains(t, err.Error(), LongLivedAccessKeyIDPrefix)
 
-			err = svc.createAccessKey(tc.akid, payload)
+			err = svc.createAccessKey(t.Context(), tc.akid, payload)
 			require.Error(t, err, "createAccessKey accepted invalid prefix %q", tc.akid)
 			assert.Contains(t, err.Error(), LongLivedAccessKeyIDPrefix)
 		})
@@ -51,9 +51,9 @@ func TestInvariant_AccessKeysBucket_AcceptsAKIAPrefix(t *testing.T) {
 	svc := setupTestIAMService(t)
 
 	akid := LongLivedAccessKeyIDPrefix + "0123456789ABCDEF"
-	require.NoError(t, svc.putAccessKey(akid, []byte(`{}`)))
+	require.NoError(t, svc.putAccessKey(t.Context(), akid, []byte(`{}`)))
 
-	entry, err := svc.accessKeysBucket.Get(akid)
+	entry, err := svc.accessKeysBucket.Get(t.Context(), akid)
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`{}`), entry.Value())
 }

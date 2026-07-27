@@ -10,6 +10,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,9 +57,11 @@ func TestWebhookTokenReview_InfraFaultIsServerInternal(t *testing.T) {
 }
 
 func TestWebhookTokenReview_ResolvesIdentity(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	kv := testutil.SeedKV(t, js, handlers_eks.AccountBucketName("111122223333"), nil)
-	require.NoError(t, handlers_eks.PutAccessEntryRecord(kv, &handlers_eks.AccessEntryRecord{
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: handlers_eks.AccountBucketName("111122223333")})
+	require.NoError(t, err)
+	require.NoError(t, handlers_eks.PutAccessEntryRecord(t.Context(), kv, &handlers_eks.AccessEntryRecord{
 		ClusterName:        "alpha",
 		PrincipalARN:       testARN,
 		KubernetesUsername: testARN,

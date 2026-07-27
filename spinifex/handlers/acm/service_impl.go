@@ -39,8 +39,8 @@ var _ ACMService = (*ACMServiceImpl)(nil)
 
 // NewACMServiceImplWithNATS builds an ACM service backed by a JetStream KV
 // store. cfg may be nil (tests); region then falls back to the default.
-func NewACMServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ACMServiceImpl, error) {
-	store, err := NewStore(nc)
+func NewACMServiceImplWithNATS(ctx context.Context, cfg *config.Config, nc *nats.Conn) (*ACMServiceImpl, error) {
+	store, err := NewStore(ctx, nc)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		certArn = s.mintCertificateArn(accountID)
 	} else {
 		// Re-import: the ARN must already exist and belong to the caller.
-		existing, gErr := s.store.GetCert(certArn)
+		existing, gErr := s.store.GetCert(ctx, certArn)
 		if gErr != nil {
 			return nil, errors.New(awserrors.ErrorInternalError)
 		}
@@ -105,7 +105,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		ImportedAt:       time.Now().UTC(),
 		Tags:             tagsToMap(input.Tags),
 	}
-	if err := s.store.PutCert(rec); err != nil {
+	if err := s.store.PutCert(ctx, rec); err != nil {
 		slog.ErrorContext(ctx, "ImportCertificate: store failed", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -119,7 +119,7 @@ func (s *ACMServiceImpl) DescribeCertificate(ctx context.Context, input *acm.Des
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (s *ACMServiceImpl) DescribeCertificate(ctx context.Context, input *acm.Des
 
 // ListCertificates returns summaries for every cert owned by accountID.
 func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
-	recs, err := s.store.ListCerts(accountID)
+	recs, err := s.store.ListCerts(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -154,10 +154,10 @@ func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.Delet
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	if _, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID); err != nil {
+	if _, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID); err != nil {
 		return nil, err
 	}
-	if _, err := s.store.DeleteCert(aws.StringValue(input.CertificateArn)); err != nil {
+	if _, err := s.store.DeleteCert(ctx, aws.StringValue(input.CertificateArn)); err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return &acm.DeleteCertificateOutput{}, nil
@@ -165,8 +165,8 @@ func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.Delet
 
 // lookupOwned fetches a cert by ARN, returning ResourceNotFound when absent or
 // owned by a different account (no cross-account disclosure).
-func (s *ACMServiceImpl) lookupOwned(certArn, accountID string) (*CertRecord, error) {
-	rec, err := s.store.GetCert(certArn)
+func (s *ACMServiceImpl) lookupOwned(ctx context.Context, certArn, accountID string) (*CertRecord, error) {
+	rec, err := s.store.GetCert(ctx, certArn)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -209,7 +209,7 @@ func (s *ACMServiceImpl) ListTagsForCertificate(ctx context.Context, input *acm.
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +221,7 @@ func (s *ACMServiceImpl) AddTagsToCertificate(ctx context.Context, input *acm.Ad
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func (s *ACMServiceImpl) AddTagsToCertificate(ctx context.Context, input *acm.Ad
 		rec.Tags = map[string]string{}
 	}
 	maps.Copy(rec.Tags, tagsToMap(input.Tags))
-	if err := s.store.PutCert(rec); err != nil {
+	if err := s.store.PutCert(ctx, rec); err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return &acm.AddTagsToCertificateOutput{}, nil
@@ -242,7 +242,7 @@ func (s *ACMServiceImpl) RemoveTagsFromCertificate(ctx context.Context, input *a
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(aws.StringValue(input.CertificateArn), accountID)
+	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (s *ACMServiceImpl) RemoveTagsFromCertificate(ctx context.Context, input *a
 		}
 		delete(rec.Tags, key)
 	}
-	if err := s.store.PutCert(rec); err != nil {
+	if err := s.store.PutCert(ctx, rec); err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return &acm.RemoveTagsFromCertificateOutput{}, nil

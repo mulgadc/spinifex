@@ -24,10 +24,10 @@ func reRegister(t *testing.T, svc *Service, cluster, id string) {
 
 func instanceStatus(t *testing.T, svc *Service, cluster, id string) InstanceRecord {
 	t.Helper()
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	found, err := getJSON(kv, InstanceKey(cluster, id), &rec)
+	found, err := getJSON(t.Context(), kv, InstanceKey(cluster, id), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	return rec
@@ -42,11 +42,11 @@ func TestRegister_RestoresReapedInstanceToActive(t *testing.T) {
 	require.NoError(t, err)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	rec := instanceStatus(t, svc, "web", "i-1")
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	NewScheduler(nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
@@ -83,10 +83,10 @@ func TestReaper_ReleasesCapacityAndRecoversClean(t *testing.T) {
 	require.Equal(t, 256, seeded.ReservedMemoryMiB)
 	require.Contains(t, seeded.PlacedTasks, taskID)
 
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	seeded.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(kv, InstanceKey("web", "i-1"), &seeded))
+	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &seeded))
 
 	NewScheduler(nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 

@@ -101,7 +101,7 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 	}
 	// Hash before any mutation so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
-	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+	return runInstancesWithClientToken(ctx, store, accountID, token, paramHash, func() (ec2.Reservation, error) {
 		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }
@@ -168,7 +168,7 @@ func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsCo
 	reservationPtr, err := distributeInstances(ctx, input, natsConn, accountID, expectedNodes)
 	if err != nil {
 		// Distinguish "unknown type" from "no capacity" via DescribeInstanceTypes.
-		if err.Error() == awserrors.ErrorInsufficientInstanceCapacity {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {
 			if !isKnownInstanceType(ctx, natsConn, *input.InstanceType) {
 				return reservation, errors.New(awserrors.ErrorInvalidInstanceType)
 			}

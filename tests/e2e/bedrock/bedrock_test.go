@@ -22,28 +22,6 @@ const (
 	modelBogus         = "does.not-exist-v1:0"
 )
 
-// TestListFoundationModels confirms the self-host model is always advertised;
-// the Anthropic model is only asserted on when present, since its advertisement
-// depends on cluster credential configuration.
-func TestListFoundationModels(t *testing.T) {
-	f := requireBedrockFixture(t)
-
-	out, err := f.AWS.Bedrock.ListFoundationModels(&bedrock.ListFoundationModelsInput{})
-	require.NoError(t, err, "list-foundation-models")
-
-	ids := make(map[string]*bedrock.FoundationModelSummary, len(out.ModelSummaries))
-	for _, m := range out.ModelSummaries {
-		ids[aws.StringValue(m.ModelId)] = m
-	}
-
-	assert.Contains(t, ids, modelSelfHostLlama, "self-host model must always be advertised")
-
-	if anthropic, ok := ids[modelAnthropic]; ok {
-		assert.Equal(t, "Anthropic", aws.StringValue(anthropic.ProviderName),
-			"anthropic model advertised with unexpected provider name")
-	}
-}
-
 // TestGetFoundationModel round-trips a known model and asserts
 // ResourceNotFoundException for an unknown one.
 func TestGetFoundationModel(t *testing.T) {

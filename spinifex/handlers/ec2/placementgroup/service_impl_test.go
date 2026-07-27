@@ -18,7 +18,7 @@ func setupTestService(t *testing.T) *PlacementGroupServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	svc, err := NewPlacementGroupServiceImplWithNATS(nil, nc)
+	svc, err := NewPlacementGroupServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc
 }
@@ -162,10 +162,10 @@ func TestDeletePlacementGroup_InUse(t *testing.T) {
 	createTestGroup(t, svc, "in-use-group", "spread")
 
 	// Simulate instances by updating the record directly
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "in-use-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "in-use-group")
 	require.NoError(t, err)
 	record.NodeInstances["node1"] = []string{"i-123"}
-	err = svc.UpdatePlacementGroupRecord(testAccountID, "in-use-group", record, entry.Revision())
+	err = svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "in-use-group", record, entry.Revision())
 	require.NoError(t, err)
 
 	_, err = svc.DeletePlacementGroup(context.Background(), &ec2.DeletePlacementGroupInput{
@@ -315,18 +315,18 @@ func TestGetAndUpdatePlacementGroupRecord(t *testing.T) {
 	createTestGroup(t, svc, "cas-group", "spread")
 
 	// Get with revision
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "cas-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cas-group")
 	require.NoError(t, err)
 	assert.Equal(t, "spread", record.Strategy)
 	assert.Empty(t, record.NodeInstances)
 
 	// Update with CAS
 	record.NodeInstances["node1"] = []string{"i-abc"}
-	err = svc.UpdatePlacementGroupRecord(testAccountID, "cas-group", record, entry.Revision())
+	err = svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "cas-group", record, entry.Revision())
 	require.NoError(t, err)
 
 	// Verify update
-	record2, _, err := svc.GetPlacementGroupRecord(testAccountID, "cas-group")
+	record2, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cas-group")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i-abc"}, record2.NodeInstances["node1"])
 }
@@ -336,25 +336,25 @@ func TestUpdatePlacementGroupRecord_CASConflict(t *testing.T) {
 	createTestGroup(t, svc, "conflict-group", "spread")
 
 	// Get the record twice (same revision)
-	record1, entry1, err := svc.GetPlacementGroupRecord(testAccountID, "conflict-group")
+	record1, entry1, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "conflict-group")
 	require.NoError(t, err)
-	record2, _, err := svc.GetPlacementGroupRecord(testAccountID, "conflict-group")
+	record2, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "conflict-group")
 	require.NoError(t, err)
 
 	// First update succeeds
 	record1.NodeInstances["node1"] = []string{"i-111"}
-	err = svc.UpdatePlacementGroupRecord(testAccountID, "conflict-group", record1, entry1.Revision())
+	err = svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "conflict-group", record1, entry1.Revision())
 	require.NoError(t, err)
 
 	// Second update with stale revision fails
 	record2.NodeInstances["node2"] = []string{"i-222"}
-	err = svc.UpdatePlacementGroupRecord(testAccountID, "conflict-group", record2, entry1.Revision())
+	err = svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "conflict-group", record2, entry1.Revision())
 	require.Error(t, err)
 }
 
 func TestGetPlacementGroupRecord_NotFound(t *testing.T) {
 	svc := setupTestService(t)
-	_, _, err := svc.GetPlacementGroupRecord(testAccountID, "nonexistent")
+	_, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "nonexistent")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, err.Error())
 }
@@ -375,7 +375,7 @@ func TestReserveSpreadNodes_Success(t *testing.T) {
 	assert.Len(t, out.ReservedNodes, 3)
 
 	// Verify placeholders in record
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "reserve-group")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "reserve-group")
 	require.NoError(t, err)
 	assert.Len(t, record.NodeInstances, 3)
 	for _, node := range out.ReservedNodes {
@@ -389,10 +389,10 @@ func TestReserveSpreadNodes_ExcludesOccupiedNodes(t *testing.T) {
 	createTestGroup(t, svc, "occupied-group", "spread")
 
 	// Pre-occupy node-a
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "occupied-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "occupied-group")
 	require.NoError(t, err)
 	record.NodeInstances["node-a"] = []string{"i-existing"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "occupied-group", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "occupied-group", record, entry.Revision()))
 
 	out, err := svc.ReserveSpreadNodes(context.Background(), &ReserveSpreadNodesInput{
 		GroupName:     "occupied-group",
@@ -413,11 +413,11 @@ func TestReserveSpreadNodes_InsufficientNodes(t *testing.T) {
 	createTestGroup(t, svc, "insufficient-group", "spread")
 
 	// Pre-occupy node-a and node-b
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "insufficient-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "insufficient-group")
 	require.NoError(t, err)
 	record.NodeInstances["node-a"] = []string{"i-1"}
 	record.NodeInstances["node-b"] = []string{"i-2"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "insufficient-group", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "insufficient-group", record, entry.Revision()))
 
 	_, err = svc.ReserveSpreadNodes(context.Background(), &ReserveSpreadNodesInput{
 		GroupName:     "insufficient-group",
@@ -481,7 +481,7 @@ func TestFinalizeSpreadInstances_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "finalize-group")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "finalize-group")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i-aaa"}, record.NodeInstances["node-a"])
 	assert.Equal(t, []string{"i-bbb"}, record.NodeInstances["node-b"])
@@ -510,7 +510,7 @@ func TestReleaseSpreadNodes_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only node-a remains
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "release-group")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "release-group")
 	require.NoError(t, err)
 	assert.Len(t, record.NodeInstances, 1)
 	_, ok := record.NodeInstances["node-a"]
@@ -538,7 +538,7 @@ func TestReleaseSpreadNodes_AllNodes(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify empty
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "release-all-group")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "release-all-group")
 	require.NoError(t, err)
 	assert.Empty(t, record.NodeInstances)
 }
@@ -550,11 +550,11 @@ func TestRemoveInstance_Success(t *testing.T) {
 	createTestGroup(t, svc, "remove-inst-group", "spread")
 
 	// Add instances to two nodes
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "remove-inst-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "remove-inst-group")
 	require.NoError(t, err)
 	record.NodeInstances["node-a"] = []string{"i-aaa"}
 	record.NodeInstances["node-b"] = []string{"i-bbb"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "remove-inst-group", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "remove-inst-group", record, entry.Revision()))
 
 	// Remove i-aaa from node-a
 	_, err = svc.RemoveInstance(context.Background(), &RemoveInstanceInput{
@@ -565,7 +565,7 @@ func TestRemoveInstance_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify node-a is removed (was the only instance), node-b remains
-	record, _, err = svc.GetPlacementGroupRecord(testAccountID, "remove-inst-group")
+	record, _, err = svc.GetPlacementGroupRecord(t.Context(), testAccountID, "remove-inst-group")
 	require.NoError(t, err)
 	assert.Len(t, record.NodeInstances, 1)
 	_, hasA := record.NodeInstances["node-a"]
@@ -605,10 +605,10 @@ func TestRemoveInstance_MultipleInstancesOnNode(t *testing.T) {
 	createTestGroup(t, svc, "multi-inst-group", "cluster")
 
 	// Add multiple instances to same node (cluster scenario)
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "multi-inst-group")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "multi-inst-group")
 	require.NoError(t, err)
 	record.NodeInstances["node-a"] = []string{"i-111", "i-222", "i-333"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "multi-inst-group", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "multi-inst-group", record, entry.Revision()))
 
 	// Remove i-222
 	_, err = svc.RemoveInstance(context.Background(), &RemoveInstanceInput{
@@ -619,7 +619,7 @@ func TestRemoveInstance_MultipleInstancesOnNode(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify i-111 and i-333 remain
-	record, _, err = svc.GetPlacementGroupRecord(testAccountID, "multi-inst-group")
+	record, _, err = svc.GetPlacementGroupRecord(t.Context(), testAccountID, "multi-inst-group")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i-111", "i-333"}, record.NodeInstances["node-a"])
 }
@@ -639,7 +639,7 @@ func TestReserveClusterNode_EmptyGroup(t *testing.T) {
 	assert.Equal(t, "node-a", out.TargetNode)
 
 	// Verify placeholder written
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "cluster-empty")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cluster-empty")
 	require.NoError(t, err)
 	assert.Len(t, record.NodeInstances, 1)
 	_, ok := record.NodeInstances["node-a"]
@@ -651,10 +651,10 @@ func TestReserveClusterNode_ExistingNode(t *testing.T) {
 	createTestGroup(t, svc, "cluster-existing", "cluster")
 
 	// Pre-populate with instances on node-b
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "cluster-existing")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cluster-existing")
 	require.NoError(t, err)
 	record.NodeInstances["node-b"] = []string{"i-existing"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "cluster-existing", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "cluster-existing", record, entry.Revision()))
 
 	// Even though node-a is in eligible list, should return existing node-b
 	out, err := svc.ReserveClusterNode(context.Background(), &ReserveClusterNodeInput{
@@ -731,7 +731,7 @@ func TestFinalizeClusterInstances_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify instances recorded
-	record, _, err := svc.GetPlacementGroupRecord(testAccountID, "cluster-finalize")
+	record, _, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cluster-finalize")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i-c1", "i-c2", "i-c3"}, record.NodeInstances["node-a"])
 }
@@ -741,10 +741,10 @@ func TestFinalizeClusterInstances_AppendsToExisting(t *testing.T) {
 	createTestGroup(t, svc, "cluster-append", "cluster")
 
 	// Pre-populate with existing instances
-	record, entry, err := svc.GetPlacementGroupRecord(testAccountID, "cluster-append")
+	record, entry, err := svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cluster-append")
 	require.NoError(t, err)
 	record.NodeInstances["node-a"] = []string{"i-existing1", "i-existing2"}
-	require.NoError(t, svc.UpdatePlacementGroupRecord(testAccountID, "cluster-append", record, entry.Revision()))
+	require.NoError(t, svc.UpdatePlacementGroupRecord(t.Context(), testAccountID, "cluster-append", record, entry.Revision()))
 
 	// Finalize with new instances (should append, not overwrite)
 	_, err = svc.FinalizeClusterInstances(context.Background(), &FinalizeClusterInstancesInput{
@@ -756,7 +756,7 @@ func TestFinalizeClusterInstances_AppendsToExisting(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify all instances present
-	record, _, err = svc.GetPlacementGroupRecord(testAccountID, "cluster-append")
+	record, _, err = svc.GetPlacementGroupRecord(t.Context(), testAccountID, "cluster-append")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"i-existing1", "i-existing2", "i-new1", "i-new2"}, record.NodeInstances["node-a"])
 }

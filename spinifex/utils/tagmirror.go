@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // MergeTagsMut returns a mutator that merges the CreateTagsInput tags into a
@@ -76,11 +77,11 @@ func RemoveTagsMut(input *ec2.DeleteTagsInput) func(map[string]string) {
 // UpdateKVRecordTags read-modify-writes a typed account-scoped KV record,
 // applying mut. A resource absent from this store is skipped (its tags live
 // elsewhere).
-func UpdateKVRecordTags[R any](kv nats.KeyValue, accountID, resourceID string, mut func(*R)) error {
+func UpdateKVRecordTags[R any](ctx context.Context, kv jetstream.KeyValue, accountID, resourceID string, mut func(*R)) error {
 	key := AccountKey(accountID, resourceID)
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil
 		}
 		slog.Error("UpdateKVRecordTags: KV read failed", "key", key, "err", err)
@@ -97,7 +98,7 @@ func UpdateKVRecordTags[R any](kv nats.KeyValue, accountID, resourceID string, m
 		slog.Error("UpdateKVRecordTags: record marshal failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		slog.Error("UpdateKVRecordTags: KV write failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -108,12 +109,12 @@ func UpdateKVRecordTags[R any](kv nats.KeyValue, accountID, resourceID string, m
 // resources carrying prefix, via UpdateKVRecordTags on the service's own KV
 // handle. tagsOf returns the address of the record's tag map so a nil map can
 // be initialized in place. Resource ids without prefix are skipped.
-func MirrorKVRecordTags[R any](kv nats.KeyValue, accountID, prefix string, resources []*string, tagsOf func(*R) *map[string]string, mut func(map[string]string)) error {
+func MirrorKVRecordTags[R any](ctx context.Context, kv jetstream.KeyValue, accountID, prefix string, resources []*string, tagsOf func(*R) *map[string]string, mut func(map[string]string)) error {
 	for _, res := range resources {
 		if res == nil || !strings.HasPrefix(*res, prefix) {
 			continue
 		}
-		if err := UpdateKVRecordTags(kv, accountID, *res, func(r *R) {
+		if err := UpdateKVRecordTags(ctx, kv, accountID, *res, func(r *R) {
 			tp := tagsOf(r)
 			if *tp == nil {
 				*tp = map[string]string{}

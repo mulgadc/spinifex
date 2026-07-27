@@ -220,6 +220,21 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 	return msg.Header.Get(PrincipalARNHeader)
 }
 
+// decodedNATSError retains a response's diagnostic message while exposing its
+// sanitized AWS wire code to unwrap-aware classifiers.
+type decodedNATSError struct {
+	code    error
+	message string
+}
+
+func (e *decodedNATSError) Error() string {
+	return e.message
+}
+
+func (e *decodedNATSError) Unwrap() error {
+	return e.code
+}
+
 // NATSRequest performs a NATS request-response with JSON marshaling. It sends
 // with X-Account-ID (plus any extra headers), unmarshals the successful response
 // into Out, and carries ctx's trace context onto the wire: it opens a client span
@@ -258,7 +273,7 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 	responseError, err := ValidateErrorPayload(msg.Data)
 	if err != nil {
 		if responseError.Message != nil && *responseError.Message != "" {
-			return nil, errors.New(*responseError.Message)
+			return nil, &decodedNATSError{code: errors.New(*responseError.Code), message: *responseError.Message}
 		}
 		return nil, errors.New(*responseError.Code)
 	}
@@ -292,7 +307,7 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 	out, err := fn(ctx, input)
 	if err != nil {
 		MarkSpanError(span, err)
-		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCode(err.Error()), err.Error()))
+		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error()))
 		return
 	}
 	data, err := json.Marshal(out)

@@ -21,7 +21,7 @@ func setupTestVPCServiceWithNC(t *testing.T) (*VPCServiceImpl, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	testutil.StubVpcdSGResponder(t, nc)
 	return svc, nc
@@ -39,7 +39,7 @@ func setupTestVPCService(t *testing.T) *VPCServiceImpl {
 func setupTestVPCServiceWithFailingVpcd(t *testing.T, errMsg string) (*VPCServiceImpl, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	testutil.StubVpcdSGFailingResponder(t, nc, errMsg)
 	return svc, nc
@@ -586,13 +586,13 @@ func TestCreateMainRouteTable_Idempotent(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.99.0.0/16") // CreateVpc auto-calls createMainRouteTable
 
-	firstID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	firstID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	require.NotEmpty(t, firstID, "CreateVpc should have created a main route table")
 
 	require.NoError(t, svc.createMainRouteTable(context.Background(), testAccountID, vpcID, "10.99.0.0/16"))
 
-	secondID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	secondID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	assert.Equal(t, firstID, secondID, "second call must be a no-op")
 
@@ -608,7 +608,7 @@ func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.77.0.0/16") // auto-creates the main RT
 
-	rtbID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	rtbID, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	require.NotEmpty(t, rtbID, "CreateVpc should have created a main route table")
 	require.Equal(t, 1, countMainRouteTablesForVPC(t, svc, vpcID))
@@ -616,7 +616,7 @@ func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
 	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.NoError(t, err)
 
-	gone, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	gone, err := svc.findMainRouteTableID(t.Context(), testAccountID, vpcID)
 	require.NoError(t, err)
 	assert.Empty(t, gone, "DeleteVpc must reap the main route table, not leak it")
 	assert.Equal(t, 0, countMainRouteTablesForVPC(t, svc, vpcID))
@@ -626,13 +626,13 @@ func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
 // state in tests. Returns the number of IsMain=true records for vpcID.
 func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) int {
 	t.Helper()
-	keys, err := svc.rtbKV.Keys()
+	keys, err := svc.rtbKV.Keys(t.Context())
 	if err != nil {
 		return 0
 	}
 	n := 0
 	for _, key := range keys {
-		entry, err := svc.rtbKV.Get(key)
+		entry, err := svc.rtbKV.Get(t.Context(), key)
 		if err != nil {
 			continue
 		}
@@ -655,7 +655,7 @@ func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string)
 // so subnet and RTB must still land in KV when vpcd is absent.
 func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	// Intentionally NOT calling StubVpcdSGResponder — vpc.create-sg has no
 	// responder, mirroring the bootstrap race.
@@ -676,11 +676,11 @@ func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 	assert.Equal(t, info.VpcId, *subDesc.Subnets[0].VpcId)
 
 	require.NotNil(t, svc.rtbKV)
-	rtbKeys, err := svc.rtbKV.Keys()
+	rtbKeys, err := svc.rtbKV.Keys(t.Context())
 	require.NoError(t, err)
 	foundMainRTB := false
 	for _, k := range rtbKeys {
-		entry, err := svc.rtbKV.Get(k)
+		entry, err := svc.rtbKV.Get(t.Context(), k)
 		if err != nil {
 			continue
 		}
@@ -700,7 +700,7 @@ func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 
 	// Default SG record is best-effort; KV write happens before the synchronous
 	// vpcd round-trip, so the record should still be present.
-	sgKeys, err := svc.sgKV.Keys()
+	sgKeys, err := svc.sgKV.Keys(t.Context())
 	require.NoError(t, err)
 	assert.NotEmpty(t, sgKeys, "default SG record must persist in KV for vpcd reconciler to converge")
 }
@@ -907,7 +907,7 @@ func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
 	testutil.StubVpcdSGResponder(t, nc)
 
 	cfg := &config.Config{AZ: "us-west-2b"}
-	svc, err := NewVPCServiceImplWithNATS(cfg, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err)
 
 	_, err = svc.EnsureDefaultVPC(testAccountID)

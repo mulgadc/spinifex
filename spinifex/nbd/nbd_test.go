@@ -44,6 +44,7 @@ func TestBuildArgs_TCPTransport(t *testing.T) {
 		"host=localhost:9000",
 		"cache_size=256",
 		"shardwal=true",
+		"gc_enabled=false",
 	}
 
 	assertArgs(t, expected, args)
@@ -65,6 +66,7 @@ func TestBuildArgs_UnixSocketTransport(t *testing.T) {
 		Host:       "10.0.0.1:9000",
 		CacheSize:  128,
 		ShardWAL:   false,
+		GCEnabled:  true,
 	}
 
 	args, err := cfg.buildArgs()
@@ -87,6 +89,7 @@ func TestBuildArgs_UnixSocketTransport(t *testing.T) {
 		"host=10.0.0.1:9000",
 		"cache_size=128",
 		"shardwal=false",
+		"gc_enabled=true",
 	}
 
 	assertArgs(t, expected, args)
@@ -269,6 +272,41 @@ func TestBuildArgs_EncryptionKeyFileOmittedWhenEmpty(t *testing.T) {
 		if len(arg) >= 19 && arg[:19] == "encryption_key_file" {
 			t.Errorf("encryption_key_file must be absent when unset, got: %q", arg)
 		}
+	}
+}
+
+func TestBuildArgs_GCEnabledForwarded(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		GCEnabled:  true,
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if slices.Index(args, "gc_enabled=true") < 0 {
+		t.Errorf("expected gc_enabled=true in args, got: %v", args)
+	}
+}
+
+func TestBuildArgs_GCEnabledDefaultFalse(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if slices.Index(args, "gc_enabled=false") < 0 {
+		t.Errorf("expected gc_enabled=false (default off) in args, got: %v", args)
 	}
 }
 

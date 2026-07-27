@@ -57,15 +57,13 @@ func runSpread(t *testing.T, fix *Fixture) {
 
 	t.Run("SpreadPlacement", func(t *testing.T) {
 		unique := uniqueCount(p.HostingNodes)
-		harness.Detail(t, "unique_hosting_nodes", unique, "want_ge", 3)
-		switch {
-		case unique >= 3:
-			// nominal — full spread
-		case unique >= 2:
-			t.Logf("WARN: only %d unique hosting nodes (expected 3) — spread best-effort", unique)
-		default:
-			t.Fatalf("spread placement failed: %d unique hosting nodes (want >= 2), hosts=%v", unique, p.HostingNodes)
-		}
+		harness.Detail(t, "unique_hosting_nodes", unique, "want", 3)
+		// The NAT-egress scenario below only proves what it claims to (three
+		// distinct chassis routing through one NAT GW) if the trio actually
+		// landed on three distinct nodes. Two colocated instances is a spread
+		// placement group failure, not a "best-effort" outcome to log past.
+		require.Equalf(t, 3, unique,
+			"spread placement failed: %d unique hosting nodes (want 3), hosts=%v", unique, p.HostingNodes)
 	})
 
 	t.Run("PreNATIsolation", func(t *testing.T) {
@@ -779,21 +777,22 @@ func waitForNATGatewayStateBest(c *harness.AWSClient, id, target string, timeout
 }
 
 // dumpPlacementNATDiag fans out datapath probes (ARP, xfrm, OVS/OVN state) to every
-// cluster node on failure and writes results under Artifacts. Best-effort: SSH errors
-// are logged but never re-fail the test.
+// cluster node on failure and writes results under t's artifact dir. Best-effort:
+// SSH errors are logged but never re-fail the test.
 func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID string) {
 	t.Helper()
-	if fix.Artifacts == "" {
-		t.Logf("dumpPlacementNATDiag: no artifact dir; skipping")
+	if fix.Env == nil {
+		t.Logf("dumpPlacementNATDiag: no env; skipping")
 		return
 	}
 	if fix.Cluster == nil || len(fix.Cluster.Nodes) == 0 {
 		t.Logf("dumpPlacementNATDiag: no cluster nodes; skipping")
 		return
 	}
+	artifactDir := fix.ArtifactDir(t)
 
 	t.Logf("dumpPlacementNATDiag: bastion=%s eip=%s nodes=%d -> %s",
-		bastionID, bastionPubIP, len(fix.Cluster.Nodes), fix.Artifacts)
+		bastionID, bastionPubIP, len(fix.Cluster.Nodes), artifactDir)
 
 	probes := []struct {
 		name string
@@ -822,7 +821,7 @@ func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID st
 				header += fmt.Sprintf("# (ssh error: %v)\n", err)
 			}
 			name := fmt.Sprintf("diag-%s-%s.log", n.Name, p.name)
-			harness.DumpFile(t, fix.Artifacts, name, append([]byte(header), out...))
+			harness.DumpFile(t, artifactDir, name, append([]byte(header), out...))
 		}
 	}
 
@@ -844,7 +843,7 @@ func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID st
 		if err != nil {
 			header += fmt.Sprintf("(exit error: %v)\n", err)
 		}
-		harness.DumpFile(t, fix.Artifacts, p.name+".log", append([]byte(header), out...))
+		harness.DumpFile(t, artifactDir, p.name+".log", append([]byte(header), out...))
 	}
 }
 

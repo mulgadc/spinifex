@@ -102,3 +102,106 @@ func TestLlamaInvokeAdapter_InvokeModel_UnresolvedEndpointReturnsModelNotReady(t
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
+
+// llamaCompletionsStreamFixture is a canned OpenAI /v1/completions streaming
+// SSE body: two text deltas, a finish_reason chunk, a trailing usage-only
+// chunk, then [DONE].
+const llamaCompletionsStreamFixture = `data: {"choices":[{"text":"Hello","finish_reason":null}]}
+
+data: {"choices":[{"text":" world","finish_reason":null}]}
+
+data: {"choices":[{"text":"","finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":6,"completion_tokens":2}}
+
+data: [DONE]
+
+`
+
+func drainInvokeStream(t *testing.T, src invokeStreamSource) [][]byte {
+	t.Helper()
+	var chunks [][]byte
+	for {
+		chunk, ok, err := src.Next(context.Background())
+		require.NoError(t, err)
+		if !ok {
+			return chunks
+		}
+		chunks = append(chunks, chunk)
+	}
+}
+
+func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_TranslatesChunks(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req llamaCompletionsRequest
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.True(t, req.Stream)
+		if !assert.NotNil(t, req.StreamOptions) {
+			return
+		}
+		assert.True(t, req.StreamOptions.IncludeUsage)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaCompletionsStreamFixture))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	a.httpClient = ts.Client()
+
+	src, err := a.InvokeModelWithResponseStream(context.Background(), modelID, []byte(`{"prompt":"hello","max_gen_len":128}`))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 3)
+
+	var c1, c2 llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &c1))
+	assert.Equal(t, "Hello", c1.Generation)
+	require.NoError(t, json.Unmarshal(chunks[1], &c2))
+	assert.Equal(t, " world", c2.Generation)
+
+	var final llamaInvokeStreamFinalChunk
+	require.NoError(t, json.Unmarshal(chunks[2], &final))
+	assert.Empty(t, final.Generation)
+	assert.Equal(t, "stop", final.StopReason)
+	assert.Equal(t, 6, final.PromptTokenCount)
+	assert.Equal(t, 2, final.GenerationTokenCount)
+	assert.Equal(t, 6, final.InvocationMetrics.InputTokenCount)
+	assert.Equal(t, 2, final.InvocationMetrics.OutputTokenCount)
+	assert.GreaterOrEqual(t, final.InvocationMetrics.InvocationLatency, int64(0))
+}
+
+func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_UnresolvedEndpointReturnsModelNotReady(t *testing.T) {
+	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(nil))
+
+	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+func TestLlamaInvokeStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {not-json\n\n"))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	a.httpClient = ts.Client()
+
+	src, err := a.InvokeModelWithResponseStream(context.Background(), modelID, []byte(`{"prompt":"hello"}`))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	_, ok, err := src.Next(context.Background())
+	assert.False(t, ok)
+	require.Error(t, err)
+	var fault *streamFaultError
+	assert.ErrorAs(t, err, &fault)
+}

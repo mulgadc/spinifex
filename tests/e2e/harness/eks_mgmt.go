@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,12 +12,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/viper"
 )
 
-// ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address —
-// the only address reachable from the runner. The NLB endpoint is not wired
-// for external access; the mgmt IP is read directly from the NATS KV record.
+// ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address, read
+// directly from the NATS KV record. Tests reach the apiserver via the published
+// cluster endpoint; this is the out-of-band path to the VM itself.
 func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) string {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
@@ -26,15 +28,15 @@ func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) s
 	}
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := js.KeyValue(handlers_eks.AccountBucketName(accountID))
+	kv, err := js.KeyValue(t.Context(), handlers_eks.AccountBucketName(accountID))
 	if err != nil {
 		t.Fatalf("open EKS account KV for %s: %v", accountID, err)
 	}
-	meta, err := handlers_eks.GetClusterMeta(kv, clusterName)
+	meta, err := handlers_eks.GetClusterMeta(t.Context(), kv, clusterName)
 	if err != nil {
 		t.Fatalf("get cluster meta %s: %v", clusterName, err)
 	}
@@ -78,6 +80,19 @@ func loadClusterConfig(path string) (*config.ClusterConfig, error) {
 	if err := v.ReadInConfig(); err != nil {
 		return nil, err
 	}
+	return unmarshalClusterConfig(v)
+}
+
+func loadClusterConfigBytes(data []byte) (*config.ClusterConfig, error) {
+	v := viper.New()
+	v.SetConfigType("toml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return unmarshalClusterConfig(v)
+}
+
+func unmarshalClusterConfig(v *viper.Viper) (*config.ClusterConfig, error) {
 	var cc config.ClusterConfig
 	if err := v.Unmarshal(&cc); err != nil {
 		return nil, err

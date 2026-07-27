@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // tokenSweepInterval is how often abandoned/expired IMDSv2 tokens are swept.
@@ -57,19 +59,27 @@ type eniResolver interface {
 // responder per local primary-ENI tap, each serving the shared mux with the
 // tap's ENI identity.
 type IMDSServiceImpl struct {
-	resolver eniResolver
-	tokens   *tokenStore
-	creds    *credCache
-	iam      profileLookup
-	pubKeys  publicKeyLookup
-	tapResp  *tapResponderManager
-	listTaps listTapsFunc
-	now      func() time.Time
+	resolver       eniResolver
+	tokens         *tokenStore
+	creds          *credCache
+	iam            profileLookup
+	pubKeys        publicKeyLookup
+	tapResp        *tapResponderManager
+	listTaps       listTapsFunc
+	now            func() time.Time
+	baseDomain     string
+	internalDomain string
 }
 
 // NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
-// network/host import cycle.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc) (*IMDSServiceImpl, error) {
+// network/host import cycle. baseDomain and internalDomain are the cluster's
+// authoritative public and private (AWS-parity) DNS domains, used for
+// public-hostname and local-hostname so IMDS matches the records the DNS writer
+// publishes. resolverIPs are the WAN IPs of nodes running northstar: when
+// non-empty, each per-tap responder also serves the VPC DNS shim on
+// 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
+// ctx bounds the bucket opens only; each served request carries its own.
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain, internalDomain string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -86,18 +96,18 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		return nil, errors.New("nil tap enumerator")
 	}
 
-	js, err := natsConn.JetStream()
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	eniKV, err := js.KeyValue(kvBucketENIs)
+	eniKV, err := js.KeyValue(ctx, kvBucketENIs)
 	if err != nil {
 		return nil, fmt.Errorf("open %s bucket: %w", kvBucketENIs, err)
 	}
 
 	// Open SG bucket best-effort; IMDS starts fine without it, degrading to raw IDs.
-	sgKV, err := js.KeyValue(kvBucketSecurityGroups)
+	sgKV, err := js.KeyValue(ctx, kvBucketSecurityGroups)
 	if err != nil {
 		slog.Warn("IMDS: security-group bucket unavailable, /security-groups will serve IDs", "bucket", kvBucketSecurityGroups, "err", err)
 		sgKV = nil
@@ -105,12 +115,12 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 
 	// Open subnet/VPC buckets best-effort; the network-interfaces CIDR leaves 404
 	// (and drop from the listing) when a bucket is unavailable, IMDS still starts.
-	subnetKV, err := js.KeyValue(kvBucketSubnets)
+	subnetKV, err := js.KeyValue(ctx, kvBucketSubnets)
 	if err != nil {
 		slog.Warn("IMDS: subnet bucket unavailable, network-interfaces subnet CIDR will 404", "bucket", kvBucketSubnets, "err", err)
 		subnetKV = nil
 	}
-	vpcKV, err := js.KeyValue(kvBucketVPCs)
+	vpcKV, err := js.KeyValue(ctx, kvBucketVPCs)
 	if err != nil {
 		slog.Warn("IMDS: vpc bucket unavailable, network-interfaces VPC CIDR will 404", "bucket", kvBucketVPCs, "err", err)
 		vpcKV = nil
@@ -124,16 +134,26 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 			vpcKV:    vpcKV,
 			lookup:   &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
-		tokens:   newTokenStore(),
-		creds:    newCredCache(sts),
-		iam:      iamSvc,
-		pubKeys:  pubKeys,
-		listTaps: listTaps,
-		now:      time.Now,
+		tokens:         newTokenStore(),
+		creds:          newCredCache(sts),
+		iam:            iamSvc,
+		pubKeys:        pubKeys,
+		listTaps:       listTaps,
+		now:            time.Now,
+		baseDomain:     baseDomain,
+		internalDomain: internalDomain,
 	}
 	// Each per-tap responder serves the shared mux, threading its tap's ENI
 	// identity into every request via BaseContext.
 	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, bindTapListener)
+	if len(resolverIPs) > 0 {
+		targets := make([]string, 0, len(resolverIPs))
+		for _, ip := range resolverIPs {
+			targets = append(targets, net.JoinHostPort(ip, northstarResolverPort))
+		}
+		svc.tapResp.enableDNS(bindTapDNS, newDNSForwarder(targets))
+		slog.Info("IMDS: VPC DNS shim enabled", "addr", VPCDNSServerIP, "backends", targets)
+	}
 
 	slog.Info("IMDS service initialized", "eni_bucket", kvBucketENIs)
 	return svc, nil

@@ -14,10 +14,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure EIPServiceImpl implements EIPService.
@@ -25,7 +27,7 @@ var _ EIPService = (*EIPServiceImpl)(nil)
 
 // EIPServiceImpl implements Elastic IP operations with NATS JetStream persistence.
 type EIPServiceImpl struct {
-	eipKV        nats.KeyValue
+	eipKV        jetstream.KeyValue
 	externalIPAM *handlers_ec2_vpc.ExternalIPAM
 	vpcService   handlers_ec2_vpc.VPCService
 	natsConn     *nats.Conn
@@ -41,17 +43,17 @@ type natEvent struct {
 }
 
 // NewEIPServiceImpl creates a new EIP service backed by NATS JetStream KV.
-func NewEIPServiceImpl(natsConn *nats.Conn, externalIPAM *handlers_ec2_vpc.ExternalIPAM, vpcService handlers_ec2_vpc.VPCService) (*EIPServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *handlers_ec2_vpc.ExternalIPAM, vpcService handlers_ec2_vpc.VPCService) (*EIPServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	eipKV, err := utils.GetOrCreateKVBucket(js, KVBucketEIPs, 10)
+	eipKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketEIPs, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketEIPs, eipKV, KVBucketEIPsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketEIPs, eipKV, KVBucketEIPsVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketEIPs, err)
 	}
 
@@ -104,7 +106,7 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal EIP record: %w", err)
 	}
-	if _, err := s.eipKV.Put(utils.AccountKey(accountID, allocID), data); err != nil {
+	if _, err := s.eipKV.Put(ctx, utils.AccountKey(accountID, allocID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -127,7 +129,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 	allocID := *input.AllocationId
 	key := utils.AccountKey(accountID, allocID)
 
-	entry, err := s.eipKV.Get(key)
+	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 	}
@@ -148,7 +150,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 		slog.WarnContext(ctx, "Failed to release IP back to IPAM pool", "allocationId", allocID, "ip", record.PublicIp, "pool", record.PoolName, "err", err)
 	}
 
-	if err := s.eipKV.Delete(key); err != nil {
+	if err := s.eipKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -166,7 +168,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	allocID := *input.AllocationId
 	key := utils.AccountKey(accountID, allocID)
 
-	entry, err := s.eipKV.Get(key)
+	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 	}
@@ -222,7 +224,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal EIP record: %w", err)
 	}
-	if _, err := s.eipKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eipKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -252,7 +254,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	associationID := *input.AssociationId
 
 	// Find the EIP record by association ID.
-	record, key, revision, err := s.findByAssociationID(accountID, associationID)
+	record, key, revision, err := s.findByAssociationID(ctx, accountID, associationID)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +282,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal EIP record: %w", err)
 	}
-	if _, err := s.eipKV.Update(key, data, revision); err != nil {
+	if _, err := s.eipKV.Update(ctx, key, data, revision); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -321,8 +323,8 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 	}
 
 	prefix := accountID + "."
-	keys, err := s.eipKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.eipKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -335,7 +337,7 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 			continue
 		}
 
-		entry, err := s.eipKV.Get(k)
+		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to get EIP record", "key", k, "error", err)
 			continue
@@ -426,7 +428,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 				continue
 			}
 			key := utils.AccountKey(accountID, *id)
-			entry, err := s.eipKV.Get(key)
+			entry, err := s.eipKV.Get(ctx, key)
 			if err != nil {
 				continue // not found, skip
 			}
@@ -443,8 +445,8 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 	} else {
 		// No filter — scan all EIPs for this account.
 		prefix := accountID + "."
-		keys, err := s.eipKV.Keys()
-		if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		keys, err := s.eipKV.Keys(ctx)
+		if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		for _, k := range keys {
@@ -454,7 +456,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 			if !strings.HasPrefix(k, prefix) {
 				continue
 			}
-			entry, err := s.eipKV.Get(k)
+			entry, err := s.eipKV.Get(ctx, k)
 			if err != nil {
 				slog.WarnContext(ctx, "Failed to get EIP record", "key", k, "error", err)
 				continue
@@ -537,9 +539,9 @@ func (s *EIPServiceImpl) lookupENIByInstance(ctx context.Context, accountID, ins
 }
 
 // findByAssociationID scans EIP records to find one matching the given association ID.
-func (s *EIPServiceImpl) findByAssociationID(accountID, associationID string) (*EIPRecord, string, uint64, error) {
+func (s *EIPServiceImpl) findByAssociationID(ctx context.Context, accountID, associationID string) (*EIPRecord, string, uint64, error) {
 	prefix := accountID + "."
-	keys, err := s.eipKV.Keys()
+	keys, err := s.eipKV.Keys(ctx)
 	if err != nil {
 		return nil, "", 0, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -552,7 +554,7 @@ func (s *EIPServiceImpl) findByAssociationID(accountID, associationID string) (*
 			continue
 		}
 
-		entry, err := s.eipKV.Get(k)
+		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			continue
 		}
@@ -578,7 +580,7 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 		return "", false
 	}
 	prefix := accountID + "."
-	keys, err := s.eipKV.Keys()
+	keys, err := s.eipKV.Keys(ctx)
 	if err != nil {
 		return "", false
 	}
@@ -586,7 +588,7 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.eipKV.Get(k)
+		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			continue
 		}
@@ -607,12 +609,13 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 // gone from the manager the per-instance release never runs, so an
 // internet-facing ALB's EIP would otherwise orphan. No-op when nothing matches.
 func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
+	ctx := context.Background()
 	if instanceID == "" {
 		return nil
 	}
-	keys, err := s.eipKV.Keys()
+	keys, err := s.eipKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list eip keys: %w", err)
@@ -622,7 +625,7 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 		if k == utils.VersionKey {
 			continue
 		}
-		entry, err := s.eipKV.Get(k)
+		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			continue
 		}
@@ -639,13 +642,13 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 			continue
 		}
 		if record.AssociationId != "" {
-			if _, err := s.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
+			if _, err := s.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
 				AssociationId: aws.String(record.AssociationId),
 			}, accountID); err != nil {
 				errs = append(errs, fmt.Errorf("disassociate %s: %w", record.AllocationId, err))
 			}
 		}
-		if _, err := s.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
+		if _, err := s.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
 			AllocationId: aws.String(record.AllocationId),
 		}, accountID); err != nil {
 			errs = append(errs, fmt.Errorf("release %s: %w", record.AllocationId, err))
@@ -701,7 +704,7 @@ func (s *EIPServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID s
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
 		func(r *EIPRecord) *map[string]string { return &r.Tags },
 		utils.MergeTagsMut(input))
 }
@@ -712,7 +715,7 @@ func (s *EIPServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.eipKV, accountID, "eipalloc-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
 		func(r *EIPRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
 }

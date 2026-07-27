@@ -1,144 +1,84 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560">
-  <defs>
-    <linearGradient id="pf-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0a0a0a"/>
-      <stop offset="100%" style="stop-color:#0d1117"/>
-    </linearGradient>
-    <linearGradient id="hw-grad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#52525b;stop-opacity:0.18"/>
-      <stop offset="100%" style="stop-color:#52525b;stop-opacity:0.06"/>
-    </linearGradient>
-    <linearGradient id="os-grad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#a855f7;stop-opacity:0.18"/>
-      <stop offset="100%" style="stop-color:#a855f7;stop-opacity:0.05"/>
-    </linearGradient>
-    <linearGradient id="spx-grad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#DC2626;stop-opacity:0.28"/>
-      <stop offset="100%" style="stop-color:#7F1D1D;stop-opacity:0.1"/>
-    </linearGradient>
-    <linearGradient id="app-grad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#3fb950;stop-opacity:0.18"/>
-      <stop offset="100%" style="stop-color:#3fb950;stop-opacity:0.05"/>
-    </linearGradient>
-  </defs>
-
-  <rect width="900" height="560" fill="url(#pf-bg)" rx="12"/>
-
-  <!-- Subtle mesh dots background -->
-  <g opacity="0.12" fill="#7F1D1D">
-    <circle cx="40" cy="40" r="1"/><circle cx="120" cy="30" r="1"/><circle cx="220" cy="50" r="1"/>
-    <circle cx="320" cy="25" r="1"/><circle cx="440" cy="45" r="1"/><circle cx="560" cy="30" r="1"/>
-    <circle cx="680" cy="50" r="1"/><circle cx="780" cy="30" r="1"/><circle cx="860" cy="45" r="1"/>
-    <circle cx="60" cy="530" r="1"/><circle cx="160" cy="520" r="1"/><circle cx="260" cy="540" r="1"/>
-    <circle cx="380" cy="525" r="1"/><circle cx="500" cy="540" r="1"/><circle cx="620" cy="520" r="1"/>
-    <circle cx="740" cy="540" r="1"/><circle cx="840" cy="525" r="1"/>
-  </g>
-
-  <!-- Title -->
-  <text x="450" y="32" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a1a1aa" text-anchor="middle" letter-spacing="2.8">THE MULGA PLATFORM</text>
-  <text x="450" y="58" font-family="'Segoe UI', system-ui, sans-serif" font-size="20" font-weight="600" fill="#f5f5f5" text-anchor="middle">AWS-style workflows, on your own stack</text>
-
-  <!-- Layer 4: Applications (top) -->
-  <g transform="translate(60, 95)">
-    <rect width="780" height="88" rx="10" fill="url(#app-grad)" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.55"/>
-    <text x="20" y="26" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#3fb950" letter-spacing="1.5" font-weight="600">LAYER 4 · APPLICATIONS &amp; TOOLING</text>
-    <text x="20" y="48" font-family="'Segoe UI', sans-serif" font-size="15" fill="#f5f5f5" font-weight="500">Your workloads — unmodified AWS tooling</text>
-
-    <g transform="translate(20, 60)" font-family="'Segoe UI', sans-serif" font-size="10.5">
-      <rect x="0" y="0" width="70" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="35" y="14" fill="#7ee787" text-anchor="middle">aws-cli</text>
-
-      <rect x="78" y="0" width="78" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="117" y="14" fill="#7ee787" text-anchor="middle">Terraform</text>
-
-      <rect x="164" y="0" width="88" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="208" y="14" fill="#7ee787" text-anchor="middle">AWS SDKs</text>
-
-      <rect x="260" y="0" width="88" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="304" y="14" fill="#7ee787" text-anchor="middle">Kubernetes</text>
-
-      <rect x="356" y="0" width="70" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="391" y="14" fill="#7ee787" text-anchor="middle">Packer</text>
-
-      <rect x="434" y="0" width="98" height="20" rx="10" fill="#3fb950" fill-opacity="0.14" stroke="#3fb950" stroke-opacity="0.45" stroke-width="0.5"/>
-      <text x="483" y="14" fill="#7ee787" text-anchor="middle">Your Services</text>
-    </g>
-  </g>
-
-  <!-- Down arrow -->
-  <g transform="translate(450, 188)" opacity="0.45">
-    <line x1="0" y1="0" x2="0" y2="14" stroke="#a1a1aa" stroke-width="1"/>
-    <polygon points="-4,12 4,12 0,18" fill="#a1a1aa"/>
-  </g>
-
-  <!-- Layer 3: Spinifex (highlighted) -->
-  <g transform="translate(60, 215)">
-    <rect width="780" height="140" rx="10" fill="url(#spx-grad)" stroke="#DC2626" stroke-width="1.5" stroke-opacity="0.75"/>
-    <text x="20" y="26" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#F87171" letter-spacing="1.5" font-weight="600">LAYER 3 · SPINIFEX · AWS ORCHESTRATION</text>
-    <text x="20" y="50" font-family="'Segoe UI', sans-serif" font-size="15" fill="#f5f5f5" font-weight="500">AWS Gateway → NATS → Service Daemons · SigV4, IAM, VPC-aware</text>
-
-    <g transform="translate(20, 66)" font-family="'Segoe UI', sans-serif">
-      <!-- EC2 -->
-      <rect x="0" y="0" width="118" height="58" rx="6" fill="#DC2626" fill-opacity="0.1" stroke="#DC2626" stroke-opacity="0.6" stroke-width="1"/>
-      <text x="59" y="18" font-size="13" fill="#F87171" text-anchor="middle" font-weight="600">EC2</text>
-      <text x="59" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">QEMU/KVM VMs</text>
-      <text x="59" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">cloud-init · AMIs</text>
-
-      <!-- EBS -->
-      <rect x="126" y="0" width="118" height="58" rx="6" fill="#DC2626" fill-opacity="0.1" stroke="#DC2626" stroke-opacity="0.6" stroke-width="1"/>
-      <text x="185" y="18" font-size="13" fill="#F87171" text-anchor="middle" font-weight="600">EBS</text>
-      <text x="185" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">Viperblock</text>
-      <text x="185" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">WAL · NBD · snapshots</text>
-
-      <!-- S3 -->
-      <rect x="252" y="0" width="118" height="58" rx="6" fill="#DC2626" fill-opacity="0.1" stroke="#DC2626" stroke-opacity="0.6" stroke-width="1"/>
-      <text x="311" y="18" font-size="13" fill="#F87171" text-anchor="middle" font-weight="600">S3</text>
-      <text x="311" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">Predastore</text>
-      <text x="311" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">Reed–Solomon EC</text>
-
-      <!-- VPC -->
-      <rect x="378" y="0" width="118" height="58" rx="6" fill="#7F1D1D" fill-opacity="0.22" stroke="#F87171" stroke-opacity="0.55" stroke-width="1"/>
-      <text x="437" y="18" font-size="13" fill="#FCA5A5" text-anchor="middle" font-weight="600">VPC</text>
-      <text x="437" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">OVN / OVS</text>
-      <text x="437" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">subnets · SG · ALB</text>
-
-      <!-- IAM -->
-      <rect x="504" y="0" width="118" height="58" rx="6" fill="#7F1D1D" fill-opacity="0.22" stroke="#F87171" stroke-opacity="0.55" stroke-width="1"/>
-      <text x="563" y="18" font-size="13" fill="#FCA5A5" text-anchor="middle" font-weight="600">IAM</text>
-      <text x="563" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">SigV4 · policies</text>
-      <text x="563" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">users · roles · keys</text>
-
-      <!-- Control -->
-      <rect x="630" y="0" width="110" height="58" rx="6" fill="#27272a" fill-opacity="0.8" stroke="#71717a" stroke-opacity="0.6" stroke-width="1"/>
-      <text x="685" y="18" font-size="13" fill="#e4e4e7" text-anchor="middle" font-weight="600">Control</text>
-      <text x="685" y="34" font-size="9.5" fill="#f5f5f5" text-anchor="middle">NATS bus</text>
-      <text x="685" y="48" font-size="9.5" fill="#a1a1aa" text-anchor="middle">spx · daemons</text>
-    </g>
-  </g>
-
-  <!-- Down arrow -->
-  <g transform="translate(450, 360)" opacity="0.45">
-    <line x1="0" y1="0" x2="0" y2="14" stroke="#a1a1aa" stroke-width="1"/>
-    <polygon points="-4,12 4,12 0,18" fill="#a1a1aa"/>
-  </g>
-
-  <!-- Layer 2: OS -->
-  <g transform="translate(60, 387)">
-    <rect width="780" height="62" rx="10" fill="url(#os-grad)" stroke="#a855f7" stroke-width="1.2" stroke-opacity="0.5"/>
-    <text x="20" y="22" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#c084fc" letter-spacing="1.5" font-weight="600">LAYER 2 · OPERATING SYSTEM</text>
-    <text x="20" y="44" font-family="'Segoe UI', sans-serif" font-size="14" fill="#f5f5f5">Debian / Ubuntu LTS · systemd · KVM · Linux bridge · headless autoinstall</text>
-  </g>
-
-  <!-- Down arrow -->
-  <g transform="translate(450, 454)" opacity="0.45">
-    <line x1="0" y1="0" x2="0" y2="14" stroke="#a1a1aa" stroke-width="1"/>
-    <polygon points="-4,12 4,12 0,18" fill="#a1a1aa"/>
-  </g>
-
-  <!-- Layer 1: Hardware -->
-  <g transform="translate(60, 481)">
-    <rect width="780" height="62" rx="10" fill="url(#hw-grad)" stroke="#71717a" stroke-width="1.2" stroke-opacity="0.6"/>
-    <text x="20" y="22" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#a1a1aa" letter-spacing="1.5" font-weight="600">LAYER 1 · HARDWARE</text>
-    <text x="20" y="44" font-family="'Segoe UI', sans-serif" font-size="14" fill="#f5f5f5">Single node · multi-node cluster · edge appliance · air-gapped rack · commodity x86 / ARM</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="664" viewBox="0 0 1000 664" role="img" aria-label="The Spinifex stack: applications and AWS tooling on top, the Spinifex AWS-compatible service layer, running on standard Linux on CPU/GPU hardware, deployable to Neocloud, on-prem or edge.">
+<rect x="0.0" y="0.0" width="1000.0" height="664.0" rx="20" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<rect x="28.0" y="204.0" width="950.0" height="438.0" rx="16" fill="none" fill-opacity="1.0" stroke="#9AA1A8" stroke-width="1" stroke-opacity="0.12" stroke-dasharray="2 4"/>
+<rect x="25.0" y="201.0" width="950.0" height="438.0" rx="16" fill="none" fill-opacity="1.0" stroke="#9AA1A8" stroke-width="1" stroke-opacity="0.2" stroke-dasharray="2 4"/>
+<rect x="22.0" y="198.0" width="950.0" height="438.0" rx="16" fill="#181D23" fill-opacity="0.25" stroke="#9AA1A8" stroke-width="1.3" stroke-opacity="0.45" stroke-dasharray="2 4"/>
+<text x="36.0" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="500" text-anchor="start">Apps</text>
+<rect x="136.0" y="34.0" width="836.0" height="54.0" rx="12" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="156.0" y="66.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="15" fill="#F5F3EE" font-weight="700" text-anchor="start">Your infrastructure &amp; apps</text>
+<rect x="516.7" y="51.0" width="89.3" height="20.0" rx="10" fill="#EE4B12" fill-opacity="0.16" stroke="none" stroke-width="1" stroke-opacity="1.0"/>
+<text x="561.4" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#EE4B12" font-weight="500" text-anchor="middle">AI training</text>
+<rect x="613.0" y="51.0" width="76.7" height="20.0" rx="10" fill="#EE4B12" fill-opacity="0.16" stroke="none" stroke-width="1" stroke-opacity="1.0"/>
+<text x="651.4" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#EE4B12" font-weight="500" text-anchor="middle">Inference</text>
+<rect x="696.7" y="51.0" width="79.0" height="20.0" rx="10" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1"/>
+<text x="736.2" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="middle">Web &amp; APIs</text>
+<rect x="782.7" y="51.0" width="72.7" height="20.0" rx="10" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1"/>
+<text x="819.1" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="middle">Databases</text>
+<rect x="862.4" y="51.0" width="91.6" height="20.0" rx="10" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1"/>
+<text x="908.2" y="64.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="middle">Batch &amp; data</text>
+<text x="36.0" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="500" text-anchor="start">Tooling</text>
+<rect x="136.0" y="102.0" width="836.0" height="54.0" rx="12" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="156.0" y="134.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="15" fill="#F5F3EE" font-weight="700" text-anchor="start">AWS tooling</text>
+<rect x="600.9" y="119.0" width="64.1" height="20.0" rx="10" fill="#EE4B12" fill-opacity="0.05" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.45"/>
+<text x="633.0" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#F3F1EC" font-weight="400" text-anchor="middle" fill-opacity="0.85">aws-cli</text>
+<rect x="672.0" y="119.0" width="76.7" height="20.0" rx="10" fill="#EE4B12" fill-opacity="0.05" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.45"/>
+<text x="710.4" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#F3F1EC" font-weight="400" text-anchor="middle" fill-opacity="0.85">Terraform</text>
+<rect x="755.7" y="119.0" width="64.1" height="20.0" rx="10" fill="#EE4B12" fill-opacity="0.05" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.45"/>
+<text x="787.8" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#F3F1EC" font-weight="400" text-anchor="middle" fill-opacity="0.85">kubectl</text>
+<rect x="826.8" y="119.0" width="66.4" height="20.0" rx="10" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1"/>
+<text x="860.0" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="middle">AWS SDKs</text>
+<rect x="900.2" y="119.0" width="53.8" height="20.0" rx="10" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1"/>
+<text x="927.1" y="132.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="middle">Packer</text>
+<text x="484.0" y="184.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="end">↓  AWS API · SigV4</text>
+<text x="624.0" y="184.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">RESPONSE  ↑</text>
+<text x="136.0" y="231.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="15" fill="#F5F3EE" font-weight="700" text-anchor="start">One portable stack.</text>
+<text x="136.0" y="249.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="start">Runs the same on a single node, cluster, edge, or air-gapped rack.</text>
+<rect x="752.3" y="222.0" width="72.4" height="22.0" rx="6" fill="none" fill-opacity="1.0" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="788.5" y="236.5" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10" fill="#EE4B12" font-weight="500" text-anchor="middle">NEOCLOUD</text>
+<rect x="832.7" y="222.0" width="66.1" height="22.0" rx="6" fill="none" fill-opacity="1.0" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="865.7" y="236.5" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10" fill="#EE4B12" font-weight="500" text-anchor="middle">ON-PREM</text>
+<rect x="906.8" y="222.0" width="47.2" height="22.0" rx="6" fill="none" fill-opacity="1.0" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="930.4" y="236.5" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10" fill="#EE4B12" font-weight="500" text-anchor="middle">EDGE</text>
+<text x="152.0" y="295.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="16" fill="#F5F3EE" font-weight="800" text-anchor="start">AWS orchestration</text>
+<text x="956.0" y="293.9" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#EE4B12" font-weight="400" text-anchor="end" fill-opacity="0.9">Gateway → NATS → daemons</text>
+<rect x="150.0" y="312.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="164.0" y="333.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">EC2</text>
+<text x="164.0" y="349.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Compute</text>
+<text x="164.0" y="363.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">QEMU / KVM</text>
+<rect x="422.7" y="312.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="436.7" y="333.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">EBS</text>
+<text x="436.7" y="349.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Block storage</text>
+<text x="436.7" y="363.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">Viperblock</text>
+<rect x="695.3" y="312.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="709.3" y="333.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">S3</text>
+<text x="709.3" y="349.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Object storage</text>
+<text x="709.3" y="363.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">Predastore</text>
+<rect x="150.0" y="382.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="164.0" y="403.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">VPC</text>
+<text x="164.0" y="419.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Networking</text>
+<text x="164.0" y="433.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">OVN / OVS</text>
+<rect x="422.7" y="382.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="436.7" y="403.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">IAM</text>
+<text x="436.7" y="419.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Identity</text>
+<text x="436.7" y="433.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">SigV4 · policies</text>
+<rect x="695.3" y="382.0" width="262.7" height="60.0" rx="9" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="709.3" y="403.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="13" fill="#EE4B12" font-weight="600" text-anchor="start">EKS</text>
+<text x="709.3" y="419.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12.5" fill="#F3F1EC" font-weight="400" text-anchor="start">Kubernetes</text>
+<text x="709.3" y="433.0" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="start">K8s-conformant</text>
+<rect x="150.0" y="452.0" width="808.0" height="32.0" rx="8" fill="#14181D" fill-opacity="0.6" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="3 3"/>
+<text x="164.0" y="472.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#9AA1A8" font-weight="400" text-anchor="start">+ ALB · ECS · ECR · RDS and more of the core AWS services</text>
+<text x="944.0" y="471.9" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#EE4B12" font-weight="400" text-anchor="end">See all →</text>
+<text x="36.0" y="386.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#EE4B12" font-weight="500" text-anchor="start">Spinifex</text>
+<rect x="136.0" y="268.0" width="836.0" height="230.0" rx="12" fill="#EE4B12" fill-opacity="0.07" stroke="#EE4B12" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="36.0" y="536.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="500" text-anchor="start">OS</text>
+<rect x="136.0" y="510.0" width="836.0" height="46.0" rx="12" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="156.0" y="537.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="14" fill="#F5F3EE" font-weight="700" text-anchor="start">Operating system</text>
+<text x="952.0" y="536.9" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="end">Debian / Ubuntu LTS · systemd · KVM · Linux bridge · Open vSwitch</text>
+<text x="36.0" y="596.7" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="500" text-anchor="start">Hardware</text>
+<rect x="136.0" y="568.0" width="413.0" height="50.0" rx="12" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="156.0" y="597.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="14" fill="#F5F3EE" font-weight="700" text-anchor="start">CPU</text>
+<text x="533.0" y="596.9" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="end">Intel · AMD · ARM</text>
+<rect x="559.0" y="568.0" width="413.0" height="50.0" rx="12" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="579.0" y="597.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="14" fill="#F5F3EE" font-weight="700" text-anchor="start">GPU</text>
+<text x="956.0" y="596.9" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#EE4B12" font-weight="400" text-anchor="end">NVIDIA · AMD</text>
 </svg>

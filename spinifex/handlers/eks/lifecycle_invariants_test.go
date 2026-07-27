@@ -40,7 +40,7 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 	require.Error(t, err, "ADR-0006 §6: a failed billable teardown must surface, not be swallowed")
 
 	require.Len(t, f.inst.terminateCalls, 1, "the VM teardown must have been attempted")
-	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.NoErrorf(t, getErr, "ADR-0006 §6 billable-before-sweep: the KV sweep must NOT run while a billable teardown is failing — the meta must survive for retry")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with failed teardown must stay DELETING")
 }
@@ -67,7 +67,7 @@ func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
 	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.NoError(t, err)
 
-	_, getErr := GetClusterMeta(f.kv, "alpha")
+	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.ErrorIs(t, getErr, ErrClusterNotFound, "a fully torn-down cluster must be swept")
 	assert.NotContainsf(t, f.nlb.tgByName, tgName,
 		"ADR-0006 §6 NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides ADR-0002/172)")

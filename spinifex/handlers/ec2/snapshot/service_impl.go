@@ -22,12 +22,14 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure SnapshotServiceImpl implements SnapshotService.
@@ -36,6 +38,7 @@ var _ SnapshotService = (*SnapshotServiceImpl)(nil)
 const (
 	KVBucketVolumeSnapshots        = "spinifex-volume-snapshots"
 	KVBucketVolumeSnapshotsVersion = 1
+	snapshotCleanupTimeout         = 5 * time.Second
 )
 
 // SnapshotServiceImpl implements SnapshotService with S3-backed storage.
@@ -43,7 +46,7 @@ type SnapshotServiceImpl struct {
 	config   *config.Config
 	store    objectstore.ObjectStore
 	natsConn *nats.Conn
-	snapKV   nats.KeyValue
+	snapKV   jetstream.KeyValue
 	mutex    sync.RWMutex
 }
 
@@ -63,7 +66,7 @@ type SnapshotConfig struct {
 }
 
 // NewSnapshotServiceImplWithNATS creates a snapshot service with JetStream KV for volume-snapshot tracking.
-func NewSnapshotServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*SnapshotServiceImpl, nats.KeyValue, error) {
+func NewSnapshotServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*SnapshotServiceImpl, jetstream.KeyValue, error) {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -71,16 +74,16 @@ func NewSnapshotServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*S
 		cfg.Predastore.SecretKey,
 	)
 
-	js, err := natsConn.JetStream()
+	js, err := jetstream.New(natsConn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get JetStream context: %w", err)
+		return nil, nil, fmt.Errorf("create JetStream: %w", err)
 	}
 
-	kv, err := utils.GetOrCreateKVBucket(js, KVBucketVolumeSnapshots, 10)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketVolumeSnapshots, 10)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketVolumeSnapshots, err)
+		return nil, nil, fmt.Errorf("create KV bucket %s: %w", KVBucketVolumeSnapshots, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketVolumeSnapshots, kv, KVBucketVolumeSnapshotsVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketVolumeSnapshots, kv, KVBucketVolumeSnapshotsVersion); err != nil {
 		return nil, nil, fmt.Errorf("migrate %s: %w", KVBucketVolumeSnapshots, err)
 	}
 
@@ -96,7 +99,7 @@ func NewSnapshotServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*S
 
 // NewSnapshotServiceImplWithStore creates a snapshot service with a custom ObjectStore (for testing).
 // An optional snapshotKV can be provided for KV-backed volume-snapshot tracking.
-func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...nats.KeyValue) *SnapshotServiceImpl {
+func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...jetstream.KeyValue) *SnapshotServiceImpl {
 	svc := &SnapshotServiceImpl{
 		config:   cfg,
 		store:    store,
@@ -271,14 +274,16 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 
 	// Track the volume→snapshot dependency in KV before persisting to S3.
 	// This ensures we never have an untracked snapshot in S3.
-	if err := s.addSnapshotRef(volumeID, snapshotID); err != nil {
+	if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.putSnapshotConfig(snapshotID, snapshotCfg); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
-		_ = s.removeSnapshotRef(volumeID, snapshotID) // best-effort cleanup
+		if cleanupErr := s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID); cleanupErr != nil {
+			slog.Error("CreateSnapshot failed to roll back snapshot reference", "snapshotId", snapshotID, "volumeId", volumeID, "err", cleanupErr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -590,8 +595,8 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 
 	// Remove from KV after S3 cleanup. Failure is logged but not fatal —
 	// a phantom entry safely blocks volume deletion rather than allowing it.
-	if err := s.removeSnapshotRef(cfg.VolumeID, snapshotID); err != nil {
-		slog.WarnContext(ctx, "DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
+	if err := s.removeSnapshotRefForCleanup(ctx, cfg.VolumeID, snapshotID); err != nil {
+		slog.Warn("DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)
 	}
 
 	slog.InfoContext(ctx, "DeleteSnapshot completed", "snapshotId", snapshotID)
@@ -645,14 +650,16 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 	maps.Copy(newCfg.Tags, sourceCfg.Tags)
 
 	// Track the volume→snapshot dependency in KV before persisting to S3.
-	if err := s.addSnapshotRef(sourceCfg.VolumeID, newSnapshotID); err != nil {
+	if err := s.addSnapshotRef(ctx, sourceCfg.VolumeID, newSnapshotID); err != nil {
 		slog.ErrorContext(ctx, "CopySnapshot failed to add snapshot ref to KV", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.putSnapshotConfig(newSnapshotID, newCfg); err != nil {
 		slog.ErrorContext(ctx, "CopySnapshot failed to write config", "snapshotId", newSnapshotID, "err", err)
-		_ = s.removeSnapshotRef(sourceCfg.VolumeID, newSnapshotID) // best-effort cleanup
+		if cleanupErr := s.removeSnapshotRefForCleanup(ctx, sourceCfg.VolumeID, newSnapshotID); cleanupErr != nil {
+			slog.Error("CopySnapshot failed to roll back snapshot reference", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", cleanupErr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -665,7 +672,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 
 // addSnapshotRef adds snapshotID to the volume's snapshot list in KV.
 // Uses CAS (Create/Update with revision) to prevent lost updates under concurrency.
-func (s *SnapshotServiceImpl) addSnapshotRef(volumeID, snapshotID string) error {
+func (s *SnapshotServiceImpl) addSnapshotRef(ctx context.Context, volumeID, snapshotID string) error {
 	if s.snapKV == nil {
 		slog.Debug("addSnapshotRef: snapshotKV is nil, skipping", "volumeId", volumeID, "snapshotId", snapshotID)
 		return nil
@@ -673,11 +680,11 @@ func (s *SnapshotServiceImpl) addSnapshotRef(volumeID, snapshotID string) error 
 
 	const maxRetries = 5
 	for attempt := range maxRetries {
-		entry, err := s.snapKV.Get(volumeID)
+		entry, err := s.snapKV.Get(ctx, volumeID)
 		var snapshots []string
 
 		if err != nil {
-			if !errors.Is(err, nats.ErrKeyNotFound) {
+			if !errors.Is(err, jetstream.ErrKeyNotFound) {
 				return fmt.Errorf("addSnapshotRef: failed to get KV key %s: %w", volumeID, err)
 			}
 			// Key doesn't exist yet — create with just this snapshot
@@ -685,7 +692,7 @@ func (s *SnapshotServiceImpl) addSnapshotRef(volumeID, snapshotID string) error 
 			if err != nil {
 				return fmt.Errorf("addSnapshotRef: failed to marshal snapshot list: %w", err)
 			}
-			if _, err := s.snapKV.Create(volumeID, data); err != nil {
+			if _, err := s.snapKV.Create(ctx, volumeID, data); err != nil {
 				if attempt < maxRetries-1 {
 					continue // concurrent Create/Update — retry
 				}
@@ -706,7 +713,7 @@ func (s *SnapshotServiceImpl) addSnapshotRef(volumeID, snapshotID string) error 
 			return fmt.Errorf("addSnapshotRef: failed to marshal snapshot list: %w", err)
 		}
 
-		if _, err := s.snapKV.Update(volumeID, data, entry.Revision()); err != nil {
+		if _, err := s.snapKV.Update(ctx, volumeID, data, entry.Revision()); err != nil {
 			if attempt < maxRetries-1 {
 				continue // concurrent update — retry
 			}
@@ -720,10 +727,18 @@ func (s *SnapshotServiceImpl) addSnapshotRef(volumeID, snapshotID string) error 
 	return fmt.Errorf("addSnapshotRef: exhausted retries for KV key %s", volumeID)
 }
 
+// removeSnapshotRefForCleanup removes a reference with a bounded context that
+// survives request cancellation after the snapshot operation has committed.
+func (s *SnapshotServiceImpl) removeSnapshotRefForCleanup(ctx context.Context, volumeID, snapshotID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
+	defer cancel()
+	return s.removeSnapshotRef(cleanupCtx, volumeID, snapshotID)
+}
+
 // removeSnapshotRef removes snapshotID from the volume's snapshot list in KV.
 // Deletes the key if the list becomes empty.
 // Uses CAS (Update with revision) to prevent lost updates under concurrency.
-func (s *SnapshotServiceImpl) removeSnapshotRef(volumeID, snapshotID string) error {
+func (s *SnapshotServiceImpl) removeSnapshotRef(ctx context.Context, volumeID, snapshotID string) error {
 	if s.snapKV == nil {
 		slog.Debug("removeSnapshotRef: snapshotKV is nil, skipping", "volumeId", volumeID, "snapshotId", snapshotID)
 		return nil
@@ -731,9 +746,9 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(volumeID, snapshotID string) err
 
 	const maxRetries = 5
 	for attempt := range maxRetries {
-		entry, err := s.snapKV.Get(volumeID)
+		entry, err := s.snapKV.Get(ctx, volumeID)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil
 			}
 			return fmt.Errorf("removeSnapshotRef: failed to get KV key %s: %w", volumeID, err)
@@ -752,7 +767,7 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(volumeID, snapshotID string) err
 		}
 
 		if len(filtered) == 0 {
-			if err := s.snapKV.Delete(volumeID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+			if err := s.snapKV.Delete(ctx, volumeID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 				return fmt.Errorf("removeSnapshotRef: failed to delete KV key %s: %w", volumeID, err)
 			}
 		} else {
@@ -760,7 +775,7 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(volumeID, snapshotID string) err
 			if err != nil {
 				return fmt.Errorf("removeSnapshotRef: failed to marshal snapshot list: %w", err)
 			}
-			if _, err := s.snapKV.Update(volumeID, data, entry.Revision()); err != nil {
+			if _, err := s.snapKV.Update(ctx, volumeID, data, entry.Revision()); err != nil {
 				if attempt < maxRetries-1 {
 					continue // concurrent update — retry
 				}
@@ -776,14 +791,14 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(volumeID, snapshotID string) err
 }
 
 // volumeHasSnapshots returns true if the volume has any snapshots in KV.
-func (s *SnapshotServiceImpl) volumeHasSnapshots(volumeID string) (bool, error) {
+func (s *SnapshotServiceImpl) volumeHasSnapshots(ctx context.Context, volumeID string) (bool, error) {
 	if s.snapKV == nil {
 		return false, nil
 	}
 
-	entry, err := s.snapKV.Get(volumeID)
+	entry, err := s.snapKV.Get(ctx, volumeID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("volumeHasSnapshots: failed to get KV key %s: %w", volumeID, err)

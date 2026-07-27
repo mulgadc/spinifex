@@ -14,7 +14,8 @@ import (
 // TestKVMetaStore_FullCycle exercises the JetStream-backed MetaStore against an
 // embedded JetStream server, covering the production CAS path.
 func TestKVMetaStore_FullCycle(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	store := NewKVMetaStore(js)
 	const acct = "000000000000"
 
@@ -90,7 +91,8 @@ func TestKVMetaStore_FullCycle(t *testing.T) {
 // tags, and manifests, leaves a same-prefix nested repo intact, and reports
 // ErrNotFound for an absent repo.
 func TestKVMetaStore_DeleteRepo(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	store := NewKVMetaStore(js)
 	const acct = "000000000000"
 	const dig = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -133,7 +135,8 @@ func TestKVMetaStore_DeleteRepo(t *testing.T) {
 // JetStream-backed store and proves the policy key shares the repo bucket
 // without being mistaken for a repository by ListRepos.
 func TestKVMetaStore_RepoPolicy(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	store := NewKVMetaStore(js)
 	const acct = "000000000000"
 	const policy = `{"Version":"2012-10-17","Statement":[]}`
@@ -164,7 +167,8 @@ func TestKVMetaStore_RepoPolicy(t *testing.T) {
 // against the JetStream-backed store and proves the lifecycle key shares the
 // repo bucket without being mistaken for a repository by ListRepos.
 func TestKVMetaStore_LifecyclePolicy(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	store := NewKVMetaStore(js)
 	const acct = "000000000000"
 	const policy = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`

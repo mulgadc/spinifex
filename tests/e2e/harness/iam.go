@@ -22,11 +22,6 @@ func IAMPolicyARN(account, key string) string {
 	return "arn:aws:iam::" + account + ":policy/" + key
 }
 
-// IAMGroupARN constructs arn:aws:iam::<account>:group/<name> (default path /).
-func IAMGroupARN(account, name string) string {
-	return "arn:aws:iam::" + account + ":group/" + name
-}
-
 // IAMAccountID returns the active account ID via STS GetCallerIdentity. Unlike
 // deriving it from a created IAM user's ARN, this is side-effect-free, so suites
 // sharing one account can call it concurrently without minting colliding users.

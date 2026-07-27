@@ -43,13 +43,13 @@ func TestDHCPPoolAllocatorAllocateAndRelease(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "192.0.2.100", addr.String())
 
-	entry, err := store.Get("eipalloc-1")
+	entry, err := store.Get(t.Context(), "eipalloc-1")
 	require.NoError(t, err)
 	assert.Equal(t, dhcp.PurposeEIP, entry.Purpose)
 	assert.Equal(t, "wan", entry.PoolName)
 
 	require.NoError(t, allocator.Release(context.Background(), "wan", addr, ""))
-	_, err = store.Get("eipalloc-1")
+	_, err = store.Get(t.Context(), "eipalloc-1")
 	assert.Error(t, err)
 	assert.Equal(t, 1, fake.ReleaseCount())
 }
@@ -71,7 +71,7 @@ func TestDHCPPoolAllocatorClientIDPrecedence(t *testing.T) {
 	for _, tc := range cases {
 		_, err := allocator.Allocate(context.Background(), tc.req)
 		require.NoError(t, err, "case %+v", tc.req)
-		entry, err := store.Get(tc.clientID)
+		entry, err := store.Get(t.Context(), tc.clientID)
 		require.NoError(t, err, "client id %q not persisted", tc.clientID)
 		assert.Equal(t, tc.purpose, entry.Purpose)
 	}

@@ -3,8 +3,10 @@ package handlers_ec2_key
 import (
 	"bytes"
 	"context"
-	"crypto/md5" //#nosec G501 - need md5 for AWS compatibility
+	"crypto/md5"  //nolint:gosec // G501: MD5 is the digest EC2 puts on the wire, not a security choice
+	"crypto/sha1" //nolint:gosec // G505: SHA-1 is the digest EC2 puts on the wire, not a security choice
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"golang.org/x/crypto/ssh"
 )
 
 // Ensure KeyServiceImpl implements KeyService.
@@ -145,10 +148,28 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Calculate fingerprint based on key type
-	fingerprint, err := s.calculateFingerprint(publicKeyData, keyType)
+	// Fingerprint the key we just generated; the digest algorithm follows the
+	// key algorithm, so it is derived from the parsed key rather than keyType.
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to calculate fingerprint", "err", err)
+		slog.ErrorContext(ctx, "Failed to parse generated public key", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	fingerprint, err := createdKeyFingerprint(privateKeyData, publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to fingerprint generated key pair", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// From here keyType describes the key that exists rather than the one that
+	// was asked for, so that the type stored alongside the fingerprint is read
+	// off the same key the fingerprint was taken from. The import path types its
+	// keys the same way. createdKeyFingerprint has already rejected every
+	// algorithm this can refuse, so the error is unreachable and stated only so
+	// an unsupported key can never be stored under a type EC2 cannot report.
+	keyType, err = keyPairType(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Generated key has an unsupported algorithm", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -174,11 +195,12 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		Tags:           tags,
 	}
 
-	// Store metadata file (CreateKeyPairOutput without KeyMaterial) for keyPairId lookups
-	err = s.storeKeyPairMetadata(ctx, accountID, keyPairID, &ec2.CreateKeyPairOutput{
+	// Store metadata file (everything but the private key) for keyPairId lookups
+	err = s.storeKeyPairMetadata(ctx, accountID, keyPairID, &keyPairMetadata{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		KeyType:        keyType,
 		Tags:           tags,
 	})
 	if err != nil {
@@ -198,48 +220,104 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	return output, nil
 }
 
-// calculateFingerprint computes the SSH key fingerprint
-// - For RSA: SHA-1 hash of public key (MD5 for older format)
-// - For ED25519: SHA-256 hash of public key.
-func (s *KeyServiceImpl) calculateFingerprint(publicKeyData []byte, keyType string) (string, error) {
-	// Parse the public key to extract the key data
-	// Format: "ssh-ed25519 AAAAC3Nza... comment"
-	parts := strings.Fields(string(publicKeyData))
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid public key format")
-	}
+// importedKeyFingerprint fingerprints a key supplied to ImportKeyPair: the MD5
+// of the DER SubjectPublicKeyInfo for RSA, and the SHA-256 of the SSH wire blob
+// for ED25519, both matching AWS.
+func importedKeyFingerprint(publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	case ssh.KeyAlgoED25519:
+		return ed25519Fingerprint(publicKey), nil
 
-	// Decode base64 key data
-	keyData, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to decode public key: %w", err)
-	}
+	case ssh.KeyAlgoRSA:
+		// AWS hashes the DER SubjectPublicKeyInfo, not the RFC 4253 wire blob
+		// that ssh.FingerprintLegacyMD5 uses, so unwrap to the crypto key and
+		// re-encode.
+		cryptoKey, ok := publicKey.(ssh.CryptoPublicKey)
+		if !ok {
+			return "", fmt.Errorf("key algorithm %q exposes no crypto public key", publicKey.Type())
+		}
+		der, err := x509.MarshalPKIXPublicKey(cryptoKey.CryptoPublicKey())
+		if err != nil {
+			return "", fmt.Errorf("marshal public key: %w", err)
+		}
 
-	if keyType == "ed25519" {
-		// ED25519 uses SHA-256 fingerprint
-		hash := sha256.Sum256(keyData)
-		return formatFingerprint(hash[:], "SHA256"), nil
-	} else {
-		// RSA uses SHA-1 or MD5 fingerprint
-		// AWS uses MD5 for RSA keys for backward compatibility
-		hash := md5.Sum(keyData) //#nosec G401 - need md5 for AWS compatibility
-		return formatFingerprint(hash[:], "MD5"), nil
+		sum := md5.Sum(der) //nolint:gosec // G401: MD5 is the digest EC2 puts on the wire, not a security choice
+		return colonHex(sum[:]), nil
+
+	default:
+		// keyPairType rejects these first, so this is unreachable in the import
+		// path. It is stated rather than left to x509, which happily marshals an
+		// ECDSA key and would hand back a digest AWS has no counterpart for.
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
 	}
 }
 
-// formatFingerprint formats the hash as a colon-separated hex string.
-func formatFingerprint(hash []byte, algorithm string) string {
-	if algorithm == "MD5" {
-		// MD5 format: aa:bb:cc:dd:...
-		return strings.ToLower(hex.EncodeToString(hash))
-	} else {
-		// SHA256 format: SHA256:base64encodedstring
-		return fmt.Sprintf("SHA256:%s", base64.RawStdEncoding.EncodeToString(hash))
+// createdKeyFingerprint fingerprints a key EC2 generated itself. For RSA that is
+// the SHA-1 of the DER PKCS#8 private key, a 20-byte digest over material the
+// caller receives once and the store never keeps. ED25519 hashes the public key,
+// exactly as the import path does.
+func createdKeyFingerprint(privateKeyPEM []byte, publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	// Matched ahead of the PKCS#8 path deliberately: ParseRawPrivateKey hands
+	// back *ed25519.PrivateKey, a pointer type MarshalPKCS8PrivateKey rejects,
+	// so an ED25519 key reaching that path would fail at runtime.
+	case ssh.KeyAlgoED25519:
+		return ed25519Fingerprint(publicKey), nil
+
+	case ssh.KeyAlgoRSA:
+		rawKey, err := ssh.ParseRawPrivateKey(privateKeyPEM)
+		if err != nil {
+			return "", fmt.Errorf("parse generated private key: %w", err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(rawKey)
+		if err != nil {
+			return "", fmt.Errorf("marshal private key: %w", err)
+		}
+
+		sum := sha1.Sum(der) //nolint:gosec // G401: SHA-1 is the digest EC2 puts on the wire, not a security choice
+		return colonHex(sum[:]), nil
+
+	default:
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
+	}
+}
+
+// ed25519Fingerprint renders the SHA-256 of the SSH wire blob as EC2 spells it:
+// bare padded base64, without the "SHA256:" prefix OpenSSH prepends and with the
+// padding OpenSSH omits.
+func ed25519Fingerprint(publicKey ssh.PublicKey) string {
+	sum := sha256.Sum256(publicKey.Marshal())
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// colonHex renders digest bytes the way EC2 spells a fingerprint: lowercase hex
+// byte pairs joined by colons.
+func colonHex(digest []byte) string {
+	encoded := hex.EncodeToString(digest)
+	pairs := make([]string, 0, len(digest))
+	for i := 0; i < len(encoded); i += 2 {
+		pairs = append(pairs, encoded[i:i+2])
+	}
+	return strings.Join(pairs, ":")
+}
+
+// keyPairType maps an SSH public key algorithm to the EC2 key type string. EC2
+// key pairs are RSA or ED25519 only, so every other algorithm -- ECDSA and
+// ssh-dss included -- is rejected rather than stored under a type the API has no
+// way to report back.
+func keyPairType(publicKey ssh.PublicKey) (string, error) {
+	switch publicKey.Type() {
+	case ssh.KeyAlgoED25519:
+		return "ed25519", nil
+	case ssh.KeyAlgoRSA:
+		return "rsa", nil
+	default:
+		return "", fmt.Errorf("unsupported key algorithm %q", publicKey.Type())
 	}
 }
 
 // storeKeyPairMetadata stores key pair metadata (without private key) to S3 for keyPairId lookups.
-func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, keyPairID string, metadata *ec2.CreateKeyPairOutput) error {
+func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, keyPairID string, metadata *keyPairMetadata) error {
 	// Store metadata with keyPairId as filename for efficient lookup when keyPairId is provided
 	metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
 
@@ -287,8 +365,8 @@ func (s *KeyServiceImpl) getKeyNameFromKeyPairId(ctx context.Context, accountID,
 		return "", fmt.Errorf("failed to read metadata: %w", err)
 	}
 
-	var metadata ec2.CreateKeyPairOutput
-	if err := json.Unmarshal(body, &metadata); err != nil {
+	metadata, err := decodeKeyPairMetadata(body)
+	if err != nil {
 		slog.Error("Failed to unmarshal metadata", "err", err)
 		return "", fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
@@ -346,8 +424,8 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 			continue
 		}
 
-		var metadata ec2.CreateKeyPairOutput
-		if err := json.Unmarshal(body, &metadata); err != nil {
+		metadata, err := decodeKeyPairMetadata(body)
+		if err != nil {
 			slog.Debug("Failed to unmarshal metadata", "key", *obj.Key, "err", err)
 			continue
 		}
@@ -572,8 +650,8 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 			continue
 		}
 
-		var metadata ec2.CreateKeyPairOutput
-		if err := json.Unmarshal(body, &metadata); err != nil {
+		metadata, err := decodeKeyPairMetadata(body)
+		if err != nil {
 			slog.DebugContext(ctx, "Failed to unmarshal metadata", "key", *obj.Key, "err", err)
 			continue
 		}
@@ -606,20 +684,15 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 			}
 		}
 
-		// Determine key type from fingerprint format
-		var keyType string
-		if metadata.KeyFingerprint != nil && strings.HasPrefix(*metadata.KeyFingerprint, "SHA256:") {
-			keyType = "ed25519"
-		} else {
-			keyType = "rsa"
-		}
-
-		// Build KeyPairInfo from metadata
+		// Build KeyPairInfo from metadata. Records predating the stored KeyType
+		// were typed by the decoder, which also normalised the fingerprint they
+		// were typed from; the object itself is left as it was found, so a list
+		// does not turn into a write per key pair.
 		keyPairInfo := &ec2.KeyPairInfo{
 			KeyPairId:      metadata.KeyPairId,
 			KeyFingerprint: metadata.KeyFingerprint,
 			KeyName:        metadata.KeyName,
-			KeyType:        aws.String(keyType),
+			KeyType:        aws.String(metadata.KeyType),
 			Tags:           metadata.Tags,
 		}
 
@@ -710,43 +783,49 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
 	}
 
-	// Parse the public key material to extract key data and determine type
-	publicKeyData := input.PublicKeyMaterial
-	publicKeyString := string(publicKeyData)
-
-	// Parse the public key format: "ssh-rsa AAAAB..." or "ssh-ed25519 AAAAC..."
-	parts := strings.Fields(publicKeyString)
-	if len(parts) < 2 {
-		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName)
+	// The material is stored verbatim and later served to instances as their
+	// authorized_keys, so it must hold exactly the one key the returned
+	// fingerprint describes. ParseAuthorizedKey skips leading comment and junk
+	// lines and stops at the first key, so a multi-line blob would otherwise be
+	// stored -- and trusted by the guest -- in full while only its first key was
+	// validated. Requiring a single line is how that rule is enforced; RFC 4716
+	// material is multi-line and would need normalising to an OpenSSH line
+	// before it reached here.
+	//
+	// This binds new imports only. Records written before the check exists are
+	// never revalidated, so material already in the object store may still be
+	// multi-line or option-prefixed and is still served to guests as-is.
+	publicKeyData := bytes.TrimSpace(input.PublicKeyMaterial)
+	if bytes.ContainsAny(publicKeyData, "\r\n") {
+		slog.ErrorContext(ctx, "Public key material is not a single key", "keyName", keyName)
 		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
 	}
 
-	// Determine key type from algorithm prefix
-	var keyType string
-	algorithmPrefix := parts[0]
-	switch {
-	case strings.HasPrefix(algorithmPrefix, "ssh-ed25519"):
-		keyType = "ed25519"
-	case strings.HasPrefix(algorithmPrefix, "ssh-rsa"):
-		keyType = "rsa"
-	case strings.HasPrefix(algorithmPrefix, "ecdsa-sha2-"):
-		// ECDSA keys are also supported but less common
-		keyType = "ecdsa"
-	default:
-		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", algorithmPrefix, "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
-	}
-
-	// Validate that the key data is valid base64
-	if _, err := base64.StdEncoding.DecodeString(parts[1]); err != nil {
-		slog.ErrorContext(ctx, "Invalid base64 in public key material", "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
-	}
-
-	// Calculate fingerprint from the imported public key
-	fingerprint, err := s.calculateFingerprint(publicKeyData, keyType)
+	// Parse the authorized-key line ("ssh-rsa AAAAB... comment"), which also
+	// validates the base64 body against the algorithm's wire encoding.
+	publicKey, _, options, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to calculate fingerprint", "err", err)
+		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
+	// An option prefix ("command=...", "from=...") is not covered by the
+	// fingerprint, yet sshd would apply it to every login on every instance
+	// launched with this key pair. Refuse to import access the API cannot report.
+	if len(options) > 0 {
+		slog.ErrorContext(ctx, "Public key material carries authorized_keys options", "keyName", keyName, "options", options)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
+	keyType, err := keyPairType(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+	}
+
+	fingerprint, err := importedKeyFingerprint(publicKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to fingerprint imported key", "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -774,14 +853,13 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	}
 
 	// Store metadata file (without public key material)
-	metadataOutput := &ec2.CreateKeyPairOutput{
+	err = s.storeKeyPairMetadata(ctx, accountID, keyPairID, &keyPairMetadata{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
+		KeyType:        keyType,
 		Tags:           tags,
-	}
-
-	err = s.storeKeyPairMetadata(ctx, accountID, keyPairID, metadataOutput)
+	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to store key pair metadata", "err", err, "keyPairId", keyPairID)
 		// Try to cleanup the public key we just uploaded
@@ -843,8 +921,10 @@ func (s *KeyServiceImpl) mirrorKeyPairTags(ctx context.Context, resources []*str
 		if err != nil {
 			return fmt.Errorf("failed to read key pair metadata: %w", err)
 		}
-		var metadata ec2.CreateKeyPairOutput
-		if err := json.Unmarshal(body, &metadata); err != nil {
+		// The whole record is rewritten, not just its Tags, so a legacy record is
+		// persisted here in the form the decoder upgraded it to.
+		metadata, err := decodeKeyPairMetadata(body)
+		if err != nil {
 			return fmt.Errorf("failed to unmarshal key pair metadata: %w", err)
 		}
 		tags := filterutil.EC2TagsToMap(metadata.Tags)
@@ -853,7 +933,7 @@ func (s *KeyServiceImpl) mirrorKeyPairTags(ctx context.Context, resources []*str
 		}
 		mut(tags)
 		metadata.Tags = utils.MapToEC2Tags(tags)
-		if err := s.storeKeyPairMetadata(ctx, accountID, *res, &metadata); err != nil {
+		if err := s.storeKeyPairMetadata(ctx, accountID, *res, metadata); err != nil {
 			return err
 		}
 	}

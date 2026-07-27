@@ -50,11 +50,11 @@ func TestEnforceRetype(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.reserve > 0 {
-				if err := s.AddVCPU(tt.account, tt.reserve); err != nil {
+				if err := s.AddVCPU(t.Context(), tt.account, tt.reserve); err != nil {
 					t.Fatalf("AddVCPU(%d): %v", tt.reserve, err)
 				}
 			}
-			delta, err := s.EnforceRetype(staticResolver(tt.oldType, tt.resolveOK, nil), tt.account, "i-abc", tt.newType)
+			delta, err := s.EnforceRetype(t.Context(), staticResolver(tt.oldType, tt.resolveOK, nil), tt.account, "i-abc", tt.newType)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("EnforceRetype = %v, want nil", err)
@@ -73,14 +73,14 @@ func TestEnforceRetype(t *testing.T) {
 // A retype from t3.micro (2) to m5.xlarge (4) on a 2/8 account lands at 4/8.
 func TestRetypeChargesDelta(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
-	if err := s.AddVCPU(testAccount, 2); err != nil { // the t3.micro is already counted
+	if err := s.AddVCPU(t.Context(), testAccount, 2); err != nil { // the t3.micro is already counted
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	delta, err := s.EnforceRetype(staticResolver("t3.micro", true, nil), testAccount, "i-a", "m5.xlarge")
+	delta, err := s.EnforceRetype(t.Context(), staticResolver("t3.micro", true, nil), testAccount, "i-a", "m5.xlarge")
 	if err != nil {
 		t.Fatalf("EnforceRetype: %v", err)
 	}
-	if err := s.AddVCPU(testAccount, delta); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, delta); err != nil {
 		t.Fatalf("AddVCPU(%d): %v", delta, err)
 	}
 	assertCounter(t, s, testAccount, 4)
@@ -91,17 +91,17 @@ func TestRetypeChargesDelta(t *testing.T) {
 // only path that lowers the counter.
 func TestRetypeDownDoesNotCharge(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
-	if err := s.AddVCPU(testAccount, 4); err != nil { // the m5.xlarge is already counted
+	if err := s.AddVCPU(t.Context(), testAccount, 4); err != nil { // the m5.xlarge is already counted
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	delta, err := s.EnforceRetype(staticResolver("m5.xlarge", true, nil), testAccount, "i-a", "t3.micro")
+	delta, err := s.EnforceRetype(t.Context(), staticResolver("m5.xlarge", true, nil), testAccount, "i-a", "t3.micro")
 	if err != nil {
 		t.Fatalf("EnforceRetype: %v", err)
 	}
 	if delta > 0 {
 		t.Fatalf("delta = %d, want <= 0 (shrink left to reconcile)", delta)
 	}
-	if err := s.AddVCPU(testAccount, delta); err != nil {
+	if err := s.AddVCPU(t.Context(), testAccount, delta); err != nil {
 		t.Fatalf("AddVCPU(%d): %v", delta, err)
 	}
 	assertCounter(t, s, testAccount, 4) // unchanged: reconcile lowers, not the retype
@@ -112,7 +112,7 @@ func TestRetypeDownDoesNotCharge(t *testing.T) {
 func TestEnforceRetypeResolverError(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	sentinel := errors.New("describe boom")
-	delta, err := s.EnforceRetype(staticResolver("t3.micro", false, sentinel), testAccount, "i-a", "m5.xlarge")
+	delta, err := s.EnforceRetype(t.Context(), staticResolver("t3.micro", false, sentinel), testAccount, "i-a", "m5.xlarge")
 	if !errors.Is(err, sentinel) || delta != 0 {
 		t.Fatalf("EnforceRetype = (%d, %v), want (0, %v)", delta, err, sentinel)
 	}
@@ -132,9 +132,11 @@ func TestEnforceRetypeExemptShortCircuits(t *testing.T) {
 		name string
 		fn   func() (int, error)
 	}{
-		{"disabled", func() (int, error) { return disabled.EnforceRetype(failResolver, testAccount, "i-a", "m5.xlarge") }},
+		{"disabled", func() (int, error) {
+			return disabled.EnforceRetype(t.Context(), failResolver, testAccount, "i-a", "m5.xlarge")
+		}},
 		{"system account", func() (int, error) {
-			return enabled.EnforceRetype(failResolver, utils.GlobalAccountID, "i-a", "m5.xlarge")
+			return enabled.EnforceRetype(t.Context(), failResolver, utils.GlobalAccountID, "i-a", "m5.xlarge")
 		}},
 	}
 	for _, tc := range cases {

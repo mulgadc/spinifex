@@ -145,7 +145,7 @@ func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	rec, err := svc.store.GetLoadBalancerByName("nlb-with-sg", testAccountID)
+	rec, err := svc.store.GetLoadBalancerByName(t.Context(), "nlb-with-sg", testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sg-111", "sg-222"}, rec.SecurityGroups)
 	assert.Empty(t, rec.NLBManagedSGID, "NLB created with customer SGs must not mint a managed SG")
@@ -176,7 +176,7 @@ func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
 		Type: aws.String("network"),
 	}, testAccountID)
 	require.NoError(t, err)
-	nlbRec, err := svc.store.GetLoadBalancerByName("nlb-cz", testAccountID)
+	nlbRec, err := svc.store.GetLoadBalancerByName(t.Context(), "nlb-cz", testAccountID)
 	require.NoError(t, err)
 	assert.Nil(t, nlbRec.Attributes, "NLB should store nil attributes — defaults come from the handler")
 
@@ -199,7 +199,7 @@ func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
 		Name: aws.String("alb-cz"),
 	}, testAccountID)
 	require.NoError(t, err)
-	albRec, err := svc.store.GetLoadBalancerByName("alb-cz", testAccountID)
+	albRec, err := svc.store.GetLoadBalancerByName(t.Context(), "alb-cz", testAccountID)
 	require.NoError(t, err)
 	assert.Nil(t, albRec.Attributes, "ALB should no longer seed attributes at create time")
 
@@ -818,7 +818,7 @@ func TestRegisterTargets_IPType(t *testing.T) {
 
 	// ip targets must carry the supplied IP as PrivateIP, not an empty
 	// ENI-resolution result — otherwise HAProxy/health-check silently drop them.
-	tg, err := svc.store.GetTargetGroupByArn(*tgArn)
+	tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 	require.NoError(t, err)
 	require.Len(t, tg.Targets, 2)
 	ipByID := make(map[string]string)
@@ -1939,7 +1939,7 @@ func TestLBAgentHeartbeat_TransitionsProvisioningToActive(t *testing.T) {
 		VPCIP:           "10.0.1.100",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-hb1"),
@@ -1947,7 +1947,7 @@ func TestLBAgentHeartbeat_TransitionsProvisioningToActive(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateActive, *out.Status)
 
-	stored, err := svc.store.GetLoadBalancer("lb-hb1")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-hb1")
 	require.NoError(t, err)
 	assert.Equal(t, StateActive, stored.State)
 	assert.False(t, stored.LastHeartbeat.IsZero())
@@ -1965,7 +1965,7 @@ func TestLBAgentHeartbeat_ReturnsConfigHash(t *testing.T) {
 		ConfigHash:      "abc123def456",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-hash1"),
@@ -1985,7 +1985,7 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 		InstanceID:      "i-sys-hr1",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	tg := &TargetGroupRecord{
 		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/health-tg/tg-hr1",
@@ -1997,10 +1997,10 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 		},
 		AccountID: testAccountID,
 	}
-	require.NoError(t, svc.store.PutTargetGroup(tg))
+	require.NoError(t, svc.store.PutTargetGroup(t.Context(), tg))
 
 	// Wire LB → listener → TG so the health checker can resolve the TG from the LBID.
-	require.NoError(t, svc.store.PutListener(&ListenerRecord{
+	require.NoError(t, svc.store.PutListener(t.Context(), &ListenerRecord{
 		ListenerArn:     lb.LoadBalancerArn + "/listener-1",
 		ListenerID:      "lst-hr1",
 		LoadBalancerArn: lb.LoadBalancerArn,
@@ -2019,7 +2019,7 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	stored, err := svc.store.GetTargetGroup("tg-hr1")
+	stored, err := svc.store.GetTargetGroup(t.Context(), "tg-hr1")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }
@@ -2041,7 +2041,7 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 		VPCIP:           "10.0.1.100",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	tg := &TargetGroupRecord{
 		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/act-tg/tg-act1",
@@ -2054,9 +2054,9 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 		},
 		AccountID: testAccountID,
 	}
-	require.NoError(t, svc.store.PutTargetGroup(tg))
+	require.NoError(t, svc.store.PutTargetGroup(t.Context(), tg))
 
-	require.NoError(t, svc.store.PutListener(&ListenerRecord{
+	require.NoError(t, svc.store.PutListener(t.Context(), &ListenerRecord{
 		ListenerArn:     lb.LoadBalancerArn + "/listener-1",
 		ListenerID:      "lst-act1",
 		LoadBalancerArn: lb.LoadBalancerArn,
@@ -2067,7 +2067,7 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 	}))
 
 	// Pre-condition: config was never built during provisioning.
-	pre, err := svc.store.GetLoadBalancer("lb-act1")
+	pre, err := svc.store.GetLoadBalancer(t.Context(), "lb-act1")
 	require.NoError(t, err)
 	require.Empty(t, pre.ConfigHash, "config must be empty before activation")
 
@@ -2078,7 +2078,7 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 	assert.Equal(t, StateActive, *out.Status)
 	assert.NotEmpty(t, aws.StringValue(out.ConfigHash), "first heartbeat must return a built ConfigHash")
 
-	stored, err := svc.store.GetLoadBalancer("lb-act1")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-act1")
 	require.NoError(t, err)
 	assert.NotEmpty(t, stored.ConfigText, "data-plane config must be built on activation")
 	assert.NotEmpty(t, stored.ConfigHash)
@@ -2117,7 +2117,7 @@ func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
 		ConfigHash:      "deadbeef",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-cfg1"),
@@ -2143,7 +2143,7 @@ func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
 			{ServerName: "srv_i-1", Address: "10.0.0.1:80", Protocol: ProtocolTCP},
 		},
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-nlbhc")}, testAccountID)
 	require.NoError(t, err)
@@ -2156,7 +2156,7 @@ func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
 
 func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
 	svc := setupTestService(t)
-	require.NoError(t, svc.store.PutLoadBalancer(&LoadBalancerRecord{
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), &LoadBalancerRecord{
 		LoadBalancerID: "lb-wire",
 		Type:           LoadBalancerTypeNetwork,
 		AccountID:      testAccountID,
@@ -2204,7 +2204,7 @@ func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
 		ConfigHash:      "hc2",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{LBID: aws.String("lb-albhc")}, testAccountID)
 	require.NoError(t, err)
@@ -2238,7 +2238,7 @@ func TestLBAgentHeartbeat_WrongAccount(t *testing.T) {
 		State:           StateActive,
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-auth1"),
@@ -2257,7 +2257,7 @@ func TestLBAgentHeartbeat_SystemAccountAllowed(t *testing.T) {
 		State:           StateActive,
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-sys1"),
@@ -2278,7 +2278,7 @@ func TestLBAgentHeartbeat_SkipsWriteWhenHeartbeatFresh(t *testing.T) {
 		LastHeartbeat:   recentHeartbeat,
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-fresh1"),
@@ -2286,7 +2286,7 @@ func TestLBAgentHeartbeat_SkipsWriteWhenHeartbeatFresh(t *testing.T) {
 	require.NoError(t, err)
 
 	// LastHeartbeat should NOT have been updated because the stored value is fresh.
-	stored, err := svc.store.GetLoadBalancer("lb-fresh1")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-fresh1")
 	require.NoError(t, err)
 	assert.Equal(t, recentHeartbeat, stored.LastHeartbeat)
 }
@@ -2303,7 +2303,7 @@ func TestLBAgentHeartbeat_PersistsWhenHeartbeatStale(t *testing.T) {
 		LastHeartbeat:   staleHeartbeat,
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-stale1"),
@@ -2311,7 +2311,7 @@ func TestLBAgentHeartbeat_PersistsWhenHeartbeatStale(t *testing.T) {
 	require.NoError(t, err)
 
 	// LastHeartbeat should have been refreshed.
-	stored, err := svc.store.GetLoadBalancer("lb-stale1")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-stale1")
 	require.NoError(t, err)
 	assert.True(t, stored.LastHeartbeat.After(staleHeartbeat))
 }
@@ -2328,7 +2328,7 @@ func TestGetLBConfig_WrongAccount(t *testing.T) {
 		ConfigHash:      "aaa",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-authcfg1"),
@@ -2349,7 +2349,7 @@ func TestGetLBConfig_SystemAccountAllowed(t *testing.T) {
 		ConfigHash:      "bbb",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-syscfg1"),
@@ -2371,7 +2371,7 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 		InstanceID:      "i-sys-upd1",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	tg := &TargetGroupRecord{
 		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/upd-tg/tg-upd1",
@@ -2383,7 +2383,7 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 		},
 		AccountID: testAccountID,
 	}
-	require.NoError(t, svc.store.PutTargetGroup(tg))
+	require.NoError(t, svc.store.PutTargetGroup(t.Context(), tg))
 
 	listener := &ListenerRecord{
 		ListenerArn:     "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/upd-lb/lb-upd1/lst-upd1",
@@ -2394,11 +2394,11 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tg.TargetGroupArn}},
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutListener(listener))
+	require.NoError(t, svc.store.PutListener(t.Context(), listener))
 
 	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
-	stored, err := svc.store.GetLoadBalancer("lb-upd1")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-upd1")
 	require.NoError(t, err)
 	assert.NotEmpty(t, stored.ConfigText)
 	assert.NotEmpty(t, stored.ConfigHash)
@@ -2415,11 +2415,11 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 		State:           StateActive,
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
-	stored, err := svc.store.GetLoadBalancer("lb-noinst")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-noinst")
 	require.NoError(t, err)
 	assert.Empty(t, stored.ConfigText)
 	assert.Empty(t, stored.ConfigHash)
@@ -2514,7 +2514,7 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 		InstanceID:      "i-sys-misstg",
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutLoadBalancer(lb))
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	listener := &ListenerRecord{
 		ListenerArn:     "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/miss-tg/lb-misstg/lst-misstg",
@@ -2525,12 +2525,12 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/gone/tg-gone"}},
 		AccountID:       testAccountID,
 	}
-	require.NoError(t, svc.store.PutListener(listener))
+	require.NoError(t, svc.store.PutListener(t.Context(), listener))
 
 	// Should not error — skips missing TG and generates config with no backends
 	require.NoError(t, svc.updateStoredConfig(context.Background(), lb))
 
-	stored, err := svc.store.GetLoadBalancer("lb-misstg")
+	stored, err := svc.store.GetLoadBalancer(t.Context(), "lb-misstg")
 	require.NoError(t, err)
 	assert.NotEmpty(t, stored.ConfigHash)
 }
@@ -2838,9 +2838,9 @@ func attrKinds() []attrKind {
 				return pairs, nil
 			},
 			revision: func(t *testing.T, svc *ELBv2ServiceImpl, arn string) uint64 {
-				tg, err := svc.store.GetTargetGroupByArn(arn)
+				tg, err := svc.store.GetTargetGroupByArn(t.Context(), arn)
 				require.NoError(t, err)
-				entry, err := svc.store.kv.Get(KeyPrefixTG + tg.TargetGroupID)
+				entry, err := svc.store.kv.Get(t.Context(), KeyPrefixTG+tg.TargetGroupID)
 				require.NoError(t, err)
 				return entry.Revision()
 			},
@@ -2892,9 +2892,9 @@ func attrKinds() []attrKind {
 				return pairs, nil
 			},
 			revision: func(t *testing.T, svc *ELBv2ServiceImpl, arn string) uint64 {
-				lb, err := svc.store.GetLoadBalancerByArn(arn)
+				lb, err := svc.store.GetLoadBalancerByArn(t.Context(), arn)
 				require.NoError(t, err)
-				entry, err := svc.store.kv.Get(KeyPrefixLB + lb.LoadBalancerID)
+				entry, err := svc.store.kv.Get(t.Context(), KeyPrefixLB+lb.LoadBalancerID)
 				require.NoError(t, err)
 				return entry.Revision()
 			},

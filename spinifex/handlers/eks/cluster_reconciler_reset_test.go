@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +13,7 @@ import (
 // newResetReconciler wires a reconciler with the given CP control plus the etcd
 // quorum-reformation escalation enabled at its defaults (5m grace/backoff, 2
 // attempts). The acctKV is real so recovery directives round-trip through KV.
-func newResetReconciler(t *testing.T, cp CPInstanceControl) (*ClusterReconciler, nats.KeyValue) {
+func newResetReconciler(t *testing.T, cp CPInstanceControl) (*ClusterReconciler, jetstream.KeyValue) {
 	t.Helper()
 	r, _, acctKV := newStateReconcilerHarness(t, WithCPInstanceControl(cp), WithEtcdResetRecovery(0, 0, 0))
 	return r, acctKV
@@ -89,12 +89,12 @@ func TestReformEtcd_EscalatesAfterGrace(t *testing.T) {
 	assert.True(t, r.resetIssued)
 	assert.False(t, r.lastResetAt.IsZero())
 
-	seed, err := LoadRecoveryDirective(acctKV, "alpha", "i-seed")
+	seed, err := LoadRecoveryDirective(t.Context(), acctKV, "alpha", "i-seed")
 	require.NoError(t, err)
 	assert.Equal(t, RecoveryActionClusterReset, seed.Action, "primary reseeds the etcd quorum")
 	assert.Equal(t, int64(1), seed.Epoch)
 
-	follower, err := LoadRecoveryDirective(acctKV, "alpha", "i-1")
+	follower, err := LoadRecoveryDirective(t.Context(), acctKV, "alpha", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, RecoveryActionWipeRejoin, follower.Action, "followers wipe and rejoin")
 	assert.Equal(t, int64(1), follower.Epoch)
@@ -137,7 +137,7 @@ func TestReformEtcd_RecoveryClearsDirectivesAndClock(t *testing.T) {
 	assert.Zero(t, r.resetAttempts, "recovery resets the attempt count")
 	assert.False(t, r.resetIssued, "one-shot clear consumed")
 
-	seed, err := LoadRecoveryDirective(acctKV, "alpha", "i-seed")
+	seed, err := LoadRecoveryDirective(t.Context(), acctKV, "alpha", "i-seed")
 	require.NoError(t, err)
 	assert.Equal(t, RecoveryActionNone, seed.Action, "stale cluster-reset is cleared on recovery")
 	assert.Equal(t, int64(2), seed.Epoch, "clear advances the epoch past the applied directive")
@@ -152,7 +152,7 @@ func TestReformEtcd_SteadyHealthyDoesNotBumpEpoch(t *testing.T) {
 	r.maybeReformEtcdQuorum(context.Background(), meta, "")
 	r.maybeReformEtcdQuorum(context.Background(), meta, "")
 
-	d, err := LoadRecoveryDirective(acctKV, "alpha", "i-0")
+	d, err := LoadRecoveryDirective(t.Context(), acctKV, "alpha", "i-0")
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), d.Epoch, "no directive is written for a never-wedged cluster")
 	assert.Equal(t, RecoveryActionNone, d.Action)

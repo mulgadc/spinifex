@@ -279,6 +279,81 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 	return nil
 }
 
+// reconcileVanishedQEMU finalizes a shutting-down instance whose QEMU process
+// has vanished. The terminate that transitioned it to shutting-down wedged
+// downstream (a dead nbdkit stalling the unmount seal, say) and never reached
+// finalizeTerminated. QEMU is confirmed gone, so the guest holds nothing open:
+// drive the record to terminated and stamp every still-outstanding teardown
+// dependent failed, so TerminatedTeardownReaper re-drives each through the
+// idempotent cleaner (volume detach+delete, ENI, NAT, placement) on its next
+// sweep. Should the original terminate goroutine later unblock, its own
+// finalizeTerminated is a no-op — the shutting-down → terminated transition is
+// already spent and terminated is terminal.
+func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+	m.stampOutstandingTeardownFailed(instance)
+	return m.finalizeTerminated(instance)
+}
+
+// forceFinalizeStuckTerminate force-completes a terminate wedged in
+// shutting-down past the backstop timeout. Unlike reconcileVanishedQEMU, which
+// fires only once QEMU is already gone, the process may still be alive and
+// wedged here, so kill it first to unblock whatever the terminate is waiting on.
+// It then reclaims DeleteOnTermination volume space directly through the cleaner
+// — the delete-authorized action the backstop exists for — stamps any remaining
+// teardown failed for TerminatedTeardownReaper, and drives the record to
+// terminated. The cleaner is idempotent, so racing the wedged goroutine is safe.
+func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
+	if pid, err := utils.ReadPidFile(instance.ID); err == nil && utils.ProcessAlive(pid) {
+		slog.Warn("Force-killing wedged QEMU for stuck terminate",
+			"instanceId", instance.ID, "pid", pid)
+		if err := utils.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
+			slog.Error("Failed to kill wedged QEMU, continuing finalize",
+				"instanceId", instance.ID, "pid", pid, "err", err)
+		}
+		_ = utils.RemovePidFile(instance.ID)
+	}
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+
+	if m.deps.InstanceCleaner != nil {
+		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
+	}
+	m.stampOutstandingTeardownFailed(instance)
+	return m.finalizeTerminated(instance)
+}
+
+// stampOutstandingTeardownFailed marks every teardown dependent that applies to
+// this instance and is not already done as failed, so a terminated record left
+// by reconcileVanishedQEMU carries the outstanding work for TerminatedTeardownReaper
+// to complete. Over-marking a dependent the wedged goroutine had actually
+// finished is harmless: the reaper re-drives it through the idempotent cleaner.
+func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
+	m.Inspect(instance, func(v *VM) {
+		if v.Teardown == nil {
+			v.Teardown = make(map[string]string)
+		}
+		markFailed := func(dep string) {
+			if TeardownState(v.Teardown[dep]) != TeardownDone {
+				v.Teardown[dep] = string(TeardownFailed)
+			}
+		}
+		markFailed(TeardownVolumes) // volumes always apply
+		if v.PublicIP != "" {
+			markFailed(TeardownNAT)
+		}
+		if v.ENIId != "" {
+			markFailed(TeardownENI)
+			markFailed(TeardownOVN)
+		}
+		if len(v.GPUAttachments) > 0 {
+			markFailed(TeardownGPU)
+		}
+		if v.PlacementGroupName != "" {
+			markFailed(TeardownPlacement)
+		}
+	})
+}
+
 // stopCleanup performs the per-instance teardown shared by Stop and the
 // initial section of Terminate: graceful QMP shutdown, PID-file wait,
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource
@@ -462,7 +537,10 @@ func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) err
 	if m.deps.TransitionState == nil {
 		// Inspect (not UpdateState): MarkFailed may run this on an instance
 		// that was never inserted into the local map.
-		m.Inspect(instance, func(v *VM) { v.Status = target })
+		m.Inspect(instance, func(v *VM) {
+			v.Status = target
+			stampShuttingDownAt(v, target)
+		})
 		return nil
 	}
 	if err := m.deps.TransitionState(instance, target); err != nil {
@@ -475,7 +553,17 @@ func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) err
 		}
 		return err
 	}
+	m.Inspect(instance, func(v *VM) { stampShuttingDownAt(v, target) })
 	return nil
+}
+
+// stampShuttingDownAt records, once, when an instance entered shutting-down, so
+// the stuck-terminate backstop can bound how long a terminate may wedge before
+// force-completing it. Only the first entry is kept.
+func stampShuttingDownAt(v *VM, target InstanceState) {
+	if target == StateShuttingDown && v.ShuttingDownAt.IsZero() {
+		v.ShuttingDownAt = time.Now()
+	}
 }
 
 // writeRunningState persists the running-VM map. View holds the lock across

@@ -14,10 +14,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -229,6 +231,40 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 				assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
 				assert.NotEqual(t, awserrors.ErrorInvalidAvailabilityZone, err.Error())
 			}
+		})
+	}
+}
+
+// TestCreateVolume_BuildVBConfig_GCEnabled asserts that CreateVolume's
+// viperblock config carries GCEnabled through from spinifex.toml's
+// [viperblock] gc_enabled key (config.Config.Viperblock.GCEnabled). This is
+// the config-level seam: GCEnabled isn't part of viperblock.VBState, so it
+// never persists to config.json and can't be observed by reading a created
+// volume back — the only place it's checkable is the config CreateVolume
+// hands to viperblock.New, before construction ever reaches the backend.
+// A regression that unwires GC in buildVBConfig, or a future refactor of
+// CreateVolume that stops routing through buildVBConfig, fails this test.
+func TestCreateVolume_BuildVBConfig_GCEnabled(t *testing.T) {
+	tests := []struct {
+		name      string
+		gcEnabled *bool
+		want      bool
+	}{
+		{name: "NilDefaultsToDisabled", gcEnabled: nil, want: false},
+		{name: "ExplicitFalse", gcEnabled: aws.Bool(false), want: false},
+		{name: "ExplicitTrue", gcEnabled: aws.Bool(true), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestVolumeService("ap-southeast-2a")
+			svc.config.Viperblock.GCEnabled = tt.gcEnabled
+
+			vbconfig := svc.buildVBConfig("vol-gc-test", 10*1024*1024*1024,
+				viperblock.VolumeConfig{}, nil, "", "")
+
+			assert.Equal(t, tt.want, vbconfig.GCEnabled,
+				"buildVBConfig GCEnabled must follow config.Viperblock.GCEnabled")
 		})
 	}
 }
@@ -476,30 +512,12 @@ func TestCreateVolume_FromSnapshot_CorruptMetadata(t *testing.T) {
 }
 
 // setupTestVolumeKV creates a NATS JetStream test server and returns a KV bucket.
-func setupTestVolumeKV(t *testing.T) nats.KeyValue {
+func setupTestVolumeKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	js, err := nc.JetStream()
-	require.NoError(t, err)
-
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
 		Bucket: "spinifex-volume-snapshots",
 	})
 	require.NoError(t, err)
@@ -540,7 +558,7 @@ func TestDeleteVolume_BlockedByKV(t *testing.T) {
 	// Put a snapshot ref in KV
 	data, err := json.Marshal([]string{"snap-001"})
 	require.NoError(t, err)
-	_, err = kv.Put(volumeID, data)
+	_, err = kv.Put(t.Context(), volumeID, data)
 	require.NoError(t, err)
 
 	// DeleteVolume should be blocked
@@ -1391,6 +1409,70 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 		VolumeId: aws.String("vol-drift"),
 	}, "")
 	require.NoError(t, err)
+}
+
+// TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes locks the
+// mulga-1dzx9 fix: a DeleteOnTermination root volume left attached to a
+// stopped instance (Stop's Unmount deliberately never clears a Boot volume's
+// AttachedInstance, daemon/vm_adapters.go) hits DeleteVolume's in-use guard
+// directly — see TestDeleteVolume_VolumeAttachedButAvailable above.
+// DeleteVolumeOnTerminate must clear the stale attachment first (terminate
+// implies detach) so the terminate delete actually succeeds instead of
+// leaking the volume.
+func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	volumeID := "vol-stopped-root"
+	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-stopped",
+	})
+
+	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")
+	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
+
+	_, err = svc.GetVolumeConfig(volumeID)
+	require.Error(t, err, "the volume must actually be deleted, not merely detached")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+}
+
+// TestDeleteVolumeOnTerminate_SurfacesDeleteFailure verifies a DeleteVolume
+// failure downstream of the attachment clear is returned, not swallowed — the
+// caller (deleteInstanceVolumes / instanceCleanerAdapter.DeleteVolumes) relies
+// on this to mark Teardown[TeardownVolumes] failed rather than silently
+// dropping the leak.
+func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	volumeID := "vol-snapshotted-root"
+	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-stopped",
+	})
+	// A dependent snapshot forces DeleteVolume to fail after the attachment
+	// clear has already succeeded.
+	snapData, err := json.Marshal([]string{"snap-001"})
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), volumeID, snapData)
+	require.NoError(t, err)
+
+	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")
+	require.Error(t, err, "a DeleteVolume failure must be surfaced, not swallowed")
+	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
+
+	cfg, getErr := svc.GetVolumeConfig(volumeID)
+	require.NoError(t, getErr, "the volume must still exist after a failed delete")
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "the attachment clear runs before delete and is not rolled back on a later delete failure")
 }
 
 func TestDescribeVolumes_EmptyStateDerivedFromAttachment(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +23,27 @@ import (
 type SSH interface {
 	Run(ctx context.Context, node Node, cmd string) ([]byte, error)
 	Close() error
+}
+
+// RunGuestSSH executes cmd in a guest addressed by an SSHTarget. It returns
+// combined output so callers can retry assertions without terminating a test.
+func RunGuestSSH(ctx context.Context, target SSHTarget, cmd string) ([]byte, error) {
+	args := []string{
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=5",
+		"-o", "BatchMode=yes",
+		"-p", strconv.Itoa(target.Port),
+		"-i", target.KeyPath,
+		target.User + "@" + target.Host,
+		cmd,
+	}
+	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("guest ssh %s@%s:%d: %w: %s", target.User, target.Host, target.Port, err, out)
+	}
+	return out, nil
 }
 
 // sshClient is the production SSH transport, backed by

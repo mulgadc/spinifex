@@ -6,15 +6,16 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newClusterStateTestKV(t *testing.T) nats.KeyValue {
+func newClusterStateTestKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 	return kv
 }
@@ -37,17 +38,17 @@ func sampleClusterMeta(name string) *ClusterMeta {
 func TestPutClusterMeta_NilOrEmptyNameRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	require.Error(t, PutClusterMeta(kv, nil))
-	require.Error(t, PutClusterMeta(kv, &ClusterMeta{}))
+	require.Error(t, PutClusterMeta(t.Context(), kv, nil))
+	require.Error(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{}))
 }
 
 func TestPutClusterMeta_RoundTrip(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
 	in := sampleClusterMeta("alpha")
-	require.NoError(t, PutClusterMeta(kv, in))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, in))
 
-	got, err := GetClusterMeta(kv, "alpha")
+	got, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, in.Name, got.Name)
 	assert.Equal(t, in.Arn, got.Arn)
@@ -62,14 +63,14 @@ func TestPutClusterMeta_RoundTrip(t *testing.T) {
 func TestGetClusterMeta_MissingReturnsErrClusterNotFound(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	_, err := GetClusterMeta(kv, "missing")
+	_, err := GetClusterMeta(t.Context(), kv, "missing")
 	require.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestGetClusterMeta_EmptyNameRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	_, err := GetClusterMeta(kv, "")
+	_, err := GetClusterMeta(t.Context(), kv, "")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrClusterNotFound)
 }
@@ -77,25 +78,25 @@ func TestGetClusterMeta_EmptyNameRejected(t *testing.T) {
 func TestGetClusterMeta_CorruptBlobRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	_, err := kv.Put(ClusterMetaKey("corrupt"), []byte("{not json"))
+	_, err := kv.Put(t.Context(), ClusterMetaKey("corrupt"), []byte("{not json"))
 	require.NoError(t, err)
 
-	_, err = GetClusterMeta(kv, "corrupt")
+	_, err = GetClusterMeta(t.Context(), kv, "corrupt")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestSetClusterStatus_TransitionsAndIsIdempotent(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
-	require.NoError(t, SetClusterStatus(kv, "alpha", ClusterStatusActive))
-	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, SetClusterStatus(t.Context(), kv, "alpha", ClusterStatusActive))
+	got, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, got.Status)
 
-	require.NoError(t, SetClusterStatus(kv, "alpha", ClusterStatusActive))
-	got, err = GetClusterMeta(kv, "alpha")
+	require.NoError(t, SetClusterStatus(t.Context(), kv, "alpha", ClusterStatusActive))
+	got, err = GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, got.Status)
 }
@@ -106,9 +107,9 @@ func TestSetClusterStatus_DeletingAlwaysAllowedFromAnyState(t *testing.T) {
 	for _, from := range []ClusterStatus{ClusterStatusCreating, ClusterStatusActive, ClusterStatusFailed} {
 		meta := sampleClusterMeta("alpha")
 		meta.Status = from
-		require.NoError(t, PutClusterMeta(kv, meta))
-		require.NoError(t, SetClusterStatus(kv, "alpha", ClusterStatusDeleting))
-		got, err := GetClusterMeta(kv, "alpha")
+		require.NoError(t, PutClusterMeta(t.Context(), kv, meta))
+		require.NoError(t, SetClusterStatus(t.Context(), kv, "alpha", ClusterStatusDeleting))
+		got, err := GetClusterMeta(t.Context(), kv, "alpha")
 		require.NoError(t, err)
 		assert.Equal(t, ClusterStatusDeleting, got.Status, "from=%s", from)
 	}
@@ -117,30 +118,30 @@ func TestSetClusterStatus_DeletingAlwaysAllowedFromAnyState(t *testing.T) {
 func TestSetClusterStatus_MissingReturnsErrClusterNotFound(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	err := SetClusterStatus(kv, "missing", ClusterStatusActive)
+	err := SetClusterStatus(t.Context(), kv, "missing", ClusterStatusActive)
 	require.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
 	// Read once to get a stale revision, then bump the record from another
 	// goroutine via Put to force one CAS conflict on the next Update.
-	entry, err := kv.Get(ClusterMetaKey("alpha"))
+	entry, err := kv.Get(t.Context(), ClusterMetaKey("alpha"))
 	require.NoError(t, err)
 
 	bumped := sampleClusterMeta("alpha")
 	bumped.Version = "1.32-bumped"
 	data, err := json.Marshal(bumped)
 	require.NoError(t, err)
-	_, err = kv.Update(ClusterMetaKey("alpha"), data, entry.Revision())
+	_, err = kv.Update(t.Context(), ClusterMetaKey("alpha"), data, entry.Revision())
 	require.NoError(t, err)
 
 	// SetClusterStatus must succeed even though there has been an intervening
 	// revision bump — its internal loop re-reads + retries.
-	require.NoError(t, SetClusterStatus(kv, "alpha", ClusterStatusActive))
-	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, SetClusterStatus(t.Context(), kv, "alpha", ClusterStatusActive))
+	got, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, got.Status)
 	assert.Equal(t, "1.32-bumped", got.Version)
@@ -148,10 +149,10 @@ func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
 
 func TestMarkClusterFailed_FromCreatingSetsStatusAndReason(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
-	require.NoError(t, MarkClusterFailed(kv, "alpha", "bootstrap failed: boom"))
-	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, MarkClusterFailed(t.Context(), kv, "alpha", "bootstrap failed: boom"))
+	got, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusFailed, got.Status)
 	assert.Equal(t, "bootstrap failed: boom", got.StatusReason)
@@ -163,10 +164,10 @@ func TestMarkClusterFailed_NoopFromNonCreating(t *testing.T) {
 	for _, from := range []ClusterStatus{ClusterStatusActive, ClusterStatusDeleting, ClusterStatusFailed} {
 		meta := sampleClusterMeta("alpha")
 		meta.Status = from
-		require.NoError(t, PutClusterMeta(kv, meta))
+		require.NoError(t, PutClusterMeta(t.Context(), kv, meta))
 
-		require.NoError(t, MarkClusterFailed(kv, "alpha", "late bootstrap error"))
-		got, err := GetClusterMeta(kv, "alpha")
+		require.NoError(t, MarkClusterFailed(t.Context(), kv, "alpha", "late bootstrap error"))
+		got, err := GetClusterMeta(t.Context(), kv, "alpha")
 		require.NoError(t, err)
 		assert.Equal(t, from, got.Status, "from=%s must be untouched", from)
 		assert.Empty(t, got.StatusReason, "from=%s reason must not be set", from)
@@ -176,21 +177,21 @@ func TestMarkClusterFailed_NoopFromNonCreating(t *testing.T) {
 func TestMarkClusterFailed_MissingReturnsErrClusterNotFound(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	err := MarkClusterFailed(kv, "ghost", "boom")
+	err := MarkClusterFailed(t.Context(), kv, "ghost", "boom")
 	require.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
-	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
-	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, SetClusterCertificateAuthority(t.Context(), kv, "alpha", "ca-blob-b64"))
+	got, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, "ca-blob-b64", got.CertificateAuthorityB64)
 
-	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
-	got, err = GetClusterMeta(kv, "alpha")
+	require.NoError(t, SetClusterCertificateAuthority(t.Context(), kv, "alpha", "ca-blob-b64"))
+	got, err = GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, "ca-blob-b64", got.CertificateAuthorityB64)
 }
@@ -198,33 +199,33 @@ func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
 func TestSetClusterCertificateAuthority_MissingReturnsErrClusterNotFound(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	err := SetClusterCertificateAuthority(kv, "ghost", "ca-blob")
+	err := SetClusterCertificateAuthority(t.Context(), kv, "ghost", "ca-blob")
 	require.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestSetClusterCertificateAuthority_EmptyInputsRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	require.Error(t, SetClusterCertificateAuthority(kv, "", "ca-blob"))
-	require.Error(t, SetClusterCertificateAuthority(kv, "alpha", ""))
+	require.Error(t, SetClusterCertificateAuthority(t.Context(), kv, "", "ca-blob"))
+	require.Error(t, SetClusterCertificateAuthority(t.Context(), kv, "alpha", ""))
 }
 
 func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
-	_, err := kv.Put(NodegroupKey("alpha", "ng-1"), []byte(`{"name":"ng-1"}`))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
+	_, err := kv.Put(t.Context(), NodegroupKey("alpha", "ng-1"), []byte(`{"name":"ng-1"}`))
 	require.NoError(t, err)
-	_, err = kv.Put(OIDCSigningKeyKey("alpha"), []byte("enc-blob"))
+	_, err = kv.Put(t.Context(), OIDCSigningKeyKey("alpha"), []byte("enc-blob"))
 	require.NoError(t, err)
-	_, err = kv.Put(OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
+	_, err = kv.Put(t.Context(), OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
 	require.NoError(t, err)
-	_, err = kv.Put(EventKey("alpha", "1700000000"), []byte(`{"ts":"1700000000"}`))
+	_, err = kv.Put(t.Context(), EventKey("alpha", "1700000000"), []byte(`{"ts":"1700000000"}`))
 	require.NoError(t, err)
 	// Sibling cluster must survive the sweep.
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("beta")))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("beta")))
 
-	require.NoError(t, DeleteClusterPrefix(kv, "alpha"))
+	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "alpha"))
 
 	for _, k := range []string{
 		ClusterMetaKey("alpha"),
@@ -233,11 +234,11 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 		OIDCJWKSKey("alpha"),
 		EventKey("alpha", "1700000000"),
 	} {
-		_, err := kv.Get(k)
-		assert.ErrorIs(t, err, nats.ErrKeyNotFound, "key %s should be gone, got err=%v", k, err)
+		_, err := kv.Get(t.Context(), k)
+		assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "key %s should be gone, got err=%v", k, err)
 	}
 
-	got, err := GetClusterMeta(kv, "beta")
+	got, err := GetClusterMeta(t.Context(), kv, "beta")
 	require.NoError(t, err)
 	assert.Equal(t, "beta", got.Name)
 }
@@ -245,11 +246,11 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 func TestDeleteClusterPrefix_EmptyBucketIsNoop(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	require.NoError(t, DeleteClusterPrefix(kv, "ghost"))
+	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "ghost"))
 }
 
 func TestDeleteClusterPrefix_EmptyNameRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	require.Error(t, DeleteClusterPrefix(kv, ""))
+	require.Error(t, DeleteClusterPrefix(t.Context(), kv, ""))
 }

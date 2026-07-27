@@ -371,6 +371,53 @@ func TestStatusEndpointViperblockKey(t *testing.T) {
 	assert.Equal(t, "dmlwZXJibG9jay1zaGFyZWQta2V5LWJhc2U2NA==", sr.ViperblockKey)
 }
 
+// The northstar resolver on every node reads the distributed zone bucket with
+// one shared, bucket-scoped pair, so joiners must receive the init node's keys
+// verbatim over the formation channel.
+func TestStatusEndpointNorthstarCredentials(t *testing.T) {
+	t.Parallel()
+	creds := testCreds()
+	creds.NorthstarAccessKey = "AKIANORTHSTAR1234567"
+	creds.NorthstarSecretKey = "northstarSecretKey1234567890"
+	fs := NewFormationServer(2, creds, "ca-cert", "ca-key", nil, testToken, testTokenTTL)
+	ts := testServer(t, fs)
+	defer ts.Close()
+
+	// Before completion the keys ride on Credentials, which is withheld entirely
+	resp := authGet(t, ts.URL+"/formation/status", testToken)
+	var sr StatusResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&sr))
+	resp.Body.Close()
+	assert.Nil(t, sr.Credentials)
+
+	require.NoError(t, fs.RegisterNode(testNode("node1", "10.0.0.1")))
+	require.NoError(t, fs.RegisterNode(testNode("node2", "10.0.0.2")))
+
+	resp = authGet(t, ts.URL+"/formation/status", testToken)
+	defer resp.Body.Close()
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&sr))
+	require.True(t, sr.Complete)
+	require.NotNil(t, sr.Credentials)
+	assert.Equal(t, "AKIANORTHSTAR1234567", sr.Credentials.NorthstarAccessKey)
+	assert.Equal(t, "northstarSecretKey1234567890", sr.Credentials.NorthstarSecretKey)
+}
+
+// An init node predating northstar distribution sends no northstar keys. The
+// joiner must then see a clean zero value and render no northstar config, not
+// a half-populated one holding a key its predastore never received.
+func TestSharedCredentialsNorthstarOmittedWhenUnset(t *testing.T) {
+	t.Parallel()
+	encoded, err := json.Marshal(testCreds())
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "northstar_access_key")
+	assert.NotContains(t, string(encoded), "northstar_secret_key")
+
+	var decoded SharedCredentials
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Empty(t, decoded.NorthstarAccessKey)
+	assert.Empty(t, decoded.NorthstarSecretKey)
+}
+
 func TestHealthEndpoint_NoAuth(t *testing.T) {
 	t.Parallel()
 	fs := NewFormationServer(1, testCreds(), "", "", nil, testToken, testTokenTTL)

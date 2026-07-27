@@ -95,7 +95,7 @@ jobs:
           path: predastore
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: "spinifex/go.mod"
           # Self-hosted runner: the Go module + build cache already persists on

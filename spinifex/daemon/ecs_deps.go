@@ -46,7 +46,7 @@ func (d *Daemon) buildECSServiceDeps() handlers_ecs.Deps {
 	if d.clusterConfig != nil {
 		clusterSize = len(d.clusterConfig.Nodes)
 	}
-	if iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.natsConn, masterKey, clusterSize); iamErr != nil {
+	if iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey, clusterSize); iamErr != nil {
 		slog.Warn("ECS: IAM service init failed; capacity provisioning disabled", "err", iamErr)
 	} else {
 		deps.IAM = iamSvc

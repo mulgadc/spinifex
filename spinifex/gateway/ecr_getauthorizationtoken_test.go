@@ -23,6 +23,8 @@ func TestHandleGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = context.WithValue(ctx, ctxIdentity, "dev")
+	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
 	w := httptest.NewRecorder()
 
 	require.NoError(t, gw.handleGetAuthorizationToken(w, req.WithContext(ctx)))
@@ -64,6 +66,8 @@ func TestHandleGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = context.WithValue(ctx, ctxIdentity, "dev")
+	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
 	w := httptest.NewRecorder()
 	require.NoError(t, gw.handleGetAuthorizationToken(w, req.WithContext(ctx)))
 

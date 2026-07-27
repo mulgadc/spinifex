@@ -1,7 +1,6 @@
 package handlers_ec2_routetable
 
 import (
-	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -19,7 +18,7 @@ import (
 func TestRLC1_RouteTableDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteRouteTable(context.Background(), &ec2.DeleteRouteTableInput{
+	_, err := svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String("rtb-absent00000000"),
 	}, testAccountID)
 

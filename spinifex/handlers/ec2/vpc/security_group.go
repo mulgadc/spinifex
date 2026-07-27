@@ -17,7 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
@@ -123,15 +123,15 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
 	}
 
-	if err := s.requireVPCExists(accountID, vpcId); err != nil {
+	if err := s.requireVPCExists(ctx, accountID, vpcId); err != nil {
 		return nil, err
 	}
 
 	// Check for duplicate group name in the same VPC and enforce the per-VPC
 	// SG quota in the same bucket walk.
 	prefix := accountID + "."
-	sgKeys, err := s.sgKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	sgKeys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	sgsInVPC := 0
@@ -142,11 +142,11 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.sgKV.Get(k)
+		entry, err := s.sgKV.Get(ctx, k)
 		if err != nil {
 			// Fail closed — a transient read error must not let a duplicate
 			// SG name slip past, nor undercount the per-VPC quota.
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.WarnContext(ctx, "CreateSecurityGroup: SG read failed", "key", k, "err", err)
@@ -196,7 +196,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := s.sgKV.Put(ctx, utils.AccountKey(accountID, groupId), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -226,12 +226,12 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 	groupId := *input.GroupId
 	key := utils.AccountKey(accountID, groupId)
 
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		// AWS-faithful: an absent security group is InvalidGroup.NotFound, not
 		// success. Destroy orchestration tolerates it via awserrors.IsNotFound;
 		// a transient read error stays a server error.
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -250,7 +250,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 		return nil, err
 	}
 
-	if err := s.sgKV.Delete(key); err != nil {
+	if err := s.sgKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -270,12 +270,12 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 // validateSGRuleReferences returns InvalidGroup.NotFound if any SourceSG in
 // rules is missing or belongs to a different VPC (cross-VPC refs not
 // supported; AWS uses the same error for both cases).
-func (s *VPCServiceImpl) validateSGRuleReferences(accountID, ownerVpcId string, rules []SGRule) error {
+func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID, ownerVpcId string, rules []SGRule) error {
 	for _, r := range rules {
 		if r.SourceSG == "" {
 			continue
 		}
-		entry, err := s.sgKV.Get(utils.AccountKey(accountID, r.SourceSG))
+		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, r.SourceSG))
 		if err != nil {
 			return errors.New(awserrors.ErrorInvalidGroupNotFound)
 		}
@@ -296,15 +296,15 @@ func (s *VPCServiceImpl) validateSGRuleReferences(accountID, ownerVpcId string, 
 func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, groupId string) error {
 	prefix := accountID + "."
 
-	eniKeys, err := s.eniKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	eniKeys, err := s.eniKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range eniKeys {
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.eniKV.Get(k)
+		entry, err := s.eniKV.Get(ctx, k)
 		if err != nil {
 			// Fail closed — a transient read error must not let us delete an
 			// SG that's actually still attached.
@@ -321,15 +321,15 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		}
 	}
 
-	sgKeys, err := s.sgKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	sgKeys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range sgKeys {
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.sgKV.Get(k)
+		entry, err := s.sgKV.Get(ctx, k)
 		if err != nil {
 			slog.WarnContext(ctx, "checkSGDependencies: SG read failed", "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
@@ -383,8 +383,8 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	}
 
 	prefix := accountID + "."
-	keys, err := s.sgKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -396,7 +396,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 			continue
 		}
 
-		entry, err := s.sgKV.Get(key)
+		entry, err := s.sgKV.Get(ctx, key)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to get security group record", "key", key, "error", err)
 			continue
@@ -519,8 +519,8 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	}
 
 	prefix := accountID + "."
-	keys, err := s.sgKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -531,7 +531,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.sgKV.Get(key)
+		entry, err := s.sgKV.Get(ctx, key)
 		if err != nil {
 			slog.ErrorContext(ctx, "DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -645,7 +645,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	groupId := *input.GroupId
 	key := utils.AccountKey(accountID, groupId)
 
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
 	}
@@ -655,7 +655,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.requireVPCExists(accountID, record.VpcId); err != nil {
+	if err := s.requireVPCExists(ctx, accountID, record.VpcId); err != nil {
 		return nil, err
 	}
 
@@ -664,7 +664,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
+	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
 	existing := make(map[string]struct{}, len(record.IngressRules))
@@ -685,7 +685,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -720,7 +720,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	groupId := *input.GroupId
 	key := utils.AccountKey(accountID, groupId)
 
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
 	}
@@ -730,7 +730,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.requireVPCExists(accountID, record.VpcId); err != nil {
+	if err := s.requireVPCExists(ctx, accountID, record.VpcId); err != nil {
 		return nil, err
 	}
 
@@ -739,7 +739,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
+	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
 	existing := make(map[string]struct{}, len(record.EgressRules))
@@ -760,7 +760,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -795,7 +795,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	groupId := *input.GroupId
 	key := utils.AccountKey(accountID, groupId)
 
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
 	}
@@ -827,7 +827,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -857,7 +857,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	groupId := *input.GroupId
 	key := utils.AccountKey(accountID, groupId)
 
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
 	}
@@ -889,7 +889,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1171,7 +1171,7 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context,
 	if err != nil {
 		return "", fmt.Errorf("marshal default security group: %w", err)
 	}
-	if _, err := s.sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := s.sgKV.Put(ctx, utils.AccountKey(accountID, groupId), data); err != nil {
 		return "", fmt.Errorf("store default security group: %w", err)
 	}
 
@@ -1193,7 +1193,7 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context,
 // per-VPC default SG. Surfaces vpcd tear-down failures to the caller.
 func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accountID, groupId string) error {
 	key := utils.AccountKey(accountID, groupId)
-	entry, err := s.sgKV.Get(key)
+	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("read default security group: %w", err)
 	}
@@ -1201,7 +1201,7 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accoun
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
 		return fmt.Errorf("unmarshal default security group: %w", err)
 	}
-	if err := s.sgKV.Delete(key); err != nil {
+	if err := s.sgKV.Delete(ctx, key); err != nil {
 		return fmt.Errorf("delete default security group: %w", err)
 	}
 	return s.requestSGEvent("vpc.delete-sg", SGEvent{
@@ -1214,10 +1214,14 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accoun
 // IsDefault=true and the given VPC. Returns "" if none found (only happens
 // when CreateVpc failed mid-flow and left the VPC without a default SG).
 func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, error) {
+	return s.findDefaultSGForVPC(context.Background(), accountID, vpcId)
+}
+
+func (s *VPCServiceImpl) findDefaultSGForVPC(ctx context.Context, accountID, vpcId string) (string, error) {
 	prefix := accountID + "."
-	keys, err := s.sgKV.Keys()
+	keys, err := s.sgKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return "", nil
 		}
 		return "", err
@@ -1226,7 +1230,7 @@ func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, e
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.sgKV.Get(k)
+		entry, err := s.sgKV.Get(ctx, k)
 		if err != nil {
 			continue
 		}

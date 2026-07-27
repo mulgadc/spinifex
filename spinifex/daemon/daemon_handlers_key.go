@@ -6,22 +6,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func (d *Daemon) handleEC2CreateKeyPair(msg *nats.Msg) {
-	handleNATSRequest(msg, d.keyService.CreateKeyPair)
-}
-
-func (d *Daemon) handleEC2DeleteKeyPair(msg *nats.Msg) {
-	handleNATSRequest(msg, d.keyService.DeleteKeyPair)
-}
-
-func (d *Daemon) handleEC2DescribeKeyPairs(msg *nats.Msg) {
-	handleNATSRequest(msg, d.keyService.DescribeKeyPairs)
-}
-
-func (d *Daemon) handleEC2ImportKeyPair(msg *nats.Msg) {
-	handleNATSRequest(msg, d.keyService.ImportKeyPair)
-}
-
 // handleIMDSGetPublicKey answers the IMDS material-path RPC. The responder lives
 // here (not in vpcd) because the daemon holds the key service and its Predastore
 // credentials; vpcd carries only a nats.Conn.

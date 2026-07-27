@@ -14,22 +14,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runSpotInstanceLifecycle exercises the Spot Instance Request mock end to end.
-// RequestSpotInstances synchronously launches real VMs via the on-demand path
-// and reports the requests active/fulfilled — there is no bidding, interruption,
-// or reclamation. One SIR is cancelled (request goes cancelled, instance keeps
-// running); the other's instance is terminated (request moves to closed). A final
-// oversized request asserts capacity failure persists no SIRs. Maps to the E2E
-// row in docs/development/feature/spot-instances-v1.md.
+// runSpotInstanceLifecycle exercises the two spot terminal transitions that the
+// NATS-level integration tier (tests/integration/spot_instance_test.go) cannot
+// observe without a real vm.Manager:
+//
+//   - Cancelling a spot request must leave its backing VM running. DaemonLite
+//     has no vm.Manager, so the integration tier can only infer this from the
+//     cancelled SIR retaining its InstanceId; this test observes the VM
+//     directly via WaitForInstanceState(running).
+//   - Terminating a spot-backed instance must drive the real async delegation
+//     (TerminateInstances -> daemon teardown cleaner -> RemoveFromSpotRequest ->
+//     CloseForInstance, daemon/vm_adapters.go instanceCleanerAdapter), not a
+//     direct CloseForInstance call. That delegation needs a real vm.Manager to
+//     run the teardown chain, which is out of DaemonLite's scope.
+//
+// The mock/CRUD/error-path coverage (describe, lineage write-back,
+// insufficient-capacity) is not duplicated here; that already runs faster and
+// without a live guest in TestRequestSpotInstances_Lifecycle (integration
+// tier). A single RequestSpotInstances call for 2 instances is the minimum
+// that lets this test drive both terminal transitions without a second
+// boot/request cycle.
 func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Spot Instance Requests (mock fulfilment)")
+	harness.Phase(t, "Single — Spot Instance terminal transitions (live VM)")
 
 	amiID := needAMI(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)
 	keyName, _ := needKeyPair(t, fix)
 
-	// InstanceCount=2 -> MinCount=MaxCount=2 (all-or-nothing). Two requests let
-	// us drive both terminal transitions: cancel one, terminate the other.
 	const count = 2
 	harness.Step(t, "request-spot-instances ami=%s type=%s count=%d", amiID, instType, count)
 	reqOut, err := fix.AWS.EC2.RequestSpotInstances(&ec2.RequestSpotInstancesInput{
@@ -46,23 +57,22 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 		"expected %d spot instance requests, got %d", count, len(reqOut.SpotInstanceRequests))
 
 	sirIDs := make([]string, 0, count)
+	sirInstance := make(map[string]string, count)
 	for _, sir := range reqOut.SpotInstanceRequests {
 		id := aws.StringValue(sir.SpotInstanceRequestId)
 		require.NotEmpty(t, id, "empty SpotInstanceRequestId in response")
 		require.Truef(t, strings.HasPrefix(id, "sir-"), "SIR id %q lacks sir- prefix", id)
 		sirIDs = append(sirIDs, id)
-		assert.Equal(t, ec2.SpotInstanceStateActive, aws.StringValue(sir.State),
-			"SIR %s should be active at create", id)
+		instID := aws.StringValue(sir.InstanceId)
+		require.NotEmptyf(t, instID, "SIR %s has no InstanceId", id)
+		sirInstance[id] = instID
 	}
 	harness.Detail(t, "sir_cancel", sirIDs[0], "sir_terminate", sirIDs[1])
 
 	// Pre-register teardown of every launched VM before the first blocking wait,
 	// so a fatal still tears the real instances down.
-	var launchedIDs []string
+	launchedIDs := []string{sirInstance[sirIDs[0]], sirInstance[sirIDs[1]]}
 	t.Cleanup(func() {
-		if len(launchedIDs) == 0 {
-			return
-		}
 		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: aws.StringSlice(launchedIDs),
 		})
@@ -75,44 +85,18 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 		SpotInstanceRequestIds: aws.StringSlice(sirIDs),
 	}), "wait spot-instance-request-fulfilled")
 
-	// Describe both SIRs: active + fulfilled + an InstanceId mapped per request.
-	descOut, err := fix.AWS.EC2.DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{
-		SpotInstanceRequestIds: aws.StringSlice(sirIDs),
-	})
-	require.NoError(t, err, "describe-spot-instance-requests")
-	require.Lenf(t, descOut.SpotInstanceRequests, count,
-		"expected %d SIRs from describe, got %d", count, len(descOut.SpotInstanceRequests))
-
-	sirInstance := make(map[string]string, count)
-	for _, sir := range descOut.SpotInstanceRequests {
-		id := aws.StringValue(sir.SpotInstanceRequestId)
-		assert.Equal(t, ec2.SpotInstanceStateActive, aws.StringValue(sir.State), "SIR %s state", id)
-		require.NotNilf(t, sir.Status, "SIR %s missing status", id)
-		assert.Equal(t, "fulfilled", aws.StringValue(sir.Status.Code), "SIR %s status code", id)
-		instID := aws.StringValue(sir.InstanceId)
-		require.NotEmptyf(t, instID, "SIR %s has no InstanceId", id)
-		sirInstance[id] = instID
-		launchedIDs = append(launchedIDs, instID)
-	}
-
-	// Both backing VMs are real on-demand launches — wait for running, then assert
-	// full spot lineage: each VM reports InstanceLifecycle=spot and links back to
-	// its originating SIR via SpotInstanceRequestId (stamped by the write-back).
-	for sirID, instID := range sirInstance {
-		inst := harness.WaitForInstanceState(t, fix.AWS, instID, "running")
-		assert.Equal(t, ec2.InstanceLifecycleTypeSpot, aws.StringValue(inst.InstanceLifecycle),
-			"instance %s should report InstanceLifecycle=spot", instID)
-		assert.Equal(t, sirID, aws.StringValue(inst.SpotInstanceRequestId),
-			"instance %s should link back to SIR %s", instID, sirID)
-	}
-
 	cancelSIR, termSIR := sirIDs[0], sirIDs[1]
 	cancelInst, termInst := sirInstance[cancelSIR], sirInstance[termSIR]
-	require.NotEmpty(t, cancelInst, "cancel SIR resolved no instance")
-	require.NotEmpty(t, termInst, "terminate SIR resolved no instance")
 
-	// Cancel one request: it flips to cancelled but the instance keeps running
-	// (cancel != terminate). The gateway->daemon move is synchronous.
+	for _, instID := range launchedIDs {
+		harness.WaitForInstanceState(t, fix.AWS, instID, "running")
+	}
+
+	// Cancel one request: it flips to cancelled, and the instance itself must
+	// keep running (cancel != terminate). CancelSpotInstanceRequests only moves
+	// the SIR bucket entry and never calls into instance/VM state, so this is
+	// observed directly off the VM rather than inferred from the cancelled
+	// record still carrying an InstanceId.
 	harness.Step(t, "cancel-spot-instance-requests %s", cancelSIR)
 	cancelOut, err := fix.AWS.EC2.CancelSpotInstanceRequests(&ec2.CancelSpotInstanceRequestsInput{
 		SpotInstanceRequestIds: aws.StringSlice([]string{cancelSIR}),
@@ -133,8 +117,10 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 	assert.Equal(t, "running", aws.StringValue(running.State.Name),
 		"cancelled SIR's instance %s must keep running", cancelInst)
 
-	// Terminate the other request's instance: the daemon teardown cleaner scans
-	// the active bucket by InstanceId and moves the SIR to closed.
+	// Terminate the other request's instance: the real daemon teardown cleaner
+	// (instanceCleanerAdapter.RemoveFromSpotRequest) scans the active bucket by
+	// InstanceId and moves the SIR to closed. Driven here through the genuine
+	// TerminateInstances -> async cleaner chain, not a direct CloseForInstance call.
 	harness.Step(t, "terminate-instances %s (closes %s)", termInst, termSIR)
 	_, err = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 		InstanceIds: aws.StringSlice([]string{termInst}),
@@ -157,25 +143,6 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 	require.NotNil(t, closed, "describe never returned SIR %s", termSIR)
 	require.NotNil(t, closed.Status)
 	assert.Equal(t, "instance-terminated-by-user", aws.StringValue(closed.Status.Code))
-
-	// Insufficient capacity: an oversized request short-circuits before any
-	// launch (totalCapacity < MinCount) and persists no SIRs.
-	t.Run("InsufficientCapacityNoSIRs", func(t *testing.T) {
-		harness.Step(t, "request-spot-instances count=1000000 (capacity short-circuit)")
-		out, rerr := fix.AWS.EC2.RequestSpotInstances(&ec2.RequestSpotInstancesInput{
-			InstanceCount: aws.Int64(1_000_000),
-			LaunchSpecification: &ec2.RequestSpotLaunchSpecification{
-				ImageId:      aws.String(amiID),
-				InstanceType: aws.String(instType),
-				KeyName:      aws.String(keyName),
-			},
-		})
-		harness.AssertAWSError(t, rerr, "InsufficientInstanceCapacity")
-		if out != nil {
-			assert.Empty(t, out.SpotInstanceRequests,
-				"capacity failure must persist/return no SIRs")
-		}
-	})
 }
 
 // describeSpotRequest returns the single SIR matching sirID, failing the test if

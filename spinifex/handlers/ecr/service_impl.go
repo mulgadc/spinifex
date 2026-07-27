@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // MetaServiceImpl is the daemon-side MetaService. It owns the backing MetaStore
@@ -23,7 +23,7 @@ func NewMetaServiceImpl(store MetaStore) *MetaServiceImpl {
 }
 
 // NewKVMetaService builds a MetaService backed by per-account JetStream KV.
-func NewKVMetaService(js nats.JetStreamContext) *MetaServiceImpl {
+func NewKVMetaService(js jetstream.JetStream) *MetaServiceImpl {
 	return &MetaServiceImpl{store: NewKVMetaStore(js)}
 }
 

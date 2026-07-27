@@ -7,15 +7,16 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func newTestStore(t *testing.T, az string) *dhcp.Store {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	s, err := dhcp.NewStore(js, az)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	s, err := dhcp.NewStore(t.Context(), js, az)
 	require.NoError(t, err)
 	return s
 }
@@ -55,9 +56,9 @@ func TestStorePutGetRoundtrip(t *testing.T) {
 		PoolName: "default",
 		Lease:    sampleLease("eipalloc-0a1b2c3d"),
 	}
-	require.NoError(t, s.Put(e))
+	require.NoError(t, s.Put(t.Context(), e))
 
-	got, err := s.Get("eipalloc-0a1b2c3d")
+	got, err := s.Get(t.Context(), "eipalloc-0a1b2c3d")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
@@ -77,28 +78,28 @@ func TestStorePutGetRoundtrip(t *testing.T) {
 
 func TestStoreGetMissing(t *testing.T) {
 	s := newTestStore(t, "az1")
-	_, err := s.Get("absent")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound, "got %v", err)
+	_, err := s.Get(t.Context(), "absent")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "got %v", err)
 }
 
 func TestStoreDeleteIdempotent(t *testing.T) {
 	s := newTestStore(t, "az1")
-	require.NoError(t, s.Delete("never-existed"))
+	require.NoError(t, s.Delete(t.Context(), "never-existed"))
 
-	require.NoError(t, s.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: sampleLease("x")}))
-	require.NoError(t, s.Delete("x"))
-	_, err := s.Get("x")
-	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
+	require.NoError(t, s.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: sampleLease("x")}))
+	require.NoError(t, s.Delete(t.Context(), "x"))
+	_, err := s.Get(t.Context(), "x")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestStoreListSkipsVersionKey(t *testing.T) {
 	s := newTestStore(t, "az1")
 
 	for _, id := range []string{"eipalloc-a", "eipalloc-b", "eipalloc-c"} {
-		require.NoError(t, s.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: sampleLease(id)}))
+		require.NoError(t, s.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: sampleLease(id)}))
 	}
 
-	entries, err := s.List()
+	entries, err := s.List(t.Context())
 	require.NoError(t, err)
 	got := map[string]bool{}
 	for _, e := range entries {
@@ -112,13 +113,13 @@ func TestStoreListSkipsVersionKey(t *testing.T) {
 
 func TestStorePutRejectsNilLease(t *testing.T) {
 	s := newTestStore(t, "az1")
-	err := s.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: nil})
+	err := s.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: nil})
 	assert.Error(t, err)
 }
 
 func TestStorePutRejectsEmptyClientID(t *testing.T) {
 	s := newTestStore(t, "az1")
 	lease := sampleLease("")
-	err := s.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: lease})
+	err := s.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: lease})
 	assert.Error(t, err)
 }

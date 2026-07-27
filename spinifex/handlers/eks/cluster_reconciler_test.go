@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,14 +45,15 @@ func (s *stubHTTPDoer) setResponse(status int, err error) {
 	s.err = err
 }
 
-func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, nats.KeyValue, nats.KeyValue) {
+func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, jetstream.KeyValue, jetstream.KeyValue) {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
-	require.NoError(t, PutClusterMeta(acctKV, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 
 	r, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-1", healthURL, opts...)
 	require.NoError(t, err)
@@ -60,10 +61,11 @@ func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOpti
 }
 
 func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
 	_, err = NewClusterReconciler(nil, acctKV, testAccountID, "alpha", "h", "")
@@ -81,13 +83,13 @@ func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
 func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 	r, _, _ := newReconcilerHarness(t, "")
 
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	require.NotNil(t, release)
 	defer release()
 
 	// Second AcquireLease from same holder must fail (Create returns KeyExists).
-	release2, ok2 := r.AcquireLease()
+	release2, ok2 := r.AcquireLease(t.Context())
 	assert.False(t, ok2)
 	assert.Nil(t, release2)
 }
@@ -95,13 +97,13 @@ func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
 	r1, leaderKV, acctKV := newReconcilerHarness(t, "")
 
-	release, ok := r1.AcquireLease()
+	release, ok := r1.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
 	r2, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-2", "")
 	require.NoError(t, err)
-	release2, ok2 := r2.AcquireLease()
+	release2, ok2 := r2.AcquireLease(t.Context())
 	assert.False(t, ok2)
 	assert.Nil(t, release2)
 }
@@ -109,54 +111,54 @@ func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
 func TestClusterReconciler_RefreshLeaseFailsAfterStolen(t *testing.T) {
 	r, leaderKV, _ := newReconcilerHarness(t, "")
 
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	assert.True(t, r.RefreshLease(), "refresh should succeed while we own the key")
+	assert.True(t, r.RefreshLease(t.Context()), "refresh should succeed while we own the key")
 
 	// Steal the key by overwriting its value via Put.
-	_, err := leaderKV.Put(reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
+	_, err := leaderKV.Put(t.Context(), reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
 	require.NoError(t, err)
 
-	assert.False(t, r.RefreshLease(), "refresh should fail after another holder stole the key")
+	assert.False(t, r.RefreshLease(t.Context()), "refresh should fail after another holder stole the key")
 }
 
 func TestClusterReconciler_RefreshLeaseFailsWhenKeyDeleted(t *testing.T) {
 	r, leaderKV, _ := newReconcilerHarness(t, "")
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	require.NoError(t, leaderKV.Delete(reconcilerLeaderKey(testAccountID, "alpha")))
-	assert.False(t, r.RefreshLease())
+	require.NoError(t, leaderKV.Delete(t.Context(), reconcilerLeaderKey(testAccountID, "alpha")))
+	assert.False(t, r.RefreshLease(t.Context()))
 }
 
 // freshenClusterCreatedAt re-stamps the cluster meta's CreatedAt to now so the
 // reconciler's CREATING deadline is far from expiry. sampleClusterMeta uses a
 // fixed past date, which would otherwise trip the create-timeout in tests that
 // assert the cluster stays CREATING.
-func freshenClusterCreatedAt(t *testing.T, kv nats.KeyValue) {
+func freshenClusterCreatedAt(t *testing.T, kv jetstream.KeyValue) {
 	t.Helper()
-	meta, err := GetClusterMeta(kv, "alpha")
+	meta, err := GetClusterMeta(t.Context(), kv, "alpha")
 	require.NoError(t, err)
 	meta.CreatedAt = time.Now().UTC()
-	require.NoError(t, PutClusterMeta(kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, meta))
 }
 
-func seedBootstrapState(t *testing.T, kv nats.KeyValue) {
+func seedBootstrapState(t *testing.T, kv jetstream.KeyValue) {
 	t.Helper()
-	_, err := kv.Put(NodeTokenKey("alpha"), []byte("enc-token"))
+	_, err := kv.Put(t.Context(), NodeTokenKey("alpha"), []byte("enc-token"))
 	require.NoError(t, err)
-	_, err = kv.Put(AdminKubeconfigKey("alpha"), []byte("enc-kc"))
+	_, err = kv.Put(t.Context(), AdminKubeconfigKey("alpha"), []byte("enc-kc"))
 	require.NoError(t, err)
 	// Pre-seeded JWKS plus the verified-marker persistJWKS writes on a passing
 	// cross-check — bootstrapReady gates ACTIVE on the marker, not the seed.
-	_, err = kv.Put(OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
+	_, err = kv.Put(t.Context(), OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
 	require.NoError(t, err)
-	_, err = kv.Put(OIDCJWKSVerifiedKey("alpha"), []byte("verified"))
+	_, err = kv.Put(t.Context(), OIDCJWKSVerifiedKey("alpha"), []byte("verified"))
 	require.NoError(t, err)
-	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
+	require.NoError(t, SetClusterCertificateAuthority(t.Context(), kv, "alpha", "ca-blob-b64"))
 }
 
 func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testing.T) {
@@ -167,7 +169,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testi
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
@@ -180,7 +182,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testi
 	go func() { runErr <- r.Run(ctx) }()
 
 	require.Eventually(t, func() bool {
-		meta, err := GetClusterMeta(acctKV, "alpha")
+		meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 		if err != nil {
 			return false
 		}
@@ -205,23 +207,23 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
 	freshenClusterCreatedAt(t, acctKV)
 
 	// Only seed two of the three KV keys (no CA, no JWKS).
-	_, err := acctKV.Put(NodeTokenKey("alpha"), []byte("enc-token"))
+	_, err := acctKV.Put(t.Context(), NodeTokenKey("alpha"), []byte("enc-token"))
 	require.NoError(t, err)
-	_, err = acctKV.Put(AdminKubeconfigKey("alpha"), []byte("enc-kc"))
+	_, err = acctKV.Put(t.Context(), AdminKubeconfigKey("alpha"), []byte("enc-kc"))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "must remain CREATING when bootstrap incomplete")
 }
@@ -239,26 +241,26 @@ func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
 	freshenClusterCreatedAt(t, acctKV)
 
-	_, err := acctKV.Put(NodeTokenKey("alpha"), []byte("enc-token"))
+	_, err := acctKV.Put(t.Context(), NodeTokenKey("alpha"), []byte("enc-token"))
 	require.NoError(t, err)
-	_, err = acctKV.Put(AdminKubeconfigKey("alpha"), []byte("enc-kc"))
+	_, err = acctKV.Put(t.Context(), AdminKubeconfigKey("alpha"), []byte("enc-kc"))
 	require.NoError(t, err)
-	require.NoError(t, SetClusterCertificateAuthority(acctKV, "alpha", "ca-blob-b64"))
+	require.NoError(t, SetClusterCertificateAuthority(t.Context(), acctKV, "alpha", "ca-blob-b64"))
 	// Pre-seeded JWKS present, but NO verified-marker.
-	_, err = acctKV.Put(OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
+	_, err = acctKV.Put(t.Context(), OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status,
 		"must remain CREATING until the JWKS cross-check positively passes")
@@ -272,7 +274,7 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
@@ -283,7 +285,7 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 	defer cancel()
 	_ = r.Run(ctx)
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "must remain CREATING when /healthz fails")
 }
@@ -297,16 +299,16 @@ func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
 		WithLeaseRefresh(10*time.Second),
 		WithCreateTimeout(1*time.Millisecond),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
 	// Stamp CreatedAt in the past so the 1ms deadline is already exceeded; the
 	// cluster never becomes ready, so the reconciler must mark it FAILED.
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	meta.CreatedAt = time.Now().Add(-time.Hour).UTC()
-	require.NoError(t, PutClusterMeta(acctKV, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, meta))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -314,7 +316,7 @@ func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
 	err = r.Run(ctx)
 	assert.ErrorIs(t, err, ErrReconcilerClusterFailed)
 
-	got, err := GetClusterMeta(acctKV, "alpha")
+	got, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusFailed, got.Status)
 	assert.Contains(t, got.StatusReason, "did not become ACTIVE")
@@ -329,7 +331,7 @@ func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
 		WithLeaseRefresh(10*time.Second),
 		WithCreateTimeout(time.Hour),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
@@ -339,7 +341,7 @@ func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
 	defer cancel()
 	_ = r.Run(ctx)
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "within deadline must stay CREATING")
 }
@@ -352,11 +354,11 @@ func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusDeleting))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusDeleting))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -373,7 +375,7 @@ func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 		WithReconcileInterval(10*time.Second),
 		WithLeaseRefresh(20*time.Millisecond),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
@@ -388,7 +390,7 @@ func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 	// Steal the lease in another holder's name. The next refresh tick should
 	// notice and return ErrReconcilerLeaseLost.
 	time.Sleep(40 * time.Millisecond)
-	_, err := leaderKV.Put(reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
+	_, err := leaderKV.Put(t.Context(), reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
 	require.NoError(t, err)
 
 	select {
@@ -407,18 +409,18 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	stub.setResponse(http.StatusServiceUnavailable, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status, "ACTIVE must not flip on healthz fail in this PR")
 	assert.Positive(t, stub.calls.Load())
@@ -434,23 +436,23 @@ func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
 	)
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 
 	// First probe fails and records the issue.
 	require.Error(t, r.probeHealthz(context.Background()))
 	require.NoError(t, r.reconcileOnce(context.Background()))
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	require.NotEmpty(t, meta.HealthIssue)
 
 	// Probe recovers: the issue must be cleared.
 	stub.setResponse(http.StatusOK, nil)
 	require.NoError(t, r.reconcileOnce(context.Background()))
-	meta, err = GetClusterMeta(acctKV, "alpha")
+	meta, err = GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Empty(t, meta.HealthIssue, "recovered /healthz must clear the recorded issue")
 }

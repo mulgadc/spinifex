@@ -17,7 +17,7 @@ func fixedMasterKey() []byte {
 }
 
 // TestCredentialStore_Resolve_NilJS covers the platform-default and
-// vendor-miss paths of a store built with a nil JetStream context (as a
+// vendor-miss paths of a store built with a nil JetStream handle (as a
 // live NATS server is out of scope here). Resolve must consult
 // platformDefaults without dereferencing js.
 func TestCredentialStore_Resolve_NilJS(t *testing.T) {
@@ -62,8 +62,8 @@ func TestNoopCredentialResolver_ResolvesNothing(t *testing.T) {
 // bucket (lazy create), credentialKey, PutCredential (encrypt+Put), and the
 // KV-hit branch of Resolve (Get+decrypt).
 func TestCredentialStore_PutAndResolve_KV(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(js, fixedMasterKey(), 1, nil)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, nil)
 
 	ctx := context.Background()
 	require.NoError(t, store.PutCredential(ctx, "000000000001", "anthropic", "sk-test"))
@@ -75,10 +75,10 @@ func TestCredentialStore_PutAndResolve_KV(t *testing.T) {
 }
 
 // TestCredentialStore_Resolve_KVMissFallsBackToPlatformDefault covers a KV
-// miss (nats.ErrKeyNotFound) that falls through to the platform default.
+// miss (jetstream.ErrKeyNotFound) that falls through to the platform default.
 func TestCredentialStore_Resolve_KVMissFallsBackToPlatformDefault(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(js, fixedMasterKey(), 1, map[string]string{"anthropic": "sk-platform-default"})
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, map[string]string{"anthropic": "sk-platform-default"})
 
 	key, ok, err := store.Resolve(context.Background(), "999999999999", "anthropic")
 	require.NoError(t, err)
@@ -89,8 +89,8 @@ func TestCredentialStore_Resolve_KVMissFallsBackToPlatformDefault(t *testing.T) 
 // TestCredentialStore_Resolve_KVMissNoPlatformDefault covers a KV miss on an
 // unknown account with no platform defaults configured: ("", false, nil).
 func TestCredentialStore_Resolve_KVMissNoPlatformDefault(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(js, fixedMasterKey(), 1, nil)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, nil)
 
 	key, ok, err := store.Resolve(context.Background(), "999999999999", "anthropic")
 	require.NoError(t, err)

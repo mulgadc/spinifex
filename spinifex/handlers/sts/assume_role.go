@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,11 +19,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -62,6 +64,7 @@ var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 // AssumeRole mints temporary credentials after evaluating the target role's
 // trust policy against the caller.
 func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+	ctx := context.Background()
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -89,7 +92,7 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 		duration = *input.DurationSeconds
 	}
 
-	out, err := s.assumeRoleForCaller(callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
+	out, err := s.assumeRoleForCaller(ctx, callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +114,7 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 // AssumeRoleForInstance is the in-process IMDS entry point, not reachable over HTTPS.
 // Caller is synthesised as ec2.amazonaws.com; the session name is the instanceID.
 func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
+	ctx := context.Background()
 	if accountID == "" || roleARN == "" || instanceID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -118,7 +122,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	out, err := s.assumeRoleForCaller("", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
+	out, err := s.assumeRoleForCaller(ctx, "", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +141,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 // assumeRoleForCaller is the shared core of AssumeRole and AssumeRoleForInstance:
 // resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
 // principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
-func (s *STSServiceImpl) assumeRoleForCaller(callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
+func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
@@ -171,7 +175,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerARN, principalSource, roleARN
 	}
 
 	env := assumedRoleEnvelope(role, roleAccountID, sessionName, sourceIdentity)
-	cred, plainSecret, plainToken, err := s.mintSession(env, duration)
+	cred, plainSecret, plainToken, err := s.mintSession(ctx, env, duration)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +423,7 @@ func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdent
 
 // mintSession generates a fresh ASIA AKID, encrypts the secret, HMACs the token,
 // and persists the credential. Retries up to mintMaxAttempts on AKID collision.
-func (s *STSServiceImpl) mintSession(env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
+func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
 	plainSecret, err := generateRandomBase64(sessionSecretBytes)
 	if err != nil {
 		return nil, "", "", err
@@ -458,8 +462,8 @@ func (s *STSServiceImpl) mintSession(env sessionEnvelope, duration int64) (*Sess
 			ExpiresAt:         expiresAt,
 			CreatedAt:         now,
 		}
-		if err := putSessionCredential(s.sessionsBucket, cred); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
+		if err := putSessionCredential(ctx, s.sessionsBucket, cred); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
 				continue
 			}
 			return nil, "", "", fmt.Errorf("persist session credential: %w", err)

@@ -1,5 +1,8 @@
 version: "2"
 
+issues:
+  max-same-issues: 10
+
 formatters:
   enable:
     - gofmt
@@ -14,7 +17,6 @@ linters:
     - bidichk # checks for dangerous unicode bidi character sequences
     - bodyclose # checks whether HTTP response body is closed successfully
     - canonicalheader # checks whether net/http.Header uses canonical header keys
-    - decorder # checks declaration order of types, consts, vars, and funcs
     - depguard # blocks imports of packages with a preferred replacement
     - durationcheck # checks for two durations multiplied together
     - embeddedstructfieldcheck # checks embedded sync.Mutex/RWMutex in structs
@@ -24,17 +26,20 @@ linters:
     - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
+    - forbidigo # blocks the legacy JetStream/KV symbols
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
     - godot # checks that declaration comments end in a period
     - goprintffuncname # checks that printf-like functions are named with f at the end
     - gosec # inspects source code for security problems
     - govet # reports suspicious constructs (Printf alignment, shadow, etc.)
+    - iface # detects interface pollution — duplicate interface declarations
     - ineffassign # detects assignments to existing variables that are not used
+    - iotamixing # flags const blocks that mix iota with non-iota declarations
     - makezero # finds slice declarations with non-zero initial length followed by append
     - mirror # catches wrong mirror patterns in bytes/strings usage
     - misspell # finds commonly misspelled English words
-    - musttag # checks structs passed to marshal/unmarshal have proper tags
     - modernize # modernizes code to use newer Go idioms (go fix analyzers)
+    - musttag # checks structs passed to marshal/unmarshal have proper tags
     - nakedret # finds naked returns in functions
     - nilerr # catches code that returns nil even after checking err != nil
     - nilnesserr # catches returning a different nil error variable after err != nil check
@@ -55,9 +60,6 @@ linters:
     - whitespace # detects leading and trailing whitespace in functions
 
   settings:
-    embeddedstructfieldcheck:
-      forbid-mutex: true
-
     depguard:
       rules:
         main:
@@ -67,10 +69,31 @@ linters:
             - pkg: math/rand$
               desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
 
+    embeddedstructfieldcheck:
+      forbid-mutex: true
+
     errcheck:
       check-type-assertions: true # replaces forcetypeassert
       exclude-functions:
         - (*github.com/nats-io/nats.go.Subscription).Unsubscribe # cleanup-only, errors not actionable
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '\.JetStream$'
+          pkg: '^github\.com/nats-io/nats\.go$'
+          msg: legacy nc.JetStream() is superseded; construct with jetstream.New(nc).
+        - pattern: '^nats\.(JetStreamContext|KeyValue.*|KeyWatcher|Err(KeyNotFound|KeyExists|BucketNotFound|NoKeysFound|StreamNotFound))$'
+          pkg: '^github\.com/nats-io/nats\.go$'
+          msg: legacy nats KV types/sentinels are superseded; use github.com/nats-io/nats.go/jetstream.
+
+    gosec:
+      excludes:
+        - G104 # unchecked errors — errcheck is stricter
+        - G116 # bidi chars — bidichk is more thorough
+        - G117 # use of net/http serve functions (we handle TLS separately)
+        - G703 # path traversal taint analysis — false positives on config file loading
+        - G705 # XSS taint analysis — false positives on internal error responses
 
     govet:
       enable-all: true
@@ -78,6 +101,28 @@ linters:
         - fieldalignment
         - shadow # too noisy to retrofit — all 50 findings are err re-declarations
         - unusedwrite # false positives on struct field assignments before marshal/send
+
+    modernize:
+      disable:
+        - newexpr # don't replace aws.String() with new() — AWS SDK idiom
+        - stringsbuilder # don't replace small string concatenations with strings.Builder
+
+    nakedret:
+      max-func-lines: 0
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    perfsprint:
+      concat-loop: false
+      err-error: false # don't flag err.Error()
+      errorf: false # don't convert fmt.Errorf to errors.New
+      strconcat: false
+
+    reassign:
+      patterns:
+        - ".*"
 
     staticcheck:
       checks:
@@ -90,40 +135,8 @@ linters:
         - -ST1020 # godoc on exported types — not enforcing yet
         - -ST1021 # godoc on exported type groups — not enforcing yet
         - -ST1022 # godoc on exported vars/consts — not enforcing yet
-        - -SA1019 # deprecated usage (handle separately)
         - -SA4006 # value overwritten — ineffassign + wastedassign cover this better
-        - -SA9005 # ineffective break (staticcheck false positives)
-
-    gosec:
-      excludes:
-        - G104 # unchecked errors — errcheck is stricter
-        - G116 # bidi chars — bidichk is more thorough
-        - G117 # use of net/http serve functions (we handle TLS separately)
-        - G703 # path traversal taint analysis — false positives on config file loading
-        - G705 # XSS taint analysis — false positives on internal error responses
-        - G706 # log injection taint analysis — false positives on structured slog usage
-
-    modernize:
-      disable:
-        - newexpr # don't replace aws.String() with new() — AWS SDK idiom
-        - stringsbuilder # don't replace small string concatenations with strings.Builder
-
-    perfsprint:
-      concat-loop: false
-      err-error: false # don't flag err.Error()
-      errorf: false # don't convert fmt.Errorf to errors.New
-      strconcat: false
-
-    nakedret:
-      max-func-lines: 0
-
-    nolintlint:
-      require-explanation: true
-      require-specific: true
-
-    reassign:
-      patterns:
-        - ".*"
+        - -SA9005 # marshaling structs with no exported fields — intended {} for empty API-response types
 
     testifylint:
       disable:
@@ -153,3 +166,8 @@ linters:
         linters: [gosec] # subprocess execution — legitimate in VM orchestration
       - text: "G304"
         linters: [gosec] # file path from variable — necessary for config loading
+
+      # aws-sdk-go v1 is deprecated wholesale (EOL 2025-07-31); the v1->v2
+      # migration is tracked separately, so suppress its SA1019 noise for now.
+      - text: "aws-sdk-go is deprecated"
+        linters: [staticcheck]

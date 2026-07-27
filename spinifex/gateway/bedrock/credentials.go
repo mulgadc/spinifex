@@ -7,7 +7,8 @@ import (
 	"sync"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // bedrockCredentialsBucket is the cluster-replicated KV bucket holding
@@ -26,13 +27,13 @@ func credentialKey(accountID, vendor string) string {
 // bedrock-credentials JetStream KV bucket, falling back to a platform-wide
 // default when an account has none. Keys are encrypted at rest.
 type CredentialStore struct {
-	js               nats.JetStreamContext
+	js               jetstream.JetStream
 	masterKey        []byte
 	replicas         int
 	platformDefaults map[string]string
 
 	mu sync.Mutex
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 }
 
 var _ CredentialResolver = (*CredentialStore)(nil)
@@ -40,7 +41,7 @@ var _ CredentialResolver = (*CredentialStore)(nil)
 // NewCredentialStore constructs a CredentialStore. platformDefaults maps
 // vendor to a platform-wide API key used when an account has no key of its
 // own; pass an empty map to disable platform defaults entirely.
-func NewCredentialStore(js nats.JetStreamContext, masterKey []byte, replicas int, platformDefaults map[string]string) *CredentialStore {
+func NewCredentialStore(js jetstream.JetStream, masterKey []byte, replicas int, platformDefaults map[string]string) *CredentialStore {
 	return &CredentialStore{
 		js:               js,
 		masterKey:        masterKey,
@@ -49,23 +50,17 @@ func NewCredentialStore(js nats.JetStreamContext, masterKey []byte, replicas int
 	}
 }
 
-// bucket lazily opens (or creates) the bedrock-credentials KV bucket,
-// caching the handle, mirroring gateway_ecrauth.openSigningBucket.
-func (s *CredentialStore) bucket() (nats.KeyValue, error) {
+// bucket lazily opens (or creates) the cluster-replicated bedrock-credentials
+// KV bucket, caching the handle for subsequent calls.
+func (s *CredentialStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.kv != nil {
 		return s.kv, nil
 	}
-	kv, err := s.js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   bedrockCredentialsBucket,
-		History:  bedrockCredentialsHistory,
-		Replicas: s.replicas,
-	})
+	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockCredentialsBucket, bedrockCredentialsHistory, s.replicas)
 	if err != nil {
-		if kv, err = s.js.KeyValue(bedrockCredentialsBucket); err != nil {
-			return nil, fmt.Errorf("open %s bucket: %w", bedrockCredentialsBucket, err)
-		}
+		return nil, err
 	}
 	s.kv = kv
 	return kv, nil
@@ -75,13 +70,13 @@ func (s *CredentialStore) bucket() (nats.KeyValue, error) {
 // stored, else the platform default, else ("", false, nil). A nil js is
 // tolerated so a store built with only platformDefaults (e.g. in tests) can
 // still serve the default-only path without touching JetStream.
-func (s *CredentialStore) Resolve(_ context.Context, accountID, vendor string) (string, bool, error) {
+func (s *CredentialStore) Resolve(ctx context.Context, accountID, vendor string) (string, bool, error) {
 	if s.js != nil {
-		kv, err := s.bucket()
+		kv, err := s.bucket(ctx)
 		if err != nil {
 			return "", false, err
 		}
-		entry, err := kv.Get(credentialKey(accountID, vendor))
+		entry, err := kv.Get(ctx, credentialKey(accountID, vendor))
 		switch {
 		case err == nil:
 			plaintext, err := handlers_iam.DecryptSecret(string(entry.Value()), s.masterKey)
@@ -89,7 +84,7 @@ func (s *CredentialStore) Resolve(_ context.Context, accountID, vendor string) (
 				return "", false, fmt.Errorf("decrypt credential for %s/%s: %w", accountID, vendor, err)
 			}
 			return plaintext, true, nil
-		case !errors.Is(err, nats.ErrKeyNotFound):
+		case !errors.Is(err, jetstream.ErrKeyNotFound):
 			return "", false, fmt.Errorf("kv get credential for %s/%s: %w", accountID, vendor, err)
 		}
 	}
@@ -100,8 +95,8 @@ func (s *CredentialStore) Resolve(_ context.Context, accountID, vendor string) (
 }
 
 // PutCredential encrypts and stores key as accountID's vendor credential.
-func (s *CredentialStore) PutCredential(_ context.Context, accountID, vendor, key string) error {
-	kv, err := s.bucket()
+func (s *CredentialStore) PutCredential(ctx context.Context, accountID, vendor, key string) error {
+	kv, err := s.bucket(ctx)
 	if err != nil {
 		return err
 	}
@@ -109,7 +104,7 @@ func (s *CredentialStore) PutCredential(_ context.Context, accountID, vendor, ke
 	if err != nil {
 		return fmt.Errorf("encrypt credential for %s/%s: %w", accountID, vendor, err)
 	}
-	if _, err := kv.Put(credentialKey(accountID, vendor), []byte(ciphertext)); err != nil {
+	if _, err := kv.Put(ctx, credentialKey(accountID, vendor), []byte(ciphertext)); err != nil {
 		return fmt.Errorf("kv put credential for %s/%s: %w", accountID, vendor, err)
 	}
 	return nil

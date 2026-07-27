@@ -13,8 +13,11 @@ import (
 // ecrAuthBridge authenticates /v2/* requests with an ECR token. It accepts a
 // single Authorization header carrying "Bearer <jwt>" or "Basic AWS:<jwt>",
 // verifies the JWT, enforces that the token account matches the host-derived
-// account, and stashes the resolved account/principal on the request context.
-// Unauthenticated or invalid requests get a 401 Bearer challenge.
+// account, rehydrates the token's principal against current IAM/STS state,
+// and stashes the resolved account/principal on the request context.
+// Unauthenticated, invalid, or revoked-identity requests get a 401 Bearer
+// challenge; a backend outage that prevents rehydration fails closed with 503
+// rather than falling through as an allow.
 //
 // A nil verifier disables the bridge (registry mounts open), matching the nil
 // ECRRegistry fallback used by unit tests of unrelated routes.
@@ -54,8 +57,25 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 			return
 		}
 
+		// The JWT is a signed pointer, not a permission grant: rehydrate it
+		// against current IAM/STS state so a revoked key, session, user, role,
+		// or account takes effect on this request even though the token itself
+		// is still cryptographically valid and unexpired.
+		principal, err := gw.resolveECRPrincipal(claims)
+		if err != nil {
+			if isECRDependencyFailure(err) {
+				slog.Error("ECR auth bridge: principal rehydration dependency failure", "err", err)
+				gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+				return
+			}
+			slog.Warn("ECR auth bridge: principal rehydration rejected token", "err", err)
+			gw.writeECRChallenge(w, r)
+			return
+		}
+
 		ctx := gateway_ecr.WithAuthAccount(r.Context(), claims.AccountID)
 		ctx = context.WithValue(ctx, ctxAuthPrincipal, claims.Subject)
+		ctx = context.WithValue(ctx, ctxECRPrincipal, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

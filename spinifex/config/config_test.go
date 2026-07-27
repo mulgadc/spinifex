@@ -785,6 +785,50 @@ shardwal = true
 	assert.True(t, *n.Viperblock.ShardWAL)
 }
 
+func TestLoadConfig_ViperblockGCEnabled_DefaultNil(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	n := cfg.Nodes["n1"]
+	assert.Nil(t, n.Viperblock.GCEnabled, "GCEnabled should be nil when not configured (defaults to false in service)")
+}
+
+func TestLoadConfig_ViperblockGCEnabled_True(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.viperblock]
+gc_enabled = true
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	n := cfg.Nodes["n1"]
+	require.NotNil(t, n.Viperblock.GCEnabled, "GCEnabled should be set when explicitly configured")
+	assert.True(t, *n.Viperblock.GCEnabled)
+}
+
 func TestParseEndpoints(t *testing.T) {
 	cases := []struct {
 		name string

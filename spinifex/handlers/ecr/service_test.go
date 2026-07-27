@@ -56,7 +56,8 @@ func TestMetaServiceImpl_FlagMapping(t *testing.T) {
 // TestNATSMetaStore_RepoPolicy drives the policy passthrough round-trip
 // (put/get/delete + not-found mapping) end to end over the embedded server.
 func TestNATSMetaStore_RepoPolicy(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := NewKVMetaService(js)
 
 	serveMeta(t, nc, SubjectPolicyPut, svc.PolicyPut)
@@ -88,7 +89,8 @@ func TestNATSMetaStore_RepoPolicy(t *testing.T) {
 // TestNATSMetaStore_LifecyclePolicy drives the lifecycle-policy passthrough
 // round-trip (put/get/delete + not-found mapping) end to end.
 func TestNATSMetaStore_LifecyclePolicy(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := NewKVMetaService(js)
 
 	serveMeta(t, nc, SubjectLifecyclePut, svc.LifecyclePut)
@@ -143,7 +145,8 @@ func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn fun
 // a KV-backed daemon service over an embedded NATS/JetStream server, proving the
 // full request/reply path including ErrNotFound/ErrConflict reconstruction.
 func TestNATSMetaStore_RoundTrip(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := NewKVMetaService(js)
 
 	serveMeta(t, nc, SubjectRepoCreate, svc.RepoCreate)

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // EKSBillableReaper is ADR-0006 §5's meta-independent billable cleanup, built on
@@ -47,7 +48,7 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("list running VMs: %w", err)
 	}
 
-	js, err := r.svc.deps.NATSConn.JetStream()
+	js, err := jetstream.New(r.svc.deps.NATSConn)
 	if err != nil {
 		return 0, fmt.Errorf("jetstream: %w", err)
 	}
@@ -68,12 +69,12 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 			continue // ENI gone or untagged: cannot confirm orphan-hood, never reap
 		}
 
-		acctKV, err := GetOrCreateAccountBucket(js, clusterAccount, max(r.svc.deps.ClusterSize, 1))
+		acctKV, err := GetOrCreateAccountBucket(ctx, js, clusterAccount, max(r.svc.deps.ClusterSize, 1))
 		if err != nil {
 			slog.WarnContext(ctx, "eks-billable: account bucket lookup failed", "account", clusterAccount, "err", err)
 			continue
 		}
-		if _, err := GetClusterMeta(acctKV, clusterName); !errors.Is(err, ErrClusterNotFound) {
+		if _, err := GetClusterMeta(ctx, acctKV, clusterName); !errors.Is(err, ErrClusterNotFound) {
 			// Meta present (live/CREATING/DELETING) or unreadable: not a definitive
 			// orphan — leave it to the cluster's own teardown/retry.
 			continue

@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -59,6 +60,9 @@ var natsConfTemplate string
 
 //go:embed templates/predastore-multinode.toml
 var predastoreMultiNodeTemplate string
+
+//go:embed templates/northstar.toml
+var northstarTomlTemplate string
 
 var supportedArchs = map[string]bool{
 	"x86_64":  true,
@@ -336,6 +340,7 @@ func init() {
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -352,6 +357,7 @@ func init() {
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 	adminJoinCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
 	adminJoinCmd.MarkFlagRequired("node")
 	adminJoinCmd.MarkFlagRequired("host")
@@ -676,6 +682,12 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Import is an interactive command whose output is a progress bar, so the
+	// volume's routine mount chatter is noise here: a fresh import has no prior
+	// state, making the "no state found" / 404 lines expected rather than
+	// notable. Scoping the logger to this VB (New copies it onto the backend
+	// too) keeps it off the process-wide default. Errors still surface, both
+	// through this logger and as the returned error the caller prints.
 	vbConfig := viperblock.VB{
 		VolumeName: volumeId,
 		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
@@ -688,6 +700,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		VolumeConfig:      manifest,
 		MasterKey:         mkey,
 		EncryptionEnabled: mkey != nil,
+		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	// Bake the deployment CA into the image trust store so a stock cloud image
@@ -697,7 +710,25 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// command, which would collapse the path to a relative config/ca.pem.
 	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
-	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)
+	// Render the flush bar here rather than inside viperblock, which stays a
+	// pure storage library. The bar is built lazily on the first update so it is
+	// never drawn if the import fails before any bytes flush; viperblock
+	// throttles the callback to ≤101 invocations, so the human-readable title
+	// renders without the per-block render-frequency regression.
+	var flushBar *pterm.ProgressbarPrinter
+	var flushUpdate func(current uint64)
+	progress := func(current, total uint64) {
+		if flushBar == nil {
+			flushBar, flushUpdate = utils.NewByteProgressBar("Flushing image to storage", total)
+		}
+		flushUpdate(current)
+	}
+
+	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath, progress)
+
+	if flushBar != nil {
+		_, _ = flushBar.Stop()
+	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not import image to predastore: %v\n", err)
@@ -1180,10 +1211,31 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Detect DNS servers from the host for VM DHCP
+	// Validate IP address format
+	if net.ParseIP(bindIP) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
+		os.Exit(1)
+	}
+
+	// Resolve the off-host advertise IP before detecting DNS. DetectNetwork may
+	// have failed earlier, so retry lazily when the listener still needs a WAN IP.
+	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
+		if d, derr := admin.DetectNetwork(); derr == nil {
+			detectedNet = d
+		}
+	}
+	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Exclude the node-local Northstar listener from its own upstreams. On a
+	// forced re-init, resolvconf may still list this address first; forwarding it
+	// back to Northstar creates a recursive DNS loop.
 	var dnsServers []string
 	if externalMode != "" {
-		dnsServers = detectDNSServers(externalIface)
+		dnsServers = detectDNSServers(externalIface, advertiseIP)
 		if len(dnsServers) > 0 {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
@@ -1217,25 +1269,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			Start: poolStart, End: poolEnd, Gateway: externalGateway,
 			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
 		})
-	}
-
-	// Validate IP address format
-	if net.ParseIP(bindIP) == nil {
-		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
-		os.Exit(1)
-	}
-
-	// Resolve the off-host advertise IP. DetectNetwork may have failed earlier;
-	// detect lazily if we still need the WAN IP.
-	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
-		if d, derr := admin.DetectNetwork(); derr == nil {
-			detectedNet = d
-		}
-	}
-	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
-		os.Exit(1)
 	}
 
 	// Validate port range
@@ -1400,6 +1433,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 	spxRoot = filepath.Clean(spxRoot)
 
+	// Generate dedicated, bucket-scoped credentials for the northstar DNS
+	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
+	// the resolver reads zone files read-only from its own S3 bucket.
+	//
+	// Generated above the multi-node dispatch because the pair is cluster-wide:
+	// a node's predastore only honours the keys rendered into its own config, so
+	// every node must present this same pair to read the distributed zone bucket.
+	northstarAccessKey, err := admin.GenerateAWSAccessKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarSecretKey, err := admin.GenerateAWSSecretKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarCreds := admin.NorthstarCredentials{
+		AccessKey: northstarAccessKey,
+		SecretKey: northstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}
+
 	// Determine if this is a multi-node formation. Operator intent comes from
 	// --nodes, not from whether --bind was left at the 0.0.0.0 default.
 	isMultiNode := nodes >= 2
@@ -1436,7 +1492,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
 			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
 		return
 	}
 
@@ -1452,6 +1508,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	portStr := strconv.Itoa(port)
+
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
 	var predastoreNodeID int
@@ -1482,7 +1542,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1547,6 +1607,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		IPSecEnabled:   ipsecEnabled,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
+		PoolDNSServers:          dnsServers,
 	}
 
 	// Print external networking summary
@@ -1588,6 +1656,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
 
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
 	// Write node.conf so spx admin banner works on source installs (not just ISO).
 	nodeHostname, _ := os.Hostname()
 	if nodeHostname == "" {
@@ -1617,10 +1688,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 // runAdminInitMultiNode handles the multi-node formation path for admin init.
 // It starts a formation server, registers this node, waits for all nodes to join,
 // then generates configs with complete cluster topology.
+//
+// The northstar credentials are generated by the caller and provision this
+// node's predastore with the zone bucket. The same pair is distributed to
+// joiners, since each node's predastore only honours the keys in its own config.
 func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
 	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
-	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig) {
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	northstarCreds admin.NorthstarCredentials) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --formation-timeout: %v\n", err)
@@ -1672,6 +1748,12 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		Region:         region,
 		AdminAccessKey: adminAccessKey,
 		AdminSecretKey: adminSecretKey,
+
+		// Joiners provision their own predastore with this pair, so every
+		// node's resolver can read the distributed zone bucket via its local
+		// endpoint. The bucket is a constant, so it is derived node-side.
+		NorthstarAccessKey: northstarCreds.AccessKey,
+		NorthstarSecretKey: northstarCreds.SecretKey,
 	}
 
 	fs := formation.NewFormationServer(expectedNodes, creds, string(caCertData), string(caKeyData), networkConfig, joinToken, tokenTTL)
@@ -1743,11 +1825,15 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	portStr := strconv.Itoa(port)
 
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1787,11 +1873,18 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(allNodes, node),
+		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum; the init node's
 		// own address leads, the rest provide failover.
@@ -1809,6 +1902,9 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
 
 	// Keep formation server running briefly so joining nodes can fetch complete status
 	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
@@ -2195,12 +2291,15 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	portStr := strconv.Itoa(port)
 
+	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
+
 	// Generate multi-node predastore config
 	var predastoreNodeID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval,
+			northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -2244,11 +2343,18 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreNodeID:          predastoreNodeID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
-		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node),
+		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
 
 		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
 
 		// Multi-endpoint OVN NB/SB list across the RAFT quorum so the client
 		// fails over instead of pinning to a single init node.
@@ -2266,6 +2372,9 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 
 	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
 
 	// Print cluster summary
 	fmt.Println("\n🎉 Node successfully joined cluster!")
@@ -2306,7 +2415,16 @@ func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNe
 // buildRemoteNodes converts formation NodeInfo into RemoteNode entries,
 // excluding the local node. This puts all cluster members into spinifex.toml
 // so config is the source of truth for expected cluster membership.
-func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) []admin.RemoteNode {
+//
+// northstarConfigPath is the local node's own path, republished for every peer:
+// every node in a formed cluster runs northstar, and the seed set must be
+// identical on all of them or the base zone's NS records get pinned to whichever
+// node wins the create-if-absent race. --config-dir is per-node and does not
+// cross the wire, so the value is accurate whenever nodes share a config dir and
+// inert when they do not — only its emptiness is ever read back. Passing it
+// empty (no credentials distributed) leaves peers with no stanza, so no node is
+// advertised as a resolver it cannot be.
+func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northstarConfigPath string) []admin.RemoteNode {
 	var remote []admin.RemoteNode
 	for name, n := range allNodes {
 		if name == localNode {
@@ -2319,11 +2437,12 @@ func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode string) 
 			host = n.BindIP
 		}
 		remote = append(remote, admin.RemoteNode{
-			Name:     name,
-			Host:     host,
-			Region:   n.Region,
-			AZ:       n.AZ,
-			Services: n.Services,
+			Name:                name,
+			Host:                host,
+			Region:              n.Region,
+			AZ:                  n.AZ,
+			Services:            n.Services,
+			NorthstarConfigPath: northstarConfigPath,
 		})
 	}
 	sort.Slice(remote, func(i, j int) bool {
@@ -2347,7 +2466,9 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 		return nil, nil, nil, nil, fmt.Errorf("load master key: %w", err)
 	}
 
-	svc, err := handlers_iam.NewIAMServiceImpl(nc, masterKey, len(cfg.Nodes))
+	// Background: this runs at CLI top level, where there is no request to
+	// inherit a deadline from and the process exits after the one command.
+	svc, err := handlers_iam.NewIAMServiceImpl(context.Background(), nc, masterKey, len(cfg.Nodes))
 	if err != nil {
 		nc.Close()
 		return nil, nil, nil, nil, fmt.Errorf("init IAM service: %w", err)
@@ -2381,7 +2502,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	// Create default VPC for the new account (belt-and-suspenders: daemon also
 	// does this via iam.account.created event, but daemon may not be running).
 	nodeConfig := cfg.Nodes[cfg.Node]
-	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(&nodeConfig, nc)
+	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(context.Background(), &nodeConfig, nc)
 	if vpcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC service: %v\n", vpcErr)
 	} else if _, vpcErr = vpcSvc.EnsureDefaultVPC(accountID); vpcErr != nil {
@@ -2539,6 +2660,7 @@ type configDirs struct {
 	Viperblock string
 	NATS       string
 	Spinifex   string
+	Northstar  string
 }
 
 // createConfigSubdirs creates the standard config subdirectories under configDir.
@@ -2549,8 +2671,9 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 		Viperblock: filepath.Join(configDir, "viperblock"),
 		NATS:       filepath.Join(configDir, "nats"),
 		Spinifex:   filepath.Join(configDir, "spinifex"),
+		Northstar:  filepath.Join(configDir, "northstar"),
 	}
-	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex} {
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex, dirs.Northstar} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -2558,13 +2681,54 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 	return dirs, nil
 }
 
+// northstarFromFormation derives a joining node's northstar credentials and
+// node-local config path from the cluster-wide pair distributed at formation.
+//
+// The keys cross the wire because a node's predastore only honours the keys in
+// its own config, so every node must present the same pair to read the
+// distributed zone bucket. The bucket name and config path are node-local
+// constants, so they are derived here rather than carried.
+//
+// A leader that predates credential distribution sends no keys. That yields a
+// zero pair and an empty path, so the node renders no northstar config at all
+// rather than a resolver holding a key its own predastore would reject.
+func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs) (admin.NorthstarCredentials, string) {
+	if creds.NorthstarAccessKey == "" || creds.NorthstarSecretKey == "" {
+		return admin.NorthstarCredentials{}, ""
+	}
+	return admin.NorthstarCredentials{
+		AccessKey: creds.NorthstarAccessKey,
+		SecretKey: creds.NorthstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}, filepath.Join(dirs.Northstar, "northstar.toml")
+}
+
 // generateAndWriteConfigs renders the standard config files (spinifex.toml,
 // awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
 func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
+	// A one-sided pair must disable Northstar wholesale. Rendering only the
+	// public stanza or only the secret file advertises a resolver that cannot run.
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled {
+		settings.NorthstarAccessKey = ""
+		settings.NorthstarSecretKey = ""
+		settings.NorthstarBucket = ""
+		settings.NorthstarConfigPath = ""
+	}
+
 	configs := []admin.ConfigFile{
 		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
 		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
 		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
+	}
+	// northstar.toml is only rendered when scoped DNS credentials were
+	// provisioned. A cluster formed by a leader that predates their distribution
+	// leaves the keys empty, yielding no northstar config rather than a partial
+	// one pointing at a bucket the local predastore does not serve.
+	if northstarEnabled {
+		configs = append(configs, admin.ConfigFile{
+			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,
+		})
 	}
 	if !skipPredastore {
 		configs = append(configs, admin.ConfigFile{
@@ -2572,6 +2736,45 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 		})
 	}
 	return admin.GenerateConfigFiles(configs, settings)
+}
+
+// hostDNSParams derives the resolver target from the settings just rendered into
+// northstar.toml and reports whether host DNS should be configured at all. Host
+// DNS is pointed at the node's own northstar only when a northstar config was
+// rendered (scoped DNS credentials present) and the operator did not opt out.
+// The resolver is the node AdvertiseIP, falling back to BindIP.
+func hostDNSParams(settings admin.ConfigSettings, skip bool) (hostdns.Params, bool) {
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled || skip {
+		return hostdns.Params{}, false
+	}
+	resolverIP := settings.AdvertiseIP
+	if resolverIP == "" {
+		resolverIP = settings.BindIP
+	}
+	return hostdns.Params{
+		ResolverIP:     resolverIP,
+		BaseDomain:     settings.NorthstarDefaultDomain,
+		InternalDomain: settings.NorthstarInternalDomain,
+	}, true
+}
+
+// configureHostDNS points this node's host resolver at its own northstar so the
+// Spinifex authoritative zones (ELB/EKS names) resolve from the node itself on
+// every install path. Failures are surfaced loudly but never abort a formed
+// cluster, mirroring installCACertificate.
+func configureHostDNS(settings admin.ConfigSettings, skip bool) {
+	params, ok := hostDNSParams(settings, skip)
+	if !ok {
+		return
+	}
+	fmt.Println("\n🔧 Configuring host DNS for Spinifex zones...")
+	if err := hostdns.Configure(params); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not configure host DNS: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    LB/EKS names may not resolve from this node until the host resolver points at %s:53.\n", params.ResolverIP)
+		return
+	}
+	fmt.Printf("✅ Host DNS: %s + %s -> %s:53 (northstar)\n", params.BaseDomain, params.InternalDomain, params.ResolverIP)
 }
 
 // finalizeNodeSetup configures AWS credentials, creates service directories,
@@ -2596,6 +2799,7 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
+	settings.PoolDNSServers = nc.PoolDNSServers
 	if nc.ExternalMode != "" {
 		settings.Pools = []admin.PoolData{{
 			Name:       nc.PoolName,
@@ -2878,15 +3082,36 @@ func bridgeModeFor(externalMode string) string {
 	return ""
 }
 
-// detectDNSServers auto-detects DNS servers from the host for the specified
-// interface. Uses resolvectl (systemd-resolved) first, then falls back to
-// /etc/resolv.conf. Returns up to 3 servers. Falls back to public DNS if none found.
-func detectDNSServers(iface string) []string {
+// dnsDetectionCommandTimeout prevents a wedged resolver manager from blocking init.
+const dnsDetectionCommandTimeout = 5 * time.Second
+
+// dnsDetectionSources isolates host resolver discovery for deterministic tests.
+type dnsDetectionSources struct {
+	queryResolvectl func(args ...string) (string, error)
+	readResolvConf  func() (string, error)
+}
+
+// detectDNSServers auto-detects up to three host DNS servers, preferring
+// systemd-resolved before resolv.conf and public fallbacks.
+func detectDNSServers(iface string, excludedIPs ...string) []string {
+	return detectDNSServersWithSources(iface, excludedIPs, dnsDetectionSources{
+		queryResolvectl: func(args ...string) (string, error) {
+			return utils.RunCommandWithTimeout(dnsDetectionCommandTimeout, "resolvectl", args...)
+		},
+		readResolvConf: func() (string, error) {
+			data, err := os.ReadFile("/etc/resolv.conf")
+			return string(data), err
+		},
+	})
+}
+
+// detectDNSServersWithSources finds usable upstreams in resolver-manager order.
+func detectDNSServersWithSources(iface string, excludedIPs []string, sources dnsDetectionSources) []string {
 	// Try resolvectl for the specific link first (most reliable on modern systems)
 	if iface != "" {
-		out, err := exec.Command("resolvectl", "dns", iface).CombinedOutput()
+		out, err := sources.queryResolvectl("dns", iface)
 		if err == nil {
-			servers := parseDNSFromResolvectl(string(out))
+			servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
 			if len(servers) > 0 {
 				return servers
 			}
@@ -2894,38 +3119,66 @@ func detectDNSServers(iface string) []string {
 	}
 
 	// Try resolvectl global
-	out, err := exec.Command("resolvectl", "dns").CombinedOutput()
+	out, err := sources.queryResolvectl("dns")
 	if err == nil {
-		servers := parseDNSFromResolvectl(string(out))
+		servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
 		if len(servers) > 0 {
 			return servers
 		}
 	}
 
 	// Fall back to /etc/resolv.conf
-	data, err := os.ReadFile("/etc/resolv.conf")
+	resolvConf, err := sources.readResolvConf()
 	if err == nil {
 		var servers []string
-		for line := range strings.SplitSeq(string(data), "\n") {
+		for line := range strings.SplitSeq(resolvConf, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "nameserver ") {
-				ip := strings.TrimSpace(strings.TrimPrefix(line, "nameserver"))
-				// Skip localhost (systemd-resolved stub)
-				if ip != "127.0.0.53" && ip != "127.0.0.1" && net.ParseIP(ip) != nil {
-					servers = append(servers, ip)
-				}
+				servers = append(servers, strings.TrimSpace(strings.TrimPrefix(line, "nameserver")))
 			}
 		}
-		if len(servers) > 0 {
-			if len(servers) > 3 {
-				servers = servers[:3]
-			}
+		if servers = filterDNSServers(servers, excludedIPs...); len(servers) > 0 {
 			return servers
 		}
 	}
 
 	// Fallback to well-known public DNS
-	return []string{"8.8.8.8", "1.1.1.1"}
+	return filterDNSServers([]string{"8.8.8.8", "1.1.1.1"}, excludedIPs...)
+}
+
+// filterDNSServers removes local, duplicate, and invalid resolver addresses and
+// caps the upstream list at the three entries supported by generated configs.
+func filterDNSServers(servers []string, excludedIPs ...string) []string {
+	excluded := make(map[string]struct{}, len(excludedIPs)+2)
+	excluded["127.0.0.1"] = struct{}{}
+	excluded["127.0.0.53"] = struct{}{}
+	for _, value := range excludedIPs {
+		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+			excluded[ip.String()] = struct{}{}
+		}
+	}
+
+	filtered := make([]string, 0, min(len(servers), 3))
+	seen := make(map[string]struct{}, len(servers))
+	for _, value := range servers {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil {
+			continue
+		}
+		normalized := ip.String()
+		if _, skip := excluded[normalized]; skip {
+			continue
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		filtered = append(filtered, normalized)
+		if len(filtered) == 3 {
+			break
+		}
+	}
+	return filtered
 }
 
 // parseDNSFromResolvectl extracts IP addresses from resolvectl dns output.
@@ -2940,13 +3193,10 @@ func parseDNSFromResolvectl(output string) []string {
 		}
 		fields := strings.FieldsSeq(after)
 		for f := range fields {
-			if net.ParseIP(f) != nil && f != "127.0.0.53" && f != "127.0.0.1" {
+			if net.ParseIP(f) != nil {
 				servers = append(servers, f)
 			}
 		}
-	}
-	if len(servers) > 3 {
-		servers = servers[:3]
 	}
 	return servers
 }

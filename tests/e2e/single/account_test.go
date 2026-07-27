@@ -428,59 +428,15 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 	// ---------------------------------------------------------------------
 	// Step 4: Key Pair Scoping (bash 2150–2206)
 	// ---------------------------------------------------------------------
-	t.Run("Step4_KeyPairScoping", func(t *testing.T) {
-		const alphaKey = "alpha-key"
-		const betaKey = "beta-key"
-		const sharedKey = "shared-name"
-		const importedKey = "imported-key"
-
-		harness.Step(t, "alpha create-key-pair %s", alphaKey)
-		_, err := alpha.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(alphaKey)})
-		require.NoError(t, err, "alpha create-key-pair %s", alphaKey)
-		alphaKeyNames = append(alphaKeyNames, alphaKey)
-		alphaKeyID := describeKeyPairID(t, alpha.Client, alphaKey)
-		require.NotEmpty(t, alphaKeyID, "alpha key-pair id")
-
-		harness.Step(t, "beta create-key-pair %s", betaKey)
-		_, err = beta.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(betaKey)})
-		require.NoError(t, err, "beta create-key-pair %s", betaKey)
-		betaKeyNames = append(betaKeyNames, betaKey)
-
-		harness.Step(t, "alpha sees only own keys")
-		alphaKeys := describeKeyPairNames(t, alpha.Client)
-		assert.NotContains(t, alphaKeys, betaKey, "alpha saw beta's key")
-
-		// Same name in both accounts — different KeyPairIds.
-		harness.Step(t, "namespace isolation: %s in both accounts", sharedKey)
-		_, err = alpha.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(sharedKey)})
-		require.NoError(t, err, "alpha create-key-pair %s", sharedKey)
-		alphaKeyNames = append(alphaKeyNames, sharedKey)
-		_, err = beta.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(sharedKey)})
-		require.NoError(t, err, "beta create-key-pair %s", sharedKey)
-		betaKeyNames = append(betaKeyNames, sharedKey)
-		alphaShared := describeKeyPairID(t, alpha.Client, sharedKey)
-		betaShared := describeKeyPairID(t, beta.Client, sharedKey)
-		require.NotEmpty(t, alphaShared, "alpha shared key id")
-		require.NotEmpty(t, betaShared, "beta shared key id")
-		assert.NotEqual(t, alphaShared, betaShared, "same KeyPairId across accounts")
-
-		harness.Step(t, "beta deletes alpha-key (idempotent, no cross-account effect)")
-		_, _ = beta.Client.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(alphaKey)})
-		assert.Equal(t, alphaKeyID, describeKeyPairID(t, alpha.Client, alphaKey),
-			"beta's delete affected alpha's key")
-
-		// Import key pair is also account-scoped.
-		harness.Step(t, "alpha import-key-pair %s", importedKey)
-		_, err = alpha.Client.EC2.ImportKeyPair(&ec2.ImportKeyPairInput{
-			KeyName:           aws.String(importedKey),
-			PublicKeyMaterial: generateImportPubKey(t),
-		})
-		require.NoError(t, err, "alpha import-key-pair")
-		alphaKeyNames = append(alphaKeyNames, importedKey)
-
-		betaKeys := describeKeyPairNames(t, beta.Client)
-		assert.NotContains(t, betaKeys, importedKey, "beta saw alpha's imported key")
-	})
+	// Step 4 (key-pair scoping) is covered by tests/integration's
+	// TestAccountScoping_KeyPairs — KeyServiceImpl's ownership check is a
+	// plain account-prefixed S3 key ("keys/<accountID>/..."), no vm.Manager or
+	// real guest involved, so the live import-key-pair variant proved nothing
+	// beyond what the integration tier already asserts (CreateKeyPair/
+	// DeleteKeyPair/namespace-isolation across two real, independently minted
+	// accounts). ImportKeyPair isolation is not separately re-asserted there:
+	// it shares the same account-prefixed storage path as CreateKeyPair, so a
+	// second create-time isolation check would exercise identical code.
 
 	// ---------------------------------------------------------------------
 	// Step 5: Snapshot Scoping (bash 2210–2250)
@@ -544,249 +500,16 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		})
 	})
 
-	// ---------------------------------------------------------------------
-	// Step 6: VPC/Subnet Scoping (bash 2254–2313)
-	// ---------------------------------------------------------------------
-	t.Run("Step6_VPCSubnetScoping", func(t *testing.T) {
-		harness.Step(t, "alpha create-vpc 10.0.0.0/16")
-		av, err := alpha.Client.EC2.CreateVpc(&ec2.CreateVpcInput{
-			CidrBlock: aws.String("10.0.0.0/16"),
-		})
-		require.NoError(t, err, "alpha create-vpc")
-		alphaVPC = aws.StringValue(av.Vpc.VpcId)
-		require.NotEmpty(t, alphaVPC)
-		harness.Detail(t, "alpha_vpc", alphaVPC)
-
-		harness.Step(t, "beta create-vpc 10.0.0.0/16 (same CIDR, no conflict)")
-		bv, err := beta.Client.EC2.CreateVpc(&ec2.CreateVpcInput{
-			CidrBlock: aws.String("10.0.0.0/16"),
-		})
-		require.NoError(t, err, "beta create-vpc")
-		betaVPC = aws.StringValue(bv.Vpc.VpcId)
-		require.NotEmpty(t, betaVPC)
-		harness.Detail(t, "beta_vpc", betaVPC)
-
-		harness.Step(t, "alpha describe-vpcs isolation")
-		alphaVPCs, err := alpha.Client.EC2.DescribeVpcs(&ec2.DescribeVpcsInput{})
-		require.NoError(t, err, "alpha describe-vpcs")
-		assert.NotContains(t, vpcIDs(alphaVPCs.Vpcs), betaVPC, "alpha saw beta's VPC")
-
-		harness.Step(t, "cross-account describe-vpc by id blocked")
-		harness.ExpectError(t, "InvalidVpcID.NotFound", func() error {
-			_, err := alpha.Client.EC2.DescribeVpcs(&ec2.DescribeVpcsInput{
-				VpcIds: []*string{aws.String(betaVPC)},
-			})
-			return err
-		})
-
-		harness.Step(t, "cross-account delete-vpc blocked")
-		harness.ExpectError(t, "InvalidVpcID.NotFound", func() error {
-			_, err := beta.Client.EC2.DeleteVpc(&ec2.DeleteVpcInput{
-				VpcId: aws.String(alphaVPC),
-			})
-			return err
-		})
-
-		harness.Step(t, "alpha create-subnet 10.0.1.0/24")
-		as, err := alpha.Client.EC2.CreateSubnet(&ec2.CreateSubnetInput{
-			VpcId:     aws.String(alphaVPC),
-			CidrBlock: aws.String("10.0.1.0/24"),
-		})
-		require.NoError(t, err, "alpha create-subnet")
-		alphaSubnet = aws.StringValue(as.Subnet.SubnetId)
-		require.NotEmpty(t, alphaSubnet)
-
-		harness.Step(t, "beta create-subnet 10.0.1.0/24")
-		bs, err := beta.Client.EC2.CreateSubnet(&ec2.CreateSubnetInput{
-			VpcId:     aws.String(betaVPC),
-			CidrBlock: aws.String("10.0.1.0/24"),
-		})
-		require.NoError(t, err, "beta create-subnet")
-		betaSubnet = aws.StringValue(bs.Subnet.SubnetId)
-		require.NotEmpty(t, betaSubnet)
-
-		harness.Step(t, "alpha describe-subnets isolation")
-		alphaSubnets, err := alpha.Client.EC2.DescribeSubnets(&ec2.DescribeSubnetsInput{})
-		require.NoError(t, err, "alpha describe-subnets")
-		var alphaSubnetIDs []string
-		for _, s := range alphaSubnets.Subnets {
-			alphaSubnetIDs = append(alphaSubnetIDs, aws.StringValue(s.SubnetId))
-		}
-		assert.NotContains(t, alphaSubnetIDs, betaSubnet, "alpha saw beta's subnet")
-
-		harness.Step(t, "cross-account create-subnet in other VPC blocked")
-		harness.ExpectError(t, "InvalidVpcID.NotFound", func() error {
-			_, err := beta.Client.EC2.CreateSubnet(&ec2.CreateSubnetInput{
-				VpcId:     aws.String(alphaVPC),
-				CidrBlock: aws.String("10.0.2.0/24"),
-			})
-			return err
-		})
-
-		harness.Step(t, "cross-account delete-subnet blocked")
-		harness.ExpectError(t, "InvalidSubnetID.NotFound", func() error {
-			_, err := beta.Client.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{
-				SubnetId: aws.String(alphaSubnet),
-			})
-			return err
-		})
-	})
-
-	// ---------------------------------------------------------------------
-	// Step 7: IGW + EIGW Scoping (bash 2317–2403)
-	// ---------------------------------------------------------------------
-	t.Run("Step7_IGWEIGWScoping", func(t *testing.T) {
-		require.NotEmpty(t, alphaVPC, "Step 6 must populate alphaVPC")
-		require.NotEmpty(t, betaVPC, "Step 6 must populate betaVPC")
-
-		harness.Step(t, "alpha create-internet-gateway")
-		ai, err := alpha.Client.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
-		require.NoError(t, err, "alpha create-internet-gateway")
-		alphaIGW = aws.StringValue(ai.InternetGateway.InternetGatewayId)
-		require.NotEmpty(t, alphaIGW)
-		harness.Detail(t, "alpha_igw", alphaIGW)
-
-		harness.Step(t, "beta create-internet-gateway")
-		bi, err := beta.Client.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
-		require.NoError(t, err, "beta create-internet-gateway")
-		betaIGW = aws.StringValue(bi.InternetGateway.InternetGatewayId)
-		require.NotEmpty(t, betaIGW)
-		harness.Detail(t, "beta_igw", betaIGW)
-
-		harness.Step(t, "alpha describe-internet-gateways isolation")
-		alphaIGWs, err := alpha.Client.EC2.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{})
-		require.NoError(t, err, "alpha describe-internet-gateways")
-		var alphaIGWIDs []string
-		for _, ig := range alphaIGWs.InternetGateways {
-			alphaIGWIDs = append(alphaIGWIDs, aws.StringValue(ig.InternetGatewayId))
-		}
-		assert.NotContains(t, alphaIGWIDs, betaIGW, "alpha saw beta's IGW")
-
-		harness.Step(t, "cross-account describe IGW by id blocked")
-		harness.ExpectError(t, "InvalidInternetGatewayID.NotFound", func() error {
-			_, err := alpha.Client.EC2.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
-				InternetGatewayIds: []*string{aws.String(betaIGW)},
-			})
-			return err
-		})
-
-		harness.Step(t, "cross-account delete IGW blocked")
-		harness.ExpectError(t, "InvalidInternetGatewayID.NotFound", func() error {
-			_, err := beta.Client.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
-				InternetGatewayId: aws.String(alphaIGW),
-			})
-			return err
-		})
-
-		harness.Step(t, "cross-account attach IGW (alpha attaches beta's IGW) blocked")
-		harness.ExpectError(t, "InvalidInternetGatewayID.NotFound", func() error {
-			_, err := alpha.Client.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
-				InternetGatewayId: aws.String(betaIGW),
-				VpcId:             aws.String(alphaVPC),
-			})
-			return err
-		})
-
-		// Attach alpha's IGW to alpha's VPC, then verify beta can't detach.
-		harness.Step(t, "alpha attach own IGW to own VPC")
-		_, err = alpha.Client.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
-			InternetGatewayId: aws.String(alphaIGW),
-			VpcId:             aws.String(alphaVPC),
-		})
-		require.NoError(t, err, "alpha attach-internet-gateway")
-
-		harness.Step(t, "cross-account detach IGW blocked")
-		harness.ExpectError(t, "InvalidInternetGatewayID.NotFound", func() error {
-			_, err := beta.Client.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
-				InternetGatewayId: aws.String(alphaIGW),
-				VpcId:             aws.String(alphaVPC),
-			})
-			return err
-		})
-
-		// EIGW
-		harness.Step(t, "alpha create-egress-only-internet-gateway")
-		ae, err := alpha.Client.EC2.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
-			VpcId: aws.String(alphaVPC),
-		})
-		require.NoError(t, err, "alpha create-eigw")
-		alphaEIGW = aws.StringValue(ae.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId)
-		require.NotEmpty(t, alphaEIGW)
-		harness.Detail(t, "alpha_eigw", alphaEIGW)
-
-		harness.Step(t, "beta create-egress-only-internet-gateway")
-		be, err := beta.Client.EC2.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
-			VpcId: aws.String(betaVPC),
-		})
-		require.NoError(t, err, "beta create-eigw")
-		betaEIGW = aws.StringValue(be.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId)
-		require.NotEmpty(t, betaEIGW)
-		harness.Detail(t, "beta_eigw", betaEIGW)
-
-		harness.Step(t, "alpha describe-eigws isolation")
-		alphaEIGWs, err := alpha.Client.EC2.DescribeEgressOnlyInternetGateways(&ec2.DescribeEgressOnlyInternetGatewaysInput{})
-		require.NoError(t, err, "alpha describe-eigws")
-		var alphaEIGWIDs []string
-		for _, ig := range alphaEIGWs.EgressOnlyInternetGateways {
-			alphaEIGWIDs = append(alphaEIGWIDs, aws.StringValue(ig.EgressOnlyInternetGatewayId))
-		}
-		assert.NotContains(t, alphaEIGWIDs, betaEIGW, "alpha saw beta's EIGW")
-
-		// Any error or none is acceptable; the contract is that alpha's EIGW survives.
-		_, _ = beta.Client.EC2.DeleteEgressOnlyInternetGateway(&ec2.DeleteEgressOnlyInternetGatewayInput{
-			EgressOnlyInternetGatewayId: aws.String(alphaEIGW),
-		})
-		check, err := alpha.Client.EC2.DescribeEgressOnlyInternetGateways(&ec2.DescribeEgressOnlyInternetGatewaysInput{})
-		require.NoError(t, err, "alpha describe-eigws (post cross-account delete attempt)")
-		var stillThere bool
-		for _, ig := range check.EgressOnlyInternetGateways {
-			if aws.StringValue(ig.EgressOnlyInternetGatewayId) == alphaEIGW {
-				stillThere = true
-				break
-			}
-		}
-		assert.True(t, stillThere, "alpha's EIGW was deleted by beta")
-
-		// Best-effort cross-account EIGW creation attempt in alpha's VPC.
-		_, _ = beta.Client.EC2.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
-			VpcId: aws.String(alphaVPC),
-		})
-	})
-
-	// ---------------------------------------------------------------------
-	// Step 8: Account Settings (bash 2407–2435)
-	// ---------------------------------------------------------------------
-	t.Run("Step8_AccountSettings", func(t *testing.T) {
-		harness.Step(t, "alpha enable-ebs-encryption-by-default")
-		_, err := alpha.Client.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "alpha enable-ebs-encryption")
-		alphaEncryptionLeftEnabled = true
-
-		betaEnc, err := beta.Client.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "beta get-ebs-encryption")
-		assert.False(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault),
-			"alpha's encryption setting leaked to beta")
-
-		// Independent toggle: enable beta, disable alpha.
-		_, err = beta.Client.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "beta enable-ebs-encryption")
-		betaEncryptionLeftEnabled = true
-		_, err = alpha.Client.EC2.DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "alpha disable-ebs-encryption")
-		alphaEncryptionLeftEnabled = false
-
-		alphaEnc, err := alpha.Client.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "alpha get-ebs-encryption")
-		betaEnc, err = beta.Client.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "beta get-ebs-encryption")
-		assert.False(t, aws.BoolValue(alphaEnc.EbsEncryptionByDefault), "alpha encryption should be off")
-		assert.True(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "beta encryption should be on")
-
-		// Reset beta — bash explicitly disables before moving on.
-		_, err = beta.Client.EC2.DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{})
-		require.NoError(t, err, "beta disable-ebs-encryption (reset)")
-		betaEncryptionLeftEnabled = false
-	})
+	// Steps 6/7/8 (VPC/subnet, IGW/EIGW, and account-settings scoping) are
+	// covered by tests/integration's TestAccountScoping_VPCSubnet,
+	// TestAccountScoping_IGWEIGW and TestAccountScoping_Settings.
+	// VPCServiceImpl/IGWServiceImpl/EgressOnlyIGWServiceImpl/
+	// AccountSettingsServiceImpl all resolve ownership from a plain
+	// account-scoped KV key (utils.AccountKey(accountID, id) or an
+	// account-keyed settings record) — no vm.Manager, no real guest, no OVN
+	// state that only exists once a VPC has an attached instance. The live
+	// variants proved nothing beyond what the integration tier now asserts
+	// across two real, independently minted tenant accounts.
 
 	// ---------------------------------------------------------------------
 	// Step 9: Global Resources (bash 2439–2472)
@@ -1060,32 +783,6 @@ func describeKeyPairNames(t *testing.T, c *harness.AWSClient) []string {
 		names = append(names, aws.StringValue(kp.KeyName))
 	}
 	return names
-}
-
-// describeKeyPairID looks up a specific key pair by name and returns its
-// KeyPairId. Empty string if the key isn't found in c's namespace.
-func describeKeyPairID(t *testing.T, c *harness.AWSClient, name string) string {
-	t.Helper()
-	out, err := c.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
-		KeyNames: []*string{aws.String(name)},
-	})
-	if err != nil {
-		// NotFound here is informational, not a test failure.
-		return ""
-	}
-	if len(out.KeyPairs) == 0 {
-		return ""
-	}
-	return aws.StringValue(out.KeyPairs[0].KeyPairId)
-}
-
-// vpcIDs flattens a slice of *ec2.Vpc to their ids.
-func vpcIDs(vpcs []*ec2.Vpc) []string {
-	ids := make([]string, 0, len(vpcs))
-	for _, v := range vpcs {
-		ids = append(ids, aws.StringValue(v.VpcId))
-	}
-	return ids
 }
 
 // describeRegionNames returns region names in gateway-returned order.

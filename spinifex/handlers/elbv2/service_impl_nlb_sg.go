@@ -192,11 +192,14 @@ func (s *ELBv2ServiceImpl) revokeNLBListenerPort(ctx context.Context, lb *LoadBa
 // SetLoadBalancerIngressCIDRs overrides the client CIDRs for an NLB's listener ports,
 // revoking old rules and authorizing new ones. Passing nil/empty reverts to the
 // scheme-based default (0.0.0.0/0 internet-facing, VPC CIDR internal).
+//
+// EKS drives this through a narrow interface that predates context threading, so
+// the KV reads run on the service lifetime context rather than the caller's.
 func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []string, accountID string) error {
 	if lbArn == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	lb, err := s.store.GetLoadBalancerByArn(lbArn)
+	lb, err := s.store.GetLoadBalancerByArn(s.ctx, lbArn)
 	if err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: failed to get LB", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -218,7 +221,7 @@ func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []str
 		slog.Error("SetLoadBalancerIngressCIDRs: resolve old CIDRs failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
+	listeners, err := s.store.ListListenersByLB(s.ctx, lb.LoadBalancerArn)
 	if err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: list listeners failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -242,7 +245,7 @@ func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []str
 		}
 	}
 
-	if err := s.store.PutLoadBalancer(lb); err != nil {
+	if err := s.store.PutLoadBalancer(s.ctx, lb); err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: persist failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}

@@ -40,6 +40,12 @@ func (b *boundAnthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID s
 	return b.inner.InvokeModel(ctx, modelID, body, b.apiKey)
 }
 
+var _ InvokeStreamAdapter = (*boundAnthropicInvokeAdapter)(nil)
+
+func (b *boundAnthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte) (invokeStreamSource, error) {
+	return b.inner.InvokeModelWithResponseStream(ctx, modelID, body, b.apiKey)
+}
+
 // newAnthropicInvokeAdapter returns an InvokeAdapter that forwards to the
 // Anthropic Messages API with apiKey.
 func newAnthropicInvokeAdapter(apiKey string) InvokeAdapter {
@@ -99,4 +105,89 @@ func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string
 	}
 
 	return respBody, "application/json", nil
+}
+
+// InvokeModelWithResponseStream rewrites the request body exactly like
+// InvokeModel (drops anthropic_version, injects model), sets stream:true,
+// and returns a source that forwards each Anthropic SSE "data:" line
+// verbatim as the chunk payload — Bedrock's Claude invoke-stream bytes *are*
+// the Anthropic event JSON, so no shape translation is needed.
+func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte, apiKey string) (invokeStreamSource, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		slog.Error("anthropic invoke-stream: failed to parse request body", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	delete(fields, "anthropic_version")
+
+	modelJSON, err := json.Marshal(anthropicModelID(modelID))
+	if err != nil {
+		slog.Error("anthropic invoke-stream: failed to marshal model id", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	fields["model"] = modelJSON
+	fields["stream"] = json.RawMessage("true")
+
+	reqBody, err := json.Marshal(fields)
+	if err != nil {
+		slog.Error("anthropic invoke-stream: failed to marshal request", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: a.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
+	if err != nil {
+		slog.Error("anthropic invoke-stream: failed to build request", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	httpReq.Header.Set("X-Api-Key", apiKey)
+	httpReq.Header.Set("Anthropic-Version", anthropicAPIVersion)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := a.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets a.baseURL, not user input
+	if err != nil {
+		slog.Error("anthropic invoke-stream: request failed", "model", modelID, "err", err)
+		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
+	return &anthropicInvokeStreamSource{resp: resp, scanner: newSSEScanner(resp.Body)}, nil
+}
+
+// anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line
+// verbatim as the chunk payload, skipping keepalive "ping" events.
+type anthropicInvokeStreamSource struct {
+	resp    *http.Response
+	scanner *sseScanner
+}
+
+var _ invokeStreamSource = (*anthropicInvokeStreamSource)(nil)
+
+func (s *anthropicInvokeStreamSource) Close() error {
+	return s.resp.Body.Close()
+}
+
+func (s *anthropicInvokeStreamSource) Next(_ context.Context) ([]byte, bool, error) {
+	for {
+		ev, ok, err := s.scanner.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, false, nil
+			}
+			return nil, false, newStreamFault(err)
+		}
+		if !ok {
+			continue
+		}
+		if ev.Event == "ping" || ev.Data == "" {
+			continue
+		}
+		return []byte(ev.Data), true, nil
+	}
 }

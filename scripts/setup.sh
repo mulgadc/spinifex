@@ -15,7 +15,8 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, users, sudoers, files, directories,
-#                                env, systemd, logrotate, udev, fixown, migrations
+#                                env, systemd, logrotate, udev, fixown,
+#                                migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -139,11 +140,12 @@ create_service_users() {
         [gw]="/var/lib/spinifex/awsgw"
         [daemon]="/var/lib/spinifex/spinifex"
         [storage]="/var/lib/spinifex/predastore"
+        [northstar]="/var/lib/spinifex/northstar"
         [viperblock]="/var/lib/spinifex/viperblock"
         [vpcd]="/var/lib/spinifex"
         [ui]="/var/lib/spinifex"
     )
-    for svc in nats gw daemon storage viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         local user="spinifex-${svc}"
         if ! id "$user" > /dev/null 2>&1; then
             $SUDO useradd --system --no-create-home \
@@ -175,7 +177,7 @@ create_service_users() {
     # Daemon consumes viperblock's NBD socket — join the producer-typed group.
     $SUDO usermod -aG spinifex-viperblock spinifex-daemon
 
-    info "Service users created (spinifex-{nats,gw,daemon,storage,viperblock,vpcd,ui})"
+    info "Service users created (spinifex-{nats,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
 }
 
 # --- Install scoped sudoers rules ---
@@ -421,6 +423,12 @@ TMPEOF
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore
     $SUDO chmod 0750 /etc/spinifex/predastore
 
+    # Northstar holds northstar.toml (bucket-scoped S3 creds, written 0600 by
+    # `spx admin init`); fix_file_ownership reassigns it to spinifex-northstar.
+    $SUDO mkdir -p /etc/spinifex/northstar
+    $SUDO chown "spinifex-northstar:$SPINIFEX_GROUP" /etc/spinifex/northstar
+    $SUDO chmod 0750 /etc/spinifex/northstar
+
     $SUDO mkdir -p /etc/spinifex/awsgw
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw
     $SUDO chmod 0750 /etc/spinifex/awsgw
@@ -445,6 +453,10 @@ TMPEOF
     $SUDO mkdir -p /var/lib/spinifex/predastore
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /var/lib/spinifex/predastore
     $SUDO chmod 0700 /var/lib/spinifex/predastore
+
+    $SUDO mkdir -p /var/lib/spinifex/northstar
+    $SUDO chown "spinifex-northstar:$SPINIFEX_GROUP" /var/lib/spinifex/northstar
+    $SUDO chmod 0700 /var/lib/spinifex/northstar
 
     $SUDO mkdir -p /var/lib/spinifex/viperblock
     $SUDO chown "spinifex-viperblock:$SPINIFEX_GROUP" /var/lib/spinifex/viperblock
@@ -517,6 +529,7 @@ fix_file_ownership() {
     for entry in \
         nats:spinifex-nats \
         predastore:spinifex-storage \
+        northstar:spinifex-northstar \
         spinifex:spinifex-daemon \
         viperblock:spinifex-viperblock \
         vpcd:spinifex-vpcd \
@@ -536,6 +549,10 @@ fix_file_ownership() {
     if [ -d /etc/spinifex/predastore ]; then
         $SUDO chown -R "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore \
             || fatal "Failed to set ownership on /etc/spinifex/predastore"
+    fi
+    if [ -d /etc/spinifex/northstar ]; then
+        $SUDO chown -R "spinifex-northstar:$SPINIFEX_GROUP" /etc/spinifex/northstar \
+            || fatal "Failed to set ownership on /etc/spinifex/northstar"
     fi
     if [ -d /etc/spinifex/awsgw ]; then
         $SUDO chown -R "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw \

@@ -29,11 +29,11 @@ func TestCreateOpenIDConnectProvider(t *testing.T) {
 	}
 
 	// The registry key STS reads must now exist for this exact issuer.
-	kv, err := svc.js.KeyValue(IAMAccountBucketName(acct))
+	kv, err := svc.js.KeyValue(t.Context(), IAMAccountBucketName(acct))
 	if err != nil {
 		t.Fatalf("open account bucket: %v", err)
 	}
-	if _, err := kv.Get(OIDCProviderKey(testIssuer)); err != nil {
+	if _, err := kv.Get(t.Context(), OIDCProviderKey(testIssuer)); err != nil {
 		t.Fatalf("provider key not written for issuer: %v", err)
 	}
 }

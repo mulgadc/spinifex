@@ -21,18 +21,6 @@ import (
 // only a partitioned-but-subscribed owner pays the full timeout.
 const instanceTagCommandTimeout = 5 * time.Second
 
-func (d *Daemon) handleEC2CreateTags(msg *nats.Msg) {
-	handleNATSRequest(msg, d.createTags)
-}
-
-func (d *Daemon) handleEC2DeleteTags(msg *nats.Msg) {
-	handleNATSRequest(msg, d.deleteTags)
-}
-
-func (d *Daemon) handleEC2DescribeTags(msg *nats.Msg) {
-	handleNATSRequest(msg, d.tagsService.DescribeTags)
-}
-
 // recordTagMirror is implemented by every service whose resource records
 // mirror the central tag store, so tag-filtered describes observe tags
 // written through create-tags/delete-tags.

@@ -84,12 +84,12 @@ func TestAssociatedPolicyToAWS_ScopeNamespaces(t *testing.T) {
 // The record-store guard clauses reject malformed input before touching the KV,
 // so a nil handle is enough to exercise them.
 func TestAccessEntryRecordGuards(t *testing.T) {
-	require.Error(t, PutAccessEntryRecord(nil, nil))
-	require.Error(t, PutAccessEntryRecord(nil, &AccessEntryRecord{PrincipalARN: "arn:aws:iam::000000000001:user/admin"}))
+	require.Error(t, PutAccessEntryRecord(t.Context(), nil, nil))
+	require.Error(t, PutAccessEntryRecord(t.Context(), nil, &AccessEntryRecord{PrincipalARN: "arn:aws:iam::000000000001:user/admin"}))
 
-	_, err := GetAccessEntryRecord(nil, "", "arn:aws:iam::000000000001:user/admin")
+	_, err := GetAccessEntryRecord(t.Context(), nil, "", "arn:aws:iam::000000000001:user/admin")
 	require.Error(t, err)
 
-	_, err = ListAccessEntryRecords(nil, "")
+	_, err = ListAccessEntryRecords(t.Context(), nil, "")
 	require.Error(t, err)
 }

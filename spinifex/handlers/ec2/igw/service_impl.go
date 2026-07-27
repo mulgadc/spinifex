@@ -15,10 +15,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure IGWServiceImpl implements IGWService.
@@ -48,8 +50,8 @@ type GatePublisher interface {
 // IGWServiceImpl implements Internet Gateway operations with NATS JetStream persistence.
 type IGWServiceImpl struct {
 	config        *config.Config
-	igwKV         nats.KeyValue
-	vpcKV         nats.KeyValue
+	igwKV         jetstream.KeyValue
+	vpcKV         jetstream.KeyValue
 	natsConn      *nats.Conn
 	gatePublisher GatePublisher
 }
@@ -61,22 +63,22 @@ func (s *IGWServiceImpl) SetGatePublisher(p GatePublisher) {
 }
 
 // NewIGWServiceImplWithNATS creates an Internet Gateway service with NATS JetStream for persistence.
-func NewIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*IGWServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*IGWServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	igwKV, err := utils.GetOrCreateKVBucket(js, KVBucketIGW, 10)
+	igwKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketIGW, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketIGW, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketIGW, igwKV, KVBucketIGWVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketIGW, igwKV, KVBucketIGWVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketIGW, err)
 	}
 
 	// Get or create VPC KV bucket for cross-resource ownership validation
-	vpcKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_vpc.KVBucketVPCs, 10)
+	vpcKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_vpc.KVBucketVPCs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
@@ -115,7 +117,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal IGW record: %w", err)
 	}
-	if _, err := s.igwKV.Put(utils.AccountKey(accountID, igwID), data); err != nil {
+	if _, err := s.igwKV.Put(ctx, utils.AccountKey(accountID, igwID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -135,12 +137,12 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 	igwID := *input.InternetGatewayId
 	key := utils.AccountKey(accountID, igwID)
 
-	entry, err := s.igwKV.Get(key)
+	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
 		// AWS-faithful: an absent internet gateway is NotFound (provider
 		// tolerates it on destroy); destroy orchestration tolerates it too.
 		// A transient read error stays a server error.
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -156,7 +158,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorDependencyViolation)
 	}
 
-	if err := s.igwKV.Delete(key); err != nil {
+	if err := s.igwKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -190,8 +192,8 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 	}
 
 	prefix := accountID + "."
-	keys, err := s.igwKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.igwKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -205,7 +207,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 			continue
 		}
 
-		entry, err := s.igwKV.Get(key)
+		entry, err := s.igwKV.Get(ctx, key)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to get IGW record", "key", key, "error", err)
 			continue
@@ -287,7 +289,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	vpcID := *input.VpcId
 	key := utils.AccountKey(accountID, igwID)
 
-	entry, err := s.igwKV.Get(key)
+	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 	}
@@ -306,7 +308,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcID)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
 		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
 		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 	}
@@ -318,7 +320,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.igwKV.Put(key, data); err != nil {
+	if _, err := s.igwKV.Put(ctx, key, data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -358,7 +360,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	vpcID := *input.VpcId
 	key := utils.AccountKey(accountID, igwID)
 
-	entry, err := s.igwKV.Get(key)
+	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 	}
@@ -379,7 +381,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.igwKV.Put(key, data); err != nil {
+	if _, err := s.igwKV.Put(ctx, key, data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -436,7 +438,7 @@ func (s *IGWServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID s
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.igwKV, accountID, "igw-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.igwKV, accountID, "igw-", input.Resources,
 		func(r *IGWRecord) *map[string]string { return &r.Tags },
 		utils.MergeTagsMut(input))
 }
@@ -447,7 +449,7 @@ func (s *IGWServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.igwKV, accountID, "igw-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.igwKV, accountID, "igw-", input.Resources,
 		func(r *IGWRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
 }

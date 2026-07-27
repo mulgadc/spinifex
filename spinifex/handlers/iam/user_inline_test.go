@@ -268,7 +268,7 @@ func TestDeleteUserPolicy_UserNotFound(t *testing.T) {
 // corrupt stored document that the write path would otherwise reject.
 func putRawUserInlinePolicy(t *testing.T, svc *IAMServiceImpl, userName, policyName, raw string) {
 	t.Helper()
-	user, err := svc.getUser(testAccountID, userName)
+	user, err := svc.getUser(t.Context(), testAccountID, userName)
 	require.NoError(t, err)
 	if user.InlinePolicies == nil {
 		user.InlinePolicies = map[string]string{}
@@ -276,7 +276,7 @@ func putRawUserInlinePolicy(t *testing.T, svc *IAMServiceImpl, userName, policyN
 	user.InlinePolicies[policyName] = raw
 	data, err := json.Marshal(user)
 	require.NoError(t, err)
-	_, err = svc.usersBucket.Put(testAccountID+"."+userName, data)
+	_, err = svc.usersBucket.Put(t.Context(), testAccountID+"."+userName, data)
 	require.NoError(t, err)
 }
 

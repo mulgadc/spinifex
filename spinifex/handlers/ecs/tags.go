@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ecsResourceKind identifies which stored record kind an ARN refers to.
@@ -64,11 +64,11 @@ func parseResourceARN(resourceARN string) (kind ecsResourceKind, cluster, id str
 }
 
 // resourceTags reads the tag map stored on the ARN-identified resource.
-func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, id string) (map[string]string, error) {
+func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind ecsResourceKind, cluster, id string) (map[string]string, error) {
 	switch kind {
 	case ecsResourceCluster:
 		var rec ClusterRecord
-		found, err := getJSON(kv, ClusterMetaKey(id), &rec)
+		found, err := getJSON(ctx, kv, ClusterMetaKey(id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -82,7 +82,7 @@ func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, 
 			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		var rec TaskDefRecord
-		found, err := getJSON(kv, TaskDefRevKey(family, rev), &rec)
+		found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -92,7 +92,7 @@ func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, 
 		return rec.Tags, nil
 	case ecsResourceService:
 		var rec ServiceRecord
-		found, err := getJSON(kv, ServiceKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +102,7 @@ func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, 
 		return rec.Tags, nil
 	case ecsResourceTask:
 		var rec TaskRecord
-		found, err := getJSON(kv, TaskKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, TaskKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +112,7 @@ func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, 
 		return rec.Tags, nil
 	case ecsResourceContainerInstance:
 		var rec InstanceRecord
-		found, err := getJSON(kv, InstanceKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -128,11 +128,11 @@ func (s *Service) resourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, 
 // mutateResourceTags reads the ARN-identified resource, applies mutate to its
 // tag map, and re-puts the record. Used by TagResource (merge) and
 // UntagResource (delete).
-func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, cluster, id string, mutate func(map[string]string) map[string]string) error {
+func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue, kind ecsResourceKind, cluster, id string, mutate func(map[string]string) map[string]string) error {
 	switch kind {
 	case ecsResourceCluster:
 		var rec ClusterRecord
-		found, err := getJSON(kv, ClusterMetaKey(id), &rec)
+		found, err := getJSON(ctx, kv, ClusterMetaKey(id), &rec)
 		if err != nil {
 			return err
 		}
@@ -140,14 +140,14 @@ func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, clu
 			return errors.New(awserrors.ErrorECSClusterNotFound)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(kv, ClusterMetaKey(id), &rec)
+		return putJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
 		family, rev := parseTaskDefRef(id)
 		if family == "" || rev == 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		var rec TaskDefRecord
-		found, err := getJSON(kv, TaskDefRevKey(family, rev), &rec)
+		found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
 		if err != nil {
 			return err
 		}
@@ -155,10 +155,10 @@ func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, clu
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(kv, TaskDefRevKey(family, rev), &rec)
+		return putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
 	case ecsResourceService:
 		var rec ServiceRecord
-		found, err := getJSON(kv, ServiceKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -166,10 +166,10 @@ func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, clu
 			return errors.New(awserrors.ErrorECSServiceNotFound)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(kv, ServiceKey(cluster, id), &rec)
+		return putJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 	case ecsResourceTask:
 		var rec TaskRecord
-		found, err := getJSON(kv, TaskKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, TaskKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -177,10 +177,10 @@ func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, clu
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(kv, TaskKey(cluster, id), &rec)
+		return putJSON(ctx, kv, TaskKey(cluster, id), &rec)
 	case ecsResourceContainerInstance:
 		var rec InstanceRecord
-		found, err := getJSON(kv, InstanceKey(cluster, id), &rec)
+		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -188,14 +188,14 @@ func (s *Service) mutateResourceTags(kv nats.KeyValue, kind ecsResourceKind, clu
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(kv, InstanceKey(cluster, id), &rec)
+		return putJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 	default:
 		return errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 }
 
 // ListTagsForResource returns the tags stored on the ARN-identified resource.
-func (s *Service) ListTagsForResource(_ context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error) {
+func (s *Service) ListTagsForResource(ctx context.Context, input *ecs.ListTagsForResourceInput, accountID string) (*ecs.ListTagsForResourceOutput, error) {
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -203,11 +203,11 @@ func (s *Service) ListTagsForResource(_ context.Context, input *ecs.ListTagsForR
 	if err != nil {
 		return nil, err
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	tags, err := s.resourceTags(kv, kind, cluster, id)
+	tags, err := s.resourceTags(ctx, kv, kind, cluster, id)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func (s *Service) ListTagsForResource(_ context.Context, input *ecs.ListTagsForR
 }
 
 // TagResource merges the supplied tags onto the ARN-identified resource.
-func (s *Service) TagResource(_ context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error) {
+func (s *Service) TagResource(ctx context.Context, input *ecs.TagResourceInput, accountID string) (*ecs.TagResourceOutput, error) {
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -223,12 +223,12 @@ func (s *Service) TagResource(_ context.Context, input *ecs.TagResourceInput, ac
 	if err != nil {
 		return nil, err
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	add := tagsToMap(input.Tags)
-	err = s.mutateResourceTags(kv, kind, cluster, id, func(existing map[string]string) map[string]string {
+	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) map[string]string {
 		if existing == nil {
 			existing = map[string]string{}
 		}
@@ -242,7 +242,7 @@ func (s *Service) TagResource(_ context.Context, input *ecs.TagResourceInput, ac
 }
 
 // UntagResource deletes the named tag keys from the ARN-identified resource.
-func (s *Service) UntagResource(_ context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error) {
+func (s *Service) UntagResource(ctx context.Context, input *ecs.UntagResourceInput, accountID string) (*ecs.UntagResourceOutput, error) {
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -250,12 +250,12 @@ func (s *Service) UntagResource(_ context.Context, input *ecs.UntagResourceInput
 	if err != nil {
 		return nil, err
 	}
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	keys := awsStringSlice(input.TagKeys)
-	err = s.mutateResourceTags(kv, kind, cluster, id, func(existing map[string]string) map[string]string {
+	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) map[string]string {
 		for _, k := range keys {
 			delete(existing, k)
 		}

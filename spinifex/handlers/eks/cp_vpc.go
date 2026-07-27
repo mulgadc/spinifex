@@ -103,6 +103,9 @@ type natGatewayProvisioner interface {
 // managed control-plane VPC from. All calls run under the system account.
 type CPVPCDeps struct {
 	VPC vpcProvisioner
+	// SG is used only by teardown, to clear security groups left in the managed
+	// CP VPC that the tag-driven sweep cannot see. Nil is tolerated.
+	SG  sgProvisioner
 	IGW igwProvisioner
 	RT  routeTableProvisioner
 	NGW natGatewayProvisioner
@@ -117,6 +120,7 @@ type CPVPCDeps struct {
 func (s *EKSServiceImpl) cpVPCDeps() CPVPCDeps {
 	return CPVPCDeps{
 		VPC:      s.deps.VPCMgr,
+		SG:       s.deps.VPCSG,
 		IGW:      s.deps.IGW,
 		RT:       s.deps.RouteTable,
 		NGW:      s.deps.NATGW,
@@ -537,6 +541,55 @@ func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 	if err := DeleteClusterIGW(ctx, deps.IGW, accountID, vpcID, clusterName); err != nil {
 		slog.WarnContext(ctx, "DeleteClusterCPVPC: delete IGW failed", "vpc", vpcID, "err", err)
 	}
+
+	// Sweep residual subnets by VPC identity, not by role tag.
+	//
+	// The tagged sweep above only finds subnets that survived long enough to be
+	// tagged. A create that fails partway — the first control-plane server
+	// failing to launch, say — leaves untagged subnets behind, which the tagged
+	// sweep cannot see. DeleteVpc then rejects with DependencyViolation, and
+	// because teardown is re-driven on a timer the cluster sits in DELETING
+	// forever, retrying the same doomed delete every couple of minutes. The
+	// cluster name stays unusable and terraform's delete wait can never pass.
+	if snOut, err := deps.VPC.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})}},
+	}, accountID); err != nil {
+		slog.WarnContext(ctx, "DeleteClusterCPVPC: describe residual subnets failed", "vpc", vpcID, "err", err)
+	} else if snOut != nil {
+		for _, sn := range snOut.Subnets {
+			snID := aws.StringValue(sn.SubnetId)
+			slog.InfoContext(ctx, "DeleteClusterCPVPC: removing residual subnet the tagged sweep missed",
+				"cluster", clusterName, "vpc", vpcID, "subnet", snID)
+			if _, err := deps.VPC.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{SubnetId: aws.String(snID)}, accountID); err != nil {
+				slog.WarnContext(ctx, "DeleteClusterCPVPC: delete residual subnet failed", "subnet", snID, "err", err)
+			}
+		}
+	}
+
+	// Same for security groups: DeleteVpc rejects any non-default SG, and the
+	// tagged CP-SG teardown misses ones a partial create never tagged.
+	if deps.SG != nil {
+		if sgOut, err := deps.SG.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})}},
+		}, accountID); err != nil {
+			slog.WarnContext(ctx, "DeleteClusterCPVPC: describe residual SGs failed", "vpc", vpcID, "err", err)
+		} else if sgOut != nil {
+			for _, sg := range sgOut.SecurityGroups {
+				// The default SG goes with the VPC cascade and cannot be
+				// deleted on its own; it is not what blocks DeleteVpc.
+				if aws.StringValue(sg.GroupName) == "default" {
+					continue
+				}
+				sgID := aws.StringValue(sg.GroupId)
+				slog.InfoContext(ctx, "DeleteClusterCPVPC: removing residual SG the tagged sweep missed",
+					"cluster", clusterName, "vpc", vpcID, "sg", sgID)
+				if _, err := deps.SG.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgID)}, accountID); err != nil {
+					slog.WarnContext(ctx, "DeleteClusterCPVPC: delete residual SG failed", "sg", sgID, "err", err)
+				}
+			}
+		}
+	}
+
 	if _, err := deps.VPC.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		return fmt.Errorf("eks: delete cp vpc %s: %w", vpcID, err)
 	}

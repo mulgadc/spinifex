@@ -19,7 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // IntentState is the desired OVN state derived from the JetStream KV
@@ -52,7 +52,7 @@ func subnetEgressKey(subnetID string, prefix netip.Prefix) string {
 
 // LoadIntentFromKV assembles IntentState for localAZ. Missing buckets are empty.
 // AZ filter: `vpc.AZ == "" || vpc.AZ == localAZ`; children inherit it transitively.
-func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ string) (IntentState, error) {
+func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ string) (IntentState, error) {
 	intent := IntentState{
 		VPCs:        make(map[string]topology.VPCSpec),
 		Subnets:     make(map[string]topology.SubnetSpec),
@@ -66,36 +66,35 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 		DropGates:   make(map[string]SubnetEgressIntent),
 	}
 
-	localVPCs, err := loadVPCs(js, localAZ, intent.VPCs)
+	localVPCs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
 	if err != nil {
 		return IntentState{}, err
 	}
-	if err := loadSubnets(js, localVPCs, intent.Subnets); err != nil {
+	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadSGs(js, localVPCs, intent.SGs); err != nil {
+	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadPorts(js, localVPCs, intent.Ports); err != nil {
+	if err := loadPorts(ctx, js, localVPCs, intent.Ports); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadIGWs(js, localVPCs, intent.IGWs); err != nil {
+	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadEIPs(js, localVPCs, intent.EIPs); err != nil {
+	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs); err != nil {
 		return IntentState{}, err
 	}
-	routeTables, err := loadRouteTables(js, localVPCs)
+	routeTables, err := loadRouteTables(ctx, js, localVPCs)
 	if err != nil {
 		return IntentState{}, err
 	}
-	if err := loadNATGWs(js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
+	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
 		return IntentState{}, err
 	}
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
-	_ = ctx
 	return intent, nil
 }
 
@@ -218,17 +217,17 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 
 func keyIsVersion(key string) bool { return key == utils.VersionKey }
 
-func loadVPCs(js nats.JetStreamContext, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
+func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
-	kv, err := js.KeyValue(handlers_ec2_vpc.KVBucketVPCs)
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketVPCs)
 	if err != nil {
 		slog.Debug("reconcile/intent: VPC bucket not available, skipping", "err", err)
 		return localVPCs, nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return localVPCs, nil
 		}
 		return nil, fmt.Errorf("list VPC keys: %w", err)
@@ -237,7 +236,7 @@ func loadVPCs(js nats.JetStreamContext, localAZ string, out map[string]topology.
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: VPC read failed", "key", key, "err", err)
 			continue
@@ -265,15 +264,15 @@ func loadVPCs(js nats.JetStreamContext, localAZ string, out map[string]topology.
 	return localVPCs, nil
 }
 
-func loadSubnets(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
-	kv, err := js.KeyValue(handlers_ec2_vpc.KVBucketSubnets)
+func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSubnets)
 	if err != nil {
 		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list subnet keys: %w", err)
@@ -282,7 +281,7 @@ func loadSubnets(js nats.JetStreamContext, localVPCs map[string]struct{}, out ma
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: subnet read failed", "key", key, "err", err)
 			continue
@@ -309,15 +308,15 @@ func loadSubnets(js nats.JetStreamContext, localVPCs map[string]struct{}, out ma
 	return nil
 }
 
-func loadSGs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
-	kv, err := js.KeyValue(handlers_ec2_vpc.KVBucketSecurityGroups)
+func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSecurityGroups)
 	if err != nil {
 		slog.Debug("reconcile/intent: SG bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list SG keys: %w", err)
@@ -326,7 +325,7 @@ func loadSGs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[st
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: SG read failed", "key", key, "err", err)
 			continue
@@ -349,15 +348,15 @@ func loadSGs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[st
 	return nil
 }
 
-func loadPorts(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[string]topology.PortSpec) error {
-	kv, err := js.KeyValue(handlers_ec2_vpc.KVBucketENIs)
+func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketENIs)
 	if err != nil {
 		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list ENI keys: %w", err)
@@ -366,7 +365,7 @@ func loadPorts(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: ENI read failed", "key", key, "err", err)
 			continue
@@ -405,15 +404,15 @@ func loadPorts(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[
 	return nil
 }
 
-func loadIGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
-	kv, err := js.KeyValue(handlers_ec2_igw.KVBucketIGW)
+func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
 	if err != nil {
 		slog.Debug("reconcile/intent: IGW bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list IGW keys: %w", err)
@@ -422,7 +421,7 @@ func loadIGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: IGW read failed", "key", key, "err", err)
 			continue
@@ -446,15 +445,15 @@ func loadIGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 	return nil
 }
 
-func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
-	kv, err := js.KeyValue(handlers_ec2_eip.KVBucketEIPs)
+func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_eip.KVBucketEIPs)
 	if err != nil {
 		slog.Debug("reconcile/intent: EIP bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list EIP keys: %w", err)
@@ -463,7 +462,7 @@ func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: EIP read failed", "key", key, "err", err)
 			continue
@@ -495,15 +494,15 @@ func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 }
 
 // loadRouteTables snapshots every local-VPC route table.
-func loadRouteTables(js nats.JetStreamContext, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
-	kv, err := js.KeyValue(handlers_ec2_routetable.KVBucketRouteTables)
+func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
+	kv, err := js.KeyValue(ctx, handlers_ec2_routetable.KVBucketRouteTables)
 	if err != nil {
 		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
 		return nil, nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list route table keys: %w", err)
@@ -513,7 +512,7 @@ func loadRouteTables(js nats.JetStreamContext, localVPCs map[string]struct{}) ([
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: route table read failed", "key", key, "err", err)
 			continue
@@ -539,20 +538,21 @@ func natgwSpecKey(natgwID, subnetCIDR string) string {
 // loadNATGWs emits one NATGWSpec per (NATGW, associated private subnet) pair.
 // SNAT rewrites traffic from the private subnets routed through the NATGW, not its home subnet.
 func loadNATGWs(
-	js nats.JetStreamContext,
+	ctx context.Context,
+	js jetstream.JetStream,
 	localVPCs map[string]struct{},
 	subnets map[string]topology.SubnetSpec,
 	routeTables []handlers_ec2_routetable.RouteTableRecord,
 	out map[string]policy.NATGWSpec,
 ) error {
-	kv, err := js.KeyValue(handlers_ec2_natgw.KVBucketNatGateways)
+	kv, err := js.KeyValue(ctx, handlers_ec2_natgw.KVBucketNatGateways)
 	if err != nil {
 		slog.Debug("reconcile/intent: NAT GW bucket not available, skipping", "err", err)
 		return nil
 	}
-	keys, err := kv.Keys()
+	keys, err := kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
 		return fmt.Errorf("list NAT GW keys: %w", err)
@@ -561,7 +561,7 @@ func loadNATGWs(
 		if keyIsVersion(key) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			slog.Warn("reconcile/intent: NAT GW read failed", "key", key, "err", err)
 			continue

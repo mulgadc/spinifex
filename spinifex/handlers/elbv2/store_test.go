@@ -15,7 +15,7 @@ func setupTestStore(t *testing.T) *Store {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	store, err := NewStore(nc)
+	store, err := NewStore(t.Context(), nc)
 	require.NoError(t, err)
 	return store
 }
@@ -71,9 +71,9 @@ func newTestListener(id, lbArn string) *ListenerRecord {
 func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutLoadBalancer(newTestLB("getput1", "lb-getput1")))
+		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("getput1", "lb-getput1")))
 
-		got, err := store.GetLoadBalancer("getput1")
+		got, err := store.GetLoadBalancer(t.Context(), "getput1")
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		assert.Equal(t, "getput1", got.LoadBalancerID)
@@ -81,39 +81,39 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 
 	t.Run("get not found", func(t *testing.T) {
 		store := setupTestStore(t)
-		got, err := store.GetLoadBalancer("nonexistent")
+		got, err := store.GetLoadBalancer(t.Context(), "nonexistent")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutLoadBalancer(newTestLB("del1", "lb-del1")))
-		require.NoError(t, store.DeleteLoadBalancer("del1"))
+		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("del1", "lb-del1")))
+		require.NoError(t, store.DeleteLoadBalancer(t.Context(), "del1"))
 
-		got, err := store.GetLoadBalancer("del1")
+		got, err := store.GetLoadBalancer(t.Context(), "del1")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.DeleteLoadBalancer("doesnt-exist"))
+		require.NoError(t, store.DeleteLoadBalancer(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutLoadBalancer(newTestLB("a", "lb-a")))
-		require.NoError(t, store.PutLoadBalancer(newTestLB("b", "lb-b")))
+		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("a", "lb-a")))
+		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("b", "lb-b")))
 
-		records, err := store.ListLoadBalancers()
+		records, err := store.ListLoadBalancers(t.Context())
 		require.NoError(t, err)
 		assert.Len(t, records, 2)
 	})
 
 	t.Run("list empty", func(t *testing.T) {
 		store := setupTestStore(t)
-		records, err := store.ListLoadBalancers()
+		records, err := store.ListLoadBalancers(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	})
@@ -122,9 +122,9 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 func TestTargetGroupStoreLifecycle(t *testing.T) {
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutTargetGroup(newTestTG("getput1", "tg-getput1")))
+		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("getput1", "tg-getput1")))
 
-		got, err := store.GetTargetGroup("getput1")
+		got, err := store.GetTargetGroup(t.Context(), "getput1")
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		assert.Equal(t, "getput1", got.TargetGroupID)
@@ -132,39 +132,39 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 
 	t.Run("get not found", func(t *testing.T) {
 		store := setupTestStore(t)
-		got, err := store.GetTargetGroup("nonexistent")
+		got, err := store.GetTargetGroup(t.Context(), "nonexistent")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutTargetGroup(newTestTG("del1", "tg-del1")))
-		require.NoError(t, store.DeleteTargetGroup("del1"))
+		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("del1", "tg-del1")))
+		require.NoError(t, store.DeleteTargetGroup(t.Context(), "del1"))
 
-		got, err := store.GetTargetGroup("del1")
+		got, err := store.GetTargetGroup(t.Context(), "del1")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.DeleteTargetGroup("doesnt-exist"))
+		require.NoError(t, store.DeleteTargetGroup(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutTargetGroup(newTestTG("a", "tg-a")))
-		require.NoError(t, store.PutTargetGroup(newTestTG("b", "tg-b")))
+		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("a", "tg-a")))
+		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("b", "tg-b")))
 
-		records, err := store.ListTargetGroups()
+		records, err := store.ListTargetGroups(t.Context())
 		require.NoError(t, err)
 		assert.Len(t, records, 2)
 	})
 
 	t.Run("list empty", func(t *testing.T) {
 		store := setupTestStore(t)
-		records, err := store.ListTargetGroups()
+		records, err := store.ListTargetGroups(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	})
@@ -175,9 +175,9 @@ func TestListenerStoreLifecycle(t *testing.T) {
 
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutListener(newTestListener("getput1", lbArn)))
+		require.NoError(t, store.PutListener(t.Context(), newTestListener("getput1", lbArn)))
 
-		got, err := store.GetListener("getput1")
+		got, err := store.GetListener(t.Context(), "getput1")
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		assert.Equal(t, "getput1", got.ListenerID)
@@ -185,39 +185,39 @@ func TestListenerStoreLifecycle(t *testing.T) {
 
 	t.Run("get not found", func(t *testing.T) {
 		store := setupTestStore(t)
-		got, err := store.GetListener("nonexistent")
+		got, err := store.GetListener(t.Context(), "nonexistent")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutListener(newTestListener("del1", lbArn)))
-		require.NoError(t, store.DeleteListener("del1"))
+		require.NoError(t, store.PutListener(t.Context(), newTestListener("del1", lbArn)))
+		require.NoError(t, store.DeleteListener(t.Context(), "del1"))
 
-		got, err := store.GetListener("del1")
+		got, err := store.GetListener(t.Context(), "del1")
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.DeleteListener("doesnt-exist"))
+		require.NoError(t, store.DeleteListener(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
 		store := setupTestStore(t)
-		require.NoError(t, store.PutListener(newTestListener("a", lbArn)))
-		require.NoError(t, store.PutListener(newTestListener("b", lbArn)))
+		require.NoError(t, store.PutListener(t.Context(), newTestListener("a", lbArn)))
+		require.NoError(t, store.PutListener(t.Context(), newTestListener("b", lbArn)))
 
-		records, err := store.ListListeners()
+		records, err := store.ListListeners(t.Context())
 		require.NoError(t, err)
 		assert.Len(t, records, 2)
 	})
 
 	t.Run("list empty", func(t *testing.T) {
 		store := setupTestStore(t)
-		records, err := store.ListListeners()
+		records, err := store.ListListeners(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	})
@@ -228,14 +228,14 @@ func TestListenerStoreLifecycle(t *testing.T) {
 func TestGetLoadBalancerByArn(t *testing.T) {
 	store := setupTestStore(t)
 	lb := newTestLB("arn123", "arn-test")
-	require.NoError(t, store.PutLoadBalancer(lb))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
 
-	got, err := store.GetLoadBalancerByArn(lb.LoadBalancerArn)
+	got, err := store.GetLoadBalancerByArn(t.Context(), lb.LoadBalancerArn)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, lb.Name, got.Name)
 
-	got, err = store.GetLoadBalancerByArn("arn:nonexistent")
+	got, err = store.GetLoadBalancerByArn(t.Context(), "arn:nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -243,9 +243,9 @@ func TestGetLoadBalancerByArn(t *testing.T) {
 func TestGetLoadBalancerByName(t *testing.T) {
 	store := setupTestStore(t)
 	lb := newTestLB("name123", "find-by-name")
-	require.NoError(t, store.PutLoadBalancer(lb))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
 
-	got, err := store.GetLoadBalancerByName("find-by-name", testAccountID)
+	got, err := store.GetLoadBalancerByName(t.Context(), "find-by-name", testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, lb.LoadBalancerID, got.LoadBalancerID)
@@ -254,13 +254,13 @@ func TestGetLoadBalancerByName(t *testing.T) {
 func TestPutLoadBalancer_Update(t *testing.T) {
 	store := setupTestStore(t)
 	lb := newTestLB("upd123", "updatable")
-	require.NoError(t, store.PutLoadBalancer(lb))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
 
 	lb.State = StateFailed
 	lb.ENIs = []string{"eni-111", "eni-222"}
-	require.NoError(t, store.PutLoadBalancer(lb))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
 
-	got, err := store.GetLoadBalancer("upd123")
+	got, err := store.GetLoadBalancer(t.Context(), "upd123")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, StateFailed, got.State)
@@ -272,9 +272,9 @@ func TestPutLoadBalancer_Update(t *testing.T) {
 func TestGetTargetGroupByArn(t *testing.T) {
 	store := setupTestStore(t)
 	tg := newTestTG("tgarn", "arn-tg")
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
-	got, err := store.GetTargetGroupByArn(tg.TargetGroupArn)
+	got, err := store.GetTargetGroupByArn(t.Context(), tg.TargetGroupArn)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, tg.Name, got.Name)
@@ -283,14 +283,14 @@ func TestGetTargetGroupByArn(t *testing.T) {
 func TestGetTargetGroupByName(t *testing.T) {
 	store := setupTestStore(t)
 	tg := newTestTG("tgname", "named-tg")
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
-	got, err := store.GetTargetGroupByName("named-tg", "vpc-test123")
+	got, err := store.GetTargetGroupByName(t.Context(), "named-tg", "vpc-test123")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
 	// Wrong VPC should not find it
-	got, err = store.GetTargetGroupByName("named-tg", "vpc-other")
+	got, err = store.GetTargetGroupByName(t.Context(), "named-tg", "vpc-other")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -302,9 +302,9 @@ func TestTargetGroupWithTargets(t *testing.T) {
 		{Id: "i-aaa111", Port: 8080, HealthState: TargetHealthInitial, PrivateIP: "10.0.1.10"},
 		{Id: "i-bbb222", Port: 0, HealthState: TargetHealthHealthy, PrivateIP: "10.0.1.11"},
 	}
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
-	got, err := store.GetTargetGroup("tgtargets")
+	got, err := store.GetTargetGroup(t.Context(), "tgtargets")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Len(t, got.Targets, 2)
@@ -327,15 +327,15 @@ func TestListListenersByLB(t *testing.T) {
 	l3 := newTestListener("lst3", lbArn2)
 	l3.Port = 80
 
-	require.NoError(t, store.PutListener(l1))
-	require.NoError(t, store.PutListener(l2))
-	require.NoError(t, store.PutListener(l3))
+	require.NoError(t, store.PutListener(t.Context(), l1))
+	require.NoError(t, store.PutListener(t.Context(), l2))
+	require.NoError(t, store.PutListener(t.Context(), l3))
 
-	listeners, err := store.ListListenersByLB(lbArn1)
+	listeners, err := store.ListListenersByLB(t.Context(), lbArn1)
 	require.NoError(t, err)
 	assert.Len(t, listeners, 2)
 
-	listeners, err = store.ListListenersByLB(lbArn2)
+	listeners, err = store.ListListenersByLB(t.Context(), lbArn2)
 	require.NoError(t, err)
 	assert.Len(t, listeners, 1)
 }
@@ -344,20 +344,20 @@ func TestGetListenerByArn(t *testing.T) {
 	store := setupTestStore(t)
 	lbArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/test/lb1"
 	l := newTestListener("lstarn", lbArn)
-	require.NoError(t, store.PutListener(l))
+	require.NoError(t, store.PutListener(t.Context(), l))
 
-	got, err := store.GetListenerByArn(l.ListenerArn)
+	got, err := store.GetListenerByArn(t.Context(), l.ListenerArn)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, l.ListenerID, got.ListenerID)
 
-	got, err = store.GetListenerByArn("arn:nonexistent")
+	got, err = store.GetListenerByArn(t.Context(), "arn:nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
 	// ARN that parses to a real listener ID but a different ARN must not match
 	// (defence-in-depth against the parse trick serving a wrong record).
-	got, err = store.GetListenerByArn("arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":listener/app/other/lbX/" + l.ListenerID)
+	got, err = store.GetListenerByArn(t.Context(), "arn:aws:elasticloadbalancing:us-east-1:"+testAccountID+":listener/app/other/lbX/"+l.ListenerID)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -371,30 +371,30 @@ func TestResourceIsolation(t *testing.T) {
 	tg := newTestTG("shared1", "tg-shared") // Same ID as LB
 	l := newTestListener("shared1", lb.LoadBalancerArn)
 
-	require.NoError(t, store.PutLoadBalancer(lb))
-	require.NoError(t, store.PutTargetGroup(tg))
-	require.NoError(t, store.PutListener(l))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
+	require.NoError(t, store.PutListener(t.Context(), l))
 
-	gotLB, err := store.GetLoadBalancer("shared1")
+	gotLB, err := store.GetLoadBalancer(t.Context(), "shared1")
 	require.NoError(t, err)
 	require.NotNil(t, gotLB)
 	assert.Equal(t, "alb-shared", gotLB.Name)
 
-	gotTG, err := store.GetTargetGroup("shared1")
+	gotTG, err := store.GetTargetGroup(t.Context(), "shared1")
 	require.NoError(t, err)
 	require.NotNil(t, gotTG)
 	assert.Equal(t, "tg-shared", gotTG.Name)
 
-	gotL, err := store.GetListener("shared1")
+	gotL, err := store.GetListener(t.Context(), "shared1")
 	require.NoError(t, err)
 	require.NotNil(t, gotL)
 	assert.Equal(t, ProtocolHTTP, gotL.Protocol)
 
 	// Deleting one type should not affect others
-	require.NoError(t, store.DeleteLoadBalancer("shared1"))
-	gotTG, _ = store.GetTargetGroup("shared1")
+	require.NoError(t, store.DeleteLoadBalancer(t.Context(), "shared1"))
+	gotTG, _ = store.GetTargetGroup(t.Context(), "shared1")
 	assert.NotNil(t, gotTG)
-	gotL, _ = store.GetListener("shared1")
+	gotL, _ = store.GetListener(t.Context(), "shared1")
 	assert.NotNil(t, gotL)
 }
 
@@ -402,14 +402,14 @@ func TestTargetGroupsForLB(t *testing.T) {
 	store := setupTestStore(t)
 
 	// Non-existent LB returns nil, nil
-	tgs, err := store.TargetGroupsForLB("nonexistent")
+	tgs, err := store.TargetGroupsForLB(t.Context(), "nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, tgs)
 
 	lb := newTestLB("tgflb1", "my-alb")
 	tg := newTestTG("tg001", "my-tg")
-	require.NoError(t, store.PutLoadBalancer(lb))
-	require.NoError(t, store.PutTargetGroup(tg))
+	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
+	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
 	listener := &ListenerRecord{
 		ListenerArn:     "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":listener/app/my-alb/tgflb1/lst1",
@@ -423,9 +423,9 @@ func TestTargetGroupsForLB(t *testing.T) {
 		},
 		AccountID: testAccountID,
 	}
-	require.NoError(t, store.PutListener(listener))
+	require.NoError(t, store.PutListener(t.Context(), listener))
 
-	tgs, err = store.TargetGroupsForLB("tgflb1")
+	tgs, err = store.TargetGroupsForLB(t.Context(), "tgflb1")
 	require.NoError(t, err)
 	require.Len(t, tgs, 1)
 	assert.Equal(t, "tg001", tgs[0].TargetGroupID)

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,8 +69,12 @@ type Fixture struct {
 
 	// processCleanups holds teardown callbacks for process-mode fixtures.
 	// Close() runs them LIFO. Unused (and untouched) when parent != nil.
+	//
+	// leaks accumulates teardown failures for Close() to return; test-mode
+	// fixtures report them on the bound *testing.T instead.
 	processMu       sync.Mutex
 	processCleanups []func()
+	leaks           []string
 }
 
 // Compile-time interface checks.
@@ -132,10 +137,12 @@ func newFixture(t *testing.T, ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API) *F
 	}
 }
 
-// Close drains the process-mode cleanup chain LIFO. No-op for test-mode
-// fixtures (parent != nil) since those route teardown through t.Cleanup.
+// Close drains the process-mode cleanup chain LIFO and returns a non-nil error
+// naming every resource it could not tear down, so a caller in TestMain can
+// fail the run. No-op returning nil for test-mode fixtures (parent != nil)
+// since those route teardown through t.Cleanup.
 // Safe to call multiple times; subsequent calls drain an empty slice.
-func (f *Fixture) Close() {
+func (f *Fixture) Close() error {
 	f.processMu.Lock()
 	cleanups := f.processCleanups
 	f.processCleanups = nil
@@ -143,18 +150,54 @@ func (f *Fixture) Close() {
 	for i := len(cleanups) - 1; i >= 0; i-- {
 		cleanups[i]()
 	}
+
+	f.processMu.Lock()
+	leaks := f.leaks
+	f.leaks = nil
+	f.processMu.Unlock()
+	if len(leaks) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d resource(s) left behind:\n  %s", len(leaks), strings.Join(leaks, "\n  "))
 }
 
 // registerCleanup routes a teardown callback to the appropriate sink based
 // on construction mode. Test mode: t.Cleanup on the bound parent. Process
 // mode: append to the LIFO drained by Close().
+//
+// Each callback is isolated from the rest: a panic in one teardown would
+// otherwise abort the whole chain and strand every resource behind it.
 func (f *Fixture) registerCleanup(fn func()) {
+	isolated := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				f.reportLeak("cleanup panicked: %v", r)
+			}
+		}()
+		fn()
+	}
 	if f.parent != nil {
-		f.parent.Cleanup(fn)
+		f.parent.Cleanup(isolated)
 		return
 	}
 	f.processMu.Lock()
-	f.processCleanups = append(f.processCleanups, fn)
+	f.processCleanups = append(f.processCleanups, isolated)
+	f.processMu.Unlock()
+}
+
+// reportLeak records a teardown failure. A cleanup that fails has left a real
+// resource behind on the node, so this must not be a log line nobody reads:
+// test-mode fixtures fail the bound test, process-mode fixtures accumulate the
+// failures for Close() to return.
+func (f *Fixture) reportLeak(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if f.parent != nil {
+		f.parent.Errorf("harness.Fixture: LEAKED resource, teardown failed: %s", msg)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "harness.Fixture: LEAKED resource, teardown failed: %s\n", msg)
+	f.processMu.Lock()
+	f.leaks = append(f.leaks, msg)
 	f.processMu.Unlock()
 }
 
@@ -222,7 +265,7 @@ func (f *Fixture) ensureOnce(t *testing.T, key string, create func() (string, fu
 		if !dup && cleanup != nil {
 			f.registerCleanup(func() {
 				if cerr := cleanup(); cerr != nil {
-					f.logf("fixture cleanup %s: %v", key, cerr)
+					f.reportLeak("%s (%s): %v", key, id, cerr)
 				}
 			})
 		}
@@ -631,10 +674,7 @@ func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 		}
 
 		return instID, func() error {
-			_, derr := fx.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-				InstanceIds: []*string{aws.String(instID)},
-			})
-			return derr
+			return teardownInstance(fx.EC2, instID)
 		}, nil
 	})
 	if err != nil {
@@ -683,10 +723,7 @@ func EnsureVolume(t *testing.T, fx *Fixture, az string, sizeGiB int64) string {
 		}
 
 		return volID, func() error {
-			_, derr := fx.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
-				VolumeId: aws.String(volID),
-			})
-			return derr
+			return teardownVolume(fx.EC2, volID)
 		}, nil
 	})
 	if err != nil {

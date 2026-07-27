@@ -120,13 +120,36 @@ type Config struct {
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool
 
+	// GCEnabled turns on viperblock chunk garbage collection for every VB this
+	// service constructs: the nbdkit plugin backing each mounted volume, and
+	// the short-lived detached VBs opened for config updates and sealing.
+	// Default false, matching ShardWAL.
+	GCEnabled bool
+
 	// EncryptionKeyFile is the path to the shared AES-256 master key for at-rest
 	// encryption. Empty → cleartext mode (legacy).
 	EncryptionKeyFile string
 
 	masterKey *masterkey.Key
 
+	// sealVolume overrides how a detached volume is sealed to predastore.
+	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
+	// inject here rather than pointing S3Host at an unreachable endpoint: the
+	// real failure only arrives once the S3 client exhausts its jittered
+	// backoff, which takes anywhere from one to five seconds and so decides the
+	// test on where the dice land relative to the caller's deadline.
+	sealVolume func(volumeName string) error
+
 	mu sync.Mutex
+}
+
+// seal persists volumeName's block map to predastore, honouring a test's
+// injected seal if there is one.
+func (cfg *Config) seal(volumeName string) error {
+	if cfg.sealVolume != nil {
+		return cfg.sealVolume(volumeName)
+	}
+	return sealVolumeVB(cfg, volumeName)
 }
 
 type Service struct {
@@ -208,6 +231,7 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 		VolumeConfig:      viperblock.VolumeConfig{},
 		MasterKey:         cfg.masterKey,
 		EncryptionEnabled: cfg.masterKey != nil,
+		GCEnabled:         cfg.GCEnabled,
 	}
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
@@ -365,7 +389,7 @@ func launchService(cfg *Config) (err error) {
 		slog.Warn("Viperblock at-rest encryption disabled (no EncryptionKeyFile configured)")
 	}
 
-	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL)
+	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled)
 
 	if cfg.NodeName != "" {
 		slog.Info("Waiting for EBS events", "node", cfg.NodeName)
@@ -376,7 +400,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := nc.QueueSubscribe("ebs.delete", "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.delete message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received ebs.delete message")
 
 		var ebsRequest types.EBSDeleteRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -451,7 +475,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received message")
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -509,7 +533,7 @@ func launchService(cfg *Config) (err error) {
 			// the block map to predastore for volumes that hold local state to
 			// flush (see volumeNeedsSeal).
 			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
-				if err := sealVolumeVB(cfg, matched.Name); err != nil {
+				if err := cfg.seal(matched.Name); err != nil {
 					slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				} else {
@@ -564,7 +588,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := nc.QueueSubscribe("ebs.sync", "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.sync message", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received ebs.sync message")
 
 		var syncRequest types.EBSSyncRequest
 		if err := json.Unmarshal(msg.Data, &syncRequest); err != nil {
@@ -689,7 +713,7 @@ func launchService(cfg *Config) (err error) {
 	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
-		slog.InfoContext(ctx, "Received message:", "data", string(msg.Data))
+		slog.InfoContext(ctx, "Received message:")
 
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
@@ -854,6 +878,7 @@ func launchService(cfg *Config) (err error) {
 			SecretKey:         cfg.SecretKey,
 			CacheSize:         nbdCacheSize,
 			ShardWAL:          cfg.ShardWAL,
+			GCEnabled:         cfg.GCEnabled,
 			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 

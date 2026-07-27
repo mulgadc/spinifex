@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // kvBucketENIs and kvBucketSecurityGroups are duplicated as literals to avoid an import cycle.
@@ -85,10 +85,10 @@ type eniRecord struct {
 // metadataResolver resolves a tap's ENI ID to ENI + instance facts.
 // Resolution chain: eniID → ENIRecord (account recovered from the bucket key) → instanceFacts.
 type metadataResolver struct {
-	eniKV    nats.KeyValue // spinifex-vpc-enis
-	sgKV     nats.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
-	subnetKV nats.KeyValue // spinifex-vpc-subnets        (nil-safe: CIDR leaf 404s)
-	vpcKV    nats.KeyValue // spinifex-vpc-vpcs           (nil-safe: CIDR leaf 404s)
+	eniKV    jetstream.KeyValue // spinifex-vpc-enis
+	sgKV     jetstream.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
+	subnetKV jetstream.KeyValue // spinifex-vpc-subnets        (nil-safe: CIDR leaf 404s)
+	vpcKV    jetstream.KeyValue // spinifex-vpc-vpcs           (nil-safe: CIDR leaf 404s)
 	lookup   instanceLookup
 }
 
@@ -102,7 +102,7 @@ func (r *metadataResolver) resolveENIByID(ctx context.Context, eniID string) (*e
 	if eniID == "" {
 		return nil, nil
 	}
-	accountID, raw, err := r.findENIByID(eniID)
+	accountID, raw, err := r.findENIByID(ctx, eniID)
 	if err != nil {
 		return nil, err
 	}
@@ -120,10 +120,10 @@ func (r *metadataResolver) resolveENIByID(ctx context.Context, eniID string) (*e
 // findENIByID scans the ENI bucket for the record whose key ends in ".{eniID}",
 // returning the owning account and the raw record bytes, or ("", nil, nil) on
 // miss. ENI IDs are globally unique, so at most one key matches.
-func (r *metadataResolver) findENIByID(eniID string) (string, []byte, error) {
-	keys, err := r.eniKV.Keys()
+func (r *metadataResolver) findENIByID(ctx context.Context, eniID string) (string, []byte, error) {
+	keys, err := r.eniKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return "", nil, nil
 		}
 		return "", nil, fmt.Errorf("list eni bucket: %w", err)
@@ -134,9 +134,9 @@ func (r *metadataResolver) findENIByID(eniID string) (string, []byte, error) {
 		if !strings.HasSuffix(key, suffix) {
 			continue
 		}
-		entry, err := r.eniKV.Get(key)
+		entry, err := r.eniKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue // raced with a concurrent delete
 			}
 			return "", nil, fmt.Errorf("get eni record %s: %w", key, err)
@@ -180,9 +180,9 @@ func (r *metadataResolver) resolveSGNames(ctx context.Context, accountID string,
 		if r.sgKV == nil {
 			continue
 		}
-		raw, err := r.sgKV.Get(accountID + "." + id)
+		raw, err := r.sgKV.Get(ctx, accountID+"."+id)
 		if err != nil {
-			if !errors.Is(err, nats.ErrKeyNotFound) {
+			if !errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.WarnContext(ctx, "IMDS: security-group name lookup failed", "account_id", accountID, "sg_id", id, "err", err)
 			}
 			continue
@@ -204,24 +204,24 @@ type cidrRecord struct {
 	CidrBlock string `json:"cidr_block"`
 }
 
-func (r *metadataResolver) resolveSubnetCIDR(_ context.Context, accountID, subnetID string) (string, error) {
-	return cidrFromKV(r.subnetKV, accountID, subnetID)
+func (r *metadataResolver) resolveSubnetCIDR(ctx context.Context, accountID, subnetID string) (string, error) {
+	return cidrFromKV(ctx, r.subnetKV, accountID, subnetID)
 }
 
-func (r *metadataResolver) resolveVPCCIDR(_ context.Context, accountID, vpcID string) (string, error) {
-	return cidrFromKV(r.vpcKV, accountID, vpcID)
+func (r *metadataResolver) resolveVPCCIDR(ctx context.Context, accountID, vpcID string) (string, error) {
+	return cidrFromKV(ctx, r.vpcKV, accountID, vpcID)
 }
 
 // cidrFromKV reads cidr_block from an account-scoped record. ("", nil) on a nil
 // bucket or key miss; the error on any other fault so the leaf 500s rather than
 // serving an empty CIDR a guest would mis-render into its network config.
-func cidrFromKV(kv nats.KeyValue, accountID, id string) (string, error) {
+func cidrFromKV(ctx context.Context, kv jetstream.KeyValue, accountID, id string) (string, error) {
 	if kv == nil || id == "" {
 		return "", nil
 	}
-	entry, err := kv.Get(accountID + "." + id)
+	entry, err := kv.Get(ctx, accountID+"."+id)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return "", nil
 		}
 		return "", fmt.Errorf("get cidr record %s.%s: %w", accountID, id, err)

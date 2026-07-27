@@ -10,6 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,6 +20,19 @@ func validToken(url string) string {
 }
 
 const testARN = "arn:aws:iam::111122223333:role/admin"
+
+// seedAccountBucket creates an empty per-account bucket on the jetstream API.
+// testutil.SeedKV stays on the legacy handle, which cannot be passed to the
+// migrated AccessEntry helpers.
+func seedAccountBucket(t *testing.T, js jetstream.JetStream, accountID string) jetstream.KeyValue {
+	t.Helper()
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket:  AccountBucketName(accountID),
+		History: KVBucketEKSAccountHistory,
+	})
+	require.NoError(t, err)
+	return kv
+}
 
 func okVerify(_ string) (*TokenVerifyResponse, error) {
 	return &TokenVerifyResponse{
@@ -107,9 +121,10 @@ func TestResolveTokenReview_MissingBucketErrors(t *testing.T) {
 }
 
 func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	kv := testutil.SeedKV(t, js, AccountBucketName("111122223333"), nil)
-	require.NoError(t, PutAccessEntryRecord(kv, &AccessEntryRecord{
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv := seedAccountBucket(t, js, "111122223333")
+	require.NoError(t, PutAccessEntryRecord(t.Context(), kv, &AccessEntryRecord{
 		ClusterName:        "alpha",
 		PrincipalARN:       testARN,
 		KubernetesUsername: testARN,
@@ -141,8 +156,9 @@ func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
 // A valid IAM principal with no AccessEntry resolves to Authenticated=false
 // (a clean 401), not an error.
 func TestResolveTokenReview_NoAccessEntryDenies(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	testutil.SeedKV(t, js, AccountBucketName("111122223333"), nil)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	seedAccountBucket(t, js, "111122223333")
 
 	sub, err := nc.Subscribe(TokenVerifySubject, func(m *nats.Msg) {
 		resp, _ := json.Marshal(TokenVerifyResponse{AccountID: "111122223333", ARN: testARN})

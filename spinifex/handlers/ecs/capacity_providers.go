@@ -13,17 +13,17 @@ import (
 // PutClusterCapacityProviders persists the cluster's capacity-provider names
 // and default strategy. Accepted and stored only: no scheduler coupling, no
 // scale loop (a separate follow-on binds this to an ASG primitive).
-func (s *Service) PutClusterCapacityProviders(_ context.Context, input *ecs.PutClusterCapacityProvidersInput, accountID string) (*ecs.PutClusterCapacityProvidersOutput, error) {
+func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.PutClusterCapacityProvidersInput, accountID string) (*ecs.PutClusterCapacityProvidersOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec ClusterRecord
-	found, err := getJSON(kv, ClusterMetaKey(cluster), &rec)
+	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func (s *Service) PutClusterCapacityProviders(_ context.Context, input *ecs.PutC
 
 	rec.CapacityProviders = awsStringSlice(input.CapacityProviders)
 	rec.DefaultCapacityProviderStrategy = strategyFromAWS(input.DefaultCapacityProviderStrategy)
-	if err := putJSON(kv, ClusterMetaKey(cluster), &rec); err != nil {
+	if err := putJSON(ctx, kv, ClusterMetaKey(cluster), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.PutClusterCapacityProvidersOutput{Cluster: rec.toAWS()}, nil
@@ -41,19 +41,19 @@ func (s *Service) PutClusterCapacityProviders(_ context.Context, input *ecs.PutC
 
 // CreateCapacityProvider persists a new capacity provider. Idempotent:
 // re-creating an existing name returns the existing record.
-func (s *Service) CreateCapacityProvider(_ context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error) {
+func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error) {
 	if input == nil || aws.StringValue(input.Name) == "" || input.AutoScalingGroupProvider == nil ||
 		aws.StringValue(input.AutoScalingGroupProvider.AutoScalingGroupArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	name := aws.StringValue(input.Name)
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 
 	var existing CapacityProviderRecord
-	found, err := getJSON(kv, CapacityProviderKey(name), &existing)
+	found, err := getJSON(ctx, kv, CapacityProviderKey(name), &existing)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (s *Service) CreateCapacityProvider(_ context.Context, input *ecs.CreateCap
 		Tags:                     tagsToMap(input.Tags),
 		CreatedAt:                time.Now().UTC(),
 	}
-	if err := putJSON(kv, CapacityProviderKey(name), &rec); err != nil {
+	if err := putJSON(ctx, kv, CapacityProviderKey(name), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.CreateCapacityProviderOutput{CapacityProvider: rec.toAWS()}, nil
@@ -77,8 +77,8 @@ func (s *Service) CreateCapacityProvider(_ context.Context, input *ecs.CreateCap
 
 // DescribeCapacityProviders returns the named providers, or every provider in
 // the account when none are named. Unknown names surface as failures.
-func (s *Service) DescribeCapacityProviders(_ context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error) {
-	kv, err := s.bucket(accountID)
+func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error) {
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -86,13 +86,13 @@ func (s *Service) DescribeCapacityProviders(_ context.Context, input *ecs.Descri
 
 	names := awsStringSlice(input.CapacityProviders)
 	if len(names) == 0 {
-		keys, kerr := keysWithPrefix(kv, CapacityProvidersPrefix())
+		keys, kerr := keysWithPrefix(ctx, kv, CapacityProvidersPrefix())
 		if kerr != nil {
 			return nil, kerr
 		}
 		for _, k := range keys {
 			var rec CapacityProviderRecord
-			ok, gerr := getJSON(kv, k, &rec)
+			ok, gerr := getJSON(ctx, kv, k, &rec)
 			if gerr != nil {
 				return nil, gerr
 			}
@@ -106,7 +106,7 @@ func (s *Service) DescribeCapacityProviders(_ context.Context, input *ecs.Descri
 	for _, ref := range names {
 		name := capacityProviderShortName(ref)
 		var rec CapacityProviderRecord
-		ok, gerr := getJSON(kv, CapacityProviderKey(name), &rec)
+		ok, gerr := getJSON(ctx, kv, CapacityProviderKey(name), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -122,24 +122,24 @@ func (s *Service) DescribeCapacityProviders(_ context.Context, input *ecs.Descri
 // DeleteCapacityProvider removes a capacity provider record. Clusters that
 // still reference the name by CapacityProviders are left untouched (v1 does
 // not enforce referential integrity here).
-func (s *Service) DeleteCapacityProvider(_ context.Context, input *ecs.DeleteCapacityProviderInput, accountID string) (*ecs.DeleteCapacityProviderOutput, error) {
+func (s *Service) DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteCapacityProviderInput, accountID string) (*ecs.DeleteCapacityProviderOutput, error) {
 	if input == nil || aws.StringValue(input.CapacityProvider) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	name := capacityProviderShortName(aws.StringValue(input.CapacityProvider))
-	kv, err := s.bucket(accountID)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	var rec CapacityProviderRecord
-	found, err := getJSON(kv, CapacityProviderKey(name), &rec)
+	found, err := getJSON(ctx, kv, CapacityProviderKey(name), &rec)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	if err := kv.Delete(CapacityProviderKey(name)); err != nil {
+	if err := kv.Delete(ctx, CapacityProviderKey(name)); err != nil {
 		return nil, err
 	}
 	return &ecs.DeleteCapacityProviderOutput{CapacityProvider: rec.toAWS()}, nil

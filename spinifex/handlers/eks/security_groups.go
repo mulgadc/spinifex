@@ -126,7 +126,13 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 		slog.WarnContext(ctx, "DeleteClusterSGs: describe SGs failed", "vpc", vpcID, "err", err)
 		record(fmt.Errorf("describe SGs in vpc %s: %w", vpcID, err))
 	}
-	for _, g := range out.SecurityGroups {
+	// A failed describe returns a nil out; fall back to an empty set so the two
+	// cross-reference sweeps below become no-ops while the targeted deletes still run.
+	var sgs []*ec2.SecurityGroup
+	if out != nil {
+		sgs = out.SecurityGroups
+	}
+	for _, g := range sgs {
 		if g == nil || g.GroupId == nil {
 			continue
 		}
@@ -146,7 +152,7 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 	// so nothing else deletes them and they pin the VPC on DependencyViolation.
 	// Match by the LBC ownership tag; rules were already revoked above. Runs after
 	// the matching ALB reap, so the LB no longer references the SG.
-	for _, g := range out.SecurityGroups {
+	for _, g := range sgs {
 		if g == nil || g.GroupId == nil || aws.StringValue(g.GroupName) == "default" {
 			continue
 		}

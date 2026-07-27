@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Bridge mode selects how the WAN NIC reaches the OVS bridge.
@@ -122,6 +123,19 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// NorthstarBaseDomain is the cluster's authoritative base domain (northstar
+	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
+	// Empty disables the public-hostname metadata key.
+	NorthstarBaseDomain string
+	// NorthstarInternalDomain is the cluster's private AWS-parity domain (northstar
+	// internal_domain, default "compute.internal"). IMDS serves it as local-hostname
+	// so the guest's own name matches the record the DNS writer publishes.
+	NorthstarInternalDomain string
+	// ResolverNameservers are the WAN IPs of cluster nodes running northstar,
+	// used as the per-tap DNS shim's forward targets. When set, DHCP advertises
+	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
+	// pool DNS.
+	ResolverNameservers []string
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT,
 	// appended to the transit /24 in the spinifex_nat_exempt set. nat mode only.
 	NATExemptCIDRs []string
@@ -450,7 +464,7 @@ func launchService(cfg *Config) error {
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
 
 	var topoOpts []topology.Option
-	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
+	if dns := resolverDNSServer(cfg); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
@@ -476,7 +490,7 @@ func launchService(cfg *Config) error {
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
@@ -498,12 +512,16 @@ func launchService(cfg *Config) error {
 		return live, nil
 	}
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+		ctx,
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
 		listTaps,
+		cfg.NorthstarBaseDomain,
+		cfg.NorthstarInternalDomain,
+		cfg.ResolverNameservers,
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -596,7 +614,7 @@ func launchService(cfg *Config) error {
 	// Elect one vpcd for startup reconcile; without this, concurrent Get-then-Create on Logical_Router
 	// produces duplicate rows that ovn-nbctl rejects. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(nc, reconcile.KVBucketVPCDReconcile, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeader(ctx, nc, reconcile.KVBucketVPCDReconcile, holder)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,
@@ -631,7 +649,12 @@ func launchService(cfg *Config) error {
 		NodeHostname: holder,
 		Chassis:      chassisNames,
 		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:    pickDNSServer(cfg.ExternalPools),
+		DNSServer:    resolverDNSServer(cfg),
+		// Re-read intent at prune time so a guest launched during a long apply
+		// phase is not mistaken for an orphan and its dnat_and_snat swept.
+		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
+			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)
@@ -678,6 +701,17 @@ func launchService(cfg *Config) error {
 	return nil
 }
 
+// resolverDNSServer returns the OVN dhcp_options dns_server advertised to
+// instances. With northstar configured, guests get the link-local VPC DNS
+// address served by the per-tap shim (which forwards to ResolverNameservers);
+// absent northstar it falls back to the upstream pool DNS.
+func resolverDNSServer(cfg *Config) string {
+	if len(cfg.ResolverNameservers) > 0 {
+		return handlers_imds.VPCDNSServerIP
+	}
+	return pickDNSServer(cfg.ExternalPools)
+}
+
 // pickDNSServer returns the OVN dhcp_options dns_server from the first unscoped pool with DNS servers.
 // Empty falls back to topology.NewLiveManager's default.
 func pickDNSServer(pools []external.ExternalPoolConfig) string {
@@ -691,7 +725,7 @@ func pickDNSServer(pools []external.ExternalPoolConfig) string {
 
 // startDHCPManagerIfNeeded starts the per-AZ DHCP Manager when any pool has Source="dhcp".
 // Returns (nil, nil, nil) when not needed.
-func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, cfg *Config) (*dhcp.Manager, []*nats.Subscription, error) {
+func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, cfg *Config) (*dhcp.Manager, []*nats.Subscription, error) {
 	if cfg == nil || cfg.ExternalMode == "" {
 		return nil, nil, nil
 	}
@@ -706,7 +740,7 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js nats.JetStr
 		return nil, nil, nil
 	}
 
-	store, err := dhcp.NewStore(js, cfg.AZ)
+	store, err := dhcp.NewStore(ctx, js, cfg.AZ)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp lease store: %w", err)
 	}

@@ -42,7 +42,8 @@ func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 
 func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := handlers_ecr.NewKVMetaService(js)
 	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
 	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)

@@ -134,7 +134,10 @@ func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resour
 	}
 	defer result.Body.Close()
 
-	var tags map[string]string
+	// Decode into a non-nil map so a stored JSON "null" body (which Decode leaves
+	// untouched without error) yields an empty map, not a nil map that callers
+	// would panic on when indexing.
+	tags := make(map[string]string)
 	if err := json.NewDecoder(result.Body).Decode(&tags); err != nil {
 		return nil, err
 	}

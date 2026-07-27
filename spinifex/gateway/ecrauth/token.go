@@ -19,9 +19,33 @@ const (
 	DefaultTokenTTL = 12 * time.Hour
 )
 
+// supportedPrincipalTypes are the mulga:principalType claim values a verified
+// token may carry. These mirror the gateway package's principalType constants
+// (user, assumed-role, root); this package can't import gateway (it would
+// cycle), so the strings are pinned here and by the gateway package's own
+// constants — a rename on either side is caught by ecrauth_test.go and by
+// the gateway ECR principal tests exercising real Mint/Verify round-trips.
+var supportedPrincipalTypes = map[string]bool{
+	"user":         true,
+	"assumed-role": true,
+	"root":         true,
+}
+
+// SupportedPrincipalType reports whether t is a principalType claim value
+// Verify accepts. Exported so callers minting a token (or tests) can validate
+// a type before it round-trips through Mint/Verify.
+func SupportedPrincipalType(t string) bool {
+	return supportedPrincipalTypes[t]
+}
+
 // Claims is the ECR token claim set: registered OIDC claims plus the mulga
-// principal attributes the bridge reads to scope a request. accountID is the
-// authority for /v2 account scoping; accessKeyID is audit-only.
+// principal attributes the bridge reads to scope a request. The token is a
+// signed pointer, not a permission grant: accountID scopes /v2 account
+// access, and accessKeyID is the lookup key the gateway uses to rehydrate the
+// current IAM/STS record on every request, so a revoked key, session, user,
+// role, or policy takes effect on the very next request even against an
+// already-issued 12h token. Verify requires all three of these plus Subject
+// to be non-empty and PrincipalType to be a supported value.
 type Claims struct {
 	jwt.RegisteredClaims
 
@@ -84,6 +108,18 @@ func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error
 	if p.AccountID == "" {
 		return "", time.Time{}, errors.New("ecrauth: mint requires account ID")
 	}
+	// A registry token is a signed pointer to an IAM/STS record: every field
+	// the verifier will later demand back must be present at mint time, or
+	// the token would verify into an unusable/ambiguous identity.
+	if p.ARN == "" {
+		return "", time.Time{}, errors.New("ecrauth: mint requires principal ARN")
+	}
+	if p.AccessKeyID == "" {
+		return "", time.Time{}, errors.New("ecrauth: mint requires access key ID")
+	}
+	if !SupportedPrincipalType(p.Type) {
+		return "", time.Time{}, fmt.Errorf("ecrauth: mint requires a supported principal type, got %q", p.Type)
+	}
 	now := time.Now()
 	exp := now.Add(i.ttl)
 	claims := Claims{
@@ -138,8 +174,12 @@ func (v *Verifier) publicKey(kid string) (*ecdsa.PublicKey, bool) {
 	return pub, ok
 }
 
-// Verify parses and validates raw: ES256, unexpired, known kid, matching iss and
-// aud, non-empty accountID. It returns the claims on success.
+// Verify parses and validates raw: ES256, unexpired, known kid, matching iss
+// and aud, and a complete identity pointer — non-empty subject, accountID,
+// accessKeyID, and a supported principalType. The gateway resolves the
+// returned claims against current IAM/STS state before trusting them; Verify
+// only proves the token was signed by this issuer and names a well-formed
+// identity to look up.
 func (v *Verifier) Verify(raw string) (*Claims, error) {
 	claims := &Claims{}
 	parser := jwt.NewParser(
@@ -163,8 +203,17 @@ func (v *Verifier) Verify(raw string) (*Claims, error) {
 	if !slices.Contains(claims.Audience, v.audience) {
 		return nil, errors.New("audience mismatch")
 	}
+	if claims.Subject == "" {
+		return nil, errors.New("missing subject claim")
+	}
 	if claims.AccountID == "" {
 		return nil, errors.New("missing accountID claim")
+	}
+	if claims.AccessKeyID == "" {
+		return nil, errors.New("missing accessKeyID claim")
+	}
+	if !SupportedPrincipalType(claims.PrincipalType) {
+		return nil, fmt.Errorf("unsupported principalType %q", claims.PrincipalType)
 	}
 	return claims, nil
 }

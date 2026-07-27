@@ -56,7 +56,7 @@ func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
 	}
 	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, vpcEntries)
 
-	svc, err := NewIGWServiceImplWithNATS(nil, nc)
+	svc, err := NewIGWServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc, nc
 }
@@ -463,14 +463,13 @@ func TestCreateInternetGateway_PublishesNoEvent(t *testing.T) {
 func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	svc, nc := setupTestIGWService(t)
 
-	// Create VPC KV bucket and add a VPC owned by testAccountID
-	js, err := nc.JetStream()
-	require.NoError(t, err)
-	vpcKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: handlers_ec2_vpc.KVBucketVPCs, History: 1})
+	// Add a VPC owned by testAccountID to the existing VPC bucket.
+	js := testutil.NewJetStream(t, nc)
+	vpcKV, err := js.KeyValue(t.Context(), handlers_ec2_vpc.KVBucketVPCs)
 	require.NoError(t, err)
 
 	vpcID := "vpc-alpha123"
-	_, err = vpcKV.Put(utils.AccountKey(testAccountID, vpcID), []byte(`{"vpc_id":"vpc-alpha123","state":"available"}`))
+	_, err = vpcKV.Put(t.Context(), utils.AccountKey(testAccountID, vpcID), []byte(`{"vpc_id":"vpc-alpha123","state":"available"}`))
 	require.NoError(t, err)
 
 	// Refresh service to pick up the VPC KV bucket

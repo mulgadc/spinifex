@@ -15,67 +15,59 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 var _ NatGatewayService = (*NatGatewayServiceImpl)(nil)
 
 // NatGatewayServiceImpl implements NAT Gateway operations with NATS JetStream persistence.
 type NatGatewayServiceImpl struct {
-	natgwKV        nats.KeyValue
-	deletedNatgwKV nats.KeyValue
-	eipKV          nats.KeyValue
-	subnetKV       nats.KeyValue
-	vpcKV          nats.KeyValue
+	natgwKV        jetstream.KeyValue
+	deletedNatgwKV jetstream.KeyValue
+	eipKV          jetstream.KeyValue
+	subnetKV       jetstream.KeyValue
+	vpcKV          jetstream.KeyValue
 	natsConn       *nats.Conn
 }
 
 // NewNatGatewayServiceImplWithNATS creates a NAT Gateway service.
-func NewNatGatewayServiceImplWithNATS(natsConn *nats.Conn) (*NatGatewayServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) (*NatGatewayServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	natgwKV, err := utils.GetOrCreateKVBucket(js, KVBucketNatGateways, 10)
+	natgwKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketNatGateways, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketNatGateways, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketNatGateways, natgwKV, KVBucketNatGatewaysVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketNatGateways, natgwKV, KVBucketNatGatewaysVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketNatGateways, err)
 	}
 
-	// Deleted NAT Gateways bucket with 1-hour TTL — keys auto-expire.
-	// Terraform polls DescribeNatGateways after delete and expects state=deleted.
-	deletedKV, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:      KVBucketDeletedNatGateways,
-		Description: "Deleted NAT Gateways (auto-expire after 1 hour)",
-		History:     1,
-		TTL:         1 * time.Hour,
-	})
+	deletedKV, err := getOrCreateDeletedBucket(ctx, js)
 	if err != nil {
-		deletedKV, err = js.KeyValue(KVBucketDeletedNatGateways)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketDeletedNatGateways, err)
-		}
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketDeletedNatGateways, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketDeletedNatGateways, deletedKV, KVBucketDeletedNatGatewaysVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketDeletedNatGateways, deletedKV, KVBucketDeletedNatGatewaysVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketDeletedNatGateways, err)
 	}
 
-	eipKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_eip.KVBucketEIPs, 10)
+	eipKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_eip.KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get EIP KV bucket: %w", err)
 	}
 
-	subnetKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_vpc.KVBucketSubnets, 10)
+	subnetKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_vpc.KVBucketSubnets, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get subnet KV bucket: %w", err)
 	}
 
-	vpcKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_vpc.KVBucketVPCs, 10)
+	vpcKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_vpc.KVBucketVPCs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
@@ -90,6 +82,25 @@ func NewNatGatewayServiceImplWithNATS(natsConn *nats.Conn) (*NatGatewayServiceIm
 		vpcKV:          vpcKV,
 		natsConn:       natsConn,
 	}, nil
+}
+
+// getOrCreateDeletedBucket creates the expiring bucket without changing an
+// existing bucket's replica or placement configuration.
+func getOrCreateDeletedBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
+	// Terraform polls DescribeNatGateways after delete and expects state=deleted.
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:      KVBucketDeletedNatGateways,
+		Description: "Deleted NAT Gateways (auto-expire after 1 hour)",
+		History:     1,
+		TTL:         time.Hour,
+	})
+	if err == nil {
+		return kv, nil
+	}
+	if !errors.Is(err, jetstream.ErrBucketExists) {
+		return nil, err
+	}
+	return js.KeyValue(ctx, KVBucketDeletedNatGateways)
 }
 
 // natGatewayEvent is published on vpc.add-nat-gateway / vpc.delete-nat-gateway topics.
@@ -113,7 +124,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	allocID := *input.AllocationId
 
 	// Validate subnet exists and get its VPC
-	subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, subnetID))
+	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 	}
@@ -123,7 +134,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	}
 
 	// Validate EIP exists and is not already associated
-	eipEntry, err := s.eipKV.Get(utils.AccountKey(accountID, allocID))
+	eipEntry, err := s.eipKV.Get(ctx, utils.AccountKey(accountID, allocID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 	}
@@ -152,7 +163,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.natgwKV.Put(utils.AccountKey(accountID, natgwID), data); err != nil {
+	if _, err := s.natgwKV.Put(ctx, utils.AccountKey(accountID, natgwID), data); err != nil {
 		slog.ErrorContext(ctx, "Failed to store NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -165,7 +176,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
-		if _, err := s.eipKV.Update(utils.AccountKey(accountID, allocID), eipData, eipEntry.Revision()); err != nil {
+		if _, err := s.eipKV.Update(ctx, utils.AccountKey(accountID, allocID), eipData, eipEntry.Revision()); err != nil {
 			slog.WarnContext(ctx, "CreateNatGateway: failed to mark EIP associated", "natGatewayId", natgwID, "allocationId", allocID, "err", err)
 		}
 	}
@@ -187,9 +198,9 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	natgwID := *input.NatGatewayId
 	key := utils.AccountKey(accountID, natgwID)
 
-	entry, err := s.natgwKV.Get(key)
+	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// AWS-faithful: an absent NAT gateway is NotFound (provider
 			// tolerates it on destroy); destroy orchestration tolerates it too.
 			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
@@ -215,13 +226,13 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.deletedNatgwKV.Put(key, deleted); err != nil {
+	if _, err := s.deletedNatgwKV.Put(ctx, key, deleted); err != nil {
 		slog.ErrorContext(ctx, "Failed to write deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Remove from active bucket
-	if err := s.natgwKV.Delete(key); err != nil {
+	if err := s.natgwKV.Delete(ctx, key); err != nil {
 		slog.ErrorContext(ctx, "Failed to delete NAT Gateway from active bucket", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -250,12 +261,17 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 	if s.natsConn == nil {
 		return
 	}
-	rtbKV, err := utils.GetOrCreateKVBucket(mustJS(s.natsConn), kvBucketRouteTables, 10)
+	js, err := jetstream.New(s.natsConn)
+	if err != nil {
+		slog.WarnContext(ctx, "DeleteNatGateway: JetStream setup failed, SNAT teardown deferred to route delete", "natGatewayId", record.NatGatewayId, "err", err)
+		return
+	}
+	rtbKV, err := kvutil.GetOrCreateBucket(ctx, js, kvBucketRouteTables, 10)
 	if err != nil {
 		slog.WarnContext(ctx, "DeleteNatGateway: route-table scan failed, SNAT teardown deferred to route delete", "natGatewayId", record.NatGatewayId, "err", err)
 		return
 	}
-	keys, err := rtbKV.Keys()
+	keys, err := rtbKV.Keys(ctx)
 	if err != nil {
 		return
 	}
@@ -264,7 +280,7 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := rtbKV.Get(key)
+		entry, err := rtbKV.Get(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -297,7 +313,7 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 			if assoc.SubnetId == "" {
 				continue
 			}
-			subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, assoc.SubnetId))
+			subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, assoc.SubnetId))
 			if err != nil {
 				continue
 			}
@@ -310,11 +326,6 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 	}
 }
 
-func mustJS(nc *nats.Conn) nats.JetStreamContext {
-	js, _ := nc.JetStream()
-	return js
-}
-
 // disassociateEIP clears the EIP's association to this NAT gateway, keeping the
 // allocation (AWS parity). Idempotent and non-fatal: the NAT gateway is already
 // gone, so a stale association only delays the EIP's reuse.
@@ -323,9 +334,9 @@ func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *Nat
 		return
 	}
 	key := utils.AccountKey(accountID, record.AllocationId)
-	entry, err := s.eipKV.Get(key)
+	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
-		if !errors.Is(err, nats.ErrKeyNotFound) {
+		if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.WarnContext(ctx, "DeleteNatGateway: EIP read failed during disassociate", "allocationId", record.AllocationId, "err", err)
 		}
 		return
@@ -348,7 +359,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *Nat
 	if err != nil {
 		return
 	}
-	if _, err := s.eipKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := s.eipKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		slog.WarnContext(ctx, "DeleteNatGateway: failed to disassociate EIP", "allocationId", record.AllocationId, "err", err)
 	}
 }
@@ -376,8 +387,8 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	}
 
 	prefix := accountID + "."
-	keys, err := s.natgwKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.natgwKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -389,9 +400,9 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 			continue
 		}
 
-		entry, err := s.natgwKV.Get(key)
+		entry, err := s.natgwKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.ErrorContext(ctx, "Failed to read NAT Gateway", "key", key, "err", err)
@@ -421,9 +432,9 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 			continue
 		}
 		key := utils.AccountKey(accountID, id)
-		entry, err := s.deletedNatgwKV.Get(key)
+		entry, err := s.deletedNatgwKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
 			}
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -493,9 +504,10 @@ func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp
 
 // GetNatGateway retrieves a NAT Gateway record by ID.
 func (s *NatGatewayServiceImpl) GetNatGateway(accountID, natgwID string) (*NatGatewayRecord, error) {
-	entry, err := s.natgwKV.Get(utils.AccountKey(accountID, natgwID))
+	ctx := context.Background()
+	entry, err := s.natgwKV.Get(ctx, utils.AccountKey(accountID, natgwID))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -538,7 +550,7 @@ func (s *NatGatewayServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, acco
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
 		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
 		utils.MergeTagsMut(input))
 }
@@ -549,7 +561,7 @@ func (s *NatGatewayServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, acc
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.natgwKV, accountID, "nat-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
 		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
 }

@@ -17,9 +17,11 @@ import (
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure RouteTableServiceImpl implements RouteTableService.
@@ -28,45 +30,45 @@ var _ RouteTableService = (*RouteTableServiceImpl)(nil)
 // RouteTableServiceImpl implements Route Table operations with NATS JetStream persistence.
 type RouteTableServiceImpl struct {
 	config   *config.Config
-	rtbKV    nats.KeyValue
-	vpcKV    nats.KeyValue
-	igwKV    nats.KeyValue
-	subnetKV nats.KeyValue
-	natgwKV  nats.KeyValue
+	rtbKV    jetstream.KeyValue
+	vpcKV    jetstream.KeyValue
+	igwKV    jetstream.KeyValue
+	subnetKV jetstream.KeyValue
+	natgwKV  jetstream.KeyValue
 	natsConn *nats.Conn
 }
 
 // NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence.
-func NewRouteTableServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (*RouteTableServiceImpl, error) {
-	js, err := natsConn.JetStream()
+func NewRouteTableServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*RouteTableServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	rtbKV, err := utils.GetOrCreateKVBucket(js, KVBucketRouteTables, 10)
+	rtbKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketRouteTables, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketRouteTables, err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketRouteTables, rtbKV, KVBucketRouteTablesVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketRouteTables, rtbKV, KVBucketRouteTablesVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketRouteTables, err)
 	}
 
-	vpcKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_vpc.KVBucketVPCs, 10)
+	vpcKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_vpc.KVBucketVPCs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
 
-	igwKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_igw.KVBucketIGW, 10)
+	igwKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_igw.KVBucketIGW, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get IGW KV bucket: %w", err)
 	}
 
-	subnetKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_vpc.KVBucketSubnets, 10)
+	subnetKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_vpc.KVBucketSubnets, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get subnet KV bucket: %w", err)
 	}
 
-	natgwKV, err := utils.GetOrCreateKVBucket(js, handlers_ec2_natgw.KVBucketNatGateways, 10)
+	natgwKV, err := kvutil.GetOrCreateBucket(ctx, js, handlers_ec2_natgw.KVBucketNatGateways, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get NAT Gateway KV bucket: %w", err)
 	}
@@ -86,9 +88,9 @@ func NewRouteTableServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn) (
 
 // getRouteTable retrieves a route table record from KV.
 func (s *RouteTableServiceImpl) getRouteTable(ctx context.Context, accountID, rtbID string) (*RouteTableRecord, error) {
-	entry, err := s.rtbKV.Get(utils.AccountKey(accountID, rtbID))
+	entry, err := s.rtbKV.Get(ctx, utils.AccountKey(accountID, rtbID))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
 		}
 		slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
@@ -109,7 +111,7 @@ func (s *RouteTableServiceImpl) putRouteTable(ctx context.Context, accountID str
 		slog.ErrorContext(ctx, "Failed to marshal route table record", "routeTableId", record.RouteTableId, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.rtbKV.Put(utils.AccountKey(accountID, record.RouteTableId), data); err != nil {
+	if _, err := s.rtbKV.Put(ctx, utils.AccountKey(accountID, record.RouteTableId), data); err != nil {
 		slog.ErrorContext(ctx, "Failed to write route table to KV", "routeTableId", record.RouteTableId, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -130,9 +132,9 @@ const rtbCASMaxRetries = 16
 func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, accountID, rtbID string, mutate func(*RouteTableRecord) (bool, error)) error {
 	key := utils.AccountKey(accountID, rtbID)
 	for range rtbCASMaxRetries {
-		entry, err := s.rtbKV.Get(key)
+		entry, err := s.rtbKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
 			}
 			slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
@@ -158,8 +160,8 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 			slog.ErrorContext(ctx, "Failed to marshal route table record", "routeTableId", rtbID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.rtbKV.Update(key, data, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
+		if _, err := s.rtbKV.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			slog.ErrorContext(ctx, "Failed to write route table to KV", "routeTableId", rtbID, "err", err)
@@ -172,7 +174,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 
 // getVPCCidr looks up a VPC's CIDR block from the VPC KV bucket.
 func (s *RouteTableServiceImpl) getVPCCidr(ctx context.Context, accountID, vpcID string) (string, error) {
-	entry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcID))
+	entry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
 		return "", errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 	}
@@ -219,9 +221,9 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(ctx context.Context, a
 	}
 
 	prefix := accountID + "."
-	keys, err := s.subnetKV.Keys()
+	keys, err := s.subnetKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list subnet keys: %w", err)
@@ -231,9 +233,9 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(ctx context.Context, a
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.subnetKV.Get(key)
+		entry, err := s.subnetKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("read subnet %s: %w", key, err)
@@ -362,30 +364,34 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(ctx context.Cont
 // destCidr, resolving each subnet's effective RT. Called on IGW Attach/Detach.
 // destCidr defaults to 0.0.0.0/0.
 func (s *RouteTableServiceImpl) PublishGateDecisionsForVPC(accountID, vpcID, destCidr string) {
+	s.publishGateDecisionsForVPC(context.Background(), accountID, vpcID, destCidr)
+}
+
+func (s *RouteTableServiceImpl) publishGateDecisionsForVPC(ctx context.Context, accountID, vpcID, destCidr string) {
 	if s.natsConn == nil || vpcID == "" {
 		return
 	}
 	if destCidr == "" {
 		destCidr = "0.0.0.0/0"
 	}
-	subnets, err := s.allSubnetsForVPC(accountID, vpcID)
+	subnets, err := s.allSubnetsForVPC(ctx, accountID, vpcID)
 	if err != nil {
-		slog.Warn("PublishGateDecisionsForVPC: enumerate subnets failed",
+		slog.WarnContext(ctx, "PublishGateDecisionsForVPC: enumerate subnets failed",
 			"vpcId", vpcID, "err", err)
 		return
 	}
 	for _, subnetID := range subnets {
-		s.publishSubnetEgressGateDecision(context.Background(), accountID, vpcID, subnetID, destCidr)
+		s.publishSubnetEgressGateDecision(ctx, accountID, vpcID, subnetID, destCidr)
 	}
 }
 
 // allSubnetsForVPC returns every SubnetId in vpcID by scanning the subnet KV.
 // Order is unspecified.
-func (s *RouteTableServiceImpl) allSubnetsForVPC(accountID, vpcID string) ([]string, error) {
+func (s *RouteTableServiceImpl) allSubnetsForVPC(ctx context.Context, accountID, vpcID string) ([]string, error) {
 	prefix := accountID + "."
-	keys, err := s.subnetKV.Keys()
+	keys, err := s.subnetKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list subnet keys: %w", err)
@@ -395,9 +401,9 @@ func (s *RouteTableServiceImpl) allSubnetsForVPC(accountID, vpcID string) ([]str
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.subnetKV.Get(key)
+		entry, err := s.subnetKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("read subnet %s: %w", key, err)
@@ -450,9 +456,9 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecisionForRT(ctx context
 // allRouteTablesForVPC returns all route tables belonging to a VPC.
 func (s *RouteTableServiceImpl) allRouteTablesForVPC(ctx context.Context, accountID, vpcID string) ([]RouteTableRecord, error) {
 	prefix := accountID + "."
-	keys, err := s.rtbKV.Keys()
+	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -463,9 +469,9 @@ func (s *RouteTableServiceImpl) allRouteTablesForVPC(ctx context.Context, accoun
 		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry, err := s.rtbKV.Get(key)
+		entry, err := s.rtbKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue // deleted between Keys() and Get()
 			}
 			slog.ErrorContext(ctx, "Failed to read route table during VPC scan", "key", key, "err", err)
@@ -581,7 +587,7 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2
 		}
 	}
 
-	if err := s.rtbKV.Delete(utils.AccountKey(accountID, rtbID)); err != nil {
+	if err := s.rtbKV.Delete(ctx, utils.AccountKey(accountID, rtbID)); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -619,8 +625,8 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	}
 
 	prefix := accountID + "."
-	keys, err := s.rtbKV.Keys()
-	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+	keys, err := s.rtbKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -632,9 +638,9 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 			continue
 		}
 
-		entry, err := s.rtbKV.Get(key)
+		entry, err := s.rtbKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.ErrorContext(ctx, "Failed to read route table during describe", "key", key, "err", err)
@@ -701,7 +707,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 	case input.GatewayId != nil && *input.GatewayId != "":
 		igwID := *input.GatewayId
 		// Verify IGW exists and is attached to the same VPC
-		igwEntry, err := s.igwKV.Get(utils.AccountKey(accountID, igwID))
+		igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 		}
@@ -729,7 +735,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 	case input.NatGatewayId != nil && *input.NatGatewayId != "":
 		natgwID := *input.NatGatewayId
 		// Verify NAT GW exists and belongs to the same VPC
-		natgwEntry, err := s.natgwKV.Get(utils.AccountKey(accountID, natgwID))
+		natgwEntry, err := s.natgwKV.Get(ctx, utils.AccountKey(accountID, natgwID))
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
 		}
@@ -878,7 +884,7 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 	igwID := *input.GatewayId
 
 	// Verify IGW exists and is attached to same VPC
-	igwEntry, err := s.igwKV.Get(utils.AccountKey(accountID, igwID))
+	igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 	}
@@ -921,7 +927,7 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(ctx context.Context, input *
 	}
 
 	// Verify subnet exists and belongs to the same VPC
-	subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, subnetID))
+	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 	}
@@ -1005,9 +1011,9 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 
 	// Search all route tables for this account to find the association
 	prefix := accountID + "."
-	keys, err := s.rtbKV.Keys()
+	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
@@ -1019,9 +1025,9 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 			continue
 		}
 
-		entry, err := s.rtbKV.Get(key)
+		entry, err := s.rtbKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.ErrorContext(ctx, "Failed to read route table during disassociate scan", "key", key, "err", err)
@@ -1096,9 +1102,9 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 
 	// Find and remove the association from its current route table
 	prefix := accountID + "."
-	keys, err := s.rtbKV.Keys()
+	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
@@ -1110,9 +1116,9 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 			continue
 		}
 
-		entry, err := s.rtbKV.Get(key)
+		entry, err := s.rtbKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.ErrorContext(ctx, "Failed to read route table during replace scan", "key", key, "err", err)
@@ -1157,9 +1163,13 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 				Main:          assoc.Main,
 			})
 			if err := s.putRouteTable(ctx, accountID, newRecord); err != nil {
-				// Compensate: restore association to old table to avoid data loss
+				// Restore the old association even when the request context caused the
+				// failed write, otherwise cancellation turns a rollback into a no-op.
 				oldRecord.Associations = append(oldRecord.Associations, assoc)
-				if restoreErr := s.putRouteTable(ctx, accountID, &oldRecord); restoreErr != nil {
+				restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				restoreErr := s.putRouteTable(restoreCtx, accountID, &oldRecord)
+				cancel()
+				if restoreErr != nil {
 					slog.ErrorContext(ctx, "CRITICAL: ReplaceRouteTableAssociation partial failure, association lost",
 						"associationId", assocID, "oldRouteTableId", oldRecord.RouteTableId,
 						"newRouteTableId", newRtbID, "restoreErr", restoreErr, "originalErr", err)
@@ -1342,7 +1352,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(ctx context.Contex
 	if s.natsConn == nil {
 		return
 	}
-	natgwEntry, err := s.natgwKV.Get(utils.AccountKey(accountID, natgwID))
+	natgwEntry, err := s.natgwKV.Get(ctx, utils.AccountKey(accountID, natgwID))
 	if err != nil {
 		slog.WarnContext(ctx, "NAT GW event: natgw lookup failed", "topic", "vpc.delete-nat-gateway", "natGatewayId", natgwID, "err", err)
 		return
@@ -1390,7 +1400,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventsForAssociation(ctx contex
 		if r.NatGatewayId == "" {
 			continue
 		}
-		natgwEntry, err := s.natgwKV.Get(utils.AccountKey(accountID, r.NatGatewayId))
+		natgwEntry, err := s.natgwKV.Get(ctx, utils.AccountKey(accountID, r.NatGatewayId))
 		if err != nil {
 			slog.WarnContext(ctx, "NAT GW event: natgw lookup failed", "topic", topic, "natGatewayId", r.NatGatewayId, "err", err)
 			continue
@@ -1415,7 +1425,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(ctx context.Cont
 	if s.natsConn == nil {
 		return
 	}
-	subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, subnetID))
+	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetID))
 	if err != nil {
 		slog.WarnContext(ctx, "NAT GW event: subnet lookup failed", "topic", topic, "subnetId", subnetID, "err", err)
 		return
@@ -1575,7 +1585,7 @@ func (s *RouteTableServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, acco
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.rtbKV, accountID, "rtb-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
 		func(r *RouteTableRecord) *map[string]string { return &r.Tags },
 		utils.MergeTagsMut(input))
 }
@@ -1586,7 +1596,7 @@ func (s *RouteTableServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, acc
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(s.rtbKV, accountID, "rtb-", input.Resources,
+	return utils.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
 		func(r *RouteTableRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
 }

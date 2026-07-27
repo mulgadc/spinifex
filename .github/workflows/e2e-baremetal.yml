@@ -9,6 +9,11 @@ on:
         required: false
         type: string
         default: ""
+      otel-attrs:
+        description: "OTEL_RESOURCE_ATTRIBUTES value for this run, e.g. ci.run_id=123,ci.cell=20 (caller-specific, so it's an input rather than a workflow-level default)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -16,6 +21,10 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
+  # Same central ES/APM sink as the other four e2e workflows. Bare-metal had
+  # no default here before — this cell's telemetry never reached the sink at
+  # all (not just missing ci.cell), see bm-bootstrap.sh's telemetry.env step.
+  SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
 
 jobs:
   e2e_baremetal:
@@ -28,6 +37,9 @@ jobs:
     env:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-20-${{ github.run_id }}
+      # Caller-supplied (workflow_call input); empty for a manual
+      # workflow_dispatch run, which bm-bootstrap.sh treats as "no attrs".
+      SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs }}
     steps:
       - name: Clean Workspace
         run: |

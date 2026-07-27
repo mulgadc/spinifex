@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -935,27 +936,28 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentStatus(t *testing.T) {
 // --- isEIPOwned tests ---
 
 // setupEIPTestService creates a VPC service with an EIP KV bucket wired in.
-func setupEIPTestService(t *testing.T) (*VPCServiceImpl, nats.KeyValue) {
+func setupEIPTestService(t *testing.T) (*VPCServiceImpl, jetstream.KeyValue) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "eip-test"})
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eip-test"})
 	require.NoError(t, err)
 	svc.eipKV = kv
 
 	return svc, kv
 }
 
-func putEIPRecord(t *testing.T, kv nats.KeyValue, key, eniID string) {
+func putEIPRecord(t *testing.T, kv jetstream.KeyValue, key, eniID string) {
 	t.Helper()
 	data, err := json.Marshal(struct {
 		ENIId string `json:"eni_id"`
 	}{ENIId: eniID})
 	require.NoError(t, err)
-	_, err = kv.Put(key, data)
+	_, err = kv.Put(t.Context(), key, data)
 	require.NoError(t, err)
 }
 
@@ -1004,7 +1006,7 @@ func TestIsEIPOwned_WrongAccountPrefix(t *testing.T) {
 
 func TestIsEIPOwned_MalformedJSON(t *testing.T) {
 	svc, kv := setupEIPTestService(t)
-	_, err := kv.Put(testAccountID+".eipalloc-001", []byte("not json"))
+	_, err := kv.Put(t.Context(), testAccountID+".eipalloc-001", []byte("not json"))
 	require.NoError(t, err)
 
 	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
@@ -1030,7 +1032,7 @@ func TestValidateSGAttachment_OK(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sg := createTestSG(t, svc, vpcID, "ok")
 
-	err := svc.validateSGAttachment(testAccountID, []string{sg}, vpcID)
+	err := svc.validateSGAttachment(t.Context(), testAccountID, []string{sg}, vpcID)
 	assert.NoError(t, err)
 }
 
@@ -1038,7 +1040,7 @@ func TestValidateSGAttachment_EmptyList(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	err := svc.validateSGAttachment(testAccountID, nil, vpcID)
+	err := svc.validateSGAttachment(t.Context(), testAccountID, nil, vpcID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
@@ -1050,13 +1052,13 @@ func TestValidateSGAttachment_TooMany(t *testing.T) {
 		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("sg-%d", i))
 	}
 
-	err := svc.validateSGAttachment(testAccountID, sgs, vpcID)
+	err := svc.validateSGAttachment(t.Context(), testAccountID, sgs, vpcID)
 	assert.ErrorContains(t, err, "SecurityGroupsPerInterfaceLimitExceeded")
 }
 
 func TestValidateSGAttachment_UnknownVPC(t *testing.T) {
 	svc := setupTestVPCService(t)
-	err := svc.validateSGAttachment(testAccountID, []string{"sg-aaa"}, "vpc-missing")
+	err := svc.validateSGAttachment(t.Context(), testAccountID, []string{"sg-aaa"}, "vpc-missing")
 	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
 }
 
@@ -1064,7 +1066,7 @@ func TestValidateSGAttachment_SGNotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
-	err := svc.validateSGAttachment(testAccountID, []string{"sg-doesntexist"}, vpcID)
+	err := svc.validateSGAttachment(t.Context(), testAccountID, []string{"sg-doesntexist"}, vpcID)
 	assert.ErrorContains(t, err, "InvalidGroup.NotFound")
 }
 
@@ -1074,7 +1076,7 @@ func TestValidateSGAttachment_CrossVPC(t *testing.T) {
 	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
 	sgInA := createTestSG(t, svc, vpcA, "in-a")
 
-	err := svc.validateSGAttachment(testAccountID, []string{sgInA}, vpcB)
+	err := svc.validateSGAttachment(t.Context(), testAccountID, []string{sgInA}, vpcB)
 	assert.ErrorContains(t, err, "InvalidParameterValue")
 }
 

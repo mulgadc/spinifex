@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,6 +40,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -131,7 +133,7 @@ func initAccountServiceForTest(t *testing.T, daemon *Daemon) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(nil, nc)
+	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	daemon.accountService = svc
 }
@@ -157,9 +159,7 @@ func TestHandleNATSRequest_ValidRequest(t *testing.T) {
 		return &testOutput{Greeting: "hello " + in.Name}, nil
 	}
 
-	sub, err := nc.Subscribe("test.greet", func(msg *nats.Msg) {
-		handleNATSRequest(msg, serviceFn)
-	})
+	sub, err := nc.Subscribe("test.greet", handleNATSRequest(serviceFn))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -184,9 +184,7 @@ func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
 		return &testOutput{Greeting: "hello"}, nil
 	}
 
-	sub, err := nc.Subscribe("test.malformed", func(msg *nats.Msg) {
-		handleNATSRequest(msg, serviceFn)
-	})
+	sub, err := nc.Subscribe("test.malformed", handleNATSRequest(serviceFn))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -210,9 +208,7 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 		return nil, fmt.Errorf("something went wrong")
 	}
 
-	sub, err := nc.Subscribe("test.err", func(msg *nats.Msg) {
-		handleNATSRequest(msg, serviceFn)
-	})
+	sub, err := nc.Subscribe("test.err", handleNATSRequest(serviceFn))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -228,6 +224,30 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
+func TestHandleNATSRequest_WrappedAWSServiceError(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	serviceFn := func(_ context.Context, _ *testInput, _ string) (*testOutput, error) {
+		cause := errors.New(awserrors.ErrorInsufficientAddressCapacity)
+		return nil, fmt.Errorf("allocate public address: %w", cause)
+	}
+
+	sub, err := nc.Subscribe("test.err.wrapped", handleNATSRequest(serviceFn))
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reqData, err := json.Marshal(testInput{Name: "world"})
+	require.NoError(t, err)
+	reply, err := nc.Request("test.err.wrapped", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, errResp["Code"])
+}
+
 // --- Handler wrapper tests (representative set via NATS round-trip) ---
 
 func TestHandleEC2CreateKeyPair_RoundTrip(t *testing.T) {
@@ -235,7 +255,7 @@ func TestHandleEC2CreateKeyPair_RoundTrip(t *testing.T) {
 
 	daemon := createFullTestDaemon(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateKeyPair", "spinifex-workers", daemon.handleEC2CreateKeyPair)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateKeyPair", "spinifex-workers", handleNATSRequest(daemon.keyService.CreateKeyPair))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1226,7 +1246,7 @@ func TestHandleEC2DescribeStoppedInstances_ReturnsStoppedInstances(t *testing.T)
 	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
 	require.NoError(t, err)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", daemon.handleEC2DescribeStoppedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeStoppedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1280,7 +1300,7 @@ func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", daemon.handleEC2DescribeStoppedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeStoppedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1510,7 +1530,7 @@ func TestHandleEC2ModifyInstanceAttribute_WrapperRoundTrip(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", daemon.handleEC2ModifyInstanceAttribute)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", handleNATSRequest(daemon.instanceService.ModifyInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1552,7 +1572,7 @@ func TestHandleEC2DescribeInstanceAttribute_RunningInstance_InstanceType(t *test
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1594,7 +1614,7 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedInstance_InstanceType(t *test
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1634,7 +1654,7 @@ func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1676,7 +1696,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1720,7 +1740,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t 
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1758,7 +1778,7 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_WithSecurityGroups(t *testi
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1804,7 +1824,7 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_NilInstance(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1841,7 +1861,7 @@ func TestHandleEC2DescribeInstanceAttribute_InstanceNotFound(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1864,7 +1884,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1900,7 +1920,7 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", handleNATSRequest(daemon.instanceService.DescribeInstanceAttribute))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1941,68 +1961,68 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 		{
 			name:    "DeleteKeyPair",
 			topic:   "ec2.test.DeleteKeyPair",
-			handler: daemon.handleEC2DeleteKeyPair,
+			handler: handleNATSRequest(daemon.keyService.DeleteKeyPair),
 			input:   &ec2.DeleteKeyPairInput{KeyName: aws.String("nonexistent-key")},
 			// Idempotent delete: missing key returns a success response.
 		},
 		{
 			name:         "ImportKeyPair",
 			topic:        "ec2.test.ImportKeyPair",
-			handler:      daemon.handleEC2ImportKeyPair,
+			handler:      handleNATSRequest(daemon.keyService.ImportKeyPair),
 			input:        &ec2.ImportKeyPairInput{KeyName: aws.String("imported-key"), PublicKeyMaterial: []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test")},
 			expectedCode: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
 			name:         "CreateVolume",
 			topic:        "ec2.test.CreateVolume",
-			handler:      daemon.handleEC2CreateVolume,
+			handler:      handleNATSRequest(daemon.volumeService.CreateVolume),
 			input:        &ec2.CreateVolumeInput{AvailabilityZone: aws.String("us-east-1a"), Size: aws.Int64(10)},
 			expectedCode: awserrors.ErrorInvalidAvailabilityZone,
 		},
 		{
 			name:    "DescribeVolumeStatus",
 			topic:   "ec2.test.DescribeVolumeStatus",
-			handler: daemon.handleEC2DescribeVolumeStatus,
+			handler: handleNATSRequest(daemon.volumeService.DescribeVolumeStatus),
 			input:   &ec2.DescribeVolumeStatusInput{},
 		},
 		{
 			name:         "DeleteVolume",
 			topic:        "ec2.test.DeleteVolume",
-			handler:      daemon.handleEC2DeleteVolume,
+			handler:      handleNATSRequest(daemon.volumeService.DeleteVolume),
 			input:        &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidVolumeNotFound,
 		},
 		{
 			name:         "CreateSnapshot",
 			topic:        "ec2.test.CreateSnapshot",
-			handler:      daemon.handleEC2CreateSnapshot,
+			handler:      handleNATSRequest(daemon.snapshotService.CreateSnapshot),
 			input:        &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidVolumeNotFound,
 		},
 		{
 			name:    "DescribeSnapshots",
 			topic:   "ec2.test.DescribeSnapshots",
-			handler: daemon.handleEC2DescribeSnapshots,
+			handler: handleNATSRequest(daemon.snapshotService.DescribeSnapshots),
 			input:   &ec2.DescribeSnapshotsInput{},
 		},
 		{
 			name:         "DeleteSnapshot",
 			topic:        "ec2.test.DeleteSnapshot",
-			handler:      daemon.handleEC2DeleteSnapshot,
+			handler:      handleNATSRequest(daemon.snapshotService.DeleteSnapshot),
 			input:        &ec2.DeleteSnapshotInput{SnapshotId: aws.String("snap-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidSnapshotNotFound,
 		},
 		{
 			name:         "CopySnapshot",
 			topic:        "ec2.test.CopySnapshot",
-			handler:      daemon.handleEC2CopySnapshot,
+			handler:      handleNATSRequest(daemon.snapshotService.CopySnapshot),
 			input:        &ec2.CopySnapshotInput{SourceRegion: aws.String("us-east-1"), SourceSnapshotId: aws.String("snap-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidSnapshotNotFound,
 		},
 		{
 			name:    "DeleteTags",
 			topic:   "ec2.test.DeleteTags",
-			handler: daemon.handleEC2DeleteTags,
+			handler: handleNATSRequest(daemon.deleteTags),
 			// Instance IDs route to the owning daemon; with no owner
 			// subscribed the mutation is rejected rather than written blind.
 			input:        &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
@@ -2011,7 +2031,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 		{
 			name:    "DescribeTags",
 			topic:   "ec2.test.DescribeTags",
-			handler: daemon.handleEC2DescribeTags,
+			handler: handleNATSRequest(daemon.tagsService.DescribeTags),
 			input:   &ec2.DescribeTagsInput{},
 		},
 	}
@@ -2276,11 +2296,11 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(daemon.config, nc)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(daemon.config, nc)
+	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
 
@@ -2301,26 +2321,26 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 		{
 			name:    "CreateVpc",
 			topic:   "ec2.test.CreateVpc",
-			handler: daemon.handleEC2CreateVpc,
+			handler: handleNATSRequest(daemon.vpcService.CreateVpc),
 			input:   &ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")},
 		},
 		{
 			name:         "DeleteVpc",
 			topic:        "ec2.test.DeleteVpc",
-			handler:      daemon.handleEC2DeleteVpc,
+			handler:      handleNATSRequest(daemon.vpcService.DeleteVpc),
 			input:        &ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
 			name:    "DescribeVpcs",
 			topic:   "ec2.test.DescribeVpcs",
-			handler: daemon.handleEC2DescribeVpcs,
+			handler: handleNATSRequest(daemon.vpcService.DescribeVpcs),
 			input:   &ec2.DescribeVpcsInput{},
 		},
 		{
 			name:    "CreateSubnet",
 			topic:   "ec2.test.CreateSubnet",
-			handler: daemon.handleEC2CreateSubnet,
+			handler: handleNATSRequest(daemon.vpcService.CreateSubnet),
 			input: &ec2.CreateSubnetInput{
 				VpcId:     aws.String("vpc-nonexistent"),
 				CidrBlock: aws.String("10.0.1.0/24"),
@@ -2330,34 +2350,34 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 		{
 			name:         "DeleteSubnet",
 			topic:        "ec2.test.DeleteSubnet",
-			handler:      daemon.handleEC2DeleteSubnet,
+			handler:      handleNATSRequest(daemon.vpcService.DeleteSubnet),
 			input:        &ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
 			name:    "DescribeSubnets",
 			topic:   "ec2.test.DescribeSubnets",
-			handler: daemon.handleEC2DescribeSubnets,
+			handler: handleNATSRequest(daemon.vpcService.DescribeSubnets),
 			input:   &ec2.DescribeSubnetsInput{},
 		},
 		{
 			name:         "CreateNetworkInterface",
 			topic:        "ec2.test.CreateNetworkInterface",
-			handler:      daemon.handleEC2CreateNetworkInterface,
+			handler:      handleNATSRequest(daemon.vpcService.CreateNetworkInterface),
 			input:        &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String("subnet-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
 			name:         "DeleteNetworkInterface",
 			topic:        "ec2.test.DeleteNetworkInterface",
-			handler:      daemon.handleEC2DeleteNetworkInterface,
+			handler:      handleNATSRequest(daemon.vpcService.DeleteNetworkInterface),
 			input:        &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidNetworkInterfaceIDNotFound,
 		},
 		{
 			name:    "DescribeNetworkInterfaces",
 			topic:   "ec2.test.DescribeNetworkInterfaces",
-			handler: daemon.handleEC2DescribeNetworkInterfaces,
+			handler: handleNATSRequest(daemon.vpcService.DescribeNetworkInterfaces),
 			input:   &ec2.DescribeNetworkInterfacesInput{},
 		},
 	}
@@ -2394,26 +2414,26 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 		{
 			name:    "CreateInternetGateway",
 			topic:   "ec2.test.CreateInternetGateway",
-			handler: daemon.handleEC2CreateInternetGateway,
+			handler: handleNATSRequest(daemon.igwService.CreateInternetGateway),
 			input:   &ec2.CreateInternetGatewayInput{},
 		},
 		{
 			name:         "DeleteInternetGateway",
 			topic:        "ec2.test.DeleteInternetGateway",
-			handler:      daemon.handleEC2DeleteInternetGateway,
+			handler:      handleNATSRequest(daemon.igwService.DeleteInternetGateway),
 			input:        &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String("igw-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidInternetGatewayIDNotFound,
 		},
 		{
 			name:    "DescribeInternetGateways",
 			topic:   "ec2.test.DescribeInternetGateways",
-			handler: daemon.handleEC2DescribeInternetGateways,
+			handler: handleNATSRequest(daemon.igwService.DescribeInternetGateways),
 			input:   &ec2.DescribeInternetGatewaysInput{},
 		},
 		{
 			name:    "AttachInternetGateway",
 			topic:   "ec2.test.AttachInternetGateway",
-			handler: daemon.handleEC2AttachInternetGateway,
+			handler: handleNATSRequest(daemon.igwService.AttachInternetGateway),
 			input: &ec2.AttachInternetGatewayInput{
 				InternetGatewayId: aws.String("igw-nonexistent"),
 				VpcId:             aws.String("vpc-nonexistent"),
@@ -2423,7 +2443,7 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 		{
 			name:    "DetachInternetGateway",
 			topic:   "ec2.test.DetachInternetGateway",
-			handler: daemon.handleEC2DetachInternetGateway,
+			handler: handleNATSRequest(daemon.igwService.DetachInternetGateway),
 			input: &ec2.DetachInternetGatewayInput{
 				InternetGatewayId: aws.String("igw-nonexistent"),
 				VpcId:             aws.String("vpc-nonexistent"),
@@ -2453,7 +2473,7 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 func TestHandleEC2CreateVpc_SuccessPath(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", daemon.handleEC2CreateVpc)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateVpc))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -2474,11 +2494,11 @@ func TestHandleEC2CreateVpc_SuccessPath(t *testing.T) {
 func TestHandleEC2CreateAndDescribeVpc_RoundTrip(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	createSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", daemon.handleEC2CreateVpc)
+	createSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateVpc))
 	require.NoError(t, err)
 	defer createSub.Unsubscribe()
 
-	describeSub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeVpcs", "spinifex-workers", daemon.handleEC2DescribeVpcs)
+	describeSub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeVpcs", "spinifex-workers", handleNATSRequest(daemon.vpcService.DescribeVpcs))
 	require.NoError(t, err)
 	defer describeSub.Unsubscribe()
 
@@ -2514,7 +2534,7 @@ func TestHandleEC2CreateAndDescribeVpc_RoundTrip(t *testing.T) {
 func TestHandleEC2CreateInternetGateway_SuccessPath(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateInternetGateway", "spinifex-workers", daemon.handleEC2CreateInternetGateway)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateInternetGateway", "spinifex-workers", handleNATSRequest(daemon.igwService.CreateInternetGateway))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -2534,11 +2554,11 @@ func TestHandleEC2CreateInternetGateway_SuccessPath(t *testing.T) {
 func TestHandleEC2CreateSubnet_SuccessPath(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", daemon.handleEC2CreateVpc)
+	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateVpc))
 	require.NoError(t, err)
 	defer createVpcSub.Unsubscribe()
 
-	createSubnetSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateSubnet", "spinifex-workers", daemon.handleEC2CreateSubnet)
+	createSubnetSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateSubnet", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateSubnet))
 	require.NoError(t, err)
 	defer createSubnetSub.Unsubscribe()
 
@@ -2592,7 +2612,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(daemon.config, nc)
+	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.eigwService = eigwSvc
 
@@ -2607,21 +2627,21 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 		{
 			name:         "CreateEgressOnlyInternetGateway",
 			topic:        "ec2.test.CreateEgressOnlyIGW",
-			handler:      daemon.handleEC2CreateEgressOnlyInternetGateway,
+			handler:      handleNATSRequest(daemon.eigwService.CreateEgressOnlyInternetGateway),
 			input:        &ec2.CreateEgressOnlyInternetGatewayInput{VpcId: aws.String("vpc-123")},
 			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
 			name:         "DeleteEgressOnlyInternetGateway",
 			topic:        "ec2.test.DeleteEgressOnlyIGW",
-			handler:      daemon.handleEC2DeleteEgressOnlyInternetGateway,
+			handler:      handleNATSRequest(daemon.eigwService.DeleteEgressOnlyInternetGateway),
 			input:        &ec2.DeleteEgressOnlyInternetGatewayInput{EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound,
 		},
 		{
 			name:    "DescribeEgressOnlyInternetGateways",
 			topic:   "ec2.test.DescribeEgressOnlyIGWs",
-			handler: daemon.handleEC2DescribeEgressOnlyInternetGateways,
+			handler: handleNATSRequest(daemon.eigwService.DescribeEgressOnlyInternetGateways),
 			input:   &ec2.DescribeEgressOnlyInternetGatewaysInput{},
 		},
 	}
@@ -2704,7 +2724,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 func TestHandleEC2DescribeInstanceTypes_CapacityFilter(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes", "spinifex-workers", daemon.handleEC2DescribeInstanceTypes)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeInstanceTypes))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -2731,7 +2751,7 @@ func TestHandleEC2DescribeInstanceTypes_CapacityFilter(t *testing.T) {
 func TestHandleEC2DescribeInstanceTypes_NoFilter(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes.nofilter", "spinifex-workers", daemon.handleEC2DescribeInstanceTypes)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes.nofilter", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeInstanceTypes))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3321,7 +3341,7 @@ func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
 func TestHandleEC2DescribeInstances_MalformedInstanceID(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances.malformed", daemon.handleEC2DescribeInstances)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances.malformed", handleNATSRequest(daemon.instanceService.DescribeInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3353,7 +3373,7 @@ func TestHandleEC2DescribeInstanceStatus_RoundTrip(t *testing.T) {
 	daemon.vmMgr.Insert(runningVM)
 	t.Cleanup(func() { daemon.vmMgr.Delete(runningVM.ID) })
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.rt", daemon.handleEC2DescribeInstanceStatus)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.rt", handleNATSRequest(daemon.instanceService.DescribeInstanceStatus))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3379,7 +3399,7 @@ func TestHandleEC2DescribeInstanceStatus_RoundTrip(t *testing.T) {
 func TestHandleEC2DescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.malformed", daemon.handleEC2DescribeInstanceStatus)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.malformed", handleNATSRequest(daemon.instanceService.DescribeInstanceStatus))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3414,7 +3434,7 @@ func TestHandleEC2DescribeTerminatedInstances_ReturnsTerminatedInstances(t *test
 	err := daemon.jsManager.WriteTerminatedInstance(terminatedVM.ID, terminatedVM)
 	require.NoError(t, err)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", daemon.handleEC2DescribeTerminatedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeTerminatedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3463,7 +3483,7 @@ func TestHandleEC2DescribeTerminatedInstances_WithFilter(t *testing.T) {
 		require.NoError(t, daemon.jsManager.WriteTerminatedInstance(v.ID, v))
 	}
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", daemon.handleEC2DescribeTerminatedInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeTerminatedInstances", "spinifex-workers", handleNATSRequest(daemon.instanceService.DescribeTerminatedInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3499,7 +3519,7 @@ func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
 	}
 	require.NoError(t, daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM))
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", handleNATSRequest(daemon.instanceService.TerminateStoppedInstance))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -3544,14 +3564,14 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []external.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(nc, ipam, daemon.vpcService)
+	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 
@@ -3566,34 +3586,34 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 		{
 			name:    "AllocateAddress",
 			topic:   "ec2.test.AllocateAddress",
-			handler: daemon.handleEC2AllocateAddress,
+			handler: handleNATSRequest(daemon.eipService.AllocateAddress),
 			input:   &ec2.AllocateAddressInput{},
 		},
 		{
 			name:         "ReleaseAddress",
 			topic:        "ec2.test.ReleaseAddress",
-			handler:      daemon.handleEC2ReleaseAddress,
+			handler:      handleNATSRequest(daemon.eipService.ReleaseAddress),
 			input:        &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidAllocationIDNotFound,
 		},
 		{
 			name:         "AssociateAddress",
 			topic:        "ec2.test.AssociateAddress",
-			handler:      daemon.handleEC2AssociateAddress,
+			handler:      handleNATSRequest(daemon.eipService.AssociateAddress),
 			input:        &ec2.AssociateAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidAllocationIDNotFound,
 		},
 		{
 			name:         "DisassociateAddress",
 			topic:        "ec2.test.DisassociateAddress",
-			handler:      daemon.handleEC2DisassociateAddress,
+			handler:      handleNATSRequest(daemon.eipService.DisassociateAddress),
 			input:        &ec2.DisassociateAddressInput{AssociationId: aws.String("eipassoc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidAssociationIDNotFound,
 		},
 		{
 			name:    "DescribeAddresses",
 			topic:   "ec2.test.DescribeAddresses",
-			handler: daemon.handleEC2DescribeAddresses,
+			handler: handleNATSRequest(daemon.eipService.DescribeAddresses),
 			input:   &ec2.DescribeAddressesInput{},
 		},
 	}
@@ -3622,7 +3642,7 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	// Create a VPC first so SG operations have a valid target
-	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", daemon.handleEC2CreateVpc)
+	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateVpc))
 	require.NoError(t, err)
 	defer createVpcSub.Unsubscribe()
 
@@ -3646,7 +3666,7 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 		{
 			name:    "CreateSecurityGroup",
 			topic:   "ec2.test.CreateSecurityGroup",
-			handler: daemon.handleEC2CreateSecurityGroup,
+			handler: handleNATSRequest(daemon.vpcService.CreateSecurityGroup),
 			input: &ec2.CreateSecurityGroupInput{
 				GroupName:   aws.String("test-sg"),
 				Description: aws.String("test security group"),
@@ -3656,41 +3676,41 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 		{
 			name:    "DescribeSecurityGroups",
 			topic:   "ec2.test.DescribeSecurityGroups",
-			handler: daemon.handleEC2DescribeSecurityGroups,
+			handler: handleNATSRequest(daemon.vpcService.DescribeSecurityGroups),
 			input:   &ec2.DescribeSecurityGroupsInput{},
 		},
 		{
 			name:         "AuthorizeSecurityGroupIngress",
 			topic:        "ec2.test.AuthorizeSecurityGroupIngress",
-			handler:      daemon.handleEC2AuthorizeSecurityGroupIngress,
+			handler:      handleNATSRequest(daemon.vpcService.AuthorizeSecurityGroupIngress),
 			input:        &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
 			name:         "AuthorizeSecurityGroupEgress",
 			topic:        "ec2.test.AuthorizeSecurityGroupEgress",
-			handler:      daemon.handleEC2AuthorizeSecurityGroupEgress,
+			handler:      handleNATSRequest(daemon.vpcService.AuthorizeSecurityGroupEgress),
 			input:        &ec2.AuthorizeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
 			name:         "RevokeSecurityGroupIngress",
 			topic:        "ec2.test.RevokeSecurityGroupIngress",
-			handler:      daemon.handleEC2RevokeSecurityGroupIngress,
+			handler:      handleNATSRequest(daemon.vpcService.RevokeSecurityGroupIngress),
 			input:        &ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
 			name:         "RevokeSecurityGroupEgress",
 			topic:        "ec2.test.RevokeSecurityGroupEgress",
-			handler:      daemon.handleEC2RevokeSecurityGroupEgress,
+			handler:      handleNATSRequest(daemon.vpcService.RevokeSecurityGroupEgress),
 			input:        &ec2.RevokeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
 			name:         "DeleteSecurityGroup",
 			topic:        "ec2.test.DeleteSecurityGroup",
-			handler:      daemon.handleEC2DeleteSecurityGroup,
+			handler:      handleNATSRequest(daemon.vpcService.DeleteSecurityGroup),
 			input:        &ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
@@ -3737,7 +3757,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(daemon.config, nc)
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
@@ -3752,27 +3772,27 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		{
 			name:         "CreateRouteTable",
 			topic:        "ec2.test.CreateRouteTable",
-			handler:      daemon.handleEC2CreateRouteTable,
+			handler:      handleNATSRequest(daemon.routeTableService.CreateRouteTable),
 			input:        &ec2.CreateRouteTableInput{VpcId: aws.String("vpc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
 			name:         "DeleteRouteTable",
 			topic:        "ec2.test.DeleteRouteTable",
-			handler:      daemon.handleEC2DeleteRouteTable,
+			handler:      handleNATSRequest(daemon.routeTableService.DeleteRouteTable),
 			input:        &ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
 			name:    "DescribeRouteTables",
 			topic:   "ec2.test.DescribeRouteTables",
-			handler: daemon.handleEC2DescribeRouteTables,
+			handler: handleNATSRequest(daemon.routeTableService.DescribeRouteTables),
 			input:   &ec2.DescribeRouteTablesInput{},
 		},
 		{
 			name:    "CreateRoute",
 			topic:   "ec2.test.CreateRoute",
-			handler: daemon.handleEC2CreateRoute,
+			handler: handleNATSRequest(daemon.routeTableService.CreateRoute),
 			input: &ec2.CreateRouteInput{
 				RouteTableId:         aws.String("rtb-nonexistent"),
 				DestinationCidrBlock: aws.String("0.0.0.0/0"),
@@ -3783,7 +3803,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		{
 			name:    "DeleteRoute",
 			topic:   "ec2.test.DeleteRoute",
-			handler: daemon.handleEC2DeleteRoute,
+			handler: handleNATSRequest(daemon.routeTableService.DeleteRoute),
 			input: &ec2.DeleteRouteInput{
 				RouteTableId:         aws.String("rtb-nonexistent"),
 				DestinationCidrBlock: aws.String("0.0.0.0/0"),
@@ -3793,7 +3813,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		{
 			name:    "ReplaceRoute",
 			topic:   "ec2.test.ReplaceRoute",
-			handler: daemon.handleEC2ReplaceRoute,
+			handler: handleNATSRequest(daemon.routeTableService.ReplaceRoute),
 			input: &ec2.ReplaceRouteInput{
 				RouteTableId:         aws.String("rtb-nonexistent"),
 				DestinationCidrBlock: aws.String("0.0.0.0/0"),
@@ -3804,7 +3824,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		{
 			name:    "AssociateRouteTable",
 			topic:   "ec2.test.AssociateRouteTable",
-			handler: daemon.handleEC2AssociateRouteTable,
+			handler: handleNATSRequest(daemon.routeTableService.AssociateRouteTable),
 			input: &ec2.AssociateRouteTableInput{
 				RouteTableId: aws.String("rtb-nonexistent"),
 				SubnetId:     aws.String("subnet-nonexistent"),
@@ -3814,14 +3834,14 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		{
 			name:         "DisassociateRouteTable",
 			topic:        "ec2.test.DisassociateRouteTable",
-			handler:      daemon.handleEC2DisassociateRouteTable,
+			handler:      handleNATSRequest(daemon.routeTableService.DisassociateRouteTable),
 			input:        &ec2.DisassociateRouteTableInput{AssociationId: aws.String("rtbassoc-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidAssociationIDNotFound,
 		},
 		{
 			name:    "ReplaceRouteTableAssociation",
 			topic:   "ec2.test.ReplaceRouteTableAssociation",
-			handler: daemon.handleEC2ReplaceRouteTableAssociation,
+			handler: handleNATSRequest(daemon.routeTableService.ReplaceRouteTableAssociation),
 			input: &ec2.ReplaceRouteTableAssociationInput{
 				AssociationId: aws.String("rtbassoc-nonexistent"),
 				RouteTableId:  aws.String("rtb-nonexistent"),
@@ -3870,7 +3890,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
 
-	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(daemon.config, nc)
+	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.placementGroupService = pgSvc
 
@@ -3885,7 +3905,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "CreatePlacementGroup",
 			topic:   "ec2.test.CreatePlacementGroup",
-			handler: daemon.handleEC2CreatePlacementGroup,
+			handler: handleNATSRequest(daemon.placementGroupService.CreatePlacementGroup),
 			input: &ec2.CreatePlacementGroupInput{
 				GroupName: aws.String("test-pg"),
 				Strategy:  aws.String("spread"),
@@ -3894,20 +3914,20 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "DescribePlacementGroups",
 			topic:   "ec2.test.DescribePlacementGroups",
-			handler: daemon.handleEC2DescribePlacementGroups,
+			handler: handleNATSRequest(daemon.placementGroupService.DescribePlacementGroups),
 			input:   &ec2.DescribePlacementGroupsInput{},
 		},
 		{
 			name:         "DeletePlacementGroup",
 			topic:        "ec2.test.DeletePlacementGroup",
-			handler:      daemon.handleEC2DeletePlacementGroup,
+			handler:      handleNATSRequest(daemon.placementGroupService.DeletePlacementGroup),
 			input:        &ec2.DeletePlacementGroupInput{GroupName: aws.String("pg-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
 			name:    "ReserveSpreadNodes",
 			topic:   "ec2.test.ReserveSpreadNodes",
-			handler: daemon.handleEC2ReserveSpreadNodes,
+			handler: handleNATSRequest(daemon.placementGroupService.ReserveSpreadNodes),
 			input: &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
@@ -3919,7 +3939,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "FinalizeSpreadInstances",
 			topic:   "ec2.test.FinalizeSpreadInstances",
-			handler: daemon.handleEC2FinalizeSpreadInstances,
+			handler: handleNATSRequest(daemon.placementGroupService.FinalizeSpreadInstances),
 			input: &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
@@ -3929,7 +3949,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "ReleaseSpreadNodes",
 			topic:   "ec2.test.ReleaseSpreadNodes",
-			handler: daemon.handleEC2ReleaseSpreadNodes,
+			handler: handleNATSRequest(daemon.placementGroupService.ReleaseSpreadNodes),
 			input: &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 				GroupName: "pg-nonexistent",
 				Nodes:     []string{"node-1"},
@@ -3939,7 +3959,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "RemoveInstanceFromPlacementGroup",
 			topic:   "ec2.test.RemoveInstanceFromPlacementGroup",
-			handler: daemon.handleEC2RemoveInstanceFromPlacementGroup,
+			handler: handleNATSRequest(daemon.placementGroupService.RemoveInstance),
 			input: &handlers_ec2_placementgroup.RemoveInstanceInput{
 				GroupName:  "pg-nonexistent",
 				NodeName:   "node-1",
@@ -3952,7 +3972,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "ReserveClusterNode",
 			topic:   "ec2.test.ReserveClusterNode",
-			handler: daemon.handleEC2ReserveClusterNode,
+			handler: handleNATSRequest(daemon.placementGroupService.ReserveClusterNode),
 			input: &handlers_ec2_placementgroup.ReserveClusterNodeInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
@@ -3962,7 +3982,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		{
 			name:    "FinalizeClusterInstances",
 			topic:   "ec2.test.FinalizeClusterInstances",
-			handler: daemon.handleEC2FinalizeClusterInstances,
+			handler: handleNATSRequest(daemon.placementGroupService.FinalizeClusterInstances),
 			input: &handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
@@ -3995,7 +4015,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	// Create a VPC first
-	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", daemon.handleEC2CreateVpc)
+	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", handleNATSRequest(daemon.vpcService.CreateVpc))
 	require.NoError(t, err)
 	defer createVpcSub.Unsubscribe()
 
@@ -4019,7 +4039,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 		{
 			name:         "ModifySubnetAttribute",
 			topic:        "ec2.test.ModifySubnetAttribute",
-			handler:      daemon.handleEC2ModifySubnetAttribute,
+			handler:      handleNATSRequest(daemon.vpcService.ModifySubnetAttribute),
 			input:        &ec2.ModifySubnetAttributeInput{SubnetId: aws.String("subnet-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
@@ -4029,14 +4049,14 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 			// the validation contract.
 			name:         "ModifyVpcAttribute",
 			topic:        "ec2.test.ModifyVpcAttribute",
-			handler:      daemon.handleEC2ModifyVpcAttribute,
+			handler:      handleNATSRequest(daemon.vpcService.ModifyVpcAttribute),
 			input:        &ec2.ModifyVpcAttributeInput{VpcId: aws.String(vpcID)},
 			expectedCode: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "DescribeVpcAttribute",
 			topic:   "ec2.test.DescribeVpcAttribute",
-			handler: daemon.handleEC2DescribeVpcAttribute,
+			handler: handleNATSRequest(daemon.vpcService.DescribeVpcAttribute),
 			input: &ec2.DescribeVpcAttributeInput{
 				VpcId:     aws.String(vpcID),
 				Attribute: aws.String("enableDnsSupport"),
@@ -4047,7 +4067,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 			// "exactly one attribute" guard before the ENI lookup runs.
 			name:         "ModifyNetworkInterfaceAttribute",
 			topic:        "ec2.test.ModifyNetworkInterfaceAttribute",
-			handler:      daemon.handleEC2ModifyNetworkInterfaceAttribute,
+			handler:      handleNATSRequest(daemon.vpcService.ModifyNetworkInterfaceAttribute),
 			input:        &ec2.ModifyNetworkInterfaceAttributeInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
 			expectedCode: awserrors.ErrorInvalidParameterValue,
 		},

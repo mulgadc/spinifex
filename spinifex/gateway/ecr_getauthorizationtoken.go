@@ -28,11 +28,23 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	accessKey, _ := ctx.Value(ctxAccessKey).(string)
+	identity, _ := ctx.Value(ctxIdentity).(string)
 	principalType, _ := ctx.Value(ctxPrincipalType).(string)
+	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
+
+	// The minted token names the exact IAM/STS record every /v2/* request will
+	// later rehydrate against, so its subject must be the same canonical ARN
+	// buildCallerARN produces everywhere else in the gateway (STS included) —
+	// not a best-effort approximation that could omit an IAM path.
+	callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+	if err != nil {
+		slog.Error("GetAuthorizationToken: cannot build canonical caller ARN", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
 
 	token, expiresAt, err := gw.ECRTokenIssuer.Mint(gateway_ecrauth.Principal{
 		AccountID:   accountID,
-		ARN:         eksCallerPrincipalARN(r),
+		ARN:         callerARN,
 		Type:        principalType,
 		AccessKeyID: accessKey,
 	})

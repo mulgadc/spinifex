@@ -120,8 +120,13 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
-# Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
-# Use this before committing to catch CI failures locally.
+# Preflight — the pre-commit gate: manifest checks, lint, vuln, and the unit,
+# race and e2e-harness tiers.
+#
+# The integration tier is deliberately NOT here. CI runs it as its own parallel
+# job, so it is still gated before merge, and keeping it out leaves preflight
+# the fast common-path check — run `make test-integration` directly when a
+# change touches the gateway router or the NATS subjects it drives.
 preflight:
 	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
@@ -132,6 +137,18 @@ preflight:
 test-harness:
 	@echo -e "\n....Running e2e harness unit tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
+
+# In-process integration tier: the real gateway router against embedded NATS
+# JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
+# `integration` so it's skipped by the default `go test ./spinifex/...` and by
+# `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
+# Spinifex daemons, so the whole package runs in well under a minute. It gets
+# its own PR-blocking CI job rather than the self-hosted, push-triggered live
+# e2e tiers, so a regression here is caught before it can be merged, not just
+# after.
+test-integration:
+	@echo -e "\n....Running in-process integration tests...."
+	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
 # of services/suites/fixtures + on-disk path existence. Subject content
@@ -254,6 +271,13 @@ govulncheck:
 	$(_Q)go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
+# NilAway — advisory nil-panic analysis. Not in preflight: it has a known
+# false-positive rate, so findings are triaged by hand rather than gating commits.
+nilaway:
+	@echo "Running nilaway..."
+	$(_Q)go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
+	@echo "  nilaway ok"
+
 # Build release tarballs — use distro-ARCH for single arch, distro for both
 distro: distro-amd64 distro-arm64
 	@echo ""
@@ -297,8 +321,8 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
-	lint fix govulncheck \
+	lint fix govulncheck nilaway \
 	distro distro-amd64 distro-arm64 distro-clean

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,21 @@ func unitFiles(t *testing.T, dir string) []string {
 func hasDirective(unit, line string) bool {
 	for l := range strings.SplitSeq(unit, "\n") {
 		if strings.TrimSpace(l) == line {
+			return true
+		}
+	}
+	return false
+}
+
+// directiveContains reports whether an active list directive contains a value.
+func directiveContains(unit, key, value string) bool {
+	prefix := key + "="
+	for line := range strings.SplitSeq(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if slices.Contains(strings.Fields(strings.TrimPrefix(line, prefix)), value) {
 			return true
 		}
 	}
@@ -116,6 +132,23 @@ func TestRG9_TierConfinement(t *testing.T) {
 		}
 	}
 
+	// Northstar: locked-down baseline plus exactly CAP_NET_BIND_SERVICE so the
+	// unprivileged user binds :53 without root. No broader; ambient caps stay
+	// compatible with NoNewPrivileges=yes.
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"NoNewPrivileges=yes",
+		"ProtectSystem=strict",
+		"MemoryDenyWriteExecute=yes",
+		"SystemCallArchitectures=native",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("RG-9: northstar must carry %q (exactly CAP_NET_BIND_SERVICE for :53)", want)
+		}
+	}
+
 	// Network tier (vpcd): per-tap IMDS dropped the in-process setns, so CAP_SYS_ADMIN
 	// is gone and the cap set is exactly the network minimum. NoNewPrivileges stays off
 	// (RG-10: vpcd shells out to sudo for ip/ovs-vsctl/dhcpcd, like the daemon).
@@ -133,6 +166,28 @@ func TestRG9_TierConfinement(t *testing.T) {
 	}
 	if !hasDirective(vpcd, "SystemCallArchitectures=native") {
 		t.Error("RG-9: vpcd must keep SystemCallArchitectures=native")
+	}
+}
+
+// TestOptionalNorthstarActivation keeps the static target and restart wiring
+// that surrounds the command's configuration-aware activation behavior.
+func TestOptionalNorthstarActivation(t *testing.T) {
+	dir := unitsDir(t)
+	target := readUnit(t, dir, "spinifex.target")
+	if !directiveContains(target, "Wants", "spinifex-northstar.service") {
+		t.Error("spinifex.target must start Northstar when node configuration enables it")
+	}
+
+	northstar := readUnit(t, dir, "spinifex-northstar.service")
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/spx service northstar start",
+		"Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml",
+		"Restart=on-failure",
+		"RestartSec=5",
+	} {
+		if !hasDirective(northstar, want) {
+			t.Errorf("configured Northstar activation must retain %q", want)
+		}
 	}
 }
 
@@ -203,6 +258,40 @@ func TestRG11_LeanUnits(t *testing.T) {
 		}
 		if comments > maxComments {
 			t.Errorf("RG-11: %s has %d comment lines (budget %d) — strip the rationale novel, keep settings + a terse # RG-n tag", name, comments, maxComments)
+		}
+	}
+}
+
+// TestApplicationUnitsExportTelemetry asserts every unit that runs an spx
+// application service sources the telemetry drop-in. That file carries
+// OTEL_EXPORTER_OTLP_ENDPOINT, MULGA_ENV and MULGA_SOURCE, so a unit missing it
+// starts a service whose instruments record into a no-op provider — the process
+// runs healthy and simply reports nothing, which is invisible until someone
+// notices an empty dashboard.
+//
+// Units that host an agent or a one-shot rather than an spx service are exempt:
+// they either export on their own (the collectors) or have nothing to export.
+func TestApplicationUnitsExportTelemetry(t *testing.T) {
+	dir := unitsDir(t)
+	const telemetry = "EnvironmentFile=-/etc/spinifex/telemetry.env"
+
+	exempt := []string{
+		"spinifex-nats-watchdog.service", // periodic health probe, no OTel SDK
+		"spinifex-shutdown.service",      // one-shot drain on halt
+		"regenerate-ssh-host-keys.service",
+	}
+
+	for _, name := range unitFiles(t, dir) {
+		if !strings.HasSuffix(name, ".service") || slices.Contains(exempt, name) {
+			continue
+		}
+		u := readUnit(t, dir, name)
+		// Only units that actually launch an spx service can emit telemetry.
+		if !strings.Contains(u, "/usr/local/bin/spx service ") {
+			continue
+		}
+		if !hasDirective(u, telemetry) {
+			t.Errorf("%s runs an spx service but does not source %s; its telemetry would be silently dropped", name, telemetry)
 		}
 	}
 }

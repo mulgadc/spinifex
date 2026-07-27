@@ -208,13 +208,13 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 	_, err = svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
 
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	_, err = getJSON(kv, InstanceKey("web", "i-1"), &rec)
+	_, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())

@@ -118,7 +118,7 @@ func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260709T010000Z.snap")
 
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	out, err := f.svc.RestoreSnapshot(context.Background(), &RestoreSnapshotInput{ClusterName: "alpha"}, testAccountID)
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
 	}
 
 	// Cluster meta reflects the replacement.
-	got, err := GetClusterMeta(f.kv, "alpha")
+	got, err := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, out.NewInstanceID, got.ControlPlaneInstanceID)
 	require.Len(t, got.ControlPlaneNodes, 1)
@@ -166,7 +166,7 @@ func TestRestoreSnapshot_ExplicitSnapshotUsedVerbatim(t *testing.T) {
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260710T010000Z.snap")
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-daily-20260601T000000Z.snap")
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	out, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -190,7 +190,7 @@ func TestRestoreSnapshot_ExplicitSnapshotMissingHardFailsBeforeLaunch(t *testing
 	// Only an unrelated snapshot exists — the requested key is absent.
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260709T010000Z.snap")
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -204,7 +204,7 @@ func TestRestoreSnapshot_ExplicitSnapshotWithNoStoreHardFails(t *testing.T) {
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	f.svc.deps.SnapshotStore = nil
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -217,7 +217,7 @@ func TestRestoreSnapshot_HARejected(t *testing.T) {
 	meta := restoreSnapshotFixtureMeta("alpha")
 	meta.ControlPlaneSpreadGroup = "eks-cp-111122223333-alpha"
 	meta.ControlPlaneNodes = append(meta.ControlPlaneNodes, ControlPlaneNode{NodeID: "node-2", InstanceID: "i-cp2"})
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -230,7 +230,7 @@ func TestRestoreSnapshot_NoTemplateRejected(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	meta := restoreSnapshotFixtureMeta("alpha")
 	meta.ControlPlaneTemplate = nil
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "alpha", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -255,7 +255,7 @@ func TestRestoreSnapshot_NLBFailureIsProvisionalNotError(t *testing.T) {
 	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	out, err := f.svc.RestoreSnapshot(context.Background(), &RestoreSnapshotInput{ClusterName: "alpha"}, testAccountID)
 	require.NoError(t, err, "an NLB re-point failure after meta commit is provisional, not a hard error")
@@ -263,7 +263,7 @@ func TestRestoreSnapshot_NLBFailureIsProvisionalNotError(t *testing.T) {
 
 	// Meta was persisted BEFORE the NLB step, so it already names the new CP and
 	// the reconciler can converge the target group.
-	got, err := GetClusterMeta(f.kv, "alpha")
+	got, err := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, out.NewInstanceID, got.ControlPlaneInstanceID, "meta persisted before NLB re-point")
 
@@ -293,7 +293,7 @@ func TestConfirmOldCPTerminated_NoOldNodeSucceeds(t *testing.T) {
 func TestUnwindFreshCP_TerminatesAndClearsDirective(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	meta := restoreSnapshotFixtureMeta("alpha")
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	// Pretend a directive was already set for the fresh CP (as the real flow does
 	// just before a meta-commit failure), then unwind.

@@ -52,7 +52,7 @@ func TestCreateCluster_ConcurrentSameNameSingleOwner(t *testing.T) {
 	assert.Equal(t, 1, ok, "exactly one create owns the name")
 	assert.Equal(t, 1, inUse, "the duplicate is rejected ResourceInUse")
 
-	meta, err := GetClusterMeta(f.kv, "race")
+	meta, err := GetClusterMeta(t.Context(), f.kv, "race")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status)
 }
@@ -65,7 +65,7 @@ func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
 
 	meta := sampleClusterMeta("race")
 	meta.Status = ClusterStatusFailed
-	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
 	const n = 2
 	errs := make([]error, n)
@@ -84,7 +84,7 @@ func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
 	assert.Equal(t, 1, ok, "exactly one retry reclaims the FAILED cluster")
 	assert.Equal(t, 1, inUse, "the concurrent retry is rejected")
 
-	got, err := GetClusterMeta(f.kv, "race")
+	got, err := GetClusterMeta(t.Context(), f.kv, "race")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, got.Status)
 }

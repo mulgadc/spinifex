@@ -12,6 +12,7 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // vcpuCASRetries bounds AddVCPU's retry on a revision conflict. Each retry
@@ -26,11 +27,11 @@ const vcpuCASRetries = 100
 // caller increments via AddVCPU after the grow succeeds. Two concurrent checks
 // can both pass before either increments (the documented soft-cap window); the
 // per-node physical gate still backstops real overcommit.
-func (s *Service) CheckVCPU(accountID string, want int) error {
+func (s *Service) CheckVCPU(ctx context.Context, accountID string, want int) error {
 	if s.Exempt(accountID) {
 		return nil
 	}
-	current, _, err := s.readVCPU(accountID)
+	current, _, err := s.readVCPU(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -44,9 +45,9 @@ func (s *Service) CheckVCPU(accountID string, want int) error {
 // concurrent writers cannot lose updates. next maps the current value to the new
 // value and a skip flag; skip leaves the counter untouched and never creates a
 // key. A revision conflict is retried; exhausting the bound is a hard error.
-func (s *Service) casVCPU(accountID string, next func(current int) (value int, skip bool)) error {
+func (s *Service) casVCPU(ctx context.Context, accountID string, next func(current int) (value int, skip bool)) error {
 	for range vcpuCASRetries {
-		current, revision, err := s.readVCPU(accountID)
+		current, revision, err := s.readVCPU(ctx, accountID)
 		if err != nil {
 			return err
 		}
@@ -59,9 +60,9 @@ func (s *Service) casVCPU(accountID string, next func(current int) (value int, s
 			return err
 		}
 		if revision == 0 {
-			_, err = s.usage.Create(accountID, data)
+			_, err = s.usage.Create(ctx, accountID, data)
 		} else {
-			_, err = s.usage.Update(accountID, data, revision)
+			_, err = s.usage.Update(ctx, accountID, data, revision)
 		}
 		if err == nil {
 			return nil
@@ -76,11 +77,11 @@ func (s *Service) casVCPU(accountID string, next func(current int) (value int, s
 // AddVCPU adds delta vCPUs to accountID's counter under CAS so concurrent grows
 // cannot lose updates. A non-positive delta is a no-op: shrinks are never charged
 // and are left to reconcile to lower the counter.
-func (s *Service) AddVCPU(accountID string, delta int) error {
+func (s *Service) AddVCPU(ctx context.Context, accountID string, delta int) error {
 	if s.Exempt(accountID) || delta <= 0 {
 		return nil
 	}
-	return s.casVCPU(accountID, func(current int) (int, bool) {
+	return s.casVCPU(ctx, accountID, func(current int) (int, bool) {
 		return current + delta, false
 	})
 }
@@ -89,8 +90,8 @@ func (s *Service) AddVCPU(accountID string, delta int) error {
 // a counter. A counter already equal to value is left untouched, so a steady-state
 // pass writes nothing and an account with no usage and no key is never created.
 // Reconcile is the sole caller and runs under the leader lock.
-func (s *Service) setVCPU(accountID string, value int) error {
-	return s.casVCPU(accountID, func(current int) (int, bool) {
+func (s *Service) setVCPU(ctx context.Context, accountID string, value int) error {
+	return s.casVCPU(ctx, accountID, func(current int) (int, bool) {
 		return value, current == value
 	})
 }
@@ -101,18 +102,18 @@ func (s *Service) setVCPU(accountID string, value int) error {
 // counter: lowering from a partial view would under-count usage and lift the
 // cap, so a short count is dropped and left for the next clean pass. Raising is
 // always safe, since the instances actually observed do exist.
-func (s *Service) reconcileVCPU(accountID string, value int, complete bool) error {
+func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int, complete bool) error {
 	if complete {
-		return s.setVCPU(accountID, value)
+		return s.setVCPU(ctx, accountID, value)
 	}
-	current, _, err := s.readVCPU(accountID)
+	current, _, err := s.readVCPU(ctx, accountID)
 	if err != nil {
 		return err
 	}
 	if value <= current {
 		return nil
 	}
-	return s.setVCPU(accountID, value)
+	return s.setVCPU(ctx, accountID, value)
 }
 
 // isCASConflict reports whether err is a lost optimistic-concurrency race: a
@@ -120,12 +121,12 @@ func (s *Service) reconcileVCPU(accountID string, value int, complete bool) erro
 // JetStream's wrong-last-sequence code and are retryable; any other error is a
 // genuine failure the caller must surface.
 func isCASConflict(err error) bool {
-	if errors.Is(err, nats.ErrKeyExists) {
+	if errors.Is(err, jetstream.ErrKeyExists) {
 		return true
 	}
-	var apiErr *nats.APIError
+	var apiErr *jetstream.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence
+		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 	}
 	return false
 }
@@ -136,12 +137,12 @@ func isCASConflict(err error) bool {
 // ChargeLaunch. An unknown instance type contributes nothing and is left for the
 // daemon to reject as InvalidInstanceType; the Exempt short-circuit lives in
 // CheckVCPU.
-func (s *Service) EnforceLaunch(accountID, instanceType string, maxCount int) error {
+func (s *Service) EnforceLaunch(ctx context.Context, accountID, instanceType string, maxCount int) error {
 	perType, ok := instancetypes.DefaultVCPUs(instanceType)
 	if !ok {
 		return nil
 	}
-	return s.CheckVCPU(accountID, perType*maxCount)
+	return s.CheckVCPU(ctx, accountID, perType*maxCount)
 }
 
 // ChargeLaunch is the increment-after for a successful RunInstances: it adds the
@@ -149,8 +150,8 @@ func (s *Service) EnforceLaunch(accountID, instanceType string, maxCount int) er
 // counter. The daemon may launch fewer than maxCount, so the charge is the real
 // reservation rather than the checked worst case. The caller treats a write
 // failure as drift for reconcile to correct, never failing the live launch.
-func (s *Service) ChargeLaunch(accountID string, reservation *ec2.Reservation) error {
-	return s.AddVCPU(accountID, sumReservationVCPUs([]*ec2.Reservation{reservation}))
+func (s *Service) ChargeLaunch(ctx context.Context, accountID string, reservation *ec2.Reservation) error {
+	return s.AddVCPU(ctx, accountID, sumReservationVCPUs([]*ec2.Reservation{reservation}))
 }
 
 // InstanceTypeResolver returns the current instance type of instanceID owned by
@@ -200,7 +201,7 @@ func confirmInstanceType(reservations []*ec2.Reservation, instanceID string, com
 // to reconcile. Exempt accounts, an unknown newType (the daemon rejects it), and
 // an instance the resolver cannot find (the daemon rejects the modify) all return
 // 0 with no check.
-func (s *Service) EnforceRetype(resolve InstanceTypeResolver, accountID, instanceID, newType string) (int, error) {
+func (s *Service) EnforceRetype(ctx context.Context, resolve InstanceTypeResolver, accountID, instanceID, newType string) (int, error) {
 	if s.Exempt(accountID) {
 		return 0, nil
 	}
@@ -223,7 +224,7 @@ func (s *Service) EnforceRetype(resolve InstanceTypeResolver, accountID, instanc
 	if delta <= 0 {
 		return delta, nil
 	}
-	if err := s.CheckVCPU(accountID, delta); err != nil {
+	if err := s.CheckVCPU(ctx, accountID, delta); err != nil {
 		return 0, err
 	}
 	return delta, nil
@@ -252,10 +253,10 @@ func instanceTypeFromReservations(reservations []*ec2.Reservation, instanceID st
 // readVCPU returns accountID's current reserved vCPU count and the KV revision
 // it was read at. A missing key is the zero counter at revision 0, which AddVCPU
 // treats as a create.
-func (s *Service) readVCPU(accountID string) (count int, revision uint64, err error) {
-	entry, err := s.usage.Get(accountID)
+func (s *Service) readVCPU(ctx context.Context, accountID string) (count int, revision uint64, err error) {
+	entry, err := s.usage.Get(ctx, accountID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, 0, nil
 		}
 		return 0, 0, err

@@ -1,6 +1,7 @@
 package dhcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // KVBucketPrefix is the lease bucket's name prefix. The full bucket name
@@ -41,13 +43,14 @@ type Entry struct {
 // NATS JetStream KV in production; tests can substitute via the
 // NewStoreWithKV constructor.
 type Store struct {
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 	az string
 }
 
-// NewStore creates/opens the per-AZ lease bucket and returns a Store.
-func NewStore(js nats.JetStreamContext, az string) (*Store, error) {
-	kv, err := utils.GetOrCreateKVBucket(js, BucketName(az), 5)
+// NewStore creates/opens the per-AZ lease bucket and returns a Store. ctx bounds
+// the bucket get-or-create only; each operation carries its own.
+func NewStore(ctx context.Context, js jetstream.KeyValueManager, az string) (*Store, error) {
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, BucketName(az), 5)
 	if err != nil {
 		return nil, fmt.Errorf("create dhcp lease KV bucket: %w", err)
 	}
@@ -55,7 +58,7 @@ func NewStore(js nats.JetStreamContext, az string) (*Store, error) {
 }
 
 // NewStoreWithKV is the test constructor — caller owns the bucket.
-func NewStoreWithKV(kv nats.KeyValue, az string) *Store {
+func NewStoreWithKV(kv jetstream.KeyValue, az string) *Store {
 	return &Store{kv: kv, az: az}
 }
 
@@ -63,11 +66,11 @@ func NewStoreWithKV(kv nats.KeyValue, az string) *Store {
 func (s *Store) AZ() string { return s.az }
 
 // KV exposes the underlying bucket. Used by tests that share buckets.
-func (s *Store) KV() nats.KeyValue { return s.kv }
+func (s *Store) KV() jetstream.KeyValue { return s.kv }
 
 // Put persists an entry keyed by Lease.ClientID. Overwrites any existing
 // entry for the same client-id.
-func (s *Store) Put(e Entry) error {
+func (s *Store) Put(ctx context.Context, e Entry) error {
 	if e.Lease == nil {
 		return errors.New("dhcp store put: lease is nil")
 	}
@@ -78,16 +81,16 @@ func (s *Store) Put(e Entry) error {
 	if err != nil {
 		return fmt.Errorf("marshal lease entry: %w", err)
 	}
-	if _, err := s.kv.Put(e.Lease.ClientID, data); err != nil {
+	if _, err := s.kv.Put(ctx, e.Lease.ClientID, data); err != nil {
 		return fmt.Errorf("put lease entry: %w", err)
 	}
 	return nil
 }
 
-// Get returns the entry for clientID. Returns (nil, nats.ErrKeyNotFound)
+// Get returns the entry for clientID. Returns (nil, jetstream.ErrKeyNotFound)
 // when absent.
-func (s *Store) Get(clientID string) (*Entry, error) {
-	raw, err := s.kv.Get(clientID)
+func (s *Store) Get(ctx context.Context, clientID string) (*Entry, error) {
+	raw, err := s.kv.Get(ctx, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +106,9 @@ func (s *Store) Get(clientID string) (*Entry, error) {
 }
 
 // Delete removes the entry. Idempotent: missing keys return nil.
-func (s *Store) Delete(clientID string) error {
-	if err := s.kv.Delete(clientID); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+func (s *Store) Delete(ctx context.Context, clientID string) error {
+	if err := s.kv.Delete(ctx, clientID); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil
 		}
 		return fmt.Errorf("delete lease entry %q: %w", clientID, err)
@@ -115,11 +118,11 @@ func (s *Store) Delete(clientID string) error {
 
 // LookupByIP scans the bucket for an entry whose lease IP matches ip (and
 // pool name when non-empty). O(N) is fine — only called on release.
-func (s *Store) LookupByIP(poolName, ip string) (*Entry, error) {
+func (s *Store) LookupByIP(ctx context.Context, poolName, ip string) (*Entry, error) {
 	if ip == "" {
 		return nil, errors.New("dhcp store lookup: ip required")
 	}
-	entries, err := s.List()
+	entries, err := s.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -135,15 +138,15 @@ func (s *Store) LookupByIP(poolName, ip string) (*Entry, error) {
 			return e, nil
 		}
 	}
-	return nil, nats.ErrKeyNotFound
+	return nil, jetstream.ErrKeyNotFound
 }
 
 // List returns every entry currently in the bucket. Skips the internal
-// version key written by utils.GetOrCreateKVBucket.
-func (s *Store) List() ([]Entry, error) {
-	keys, err := s.kv.Keys()
+// schema-version key the migration registry stamps on the bucket.
+func (s *Store) List(ctx context.Context) ([]Entry, error) {
+	keys, err := s.kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list lease keys: %w", err)
@@ -153,9 +156,9 @@ func (s *Store) List() ([]Entry, error) {
 		if k == utils.VersionKey {
 			continue
 		}
-		e, err := s.Get(k)
+		e, err := s.Get(ctx, k)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.Warn("dhcp store list: skipping unreadable entry", "key", k, "err", err)

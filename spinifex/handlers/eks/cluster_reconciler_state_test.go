@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,14 +17,15 @@ import (
 // state source (so observe() reads r.latest) and returns the conn + account KV.
 // It does NOT start a subscription — tests drive r.latest directly for
 // determinism; the integration test below exercises the real Subscribe path.
-func newStateReconcilerHarness(t *testing.T, opts ...ReconcilerOption) (*ClusterReconciler, *nats.Conn, nats.KeyValue) {
+func newStateReconcilerHarness(t *testing.T, opts ...ReconcilerOption) (*ClusterReconciler, *nats.Conn, jetstream.KeyValue) {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
-	leaderKV, err := InitLeaderBucket(js, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
-	require.NoError(t, PutClusterMeta(acctKV, sampleClusterMeta("alpha")))
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 
 	base := []ReconcilerOption{WithStateSource(nc, StateSubject(testAccountID, "alpha"))}
 	r, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-1", "", append(base, opts...)...)
@@ -43,7 +45,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnStateReport(t *testing.T
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status)
 	assert.Equal(t, 3, meta.NodeCount)
@@ -58,7 +60,7 @@ func TestClusterReconciler_CreatingStaysWithoutStateReport(t *testing.T) {
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "no state report yet → stays CREATING")
 }
@@ -71,20 +73,20 @@ func TestClusterReconciler_CreatingStaysOnUnhealthyReport(t *testing.T) {
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "unhealthy apiserver → stays CREATING")
 }
 
 func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
 	r, _, acctKV := newStateReconcilerHarness(t)
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
-	require.NoError(t, SetClusterHealthState(acctKV, "alpha", "stale", 0, nil))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterHealthState(t.Context(), acctKV, "alpha", "stale", 0, nil))
 	r.latest.Store(freshReport("ok", 4))
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status)
 	assert.Equal(t, 4, meta.NodeCount)
@@ -93,12 +95,12 @@ func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
 
 func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
 	r, _, acctKV := newStateReconcilerHarness(t, WithStateStaleAfter(90*time.Second))
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(&ServerStateReport{Healthz: "ok", NodeCount: 2, TS: time.Now().Add(-5 * time.Minute).Unix()})
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Contains(t, meta.HealthIssue, "stale", "report older than stale window flags an issue")
 	assert.Equal(t, 2, meta.NodeCount, "last known node count still recorded")
@@ -106,7 +108,7 @@ func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
 
 func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
 	r, _, acctKV := newStateReconcilerHarness(t)
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(&ServerStateReport{
 		Healthz: "fail", NodeCount: 0, TS: time.Now().Unix(),
 		Reason: "readyz:[etcd]; etcd:unreachable; disk:ok",
@@ -114,7 +116,7 @@ func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status)
 	assert.Contains(t, meta.HealthIssue, `apiserver healthz="fail"`)
@@ -123,12 +125,12 @@ func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
 
 func TestClusterReconciler_ActiveUnhealthyReportWithoutReasonStaysTerse(t *testing.T) {
 	r, _, acctKV := newStateReconcilerHarness(t)
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(freshReport("fail", 0))
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, `apiserver healthz="fail"`, meta.HealthIssue, "no reason → terse issue, back-compatible with older AMI")
 }
@@ -141,7 +143,7 @@ func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
 
-	release, ok := r.AcquireLease()
+	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
@@ -169,7 +171,7 @@ func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		meta, err := GetClusterMeta(acctKV, "alpha")
+		meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 		return err == nil && meta.Status == ClusterStatusActive && meta.NodeCount == 3
 	}, 1500*time.Millisecond, 10*time.Millisecond, "state reports should drive CREATING → ACTIVE")
 

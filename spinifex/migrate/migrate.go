@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // KVMigration represents a versioned transformation of KV bucket data.
@@ -17,15 +18,15 @@ type KVMigration struct {
 	FromVersion int
 	ToVersion   int
 	Description string
-	Run         func(ctx KVContext) error
+	Run         func(ctx context.Context, kvc KVContext) error
 }
 
 // KVContext provides KV migration functions access to the bucket being migrated.
 // JetStream is non-nil only when the caller used RunKVWithJetStream — used by
 // migrations that need to read sibling buckets (e.g. owner-attribution lookups).
 type KVContext struct {
-	KV        nats.KeyValue
-	JetStream nats.JetStreamContext
+	KV        jetstream.KeyValue
+	JetStream jetstream.JetStream
 	Logger    *slog.Logger
 }
 
@@ -103,18 +104,18 @@ func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
 // RunKVWithJetStream is RunKV with a JetStream handle attached to each
 // migration's KVContext, enabling cross-bucket reads (e.g. owner-attribution
 // during a backfill). Prefer plain RunKV when the migration is self-contained.
-func (r *Registry) RunKVWithJetStream(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {
-	return r.runKV(bucket, kv, js, targetVersion)
+func (r *Registry) RunKVWithJetStream(ctx context.Context, bucket string, kv jetstream.KeyValue, js jetstream.JetStream, targetVersion int) error {
+	return r.runKV(ctx, bucket, kv, js, targetVersion)
 }
 
 // RunKV applies pending KV migrations up to targetVersion. Stamps directly when
 // no migrations are registered (fresh bucket). Errors if the chain is incomplete.
-func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) error {
-	return r.runKV(bucket, kv, nil, targetVersion)
+func (r *Registry) RunKV(ctx context.Context, bucket string, kv jetstream.KeyValue, targetVersion int) error {
+	return r.runKV(ctx, bucket, kv, nil, targetVersion)
 }
 
-func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {
-	current, err := utils.ReadVersion(kv)
+func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyValue, js jetstream.JetStream, targetVersion int) error {
+	current, err := kvutil.ReadVersion(ctx, kv)
 	if err != nil {
 		return fmt.Errorf("read version for %s: %w", bucket, err)
 	}
@@ -127,7 +128,7 @@ func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamConte
 
 	// Fresh bucket, no migrations: stamp directly (common first-init path).
 	if current == 0 && len(all) == 0 {
-		return utils.WriteVersion(kv, targetVersion)
+		return kvutil.WriteVersion(ctx, kv, targetVersion)
 	}
 
 	// Fresh bucket with migrations: no v0 schema by convention; start at chain bottom.
@@ -162,11 +163,11 @@ func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamConte
 	logger := slog.Default()
 	for _, m := range pending {
 		logger.Info("Running KV migration", "bucket", bucket, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
-		ctx := KVContext{KV: kv, JetStream: js, Logger: logger}
-		if err := m.Run(ctx); err != nil {
+		kvc := KVContext{KV: kv, JetStream: js, Logger: logger}
+		if err := m.Run(ctx, kvc); err != nil {
 			return fmt.Errorf("KV migration %s %d→%d failed: %w", bucket, m.FromVersion, m.ToVersion, err)
 		}
-		if err := utils.WriteVersion(kv, m.ToVersion); err != nil {
+		if err := kvutil.WriteVersion(ctx, kv, m.ToVersion); err != nil {
 			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, bucket, err)
 		}
 	}

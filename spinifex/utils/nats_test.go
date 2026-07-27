@@ -11,6 +11,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net"
@@ -278,7 +280,10 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 	type Resp struct{}
 	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidParameterValue")
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }
 
 func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
@@ -300,6 +305,34 @@ func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
 	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail.msg", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
 	assert.Equal(t, reason, err.Error())
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorServerInternal, code)
+}
+
+func TestServeNATSRequest_WrappedErrorPreservesCodeAndMessage(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	const message = "launch on node-1: InsufficientAddressCapacity"
+	_, err = nc.Subscribe("test.serve.error", func(msg *nats.Msg) {
+		ServeNATSRequest(msg, func(_ *struct{}) (*struct{}, error) {
+			cause := errors.New(awserrors.ErrorInsufficientAddressCapacity)
+			return nil, fmt.Errorf("launch on node-1: %w", cause)
+		})
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	_, err = NATSRequest[struct{}](context.Background(), nc, "test.serve.error", struct{}{}, 2*time.Second, "")
+	require.Error(t, err)
+	assert.Equal(t, message, err.Error())
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
 }
 
 func TestNATSRequest_NoResponders(t *testing.T) {

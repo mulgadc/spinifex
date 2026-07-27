@@ -810,10 +810,41 @@ host = "{{.Host}}"
 		{ID: 3, Host: "10.0.0.3"},
 	}
 
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	require.NoError(t, err)
 	assert.Contains(t, result, `host = "10.0.0.1"`)
 	assert.Contains(t, result, `host = "10.0.0.3"`)
+}
+
+// The northstar template fields were declared but never assigned, so every
+// multi-node predastore config silently rendered the empty-key path: no zone
+// bucket and no credential the resolver could authenticate with.
+func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *testing.T) {
+	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
+	nodes := []PredastoreNodeConfig{
+		{ID: 1, Host: "10.0.0.1"},
+		{ID: 2, Host: "10.0.0.2"},
+	}
+
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0,
+		NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: "northstar"})
+	require.NoError(t, err)
+	assert.Equal(t, `access = "NSAK" secret = "NSSK" bucket = "northstar"`, result)
+}
+
+// A zero credential must leave every northstar field empty, which is what the
+// production template's guards key off to omit the stanzas entirely.
+func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) {
+	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
+	nodes := []PredastoreNodeConfig{
+		{ID: 1, Host: "10.0.0.1"},
+		{ID: 2, Host: "10.0.0.2"},
+	}
+
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0,
+		NorthstarCredentials{})
+	require.NoError(t, err)
+	assert.Equal(t, `access = "" secret = "" bucket = ""`, result)
 }
 
 func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
@@ -821,7 +852,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 
 	_, err := GenerateMultiNodePredastoreConfig(tmpl, []PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "at least 2 nodes")
 }
@@ -829,7 +860,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
 	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []PredastoreNodeConfig{
 		{ID: 1, Host: "a"}, {ID: 2, Host: "b"}, {ID: 3, Host: "c"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0)
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse")
 }

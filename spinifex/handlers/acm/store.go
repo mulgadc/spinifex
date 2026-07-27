@@ -1,6 +1,7 @@
 package handlers_acm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -42,19 +44,20 @@ type CertRecord struct {
 
 // Store provides CRUD for ACM certificate records backed by JetStream KV.
 type Store struct {
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 }
 
-// NewStore creates an ACM store using the provided NATS connection.
-func NewStore(nc *nats.Conn) (*Store, error) {
-	js, err := nc.JetStream()
+// NewStore creates an ACM store using the provided NATS connection. ctx bounds
+// the bucket get-or-create only; each operation carries its own.
+func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := utils.GetOrCreateKVBucket(js, KVBucketACM, KVBucketACMVersion)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketACM, KVBucketACMVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketACM, err)
+		return nil, err
 	}
 
 	slog.Info("ACM store initialized", "bucket", KVBucketACM)
@@ -71,20 +74,20 @@ func certKey(certArn string) string {
 }
 
 // PutCert stores (or replaces) a certificate record.
-func (s *Store) PutCert(rec *CertRecord) error {
+func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("marshal cert: %w", err)
 	}
-	_, err = s.kv.Put(certKey(rec.CertificateArn), data)
+	_, err = s.kv.Put(ctx, certKey(rec.CertificateArn), data)
 	return err
 }
 
 // GetCert retrieves a certificate by ARN, returning (nil, nil) when absent.
-func (s *Store) GetCert(certArn string) (*CertRecord, error) {
-	entry, err := s.kv.Get(certKey(certArn))
+func (s *Store) GetCert(ctx context.Context, certArn string) (*CertRecord, error) {
+	entry, err := s.kv.Get(ctx, certKey(certArn))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -97,24 +100,24 @@ func (s *Store) GetCert(certArn string) (*CertRecord, error) {
 }
 
 // DeleteCert removes a certificate by ARN. Returns (false, nil) when absent.
-func (s *Store) DeleteCert(certArn string) (bool, error) {
-	if _, err := s.kv.Get(certKey(certArn)); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+func (s *Store) DeleteCert(ctx context.Context, certArn string) (bool, error) {
+	if _, err := s.kv.Get(ctx, certKey(certArn)); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return false, nil
 		}
 		return false, err
 	}
-	if err := s.kv.Delete(certKey(certArn)); err != nil {
+	if err := s.kv.Delete(ctx, certKey(certArn)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 // ListCerts returns all certificate records owned by accountID.
-func (s *Store) ListCerts(accountID string) ([]*CertRecord, error) {
-	keys, err := s.kv.Keys()
+func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord, error) {
+	keys, err := s.kv.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -124,7 +127,7 @@ func (s *Store) ListCerts(accountID string) ([]*CertRecord, error) {
 		if !strings.HasPrefix(key, KeyPrefixCert) {
 			continue
 		}
-		entry, err := s.kv.Get(key)
+		entry, err := s.kv.Get(ctx, key)
 		if err != nil {
 			continue
 		}

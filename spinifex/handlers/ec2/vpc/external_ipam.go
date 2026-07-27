@@ -1,16 +1,16 @@
 package handlers_ec2_vpc
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Backward-compatible aliases so callers (daemon, EIP, EC2 handlers, tests)
@@ -29,7 +29,7 @@ const (
 // ExternalIPAM is the AWS-facing entry point for external IP allocation,
 // dispatching to StaticPoolAllocator or dhcp.DHCPPoolAllocator per pool name.
 type ExternalIPAM struct {
-	kv      nats.KeyValue
+	kv      jetstream.KeyValue
 	pools   []external.ExternalPoolConfig
 	static  *external.StaticPoolAllocator
 	perPool map[string]external.Allocator // dhcp overrides; static pools fall through to `static`
@@ -38,15 +38,15 @@ type ExternalIPAM struct {
 // NewExternalIPAM creates a new ExternalIPAM. Static pools wire through
 // external.StaticPoolAllocator; DHCP-sourced pools wait for EnableDHCP
 // to install the per-pool dhcp.DHCPPoolAllocator.
-func NewExternalIPAM(js nats.JetStreamContext, pools []external.ExternalPoolConfig) (*ExternalIPAM, error) {
+func NewExternalIPAM(ctx context.Context, js jetstream.JetStream, pools []external.ExternalPoolConfig) (*ExternalIPAM, error) {
 	staticPools := filterStatic(pools)
 	var (
 		alloc *external.StaticPoolAllocator
-		kv    nats.KeyValue
+		kv    jetstream.KeyValue
 	)
 	if len(staticPools) > 0 {
 		var err error
-		alloc, err = external.NewStaticPoolAllocator(js, staticPools)
+		alloc, err = external.NewStaticPoolAllocator(ctx, js, staticPools)
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +56,7 @@ func NewExternalIPAM(js nats.JetStreamContext, pools []external.ExternalPoolConf
 }
 
 // NewExternalIPAMWithKV creates an ExternalIPAM with an existing KV bucket (for testing).
-func NewExternalIPAMWithKV(kv nats.KeyValue, pools []external.ExternalPoolConfig) *ExternalIPAM {
+func NewExternalIPAMWithKV(kv jetstream.KeyValue, pools []external.ExternalPoolConfig) *ExternalIPAM {
 	alloc := external.NewStaticPoolAllocatorWithKV(kv, filterStatic(pools))
 	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}
 }
@@ -82,7 +82,7 @@ func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
 func (m *ExternalIPAM) AllocateIP(ctx context.Context, region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
 	pool := m.findPool(region, az)
 	if pool == nil {
-		return "", "", fmt.Errorf("InsufficientAddressCapacity: no external pool available for region=%q az=%q", region, az)
+		return "", "", fmt.Errorf("no external pool available for region=%q az=%q: %w", region, az, errors.New(awserrors.ErrorInsufficientAddressCapacity))
 	}
 	ip, err := m.AllocateFromPool(ctx, pool.Name, purpose, allocID, eniID, instanceID)
 	if err != nil {
@@ -128,10 +128,14 @@ func (m *ExternalIPAM) ReleaseIP(ctx context.Context, poolName, ip, ownerENIID s
 // GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced
 // pools have no static record — the per-AZ lease bucket is authoritative.
 func (m *ExternalIPAM) GetPoolRecord(poolName string) (*ExternalIPAMRecord, error) {
+	return m.getPoolRecord(context.Background(), poolName)
+}
+
+func (m *ExternalIPAM) getPoolRecord(ctx context.Context, poolName string) (*ExternalIPAMRecord, error) {
 	if m.static == nil {
 		return nil, fmt.Errorf("pool record unavailable: no static allocator")
 	}
-	return m.static.GetPoolRecord(poolName)
+	return m.static.GetPoolRecord(ctx, poolName)
 }
 
 func (m *ExternalIPAM) allocatorFor(poolName string) (external.Allocator, error) {
@@ -226,6 +230,10 @@ func ValidatePoolConfig(pool external.ExternalPoolConfig) error {
 	return nil
 }
 
+// compareIPs orders two addresses. Callers parse both first, so an invalid Addr
+// only arises from a nil net.IP and sorts before every valid address.
 func compareIPs(a, b net.IP) int {
-	return cmp.Compare(ipToInt(a), ipToInt(b))
+	x, _ := netip.AddrFromSlice(a)
+	y, _ := netip.AddrFromSlice(b)
+	return x.Unmap().Compare(y.Unmap())
 }

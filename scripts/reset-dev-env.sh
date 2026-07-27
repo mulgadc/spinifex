@@ -275,5 +275,41 @@ sleep 5
 echo "==> Building and installing microVM artifacts"
 cd "$PROJECT_ROOT" && make build-lb-agent install-microvm
 
+# --- Authorize SSH ingress on the default security group ---
+# Default SG denies all inbound, so smoke-test.sh's SSH probe times out.
+# Open port 22 on the default VPC's default SG before the smoke test runs.
+aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex aws "$@"; }
+
+echo "==> Waiting for EC2 daemon"
+DAEMON_TIMEOUT=60
+DAEMON_ELAPSED=0
+while [ $DAEMON_ELAPSED -lt $DAEMON_TIMEOUT ]; do
+    if aws_as_user ec2 describe-security-groups --output text >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+    DAEMON_ELAPSED=$((DAEMON_ELAPSED + 2))
+done
+if [ $DAEMON_ELAPSED -ge $DAEMON_TIMEOUT ]; then
+    echo "❌ EC2 daemon not ready after ${DAEMON_TIMEOUT}s"
+    exit 1
+fi
+
+echo "==> Authorizing SSH (port 22) on default security group"
+DEFAULT_VPC_ID=$(aws_as_user ec2 describe-vpcs \
+    --filters "Name=is-default,Values=true" \
+    --query 'Vpcs[0].VpcId' --output text)
+DEFAULT_SG_ID=$(aws_as_user ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$DEFAULT_VPC_ID" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+if [ -z "$DEFAULT_SG_ID" ] || [ "$DEFAULT_SG_ID" = "None" ]; then
+    echo "❌ Could not locate default security group in VPC $DEFAULT_VPC_ID"
+    exit 1
+fi
+aws_as_user ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0 \
+    >/dev/null 2>&1 || true
+echo "  Authorized SSH on $DEFAULT_SG_ID ($DEFAULT_VPC_ID)"
+
 # --- Smoke test ---
 sudo -u "$INVOKING_USER" "$SCRIPT_DIR/smoke-test.sh"

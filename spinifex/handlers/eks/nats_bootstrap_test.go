@@ -13,6 +13,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,22 +30,23 @@ var bootstrapTestMasterKey = []byte("0123456789abcdef0123456789abcdef")
 type natsBootstrapHarness struct {
 	t  *testing.T
 	nc *nats.Conn
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 
 	subscriber *NATSBootstrap
 }
 
 func newBootstrapHarness(t *testing.T) *natsBootstrapHarness {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
-	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta(bootstrapTestCluster)))
+	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta(bootstrapTestCluster)))
 
 	// Lay down the controller-generated JWKS so persistJWKS has something
 	// to cross-check against.
-	_, _, err = GenerateClusterOIDCKeypair(kv, bootstrapTestCluster, bootstrapTestMasterKey)
+	_, _, err = GenerateClusterOIDCKeypair(t.Context(), kv, bootstrapTestCluster, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
 	sub, err := NewNATSBootstrap(nc, kv, bootstrapTestMasterKey, testAccountID, bootstrapTestCluster)
@@ -64,7 +66,7 @@ func (h *natsBootstrapHarness) publish(kind string, env BootstrapEnvelope) {
 
 func (h *natsBootstrapHarness) loadControllerJWKS() []byte {
 	h.t.Helper()
-	entry, err := h.kv.Get(OIDCJWKSKey(bootstrapTestCluster))
+	entry, err := h.kv.Get(h.t.Context(), OIDCJWKSKey(bootstrapTestCluster))
 	require.NoError(h.t, err)
 	return entry.Value()
 }
@@ -81,8 +83,9 @@ func (h *natsBootstrapHarness) waitSubsBound(base, want int) {
 }
 
 func TestNewNATSBootstrap_RejectsBadInputs(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
 	require.NoError(t, err)
 
 	_, err = NewNATSBootstrap(nil, kv, bootstrapTestMasterKey, testAccountID, "alpha")
@@ -122,25 +125,25 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 		t.Fatal("Run did not return after all four publications")
 	}
 
-	tokEntry, err := h.kv.Get(NodeTokenKey(bootstrapTestCluster))
+	tokEntry, err := h.kv.Get(h.t.Context(), NodeTokenKey(bootstrapTestCluster))
 	require.NoError(t, err)
 	dec, err := handlers_iam.DecryptSecret(string(tokEntry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, "k3s::server-node-token::v1", dec)
 
-	kcEntry, err := h.kv.Get(AdminKubeconfigKey(bootstrapTestCluster))
+	kcEntry, err := h.kv.Get(h.t.Context(), AdminKubeconfigKey(bootstrapTestCluster))
 	require.NoError(t, err)
 	dec, err = handlers_iam.DecryptSecret(string(kcEntry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, "apiVersion: v1\nkind: Config\n", dec)
 
-	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
+	meta, err := GetClusterMeta(t.Context(), h.kv, bootstrapTestCluster)
 	require.NoError(t, err)
 	assert.Equal(t, caB64, meta.CertificateAuthorityB64)
 
 	// The passing JWKS cross-check must record the verified-marker the
 	// reconciler gates ACTIVE on.
-	_, err = h.kv.Get(OIDCJWKSVerifiedKey(bootstrapTestCluster))
+	_, err = h.kv.Get(h.t.Context(), OIDCJWKSVerifiedKey(bootstrapTestCluster))
 	require.NoError(t, err, "persistJWKS must write the verified-marker on a passing cross-check")
 
 	// Run's deferred cleanup must tear down every subscription it bound, so the
@@ -247,7 +250,7 @@ func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
 	// Wait until the first token is persisted before racing in a second, so the
 	// one-shot drop is what's under test rather than publish ordering.
 	require.Eventually(t, func() bool {
-		_, err := h.kv.Get(NodeTokenKey(bootstrapTestCluster))
+		_, err := h.kv.Get(h.t.Context(), NodeTokenKey(bootstrapTestCluster))
 		return err == nil
 	}, 2*time.Second, 5*time.Millisecond, "first token never persisted")
 	// Second token publication has a different value; persistToken should not
@@ -265,7 +268,7 @@ func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 
-	entry, err := h.kv.Get(NodeTokenKey(bootstrapTestCluster))
+	entry, err := h.kv.Get(h.t.Context(), NodeTokenKey(bootstrapTestCluster))
 	require.NoError(t, err)
 	dec, err := handlers_iam.DecryptSecret(string(entry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
@@ -335,37 +338,37 @@ func TestPersistWithRetry(t *testing.T) {
 func TestBootstrapPendingKinds(t *testing.T) {
 	h := newBootstrapHarness(t)
 
-	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
+	meta, err := GetClusterMeta(t.Context(), h.kv, bootstrapTestCluster)
 	require.NoError(t, err)
 
 	// Fresh cluster: all four pending. The JWKS verified-marker is absent even
 	// though the controller pre-seeded OIDCJWKSKey, so JWKS is still pending.
 	assert.Equal(t,
 		[]string{BootstrapSubjectToken, BootstrapSubjectKubeconfig, BootstrapSubjectJWKS, BootstrapSubjectCA},
-		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+		BootstrapPendingKinds(t.Context(), h.kv, bootstrapTestCluster, meta))
 
 	// Persist token only -> token drops out of pending.
 	ct, err := handlers_iam.EncryptSecret("tok", bootstrapTestMasterKey)
 	require.NoError(t, err)
-	_, err = h.kv.Put(NodeTokenKey(bootstrapTestCluster), []byte(ct))
+	_, err = h.kv.Put(t.Context(), NodeTokenKey(bootstrapTestCluster), []byte(ct))
 	require.NoError(t, err)
 	assert.Equal(t,
 		[]string{BootstrapSubjectKubeconfig, BootstrapSubjectJWKS, BootstrapSubjectCA},
-		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+		BootstrapPendingKinds(t.Context(), h.kv, bootstrapTestCluster, meta))
 
 	// Persist kubeconfig + CA-on-meta -> only JWKS (unverified) still pending.
-	_, err = h.kv.Put(AdminKubeconfigKey(bootstrapTestCluster), []byte(ct))
+	_, err = h.kv.Put(t.Context(), AdminKubeconfigKey(bootstrapTestCluster), []byte(ct))
 	require.NoError(t, err)
 	meta.CertificateAuthorityB64 = "ca-b64"
 	assert.Equal(t,
 		[]string{BootstrapSubjectJWKS},
-		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+		BootstrapPendingKinds(t.Context(), h.kv, bootstrapTestCluster, meta))
 
 	// Write the JWKS verified-marker (persistJWKS does this on a passing
 	// cross-check) -> nothing pending.
-	_, err = h.kv.Put(OIDCJWKSVerifiedKey(bootstrapTestCluster), []byte("verified"))
+	_, err = h.kv.Put(t.Context(), OIDCJWKSVerifiedKey(bootstrapTestCluster), []byte("verified"))
 	require.NoError(t, err)
-	assert.Empty(t, BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+	assert.Empty(t, BootstrapPendingKinds(t.Context(), h.kv, bootstrapTestCluster, meta))
 }
 
 func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
@@ -391,7 +394,7 @@ func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
 		t.Fatal("RunForKinds did not return after CA-only publication")
 	}
 
-	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
+	meta, err := GetClusterMeta(t.Context(), h.kv, bootstrapTestCluster)
 	require.NoError(t, err)
 	assert.Equal(t, caB64, meta.CertificateAuthorityB64)
 }

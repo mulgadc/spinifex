@@ -220,6 +220,91 @@ func TestExecute_MultipleIOThreads(t *testing.T) {
 	assert.Equal(t, 2, iothreadCount)
 }
 
+// TestExecute_Blockdev_UnixServer asserts a unix-socket NBD blockdev renders
+// as a -blockdev argument, ordered before its referencing -device, and that
+// -drive is untouched when Drives is empty — a data volume no longer gets an
+// anonymous -drive.
+func TestExecute_Blockdev_UnixServer(t *testing.T) {
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+		// Execute requires a drive or kernel image; a kernel keeps this test
+		// isolated to blockdev/device rendering without an unrelated -drive.
+		KernelImage: "/boot/vmlinuz",
+		IOThreads:   []IOThread{{ID: "ioth-vol-data-a"}},
+		Blockdevs: []Blockdev{
+			VolumeBlockdev("nbd-vol-data-a", NBDServerOpts{Type: "unix", Path: "/run/spinifex/nbd/nbd-vol-data-a.sock"}),
+		},
+		Devices: []Device{
+			VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3"),
+		},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+
+	args := cmd.Args[1:]
+	assert.False(t, argExists(args, "-drive"), "a config with only a data volume must emit no -drive")
+
+	blockdevIdx := -1
+	for i, a := range args {
+		if a == "-blockdev" {
+			blockdevIdx = i
+			break
+		}
+	}
+	require.Greater(t, blockdevIdx, -1, "-blockdev must be emitted")
+	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/run/spinifex/nbd/nbd-vol-data-a.sock,export=", args[blockdevIdx+1])
+
+	deviceIdx := -1
+	for i, a := range args {
+		if a == "-device" {
+			deviceIdx = i
+			break
+		}
+	}
+	require.Greater(t, deviceIdx, -1)
+	assert.Greater(t, deviceIdx, blockdevIdx, "-blockdev must precede the -device referencing it")
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3", args[deviceIdx+1])
+}
+
+// TestExecute_Blockdev_InetServer asserts the TCP NBD form renders
+// server.type=inet with host/port instead of a unix socket path.
+func TestExecute_Blockdev_InetServer(t *testing.T) {
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+		KernelImage:  "/boot/vmlinuz",
+		Blockdevs: []Blockdev{
+			VolumeBlockdev("nbd-vol-data-b", NBDServerOpts{Type: "inet", Host: "10.0.0.5", Port: 10809}),
+		},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+
+	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-b,server.type=inet,server.host=10.0.0.5,server.port=10809,export=",
+		argValue(cmd.Args[1:], "-blockdev"))
+}
+
+// TestExecute_NoBlockdevWhenEmpty asserts a config with no Blockdevs emits no
+// -blockdev flag at all — the common case (boot-only, or no EBS requests).
+func TestExecute_NoBlockdevWhenEmpty(t *testing.T) {
+	cfg := Config{
+		CPUCount:     1,
+		Memory:       512,
+		Architecture: "x86_64",
+		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+
+	assert.False(t, argExists(cmd.Args[1:], "-blockdev"))
+}
+
 // argValue returns the value following flag in args, or "" if not found.
 func argValue(args []string, flag string) string {
 	for i, a := range args {

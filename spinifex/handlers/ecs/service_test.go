@@ -166,7 +166,7 @@ func TestService_DescribeTaskDefinition_Unknown(t *testing.T) {
 // register path (the way the agent registers in production).
 func registerInstance(t *testing.T, svc *Service, cluster, id string, cpu, mem int) {
 	t.Helper()
-	require.NoError(t, svc.recordRegister(&bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
 		AccountID:   testAccountID,
 		ClusterName: cluster,
 		InstanceID:  id,
@@ -393,7 +393,7 @@ func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
 func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {
 	svc, _ := newTestService(t)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-	require.NoError(t, svc.recordHeartbeat(&bus.Heartbeat{
+	require.NoError(t, svc.recordHeartbeat(t.Context(), &bus.Heartbeat{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", Status: bus.StatusDraining,
 	}))
 	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
@@ -415,13 +415,13 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	// Backdate LastSeen beyond the heartbeat timeout.
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	_, err = getJSON(kv, InstanceKey("web", "i-1"), &rec)
+	_, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
@@ -444,9 +444,9 @@ func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 	svc := NewService(nc, testRegion, "")
 	a := NewScheduler(nc, svc, "holder-a")
 	b := NewScheduler(nc, svc, "holder-b")
-	assert.True(t, a.acquireOrRefresh())
-	assert.False(t, b.acquireOrRefresh())
-	assert.True(t, a.acquireOrRefresh()) // refresh keeps leadership
+	assert.True(t, a.acquireOrRefresh(t.Context()))
+	assert.False(t, b.acquireOrRefresh(t.Context()))
+	assert.True(t, a.acquireOrRefresh(t.Context())) // refresh keeps leadership
 }
 
 // --- GPU placement dimension (Epic C2) ---
@@ -476,7 +476,7 @@ func registerTaskDefGPU(t *testing.T, svc *Service, family string, cpu, mem, gpu
 // capacity via the bus register path.
 func registerInstanceGPU(t *testing.T, svc *Service, cluster, id string, cpu, mem, gpu int) {
 	t.Helper()
-	require.NoError(t, svc.recordRegister(&bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
 		AccountID:   testAccountID,
 		ClusterName: cluster,
 		InstanceID:  id,
@@ -526,10 +526,10 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 	assert.Empty(t, registeredGPU.StringSetValue)
 	assert.Empty(t, remainingGPU.StringSetValue)
 
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	found, err := getJSON(kv, InstanceKey("web", "i-1"), &rec)
+	found, err := getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 2, rec.TotalGPU)
@@ -540,7 +540,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
 		LastStatus: bus.TaskStatusStopped, Reason: "exited",
 	}))
-	found, err = getJSON(kv, InstanceKey("web", "i-1"), &rec)
+	found, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 0, rec.ReservedGPU)
@@ -624,7 +624,7 @@ func TestRegisterContainerInstance_GPU_StringSetResource(t *testing.T) {
 // path (Epic C3 register report-back).
 func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
 	svc, _ := newTestService(t)
-	require.NoError(t, svc.recordRegister(&bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
 		Capacity: bus.InstanceCapacity{CPU: 1024, MemoryMiB: 2048, GPU: 2, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}},
 	}))

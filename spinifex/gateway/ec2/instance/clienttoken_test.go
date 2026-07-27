@@ -1,7 +1,6 @@
 package gateway_ec2_instance
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -20,8 +19,8 @@ const ctTestAccount = "111122223333"
 
 func newTestClientTokenStore(t *testing.T) *ClientTokenStore {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	store, err := newClientTokenStore(js)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store, err := newClientTokenStore(t.Context(), testutil.NewJetStream(t, nc))
 	require.NoError(t, err)
 	return store
 }
@@ -32,14 +31,14 @@ func TestClientToken_ReplaysCompletedReservation(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok, hash = "tok-1", "hash-a"
 
-	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	require.True(t, owned, "first caller owns the launch")
 
 	res := &ec2.Reservation{ReservationId: aws.String("r-123")}
-	require.NoError(t, store.Finalize(ctTestAccount, tok, hash, res))
+	require.NoError(t, store.Finalize(t.Context(), ctTestAccount, tok, hash, res))
 
-	replay, owned2, err := store.Claim(ctTestAccount, tok, hash)
+	replay, owned2, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	assert.False(t, owned2, "duplicate caller does not own the launch")
 	require.NotNil(t, replay)
@@ -51,12 +50,12 @@ func TestClientToken_ParamMismatchRejected(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok = "tok-2"
 
-	_, owned, err := store.Claim(ctTestAccount, tok, "hash-a")
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, "hash-a")
 	require.NoError(t, err)
 	require.True(t, owned)
-	require.NoError(t, store.Finalize(ctTestAccount, tok, "hash-a", &ec2.Reservation{ReservationId: aws.String("r-1")}))
+	require.NoError(t, store.Finalize(t.Context(), ctTestAccount, tok, "hash-a", &ec2.Reservation{ReservationId: aws.String("r-1")}))
 
-	_, _, err = store.Claim(ctTestAccount, tok, "hash-DIFFERENT")
+	_, _, err = store.Claim(t.Context(), ctTestAccount, tok, "hash-DIFFERENT")
 	assert.ErrorIs(t, err, errIdempotentParamMismatch)
 }
 
@@ -66,13 +65,13 @@ func TestClientToken_AbortAllowsRelaunch(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok, hash = "tok-3", "hash-a"
 
-	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	require.True(t, owned)
 
-	store.Abort(ctTestAccount, tok)
+	store.Abort(t.Context(), ctTestAccount, tok)
 
-	_, owned2, err := store.Claim(ctTestAccount, tok, hash)
+	_, owned2, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	assert.True(t, owned2, "after abort the token is free to re-own")
 }
@@ -93,7 +92,7 @@ func TestClientToken_ConcurrentSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			replay, owned, err := store.Claim(ctTestAccount, tok, hash)
+			replay, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 			if err != nil {
 				errs[i] = err
 				return
@@ -101,7 +100,7 @@ func TestClientToken_ConcurrentSingleOwner(t *testing.T) {
 			if owned {
 				atomic.AddInt32(&owners, 1)
 				// Simulate the launch then publish the reservation.
-				errs[i] = store.Finalize(ctTestAccount, tok, hash, res)
+				errs[i] = store.Finalize(t.Context(), ctTestAccount, tok, hash, res)
 				replays[i] = res
 				return
 			}
@@ -147,13 +146,13 @@ func TestClientTokenParamHash_IgnoresTokenReflectsParams(t *testing.T) {
 func TestRunInstancesWithClientToken_ReplaySkipsLaunch(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok, hash = "rt-1", "h"
-	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	require.True(t, owned)
-	require.NoError(t, store.Finalize(ctTestAccount, tok, hash, &ec2.Reservation{ReservationId: aws.String("r-x")}))
+	require.NoError(t, store.Finalize(t.Context(), ctTestAccount, tok, hash, &ec2.Reservation{ReservationId: aws.String("r-x")}))
 
 	launched := false
-	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+	res, err := runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
 		launched = true
 		return ec2.Reservation{}, nil
 	})
@@ -172,11 +171,11 @@ func TestRunInstancesWithClientToken_OwnerLaunchesOnceThenReplay(t *testing.T) {
 		return ec2.Reservation{ReservationId: aws.String("r-own")}, nil
 	}
 
-	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, launch)
+	res, err := runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, hash, launch)
 	require.NoError(t, err)
 	assert.Equal(t, "r-own", aws.StringValue(res.ReservationId))
 
-	res2, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, launch)
+	res2, err := runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, hash, launch)
 	require.NoError(t, err)
 	assert.Equal(t, "r-own", aws.StringValue(res2.ReservationId))
 	assert.Equal(t, 1, launches, "duplicate must replay, not relaunch")
@@ -187,13 +186,13 @@ func TestRunInstancesWithClientToken_LaunchFailureAborts(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok, hash = "rt-3", "h"
 
-	_, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+	_, err := runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
 		return ec2.Reservation{}, errors.New("no capacity")
 	})
 	require.Error(t, err)
 
 	relaunched := false
-	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+	res, err := runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
 		relaunched = true
 		return ec2.Reservation{ReservationId: aws.String("r-retry")}, nil
 	})
@@ -207,13 +206,13 @@ func TestRunInstancesWithClientToken_LaunchFailureAborts(t *testing.T) {
 func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok = "rt-4"
-	_, owned, err := store.Claim(ctTestAccount, tok, "hA")
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, "hA")
 	require.NoError(t, err)
 	require.True(t, owned)
-	require.NoError(t, store.Finalize(ctTestAccount, tok, "hA", &ec2.Reservation{ReservationId: aws.String("r")}))
+	require.NoError(t, store.Finalize(t.Context(), ctTestAccount, tok, "hA", &ec2.Reservation{ReservationId: aws.String("r")}))
 
 	launched := false
-	_, err = runInstancesWithClientToken(store, ctTestAccount, tok, "hB", func() (ec2.Reservation, error) {
+	_, err = runInstancesWithClientToken(t.Context(), store, ctTestAccount, tok, "hB", func() (ec2.Reservation, error) {
 		launched = true
 		return ec2.Reservation{}, nil
 	})
@@ -225,10 +224,10 @@ func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
 // instance on subsequent calls.
 func TestGetClientTokenStore_BindsOnce(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	s1, err := getClientTokenStore(context.Background(), nc)
+	s1, err := getClientTokenStore(t.Context(), nc)
 	require.NoError(t, err)
 	require.NotNil(t, s1)
-	s2, err := getClientTokenStore(context.Background(), nc)
+	s2, err := getClientTokenStore(t.Context(), nc)
 	require.NoError(t, err)
 	assert.Same(t, s1, s2, "store binds once")
 }
@@ -239,7 +238,7 @@ func TestClientToken_InFlightWaitTimesOut(t *testing.T) {
 	store := newTestClientTokenStore(t)
 	const tok, hash = "wt-1", "h"
 
-	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
 	require.NoError(t, err)
 	require.True(t, owned, "owner holds the in-flight record and never finalizes")
 
@@ -247,6 +246,6 @@ func TestClientToken_InFlightWaitTimesOut(t *testing.T) {
 	clientTokenWaitTimeout, clientTokenPollStep = 30*time.Millisecond, 10*time.Millisecond
 	defer func() { clientTokenWaitTimeout, clientTokenPollStep = origTimeout, origStep }()
 
-	_, _, err = store.Claim(ctTestAccount, tok, hash)
+	_, _, err = store.Claim(t.Context(), ctTestAccount, tok, hash)
 	assert.ErrorIs(t, err, errClientTokenWaitTimeout)
 }

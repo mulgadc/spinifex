@@ -10,6 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Scheduler timing. The leader lease lives in spinifex-ecs-leader (60s TTL); the
@@ -70,18 +71,24 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-leaseTicker.C:
 			sc.evaluateLeadership(ctx)
 		case <-reaperTicker.C:
-			if sc.isLeader() {
-				sc.reap()
-			}
+			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })
 		case <-reconcileTicker.C:
-			if sc.isLeader() {
-				sc.svc.reconcileAllServices()
-			}
+			sc.runIfLeader("service reconcile", func() error { return sc.svc.reconcileAllServices(ctx) })
 		case <-sweepTicker.C:
-			if sc.isLeader() {
-				sc.sweepStoppedTasks()
-			}
+			sc.runIfLeader("stopped-task sweep", func() error { return sc.sweepStoppedTasks(ctx) })
 		}
+	}
+}
+
+// runIfLeader runs one leader-only pass, logging a pass that could not complete.
+// A pass errors only when it could not observe the whole fleet, so this log is
+// the operator's signal that a tick was skipped rather than found nothing to do.
+func (sc *Scheduler) runIfLeader(pass string, run func() error) {
+	if !sc.isLeader() {
+		return
+	}
+	if err := run(); err != nil {
+		slog.Error("ECS scheduler: pass failed", "pass", pass, "err", err)
 	}
 }
 
@@ -94,7 +101,7 @@ func (sc *Scheduler) isLeader() bool {
 // evaluateLeadership acquires or refreshes the lease, wiring up (or tearing down)
 // the bus subscriptions as leadership changes.
 func (sc *Scheduler) evaluateLeadership(ctx context.Context) {
-	won := sc.acquireOrRefresh()
+	won := sc.acquireOrRefresh(ctx)
 	sc.mu.Lock()
 	was := sc.leader
 	sc.leader = won
@@ -115,19 +122,19 @@ func (sc *Scheduler) evaluateLeadership(ctx context.Context) {
 
 // acquireOrRefresh tries to claim the scheduler lease, refreshing it (resetting
 // the TTL) when we already hold it. Returns true when we are the leader.
-func (sc *Scheduler) acquireOrRefresh() bool {
-	js, err := sc.nc.JetStream()
+func (sc *Scheduler) acquireOrRefresh(ctx context.Context) bool {
+	js, err := jetstream.New(sc.nc)
 	if err != nil {
 		return false
 	}
-	kv, err := InitLeaderBucket(js)
+	kv, err := InitLeaderBucket(ctx, js)
 	if err != nil {
 		return false
 	}
-	if _, err := kv.Create(schedulerLeaderKey, []byte(sc.holder)); err == nil {
+	if _, err := kv.Create(ctx, schedulerLeaderKey, []byte(sc.holder)); err == nil {
 		return true
 	}
-	entry, err := kv.Get(schedulerLeaderKey)
+	entry, err := kv.Get(ctx, schedulerLeaderKey)
 	if err != nil {
 		return false
 	}
@@ -135,7 +142,7 @@ func (sc *Scheduler) acquireOrRefresh() bool {
 		return false // someone else holds it
 	}
 	// We hold it — refresh to reset the TTL.
-	if _, err := kv.Put(schedulerLeaderKey, []byte(sc.holder)); err != nil {
+	if _, err := kv.Put(ctx, schedulerLeaderKey, []byte(sc.holder)); err != nil {
 		return false
 	}
 	return true
@@ -144,16 +151,20 @@ func (sc *Scheduler) acquireOrRefresh() bool {
 // relinquish drops subscriptions and deletes the lease key on shutdown.
 func (sc *Scheduler) relinquish() {
 	sc.unsubscribeBus()
-	js, err := sc.nc.JetStream()
+	// Run's ctx is already cancelled by the time it calls relinquish, so the
+	// release runs on its own context — a captured ctx would fail the delete and
+	// leave the lease for the TTL to reap.
+	ctx := context.Background()
+	js, err := jetstream.New(sc.nc)
 	if err != nil {
 		return
 	}
-	kv, err := InitLeaderBucket(js)
+	kv, err := InitLeaderBucket(ctx, js)
 	if err != nil {
 		return
 	}
-	if entry, gerr := kv.Get(schedulerLeaderKey); gerr == nil && string(entry.Value()) == sc.holder {
-		_ = kv.Delete(schedulerLeaderKey)
+	if entry, gerr := kv.Get(ctx, schedulerLeaderKey); gerr == nil && string(entry.Value()) == sc.holder {
+		_ = kv.Delete(ctx, schedulerLeaderKey)
 	}
 }
 
@@ -197,7 +208,9 @@ func (sc *Scheduler) onRegister(msg *nats.Msg) {
 		slog.Warn("ECS scheduler: bad register payload", "err", err)
 		return
 	}
-	if err := sc.svc.recordRegister(&m); err != nil {
+	// A bus callback outlives the Run context that wired its subscription, so it
+	// binds its own — a cancelled ctx would abandon the KV write mid-record.
+	if err := sc.svc.recordRegister(context.Background(), &m); err != nil {
 		slog.Error("ECS scheduler: record register failed", "instance", m.InstanceID, "err", err)
 		return
 	}
@@ -209,7 +222,7 @@ func (sc *Scheduler) onHeartbeat(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		return
 	}
-	if err := sc.svc.recordHeartbeat(&m); err != nil {
+	if err := sc.svc.recordHeartbeat(context.Background(), &m); err != nil {
 		slog.Debug("ECS scheduler: record heartbeat failed", "instance", m.InstanceID, "err", err)
 	}
 }
@@ -227,29 +240,33 @@ func (sc *Scheduler) onTaskState(msg *nats.Msg) {
 }
 
 // reap marks instances that have missed their heartbeat window DRAINING and stops
-// their tasks, releasing capacity. Iterates every ECS account bucket.
-func (sc *Scheduler) reap() {
-	ctx := context.Background()
-	js, err := sc.nc.JetStream()
+// their tasks, releasing capacity. Iterates every ECS account bucket. Returns an
+// error when the account enumeration could not be completed, so a pass that
+// could not see the whole fleet is reported rather than read as "nothing to
+// reap" — every unlisted account keeps its dead instances' capacity held.
+func (sc *Scheduler) reap(ctx context.Context) error {
+	js, err := jetstream.New(sc.nc)
 	if err != nil {
-		return
+		return err
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
-	for bucket := range js.KeyValueStoreNames() {
-		accountID, ok := accountIDFromBucket(bucket)
-		if !ok {
-			continue
-		}
-		kv, err := js.KeyValue(bucket)
+	for _, bucket := range buckets {
+		kv, err := js.KeyValue(ctx, bucket.name)
 		if err != nil {
+			slog.Error("ECS scheduler: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
-		sc.reapBucket(ctx, kv, accountID, now)
+		sc.reapBucket(ctx, kv, bucket.accountID, now)
 	}
+	return nil
 }
 
-func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID string, now time.Time) {
-	keys, err := keysWithPrefix(kv, "clusters/")
+func (sc *Scheduler) reapBucket(ctx context.Context, kv jetstream.KeyValue, accountID string, now time.Time) {
+	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return
 	}
@@ -258,7 +275,7 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID
 			continue
 		}
 		var inst InstanceRecord
-		found, err := getJSON(kv, k, &inst)
+		found, err := getJSON(ctx, kv, k, &inst)
 		if err != nil || !found {
 			continue
 		}
@@ -269,7 +286,7 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID
 			"lastSeen", inst.LastSeen.Format(time.RFC3339))
 		inst.Status = InstanceStatusDraining
 		inst.Reaped = true
-		if perr := putJSON(kv, k, &inst); perr != nil {
+		if perr := putJSON(ctx, kv, k, &inst); perr != nil {
 			continue
 		}
 		sc.stopInstanceTasks(ctx, kv, accountID, inst.Cluster, inst.InstanceID)
@@ -278,14 +295,14 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv nats.KeyValue, accountID
 
 // stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED
 // and reclaims each awsvpc task's ENI (leak guard for a dead agent).
-func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv nats.KeyValue, accountID, cluster, instanceID string) {
-	keys, err := keysWithPrefix(kv, TasksPrefix(cluster))
+func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string) {
+	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return
 	}
 	for _, k := range keys {
 		var task TaskRecord
-		found, err := getJSON(kv, k, &task)
+		found, err := getJSON(ctx, kv, k, &task)
 		if err != nil || !found {
 			continue
 		}

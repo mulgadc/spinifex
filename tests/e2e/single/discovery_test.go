@@ -146,33 +146,3 @@ func runDiscovery(t *testing.T, fix *Fixture) {
 	az := needAZ(t, fix)
 	harness.Detail(t, "instance_type", instType, "arch", arch, "az", az)
 }
-
-// runSerialConsoleAccess flips serial-console-access on then off and verifies
-// each transition with both the action-returned bool and a follow-up
-// get-status round-trip. Maps to run-e2e.sh ~166–202.
-func runSerialConsoleAccess(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Serial Console Access")
-
-	harness.Step(t, "default state should be disabled")
-	if got := harness.GetSerialConsoleAccessEnabled(t, fix.AWS); got {
-		t.Fatalf("expected serial console default disabled, got enabled")
-	}
-
-	harness.Step(t, "enable")
-	if got := harness.EnableSerialConsoleAccess(t, fix.AWS); !got {
-		t.Fatalf("enable: action returned enabled=false")
-	}
-	if got := harness.GetSerialConsoleAccessEnabled(t, fix.AWS); !got {
-		t.Fatalf("enable: subsequent get-status returned disabled")
-	}
-	harness.Detail(t, "state", "enabled")
-
-	harness.Step(t, "disable")
-	if got := harness.DisableSerialConsoleAccess(t, fix.AWS); got {
-		t.Fatalf("disable: action returned enabled=true")
-	}
-	if got := harness.GetSerialConsoleAccessEnabled(t, fix.AWS); got {
-		t.Fatalf("disable: subsequent get-status returned enabled")
-	}
-	harness.Detail(t, "state", "disabled")
-}

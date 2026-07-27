@@ -705,12 +705,12 @@ func TestGetRolePolicies_UnresolvablePolicy(t *testing.T) {
 	// Overwrite the role record with an attachment to a policy that does not
 	// exist, simulating a managed policy deleted out from under a live
 	// attachment.
-	role, err := svc.getRole(testAccountID, "dangling-role")
+	role, err := svc.getRole(t.Context(), testAccountID, "dangling-role")
 	require.NoError(t, err)
 	role.AttachedPolicies = []string{"arn:aws:iam::" + testAccountID + ":policy/Ghost"}
 	data, err := json.Marshal(role)
 	require.NoError(t, err)
-	_, err = svc.rolesBucket.Put(testAccountID+".dangling-role", data)
+	_, err = svc.rolesBucket.Put(t.Context(), testAccountID+".dangling-role", data)
 	require.NoError(t, err)
 
 	_, err = svc.GetRolePolicies(testAccountID, "dangling-role")

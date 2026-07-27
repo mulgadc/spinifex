@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -714,7 +715,7 @@ func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
 
 // UpdateStoppedInstance mimics the real CAS semantics: mutate runs under the
 // store lock against loadByID's entry, and a missing record (e.g. removed by
-// a concurrent ClaimStoppedInstance) returns nats.ErrKeyNotFound instead of
+// a concurrent ClaimStoppedInstance) returns jetstream.ErrKeyNotFound instead of
 // resurrecting it — the same createIfAbsent=false contract as JetStreamManager.
 func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
 	f.mu.Lock()
@@ -725,7 +726,7 @@ func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM))
 	}
 	v, ok := f.loadByID[id]
 	if !ok {
-		return nil, nats.ErrKeyNotFound
+		return nil, jetstream.ErrKeyNotFound
 	}
 	mutate(v)
 	return v, nil
@@ -828,7 +829,7 @@ func TestDescribeInstances_OneVisibleInstance(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String(id), InstanceType: aws.String("t3.micro")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -889,7 +890,7 @@ func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
 	require.NoError(t, err)
@@ -911,7 +912,7 @@ func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
 	}
-	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
 
 	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -947,13 +948,34 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{
 		keep.ID: keep,
 		drop.ID: drop,
-	})}
+	}), config: &config.Config{}}
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
 	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstances_ReservationGrouping(t *testing.T) {
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	instances := map[string]*vm.VM{
+		"i-first": {
+			ID: "i-first", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+		},
+		"i-second": {
+			ID: "i-second", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+		},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(instances), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+	assert.Len(t, out.Reservations[0].Instances, 2)
 }
 
 func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
@@ -1191,7 +1213,7 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 			},
 		},
 	}
-	svc := &InstanceServiceImpl{stoppedStore: store}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
 
 	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
@@ -1221,12 +1243,63 @@ func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
 			},
 		},
 	}
-	svc := &InstanceServiceImpl{stoppedStore: store}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
 
 	out, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-term1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeKVInstances_FilteringGroupingAndIsolation(t *testing.T) {
+	owner := "111122223333"
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	first := &vm.VM{
+		ID: "i-first", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+	}
+	second := &vm.VM{
+		ID: "i-second", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+	}
+	other := &vm.VM{
+		ID: "i-other", AccountID: "999988887777",
+		Reservation: &ec2.Reservation{ReservationId: aws.String("r-other")},
+		Instance:    &ec2.Instance{InstanceId: aws.String("i-other")},
+	}
+	store := &fakeStoppedStore{
+		stopped:    []*vm.VM{first, second, other},
+		terminated: []*vm.VM{first, second, other},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	tests := []struct {
+		name string
+		call func(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
+	}{
+		{"stopped", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeStoppedInstances(context.Background(), input, owner)
+		}},
+		{"terminated", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeTerminatedInstances(context.Background(), input, owner)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := tt.call(&ec2.DescribeInstancesInput{})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+			assert.Len(t, out.Reservations[0].Instances, 2)
+
+			out, err = tt.call(&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-second")}})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			require.Len(t, out.Reservations[0].Instances, 1)
+			assert.Equal(t, "i-second", aws.StringValue(out.Reservations[0].Instances[0].InstanceId))
+		})
+	}
 }
 
 func TestIsInstanceVisible(t *testing.T) {
@@ -1589,9 +1662,10 @@ func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 // --- TerminateStoppedInstance tests ---
 
 type fakeVolumeDeleter struct {
-	calls   []string
-	deleted []string
-	err     error
+	calls    []string
+	deleted  []string
+	detached []string
+	err      error
 }
 
 func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
@@ -1602,6 +1676,29 @@ func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVol
 	}
 	f.deleted = append(f.deleted, id)
 	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+// DeleteVolumeOnTerminate mirrors DeleteVolume's call/error bookkeeping; the
+// stopped-instance terminate path calls this instead of DeleteVolume.
+func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.deleted = append(f.deleted, volumeID)
+	return nil
+}
+
+// DetachVolumeOnTerminate mirrors DeleteVolumeOnTerminate's call/error
+// bookkeeping but records into detached instead of deleted; the non-DoT
+// Boot-volume branch calls this instead of deleting.
+func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.detached = append(f.detached, volumeID)
+	return nil
 }
 
 type fakeENIDeleter struct {
@@ -1841,6 +1938,80 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
 	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the mulga-1dzx9
+// fix: TerminateStoppedInstance must stamp Teardown[vm.TeardownVolumes] on
+// success, mirroring the running-instance path's markTeardownResult
+// (vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and
+// VolumeLeakReaper can never see a stopped-path leak because
+// TerminateStoppedInstance previously never touched Teardown at all.
+func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
+	id := "i-teardown-done"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"ADR-0003 §1 semantics: a successful volume delete must stamp Teardown[volumes]=done")
+	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError locks
+// the "do not swallow" half of the fix: a DeleteVolumeOnTerminate failure must
+// surface as Teardown[vm.TeardownVolumes]=failed (picked up by
+// daemon.leakedVolumeInstances() / VolumeLeakReaper) rather than being merely
+// logged and forgotten.
+func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *testing.T) {
+	id := "i-teardown-failed"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New("delete forced failure")}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "terminate itself stays best-effort; the failure is tracked via Teardown, not returned")
+
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownFailed), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a DeleteVolumeOnTerminate failure must be surfaced via Teardown, not silently swallowed")
+	assert.Empty(t, vd.deleted, "the forced failure must mean nothing was actually deleted")
+}
+
+// TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted locks the
+// second half of the terminate-implies-detach fix: a DeleteOnTermination=false
+// Boot volume is never cleared by Stop's Unmount (daemon/vm_adapters.go), so
+// without this it would strand attached to the now-gone instance forever.
+// Terminate must still detach it (AWS semantics: it survives as available,
+// it just isn't deleted).
+func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-boot"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-root-nondot"}, vd.detached, "the still-attached non-DoT boot volume must be detached")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes])
 }
 
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
@@ -3152,6 +3323,23 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	// AWS code for raw ENI failure).
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
+}
+
+func TestPrepareRunInstances_WrappedENICreateErrorPreservesCode(t *testing.T) {
+	cause := errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+	eni := &fakeENICreator{createErr: fmt.Errorf("create primary ENI: %w", cause)}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-missing"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+
+	require.EqualError(t, err, awserrors.ErrorInvalidSubnetIDNotFound)
+	require.Len(t, prov.deallocated, 1)
 }
 
 // TestPrepareRunInstances_ENIAttachFailureRollsBack verifies that an AttachENI

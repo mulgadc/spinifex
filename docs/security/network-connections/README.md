@@ -107,8 +107,10 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 | Destination | Purpose | Protocol | Verification |
 |-------------|---------|----------|--------------|
-| `https://cloud.debian.org/images/cloud/trixie/` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
-| `https://cloud-images.ubuntu.com/resolute/` | Ubuntu 26.04 LTS cloud image download | HTTPS | TLS + checksum verification |
+| `https://cloud.debian.org/images/cloud/trixie/latest/` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
+| `https://cloud-images.ubuntu.com/releases/resolute/release/` | Ubuntu 26.04 LTS cloud image download | HTTPS | TLS + checksum verification |
+| `https://dl.rockylinux.org/pub/rocky/10/images/` | Rocky Linux 10 cloud image download | HTTPS | TLS + checksum verification |
+| `https://dl-cdn.alpinelinux.org/alpine/` | Alpine Linux cloud image download | HTTPS | TLS + checksum verification |
 | `https://d2yp8ipz5jfqcw.cloudfront.net` | Alpine image for managed HAProxy load-balancer | HTTPS | TLS + checksum verification |
 | `https://install.mulgadc.com/install` | One-shot install telemetry POST on `spx admin init` / `join`. | HTTPS | TLS |
 
@@ -116,7 +118,7 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 **Update checks and metadata.** Spinifex does not check for updates and does not consume a cloud metadata service (`169.254.169.254` is served *by* the cluster to guest VMs). Node software updates come from the operator's OS package channel. The install-telemetry endpoint above is the only vendor-operated destination contacted by a node; closed-egress deployments should disable it and record the opt-out in the security plan.
 
-**Air-gapped deployments.** The three image URLs are the only destinations needed for the standard image catalogue. Mirror them locally and use `spx admin images import --file` with pre-staged files. Telemetry must also be disabled. See [Air-Gapped Install](/docs/install-airgapped).
+**Air-gapped deployments.** The image URLs above are the only destinations needed for the standard image catalogue. Mirror them locally and use `spx admin images import --file` with pre-staged files. Telemetry must also be disabled. See [Air-Gapped Install](/docs/install-airgapped).
 
 ## 3. Cross-Node (Internal) Connections
 

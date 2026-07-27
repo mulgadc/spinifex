@@ -1,30 +1,31 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const sgTestAccountID = "123456789012"
 
-func sgMigrationKV(t *testing.T) nats.KeyValue {
+func sgMigrationKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
 	_, nc := startTestNATS(t)
 	return createTestBucket(t, nc, "sg-migration-test")
 }
 
-func runSGMigration(t *testing.T, kv nats.KeyValue) {
+func runSGMigration(t *testing.T, kv jetstream.KeyValue) {
 	t.Helper()
 	for _, m := range DefaultRegistry.kvMigrations[sgBucket] {
 		if m.FromVersion == 1 && m.ToVersion == 2 {
-			require.NoError(t, m.Run(KVContext{KV: kv, Logger: slog.Default()}))
+			require.NoError(t, m.Run(t.Context(), KVContext{KV: kv, Logger: slog.Default()}))
 			return
 		}
 	}
@@ -49,12 +50,12 @@ func TestSGMigration_AssignsBlankRuleIDs(t *testing.T) {
 	}
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = kv.Put(utils.AccountKey(sgTestAccountID, record.GroupId), data)
+	_, err = kv.Put(t.Context(), utils.AccountKey(sgTestAccountID, record.GroupId), data)
 	require.NoError(t, err)
 
 	runSGMigration(t, kv)
 
-	entry, err := kv.Get(utils.AccountKey(sgTestAccountID, record.GroupId))
+	entry, err := kv.Get(t.Context(), utils.AccountKey(sgTestAccountID, record.GroupId))
 	require.NoError(t, err)
 	var got sgRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -93,16 +94,16 @@ func TestSGMigration_IdempotentOnAlreadyMigrated(t *testing.T) {
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
 	key := utils.AccountKey(sgTestAccountID, record.GroupId)
-	_, err = kv.Put(key, data)
+	_, err = kv.Put(t.Context(), key, data)
 	require.NoError(t, err)
 
-	entryBefore, err := kv.Get(key)
+	entryBefore, err := kv.Get(t.Context(), key)
 	require.NoError(t, err)
 	revBefore := entryBefore.Revision()
 
 	runSGMigration(t, kv)
 
-	entryAfter, err := kv.Get(key)
+	entryAfter, err := kv.Get(t.Context(), key)
 	require.NoError(t, err)
 	assert.Equal(t, revBefore, entryAfter.Revision(), "fully-populated records must not be rewritten")
 }
@@ -122,12 +123,12 @@ func TestSGMigration_PartialBackfill(t *testing.T) {
 	}
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = kv.Put(utils.AccountKey(sgTestAccountID, record.GroupId), data)
+	_, err = kv.Put(t.Context(), utils.AccountKey(sgTestAccountID, record.GroupId), data)
 	require.NoError(t, err)
 
 	runSGMigration(t, kv)
 
-	entry, err := kv.Get(utils.AccountKey(sgTestAccountID, record.GroupId))
+	entry, err := kv.Get(t.Context(), utils.AccountKey(sgTestAccountID, record.GroupId))
 	require.NoError(t, err)
 	var got sgRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -140,24 +141,24 @@ func TestSGMigration_EmptyBucket(t *testing.T) {
 	runSGMigration(t, kv)
 }
 
-// casConflictKV wraps a nats.KeyValue and forces the next failuresLeft Update
-// calls to return nats.ErrKeyExists, simulating the JetStream
+// casConflictKV wraps a jetstream.KeyValue and forces the next failuresLeft
+// Update calls to return jetstream.ErrKeyExists, simulating the JetStream
 // wrong-last-sequence response that backfillSGRuleIDs retries on.
 type casConflictKV struct {
-	nats.KeyValue
+	jetstream.KeyValue
 
 	failuresLeft int
 }
 
-func (k *casConflictKV) Update(key string, value []byte, last uint64) (uint64, error) {
+func (k *casConflictKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
 	if k.failuresLeft > 0 {
 		k.failuresLeft--
-		return 0, nats.ErrKeyExists
+		return 0, jetstream.ErrKeyExists
 	}
-	return k.KeyValue.Update(key, value, last)
+	return k.KeyValue.Update(ctx, key, value, last)
 }
 
-func seedSGRecord(t *testing.T, kv nats.KeyValue) string {
+func seedSGRecord(t *testing.T, kv jetstream.KeyValue) string {
 	t.Helper()
 	record := sgRecord{
 		GroupId:   "sg-0123456789abcdef0",
@@ -171,7 +172,7 @@ func seedSGRecord(t *testing.T, kv nats.KeyValue) string {
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
 	key := utils.AccountKey(sgTestAccountID, record.GroupId)
-	_, err = kv.Put(key, data)
+	_, err = kv.Put(t.Context(), key, data)
 	require.NoError(t, err)
 	return key
 }
@@ -181,11 +182,11 @@ func TestSGMigration_RetriesOnCASConflict(t *testing.T) {
 	key := seedSGRecord(t, kv)
 
 	stub := &casConflictKV{KeyValue: kv, failuresLeft: sgMigrationMaxRetries - 1}
-	err := backfillSGRuleIDs(KVContext{KV: stub, Logger: slog.Default()}, key)
+	err := backfillSGRuleIDs(t.Context(), KVContext{KV: stub, Logger: slog.Default()}, key)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stub.failuresLeft, "all injected conflicts must have been consumed")
 
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(t.Context(), key)
 	require.NoError(t, err)
 	var got sgRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -198,12 +199,12 @@ func TestSGMigration_FailsAfterCASRetryExhaustion(t *testing.T) {
 	key := seedSGRecord(t, kv)
 
 	stub := &casConflictKV{KeyValue: kv, failuresLeft: sgMigrationMaxRetries + 1}
-	err := backfillSGRuleIDs(KVContext{KV: stub, Logger: slog.Default()}, key)
+	err := backfillSGRuleIDs(t.Context(), KVContext{KV: stub, Logger: slog.Default()}, key)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeded 3 CAS retries")
-	assert.ErrorIs(t, err, nats.ErrKeyExists, "exhaustion error must wrap the underlying CAS conflict")
+	assert.ErrorIs(t, err, jetstream.ErrKeyExists, "exhaustion error must wrap the underlying CAS conflict")
 
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(t.Context(), key)
 	require.NoError(t, err)
 	var got sgRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &got))

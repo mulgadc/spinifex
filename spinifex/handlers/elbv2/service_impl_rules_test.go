@@ -120,7 +120,7 @@ func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
 	require.NoError(t, err)
 
 	// LB deletion must cascade rule deletion — no rule may survive.
-	rules, err := env.svc.store.ListRules()
+	rules, err := env.svc.store.ListRules(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, rules, "LB deletion must cascade rule deletion")
 
@@ -382,7 +382,7 @@ func TestDeleteListener_CascadesRules(t *testing.T) {
 	_, err = env.svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{ListenerArn: aws.String(env.listenerArn)}, testAccountID)
 	require.NoError(t, err)
 
-	rules, err := env.svc.store.ListRules()
+	rules, err := env.svc.store.ListRules(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, rules)
 }

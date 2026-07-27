@@ -200,3 +200,102 @@ func TestBedrockRuntimeRequest_MissingAccountIDReturnsServerInternal(t *testing.
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
+
+// newVLLMStreamStub stands up an httptest server answering the OpenAI
+// chat-completions streaming (SSE) wire, for the ConverseStream self-host path.
+func newVLLMStreamStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":"hi from vllm stream"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2}}
+
+data: [DONE]
+
+`))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// newLlamaCompletionsStreamStub stands up an httptest server answering the
+// OpenAI completions streaming (SSE) wire, for the
+// InvokeModelWithResponseStream self-host path.
+func newLlamaCompletionsStreamStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"choices":[{"text":"hi from llama stream","finish_reason":null}]}
+
+data: {"choices":[{"text":"","finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}
+
+data: [DONE]
+
+`))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestBedrockRuntimeRequest_ConverseStream(t *testing.T) {
+	ts := newVLLMStreamStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+
+	body := `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`
+	req := bedrockRequestWithAccount(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/converse-stream", body)
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.BedrockRuntime_Request(w, req))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/vnd.amazon.eventstream", w.Header().Get("Content-Type"))
+	assert.NotZero(t, w.Body.Len())
+}
+
+func TestBedrockRuntimeRequest_ConverseStream_UnknownModelReturnsResourceNotFound(t *testing.T) {
+	ts := newVLLMStreamStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+
+	body := `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`
+	req := bedrockRequestWithAccount(http.MethodPost, "/model/does.not-exist-v1:0/converse-stream", body)
+	w := httptest.NewRecorder()
+	err := gw.BedrockRuntime_Request(w, req)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	// Pre-stream failure: BedrockRuntime_Request must not have written
+	// anything, leaving ErrorHandler free to write the JSON envelope.
+	assert.Zero(t, w.Body.Len())
+}
+
+func TestBedrockRuntimeRequest_InvokeModelWithResponseStream(t *testing.T) {
+	ts := newLlamaCompletionsStreamStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+
+	body := `{"prompt":"hello","max_gen_len":128}`
+	req := bedrockRequestWithAccount(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/invoke-with-response-stream", body)
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.BedrockRuntime_Request(w, req))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/vnd.amazon.eventstream", w.Header().Get("Content-Type"))
+	assert.NotZero(t, w.Body.Len())
+}
+
+func TestBedrockRuntimeRequest_InvokeModelWithResponseStream_UnknownModelReturnsResourceNotFound(t *testing.T) {
+	ts := newLlamaCompletionsStreamStub(t)
+	gw := newBedrockRequestGateway(t, ts.URL)
+
+	body := `{"prompt":"hello"}`
+	req := bedrockRequestWithAccount(http.MethodPost, "/model/does.not-exist-v1:0/invoke-with-response-stream", body)
+	w := httptest.NewRecorder()
+	err := gw.BedrockRuntime_Request(w, req)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.Zero(t, w.Body.Len())
+}

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/banner.svg" alt="Spinifex — AWS-Compatible Infrastructure Stack" width="900">
+  <img src=".github/assets/banner.svg" alt="Spinifex: the open, AWS-compatible cloud you run yourself. EC2, EBS, S3, VPC, and IAM on your infrastructure, at the edge, or on a Neocloud." width="900">
 </p>
 
 <p align="center">
@@ -11,6 +11,8 @@
 <p align="center">
   <a href="#what-is-spinifex">What is Spinifex?</a> ·
   <a href="#the-platform">Platform</a> ·
+  <a href="#three-ways-to-deploy">Deploy</a> ·
+  <a href="#aws-compatibility">AWS services</a> ·
   <a href="#core-components">Components</a> ·
   <a href="#architecture-at-a-glance">Architecture</a> ·
   <a href="#installation">Installation</a> ·
@@ -19,30 +21,89 @@
 
 ---
 
-# Spinifex: An Open Source AWS-Compatible Stack for Bare-Metal, Edge, and On-Prem Deployments
+# Spinifex: the open, AWS-compatible cloud you run yourself
 
-Spinifex developed by [Mulga Defense Corporation](https://mulgadc.com) is an open source infrastructure platform that brings the core services of AWS—like EC2, VPC, EBS, and S3—to environments where running in the cloud isn't an option. Whether you're deploying to edge sites, private data-centers, or need to operate in low-connectivity or highly contested environments, Spinifex gives you AWS-style workflows on your own hardware.
+Spinifex, built by [Mulga](https://mulgadc.com), recreates the AWS services your
+software already uses (EC2, EBS, S3, VPC, IAM) on infrastructure you control.
+Move workloads off the hyperscalers, run AI at a fraction of the cost, or take
+the cloud to the edge, without rewriting a line. The exact build you ship to AWS,
+Spinifex serves on your own hardware: same APIs, same Terraform, same SDKs.
 
 ## What is Spinifex?
 
-Spinifex replicates essential AWS primitives—virtual machines, block volumes, and object storage—using lightweight, self-contained components that are easy to deploy and integrate.
+Spinifex is an open-source infrastructure platform that recreates the AWS service
+surface (EC2, EBS, S3, VPC, IAM) on bare-metal, edge, and on-premises
+environments. Run cloud-native software without a hyperscaler.
 
-It's designed for developers and operators who need:
+Most AWS alternatives wrap an API and call it a cloud. We rebuilt the engineering
+underneath: distributed object storage with erasure coding, block storage built
+to survive failure, and compute on bare metal. That depth is the reason your
+software runs unchanged, instead of rewritten.
 
-- Cloud-like infrastructure without the cloud
-- Minimal dependencies, full control
-- Drop-in compatibility with tools like the AWS CLI, SDKs, and Terraform
-- A secure cloud environment you control and own the entire hardware, network and software stack
+It's built for teams that need:
 
-You can run Spinifex on a few servers in a rack, a field site, or anywhere centralized cloud services aren't feasible.
+- The AWS tooling they already use (AWS CLI, SDKs, Terraform), with nothing to rewrite
+- Full control of the stack: your hardware, your network, your data, your keys
+- A cloud that keeps running offline, through disconnection, with no external control plane
+- An open core (AGPL-3.0), auditable and yours to keep, with no lock-in
+
+You change *where* your software runs, not *what* it is.
 
 ## The Platform
 
 <p align="center">
-  <img src=".github/assets/platform.svg" alt="The Mulga Platform — Hardware to Applications" width="900">
+  <img src=".github/assets/platform.svg" alt="The Spinifex stack: your apps and AWS tooling on top, the Spinifex AWS-compatible service layer, running on standard Linux on CPU and GPU hardware, deployable to Neocloud, on-premise, or the edge." width="900">
 </p>
 
 From commodity hardware up to unmodified AWS tooling, every layer is replaceable and yours to own.
+
+## Three ways to deploy
+
+One AWS-compatible surface, three deployment shapes. Pick the one that matches
+your reality; the platform on top is the same.
+
+### Neocloud
+
+Lift and shift onto a partner Neocloud. Move workloads off the hyperscalers and
+onto our Neocloud partner ecosystem without rewriting them. GPU capacity
+(H100 / H200 / B200), cheaper, available now. Change an endpoint, keep the
+software.
+
+### On-premise
+
+Bring your own hardware and host Spinifex in your own data centre. A real
+multi-node HA cluster integrated with your storage and networking, with full
+control of stack, data, and jurisdiction. A predictable bill, no egress
+surprises, an auditable open-source core.
+
+### Edge
+
+Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels,
+factories, and clinics. Compute next to the data, running through disconnection,
+on hardware you own. The same AWS APIs your software already uses.
+
+## AWS compatibility
+
+Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform:
+everything you deploy on AWS deploys on Spinifex unchanged. At the edge,
+on-premise, or on a partner Neocloud.
+
+| Service | What it is | Status |
+| --- | --- | --- |
+| **EC2** | Compute | Available |
+| **EBS** | Block storage | Available |
+| **S3** | Object storage | Available |
+| **VPC** | Networking | Available |
+| **IAM** | Identity & auth | Available |
+| **ALB / NLB** | Load balancers | Available |
+| **EKS** | Kubernetes | Available |
+| **ECR** | Container registry | Available |
+| **ECS** | Container service | Available |
+| **RDS** | Databases | Q3 2026 |
+
+Roadmap items (Q3 2026) ship under the same AWS API surface. Code written for AWS
+today keeps working the moment they land.
+[Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 
 ## Core Components
 
@@ -75,19 +136,23 @@ Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs
 ## Architecture at a Glance
 
 <p align="center">
-  <img src=".github/assets/architecture.svg" alt="Spinifex message-driven architecture — AWS Gateway, NATS bus, service daemons" width="900">
+  <img src=".github/assets/architecture.svg" alt="Spinifex message-driven architecture: standard AWS clients call the AWS Gateway over HTTPS with SigV4, which publishes to a NATS bus answered by stateless ec2/ebs/s3/vpc/iam daemons over local backends." width="900">
 </p>
 
-Every AWS API call is authenticated at the gateway, published to a NATS subject, and answered by whichever daemon claims it. Daemons are stateless — scale horizontally by starting more. No etcd, no Kubernetes, no external control plane. Deep dive: **[`docs/DESIGN.md`](docs/DESIGN.md)**.
+Every AWS API call is authenticated at the gateway, published to a NATS subject,
+and answered by whichever daemon claims it. Daemons are stateless: scale
+horizontally by starting more. No etcd, no Kubernetes, no external control plane.
+Just systemd units, a NATS cluster, and your hardware. Deep dive:
+**[`docs/DESIGN.md`](docs/DESIGN.md)**.
 
 ## Key Features
 
-AWS-Compatible Interfaces – Provision infrastructure with awscli, Terraform, or SDKs you already use.
-
-- Designed for Control – Run on your own terms, whether that's in a datacenter, remote site, or sensitive environment.
-- Minimal Dependencies – Each service is standalone and avoids complex orchestration layers.
-- Works Offline – No reliance on centralized cloud services or external networks.
-- Open Source – Licensed under AGPL 3.0. Fork it, extend it, or deploy it as-is.
+- **AWS-compatible APIs.** Use the AWS CLI, SDKs, and Terraform you already know. Repoint your endpoint and ship; nothing to rewrite.
+- **Zero cloud dependency.** Runs entirely on your hardware. No phone-home, no control plane, no external authority. Works fully offline.
+- **Bare-metal compute.** QEMU-based with direct hardware access. No hypervisor tax, no abstraction overhead.
+- **Built-in storage.** Block and object storage included: NVMe caching, Reed-Solomon erasure coding, and replication out of the box.
+- **Edge-first architecture.** Designed for disconnected, contested, and resource-constrained environments from day one.
+- **Open core, no lock-in.** AGPL-3.0 with a commercial option. Inspect it, modify it, deploy it. The platform is yours to keep.
 
 ## Installation
 

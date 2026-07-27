@@ -12,6 +12,7 @@ import (
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,12 +29,28 @@ func respondJSON(t *testing.T, nc *nats.Conn, subject string, out *ec2.DescribeI
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
+func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket:  handlers_quota.KVBucketAccountUsage,
+		History: 5,
+	})
+	require.NoError(t, err)
+
+	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	status, err := bucket.Status(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 5, status.History())
+}
+
 // TestRunQuotaReconcile drives the leader-locked reconcile loop end to end: the
 // startup pass elects this gateway, describes the account's instances over NATS
 // via the production NATSInstanceLister, and writes the recomputed vCPU counter.
 func TestRunQuotaReconcile(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-	bucket, err := openAccountUsageBucket(js, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	bucket, err := openAccountUsageBucket(t.Context(), testutil.NewJetStream(t, nc), 1)
 	require.NoError(t, err)
 	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
@@ -70,9 +87,9 @@ func TestRunQuotaReconcile(t *testing.T) {
 
 // readUsageCounter reads an account's integer vCPU counter from the usage bucket,
 // returning -1 while the key is still absent so Eventually keeps polling.
-func readUsageCounter(t *testing.T, bucket nats.KeyValue, account string) int {
+func readUsageCounter(t *testing.T, bucket jetstream.KeyValue, account string) int {
 	t.Helper()
-	entry, err := bucket.Get(account)
+	entry, err := bucket.Get(t.Context(), account)
 	if err != nil {
 		return -1
 	}

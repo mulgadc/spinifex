@@ -1,12 +1,13 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ipamBucket / eniBucket mirror handlers/ec2/vpc.KVBucketIPAM and
@@ -54,15 +55,15 @@ func init() {
 		FromVersion: 1,
 		ToVersion:   2,
 		Description: "convert subnet IPAM Allocated []string → []IPEntry; backfill Purpose+OwnerID from ENIs",
-		Run: func(ctx KVContext) error {
-			ownerIndex, err := buildIPAMOwnerIndex(ctx.JetStream)
+		Run: func(ctx context.Context, kvc KVContext) error {
+			ownerIndex, err := buildIPAMOwnerIndex(ctx, kvc.JetStream)
 			if err != nil {
 				return fmt.Errorf("build owner index: %w", err)
 			}
 
-			keys, err := ctx.KV.Keys()
+			keys, err := kvc.KV.Keys(ctx)
 			if err != nil {
-				if errors.Is(err, nats.ErrNoKeysFound) {
+				if errors.Is(err, jetstream.ErrNoKeysFound) {
 					return nil
 				}
 				return fmt.Errorf("list keys: %w", err)
@@ -72,7 +73,7 @@ func init() {
 				if key == utils.VersionKey {
 					continue
 				}
-				if err := convertIPAMRecord(ctx, key, ownerIndex); err != nil {
+				if err := convertIPAMRecord(ctx, kvc, key, ownerIndex); err != nil {
 					return err
 				}
 			}
@@ -84,24 +85,24 @@ func init() {
 // buildIPAMOwnerIndex returns map[subnetID]map[ip]eniID by walking the ENI
 // bucket. Returns an empty index if the ENI bucket is missing
 // (fresh-install case) so the migration still runs cleanly.
-func buildIPAMOwnerIndex(js nats.JetStreamContext) (map[string]map[string]string, error) {
+func buildIPAMOwnerIndex(ctx context.Context, js jetstream.JetStream) (map[string]map[string]string, error) {
 	if js == nil {
 		// Called via the bare RunKV path (e.g. in tests with no JS). Skip
 		// owner attribution — all entries become Purpose=unknown so the
 		// schema-only conversion still succeeds.
 		return map[string]map[string]string{}, nil
 	}
-	eniKV, err := js.KeyValue(eniBucket)
+	eniKV, err := js.KeyValue(ctx, eniBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return map[string]map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("open ENI bucket: %w", err)
 	}
 
-	keys, err := eniKV.Keys()
+	keys, err := eniKV.Keys(ctx)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return map[string]map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("list ENI keys: %w", err)
@@ -112,9 +113,9 @@ func buildIPAMOwnerIndex(js nats.JetStreamContext) (map[string]map[string]string
 		if key == utils.VersionKey {
 			continue
 		}
-		entry, err := eniKV.Get(key)
+		entry, err := eniKV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("get ENI %s: %w", key, err)
@@ -134,12 +135,12 @@ func buildIPAMOwnerIndex(js nats.JetStreamContext) (map[string]map[string]string
 	return index, nil
 }
 
-func convertIPAMRecord(ctx KVContext, key string, ownerIndex map[string]map[string]string) error {
+func convertIPAMRecord(ctx context.Context, kvc KVContext, key string, ownerIndex map[string]map[string]string) error {
 	var lastErr error
 	for attempt := range ipamMigrationMaxRetries {
-		entry, err := ctx.KV.Get(key)
+		entry, err := kvc.KV.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return nil
 			}
 			return fmt.Errorf("get %s: %w", key, err)
@@ -172,7 +173,7 @@ func convertIPAMRecord(ctx KVContext, key string, ownerIndex map[string]map[stri
 			if !found {
 				ownerID = ""
 				purpose = "unknown"
-				ctx.Logger.Warn("internal IPAM v1→v2 migration: no owning ENI, tagging unknown",
+				kvc.Logger.Warn("internal IPAM v1→v2 migration: no owning ENI, tagging unknown",
 					"subnet", raw.SubnetId, "ip", ip)
 			}
 			converted = append(converted, ipEntryV2{IP: ip, Purpose: purpose, OwnerID: ownerID})
@@ -187,9 +188,9 @@ func convertIPAMRecord(ctx KVContext, key string, ownerIndex map[string]map[stri
 		if err != nil {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
-		if _, err := ctx.KV.Update(key, data, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
-				ctx.Logger.Warn("internal IPAM migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
+		if _, err := kvc.KV.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				kvc.Logger.Warn("internal IPAM migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue
 			}

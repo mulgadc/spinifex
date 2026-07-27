@@ -408,7 +408,7 @@ func TestCreateAccount_PublishesEvent(t *testing.T) {
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
 
-	svc, err := NewIAMServiceImpl(nc, masterKey, 1)
+	svc, err := NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
 	eventCh := make(chan *nats.Msg, 1)

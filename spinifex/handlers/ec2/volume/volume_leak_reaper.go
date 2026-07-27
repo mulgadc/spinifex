@@ -100,13 +100,13 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 	return marked, nil
 }
 
-// markVolumeOrphaned tags the volume as orphaned and persists it. Tag-only: the
-// volume's data and state are untouched so reclamation stays an explicit choice.
+// markVolumeOrphaned tags the volume as orphaned in the control-plane-owned
+// tags.json. The volume's data and state remain untouched.
 func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, cfg *viperblock.VolumeConfig) error {
 	if cfg.VolumeMetadata.Tags == nil {
 		cfg.VolumeMetadata.Tags = make(map[string]string)
 	}
 	cfg.VolumeMetadata.Tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
 	cfg.VolumeMetadata.Tags[orphanInstanceTagKey] = cfg.VolumeMetadata.AttachedInstance
-	return s.putVolumeConfig(ctx, volumeID, cfg)
+	return s.putVolumeTags(ctx, volumeID, cfg.VolumeMetadata.Tags)
 }

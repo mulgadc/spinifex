@@ -36,3 +36,11 @@ func SafeUint64ToInt64(v uint64) int64 {
 	}
 	return int64(v)
 }
+
+// SafeUint64ToInt converts uint64 to int, capping at math.MaxInt.
+func SafeUint64ToInt(v uint64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
+}

@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -21,6 +22,7 @@ const (
 // (AKIA prefix, principalType "user") may call this; assumed-role and session callers
 // are rejected. Caller identity is resolved by the gateway and passed as plain strings.
 func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+	ctx := context.Background()
 	if input == nil {
 		// An absent body is the common case from `aws sts get-session-token` with no args.
 		input = &sts.GetSessionTokenInput{}
@@ -56,7 +58,7 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 		duration = clampGetSessionTokenDuration(*input.DurationSeconds)
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSession(userEnvelope(callerAccountID, callerUserName), duration)
+	cred, plainSecret, plainToken, err := s.mintSession(ctx, userEnvelope(callerAccountID, callerUserName), duration)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,9 +14,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 // Per-account IAM bucket holds account-scoped resources (currently the OIDC provider registry).
@@ -46,8 +49,8 @@ func OIDCProviderARN(accountID, issuerHostPath string) string {
 }
 
 // GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
-func GetOrCreateIAMAccountBucket(js nats.JetStreamContext, accountID string, replicas int) (nats.KeyValue, error) {
-	return getOrCreateBucket(js, IAMAccountBucketName(accountID), 1, max(replicas, 1))
+func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string, replicas int) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, IAMAccountBucketName(accountID), 1, max(replicas, 1))
 }
 
 // OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
@@ -101,6 +104,7 @@ func awsStrings(in []*string) []string {
 }
 
 func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
 	issuer := aws.StringValue(input.Url)
 	if err := validateOIDCProviderURL(issuer); err != nil {
 		slog.Debug("CreateOpenIDConnectProvider: invalid Url", "url", issuer, "err", err)
@@ -119,13 +123,13 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, fmt.Errorf("marshal OIDC provider: %w", err)
 	}
 
-	kv, err := GetOrCreateIAMAccountBucket(s.js, accountID, s.replicas)
+	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID, s.replicas)
 	if err != nil {
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 
-	if _, err := kv.Create(OIDCProviderKey(issuer), data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := kv.Create(ctx, OIDCProviderKey(issuer), data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store OIDC provider: %w", err)
@@ -140,7 +144,8 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 }
 
 func (s *IAMServiceImpl) GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProviderInput) (*iam.GetOpenIDConnectProviderOutput, error) {
-	record, err := s.getOIDCProvider(accountID, aws.StringValue(input.OpenIDConnectProviderArn))
+	ctx := context.Background()
+	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))
 	if err != nil {
 		return nil, err
 	}
@@ -154,21 +159,22 @@ func (s *IAMServiceImpl) GetOpenIDConnectProvider(accountID string, input *iam.G
 }
 
 func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error) {
+	ctx := context.Background()
 	out := &iam.ListOpenIDConnectProvidersOutput{
 		OpenIDConnectProviderList: []*iam.OpenIDConnectProviderListEntry{},
 	}
 
-	kv, err := s.js.KeyValue(IAMAccountBucketName(accountID))
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return out, nil
 		}
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 
-	keys, err := kv.Keys()
+	keys, err := kvutil.Keys(ctx, kv)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return out, nil
 		}
 		return nil, fmt.Errorf("list OIDC provider keys: %w", err)
@@ -178,9 +184,9 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 		if key == utils.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
 			continue
 		}
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
 			slog.Warn("ListOpenIDConnectProviders: get failed", "key", key, "err", err)
@@ -200,28 +206,29 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 }
 
 func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
 	issuer, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 
-	kv, err := s.js.KeyValue(IAMAccountBucketName(accountID))
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 
 	key := OIDCProviderKey(issuer)
-	if _, err := kv.Get(key); err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := kv.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get OIDC provider: %w", err)
 	}
-	if err := kv.Delete(key); err != nil {
+	if err := kv.Delete(ctx, key); err != nil {
 		return nil, fmt.Errorf("delete OIDC provider: %w", err)
 	}
 
@@ -232,12 +239,13 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 // TagOpenIDConnectProvider upserts tags on an OIDC provider. Blind
 // read-modify-write Put like the other writers here (no CAS).
 func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
-	record, err := s.getOIDCProvider(accountID, arn)
+	record, err := s.getOIDCProvider(ctx, accountID, arn)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +256,7 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 	}
 	record.Tags = merged
 
-	if err := s.putOIDCProvider(accountID, record); err != nil {
+	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err
 	}
 
@@ -259,15 +267,16 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 // UntagOpenIDConnectProvider removes the named tag keys from an OIDC provider;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
-	record, err := s.getOIDCProvider(accountID, arn)
+	record, err := s.getOIDCProvider(ctx, accountID, arn)
 	if err != nil {
 		return nil, err
 	}
 
 	record.Tags = removeTagKeys(record.Tags, input.TagKeys)
 
-	if err := s.putOIDCProvider(accountID, record); err != nil {
+	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err
 	}
 
@@ -278,7 +287,8 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 // ListOpenIDConnectProviderTags returns an OIDC provider's tags. Pagination is
 // not implemented: IsTruncated is always false.
 func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
-	record, err := s.getOIDCProvider(accountID, aws.StringValue(input.OpenIDConnectProviderArn))
+	ctx := context.Background()
+	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))
 	if err != nil {
 		return nil, err
 	}
@@ -290,39 +300,39 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *
 
 // putOIDCProvider overwrites an existing provider record, keyed by its issuer
 // URL. The record must have been read from the bucket first.
-func (s *IAMServiceImpl) putOIDCProvider(accountID string, record *OIDCProviderRecord) error {
+func (s *IAMServiceImpl) putOIDCProvider(ctx context.Context, accountID string, record *OIDCProviderRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal OIDC provider: %w", err)
 	}
-	kv, err := s.js.KeyValue(IAMAccountBucketName(accountID))
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return fmt.Errorf("open IAM account bucket: %w", err)
 	}
-	if _, err := kv.Put(OIDCProviderKey(record.Url), data); err != nil {
+	if _, err := kv.Put(ctx, OIDCProviderKey(record.Url), data); err != nil {
 		return fmt.Errorf("store OIDC provider: %w", err)
 	}
 	return nil
 }
 
-func (s *IAMServiceImpl) getOIDCProvider(accountID, arn string) (*OIDCProviderRecord, error) {
+func (s *IAMServiceImpl) getOIDCProvider(ctx context.Context, accountID, arn string) (*OIDCProviderRecord, error) {
 	issuer, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
-	kv, err := s.js.KeyValue(IAMAccountBucketName(accountID))
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
-	entry, err := kv.Get(OIDCProviderKey(issuer))
+	entry, err := kv.Get(ctx, OIDCProviderKey(issuer))
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get OIDC provider: %w", err)

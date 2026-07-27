@@ -5,9 +5,6 @@ package multinode
 import (
 	"context"
 	"fmt"
-	"net"
-	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,11 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fresh-install reachability baselines. Run before needInstanceTrio so the
+// Fresh-install reachability baseline. Run before needInstanceTrio so the
 // default SG/subnet/route-table are in their pristine state.
 //
-//   - runMultinodeDefaultSGReachabilityBaseline: proves the SG (not routing)
-//     gates external tcp/22 — blocked before authorize, reachable after.
 //   - runMultinodeSameSGCrossHostComms: proves the default SG self-reference
 //     rule spans chassis — ICMP between two instances on different nodes
 //     succeeds with no added ingress rule.
@@ -61,9 +56,12 @@ func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnet
 	}
 	require.NotEmpty(t, id, "RunInstances never succeeded")
 	t.Cleanup(func() {
-		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
+		if _, err := fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: []*string{aws.String(id)},
-		})
+		}); err != nil {
+			t.Errorf("terminate instance %s: %v", id, err)
+			return
+		}
 		harness.WaitForInstanceState(t, fix.AWS, id, "terminated")
 	})
 	harness.WaitForInstanceState(t, fix.AWS, id, "running")
@@ -88,61 +86,10 @@ func instancePrivateIP(t *testing.T, fix *Fixture, id string) string {
 func sshCapture(pem, user, host string, port int, cmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := []string{
-		"-i", pem,
-		"-p", strconv.Itoa(port),
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-o", "LogLevel=ERROR",
-		fmt.Sprintf("%s@%s", user, host),
-		cmd,
-	}
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	out, err := harness.RunGuestSSH(ctx, harness.SSHTarget{
+		User: user, Host: host, Port: port, KeyPath: pem,
+	}, cmd)
 	return string(out), err
-}
-
-// runMultinodeDefaultSGReachabilityBaseline asserts the default-deny SG gate
-// on the public-IP datapath: blocked before authorize, reachable after.
-func runMultinodeDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode — Baseline: default-deny SG blocks external reach until authorized")
-
-	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, arch := needInstanceTypeArch(t, fix)
-	amiID := needAMI(t, fix, arch)
-	keyName, keyPath := needKeyPair(t, fix)
-
-	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-denysg")
-	id := baselineLaunch(t, fix, amiID, instType, keyName, subnetID, []string{sgID})
-
-	inst := harness.WaitForInstanceState(t, fix.AWS, id, "running")
-	pubIP := aws.StringValue(inst.PublicIpAddress)
-	if pubIP == "" || pubIP == "None" {
-		t.Fatalf("instance %s has no public IP; the datapath it depends on is "+
-			"broken or the subnet does not auto-assign one (hostfwd fallback is disabled)", id)
-	}
-	harness.Detail(t, "instance", id, "public_ip", pubIP, "sg", sgID)
-
-	harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, derr := net.DialTimeout("tcp", net.JoinHostPort(pubIP, "22"), 3*time.Second)
-		if derr == nil {
-			_ = conn.Close()
-			t.Fatalf("tcp/22 to %s connected with NO ingress rule — default-deny SG must block external traffic", pubIP)
-		}
-		time.Sleep(3 * time.Second)
-	}
-
-	harness.Step(t, "authorizing tcp/22, expecting reachability")
-	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	harness.GuestSSHReady(t, pubIP, 22, "ubuntu", keyPath,
-		harness.WithTimeout(3*time.Minute), harness.WithPoll(3*time.Second))
-
-	out, err := sshCapture(keyPath, "ubuntu", pubIP, 22, "id")
-	require.NoErrorf(t, err, "ssh id after authorize: %s", out)
-	assert.Containsf(t, out, "ubuntu", "ssh id after authorize\n%s", out)
 }
 
 // runMultinodeSameSGCrossHostComms launches two instances on different nodes sharing

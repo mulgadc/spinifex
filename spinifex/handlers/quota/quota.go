@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ReconcileInterval is how often the gateway recomputes vCPU counters. It is
@@ -44,13 +44,13 @@ type Service struct {
 	// usage holds the per-account vCPU counters (key {accountID}). Nil when
 	// quotas are disabled, in which case Exempt short-circuits every check
 	// before the counter is touched.
-	usage nats.KeyValue
+	usage jetstream.KeyValue
 }
 
 // New constructs a quota Service from the configured limits and the gateway-owned
 // account-usage KV bucket. usage may be nil when quotas are disabled; Exempt then
 // short-circuits every check before the counter is read.
-func New(limits Limits, usage nats.KeyValue) *Service {
+func New(limits Limits, usage jetstream.KeyValue) *Service {
 	return &Service{limits: limits, usage: usage}
 }
 

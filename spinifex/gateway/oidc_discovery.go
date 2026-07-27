@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // oidcDiscoveryDocument is the subset of the OpenID Connect Discovery metadata
@@ -24,17 +25,17 @@ type oidcDiscoveryDocument struct {
 }
 
 // eksAccountKV opens the read-only per-account EKS bucket. Returns
-// nats.ErrBucketNotFound (unwrapped) when the account has no clusters, which
+// jetstream.ErrBucketNotFound (unwrapped) when the account has no clusters, which
 // the OIDC handlers translate to 404.
-func (gw *GatewayConfig) eksAccountKV(accountID string) (nats.KeyValue, error) {
+func (gw *GatewayConfig) eksAccountKV(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
 	if gw.NATSConn == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
 	}
-	js, err := gw.NATSConn.JetStream()
+	js, err := jetstream.New(gw.NATSConn)
 	if err != nil {
 		return nil, err
 	}
-	return js.KeyValue(handlers_eks.AccountBucketName(accountID))
+	return js.KeyValue(ctx, handlers_eks.AccountBucketName(accountID))
 }
 
 // OIDCDiscoveryDocument serves the cluster's OpenID discovery document. The
@@ -45,9 +46,9 @@ func (gw *GatewayConfig) OIDCDiscoveryDocument(w http.ResponseWriter, r *http.Re
 	accountID := chi.URLParam(r, "accountID")
 	clusterName := chi.URLParam(r, "clusterName")
 
-	kv, err := gw.eksAccountKV(accountID)
+	kv, err := gw.eksAccountKV(r.Context(), accountID)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -56,7 +57,7 @@ func (gw *GatewayConfig) OIDCDiscoveryDocument(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	meta, err := handlers_eks.GetClusterMeta(kv, clusterName)
+	meta, err := handlers_eks.GetClusterMeta(r.Context(), kv, clusterName)
 	if err != nil || meta == nil || meta.OIDCIssuer == "" {
 		http.NotFound(w, r)
 		return
@@ -78,9 +79,9 @@ func (gw *GatewayConfig) OIDCJWKS(w http.ResponseWriter, r *http.Request) {
 	accountID := chi.URLParam(r, "accountID")
 	clusterName := chi.URLParam(r, "clusterName")
 
-	kv, err := gw.eksAccountKV(accountID)
+	kv, err := gw.eksAccountKV(r.Context(), accountID)
 	if err != nil {
-		if errors.Is(err, nats.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -89,7 +90,7 @@ func (gw *GatewayConfig) OIDCJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := kv.Get(handlers_eks.OIDCJWKSKey(clusterName))
+	entry, err := kv.Get(r.Context(), handlers_eks.OIDCJWKSKey(clusterName))
 	if err != nil {
 		http.NotFound(w, r)
 		return

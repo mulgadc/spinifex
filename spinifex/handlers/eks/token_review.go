@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // WebhookTokenReviewResult is the gateway's reply to the eks-token-webhook's
@@ -71,11 +72,11 @@ func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterNa
 	if nc == nil {
 		return WebhookTokenReviewResult{}, fmt.Errorf("eks: ResolveTokenReview nil nats conn")
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return WebhookTokenReviewResult{}, fmt.Errorf("eks: jetstream: %w", err)
 	}
-	kv, err := js.KeyValue(AccountBucketName(accountID))
+	kv, err := js.KeyValue(ctx, AccountBucketName(accountID))
 	if err != nil {
 		return WebhookTokenReviewResult{}, fmt.Errorf("eks: open account KV %s: %w", accountID, err)
 	}
@@ -87,7 +88,7 @@ func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterNa
 			verifyTimeout, "")
 	}
 	lookup := func(principalARN string) (*AccessEntryRecord, error) {
-		return GetAccessEntryRecord(kv, clusterName, principalARN)
+		return GetAccessEntryRecord(ctx, kv, clusterName, principalARN)
 	}
 	return Authenticate(token, verify, lookup), nil
 }

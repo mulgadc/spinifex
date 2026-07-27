@@ -70,6 +70,47 @@ func TestValidErrorCode(t *testing.T) {
 	}
 }
 
+func TestResolveErrorCode(t *testing.T) {
+	known := errors.New(ErrorInsufficientAddressCapacity)
+	tests := []struct {
+		name   string
+		err    error
+		want   string
+		wantOK bool
+	}{
+		{name: "nil", err: nil},
+		{name: "exact code", err: known, want: ErrorInsufficientAddressCapacity, wantOK: true},
+		{name: "single wrapper", err: fmt.Errorf("allocate public address: %w", known), want: ErrorInsufficientAddressCapacity, wantOK: true},
+		{name: "nested wrappers", err: fmt.Errorf("launch on node: %w", fmt.Errorf("prepare instance: %w", known)), want: ErrorInsufficientAddressCapacity, wantOK: true},
+		{name: "joined errors", err: errors.Join(errors.New("opaque"), known), want: ErrorInsufficientAddressCapacity, wantOK: true},
+		{name: "first joined code wins", err: errors.Join(errors.New(ErrorAuthFailure), known), want: ErrorAuthFailure, wantOK: true},
+		{name: "unknown error", err: errors.New("opaque")},
+		{name: "code substring is not exact", err: errors.New("launch failed: " + ErrorInsufficientAddressCapacity)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ResolveErrorCode(tt.err)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("ResolveErrorCode() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestValidErrorCodeFromError(t *testing.T) {
+	wrapped := fmt.Errorf("launch: %w", errors.New(ErrorInsufficientInstanceCapacity))
+	if got := ValidErrorCodeFromError(wrapped); got != ErrorInsufficientInstanceCapacity {
+		t.Errorf("ValidErrorCodeFromError() = %q, want %q", got, ErrorInsufficientInstanceCapacity)
+	}
+	if got := ValidErrorCodeFromError(errors.New("opaque")); got != ErrorServerInternal {
+		t.Errorf("ValidErrorCodeFromError() = %q, want %q", got, ErrorServerInternal)
+	}
+	if got := ValidErrorCodeFromError(nil); got != ErrorServerInternal {
+		t.Errorf("ValidErrorCodeFromError(nil) = %q, want %q", got, ErrorServerInternal)
+	}
+}
+
 func TestHasErrorCode(t *testing.T) {
 	tests := []struct {
 		name string

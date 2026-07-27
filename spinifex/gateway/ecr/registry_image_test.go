@@ -157,7 +157,8 @@ func TestListImages_TaggedAndUntagged(t *testing.T) {
 // canonicalize on meta.Digest to emit a real digest and keep tag association.
 // The memory store returns real digests and would mask this.
 func TestListImages_KVDigestForm(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	reg := NewRegistry(objectstore.NewMemoryObjectStore(), ecr.NewKVMetaStore(js), testAccount)
 	repo := "team/app"
 	require.NoError(t, reg.Meta.PutRepo(context.Background(), testAccount, ecr.RepoMeta{Name: repo}))

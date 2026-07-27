@@ -20,7 +20,8 @@ const validLifecyclePolicy = `{"rules":[{"rulePriority":1,"selection":{"tagStatu
 // lifecycle metadata subjects served, returning the gateway NATS connection.
 func newLifecycleTestConn(t *testing.T) *nats.Conn {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 	svc := handlers_ecr.NewKVMetaService(js)
 	serveMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
 	serveMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)

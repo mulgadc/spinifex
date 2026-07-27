@@ -1,4 +1,3 @@
-import type { AttachedPolicy } from "@aws-sdk/client-iam"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
@@ -12,11 +11,7 @@ import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
 import { formatDateTime } from "@/lib/utils"
-import {
-  useAttachRolePolicy,
-  useDeleteRole,
-  useDetachRolePolicy,
-} from "@/mutations/iam"
+import { useDeleteRole } from "@/mutations/iam"
 import {
   iamAttachedRolePoliciesQueryOptions,
   iamInstanceProfilesForRoleQueryOptions,
@@ -25,6 +20,7 @@ import {
   iamRoleQueryOptions,
 } from "@/queries/iam"
 
+import { AttachedPoliciesPanel } from "../../-components/attached-policies-panel"
 import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 import { PolicyDocumentViewer } from "../../-components/policy-document-viewer"
 
@@ -58,33 +54,16 @@ function RoleDetail() {
   const { roleName } = Route.useParams()
   const navigate = useNavigate()
   const { data: roleData } = useSuspenseQuery(iamRoleQueryOptions(roleName))
-  const { data: attachedPoliciesData } = useSuspenseQuery(
-    iamAttachedRolePoliciesQueryOptions(roleName),
-  )
   const { data: profilesData } = useSuspenseQuery(
     iamInstanceProfilesForRoleQueryOptions(roleName),
   )
-  const { data: allPoliciesData } = useSuspenseQuery(iamPoliciesQueryOptions)
 
   const deleteMutation = useDeleteRole()
-  const attachPolicyMutation = useAttachRolePolicy()
-  const detachPolicyMutation = useDetachRolePolicy()
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [showAttachSelect, setShowAttachSelect] = useState(false)
-  const [pendingPolicyAction, setPendingPolicyAction] = useState<string | null>(
-    null,
-  )
 
   const role = roleData.Role
-  const attachedPolicies = attachedPoliciesData.AttachedPolicies ?? []
   const instanceProfiles = profilesData.InstanceProfiles ?? []
-  const allPolicies = allPoliciesData.Policies ?? []
-
-  const attachedArns = new Set(attachedPolicies.map((p) => p.PolicyArn))
-  const availablePolicies = allPolicies.filter(
-    (p) => p.Arn && !attachedArns.has(p.Arn),
-  )
 
   const trustPolicy = role?.AssumeRolePolicyDocument
     ? decodeURIComponent(role.AssumeRolePolicyDocument)
@@ -96,20 +75,6 @@ function RoleDetail() {
       navigate({ to: "/iam/list-roles" })
     } finally {
       setShowDeleteDialog(false)
-    }
-  }
-
-  const handleAttachPolicy = async (policyArn: string) => {
-    await attachPolicyMutation.mutateAsync({ roleName, policyArn })
-    setShowAttachSelect(false)
-  }
-
-  const handleDetachPolicy = async (policyArn: string) => {
-    setPendingPolicyAction(policyArn)
-    try {
-      await detachPolicyMutation.mutateAsync({ roleName, policyArn })
-    } finally {
-      setPendingPolicyAction(null)
     }
   }
 
@@ -128,18 +93,6 @@ function RoleDetail() {
 
       {deleteMutation.error && (
         <ErrorBanner error={deleteMutation.error} msg="Failed to delete role" />
-      )}
-      {attachPolicyMutation.error && (
-        <ErrorBanner
-          error={attachPolicyMutation.error}
-          msg="Failed to attach policy"
-        />
-      )}
-      {detachPolicyMutation.error && (
-        <ErrorBanner
-          error={detachPolicyMutation.error}
-          msg="Failed to detach policy"
-        />
       )}
 
       <div className="space-y-6">
@@ -182,87 +135,7 @@ function RoleDetail() {
           </DetailCard>
         )}
 
-        {/* Attached Policies */}
-        <DetailCard>
-          <DetailCard.Header>
-            <div className="flex items-center justify-between">
-              <span>Attached Policies</span>
-              <Button
-                onClick={() => setShowAttachSelect(!showAttachSelect)}
-                size="sm"
-              >
-                Attach Policy
-              </Button>
-            </div>
-          </DetailCard.Header>
-          <DetailCard.Content>
-            {showAttachSelect && availablePolicies.length > 0 && (
-              <div className="col-span-2 space-y-2 rounded-md border p-3">
-                <p className="text-sm font-medium">
-                  Select a policy to attach:
-                </p>
-                <div className="space-y-1">
-                  {availablePolicies.map((policy) => (
-                    <button
-                      className="flex w-full items-center justify-between rounded-md p-2 text-left text-sm hover:bg-accent"
-                      disabled={attachPolicyMutation.isPending}
-                      key={policy.Arn}
-                      onClick={() => {
-                        if (policy.Arn) {
-                          void handleAttachPolicy(policy.Arn)
-                        }
-                      }}
-                      type="button"
-                    >
-                      <span>{policy.PolicyName}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {policy.Arn}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {showAttachSelect && availablePolicies.length === 0 && (
-              <p className="col-span-2 text-sm text-muted-foreground">
-                No policies available to attach.
-              </p>
-            )}
-            {attachedPolicies.length > 0 ? (
-              <div className="col-span-2 space-y-3">
-                {attachedPolicies.map((policy: AttachedPolicy) => (
-                  <div
-                    className="flex items-center justify-between rounded-md border p-3"
-                    key={policy.PolicyArn}
-                  >
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">{policy.PolicyName}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {policy.PolicyArn}
-                      </p>
-                    </div>
-                    <Button
-                      disabled={pendingPolicyAction === policy.PolicyArn}
-                      onClick={() => {
-                        if (policy.PolicyArn) {
-                          void handleDetachPolicy(policy.PolicyArn)
-                        }
-                      }}
-                      size="sm"
-                      variant="outline"
-                    >
-                      Detach
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="col-span-2 text-sm text-muted-foreground">
-                No attached policies.
-              </p>
-            )}
-          </DetailCard.Content>
-        </DetailCard>
+        <AttachedPoliciesPanel kind="role" name={roleName} />
 
         <InlinePoliciesPanel kind="role" name={roleName} />
 

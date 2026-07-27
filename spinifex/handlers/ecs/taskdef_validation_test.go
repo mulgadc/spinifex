@@ -132,10 +132,10 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	assert.Zero(t, poll.Assignments[0].Containers[1].GPU)
 
 	taskID := taskShortID(aws.StringValue(out.Tasks[0].TaskArn))
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec TaskRecord
-	found, err := getJSON(kv, TaskKey("web", taskID), &rec)
+	found, err := getJSON(t.Context(), kv, TaskKey("web", taskID), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 1, rec.GPU)

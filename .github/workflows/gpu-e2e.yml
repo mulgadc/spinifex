@@ -44,32 +44,6 @@ on:
         description: "Optional -test.run regex scoped to tests/e2e/gpu (empty = run all GPU tests)"
         required: false
         default: ""
-  push:
-    branches:
-      - main
-      - dev
-    paths: &gpu_paths
-      - "spinifex/gpu/**"
-      - "spinifex/instancetypes/**"
-      - "spinifex/daemon/gpu_adapter.go"
-      - "spinifex/daemon/gpu_pool_reconciler.go"
-      - "spinifex/handlers/ecs/gpu_report.go"
-      - "spinifex/handlers/eks/nodegroup.go"
-      - "spinifex/handlers/eks/nodegroup_userdata.go"
-      - "spinifex/vm/vm.go"
-      - "spinifex/vm/lifecycle.go"
-      - "cmd/ecs-agent/gpu_discovery.go"
-      - "cmd/ecs-agent/gpu_ledger.go"
-      - "cmd/spinifex/cmd/admin_gpu.go"
-      - "tests/e2e/gpu/**"
-      - "scripts/images/eks-node-gpu/**"
-      - "scripts/images/ecs-agent-gpu/**"
-      - ".github/workflows/gpu-e2e.yml"
-  pull_request:
-    branches:
-      - main
-      - dev
-    paths: *gpu_paths
 
 permissions:
   contents: read
@@ -88,7 +62,11 @@ env:
   # the GPU suite's own daemon-side spans are emitted by wattle's already-
   # configured obs-agent, not by this job.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
-  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
+  # ci.cell=gpu keeps this workflow's telemetry separable from the tofu-env
+  # workflows'. Nothing in this job bakes these attrs into a daemon (see the
+  # note above), so the label only takes effect once wattle's obs-agent is
+  # given them; there is deliberately no ci.job_id lookup for the same reason.
+  SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=gpu
   WATTLE_SSH_HOST: ${{ vars.WATTLE_SSH_HOST || '192.168.1.13' }}
   WATTLE_SSH_USER: ${{ vars.WATTLE_SSH_USER || 'tf-user' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
@@ -131,7 +109,7 @@ jobs:
       - uses: actions/checkout@v7
         if: steps.gate.outputs.paused != 'true'
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.gate.outputs.paused != 'true'
         with:
           go-version-file: go.mod

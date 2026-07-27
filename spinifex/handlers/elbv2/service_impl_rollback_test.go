@@ -34,7 +34,7 @@ func TestRollbackLBInfra_RemovesAllInfra(t *testing.T) {
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
 	lb := createNLB(t, svc, "nlb-rollback", "internal", subnetID)
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	sgID := rec.NLBManagedSGID
 	require.NotEmpty(t, sgID)
@@ -59,7 +59,7 @@ func TestRollbackLBInfra_RemovesAllInfra(t *testing.T) {
 	}
 
 	// Name claim released → reclaimable by a fresh owner.
-	ok, dup, err := svc.store.ClaimLBName("nlb-rollback", testAccountID, "lb-fresh")
+	ok, dup, err := svc.store.ClaimLBName(t.Context(), "nlb-rollback", testAccountID, "lb-fresh")
 	require.NoError(t, err)
 	assert.True(t, ok, "rollback must release the name claim")
 	assert.False(t, dup)
@@ -75,14 +75,14 @@ func TestRollbackListener_RevokesPortAndDeletesRecord(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-lst-rb", "internet-facing", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 	require.True(t, sgHasRule(describeSG(t, vpcSvc, rec.NLBManagedSGID), "tcp", 443, "0.0.0.0/0"))
 
 	lst, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, lst.Listeners, 1)
-	listenerRec, err := svc.store.GetListenerByArn(*lst.Listeners[0].ListenerArn)
+	listenerRec, err := svc.store.GetListenerByArn(t.Context(), *lst.Listeners[0].ListenerArn)
 	require.NoError(t, err)
 
 	// authorizedCIDRs non-empty ⇒ the config-failure path that already opened the port.
@@ -106,13 +106,13 @@ func TestRollbackListener_NilCIDRsSkipsRevoke(t *testing.T) {
 	lb := createNLB(t, svc, "nlb-lst-nil", "internet-facing", subnetID)
 	createTCPListener(t, svc, lb.LoadBalancerArn, 443)
 
-	rec, err := svc.store.GetLoadBalancerByArn(*lb.LoadBalancerArn)
+	rec, err := svc.store.GetLoadBalancerByArn(t.Context(), *lb.LoadBalancerArn)
 	require.NoError(t, err)
 
 	lst, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lb.LoadBalancerArn}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, lst.Listeners, 1)
-	listenerRec, err := svc.store.GetListenerByArn(*lst.Listeners[0].ListenerArn)
+	listenerRec, err := svc.store.GetListenerByArn(t.Context(), *lst.Listeners[0].ListenerArn)
 	require.NoError(t, err)
 
 	svc.rollbackListener(context.Background(), listenerRec, rec, "tcp", 443, nil, testAccountID)

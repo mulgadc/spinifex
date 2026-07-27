@@ -155,6 +155,11 @@ type VM struct {
 	// 1h TTL bounds visibility regardless.
 	TerminatedAt time.Time `json:"terminated_at,omitzero"`
 
+	// ShuttingDownAt is when the instance entered StateShuttingDown, stamped once
+	// on the transition. The stuck-terminate backstop uses it to bound how long a
+	// terminate may wedge before being force-completed.
+	ShuttingDownAt time.Time `json:"shutting_down_at,omitzero"`
+
 	// CapacityReservationId is the On-Demand Capacity Reservation this instance
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.
@@ -204,6 +209,15 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
+	// Werror and Rerror set QEMU's block on-error policy. Left empty, QEMU
+	// applies its default werror=enospc, which pauses the whole VM on an
+	// out-of-space write rather than reporting it — so a guest never sees the
+	// backend's ENOSPC. Setting "report" delivers the error to the guest,
+	// letting its filesystem surface a clean out-of-space to userspace and stay
+	// alive. Set on the drive: with if=none the virtio-blk device inherits the
+	// BlockBackend's on-error policy.
+	Werror string `json:"werror,omitempty"`
+	Rerror string `json:"rerror,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
 	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
@@ -213,6 +227,16 @@ type Drive struct {
 
 type IOThread struct {
 	ID string `json:"id"`
+}
+
+// Blockdev is a QEMU -blockdev entry: the command-line equivalent of the
+// blockdev-add QMP command. Unlike a -drive with if=none, it produces a
+// monitor-owned node addressable by node-name, which is what makes
+// blockdev-del able to remove it later. Used for data (non-boot, non-EFI)
+// volumes so a cold-booted one has the same detachable block-graph shape as
+// a hot-attached one; boot/EFI volumes keep the legacy -drive shape.
+type Blockdev struct {
+	Value string `json:"value"`
 }
 
 type Config struct {
@@ -234,6 +258,9 @@ type Config struct {
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
+	// Blockdevs are rendered as -blockdev, before Devices, so a -device's
+	// drive= reference resolves against an already-declared node.
+	Blockdevs []Blockdev `json:"blockdevs,omitempty"`
 
 	Devices []Device `json:"devices"`
 	NetDevs []NetDev `json:"net_devs"`
@@ -397,7 +424,22 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 			opts = append(opts, fmt.Sprintf("cache=%s", drive.Cache))
 		}
 
+		if drive.Werror != "" {
+			opts = append(opts, fmt.Sprintf("werror=%s", drive.Werror))
+		}
+
+		if drive.Rerror != "" {
+			opts = append(opts, fmt.Sprintf("rerror=%s", drive.Rerror))
+		}
+
 		args = append(args, "-drive", strings.Join(opts, ","))
+	}
+
+	// -blockdev entries must precede the -device entries that reference them
+	// via drive= so QEMU resolves the node on first pass (QEMU itself
+	// tolerates either order; this just matches how the file already reads).
+	for _, blockdev := range cfg.Blockdevs {
+		args = append(args, "-blockdev", blockdev.Value)
 	}
 
 	for _, device := range cfg.Devices {

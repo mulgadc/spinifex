@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
@@ -13,9 +14,10 @@ import (
 
 func setupTestExternalIPAM(t *testing.T, pools []external.ExternalPoolConfig) *ExternalIPAM {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
-	ipam, err := NewExternalIPAM(js, pools)
+	ipam, err := NewExternalIPAM(t.Context(), js, pools)
 	require.NoError(t, err)
 	return ipam
 }
@@ -337,10 +339,11 @@ func TestExternalIPAM_RangeValidation(t *testing.T) {
 func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	pool := testPool()
 	// Create IPAM twice — second init should be idempotent
-	_, _, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
 
 	// First init
-	ipam1, err := NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
+	ipam1, err := NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	// Allocate an IP
@@ -349,7 +352,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	assert.Equal(t, "192.168.1.151", ip)
 
 	// Second init (simulating restart) — should not lose allocation
-	ipam2, err := NewExternalIPAM(js, []external.ExternalPoolConfig{pool})
+	ipam2, err := NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	record, err := ipam2.GetPoolRecord("wan")
@@ -380,7 +383,10 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 
 	// No pool matches eu-west
 	_, _, err := ipam.AllocateIP(context.Background(), "eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-1", "i-1")
-	assert.ErrorContains(t, err, "InsufficientAddressCapacity")
+	assert.ErrorContains(t, err, `region="eu-west-1" az="eu-west-1a"`)
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
 }
 
 func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {

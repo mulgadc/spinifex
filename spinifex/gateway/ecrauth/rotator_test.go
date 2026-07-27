@@ -77,13 +77,14 @@ func TestPlanRotation(t *testing.T) {
 // always due: a new active key is minted, installed on the issuer, and accepted
 // by the verifier, while the prior key stays verifiable.
 func TestRotateOnce_MintsAndSwaps(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	issuer := NewIssuer(key, testAudience)
 	verifier := NewVerifier(verify, testAudience)
-	kv, err := openSigningBucket(js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	// Token minted under the original key before rotation.
@@ -95,7 +96,7 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 		params: rotationParams{rotateAfter: 0, retainFor: time.Hour, retainCount: 2},
 		now:    func() time.Time { return time.Now().UTC() },
 	}
-	r.rotateOnce(time.Now().UTC())
+	r.rotateOnce(t.Context(), time.Now().UTC())
 
 	// A new active key took over.
 	assert.NotEqual(t, key.Kid, issuer.ActiveKid(), "issuer should sign with the rotated key")
@@ -108,7 +109,7 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 	_, err = verifier.Verify(newTok)
 	require.NoError(t, err, "token from the rotated key must verify")
 
-	_, _, metas, err := reloadKeys(kv, testMasterKey)
+	_, _, metas, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 	assert.Len(t, metas, 2, "previous key retained alongside the new active key")
 }
@@ -117,12 +118,13 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 // retainFor=0 (and no mint) so the older key is pruned and dropped from the
 // verifier.
 func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	first, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	first, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
-	kv, err := openSigningBucket(js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
-	second, err := generateSigningKey(kv, testMasterKey)
+	second, err := generateSigningKey(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 	require.NotEqual(t, first.Kid, second.Kid)
 
@@ -134,9 +136,9 @@ func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 		params: rotationParams{rotateAfter: 1000 * time.Hour, retainFor: 0, retainCount: 2},
 		now:    func() time.Time { return time.Now().UTC() },
 	}
-	r.rotateOnce(time.Now().UTC())
+	r.rotateOnce(t.Context(), time.Now().UTC())
 
-	active, _, metas, err := reloadKeys(kv, testMasterKey)
+	active, _, metas, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 	require.Len(t, metas, 1, "the older key should be pruned")
 	assert.Equal(t, second.Kid, active.Kid, "newest key remains active")
@@ -147,12 +149,13 @@ func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 // with rotateAfter=0 so it mints on the first tick, then cancels: the active key
 // changes and Run returns.
 func TestRotator_RunRotatesThenStops(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	key, verify, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 	issuer := NewIssuer(key, testAudience)
 	verifier := NewVerifier(verify, testAudience)
-	kv, err := openSigningBucket(js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
 
 	r := &Rotator{
@@ -180,14 +183,15 @@ func TestRotator_RunRotatesThenStops(t *testing.T) {
 // TestIssuerVerifier_ConcurrentSwap exercises the hot-swap under -race: Mint and
 // Verify run while SetActiveKey/SetKeys rotate the key set.
 func TestIssuerVerifier_ConcurrentSwap(t *testing.T) {
-	_, _, js := testutil.StartTestJetStream(t)
-	k1, v1, err := LoadOrCreateSigningKey(js, testMasterKey, 1)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	k1, v1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
-	kv, err := openSigningBucket(js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
 	require.NoError(t, err)
-	k2, err := generateSigningKey(kv, testMasterKey)
+	k2, err := generateSigningKey(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
-	_, v2, _, err := reloadKeys(kv, testMasterKey)
+	_, v2, _, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 
 	issuer := NewIssuer(k1, testAudience)

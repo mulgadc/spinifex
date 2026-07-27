@@ -17,9 +17,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -27,6 +29,7 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 	s3backend "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -44,19 +47,24 @@ var _ VolumeService = (*VolumeServiceImpl)(nil)
 // can call UpdateVolumeState directly without a daemon-side adapter.
 var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
 
+// Ensure VolumeServiceImpl satisfies handlers/ec2/instance's VolumeDeleter so
+// InstanceServiceImpl can call DeleteVolume/DeleteVolumeOnTerminate through
+// the dependency wired via SetTerminationDeps.
+var _ handlers_ec2_instance.VolumeDeleter = (*VolumeServiceImpl)(nil)
+
 // VolumeServiceImpl handles EBS volume operations with S3 storage.
 type VolumeServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
 	natsConn   *nats.Conn
-	snapshotKV nats.KeyValue
+	snapshotKV jetstream.KeyValue
 }
 
 // NewVolumeServiceImpl creates a new daemon-side volume service.
 // snapshotKV is optional — when non-nil, DeleteVolume uses O(1) KV lookup
 // instead of scanning all snapshots in S3.
-func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV nats.KeyValue) *VolumeServiceImpl {
+func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV jetstream.KeyValue) *VolumeServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -74,7 +82,7 @@ func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV na
 }
 
 // NewVolumeServiceImplWithStore creates a volume service with a custom ObjectStore (for testing).
-func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...nats.KeyValue) *VolumeServiceImpl {
+func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, snapshotKV ...jetstream.KeyValue) *VolumeServiceImpl {
 	bucketName := ""
 	if cfg != nil {
 		bucketName = cfg.Predastore.Bucket
@@ -202,24 +210,9 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	vbconfig := viperblock.VB{
-		VolumeName:        volumeID,
-		VolumeSize:        volumeSizeBytes,
-		BaseDir:           s.config.WalDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig:      volumeConfig,
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-	}
+	vbconfig := s.buildVBConfig(volumeID, volumeSizeBytes, volumeConfig, mkey, snapshotID, sourceVolumeName)
 
-	// If created from a snapshot, set the snapshot fields so viperblock's
-	// LoadState will call OpenFromSnapshot to load the base block map.
-	if snapshotID != "" {
-		vbconfig.SnapshotID = snapshotID
-		vbconfig.SourceVolumeName = sourceVolumeName
-	}
-
-	vb, err := viperblock.New(&vbconfig, "s3", cfg)
+	vb, err := viperblock.New(vbconfig, "s3", cfg)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume failed to create viperblock instance", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -262,6 +255,36 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	}
 
 	return vol, nil
+}
+
+// buildVBConfig assembles the viperblock.VB config CreateVolume hands to
+// viperblock.New. Split out from CreateVolume so the GC-enablement wiring can
+// be asserted directly against the returned config, without needing a live
+// viperblock/S3 backend to observe it: GCEnabled is not part of
+// viperblock.VBState, so it never round-trips through a saved config.json and
+// can't be checked by reading volume state back.
+func (s *VolumeServiceImpl) buildVBConfig(volumeID string, volumeSizeBytes uint64, volumeConfig viperblock.VolumeConfig, mkey *masterkey.Key, snapshotID, sourceVolumeName string) *viperblock.VB {
+	vbconfig := &viperblock.VB{
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSizeBytes,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		VolumeConfig:      volumeConfig,
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
+		// GCEnabled: default false unless explicitly set to true, matching the
+		// nbdkit plugin and viperblockd resolution of the same config field.
+		GCEnabled: s.config.Viperblock.GCEnabled != nil && *s.config.Viperblock.GCEnabled,
+	}
+
+	// If created from a snapshot, set the snapshot fields so viperblock's
+	// LoadState will call OpenFromSnapshot to load the base block map.
+	if snapshotID != "" {
+		vbconfig.SnapshotID = snapshotID
+		vbconfig.SourceVolumeName = sourceVolumeName
+	}
+
+	return vbconfig
 }
 
 // describeVolumesValidFilters defines the set of filter names accepted by DescribeVolumes.
@@ -1023,6 +1046,9 @@ type volumeStateRecord struct {
 // volumeStateKey is the S3 key for a volume's control-plane state object.
 func volumeStateKey(volumeID string) string { return volumeID + "/state.json" }
 
+// volumeTagsKey is the S3 key for a volume's control-plane tags object.
+func volumeTagsKey(volumeID string) string { return volumeID + "/tags.json" }
+
 // putVolumeState writes the control-plane attachment state to state.json.
 func (s *VolumeServiceImpl) putVolumeState(ctx context.Context, volumeID string, rec volumeStateRecord) error {
 	data, err := json.Marshal(rec)
@@ -1067,7 +1093,56 @@ func (s *VolumeServiceImpl) getVolumeState(ctx context.Context, volumeID string)
 	return rec, true, nil
 }
 
-// GetVolumeConfig reads the raw VolumeConfig from S3 for a given volume ID.
+// putVolumeTags writes the control-plane-owned tag set to tags.json.
+func (s *VolumeServiceImpl) putVolumeTags(ctx context.Context, volumeID string, tags map[string]string) error {
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	data, err := json.Marshal(tags)
+	if err != nil {
+		return fmt.Errorf("marshal volume tags: %w", err)
+	}
+	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(volumeTagsKey(volumeID)),
+		Body:   bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("write volume tags to S3: %w", err)
+	}
+	return nil
+}
+
+// getVolumeTags reads tags.json. found=false means the object is absent, while
+// a present empty map is an authoritative empty tag set.
+func (s *VolumeServiceImpl) getVolumeTags(ctx context.Context, volumeID string) (map[string]string, bool, error) {
+	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(volumeTagsKey(volumeID)),
+	})
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("get volume tags: %w", err)
+	}
+	defer getResult.Body.Close()
+
+	body, err := io.ReadAll(getResult.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("read volume tags body: %w", err)
+	}
+	var tags map[string]string
+	if err := json.Unmarshal(body, &tags); err != nil {
+		return nil, false, fmt.Errorf("unmarshal volume tags: %w", err)
+	}
+	if tags == nil {
+		return nil, false, errors.New("unmarshal volume tags: expected JSON object")
+	}
+	return tags, true, nil
+}
+
+// GetVolumeConfig reads the effective VolumeConfig for a given volume ID.
 func (s *VolumeServiceImpl) GetVolumeConfig(volumeID string) (*viperblock.VolumeConfig, error) {
 	return s.getVolumeConfig(context.Background(), volumeID)
 }
@@ -1078,9 +1153,42 @@ func (s *VolumeServiceImpl) getVolumeConfig(ctx context.Context, volumeID string
 	return cfg, err
 }
 
-// getVolumeConfigAndEncryption reads config.json and returns the VolumeConfig plus the
-// VBState.EncryptionEnabled flag. Pre-VBState blobs report encryptionEnabled=false.
+// getVolumeConfigAndEncryption reads config.json and overlays control-plane-owned
+// state and tags. Pre-VBState blobs report encryptionEnabled=false.
 func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(ctx context.Context, volumeID string) (*viperblock.VolumeConfig, bool, error) {
+	vc, encryptionEnabled, err := s.getBaseVolumeConfigAndEncryption(ctx, volumeID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Overlay the control-plane-owned attachment state from state.json. The State
+	// embedded in config.json is rewritten by the live nbdkit VB (stale
+	// "available") and is not authoritative; state.json is. Absent state.json
+	// keeps the embedded value (volumes predating the split).
+	if rec, found, stateErr := s.getVolumeState(ctx, volumeID); stateErr != nil {
+		return nil, false, stateErr
+	} else if found {
+		vc.VolumeMetadata.State = rec.State
+		vc.VolumeMetadata.AttachedInstance = rec.AttachedInstance
+		vc.VolumeMetadata.DeviceName = rec.DeviceName
+		vc.VolumeMetadata.AttachedAt = rec.AttachedAt
+	}
+
+	// tags.json is authoritative when present, including when it contains an
+	// empty map. Falling back to config.json preserves tags on older volumes and
+	// tags supplied at volume creation until their first tag mutation.
+	if tags, found, tagsErr := s.getVolumeTags(ctx, volumeID); tagsErr != nil {
+		return nil, false, tagsErr
+	} else if found {
+		vc.VolumeMetadata.Tags = tags
+	}
+
+	return vc, encryptionEnabled, nil
+}
+
+// getBaseVolumeConfigAndEncryption reads config.json without overlaying the
+// control-plane-owned state and tags objects.
+func (s *VolumeServiceImpl) getBaseVolumeConfigAndEncryption(ctx context.Context, volumeID string) (*viperblock.VolumeConfig, bool, error) {
 	configKey := volumeID + "/config.json"
 
 	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
@@ -1121,29 +1229,15 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(ctx context.Context, vo
 		vc = &wrapper.VolumeConfig
 	}
 
-	// Overlay the control-plane-owned attachment state from state.json. The State
-	// embedded in config.json is rewritten by the live nbdkit VB (stale
-	// "available") and is not authoritative; state.json is. Absent state.json
-	// keeps the embedded value (volumes predating the split).
-	if rec, found, stateErr := s.getVolumeState(ctx, volumeID); stateErr != nil {
-		return nil, false, stateErr
-	} else if found {
-		vc.VolumeMetadata.State = rec.State
-		vc.VolumeMetadata.AttachedInstance = rec.AttachedInstance
-		vc.VolumeMetadata.DeviceName = rec.DeviceName
-		vc.VolumeMetadata.AttachedAt = rec.AttachedAt
-	}
-
 	return vc, encryptionEnabled, nil
 }
 
 // putVolumeConfig writes a VolumeConfig back to S3 as config.json.
 // It performs a read-modify-write to preserve full VBState if viperblock
 // has already written state (BlockSize, SeqNum, WALNum, etc.) to config.json.
-// Callers are the safe non-live writers only (CreateVolume pre-mount,
-// markVolumeOrphaned detached, ModifyVolume stopped-instance); the
-// control-plane attachment state of a live-mounted volume goes to state.json via
-// UpdateVolumeState, never here.
+// Callers are the safe non-live writers only (CreateVolume pre-mount and
+// ModifyVolume stopped-instance); control-plane-owned state and tags go to
+// state.json and tags.json, never here.
 func (s *VolumeServiceImpl) putVolumeConfig(ctx context.Context, volumeID string, cfg *viperblock.VolumeConfig) error {
 	configKey := volumeID + "/config.json"
 
@@ -1402,6 +1496,36 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	}, nil
 }
 
+// DeleteVolumeOnTerminate deletes a DeleteOnTermination volume as part of an
+// instance terminate: terminate implies detach, so this clears any stale
+// attachment via UpdateVolumeState before calling DeleteVolume. Both the
+// stopped-instance path (Stop's Unmount deliberately never clears a Boot
+// volume, vm_adapters.go's volumeMounterAdapter.Unmount) and the
+// running-instance path (terminateCleanup runs after shutdownAndUnmount,
+// which has the same Boot-volume carve-out) would otherwise still have
+// AttachedInstance set and hit DeleteVolume's in-use guard. There is no live
+// QEMU to hot-unplug on either path — a stopped instance has none, and a
+// terminating instance's QEMU has already been asked to shut down — so this
+// is always a metadata-only clear, never a QMP call. Errors from either step
+// are returned, not swallowed.
+func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
+	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		return fmt.Errorf("clear attachment before terminate delete: %w", err)
+	}
+	_, err := s.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: &volumeID}, accountID)
+	return err
+}
+
+// DetachVolumeOnTerminate clears a volume's attachment on instance terminate
+// without deleting it, matching AWS semantics for a DeleteOnTermination=false
+// volume: terminate still implies detach, it just leaves the volume behind as
+// available rather than deleting it. Metadata-only, no QMP — same rationale
+// as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
+// terminate path.
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	return s.UpdateVolumeState(volumeID, "available", "", "")
+}
+
 // DeleteVolume deletes an EBS volume: validates state, notifies viperblockd, and removes S3 data.
 func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
@@ -1439,7 +1563,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	// Check if any snapshots reference this volume via JetStream KV.
 	// Snapshot-backed clones read chunk files from the source volume's
 	// S3 prefix via ReadFrom(). Deleting the source would break all clones.
-	if err := s.checkVolumeHasNoSnapshots(volumeID); err != nil {
+	if err := s.checkVolumeHasNoSnapshots(ctx, volumeID); err != nil {
 		return nil, err
 	}
 
@@ -1553,29 +1677,29 @@ func (s *VolumeServiceImpl) getSnapshotMetadata(ctx context.Context, snapshotID 
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots
 // using the JetStream KV index.
-func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(volumeID string) error {
+func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, volumeID string) error {
 	if s.snapshotKV == nil {
-		slog.Error("checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	has, err := s.volumeHasSnapshotsKV(volumeID)
+	has, err := s.volumeHasSnapshotsKV(ctx, volumeID)
 	if err != nil {
-		slog.Error("checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if has {
-		slog.Error("DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
+		slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorVolumeInUse)
 	}
 	return nil
 }
 
 // volumeHasSnapshotsKV checks the JetStream KV index for snapshot references.
-func (s *VolumeServiceImpl) volumeHasSnapshotsKV(volumeID string) (bool, error) {
-	entry, err := s.snapshotKV.Get(volumeID)
+func (s *VolumeServiceImpl) volumeHasSnapshotsKV(ctx context.Context, volumeID string) (bool, error) {
+	entry, err := s.snapshotKV.Get(ctx, volumeID)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -1589,9 +1713,9 @@ func (s *VolumeServiceImpl) volumeHasSnapshotsKV(volumeID string) (bool, error) 
 	return len(snapshots) > 0, nil
 }
 
-// ApplyRecordTags mirrors CreateTags into the owning volume config so
-// DescribeVolumes observes tags added after create. Non-vol ids, volumes
-// absent from this store, and volumes the caller does not own are skipped.
+// ApplyRecordTags mirrors CreateTags into the owning volume's tags.json so
+// DescribeVolumes observes tags added after create. Non-vol ids, volumes absent
+// from this store, and volumes the caller does not own are skipped.
 func (s *VolumeServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID string) error {
 	if input == nil {
 		return nil
@@ -1599,7 +1723,7 @@ func (s *VolumeServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountI
 	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, utils.MergeTagsMut(input))
 }
 
-// RemoveRecordTags mirrors DeleteTags into the owning volume config with
+// RemoveRecordTags mirrors DeleteTags into the owning volume's tags.json with
 // AWS-faithful delete semantics.
 func (s *VolumeServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID string) error {
 	if input == nil {
@@ -1608,15 +1732,15 @@ func (s *VolumeServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, account
 	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, utils.RemoveTagsMut(input))
 }
 
-// mirrorVolumeTags read-modify-writes VolumeMetadata.Tags for each vol- id.
-// config.json lives at a global ID-keyed path, so the mutation is gated on the
-// caller owning the volume (TenantID match); mismatch or absence is a no-op.
+// mirrorVolumeTags read-modify-writes tags.json for each vol- id. The base
+// config supplies the ownership gate and create-time tag fallback. Mismatch or
+// absence is a no-op.
 func (s *VolumeServiceImpl) mirrorVolumeTags(ctx context.Context, resources []*string, accountID string, mut func(map[string]string)) error {
 	for _, res := range resources {
 		if res == nil || !strings.HasPrefix(*res, "vol-") {
 			continue
 		}
-		cfg, err := s.GetVolumeConfig(*res)
+		cfg, _, err := s.getBaseVolumeConfigAndEncryption(ctx, *res)
 		if err != nil {
 			if err.Error() == awserrors.ErrorInvalidVolumeNotFound {
 				continue
@@ -1627,11 +1751,19 @@ func (s *VolumeServiceImpl) mirrorVolumeTags(ctx context.Context, resources []*s
 			slog.Debug("mirrorVolumeTags: skipping volume not owned by caller", "volumeId", *res)
 			continue
 		}
-		if cfg.VolumeMetadata.Tags == nil {
-			cfg.VolumeMetadata.Tags = map[string]string{}
+
+		tags, found, err := s.getVolumeTags(ctx, *res)
+		if err != nil {
+			return err
 		}
-		mut(cfg.VolumeMetadata.Tags)
-		if err := s.putVolumeConfig(ctx, *res, cfg); err != nil {
+		if !found {
+			tags = cfg.VolumeMetadata.Tags
+		}
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		mut(tags)
+		if err := s.putVolumeTags(ctx, *res, tags); err != nil {
 			return err
 		}
 	}

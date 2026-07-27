@@ -181,8 +181,8 @@ func TestMaybeRecoverCP_StateQueryErrorSkipsRestart(t *testing.T) {
 func TestActiveBranchRestartsWedgedCP(t *testing.T) {
 	cp := &fakeCPControl{state: "stopped"}
 	r, _, acctKV := newStateReconcilerHarness(t, WithCPInstanceControl(cp))
-	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
-	require.NoError(t, casUpdateMeta(acctKV, "alpha", func(m *ClusterMeta) bool {
+	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
+	require.NoError(t, casUpdateMeta(t.Context(), acctKV, "alpha", func(m *ClusterMeta) bool {
 		m.ControlPlaneInstanceID = "i-cp"
 		return true
 	}))
@@ -191,7 +191,7 @@ func TestActiveBranchRestartsWedgedCP(t *testing.T) {
 
 	require.NoError(t, r.reconcileOnce(context.Background()))
 
-	meta, err := GetClusterMeta(acctKV, "alpha")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status, "status stays AWS-faithful ACTIVE, not a new DEGRADED enum")
 	assert.Contains(t, meta.HealthIssue, "stale", "degradation is reflected in the health field")

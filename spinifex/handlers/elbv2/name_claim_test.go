@@ -45,7 +45,7 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 	assert.Equal(t, 1, ok, "exactly one create owns the name")
 	assert.Equal(t, 1, dup, "the duplicate is rejected DuplicateLoadBalancerName")
 
-	rec, err := svc.store.GetLoadBalancerByName("race-lb", testAccountID)
+	rec, err := svc.store.GetLoadBalancerByName(t.Context(), "race-lb", testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 }
@@ -58,7 +58,7 @@ func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
 
 	// Seed a name claim pointing at a non-existent LB (crashed create left no
 	// record). ClaimLBName writes the key with this bogus owner.
-	ok, dup, err := svc.store.ClaimLBName("orphan-lb", testAccountID, "lb-doesnotexist")
+	ok, dup, err := svc.store.ClaimLBName(t.Context(), "orphan-lb", testAccountID, "lb-doesnotexist")
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.False(t, dup)

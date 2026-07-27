@@ -1,11 +1,13 @@
 package handlers_eks
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // AddonInstaller delivers and removes a managed add-on's Kubernetes manifests.
@@ -14,9 +16,9 @@ import (
 type AddonInstaller interface {
 	// Install stages the add-on manifest. Does not transition to ACTIVE — that
 	// is gated on the cluster's state report confirming pods are ready.
-	Install(accountID, cluster string, rec *AddonRecord) error
+	Install(ctx context.Context, accountID, cluster string, rec *AddonRecord) error
 	// Uninstall removes the add-on's manifests from the cluster.
-	Uninstall(accountID, cluster, addon string) error
+	Uninstall(ctx context.Context, accountID, cluster, addon string) error
 }
 
 // StagedAddonManifest is the artifact the VM-side delivery transport consumes.
@@ -47,22 +49,22 @@ func newStagingInstaller(nc *nats.Conn, clusterSize int) *stagingInstaller {
 	return &stagingInstaller{nc: nc, clusterSize: clusterSize}
 }
 
-func (i *stagingInstaller) acctKV(accountID string) (nats.KeyValue, error) {
+func (i *stagingInstaller) acctKV(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
 	if i.nc == nil {
 		return nil, errors.New("eks: stagingInstaller nil NATS connection")
 	}
-	js, err := i.nc.JetStream()
+	js, err := jetstream.New(i.nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(js, accountID, max(i.clusterSize, 1))
+	return GetOrCreateAccountBucket(ctx, js, accountID, max(i.clusterSize, 1))
 }
 
-func (i *stagingInstaller) Install(accountID, cluster string, rec *AddonRecord) error {
+func (i *stagingInstaller) Install(ctx context.Context, accountID, cluster string, rec *AddonRecord) error {
 	if rec == nil {
 		return errors.New("eks: stagingInstaller Install nil record")
 	}
-	kv, err := i.acctKV(accountID)
+	kv, err := i.acctKV(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -77,19 +79,19 @@ func (i *stagingInstaller) Install(accountID, cluster string, rec *AddonRecord) 
 		return fmt.Errorf("marshal staged manifest %s: %w", rec.AddonName, err)
 	}
 	key := AddonManifestKey(cluster, rec.AddonName)
-	if _, err := kv.Put(key, data); err != nil {
+	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("kv put %s: %w", key, err)
 	}
 	return nil
 }
 
-func (i *stagingInstaller) Uninstall(accountID, cluster, addon string) error {
-	kv, err := i.acctKV(accountID)
+func (i *stagingInstaller) Uninstall(ctx context.Context, accountID, cluster, addon string) error {
+	kv, err := i.acctKV(ctx, accountID)
 	if err != nil {
 		return err
 	}
 	key := AddonManifestKey(cluster, addon)
-	if err := kv.Delete(key); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return fmt.Errorf("kv delete %s: %w", key, err)
 	}
 	return nil

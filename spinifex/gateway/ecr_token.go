@@ -64,10 +64,35 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A refresh must not re-issue a token for an identity that was revoked
+	// since the presented token was minted: rehydrate against current IAM/STS
+	// state and mint the replacement from that authoritative record, never
+	// blindly from the presented claims.
+	principal, err := gw.resolveECRPrincipal(claims)
+	if err != nil {
+		// No Bearer challenge here: this is already the challenge target, and a
+		// revoked identity retrying the challenge flow would only loop back.
+		if isECRDependencyFailure(err) {
+			slog.Error("ECR token endpoint: principal rehydration dependency failure", "err", err)
+			gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+			return
+		}
+		slog.Warn("ECR token endpoint: refusing to refresh revoked identity", "err", err)
+		gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
+		return
+	}
+
+	callerARN, err := buildCallerARN(principal.accountID, principal.identity, principal.principalType, principal.assumedRoleARN)
+	if err != nil {
+		slog.Error("ECR token endpoint: cannot build canonical caller ARN", "err", err)
+		gateway_ecr.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")
+		return
+	}
+
 	fresh, expiresAt, err := gw.ECRTokenIssuer.Mint(gateway_ecrauth.Principal{
-		AccountID:   claims.AccountID,
-		ARN:         claims.Subject,
-		Type:        claims.PrincipalType,
+		AccountID:   principal.accountID,
+		ARN:         callerARN,
+		Type:        principal.principalType,
 		AccessKeyID: claims.AccessKeyID,
 	})
 	if err != nil {

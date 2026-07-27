@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -51,7 +52,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -384,7 +387,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	daemon := createTestDaemon(t, natsURL)
 
 	// Subscribe to DescribeInstanceTypes (no queue group for fan-out)
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", daemon.handleEC2DescribeInstanceTypes)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", handleNATSRequest(daemon.instanceService.DescribeInstanceTypes))
 	require.NoError(t, err, "Failed to subscribe to ec2.DescribeInstanceTypes")
 	defer sub.Unsubscribe()
 
@@ -1018,197 +1021,6 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	assert.InDelta(t, memGB*float64(capacityFor), finalMem, 0.001, "allocated memory must not exceed schedulable pool")
 }
 
-// TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID.
-func TestDescribeInstances_ReservationGrouping(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createTestDaemon(t, natsURL)
-
-	// Create instances with shared reservation (simulating --count 3)
-	reservation1 := &ec2.Reservation{}
-	reservation1.SetReservationId("r-shared-001")
-	reservation1.SetOwnerId("123456789012")
-
-	// Add 3 instances with same reservation ID
-	for i := 1; i <= 3; i++ {
-		instanceID := fmt.Sprintf("i-group1-%03d", i)
-		ec2Instance := &ec2.Instance{}
-		ec2Instance.SetInstanceId(instanceID)
-		ec2Instance.SetInstanceType("t3.micro")
-
-		daemon.vmMgr.Insert(&vm.VM{
-			ID:          instanceID,
-			Status:      vm.StateRunning,
-			AccountID:   testAccountID,
-			Reservation: reservation1,
-			Instance:    ec2Instance,
-		})
-	}
-
-	// Create another reservation with 2 instances
-	reservation2 := &ec2.Reservation{}
-	reservation2.SetReservationId("r-shared-002")
-	reservation2.SetOwnerId("123456789012")
-
-	for i := 1; i <= 2; i++ {
-		instanceID := fmt.Sprintf("i-group2-%03d", i)
-		ec2Instance := &ec2.Instance{}
-		ec2Instance.SetInstanceId(instanceID)
-		ec2Instance.SetInstanceType("t3.small")
-
-		daemon.vmMgr.Insert(&vm.VM{
-			ID:          instanceID,
-			Status:      vm.StateRunning,
-			AccountID:   testAccountID,
-			Reservation: reservation2,
-			Instance:    ec2Instance,
-		})
-	}
-
-	// Create a single-instance reservation
-	reservation3 := &ec2.Reservation{}
-	reservation3.SetReservationId("r-single-003")
-	reservation3.SetOwnerId("123456789012")
-
-	ec2Instance := &ec2.Instance{}
-	ec2Instance.SetInstanceId("i-single-001")
-	ec2Instance.SetInstanceType("t3.large")
-
-	daemon.vmMgr.Insert(&vm.VM{
-		ID:          "i-single-001",
-		Status:      vm.StateStopped,
-		AccountID:   testAccountID,
-		Reservation: reservation3,
-		Instance:    ec2Instance,
-	})
-
-	// Subscribe to handle DescribeInstances
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	t.Run("GroupsInstancesByReservationID", func(t *testing.T) {
-		input := &ec2.DescribeInstancesInput{}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-
-		var output ec2.DescribeInstancesOutput
-		err = json.Unmarshal(resp.Data, &output)
-		require.NoError(t, err)
-
-		// Should have exactly 3 reservations
-		assert.Len(t, output.Reservations, 3, "Should have 3 reservations")
-
-		// Build a map of reservation ID -> instance count
-		resMap := make(map[string]int)
-		for _, res := range output.Reservations {
-			resID := *res.ReservationId
-			resMap[resID] = len(res.Instances)
-			t.Logf("Reservation %s has %d instances", resID, len(res.Instances))
-		}
-
-		assert.Equal(t, 3, resMap["r-shared-001"], "r-shared-001 should have 3 instances")
-		assert.Equal(t, 2, resMap["r-shared-002"], "r-shared-002 should have 2 instances")
-		assert.Equal(t, 1, resMap["r-single-003"], "r-single-003 should have 1 instance")
-	})
-
-	t.Run("FilterByInstanceID_PreservesReservation", func(t *testing.T) {
-		// Request only one instance from a multi-instance reservation
-		input := &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String("i-group1-001")},
-		}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-
-		var output ec2.DescribeInstancesOutput
-		err = json.Unmarshal(resp.Data, &output)
-		require.NoError(t, err)
-
-		// Should have 1 reservation with 1 instance
-		require.Len(t, output.Reservations, 1)
-		assert.Equal(t, "r-shared-001", *output.Reservations[0].ReservationId)
-		assert.Len(t, output.Reservations[0].Instances, 1)
-		assert.Equal(t, "i-group1-001", *output.Reservations[0].Instances[0].InstanceId)
-	})
-
-	t.Run("FilterMultipleInstances_SameReservation", func(t *testing.T) {
-		// Request 2 instances from the same reservation
-		input := &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{
-				aws.String("i-group1-001"),
-				aws.String("i-group1-003"),
-			},
-		}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-
-		var output ec2.DescribeInstancesOutput
-		err = json.Unmarshal(resp.Data, &output)
-		require.NoError(t, err)
-
-		// Should have 1 reservation with 2 instances
-		require.Len(t, output.Reservations, 1)
-		assert.Equal(t, "r-shared-001", *output.Reservations[0].ReservationId)
-		assert.Len(t, output.Reservations[0].Instances, 2)
-	})
-
-	t.Run("FilterMultipleInstances_DifferentReservations", func(t *testing.T) {
-		// Request instances from different reservations
-		input := &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{
-				aws.String("i-group1-001"),
-				aws.String("i-group2-001"),
-				aws.String("i-single-001"),
-			},
-		}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-
-		var output ec2.DescribeInstancesOutput
-		err = json.Unmarshal(resp.Data, &output)
-		require.NoError(t, err)
-
-		// Should have 3 reservations, each with 1 instance
-		assert.Len(t, output.Reservations, 3)
-		for _, res := range output.Reservations {
-			assert.Len(t, res.Instances, 1, "Each reservation should have 1 instance when filtered")
-		}
-	})
-
-	t.Run("InstanceStates_AreCorrect", func(t *testing.T) {
-		input := &ec2.DescribeInstancesInput{}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-
-		var output ec2.DescribeInstancesOutput
-		err = json.Unmarshal(resp.Data, &output)
-		require.NoError(t, err)
-
-		// Find the stopped instance and verify its state
-		for _, res := range output.Reservations {
-			for _, inst := range res.Instances {
-				if *inst.InstanceId == "i-single-001" {
-					assert.Equal(t, int64(80), *inst.State.Code, "Stopped instance should have code 80")
-					assert.Equal(t, "stopped", *inst.State.Name)
-				} else {
-					assert.Equal(t, int64(16), *inst.State.Code, "Running instance should have code 16")
-					assert.Equal(t, "running", *inst.State.Name)
-				}
-			}
-		}
-	})
-}
-
 // TestRunInstances_CountValidation tests MinCount/MaxCount validation scenarios.
 func TestRunInstances_CountValidation(t *testing.T) {
 	natsURL := sharedNATSURL
@@ -1736,6 +1548,171 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	// Root volume with DeleteOnTermination=false should NOT receive ebs.delete
 	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear
+// locks the mulga-1dzx9 fix on the running-instance terminate path: a Boot,
+// DeleteOnTermination root volume left attached (terminateCleanup's
+// shutdownAndUnmount runs Unmount, which deliberately never clears a Boot
+// volume's AttachedInstance) previously hit DeleteVolume's in-use guard
+// directly. DeleteVolumes must now call DeleteVolumeOnTerminate, which clears
+// the stale attachment first, so the delete actually succeeds.
+func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV;
+	// wire a JetStream-backed one (no snapshot refs recorded) so the delete
+	// reaches the S3 cleanup step instead of failing closed on a nil KV.
+	jsConn, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { jsConn.Close() })
+	js, err := jetstream.New(jsConn)
+	require.NoError(t, err)
+	snapKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
+	})
+	require.NoError(t, err)
+	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+
+	volumeID := "vol-root-attached"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-test-boot-delete", // stale: never cleared by Stop/shutdownAndUnmount's Boot carve-out
+	})
+
+	instance := &vm.VM{
+		ID:        "i-test-boot-delete",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: true},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	err = cleaner.DeleteVolumes(instance)
+	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
+
+	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	require.Error(t, err, "the volume must actually be deleted")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
+// locks the running-path half of the terminate-implies-detach fix for a
+// DeleteOnTermination=false root volume: shutdownAndUnmount's Unmount
+// (daemon/vm_adapters.go) deliberately never clears a Boot volume's
+// attachment, so without this it would strand attached to the now-terminated
+// instance forever. Terminate must still detach it (AWS semantics: it
+// survives as available, it just isn't deleted).
+func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	volumeID := "vol-root-nondot-attached"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: "i-test-boot-detach", // stale: never cleared by Unmount's Boot carve-out
+	})
+
+	instance := &vm.VM{
+		ID:        "i-test-boot-detach",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: false},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	err := cleaner.DeleteVolumes(instance)
+	require.NoError(t, err)
+
+	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
+	assert.Equal(t, "available", cfg.VolumeMetadata.State)
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
+}
+
+// TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
+// go-forward self-heal: a stopped-terminate that stamped
+// Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
+// handlers/ec2/instance/service_impl.go) is retried by
+// TerminatedTeardownReaper.Sweep (vm/teardown_reaper.go) through the real
+// instanceCleanerAdapter, which stage 1 rerouted through
+// DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
+// now succeeds, and the mark flips to done — without abandoning the record.
+func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedJSNATSURL)
+
+	// A real terminated-instance KV, so Sweep can list/update/(not yet)purge
+	// the record exactly as production does.
+	jsManager, err := NewJetStreamManager(daemon.natsConn, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsManager.InitTerminatedInstanceBucket())
+	daemon.stateStore = newStateStoreAdapter(jsManager)
+
+	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV.
+	js, err := jetstream.New(daemon.natsConn)
+	require.NoError(t, err)
+	snapKV, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
+	})
+	require.NoError(t, err)
+	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+
+	volumeID := "vol-root-self-heal"
+	instanceID := "i-self-heal"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "available",
+		AttachedInstance: instanceID, // stale, left by the earlier failed terminate
+	})
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		AccountID:    testAccountID,
+		Status:       vm.StateTerminated,
+		LastNode:     daemon.node,
+		TerminatedAt: time.Now(), // inside the visibility window: Sweep must not purge yet
+		Teardown: map[string]string{
+			vm.TeardownVolumes: string(vm.TeardownFailed),
+		},
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: true, DeleteOnTermination: true},
+			},
+		},
+	}
+	require.NoError(t, daemon.stateStore.WriteTerminatedInstance(instance.ID, instance))
+
+	reaper := vm.NewManagerWithDeps(vm.Deps{
+		NodeID:          daemon.node,
+		StateStore:      daemon.stateStore,
+		InstanceCleaner: newInstanceCleanerAdapter(daemon),
+	}).NewTerminatedTeardownReaper()
+
+	_, err = reaper.Sweep(context.Background())
+	require.NoError(t, err)
+
+	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	require.Error(t, err, "the retried delete must actually remove the volume")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+
+	remaining, err := daemon.stateStore.ListTerminatedInstances()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "still within the visibility window: not purged yet")
+	assert.Equal(t, string(vm.TeardownDone), remaining[0].Teardown[vm.TeardownVolumes],
+		"a retry that now succeeds must flip the mark from failed to done")
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.
@@ -3517,40 +3494,6 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 		"rollback failure must be surfaced, not silently logged")
 	assert.Contains(t, err.Error(), "rollback unmount failed",
 		"underlying unmount error must be wrapped in")
-}
-
-// TestDescribeInstances_InvalidInstanceIDMalformed verifies that DescribeInstances
-// returns InvalidInstanceID.Malformed when given instance IDs without the i- prefix.
-func TestDescribeInstances_InvalidInstanceIDMalformed(t *testing.T) {
-	natsURL := sharedNATSURL
-	daemon := createTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances", daemon.handleEC2DescribeInstances)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	t.Run("MalformedInstanceID", func(t *testing.T) {
-		input := &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String("bad-instance-id")},
-		}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-		assert.Contains(t, string(resp.Data), "InvalidInstanceID.Malformed")
-	})
-
-	t.Run("ValidInstanceIDPassesValidation", func(t *testing.T) {
-		input := &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String("i-nonexistent")},
-		}
-		inputJSON, _ := json.Marshal(input)
-
-		resp, err := natsRequest(daemon.natsConn, "ec2.DescribeInstances", inputJSON, 5*time.Second)
-		require.NoError(t, err)
-		// Should not contain a malformed error — returns empty results instead
-		assert.NotContains(t, string(resp.Data), "InvalidInstanceID.Malformed")
-	})
 }
 
 // TestStopTerminate_IncorrectInstanceState verifies that stopping an already-stopped

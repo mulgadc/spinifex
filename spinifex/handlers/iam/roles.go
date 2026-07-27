@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -33,6 +36,7 @@ const (
 )
 
 func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	if err := validateUserName(roleName); err != nil {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -84,8 +88,8 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	}
 
 	kvKey := accountID + "." + roleName
-	if _, err := s.rolesBucket.Create(kvKey, data); err != nil {
-		if errors.Is(err, nats.ErrKeyExists) {
+	if _, err := s.rolesBucket.Create(ctx, kvKey, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
 		}
 		return nil, fmt.Errorf("store role: %w", err)
@@ -97,7 +101,8 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 }
 
 func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	role, err := s.getRole(accountID, *input.RoleName)
+	ctx := context.Background()
+	role, err := s.getRole(ctx, accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +111,10 @@ func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*ia
 }
 
 func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	keys, err := s.rolesBucket.Keys()
+	ctx := context.Background()
+	keys, err := kvutil.Keys(ctx, s.rolesBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListRolesOutput{
 				Roles:       []*iam.Role{},
 				IsTruncated: aws.Bool(false),
@@ -132,9 +138,9 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 			continue
 		}
 
-		entry, err := s.rolesBucket.Get(key)
+		entry, err := s.rolesBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("ListRoles: role key disappeared (concurrent delete)", "key", key)
 			} else {
 				slog.Warn("ListRoles: failed to get role", "key", key, "err", err)
@@ -162,9 +168,10 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 }
 
 func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 
-	role, err := s.getRole(accountID, roleName)
+	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +184,7 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	profiles, err := s.findInstanceProfilesForRole(accountID, roleName)
+	profiles, err := s.findInstanceProfilesForRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("check role instance profiles: %w", err)
 	}
@@ -185,7 +192,7 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 
-	if err := s.rolesBucket.Delete(accountID + "." + roleName); err != nil {
+	if err := s.rolesBucket.Delete(ctx, accountID+"."+roleName); err != nil {
 		return nil, fmt.Errorf("delete role: %w", err)
 	}
 
@@ -194,9 +201,10 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 }
 
 func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 
-	role, err := s.getRole(accountID, roleName)
+	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +224,7 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 	if err != nil {
 		return nil, fmt.Errorf("marshal role: %w", err)
 	}
-	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
+	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
 		return nil, fmt.Errorf("update role: %w", err)
 	}
 
@@ -225,6 +233,7 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 }
 
 func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 
 	if _, err := ValidateTrustPolicyDocument(*input.PolicyDocument); err != nil {
@@ -232,7 +241,7 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
 	}
 
-	role, err := s.getRole(accountID, roleName)
+	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +252,7 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 	if err != nil {
 		return nil, fmt.Errorf("marshal role: %w", err)
 	}
-	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
+	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
 		return nil, fmt.Errorf("update role trust policy: %w", err)
 	}
 
@@ -252,6 +261,7 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 }
 
 func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
@@ -261,12 +271,12 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
 	// failing NoSuchEntity. Customer-managed ARNs must still exist.
 	if !isAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
 
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		if slices.Contains(role.AttachedPolicies, policyARN) {
 			return false, nil
 		}
@@ -282,10 +292,11 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 }
 
 func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		idx := slices.Index(role.AttachedPolicies, policyARN)
 		if idx < 0 {
 			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
@@ -302,7 +313,8 @@ func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRol
 }
 
 func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	role, err := s.getRole(accountID, *input.RoleName)
+	ctx := context.Background()
+	role, err := s.getRole(ctx, accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +328,7 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 			})
 			continue
 		}
-		policy, err := s.getPolicyByARN(accountID, arn)
+		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
 			continue
@@ -336,6 +348,7 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 // PutRolePolicy embeds an inline policy document in a role, keyed by PolicyName.
 // Idempotent upsert: a same-name policy is overwritten, mirroring AWS.
 func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
@@ -347,7 +360,7 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
 	}
 
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		if role.InlinePolicies == nil {
 			role.InlinePolicies = map[string]string{}
 		}
@@ -366,10 +379,11 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 // Returns the document as a raw JSON string, matching how GetRole returns
 // AssumeRolePolicyDocument; AWS URL-encodes it, we follow the in-repo convention.
 func (s *IAMServiceImpl) GetRolePolicy(accountID string, input *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	policyName := *input.PolicyName
 
-	role, err := s.getRole(accountID, roleName)
+	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -389,10 +403,11 @@ func (s *IAMServiceImpl) GetRolePolicy(accountID string, input *iam.GetRolePolic
 // DeleteRolePolicy removes a role's inline policy by name. A missing name yields
 // NoSuchEntity, matching AWS.
 func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
 	policyName := *input.PolicyName
 
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		if _, ok := role.InlinePolicies[policyName]; !ok {
 			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
@@ -410,7 +425,8 @@ func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRol
 // ListRolePolicies returns the names of a role's inline policies, sorted for
 // deterministic output. Pagination is not implemented: IsTruncated is always false.
 func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
-	role, err := s.getRole(accountID, *input.RoleName)
+	ctx := context.Background()
+	role, err := s.getRole(ctx, accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
 	}
@@ -430,12 +446,13 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 
 // TagRole upserts tags on a role under CAS, like the other role writers.
 func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
 	roleName := *input.RoleName
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		merged := mergeTags(role.Tags, input.Tags)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
@@ -453,8 +470,9 @@ func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*ia
 
 // UntagRole removes the named tag keys from a role; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	ctx := context.Background()
 	roleName := *input.RoleName
-	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		role.Tags = removeTagKeys(role.Tags, input.TagKeys)
 		return true, nil
 	})
@@ -469,7 +487,8 @@ func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) 
 // ListRoleTags returns a role's tags. Pagination is not implemented:
 // IsTruncated is always false.
 func (s *IAMServiceImpl) ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
-	role, err := s.getRole(accountID, *input.RoleName)
+	ctx := context.Background()
+	role, err := s.getRole(ctx, accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
 	}
@@ -483,14 +502,15 @@ func (s *IAMServiceImpl) ListRoleTags(accountID string, input *iam.ListRoleTagsI
 // Used by the gateway for policy evaluation. Fails closed: any unresolvable
 // policy returns an error so the caller denies access rather than using a partial set.
 func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error) {
-	role, err := s.getRole(accountID, roleName)
+	ctx := context.Background()
+	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
 		return nil, err
 	}
 
 	var docs []PolicyDocument
 	for _, arn := range role.AttachedPolicies {
-		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(ctx, accountID, arn)
 		if err != nil {
 			return nil, err // fail closed
 		}
@@ -528,10 +548,10 @@ func managedPolicyNameFromARN(arn string) string {
 	return name
 }
 
-func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
-	entry, err := s.rolesBucket.Get(accountID + "." + roleName)
+func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string) (*Role, error) {
+	entry, err := s.rolesBucket.Get(ctx, accountID+"."+roleName)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		}
 		return nil, fmt.Errorf("get role: %w", err)
@@ -550,12 +570,12 @@ func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
 // loses updates when callers (e.g. Terraform attaching several managed policies
 // to one role at once) write the same record concurrently. mutate reports
 // whether it changed the record; a false return commits nothing.
-func (s *IAMServiceImpl) updateRoleCAS(accountID, roleName string, mutate func(*Role) (bool, error)) error {
+func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName string, mutate func(*Role) (bool, error)) error {
 	key := accountID + "." + roleName
 	for range roleCASMaxRetries {
-		entry, err := s.rolesBucket.Get(key)
+		entry, err := s.rolesBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return errors.New(awserrors.ErrorIAMNoSuchEntity)
 			}
 			return fmt.Errorf("get role: %w", err)
@@ -578,8 +598,8 @@ func (s *IAMServiceImpl) updateRoleCAS(accountID, roleName string, mutate func(*
 		if err != nil {
 			return fmt.Errorf("marshal role: %w", err)
 		}
-		if _, err := s.rolesBucket.Update(key, data, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) {
+		if _, err := s.rolesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			return fmt.Errorf("update role: %w", err)
@@ -593,10 +613,10 @@ func (s *IAMServiceImpl) updateRoleCAS(accountID, roleName string, mutate func(*
 // profile in the account that references the given role. Fails closed on
 // per-key Get or unmarshal errors so DeleteRole cannot succeed while a
 // real-but-unreadable reference exists.
-func (s *IAMServiceImpl) findInstanceProfilesForRole(accountID, roleName string) ([]*InstanceProfile, error) {
-	keys, err := s.instanceProfilesBucket.Keys()
+func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accountID, roleName string) ([]*InstanceProfile, error) {
+	keys, err := kvutil.Keys(ctx, s.instanceProfilesBucket)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list instance profile keys: %w", err)
@@ -612,9 +632,9 @@ func (s *IAMServiceImpl) findInstanceProfilesForRole(accountID, roleName string)
 			continue
 		}
 
-		entry, err := s.instanceProfilesBucket.Get(key)
+		entry, err := s.instanceProfilesBucket.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				slog.Debug("findInstanceProfilesForRole: profile key disappeared", "key", key)
 				continue
 			}

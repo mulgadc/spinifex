@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +34,7 @@ func (r *stubRegistrar) Deregister(_ context.Context, _, tg, ip string, port int
 
 // serviceTestRig wires a Service with a stub registrar and a seeded cluster +
 // task definition + one fat container instance.
-func serviceTestRig(t *testing.T) (*Service, *stubRegistrar, nats.KeyValue) {
+func serviceTestRig(t *testing.T) (*Service, *stubRegistrar, jetstream.KeyValue) {
 	t.Helper()
 	svc, _ := newTestService(t)
 	reg := &stubRegistrar{}
@@ -43,7 +43,7 @@ func serviceTestRig(t *testing.T) (*Service, *stubRegistrar, nats.KeyValue) {
 	require.NoError(t, err)
 	registerTaskDef(t, svc, "app", 128, 256)
 	registerInstance(t, svc, "web", "i-1", 4096, 8192)
-	kv, err := svc.bucket(testAccountID)
+	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	return svc, reg, kv
 }
@@ -62,7 +62,7 @@ func TestService_CreateService_LaunchesReplicas(t *testing.T) {
 	assert.Equal(t, ServiceARN(testRegion, testAccountID, "web", "web"), aws.StringValue(out.Service.ServiceArn))
 	assert.Equal(t, int64(2), aws.Int64Value(out.Service.PendingCount))
 
-	tasks, err := svc.listServiceTasks(kv, "web", "web")
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
 	for _, task := range tasks {
@@ -106,7 +106,7 @@ func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tasks, err := svc.listServiceTasks(kv, "web", "web")
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
 
@@ -115,13 +115,13 @@ func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
 		TaskID: tasks[0].TaskID, LastStatus: bus.TaskStatusStopped,
 	}))
-	live, err := svc.listServiceTasks(kv, "web", "web")
+	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	require.Len(t, live, 1) // STOPPED task drops out of the active set
 
 	// Reconcile launches a replacement back to desired=2.
-	svc.reconcileAllServices()
-	live, err = svc.listServiceTasks(kv, "web", "web")
+	require.NoError(t, svc.reconcileAllServices(t.Context()))
+	live, err = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	assert.Len(t, live, 2)
 }
@@ -134,7 +134,7 @@ func TestService_UpdateService_ScalesIn(t *testing.T) {
 		DesiredCount: aws.Int64(3),
 	}, testAccountID)
 	require.NoError(t, err)
-	live, _ := svc.listServiceTasks(kv, "web", "web")
+	live, _ := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.Len(t, live, 3)
 
 	out, err := svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
@@ -143,7 +143,7 @@ func TestService_UpdateService_ScalesIn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), aws.Int64Value(out.Service.DesiredCount))
 
-	live, err = svc.listServiceTasks(kv, "web", "web")
+	live, err = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	assert.Len(t, live, 1)
 }
@@ -162,7 +162,7 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ServiceStatusInactive, aws.StringValue(out.Service.Status))
 
-	live, err := svc.listServiceTasks(kv, "web", "web")
+	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
 	assert.Empty(t, live)
 
@@ -172,8 +172,8 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Services, 1)
-	svc.reconcileAllServices()
-	live, _ = svc.listServiceTasks(kv, "web", "web")
+	require.NoError(t, svc.reconcileAllServices(t.Context()))
+	live, _ = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	assert.Empty(t, live)
 }
 
@@ -214,7 +214,7 @@ func TestService_StartTask_PlacesPerInstance(t *testing.T) {
 	assert.Empty(t, out.Failures)
 	assert.Equal(t, TaskStatusPending, aws.StringValue(out.Tasks[0].LastStatus))
 
-	tasks, err := svc.listTaskRecords(kv, "web")
+	tasks, err := svc.listTaskRecords(t.Context(), kv, "web")
 	require.NoError(t, err)
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "custom", tasks[0].Group)
@@ -263,7 +263,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.9",
 		ReservedCPU: 64, ReservedMemoryMiB: 64,
 	}
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-9"), task))
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-9"), task))
 
 	// Cooperative stop: the task stays RUNNING with desiredStatus=STOPPED and a
 	// stop directive lands in the instance inbox; nothing is deregistered until the
@@ -277,7 +277,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Empty(t, reg.deregistered)
 
 	var sd bus.StopDirective
-	found, err := getJSON(kv, StopKey("web", "i-1", "t-9"), &sd)
+	found, err := getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "bye", sd.Reason)
@@ -288,7 +288,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 		TaskID: "t-9", LastStatus: bus.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
-	found, err = getJSON(kv, StopKey("web", "i-1", "t-9"), &sd)
+	found, err = getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
 	require.NoError(t, err)
 	assert.False(t, found)
 
@@ -312,7 +312,7 @@ func TestService_StopTask_UnplacedForceStops(t *testing.T) {
 		TaskID: "t-np", Cluster: "web",
 		LastStatus: TaskStatusPending, DesiredStatus: TaskStatusRunning,
 	}
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-np"), task))
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-np"), task))
 
 	out, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{
 		Cluster: aws.String("web"), Task: aws.String("t-np"), Reason: aws.String("cancel"),
@@ -344,7 +344,7 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 		ContainerInstanceID: "i-1", LastStatus: TaskStatusPending,
 		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.5",
 	}
-	require.NoError(t, putJSON(kv, TaskKey("web", "t-1"), task))
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
 
 	// RUNNING → register.
 	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{

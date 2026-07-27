@@ -249,3 +249,48 @@ func readFile(t *testing.T, dir, name string) string {
 	}
 	return string(b)
 }
+
+// Resolvers belong to the plane holding the default route. The east-west
+// bridges are link-local and activate manually, so a resolver pinned to one is
+// unreachable while resolved still tries it — a timeout in front of every
+// lookup. The TUI cannot express this; the kernel cmdline can, so it is caught.
+func TestValidateRejectsDNSOffWAN(t *testing.T) {
+	cfg := threeNIC()
+	cfg.LAN.DNS = []string{"10.0.0.1"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("lan must not carry DNS servers")
+	}
+
+	cfg = threeNIC()
+	cfg.VPC.DNS = []string{"10.1.0.1"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("vpc must not carry DNS servers")
+	}
+
+	cfg = threeNIC()
+	cfg.WAN.DNS = []string{"8.8.8.8", "1.1.1.1"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("wan carries the resolvers: %v", err)
+	}
+}
+
+// Even if a role somehow carries DNS, generation must not write it onto an
+// east-west bridge.
+func TestWriteNetworkdBridgeKeepsDNSOnWAN(t *testing.T) {
+	dir := t.TempDir()
+	lan := NetworkRole{Interface: "ens1f0np0", Address: "10.0.0.3", Mask: "255.255.0.0", DNS: []string{"10.0.0.1"}}
+	if err := writeNetworkdBridge(dir, PlaneLAN, lan, true); err != nil {
+		t.Fatalf("writeNetworkdBridge: %v", err)
+	}
+	if got := readFile(t, dir, "20-spinifex-lan.network"); strings.Contains(got, "DNS=") {
+		t.Errorf("lan bridge must carry no resolver:\n%s", got)
+	}
+
+	wan := NetworkRole{Interface: "eno6", Address: "216.218.163.99", Mask: "255.255.255.224", Gateway: "216.218.163.97", DNS: []string{"8.8.8.8"}}
+	if err := writeNetworkdBridge(dir, PlaneWAN, wan, false); err != nil {
+		t.Fatalf("writeNetworkdBridge: %v", err)
+	}
+	if got := readFile(t, dir, "20-spinifex-wan.network"); !strings.Contains(got, "DNS=8.8.8.8") {
+		t.Errorf("wan bridge must carry the resolver:\n%s", got)
+	}
+}

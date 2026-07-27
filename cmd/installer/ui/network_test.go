@@ -253,3 +253,27 @@ func TestAdvancedToggle(t *testing.T) {
 		t.Fatal("'a' should turn Advanced back off")
 	}
 }
+
+// The default route and the resolvers are node-level, and wan is the only plane
+// that carries either, so the east-west editors must not ask for them. Their
+// bridges are link-local and activate manually — a resolver pinned there is
+// unreachable, and a gateway would fight the real default route.
+func TestVisibleFieldsOmitsRoutingOffWAN(t *testing.T) {
+	for _, plane := range []install.Plane{install.PlaneLAN, install.PlaneVPC} {
+		t.Run(string(plane), func(t *testing.T) {
+			f := newRoleForm(plane, 1)
+			f.dhcp = false
+			got := f.visibleFields(false, false)
+
+			want := []roleField{roleFieldNIC, roleFieldMethod, roleFieldIP, roleFieldMask}
+			if len(got) != len(want) {
+				t.Fatalf("visibleFields() = %v, want %v", got, want)
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Fatalf("visibleFields() = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}

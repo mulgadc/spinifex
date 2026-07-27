@@ -517,9 +517,15 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 		if role.Gateway != "" && plane == PlaneWAN {
 			fmt.Fprintf(&b, "Gateway=%s\n", role.Gateway)
 		}
-		for _, ns := range role.DNS {
-			if ns = strings.TrimSpace(ns); ns != "" {
-				fmt.Fprintf(&b, "DNS=%s\n", ns)
+		// Resolvers follow the default route for the same reason. A resolver
+		// pinned to an east-west bridge is unreachable — those bridges are
+		// link-local and activate manually — but resolved would still try it,
+		// putting a timeout in front of every lookup on the node.
+		if plane == PlaneWAN {
+			for _, ns := range role.DNS {
+				if ns = strings.TrimSpace(ns); ns != "" {
+					fmt.Fprintf(&b, "DNS=%s\n", ns)
+				}
 			}
 		}
 	}

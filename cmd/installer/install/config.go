@@ -206,6 +206,12 @@ func (c *Config) Validate() error {
 		if r.Role.MTU != 0 && (r.Role.MTU < 68 || r.Role.MTU > 9216) {
 			return fmt.Errorf("%s: MTU %d out of range (68-9216)", r.Plane, r.Role.MTU)
 		}
+		// Resolvers belong to the plane that holds the default route. Accepting
+		// one here and dropping it during generation would leave an unattended
+		// install believing it had set a resolver that was never written.
+		if r.Plane != PlaneWAN && len(r.Role.DNS) > 0 {
+			return fmt.Errorf("%s: DNS servers belong to the wan plane, which holds the default route", r.Plane)
+		}
 	}
 	return nil
 }

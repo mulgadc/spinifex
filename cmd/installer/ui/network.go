@@ -112,10 +112,13 @@ func (f *roleForm) visibleFields(isWiFi, advanced bool) []roleField {
 	fields := []roleField{roleFieldNIC, roleFieldMethod}
 	if !f.dhcp {
 		fields = append(fields, roleFieldIP, roleFieldMask)
+		// Default route and resolvers are properties of the node, not of each
+		// plane, and wan is the only one that carries either: it holds the
+		// default route, so it is the only plane that can reach an upstream
+		// resolver. On DHCP the lease supplies both.
 		if f.plane == install.PlaneWAN {
-			fields = append(fields, roleFieldGateway)
+			fields = append(fields, roleFieldGateway, roleFieldDNS)
 		}
-		fields = append(fields, roleFieldDNS)
 	}
 	if advanced {
 		fields = append(fields, roleFieldVLAN, roleFieldMTU)

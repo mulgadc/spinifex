@@ -2,7 +2,7 @@ import type { Listener } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
-import { Fragment, useEffect, useState } from "react"
+import { Fragment, useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
@@ -53,6 +53,26 @@ function listenerDefaults(lbType: LbType): CreateListenerFormData {
     protocol: defaultProtocolForType(lbType),
     port: 80,
     defaultTargetGroupArn: "",
+  }
+}
+
+// Projects an existing listener onto the form shape. TLS fields are dropped for
+// plaintext protocols so a downgrade does not carry a stale certificate.
+function listenerFormValues(
+  listener: Listener,
+  protocols: readonly ListenerProtocolValue[],
+): CreateListenerFormData {
+  const protocol: ListenerProtocolValue =
+    protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
+  const secure = isSecureProtocol(protocol)
+  return {
+    protocol,
+    port: listener.Port ?? 80,
+    defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
+    certificateArn: secure
+      ? listener.Certificates?.[0]?.CertificateArn
+      : undefined,
+    sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
   }
 }
 
@@ -276,17 +296,20 @@ export function ListenersTab({
         </div>
       )}
 
-      <AddListenerDialog
-        certificates={certificates}
-        isPending={createMutation.isPending}
-        lbType={lbType}
-        onOpenChange={setAddOpen}
-        onSubmit={handleCreate}
-        open={addOpen}
-        protocols={protocols}
-        sslPolicies={sslPolicies}
-        targetGroups={vpcTgs}
-      />
+      {/* Mounted only while open so every session starts from blank defaults. */}
+      {addOpen && (
+        <AddListenerDialog
+          certificates={certificates}
+          isPending={createMutation.isPending}
+          lbType={lbType}
+          onOpenChange={setAddOpen}
+          onSubmit={handleCreate}
+          open={addOpen}
+          protocols={protocols}
+          sslPolicies={sslPolicies}
+          targetGroups={vpcTgs}
+        />
+      )}
 
       <EditListenerDialog
         certificates={certificates}
@@ -342,12 +365,6 @@ function AddListenerDialog({
     resolver: zodResolver(createListenerSchema),
     defaultValues: listenerDefaults(lbType),
   })
-
-  useEffect(() => {
-    if (!open) {
-      form.reset(listenerDefaults(lbType))
-    }
-  }, [open, form, lbType])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 
@@ -421,25 +438,10 @@ function EditListenerDialog({
       port: 80,
       defaultTargetGroupArn: "",
     },
+    // Re-seeds the form whenever a different listener is selected. Left
+    // undefined while closing so the fields do not visibly reset mid-animation.
+    values: listener ? listenerFormValues(listener, protocols) : undefined,
   })
-
-  useEffect(() => {
-    if (!listener) {
-      return
-    }
-    const protocol: ListenerProtocolValue =
-      protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
-    const secure = isSecureProtocol(protocol)
-    form.reset({
-      protocol,
-      port: listener.Port ?? 80,
-      defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
-      certificateArn: secure
-        ? listener.Certificates?.[0]?.CertificateArn
-        : undefined,
-      sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
-    })
-  }, [listener, form, protocols])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 

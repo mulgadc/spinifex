@@ -38,6 +38,9 @@ export function ThemeProvider({
     getStoredTheme(storageKey, defaultTheme),
   )
 
+  // Syncing the theme class onto <html> is a genuine external-system write: it
+  // has to run on mount for the stored theme, not just on user selection.
+  /* oxlint-disable react-you-might-not-need-an-effect/no-event-handler */
   useEffect(() => {
     const root = window.document.documentElement
 
@@ -55,6 +58,7 @@ export function ThemeProvider({
 
     root.classList.add(theme)
   }, [theme])
+  /* oxlint-enable react-you-might-not-need-an-effect/no-event-handler */
 
   const value = useMemo(
     () => ({

@@ -6,7 +6,7 @@ import type {
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Controller, useFieldArray, useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
@@ -196,14 +196,17 @@ export function ListenerRulesTab({
         </table>
       </div>
 
-      <RuleDialog
-        isPending={createMutation.isPending}
-        mode="add"
-        onOpenChange={setAddOpen}
-        onSubmit={handleCreate}
-        open={addOpen}
-        targetGroups={targetGroups}
-      />
+      {/* Mounted only while open so every session starts from blank defaults. */}
+      {addOpen && (
+        <RuleDialog
+          isPending={createMutation.isPending}
+          mode="add"
+          onOpenChange={setAddOpen}
+          onSubmit={handleCreate}
+          open={addOpen}
+          targetGroups={targetGroups}
+        />
+      )}
 
       <RuleDialog
         initialRule={editTarget}
@@ -320,6 +323,25 @@ function toRuleCondInput(c: RuleConditionFormData): RuleCondInput {
   }
 }
 
+// A new rule starts at the highest priority with a single empty path match.
+const DEFAULT_PRIORITY = 1
+const defaultConditions: RuleConditionFormData[] = [
+  { field: "path-pattern", rawValues: "" },
+]
+
+// Projects an existing rule onto the form shape, falling back to the defaults
+// for a non-numeric priority or a rule that carries no conditions.
+function ruleFormValues(rule: Rule): CreateRuleFormData {
+  const priority = Number(rule.Priority ?? DEFAULT_PRIORITY)
+  const conditions: RuleConditionFormData[] =
+    rule.Conditions?.map((c) => fromSDKCondition(c)) ?? []
+  return {
+    priority: Number.isFinite(priority) ? priority : DEFAULT_PRIORITY,
+    conditions: conditions.length > 0 ? conditions : defaultConditions,
+    forwardTargetGroupArn: rule.Actions?.[0]?.TargetGroupArn ?? "",
+  }
+}
+
 interface RuleDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -339,47 +361,21 @@ function RuleDialog({
   mode,
   initialRule,
 }: RuleDialogProps) {
-  const defaultConds: RuleConditionFormData[] = [
-    { field: "path-pattern", rawValues: "" },
-  ]
   const form = useForm<CreateRuleFormData>({
     resolver: zodResolver(createRuleSchema),
     defaultValues: {
-      priority: 1,
-      conditions: defaultConds,
+      priority: DEFAULT_PRIORITY,
+      conditions: defaultConditions,
       forwardTargetGroupArn: "",
     },
+    // Re-seeds the form whenever a different rule is selected. Left undefined
+    // while closing so the fields do not visibly reset mid-animation.
+    values: initialRule ? ruleFormValues(initialRule) : undefined,
   })
   const { fields, append, remove } = useFieldArray({
     control: form.control,
     name: "conditions",
   })
-
-  useEffect(() => {
-    if (mode === "add") {
-      if (!open) {
-        form.reset({
-          priority: 1,
-          conditions: defaultConds,
-          forwardTargetGroupArn: "",
-        })
-      }
-      return
-    }
-    if (!initialRule) {
-      return
-    }
-    const priorityNum = Number(initialRule.Priority ?? 1)
-    const conditions: RuleConditionFormData[] =
-      initialRule.Conditions?.map((c) => fromSDKCondition(c)) ?? defaultConds
-    form.reset({
-      priority: Number.isFinite(priorityNum) ? priorityNum : 1,
-      conditions: conditions.length > 0 ? conditions : defaultConds,
-      forwardTargetGroupArn: initialRule.Actions?.[0]?.TargetGroupArn ?? "",
-    })
-    // form is intentionally excluded so the reset only fires on identity change of the source.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialRule, open, mode])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 

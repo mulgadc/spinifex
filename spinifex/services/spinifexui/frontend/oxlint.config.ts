@@ -9,6 +9,7 @@ export default defineConfig({
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
+    "eslint-plugin-react-you-might-not-need-an-effect",
   ],
   options: {
     typeAware: true,
@@ -24,7 +25,6 @@ export default defineConfig({
     "@tanstack/query/stable-query-client": "error",
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
-    "react/jsx-handler-names": "off",
     "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
@@ -42,6 +42,18 @@ export default defineConfig({
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
     "jsx-a11y/prefer-tag-over-role": "off",
+    "react/jsx-handler-names": "off",
+    "react-you-might-not-need-an-effect/no-adjust-state-on-prop-change":
+      "error",
+    "react-you-might-not-need-an-effect/no-chain-state-updates": "error",
+    "react-you-might-not-need-an-effect/no-derived-state": "error",
+    "react-you-might-not-need-an-effect/no-event-handler": "error",
+    "react-you-might-not-need-an-effect/no-external-store-subscription":
+      "error",
+    "react-you-might-not-need-an-effect/no-initialize-state": "error",
+    "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
+    "react-you-might-not-need-an-effect/no-reset-all-state-on-prop-change":
+      "error",
     "typescript/no-confusing-void-expression": "off",
     "typescript/no-floating-promises": [
       "error",

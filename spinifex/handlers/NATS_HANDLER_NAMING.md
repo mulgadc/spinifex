@@ -300,3 +300,71 @@ The scheduler also publishes on existing namespaces (no `ecs.` prefix):
 `ec2.CreateNetworkInterface`, `ec2.AttachNetworkInterface`, `sts.AssumeRole`,
 `elbv2.RegisterTargets`, `elbv2.DeregisterTargets`,
 `route53.ChangeResourceRecordSets`.
+
+## RDS (Relational Database Service)
+
+RDS uses the same two layers as ECS, with the `.bus.` segment separating
+internal reconciler↔agent traffic from the AWS API surface (rds-v1.md D7).
+
+### Layer 1 — AWS API surface
+
+Unlike ECS, RDS speaks the AWS Query protocol with XML responses (D2), so the
+gateway takes the action from the `Action=` form parameter rather than an
+`X-Amz-Target` header. It then relays `rds.<AWSAction>` NATS requests on the
+existing `spinifex-workers` queue group. Handler names follow the
+`handleRDS<AWSAction>` convention. The full v1 namespace:
+
+```
+rds.CreateDBInstance, rds.DescribeDBInstances, rds.ModifyDBInstance,
+rds.DeleteDBInstance, rds.RebootDBInstance, rds.StartDBInstance,
+rds.StopDBInstance
+rds.CreateDBSnapshot, rds.DescribeDBSnapshots, rds.DeleteDBSnapshot,
+rds.RestoreDBInstanceFromDBSnapshot
+rds.DescribeDBInstanceAutomatedBackups
+rds.CreateDBSubnetGroup, rds.DescribeDBSubnetGroups, rds.DeleteDBSubnetGroup
+rds.CreateDBParameterGroup, rds.DescribeDBParameterGroups,
+rds.ModifyDBParameterGroup, rds.DescribeDBParameters, rds.DeleteDBParameterGroup
+rds.AddTagsToResource, rds.RemoveTagsFromResource, rds.ListTagsForResource
+rds.DescribeEvents
+rds.RegisterDBInstance, rds.SubmitDBStateChange, rds.PollDBCommands,
+rds.GetDBBootstrapConfig
+```
+
+The last four are the internal agent actions: they are gateway actions like any
+other because `rds-agent` reaches the control plane over SigV4-on-awsgw with
+IMDS instance-role credentials, never over NATS directly (D7). Authorization
+binds them to the caller's own instance identity.
+
+Today every action is a stub — `NotImplemented` for the v1 namespace,
+`OperationNotSupportedException` for the recognised out-of-scope actions (read
+replicas, Aurora clusters, option groups, point-in-time restore) — except
+`DescribeDBInstances`, which returns an empty result set. The subjects land with
+their handler bodies.
+
+### Layer 2 — internal reconciler↔agent bus
+
+The leader-elected reconciler and the in-guest `rds-agent` communicate on
+`rds.bus.<accountID>.<dbInstanceIdentifier>.*`. DB instance identity is
+`<accountID>.<dbInstanceIdentifier>` (matches the KV layout), not a UUID, and
+deliberately not the internal EC2 instance ID — that changes on every VM
+replace, while the bus subject must not.
+
+```
+rds.bus.<accountID>.<dbInstanceIdentifier>.register        # agent → reconciler, at boot
+rds.bus.<accountID>.<dbInstanceIdentifier>.heartbeat       # agent → reconciler, every 30s
+rds.bus.<accountID>.<dbInstanceIdentifier>.health          # agent → reconciler, engine health
+rds.bus.<accountID>.<dbInstanceIdentifier>.command         # reconciler → agent
+rds.bus.<accountID>.<dbInstanceIdentifier>.command-reply   # agent → reconciler
+```
+
+The agent never publishes to these subjects itself; the gateway relays its
+Layer 1 calls onto them, keeping NATS host-internal exactly as it is for
+`ecs-agent` and `lbagent`. The subjects are consumed in a later phase.
+
+### Cross-service calls
+
+The reconciler also publishes on existing namespaces (no `rds.` prefix):
+`ec2.CreateVolume`, `ec2.AttachVolume`, `ec2.ModifyVolume`, `ec2.CreateSnapshot`,
+`ec2.DescribeSnapshots`, `ec2.DeleteSnapshot`, `ec2.CreateNetworkInterface`,
+`ec2.AttachNetworkInterface`, `system.LaunchInstance.<type>`, and
+`dns.recordset.change`.

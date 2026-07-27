@@ -178,7 +178,16 @@ func TestSpinifexTomlTemplate_GatewayListensOnAllPlanes(t *testing.T) {
 	assert.Contains(t, content, `host = "0.0.0.0:9999"`, "gateway must answer on every plane")
 	assert.NotContains(t, content, `host = "10.0.0.3:9999"`, "gateway must not be pinned to the internal plane")
 	assert.Contains(t, content, `host = "10.0.0.3:4222"`, "nats stays internal")
-	assert.Contains(t, content, `host = "10.0.0.3:8443"`, "predastore peer address stays internal")
+
+	// predastore-start.sh scrapes this into SPINIFEX_PREDASTORE_HOST, which
+	// outranks predastore.toml, so pinning it here makes S3 unreachable from the
+	// wan plane and breaks the UI, which proxies to localhost:8443.
+	assert.Contains(t, content, `host = "0.0.0.0:8443"`, "S3 must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:8443"`, "S3 must not be pinned to the internal plane")
+
+	// The daemon is cluster-internal and peers dial it by advertise address,
+	// so it stays on the bind address rather than following the public ones.
+	assert.Contains(t, content, `host = "10.0.0.3:4432"`, "daemon stays internal")
 }
 
 // Empty AdvertiseIP (e.g. loading an existing cluster pre-siv-8) must NOT

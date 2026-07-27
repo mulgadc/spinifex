@@ -70,3 +70,38 @@ func TestGroupMembers_MissingGroup(t *testing.T) {
 		t.Error("want error for non-existent IOMMU group, got nil")
 	}
 }
+
+func TestIsBridgeClass(t *testing.T) {
+	cases := []struct {
+		class string
+		want  bool
+	}{
+		{"0x060400", true},  // PCI-to-PCI bridge
+		{"0x060000", true},  // host bridge
+		{"0x030200", false}, // 3D controller (GPU)
+		{"0x040300", false}, // audio device
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isBridgeClass(c.class); got != c.want {
+			t.Errorf("isBridgeClass(%q) = %v, want %v", c.class, got, c.want)
+		}
+	}
+}
+
+func TestFilterBridgeMembers(t *testing.T) {
+	members := []IOMMUGroupMember{
+		{PCIAddress: "0000:00:1c.0", Class: "0x060400"},
+		{PCIAddress: "0000:03:00.0", Class: "0x030200"},
+		{PCIAddress: "0000:03:00.1", Class: "0x040300"},
+	}
+	got := filterBridgeMembers(members)
+	if len(got) != 2 {
+		t.Fatalf("want 2 members after filtering bridge, got %d", len(got))
+	}
+	for _, m := range got {
+		if m.PCIAddress == "0000:00:1c.0" {
+			t.Error("bridge member 0000:00:1c.0 should have been filtered out")
+		}
+	}
+}

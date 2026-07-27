@@ -44,6 +44,18 @@ spec:
         kubernetes.io/os: linux
       serviceAccountName: ebs-csi-controller-sa
       priorityClassName: system-cluster-critical
+      # A cluster with a GPU-only nodegroup has no untainted node: the CP carries
+      # CriticalAddonsOnly (EKS parity keeps user workloads off it) and every
+      # worker carries nvidia.com/gpu (nodegroup_userdata.go). Without these
+      # tolerations the controller has nowhere to schedule and stays Pending
+      # forever. Real EKS never needs this: its control plane isn't a schedulable
+      # node, so the stock upstream manifest carries no such toleration.
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

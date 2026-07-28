@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -391,25 +390,33 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 	if err != nil {
 		return "", fmt.Errorf("rds: describe %s AMI: %w", engine, err)
 	}
-	if out == nil || len(out.Images) == 0 {
+	if out == nil {
 		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
 	}
 
-	// Several builds of one engine version can be registered; the newest is the
-	// one an operator most recently imported.
-	images := out.Images
-	sort.Slice(images, func(i, j int) bool {
-		return aws.StringValue(images[i].CreationDate) > aws.StringValue(images[j].CreationDate)
-	})
-	imageID := aws.StringValue(images[0].ImageId)
-	if imageID == "" {
+	// Several builds of one engine version can be registered; skip malformed
+	// catalog entries and select the most recently imported usable image.
+	var newestID, newestCreated string
+	matches := 0
+	for _, image := range out.Images {
+		if image == nil || aws.StringValue(image.ImageId) == "" {
+			continue
+		}
+		matches++
+		created := aws.StringValue(image.CreationDate)
+		if newestID == "" || created > newestCreated {
+			newestID = aws.StringValue(image.ImageId)
+			newestCreated = created
+		}
+	}
+	if newestID == "" {
 		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
 	}
-	if len(images) > 1 {
+	if matches > 1 {
 		slog.WarnContext(ctx, "rds: multiple AMIs match the requested engine; using newest",
-			"engine", engine, "engineVersion", version, "imageId", imageID, "matches", len(images))
+			"engine", engine, "engineVersion", version, "imageId", newestID, "matches", matches)
 	}
-	return imageID, nil
+	return newestID, nil
 }
 
 // natsVolumeAttacher hot-plugs a volume through the per-instance ec2.cmd

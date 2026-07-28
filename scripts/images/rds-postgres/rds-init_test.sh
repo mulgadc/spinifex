@@ -75,7 +75,11 @@ done
 mkdir -p "${pgdata}"
 echo 18 > "${pgdata}/PG_VERSION"
 echo "# stock postgresql.conf" > "${pgdata}/postgresql.conf"
-echo "local all all peer" > "${pgdata}/pg_hba.conf"
+if [ "${PG_HBA_AS_DIR:-0}" = "1" ]; then
+    mkdir "${pgdata}/pg_hba.conf"
+else
+    echo "local all all peer" > "${pgdata}/pg_hba.conf"
+fi
 exit 0
 EOF
 
@@ -156,7 +160,7 @@ reset_state() {
     : > "${INITDB_CALLS}"
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
-    unset INITDB_FAIL PSQL_FAIL RDS_ALLOW_LOCAL_DATADIR || true
+    unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL RDS_ALLOW_LOCAL_DATADIR || true
 }
 
 # run: invoke rds-init with every path knob pointed into the temp dir.
@@ -170,6 +174,7 @@ run() {
         RDS_MOUNTS_FILE="${MOUNTS}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
+        PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
         PSQL_FAIL="${PSQL_FAIL:-0}" \
         INITDB_CALLS="${INITDB_CALLS}" PGCTL_CALLS="${PGCTL_CALLS}" PSQL_CALLS="${PSQL_CALLS}" \
         sh "${SCRIPT}" </dev/null
@@ -267,7 +272,18 @@ run_fails "initdb-fail"
     && fail "initdb-fail: half-written datadir kept" || pass "initdb-fail: datadir cleared"
 unset INITDB_FAIL
 
-# --- Case 6a: a failed initdb over a NON-empty datadir must not delete it ---
+# --- Case 6a: a post-initdb failure is covered by the cleanup trap ---
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PG_HBA_AS_DIR=1
+export PG_HBA_AS_DIR
+run_fails "post-initdb-fail"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "post-initdb-fail: datadir kept before the former late trap point" \
+    || pass "post-initdb-fail: datadir cleared"
+unset PG_HBA_AS_DIR
+
+# --- Case 6b: a failed initdb over a NON-empty datadir must not delete it ---
 # A zero-length PG_VERSION over an otherwise intact datadir takes the
 # initialise path, and "directory not empty" is one way initdb then fails.
 # Clearing there would destroy customer data in response to the one signal
@@ -287,7 +303,7 @@ grep -q 'refusing to clear' "${WORK}/out" \
     && pass "initdb-fail-nonempty: refusal explains why" || fail "initdb-fail-nonempty: no refusal message"
 unset INITDB_FAIL
 
-# --- Case 6b: a failed master bootstrap leaves nothing bootable either ---
+# --- Case 6c: a failed master bootstrap leaves nothing bootable either ---
 # postgresql is in the default runlevel independently of this oneshot, so a
 # datadir kept here would start an engine whose master role has no password —
 # and the password is one-shot, so the next fetch is `attach` and cannot repair
@@ -304,7 +320,7 @@ grep -q 'stop' "${PGCTL_CALLS}" \
     && pass "bootstrap-fail: bootstrap server stopped" || fail "bootstrap-fail: bootstrap server left running"
 unset PSQL_FAIL
 
-# --- Case 6c: the bootstrap server never starts ---
+# --- Case 6d: the bootstrap server never starts ---
 # `set -e` aborts the moment pg_ctl start fails, so nothing inside
 # bootstrap_master runs. The datadir already carries PG_VERSION and a pg_hba
 # accepting scram, and the password is spent, so leaving it would attach on the
@@ -319,7 +335,7 @@ run_fails "bootstrap-nostart"
     || pass "bootstrap-nostart: datadir cleared"
 unset PGCTL_START_FAIL
 
-# --- Case 6d: a pre-existing datadir is never swept by the trap ---
+# --- Case 6e: a pre-existing datadir is never swept by the trap ---
 # The clear is scoped to a datadir this invocation created. A torn write that
 # loses PG_VERSION over intact data takes the initialise branch, and the sweep
 # must not answer that by destroying the customer's data.

@@ -592,6 +592,20 @@ func TestResolveEngineAMIPicksTheNewestBuild(t *testing.T) {
 	assert.Equal(t, "ami-new", amiID)
 }
 
+func TestResolveEngineAMISkipsMalformedCatalogEntries(t *testing.T) {
+	h := newLaunchHarness()
+	h.images.images = []*ec2.Image{
+		nil,
+		{ImageId: aws.String(""), CreationDate: aws.String("2026-04-01T00:00:00Z")},
+		{CreationDate: aws.String("2026-05-01T00:00:00Z")},
+		{ImageId: aws.String("ami-valid"), CreationDate: aws.String("2026-03-01T00:00:00Z")},
+	}
+
+	amiID, err := resolveEngineAMI(t.Context(), h.images, "postgres", "18")
+	require.NoError(t, err)
+	assert.Equal(t, "ami-valid", amiID)
+}
+
 func TestLaunchDBInstanceVMFailsWithoutAnEngineAMI(t *testing.T) {
 	h := newLaunchHarness()
 	h.images.images = nil

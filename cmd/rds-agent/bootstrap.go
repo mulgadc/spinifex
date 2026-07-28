@@ -16,23 +16,37 @@ import (
 // blocked waiting for, then points the health probe at the port the control
 // plane actually assigned.
 func (a *Agent) bootstrap(ctx context.Context) error {
-	return retry(ctx, "bootstrap fetch", func(ctx context.Context) error {
-		cfg, err := a.cp.GetBootstrapConfig(ctx, a.id)
+	var cfg *handlers_rds.GetDBBootstrapConfigOutput
+	if err := retry(ctx, "bootstrap fetch", func(ctx context.Context) error {
+		fetched, err := a.cp.GetBootstrapConfig(ctx, a.id)
 		if err != nil {
 			return err
 		}
-		if err := writeHandoff(a.cfg.HandoffDir, cfg); err != nil {
-			return err
+		if fetched == nil {
+			return fmt.Errorf("bootstrap fetch returned no config")
 		}
-		if cfg.Port > 0 {
-			a.probe.setPort(int(cfg.Port))
-		}
-		// Mode is logged but never branched on: rds-init decides whether to
-		// initdb from the state of the datadir.
-		slog.Info("rds-agent: bootstrap config delivered",
-			"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters))
+		cfg = fetched
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Once an initialize response reaches the guest, keep retrying that same
+	// payload. Re-fetching after a local write failure returns attach because the
+	// control plane has already consumed the one-shot password.
+	if err := retry(ctx, "bootstrap handoff", func(context.Context) error {
+		return a.handoffWriter(a.cfg.HandoffDir, cfg)
+	}); err != nil {
+		return err
+	}
+	if cfg.Port > 0 {
+		a.probe.setPort(int(cfg.Port))
+	}
+	// Mode is logged but never branched on: rds-init decides whether to initdb
+	// from the state of the datadir.
+	slog.Info("rds-agent: bootstrap config delivered",
+		"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters))
+	return nil
 }
 
 // The handoff files rds-init reads. They live on tmpfs, so nothing survives a

@@ -69,8 +69,11 @@ _bootstrapped=0
 clear_unfinished_datadir() {
     [ "${_created_datadir}" = "1" ] || return 0
     [ "${_bootstrapped}" = "1" ] && return 0
-    rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after an unfinished bootstrap"
-    echo "[rds-init] ERROR: bootstrap did not complete; datadir ${PGDATA} cleared" >&2
+    if rm -rf -- "${PGDATA}" && [ ! -e "${PGDATA}" ]; then
+        echo "[rds-init] ERROR: bootstrap did not complete; datadir ${PGDATA} cleared" >&2
+        return 0
+    fi
+    echo "[rds-init] ERROR: bootstrap did not complete and datadir ${PGDATA} could not be cleared; recover it out of band before retrying" >&2
 }
 
 # as_pg runs a command as the postgres user; the server refuses to run as root.
@@ -139,14 +142,17 @@ initialise_cluster() {
         # A half-written datadir carries PG_VERSION and would look initialised
         # forever after, but only what this invocation created may be cleared.
         if [ "${_was_empty}" = "1" ]; then
-            rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after a failed initdb"
-            fail "initdb failed; datadir cleared"
+            if rm -rf -- "${PGDATA}" && [ ! -e "${PGDATA}" ]; then
+                fail "initdb failed; datadir cleared"
+            fi
+            fail "initdb failed and datadir ${PGDATA} could not be cleared; recover it out of band before retrying"
         fi
         fail "initdb failed and ${PGDATA} was not empty beforehand — refusing to clear it, since the contents may be a datadir whose PG_VERSION was lost; recover the data volume out of band"
     fi
 
     # Only a datadir initdb built over an empty directory may be swept later.
     _created_datadir="${_was_empty}"
+    trap clear_unfinished_datadir EXIT
 
     cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
 
@@ -345,9 +351,6 @@ if [ -s "${PGDATA}/PG_VERSION" ]; then
     install_runtime_config
 else
     initialise_cluster
-    # Armed from here so every step up to a working master role is covered, not
-    # just the ones whose status bootstrap_master checks.
-    trap clear_unfinished_datadir EXIT
     install_runtime_config
     bootstrap_master
     _bootstrapped=1

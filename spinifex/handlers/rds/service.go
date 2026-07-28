@@ -86,15 +86,18 @@ func (s *Service) systemBucket(ctx context.Context) (jetstream.KeyValue, error) 
 	return GetOrCreateSystemBucket(ctx, js)
 }
 
-// loadCA resolves the cluster CA keypair, preferring an injected loader. A nil
-// cert means no CA is configured, which callers treat as "mint no serving cert"
-// rather than as a failure.
+// loadCA resolves the cluster CA keypair, preferring an injected loader. Both
+// empty paths deliberately disable TLS; a partial configuration is an error
+// rather than an accidental plaintext deployment.
 func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	if s.deps.LoadCA != nil {
 		return s.deps.LoadCA()
 	}
-	if s.deps.CACertPath == "" || s.deps.CAKeyPath == "" {
+	if s.deps.CACertPath == "" && s.deps.CAKeyPath == "" {
 		return nil, nil, nil
+	}
+	if s.deps.CACertPath == "" || s.deps.CAKeyPath == "" {
+		return nil, nil, errors.New("rds service: incomplete cluster CA configuration")
 	}
 	return admin.LoadCAKeyPair(s.deps.CACertPath, s.deps.CAKeyPath)
 }

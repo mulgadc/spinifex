@@ -160,10 +160,11 @@ func setIfPresent(params url.Values, key, value string) {
 // Agent registers the VM, delivers the bootstrap config rds-init is waiting on,
 // then heartbeats engine health and polls for directives until shutdown.
 type Agent struct {
-	cfg   config
-	id    identity
-	cp    controlPlane
-	probe *engineProbe
+	cfg           config
+	id            identity
+	cp            controlPlane
+	probe         *engineProbe
+	handoffWriter func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
 
 	hb  *heartbeater
 	cmd *commander
@@ -177,7 +178,7 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 		AgentVersion:         version,
 		EngineVersion:        cfg.EngineVersion,
 	}
-	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe}
+	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
 	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(), cfg.PollWait)
 	return a

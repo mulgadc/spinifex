@@ -278,6 +278,36 @@ func TestRun_RetriesRegisterAndBootstrap(t *testing.T) {
 	}
 }
 
+func TestBootstrap_RetriesHandoffWithoutRefetchingConsumedPassword(t *testing.T) {
+	cp := newFakeControlPlane()
+	password := "one-shot-secret"
+	cp.bootstrapOut = bootstrapOutput(&password)
+	cfg := testConfig(t)
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+
+	writes := 0
+	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
+		writes++
+		if got.MasterUserPassword == nil || *got.MasterUserPassword != password {
+			t.Fatalf("handoff attempt %d lost the initialize password", writes)
+		}
+		if writes == 1 {
+			return errors.New("temporary tmpfs write error")
+		}
+		return nil
+	}
+
+	if err := a.bootstrap(t.Context()); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if len(cp.bootstrapReqs) != 1 {
+		t.Errorf("bootstrap fetches = %d, want 1", len(cp.bootstrapReqs))
+	}
+	if writes != 2 {
+		t.Errorf("handoff writes = %d, want 2", writes)
+	}
+}
+
 // A configured identifier is asserted on the wire so a mis-provisioned VM is
 // rejected by the gateway instead of adopting whatever it resolves to.
 func TestRun_SendsConfiguredIdentifier(t *testing.T) {

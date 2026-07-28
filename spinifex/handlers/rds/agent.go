@@ -275,63 +275,67 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 	}
 	key := DBInstanceKey(input.DBInstanceIdentifier)
 
-	var rec DBInstanceRecord
-	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
-	}
+	for {
+		var rec DBInstanceRecord
+		rev, found, err := getJSONRevision(ctx, kv, key, &rec)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
+		}
 
-	out := &GetDBBootstrapConfigOutput{
-		Mode:                 BootstrapModeAttach,
-		DBInstanceIdentifier: rec.DBInstanceIdentifier,
-		Engine:               rec.Engine,
-		EngineVersion:        rec.EngineVersion,
-		DBName:               rec.DBName,
-		MasterUsername:       rec.MasterUsername,
-		Port:                 rec.Port,
-		Parameters:           rec.Bootstrap.ResolvedParameters,
-	}
+		out := &GetDBBootstrapConfigOutput{
+			Mode:                 BootstrapModeAttach,
+			DBInstanceIdentifier: rec.DBInstanceIdentifier,
+			Engine:               rec.Engine,
+			EngineVersion:        rec.EngineVersion,
+			DBName:               rec.DBName,
+			MasterUsername:       rec.MasterUsername,
+			Port:                 rec.Port,
+			Parameters:           rec.Bootstrap.ResolvedParameters,
+		}
 
-	// The cert is minted before the password is consumed, so a mint failure
-	// leaves the password in KV for the agent's retry. Consuming first would
-	// leave an instance that can never learn its master password.
-	cert, err := s.mintServingCert(&rec)
-	if err != nil {
-		return nil, err
-	}
-	if cert != nil {
-		out.ServingCertificate = cert.CertificatePEM
-		out.ServingPrivateKey = cert.PrivateKeyPEM
-		out.CACertificate = cert.caPEM
-	}
+		// The cert is minted before the password is consumed, so a mint failure
+		// leaves the password in KV for the agent's retry. Consuming first would
+		// leave an instance that can never learn its master password.
+		cert, err := s.mintServingCert(&rec)
+		if err != nil {
+			return nil, err
+		}
+		if cert != nil {
+			out.ServingCertificate = cert.CertificatePEM
+			out.ServingPrivateKey = cert.PrivateKeyPEM
+			out.CACertificate = cert.caPEM
+		}
 
-	if !rec.Bootstrap.Consumed {
+		if rec.Bootstrap.Consumed {
+			return out, nil
+		}
+
 		password := rec.Bootstrap.MasterUserPassword
 		now := time.Now().UTC()
 		rec.Bootstrap.MasterUserPassword = ""
 		rec.Bootstrap.Consumed = true
 		rec.Bootstrap.ConsumedAt = &now
 		rec.UpdatedAt = now
-		// A lost CAS means a concurrent fetch consumed the password first, so
-		// this one degrades to attach rather than handing it to two agents.
-		// Any other write failure must surface: degrading on it would answer a
-		// genuine first boot with attach, and rds-init then blames the data
-		// volume for what is a control-plane write error.
 		if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
 			if !errors.Is(err, jetstream.ErrKeyExists) {
 				return nil, fmt.Errorf("rds bootstrap: consume master password for %s: %w",
 					input.DBInstanceIdentifier, err)
 			}
-			return out, nil
+			// A revision conflict may be an unrelated record update. Re-read and
+			// return attach only when the stored consumed marker proves another
+			// bootstrap fetch won the password.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		out.Mode = BootstrapModeInitialize
 		out.MasterUserPassword = &password
+		return out, nil
 	}
-
-	return out, nil
 }
 
 // bootstrapCert bundles a minted serving cert with the CA the agent must trust.
@@ -341,16 +345,19 @@ type bootstrapCert struct {
 	caPEM string
 }
 
-// mintServingCert issues a fresh serving cert for the instance. Returns nil when
-// no CA is configured or the instance has no ENI address to name, since TLS is
-// offered rather than enforced and neither case should block a boot.
+// mintServingCert issues a fresh serving cert for the instance. A deployment
+// with no cluster CA may boot without TLS, but configured TLS fails closed when
+// the instance record has no ENI address for the required IP SAN.
 func (s *Service) mintServingCert(rec *DBInstanceRecord) (*bootstrapCert, error) {
 	caCert, caKey, err := s.loadCA()
 	if err != nil {
 		return nil, fmt.Errorf("rds bootstrap: load cluster CA: %w", err)
 	}
-	if caCert == nil || caKey == nil || rec.ENIPrivateIP == "" {
+	if caCert == nil || caKey == nil {
 		return nil, nil
+	}
+	if rec.ENIPrivateIP == "" {
+		return nil, errors.New("rds bootstrap: configured TLS requires an ENI private IP")
 	}
 	cert, err := MintServingCert(caCert, caKey, ServingCertRequest{
 		DBInstanceIdentifier: rec.DBInstanceIdentifier,

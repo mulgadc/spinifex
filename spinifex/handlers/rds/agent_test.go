@@ -231,6 +231,36 @@ func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 	assert.Equal(t, int64(5432), out.Port)
 }
 
+func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
+	svc := newTestService(t)
+	rec := defaultRecord()
+	rec.ENIPrivateIP = ""
+	seedInstance(t, svc, rec)
+
+	_, err := svc.GetDBBootstrapConfig(t.Context(),
+		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "configured TLS requires an ENI private IP")
+
+	stored, raw := readRecord(t, svc)
+	assert.False(t, stored.Bootstrap.Consumed)
+	assert.Contains(t, raw, "s3cr3t-master-pw")
+}
+
+func TestGetDBBootstrapConfig_PartialCAConfigurationFailsClosed(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion).WithDeps(Deps{CACertPath: "/etc/spinifex/ca.pem"})
+	seedInstance(t, svc, defaultRecord())
+
+	_, err := svc.GetDBBootstrapConfig(t.Context(),
+		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "incomplete cluster CA configuration")
+
+	stored, _ := readRecord(t, svc)
+	assert.False(t, stored.Bootstrap.Consumed)
+}
+
 // A configured CA that cannot be loaded must fail the fetch *without* consuming
 // the password. Leaving the bootstrap state untouched is what makes the agent's
 // retry succeed once the CA is readable again.
@@ -265,6 +295,38 @@ func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T
 	require.NotNil(t, out.MasterUserPassword)
 	assert.Equal(t, "s3cr3t-master-pw", *out.MasterUserPassword)
 	assert.NotEmpty(t, out.ServingCertificate)
+}
+
+func TestGetDBBootstrapConfig_RetriesCASConflictFromUnrelatedUpdate(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	baseCA := newTestCA(t)
+	svc := NewService(nc, testRegion)
+	var once sync.Once
+	svc.WithDeps(Deps{LoadCA: func() (*x509.Certificate, *rsa.PrivateKey, error) {
+		once.Do(func() {
+			kv, err := svc.bucket(t.Context(), testAccountID)
+			require.NoError(t, err)
+			var rec DBInstanceRecord
+			rev, found, err := getJSONRevision(t.Context(), kv, DBInstanceKey(testDBID), &rec)
+			require.NoError(t, err)
+			require.True(t, found)
+			rec.Agent.Message = "concurrent health update"
+			require.NoError(t, updateJSON(t.Context(), kv, DBInstanceKey(testDBID), rev, &rec))
+		})
+		return baseCA()
+	}})
+	seedInstance(t, svc, defaultRecord())
+
+	out, err := svc.GetDBBootstrapConfig(t.Context(),
+		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, BootstrapModeInitialize, out.Mode)
+	require.NotNil(t, out.MasterUserPassword)
+	assert.Equal(t, "s3cr3t-master-pw", *out.MasterUserPassword)
+
+	rec, _ := readRecord(t, svc)
+	assert.Equal(t, "concurrent health update", rec.Agent.Message)
+	assert.True(t, rec.Bootstrap.Consumed)
 }
 
 // Concurrent bootstrap fetches must resolve to exactly one password holder, and

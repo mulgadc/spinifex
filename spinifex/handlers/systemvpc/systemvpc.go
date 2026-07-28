@@ -395,10 +395,11 @@ func ensureSubnet(ctx context.Context, vpcp VPCProvisioner, spec Spec, accountID
 // default route, and associates it to subnetIDs. Idempotent: a re-run reuses the
 // existing table and re-drives the associations.
 func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec, accountID, vpcID, role string, route *ec2.CreateRouteInput, subnetIDs []string) (string, error) {
-	rtID, fresh, err := describeOrCreateRouteTable(ctx, rtp, spec, accountID, vpcID, role)
+	rt, fresh, err := describeOrCreateRouteTable(ctx, rtp, spec, accountID, vpcID, role)
 	if err != nil {
 		return "", err
 	}
+	rtID := aws.StringValue(rt.RouteTableId)
 	if fresh {
 		route.RouteTableId = aws.String(rtID)
 		if _, err := rtp.CreateRoute(ctx, route, accountID); err != nil {
@@ -409,38 +410,57 @@ func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec,
 		if sn == "" {
 			continue
 		}
-		// A subnet surviving an earlier Ensure is already on this table, which
-		// AssociateRouteTable rejects as Resource.AlreadyAssociated. For a shared
-		// system VPC every Ensure after the first takes this path.
-		if _, err := rtp.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
+		_, err := rtp.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
 			RouteTableId: aws.String(rtID),
 			SubnetId:     aws.String(sn),
-		}, accountID); err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorResourceAlreadyAssociated) {
+		}, accountID)
+		if err == nil {
+			continue
+		}
+		// AssociateRouteTable rejects a subnet holding an explicit association on
+		// any table in the VPC. Tolerate that only when the association is this
+		// table's — a subnet parked on someone else's table has no egress, and for
+		// a shared system VPC every Ensure after the first takes this path.
+		if !awserrors.IsErrorCode(err, awserrors.ErrorResourceAlreadyAssociated) || !associatedWith(rt, sn) {
 			return "", fmt.Errorf("systemvpc: associate route table %s → subnet %s: %w", rtID, sn, err)
 		}
 	}
 	return rtID, nil
 }
 
-func describeOrCreateRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec, accountID, vpcID, role string) (rtID string, fresh bool, err error) {
+// associatedWith reports whether subnetID already holds an explicit association
+// on rt, as of the describe ensureRouteTable adopted it from.
+func associatedWith(rt *ec2.RouteTable, subnetID string) bool {
+	for _, assoc := range rt.Associations {
+		if aws.StringValue(assoc.SubnetId) == subnetID && !aws.BoolValue(assoc.Main) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeOrCreateRouteTable returns the role-tagged route table, adopting an
+// existing one where possible. The table is returned whole rather than by ID so
+// the caller can read the associations the describe already carried.
+func describeOrCreateRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec, accountID, vpcID, role string) (rt *ec2.RouteTable, fresh bool, err error) {
 	out, err := rtp.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: spec.roleFilters(role)}, accountID)
 	if err != nil {
-		return "", false, fmt.Errorf("systemvpc: describe route table (%s): %w", role, err)
+		return nil, false, fmt.Errorf("systemvpc: describe route table (%s): %w", role, err)
 	}
 	if out != nil && len(out.RouteTables) > 0 {
-		return aws.StringValue(out.RouteTables[0].RouteTableId), false, nil
+		return out.RouteTables[0], false, nil
 	}
 	created, err := rtp.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
 		VpcId:             aws.String(vpcID),
 		TagSpecifications: spec.tagSpec("route-table", role),
 	}, accountID)
 	if err != nil {
-		return "", false, fmt.Errorf("systemvpc: create route table (%s): %w", role, err)
+		return nil, false, fmt.Errorf("systemvpc: create route table (%s): %w", role, err)
 	}
 	if created == nil || created.RouteTable == nil || aws.StringValue(created.RouteTable.RouteTableId) == "" {
-		return "", false, fmt.Errorf("systemvpc: create route table (%s): empty id", role)
+		return nil, false, fmt.Errorf("systemvpc: create route table (%s): empty id", role)
 	}
-	return aws.StringValue(created.RouteTable.RouteTableId), true, nil
+	return created.RouteTable, true, nil
 }
 
 func ensureNatGateway(ctx context.Context, deps Deps, spec Spec, accountID, publicSubnetID string) (natID, allocID, publicIP string, err error) {

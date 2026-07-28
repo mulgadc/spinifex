@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -403,6 +404,23 @@ func (f *fakeNatGatewayProvisioner) DeleteNatGateway(_ context.Context, input *e
 }
 
 // --- Address-space ownership ---
+
+// TestCPVPCTagValuesAreFrozen pins the values live CP VPCs already carry. Every
+// other test in the package seeds its fake and filters through cpVPCRoles, so
+// only a literal assertion catches a change to the prefix or the supernet — and
+// a change to either orphans every deployed cluster from its own teardown,
+// stranding a billable NAT gateway and hanging DeleteCluster in DELETING.
+func TestCPVPCTagValuesAreFrozen(t *testing.T) {
+	assert.Equal(t, handlers_systemvpc.Roles{
+		VPC:           "cp-vpc",
+		PublicSubnet:  "cp-public",
+		PrivateSubnet: "cp-private",
+		PublicRT:      "cp-public-rt",
+		PrivateRT:     "cp-private-rt",
+		NatGW:         "cp-natgw",
+	}, cpVPCRoles, "these role tags are baked into live deployments; DeleteClusterCPVPC and EKSBillableReaper find resources by them")
+	assert.Equal(t, "10.252.0.0/14", cpVPCSupernet, "existing clusters' CIDRs are hashed out of this block")
+}
 
 func TestCPVPCSupernetIsDisjointFromOtherComponents(t *testing.T) {
 	supernet, err := netip.ParsePrefix(cpVPCSupernet)

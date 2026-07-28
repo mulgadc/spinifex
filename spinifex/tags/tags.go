@@ -45,5 +45,5 @@ const (
 // VMs bind a system.TerminateInstance.{id} subject so a cluster-wide teardown
 // invoked on any node can route a terminate to the owning node.
 func IsSystemManaged(managedBy string) bool {
-	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS
+	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS
 }

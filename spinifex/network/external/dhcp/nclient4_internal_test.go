@@ -10,46 +10,54 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4"
 )
 
-// socketTimeout must never cap the caller's budget, because nclient4 ends an
-// attempt on whichever of the two deadlines fires first.
-func TestSocketTimeoutTracksContextDeadline(t *testing.T) {
+// The caller's budget must be spent retransmitting under one xid, not waiting
+// out a single silent read, so the first read is short and the ladder — not the
+// read deadline — is what has to cover the window Manager gives an attempt.
+func TestRetransmitLadderCoversTheWidestAcquireWindow(t *testing.T) {
+	widest := defaultAcquireSchedule[len(defaultAcquireSchedule)-1] + acquireAttemptJitter
+	if got := retransmitLadder(nclient4InitialRead, nclient4Tries); got <= widest {
+		t.Fatalf("ladder spans %v, want more than the widest attempt window %v — "+
+			"the exchange would end on an exhausted ladder with budget left", got, widest)
+	}
+}
+
+// nclient4 ends a read on whichever of the socket deadline and ctx fires first,
+// so a read longer than what the caller has left is dead time: the transmission
+// it belongs to can never be retried inside the exchange.
+func TestSocketTimeoutNeverOutlivesTheCaller(t *testing.T) {
 	c := NewNClient4(5 * time.Second)
 
-	t.Run("no deadline falls back to the configured timeout", func(t *testing.T) {
-		if got := c.socketTimeout(context.Background()); got != 5*time.Second {
-			t.Fatalf("socketTimeout = %v, want 5s", got)
-		}
-	})
-
-	t.Run("longer deadline is honoured rather than capped", func(t *testing.T) {
+	t.Run("ample deadline yields the short initial read", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 32*time.Second)
 		defer cancel()
-		got := c.socketTimeout(ctx)
-		if got <= 5*time.Second {
-			t.Fatalf("socketTimeout = %v, want the remaining ~32s, not the 5s fallback", got)
-		}
-		// Strictly beyond the caller's deadline so ctx.Done() reports the timeout.
-		if got <= 32*time.Second {
-			t.Fatalf("socketTimeout = %v, want more than the remaining 32s", got)
+		if got := c.socketTimeout(ctx); got != nclient4InitialRead {
+			t.Fatalf("socketTimeout = %v, want the %v initial read", got, nclient4InitialRead)
 		}
 	})
 
-	t.Run("shorter deadline shortens the read", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Run("no deadline yields the same initial read", func(t *testing.T) {
+		if got := c.socketTimeout(context.Background()); got != nclient4InitialRead {
+			t.Fatalf("socketTimeout = %v, want the %v initial read", got, nclient4InitialRead)
+		}
+	})
+
+	t.Run("deadline inside the initial read shortens it", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), nclient4InitialRead/4)
 		defer cancel()
 		got := c.socketTimeout(ctx)
-		if got <= time.Second || got > 2*time.Second {
-			t.Fatalf("socketTimeout = %v, want just beyond the remaining 1s", got)
+		if got <= 0 || got > nclient4InitialRead/4 {
+			t.Fatalf("socketTimeout = %v, want a positive value within the remaining %v",
+				got, nclient4InitialRead/4)
 		}
 	})
 
-	t.Run("expired deadline yields a positive timeout", func(t *testing.T) {
+	t.Run("expired deadline still yields a positive timeout", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
 		// nclient4 rejects a non-positive read deadline; ctx.Done() ends the
 		// attempt immediately regardless of what is passed here.
-		if got := c.socketTimeout(ctx); got != 5*time.Second {
-			t.Fatalf("socketTimeout = %v, want the 5s fallback", got)
+		if got := c.socketTimeout(ctx); got != nclient4InitialRead {
+			t.Fatalf("socketTimeout = %v, want the %v fallback", got, nclient4InitialRead)
 		}
 	})
 }

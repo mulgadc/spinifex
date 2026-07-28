@@ -13,13 +13,30 @@ import (
 )
 
 // NClient4Client is the production DHCP client (AF_PACKET per call, no
-// long-lived socket). Single-shot: Manager.acquireWithBackoff owns retries
-// so budget arithmetic stays in one place.
+// long-lived socket). Manager.acquireWithBackoff owns the outer schedule of
+// whole DORA exchanges; this type owns the retransmissions inside one exchange.
 type NClient4Client struct {
 	timeout time.Duration
 }
 
-const nclient4Retries = 1
+// nclient4InitialRead is the read deadline for the FIRST transmission of an
+// exchange. nclient4's retryFn doubles it per retransmission, so the ladder is
+// 1s, 2s, 4s, … — RFC 2131 §4.1 behaviour.
+//
+// Retransmitting inside the exchange is the whole point, and it is not the same
+// as Manager retrying: Manager builds a new client and therefore a new xid each
+// attempt, so a server that answers late, or that ignores a first-contact
+// DISCOVER while it probes the candidate address, has its OFFER dropped as
+// belonging to an unknown transaction. Observed upstream behaviour is exactly
+// that — the first DISCOVER from an unseen MAC goes unanswered and a
+// retransmission is answered within ~500ms — so a client that sends one packet
+// and waits out the window never completes DORA at all.
+const nclient4InitialRead = time.Second
+
+// nclient4Tries is the number of transmissions per exchange. Six spans a 63s
+// ladder, longer than the widest window Manager schedules, so an attempt always
+// ends on the caller's context rather than on an exhausted ladder.
+const nclient4Tries = 6
 
 var _ Client = (*NClient4Client)(nil)
 
@@ -33,28 +50,36 @@ func NewNClient4(timeout time.Duration) *NClient4Client {
 	return &NClient4Client{timeout: timeout}
 }
 
-// socketTimeoutGrace keeps the socket deadline strictly behind the caller's, so
-// ctx.Done() is what ends a timed-out attempt. Matching the two exactly makes
-// them expire together and the reported error becomes a coin toss between
-// context.DeadlineExceeded and nclient4's ErrNoResponse, which reads as a
-// packet-matching fault rather than the plain timeout it is.
-const socketTimeoutGrace = time.Second
+// retransmitLadder is the wall-clock span of tries transmissions that start at
+// initial and double each time. The caller's budget must sit inside this span,
+// otherwise the ladder runs out first and the exchange ends early with time
+// still on the clock.
+func retransmitLadder(initial time.Duration, tries int) time.Duration {
+	var total, step time.Duration = 0, initial
+	for range tries {
+		total += step
+		step *= 2
+	}
+	return total
+}
 
-// socketTimeout is the read deadline handed to nclient4 for one DORA. It must
-// track the caller's deadline: nclient4 races its own deadline against ctx and
-// the shorter one ends the attempt, so a fixed value below the caller's budget
-// silently truncates every window in Manager's retransmission schedule.
+// socketTimeout is the read deadline for the first transmission of an exchange.
+// It is deliberately short so the retransmissions above actually happen: the
+// budget is spent on repeated DISCOVERs under one xid, not on a single silent
+// wait. nclient4 races this against ctx and the shorter wins, so it is clamped
+// to whatever the caller has left.
 func (c *NClient4Client) socketTimeout(ctx context.Context) time.Duration {
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		return c.timeout
+		return nclient4InitialRead
 	}
 	// A deadline already in the past is left to ctx.Done(); nclient4 rejects a
 	// non-positive timeout, so keep the fallback rather than pass it through.
-	if remaining := time.Until(deadline); remaining > 0 {
-		return remaining + socketTimeoutGrace
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nclient4InitialRead
 	}
-	return c.timeout
+	return min(remaining, nclient4InitialRead)
 }
 
 func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Lease, error) {
@@ -98,7 +123,7 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 	client, err := nclient4.New(req.Bridge,
 		nclient4.WithHWAddr(req.HWAddr),
 		nclient4.WithTimeout(c.socketTimeout(ctx)),
-		nclient4.WithRetry(nclient4Retries),
+		nclient4.WithRetry(nclient4Tries),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open nclient4 on %s: %w", req.Bridge, err)
@@ -138,7 +163,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	client, err := nclient4.New(lease.Bridge,
 		nclient4.WithHWAddr(lease.HWAddr),
 		nclient4.WithTimeout(c.socketTimeout(ctx)),
-		nclient4.WithRetry(nclient4Retries),
+		nclient4.WithRetry(nclient4Tries),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open nclient4 on %s for renew: %w", lease.Bridge, err)

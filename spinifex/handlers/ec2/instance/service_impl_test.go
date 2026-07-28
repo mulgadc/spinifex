@@ -3257,45 +3257,69 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 }
 
 // TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch verifies that a
-// failed public-IP allocation aborts the launch: detaches and deletes the ENI,
-// deallocates capacity, and returns InsufficientAddressCapacity.
+// failed public-IP allocation aborts the launch — detaches and deletes the ENI,
+// deallocates capacity — and reports the allocator's real cause. Reporting every
+// cause as InsufficientAddressCapacity is what made an upstream DHCP fault look
+// like an exhausted pool on every environment that hit it.
 func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
-	eni := &fakeENICreator{
-		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
-		createOut: &ec2.CreateNetworkInterfaceOutput{
-			NetworkInterface: &ec2.NetworkInterface{
-				NetworkInterfaceId: aws.String("eni-pubip-fail"),
-				MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
-				PrivateIpAddress:   aws.String("10.0.0.50"),
-				VpcId:              aws.String("vpc-1"),
-			},
+	tests := []struct {
+		name     string
+		allocErr error
+		wantCode string
+	}{
+		{
+			// Shape mirrors StaticPoolAllocator's own exhaustion error.
+			name:     "an exhausted pool still surfaces the capacity code",
+			allocErr: fmt.Errorf("pool wan exhausted: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity)),
+			wantCode: awserrors.ErrorInsufficientAddressCapacity,
+		},
+		{
+			name:     "a DHCP timeout is not dressed up as exhausted capacity",
+			allocErr: errors.New("dhcp pool allocate: acquire after 4 attempts: unable to receive an offer"),
+			wantCode: awserrors.ErrorServerInternal,
 		},
 	}
-	ipam := &fakeIPAllocator{err: errors.New("InsufficientAddressCapacity: pool wan exhausted")}
-	deleter := &fakeENIDeleter{}
-	svc, prov := prepareSvcWithENI(t, eni, ipam)
-	svc.eniDeleter = deleter
 
-	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
-		InstanceType: aws.String("t3.micro"),
-		ImageId:      aws.String("ami-1"),
-		SubnetId:     aws.String("subnet-1"),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-	}, "acc", "")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-pubip-fail"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
+						PrivateIpAddress:   aws.String("10.0.0.50"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			ipam := &fakeIPAllocator{err: tt.allocErr}
+			deleter := &fakeENIDeleter{}
+			svc, prov := prepareSvcWithENI(t, eni, ipam)
+			svc.eniDeleter = deleter
 
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error(),
-		"pool exhaustion must surface as InsufficientAddressCapacity, not a silent IP-less boot")
-	assert.Empty(t, instances, "instance with no public IP must not be returned")
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
 
-	// The ENI is attached with a primary IP; rollback must detach before
-	// delete (in-use ENIs reject deletion) so no eniKV record leaks.
-	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
-	assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
-	assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
+			require.Error(t, err)
+			assert.Equal(t, tt.wantCode, err.Error(),
+				"the code must be resolved from the allocator's cause, not asserted by the caller")
+			assert.Empty(t, instances, "instance with no public IP must not be returned")
 
-	require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")
+			// The ENI is attached with a primary IP; rollback must detach before
+			// delete (in-use ENIs reject deletion) so no eniKV record leaks.
+			assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+			assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+			assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
+
+			require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")
+		})
+	}
 }
 
 // natWirePayload mirrors utils.natEvent for test-side decoding.

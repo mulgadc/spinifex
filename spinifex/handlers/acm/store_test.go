@@ -206,3 +206,43 @@ func TestNewStore_RequiresMasterKey(t *testing.T) {
 	_, err := NewStore(t.Context(), nc, nil)
 	require.Error(t, err)
 }
+
+// TestStore_PutGetCert_RoundTripsManagedIssuanceFields asserts the
+// RequestCertificate-era fields on CertRecord — validation state, the
+// delegation token, and the resumable ACME/lease state — survive a
+// PutCert/GetCert round trip unchanged, alongside the encrypted PrivateKey.
+func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
+	store := setupStore(t)
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/managed-1"
+	rec := &CertRecord{
+		CertificateArn:   arn,
+		AccountID:        testAccountID,
+		DomainName:       "managed.example.com",
+		Type:             "AMAZON_ISSUED",
+		Status:           "PENDING_VALIDATION",
+		ValidationMethod: ValidationModeManualTXT,
+		DomainValidationOptions: []DomainValidationEntry{
+			{
+				DomainName:       "managed.example.com",
+				RecordType:       "TXT",
+				RecordName:       "_acme-challenge.managed.example.com.",
+				ValidationStatus: "PENDING_VALIDATION",
+			},
+		},
+		RenewalEligibility: "INELIGIBLE",
+		DelegationToken:    "delegation-token-abc",
+		ACMEOrderURL:       "https://acme.example/order/1",
+		LeaseHolder:        "node-a",
+	}
+	require.NoError(t, store.PutCert(t.Context(), rec))
+
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, rec.ValidationMethod, got.ValidationMethod)
+	assert.Equal(t, rec.DomainValidationOptions, got.DomainValidationOptions)
+	assert.Equal(t, rec.DelegationToken, got.DelegationToken, "the delegation token must be ARN-stable across reads")
+	assert.Equal(t, rec.ACMEOrderURL, got.ACMEOrderURL)
+	assert.Equal(t, rec.LeaseHolder, got.LeaseHolder)
+	assert.Equal(t, rec.RenewalEligibility, got.RenewalEligibility)
+}

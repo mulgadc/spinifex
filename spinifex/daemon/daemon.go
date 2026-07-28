@@ -1082,10 +1082,11 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// ACM gateway → daemon subscriptions (minimal certificate store).
+	// ACM gateway → daemon subscriptions (certificate import and managed issuance).
 	if d.acmService != nil {
 		subs = append(subs,
 			natsSub{"acm.ImportCertificate", handleNATSRequest(d.acmService.ImportCertificate), "spinifex-workers"},
+			natsSub{"acm.RequestCertificate", handleNATSRequest(d.acmService.RequestCertificate), "spinifex-workers"},
 			natsSub{"acm.DescribeCertificate", handleNATSRequest(d.acmService.DescribeCertificate), "spinifex-workers"},
 			natsSub{"acm.ListCertificates", handleNATSRequest(d.acmService.ListCertificates), "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", handleNATSRequest(d.acmService.DeleteCertificate), "spinifex-workers"},

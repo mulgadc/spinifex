@@ -26,8 +26,63 @@ const (
 	KeyPrefixCert = "cert."
 )
 
-// CertRecord is the stored representation of an imported certificate.
-// AccountID scopes ownership so list/describe never cross account boundaries.
+// Validation modes for a managed (RequestCertificate) certificate. The mode is
+// derived from deployment state at request time, never configured, and stored
+// on CertRecord.ValidationMethod so DescribeCertificate and the future
+// issuance/renewal workers can see how a certificate is being validated
+// without re-deriving it.
+const (
+	// ValidationModeProviderAPI: Spinifex writes the DNS-01 challenge via the
+	// operator's DNS provider API. No ResourceRecord is returned — there is
+	// nothing for the caller to publish. Automatic renewal.
+	ValidationModeProviderAPI = "PROVIDER_API"
+	// ValidationModeManualTXT: the operator publishes a rotating TXT challenge
+	// record by hand or via Terraform. Renewal is INELIGIBLE because the
+	// challenge token rotates per order, so unattended renewal cannot succeed.
+	ValidationModeManualTXT = "MANUAL_TXT"
+	// ValidationModeCNAMEDelegation: the operator publishes one stable CNAME
+	// once, and Spinifex answers every subsequent challenge behind it. Deferred
+	// until northstar can serve public authoritative queries; never selected by
+	// deriveValidationMode today, but CertRecord.DelegationToken is minted for
+	// every managed certificate now so this mode is a non-breaking addition
+	// later.
+	ValidationModeCNAMEDelegation = "CNAME_DELEGATION"
+	// ValidationModePrivateCA: signed from the tenant root CA with no domain
+	// validation at all. The only mode that issues synchronously.
+	ValidationModePrivateCA = "PRIVATE_CA"
+)
+
+// DomainValidationEntry is the resumable per-domain validation state for one
+// name on a managed certificate. Converted to the AWS-shaped
+// []*acm.DomainValidation in recordToDetail. RecordType/RecordName/RecordValue
+// stay empty for any mode where Spinifex (or, for PRIVATE_CA, nobody) owns the
+// record write — that omission is what makes DescribeCertificate AWS-shaped
+// without fabricating a ResourceRecord the caller has nothing to do with.
+type DomainValidationEntry struct {
+	DomainName string `json:"domain_name"`
+	// RecordType/RecordName/RecordValue mirror acm.ResourceRecord. RecordType
+	// empty means "no ResourceRecord" in the AWS-shaped output.
+	RecordType  string `json:"record_type,omitempty"`
+	RecordName  string `json:"record_name,omitempty"`
+	RecordValue string `json:"record_value,omitempty"`
+	// ValidationStatus is one of the ACM DomainStatus values (PENDING_VALIDATION,
+	// SUCCESS, FAILED).
+	ValidationStatus string `json:"validation_status"`
+}
+
+// RenewalSummaryRecord is the stored form of acm.RenewalSummary, populated by
+// the future renewal worker. RenewalStatusReason is what lets a certificate
+// that issued cleanly but can no longer renew surface before it expires
+// rather than after.
+type RenewalSummaryRecord struct {
+	RenewalStatus       string    `json:"renewal_status"`
+	RenewalStatusReason string    `json:"renewal_status_reason,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// CertRecord is the stored representation of a certificate, whether imported
+// or issued by RequestCertificate. AccountID scopes ownership so list/describe
+// never cross account boundaries.
 type CertRecord struct {
 	CertificateArn   string            `json:"certificate_arn"`
 	AccountID        string            `json:"account_id"`
@@ -49,6 +104,47 @@ type CertRecord struct {
 	// created, modified and deleted; also surfaces as the public
 	// CertificateDetail.InUseBy field.
 	InUseBy []string `json:"in_use_by,omitempty"`
+
+	// Type is the ACM certificate type: AMAZON_ISSUED, PRIVATE or IMPORTED.
+	Type string `json:"type,omitempty"`
+	// Status is the ACM certificate status (PENDING_VALIDATION, ISSUED,
+	// FAILED, ...).
+	Status string `json:"status,omitempty"`
+	// ValidationMethod is the derived validation mode (see the
+	// ValidationMode* constants above). Empty for imported certificates, which
+	// have no validation.
+	ValidationMethod string `json:"validation_method,omitempty"`
+	// DomainValidationOptions carries one entry per name on the certificate
+	// (DomainName plus any SubjectAltNames).
+	DomainValidationOptions []DomainValidationEntry `json:"domain_validation_options,omitempty"`
+	// FailureReason is populated on terminal issuance failure, using the ACM
+	// FailureReason enum.
+	FailureReason string `json:"failure_reason,omitempty"`
+	// RenewalEligibility reports whether the renewal worker may reissue this
+	// certificate under its existing ARN.
+	RenewalEligibility string `json:"renewal_eligibility,omitempty"`
+	// RenewalSummary is nil until a renewal has been attempted.
+	RenewalSummary *RenewalSummaryRecord `json:"renewal_summary,omitempty"`
+	// DelegationToken is minted once at RequestCertificate time and persisted
+	// for the certificate's lifetime, so that CNAME_DELEGATION mode, when it
+	// lands, has a stable CNAME target that never changes retroactively. Unused
+	// by any mode today.
+	DelegationToken string `json:"delegation_token,omitempty"`
+
+	// --- Resumable ACME order state, populated by the future issuance worker.
+	// Persisted so a crashed lease holder's work resumes elsewhere instead of
+	// minting a fresh order (and burning rate-limit budget) on every retry.
+	ACMEOrderURL       string    `json:"acme_order_url,omitempty"`
+	ACMEAuthzURLs      []string  `json:"acme_authz_urls,omitempty"`
+	ACMEChallengeToken string    `json:"acme_challenge_token,omitempty"`
+	ACMEAttemptCount   int       `json:"acme_attempt_count,omitempty"`
+	ACMENextAttemptAt  time.Time `json:"acme_next_attempt_at"`
+
+	// --- Per-certificate issuance lease (see handlers/eks/cluster_reconciler.go
+	// for the pattern this follows). Only the holder may drive this
+	// certificate's order; empty/zero when unleased.
+	LeaseHolder    string    `json:"lease_holder,omitempty"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 }
 
 // Store provides CRUD for ACM certificate records backed by JetStream KV.

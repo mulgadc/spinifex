@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"math/big"
 	"strings"
@@ -315,6 +316,237 @@ func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
 // DescribeCertificate never place the raw private key PEM in log output.
 // Precedent: TestSensitiveDataNotLogged_MasterKey in
 // handlers/iam/service_impl_test.go.
+// fakeCertAuthority is a minimal CertAuthority for testing RequestCertificate's
+// PRIVATE_CA path without the real tenant CA implementation (handlers/acm/privateca.go
+// lives on a separate branch).
+type fakeCertAuthority struct {
+	permitted map[string]bool
+	issueErr  error
+}
+
+func (f *fakeCertAuthority) Authorized(domain string) bool { return f.permitted[domain] }
+
+func (f *fakeCertAuthority) IssueLeaf(domain string, sans []string) (certPEM, chainPEM, keyPEM string, err error) {
+	if f.issueErr != nil {
+		return "", "", "", f.issueErr
+	}
+	c, k, err := genLeafPEM(domain, append([]string{domain}, sans...))
+	if err != nil {
+		return "", "", "", err
+	}
+	return c, "-----BEGIN CERTIFICATE-----\nfake-chain\n-----END CERTIFICATE-----\n", k, nil
+}
+
+// genLeafPEM generates a self-signed leaf certificate + private key as PEM,
+// independent of *testing.T so it can be called from fakeCertAuthority.IssueLeaf.
+func genLeafPEM(cn string, dnsNames []string) (certPEM, keyPEM string, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: cn},
+		DNSNames:     dnsNames,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return "", "", err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	certBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return string(certBytes), string(keyBytes), nil
+}
+
+func TestRequestCertificate_ProviderAPI_PendingValidationNoResourceRecord(t *testing.T) {
+	svc := setupACMService(t)
+	svc.dnsProviderConfigured = true
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("api.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.CertificateArn)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	d := desc.Certificate
+	assert.Equal(t, acm.CertificateStatusPendingValidation, aws.StringValue(d.Status))
+	assert.Equal(t, acm.CertificateTypeAmazonIssued, aws.StringValue(d.Type))
+	require.Len(t, d.DomainValidationOptions, 1)
+	assert.Equal(t, "api.example.com", aws.StringValue(d.DomainValidationOptions[0].DomainName))
+	assert.Nil(t, d.DomainValidationOptions[0].ResourceRecord, "PROVIDER_API: Spinifex owns the record write, nothing for the caller to publish")
+	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility))
+}
+
+func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *testing.T) {
+	svc := setupACMService(t)
+	svc.northstarHostsZone = true
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("manual.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	d := desc.Certificate
+	assert.Equal(t, acm.CertificateStatusPendingValidation, aws.StringValue(d.Status))
+	require.Len(t, d.DomainValidationOptions, 1)
+	rr := d.DomainValidationOptions[0].ResourceRecord
+	require.NotNil(t, rr, "MANUAL_TXT: the operator must publish the challenge record by hand")
+	assert.Equal(t, "TXT", aws.StringValue(rr.Type))
+	assert.Equal(t, "_acme-challenge.manual.example.com.", aws.StringValue(rr.Name))
+	assert.Equal(t, acm.RenewalEligibilityIneligible, aws.StringValue(d.RenewalEligibility),
+		"MANUAL_TXT's challenge token rotates per order, so unattended renewal is impossible")
+}
+
+func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"private.example.com": true}}
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("private.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	d := desc.Certificate
+	assert.Equal(t, acm.CertificateStatusIssued, aws.StringValue(d.Status))
+	assert.Equal(t, acm.CertificateTypePrivate, aws.StringValue(d.Type))
+	assert.NotEmpty(t, aws.StringValue(d.Serial), "the leaf from the injected CA must be parsed and stored")
+	require.Len(t, d.DomainValidationOptions, 1)
+	assert.Nil(t, d.DomainValidationOptions[0].ResourceRecord, "PRIVATE_CA: no validation, nothing to publish")
+	assert.Equal(t, acm.DomainStatusSuccess, aws.StringValue(d.DomainValidationOptions[0].ValidationStatus))
+	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility))
+}
+
+func TestRequestCertificate_PrivateCA_DomainOutsidePermittedRejected(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"allowed.example.com": true}}
+
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("evil.example.com"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameter)
+}
+
+func TestRequestCertificate_PrivateCA_SANOutsidePermittedRejected(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"allowed.example.com": true}}
+
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName:              aws.String("allowed.example.com"),
+		SubjectAlternativeNames: aws.StringSlice([]string{"other.example.com"}),
+	}, testAccountID)
+	require.Error(t, err, "a SAN outside permitted domains must be rejected, not just the primary domain name")
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameter)
+}
+
+func TestRequestCertificate_PrivateCA_NoTenantCAWired_FailsLoudly(t *testing.T) {
+	svc := setupACMService(t)
+	// TenantCA deliberately left nil: PRIVATE_CA is derived (no dns provider, no
+	// northstar zone) but nothing can drive it.
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("x.example.com"),
+	}, testAccountID)
+	require.Error(t, err, "must fail loudly rather than silently skip issuance")
+}
+
+func TestRequestCertificate_PrivateCA_IssueLeafErrorNotStored(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{
+		permitted: map[string]bool{"broken.example.com": true},
+		issueErr:  errors.New("ca offline"),
+	}
+
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("broken.example.com"),
+	}, testAccountID)
+	require.Error(t, err)
+
+	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, list.CertificateSummaryList, "a failed private-CA issuance must not leave a dangling record")
+}
+
+func TestRequestCertificate_NoDomainName_Rejected(t *testing.T) {
+	svc := setupACMService(t)
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameter)
+}
+
+func TestRequestCertificate_PrivateCA_DescribeDoesNotLeakPrivateKey(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"noleak-priv.example.com": true}}
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("noleak-priv.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+
+	b, err := json.Marshal(desc)
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "PRIVATE KEY", "DescribeCertificate response must never carry key material")
+}
+
+func TestImportCertificate_RenewalEligibilityIneligible(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "imported-ineligible.example.com")
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, acm.RenewalEligibilityIneligible, aws.StringValue(desc.Certificate.RenewalEligibility),
+		"imported certificates are never auto-renewed")
+}
+
+func TestDeleteCertificate_RefusesWhenInUse(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "inuse-delete.example.com")
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(out.CertificateArn)
+	require.NoError(t, svc.store.AddInUseBy(context.Background(), certArn, "arn:lb/one"))
+
+	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorEKSResourceInUse)
+
+	// Refused, not partially applied: the certificate must still be there.
+	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestDeleteCertificate_SucceedsWhenNotInUse(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "notinuse-delete.example.com")
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
+}
+
 func TestSensitiveDataNotLogged_ACMPrivateKey(t *testing.T) {
 	var buf strings.Builder
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

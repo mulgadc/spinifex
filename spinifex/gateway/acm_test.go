@@ -37,6 +37,7 @@ func TestACMActionsMap_AllActionsRegistered(t *testing.T) {
 		"ListTagsForCertificate",
 		"AddTagsToCertificate",
 		"RemoveTagsFromCertificate",
+		"RequestCertificate",
 	}
 	for _, action := range expected {
 		_, ok := acmActions[action]
@@ -56,7 +57,7 @@ func TestACMRequest_MissingTarget(t *testing.T) {
 func TestACMRequest_UnknownAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 	w := httptest.NewRecorder()
-	err := gw.ACM_Request(w, setupACMRequest("CertificateManager.RequestCertificate", "{}"))
+	err := gw.ACM_Request(w, setupACMRequest("CertificateManager.BogusAction", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }

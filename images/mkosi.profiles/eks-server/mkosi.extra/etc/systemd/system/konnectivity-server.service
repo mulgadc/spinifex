@@ -22,13 +22,20 @@ Type=simple
 # "-" prefix: a nonzero exit here must stop the server from ever starting,
 # same as the OpenRC start_pre returning 1.
 ExecStartPre=/usr/local/sbin/konnectivity-server-prestart
+# $$ is load-bearing. systemd expands $VAR/${VAR} in Exec*= from the unit's own
+# environment before /bin/sh is executed, and it substitutes an empty string for
+# names it does not know. KONN_SERVER_COUNT is not a unit variable — it only
+# exists in the file ExecStartPre writes, which the shell sources at runtime —
+# so a single $ silently yields `--server-count=` and konnectivity-server dies
+# on flag parsing before it can log or bind the UDS. $$ passes a literal $
+# through so the expansion happens in the shell, after the source.
 ExecStart=/bin/sh -c '. /run/konnectivity-server-args.env; exec /usr/local/bin/konnectivity-server \
     --logtostderr=true \
     --uds-name=/run/konnectivity/konnectivity-server.socket \
     --delete-existing-uds-file \
     --cluster-cert=/var/lib/spinifex-eks/konnectivity/tls.crt \
     --cluster-key=/var/lib/spinifex-eks/konnectivity/tls.key \
-    --server-count=${KONN_SERVER_COUNT} \
+    --server-count=$${KONN_SERVER_COUNT} \
     --mode=grpc \
     --server-port=0 \
     --agent-port=8132 \

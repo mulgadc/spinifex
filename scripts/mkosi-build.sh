@@ -174,6 +174,47 @@ stage_profile_binaries() {
     fi
 }
 
+# Reject an unescaped $VAR/${VAR} in any Exec*= line of a profile's units.
+#
+# systemd expands those from the UNIT's environment before the command runs and
+# substitutes an empty string for a name it does not know, so a unit that wraps
+# a shell to source a runtime-written env file must write $$ to defer expansion
+# to that shell. A single $ is not a syntax error anywhere — it silently drops
+# the argument's value, and the service dies on flag parsing with no useful log.
+# This bites exactly on the OpenRC->systemd port, where the same ${VAR} text was
+# correct because the shell was the only thing reading it.
+#
+# Runs on the host before the container starts, alongside the binary staging
+# above, so a bad unit fails the build in seconds instead of at first boot.
+lint_unit_expansions() {
+    local profile="$1" extra
+    extra="${IMAGE_DIR}/mkosi.profiles/${profile}/mkosi.extra"
+    [[ -d "${extra}" ]] || return 0
+
+    # Line continuations are joined first: the offending reference is typically
+    # mid-way through a wrapped multi-line ExecStart, not on the Exec*= line.
+    local bad
+    bad="$(find "${extra}" -type f \( -name '*.service' -o -name '*.socket' \
+        -o -name '*.timer' -o -name '*.mount' \) -print0 |
+        xargs -0 --no-run-if-empty awk '
+            FNR == 1 { pending = "" }
+            { line = pending $0 }
+            line ~ /\\$/ { pending = substr(line, 1, length(line) - 1); next }
+            { pending = "" }
+            line !~ /^[[:space:]]*Exec(Start|Stop|Reload|Condition)/ { next }
+            # Strip $$ first so an escaped reference cannot match as a bare one.
+            { probe = line; gsub(/\$\$/, "", probe) }
+            probe ~ /\$\{?[A-Za-z_]/ { print FILENAME ": " line }
+        ')"
+
+    if [[ -n "${bad}" ]]; then
+        echo "mkosi-build: unescaped systemd variable reference in Exec* line(s):" >&2
+        echo "${bad}" >&2
+        echo "mkosi-build: systemd expands these to empty; write \$\$ to defer to the shell" >&2
+        exit 1
+    fi
+}
+
 IMAGE=""
 PROFILES=()
 WANT_SHELL=0
@@ -214,6 +255,7 @@ build_builder_image
 # Before the container starts: the repo is mounted read-only, so anything a
 # profile needs built has to exist by now.
 for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
+    lint_unit_expansions "${p}"
     stage_profile_binaries "${p}"
 done
 

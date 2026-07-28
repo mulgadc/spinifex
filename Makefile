@@ -126,15 +126,10 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
-# Preflight — the pre-commit gate: manifest checks, lint, vuln, and the unit,
-# race and e2e-harness tiers.
-#
-# The integration tier is deliberately NOT here. CI runs it as its own parallel
-# job, so it is still gated before merge, and keeping it out leaves preflight
-# the fast common-path check — run `make test-integration` directly when a
-# change touches the gateway router or the NATS subjects it drives.
+# the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
+# integration and race tests skipped to keep quick, they run in CI.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -177,19 +172,19 @@ manifest-lint-update:
 # Run unit tests
 test:
 	@echo -e "\n....Running tests for $(GO_PROJECT_NAME)...."
-	LOG_IGNORE=1 go test -timeout 120s ./spinifex/...
+	GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/...
 
 # Run unit tests with coverage profile
 COVERPROFILE ?= coverage.out
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test -timeout 120s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... $(_COVQ)
+	$(_Q)GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test -race -timeout 300s ./spinifex/... $(_RACEQ)
+	$(_Q)GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.

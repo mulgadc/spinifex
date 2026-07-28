@@ -61,10 +61,22 @@ svc_enable() {
     esac
 }
 
+# --no-block is load-bearing on systemd, not a tuning knob. This unit declares
+# Before=k3s.service, and mulga-eks-k3s-recovery declares After=eks-node-role,
+# so a blocking `systemctl start` deadlocks: systemd will not run the queued job
+# until this unit finishes, and this unit cannot finish until the job it is
+# waiting on runs. Type=oneshot defaults TimeoutStartSec=infinity, so nothing
+# ever breaks the tie and the node wedges mid-boot with the role chosen but no
+# control plane. Enqueue instead and let systemd sequence the units by the
+# After=/Before= they already declare between themselves.
+#
+# OpenRC has no such constraint — rc-service runs the script directly rather
+# than asking a supervisor to schedule it — so that branch still blocks and
+# still surfaces a start failure via set -e.
 svc_start() {
     case "${INIT_SYSTEM}" in
         openrc) rc-service "$1" start ;;
-        systemd) systemctl start "$1.service" ;;
+        systemd) systemctl start --no-block "$1.service" ;;
     esac
 }
 

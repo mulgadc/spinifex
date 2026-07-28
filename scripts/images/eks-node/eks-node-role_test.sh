@@ -60,7 +60,9 @@ enable_cmd() { # <init> <svc>
 start_cmd() { # <init> <svc>
     case "$1" in
         openrc) echo "rc-service $2 start" ;;
-        systemd) echo "systemctl start $2.service" ;;
+        # --no-block is asserted, not incidental: without it the selector
+        # deadlocks against the units it is ordered Before=.
+        systemd) echo "systemctl start --no-block $2.service" ;;
     esac
 }
 disable_cmd() { # <init> <svc>

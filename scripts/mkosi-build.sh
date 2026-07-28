@@ -54,8 +54,18 @@ image_profiles() {
     case "$1" in
         ubuntu-gpu-nvidia)     echo "gpu-nvidia docker" ;;
         ubuntu-gpu-amd)        echo "gpu-amd docker" ;;
-        spinifex-eks-node-gpu) echo "gpu-nvidia eks-common eks-agent" ;;
+        spinifex-eks-node-gpu) echo "gpu-nvidia ec2-node eks-common eks-agent" ;;
         spinifex-ecs-node-gpu) echo "gpu-nvidia ecs" ;;
+        # The CPU variant is the GPU one minus gpu-nvidia. ecs pulls nothing
+        # from that profile: it adds no repositories, needs no network at build
+        # time, and every package it installs is in main/universe, which the
+        # base already enables.
+        spinifex-ecs-node)     echo "ecs" ;;
+        # One image for both EKS roles: eks-server and eks-agent are both
+        # present and the first-boot selector starts whichever the launch asked
+        # for. eks-common comes first because it installs the k3s binary the
+        # other two build on.
+        spinifex-eks-node)     echo "ec2-node eks-common eks-server eks-agent" ;;
         *)                     return 1 ;;
     esac
 }
@@ -70,10 +80,62 @@ image_profiles() {
 # not present in every checkout.
 profile_binaries() {
     case "$1" in
-        eks-agent) echo "./cmd/ecr-credential-provider:usr/local/bin/ecr-credential-provider" ;;
-        ecs)       echo "./cmd/ecs-agent:usr/local/bin/ecs-agent" ;;
-        *)         echo "" ;;
+        eks-agent)
+            echo "./cmd/ecr-credential-provider:usr/local/bin/ecr-credential-provider"
+            ;;
+        eks-server)
+            # konnectivity-server is NOT here — it is not an in-repo ./cmd/...
+            # package, so it gets its own clone-and-build step in
+            # stage_profile_binaries() below.
+            echo "./cmd/eks-token-webhook:usr/local/bin/eks-token-webhook \
+./cmd/eks-gateway-publish:usr/local/bin/eks-gateway-publish \
+./cmd/eks-gateway-fetch:usr/local/bin/eks-gateway-fetch \
+./cmd/eks-webhook-cert:usr/local/bin/eks-webhook-cert \
+./cmd/eks-konnectivity-cert:usr/local/bin/eks-konnectivity-cert"
+            ;;
+        ecs) echo "./cmd/ecs-agent:usr/local/bin/ecs-agent" ;;
+        *)   echo "" ;;
     esac
+}
+
+# apiserver-network-proxy version powering konnectivity-server. Pinned as
+# a named constant, not resolved at build time: its GitHub releases ship only
+# container images (no downloadable binary), and its own go.mod carries local
+# replace directives, which `go install pkg@version` cannot resolve for a
+# module outside its own checkout — a plain clone-and-build is the only route.
+readonly KONNECTIVITY_SERVER_VERSION="v0.30.3"
+
+# Clone and build konnectivity-server (apiserver-network-proxy's ./cmd/server)
+# into the given staging dir, on the host, alongside stage_profile_binaries()'s
+# in-repo binaries below. Kept as its own function because it is not an
+# in-repo ./cmd/... package, so profile_binaries() cannot express it.
+stage_konnectivity_server() {
+    local staging="$1" clone_dir
+
+    command -v git >/dev/null || {
+        echo "mkosi-build: git not found — eks-server needs it to build konnectivity-server" >&2
+        exit 1
+    }
+    command -v go >/dev/null || {
+        echo "mkosi-build: go not found — eks-server needs it to build konnectivity-server" >&2
+        exit 1
+    }
+
+    clone_dir="$(mktemp -d)"
+    echo "[mkosi-build] cloning apiserver-network-proxy ${KONNECTIVITY_SERVER_VERSION}"
+    git clone --quiet --depth 1 --branch "${KONNECTIVITY_SERVER_VERSION}" \
+        https://github.com/kubernetes-sigs/apiserver-network-proxy "${clone_dir}"
+
+    mkdir -p "${staging}/usr/local/bin"
+    echo "[mkosi-build] building konnectivity-server -> staging/eks-server/usr/local/bin/konnectivity-server"
+    # Same flags as the in-repo binaries below: a static, FIPS-pinned, stripped
+    # binary. Built from within its own clone, so no GOWORK=off is needed —
+    # nothing in a bare /tmp checkout can discover the monorepo's go.work.
+    ( cd "${clone_dir}" && CGO_ENABLED=0 GOFIPS140=v1.0.0 \
+        go build -ldflags "-s -w" -o "${staging}/usr/local/bin/konnectivity-server" ./cmd/server )
+    chmod 0755 "${staging}/usr/local/bin/konnectivity-server"
+
+    rm -rf "${clone_dir}"
 }
 
 # Compile a profile's binaries into images/staging/<profile>/, which the
@@ -83,6 +145,9 @@ profile_binaries() {
 stage_profile_binaries() {
     local profile="$1" spec pkg dest staging
     spec="$(profile_binaries "${profile}")"
+    # eks-server always has in-repo binaries too (profile_binaries() above), so
+    # this never leaves konnectivity-server staged alone with spec empty and
+    # the rm -rf below wiping it out.
     [[ -z "${spec}" ]] && return 0
 
     staging="${IMAGE_DIR}/staging/${profile}"
@@ -103,6 +168,10 @@ stage_profile_binaries() {
             go build -ldflags "-s -w" -o "${staging}/${dest}" "${pkg}" )
         chmod 0755 "${staging}/${dest}"
     done
+
+    if [[ "${profile}" == "eks-server" ]]; then
+        stage_konnectivity_server "${staging}"
+    fi
 }
 
 IMAGE=""
@@ -126,7 +195,7 @@ if [[ -n "${IMAGE}" ]]; then
     fi
     if ! expanded="$(image_profiles "${IMAGE}")"; then
         echo "mkosi-build: unknown image: ${IMAGE}" >&2
-        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd spinifex-eks-node-gpu spinifex-ecs-node-gpu" >&2
+        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd spinifex-eks-node-gpu spinifex-ecs-node-gpu spinifex-ecs-node spinifex-eks-node" >&2
         exit 2
     fi
     read -r -a PROFILES <<< "${expanded}"

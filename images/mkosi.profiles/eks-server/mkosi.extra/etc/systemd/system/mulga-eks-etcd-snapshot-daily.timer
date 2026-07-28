@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Mulga EKS etcd snapshot (nightly recovery point)
+
+[Timer]
+OnCalendar=daily
+# Catch up a missed run if the VM was off at the scheduled time — strictly
+# more robust than the crond cadence it replaces, not a regression.
+Persistent=true
+Unit=mulga-eks-etcd-snapshot@daily.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,44 @@
+[Unit]
+Description=K3s Kubernetes server (Mulga EKS control plane)
+# The per-cluster config.yaml sets cluster-init, so k3s uses the embedded etcd
+# datastore (required for multi-server HA). Data lives at
+# /var/lib/rancher/k3s; subsequent starts reuse it.
+After=network-online.target mulga-eks-provider-id.service mulga-vpc-mtu.service mulga-ebs-byid.service
+Wants=network-online.target
+# Unlimited restarts on any exit, not just failures (S3 / k3s.initd:11-16): a
+# transient apiserver crash must self-heal or the NLB target never recovers
+# and the cluster wedges ACTIVE-but-unreachable. StartLimitIntervalSec=0
+# disables systemd's default start-rate throttling so Restart=always below
+# really is unbounded, matching the OpenRC supervisor's respawn_max=0.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# k3s embeds containerd + kubelet in-process, so on a cgroup-v2 host the unit
+# must delegate a cgroup subtree or the kubelet cannot create /kubepods and
+# ContainerManager.Start fails before the apiserver is even reachable.
+Delegate=yes
+KillMode=process
+TasksMax=infinity
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+# k3s-prestart reproduces the start_pre steps this used to run inline: refuses
+# to start on a restore-block marker, derives config.yaml from its skeleton,
+# stages the konnectivity-agent + CoreDNS manifests, and waits (bounded) for
+# the token-webhook kubeconfig. No "-" prefix: a nonzero exit here must stop
+# k3s from ever starting, same as the OpenRC start_pre returning 1.
+ExecStartPre=/usr/local/sbin/k3s-prestart
+ExecStart=/usr/local/bin/k3s server --config /etc/rancher/k3s/config.yaml
+# Tee to the serial console as well as journald: a headless control-plane VM
+# whose apiserver dies leaves no trace in journald alone (same reasoning as
+# k3s-agent.service's kubelet-registration case, doubly true for the server).
+# This replaces the OpenRC runscript's dedicated /var/log/k3s.log — journald
+# already retains it, so no separate log file is created.
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

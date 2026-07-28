@@ -39,15 +39,23 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 # the exec bit at this point instead. Without the chmod they land
 # non-executable and every unit that runs one dies with EACCES on a booted
 # guest and nowhere earlier.
-chmod 0755 /usr/local/sbin/mulga-ebs-byid /usr/local/sbin/mulga-eks-provider-id \
-    /usr/local/sbin/mulga-vpc-mtu
+chmod 0755 /usr/local/sbin/mulga-eks-provider-id /usr/local/sbin/mulga-vpc-mtu
 
 # k3s config dir (mulga-eks-provider-id's drop-in, plus first-boot agent
 # config) and the shared state dir cloud-init drops agent.env into at launch.
 mkdir -p /etc/rancher/k3s/config.yaml.d /etc/spinifex-eks
 
 # Role-agnostic services only. Anything role-specific is enabled by the
-# first-boot selector, not baked.
-systemctl enable mulga-ebs-byid mulga-eks-provider-id mulga-vpc-mtu
+# first-boot selector, not baked. mulga-ebs-byid is enabled by ec2-node, which
+# every EKS composition includes.
+#
+# Fail loudly if that profile is missing rather than shipping a node whose
+# attached volumes never get their by-id links — a fault with no symptom until
+# a volume is attached at runtime.
+if [[ " ${PROFILES:-} " != *" ec2-node "* ]]; then
+    echo "ERROR: eks-common requires the ec2-node profile (mulga-ebs-byid lives there)" >&2
+    exit 1
+fi
+systemctl enable mulga-eks-provider-id mulga-vpc-mtu
 
 echo "[eks-common] postinst complete: k3s ${K3S_VERSION} installed, node services enabled"

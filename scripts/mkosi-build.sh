@@ -395,6 +395,29 @@ if [[ "${VERB}" == "build" && "${CALLER_SET_IMAGE_ID}" -eq 0 ]]; then
         exit 1
     fi
     echo "[mkosi-build] built ${EXPECTED_RAW}"
+
+    # mkosi only emits the raw. A qcow2 next to it came from a previous run's
+    # hand conversion, and nothing about its name says which build it belongs
+    # to — so it survives a rebuild and silently ships the old image to a node,
+    # while the raw beside it carries the new one. Same failure the freshness
+    # check above exists to prevent, one file over.
+    #
+    # Refresh rather than delete: the qcow2 is what gets copied to a node and
+    # imported, so removing it just pushes the manual conversion (and this
+    # trap) back onto the caller. Conversion is a couple of seconds.
+    EXPECTED_QCOW2="${OUTPUT_DIR}/${IMAGE:-spinifex}.qcow2"
+    if [[ -f "${EXPECTED_QCOW2}" && "$(stat -c %Y "${EXPECTED_QCOW2}")" -lt "${BUILD_STARTED_AT}" ]]; then
+        if command -v qemu-img >/dev/null 2>&1; then
+            echo "[mkosi-build] refreshing stale ${EXPECTED_QCOW2}"
+            # Convert to a temp name and rename, so an interrupted run leaves
+            # the old qcow2 rather than a half-written one that looks current.
+            qemu-img convert -f raw -O qcow2 "${EXPECTED_RAW}" "${EXPECTED_QCOW2}.tmp"
+            mv "${EXPECTED_QCOW2}.tmp" "${EXPECTED_QCOW2}"
+        else
+            echo "[mkosi-build] removing stale ${EXPECTED_QCOW2} (no qemu-img to refresh it)" >&2
+            rm -f "${EXPECTED_QCOW2}"
+        fi
+    fi
 fi
 
 echo "[mkosi-build] artefacts in ${OUTPUT_DIR}:"

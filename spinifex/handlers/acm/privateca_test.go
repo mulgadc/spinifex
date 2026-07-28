@@ -347,6 +347,49 @@ func TestAuthorized(t *testing.T) {
 	}
 }
 
+func TestLoadTenantCA_MissingReturnsActionableError(t *testing.T) {
+	certPath, keyPath := tenantCAPaths(t)
+
+	_, err := LoadTenantCA(certPath, keyPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), tenantCACreateCommandHint, "error must name the admin command that creates the CA")
+}
+
+func TestLoadTenantCA_IncompletePairReturnsActionableError(t *testing.T) {
+	certPath, keyPath := tenantCAPaths(t)
+
+	_, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(keyPath))
+
+	_, err = LoadTenantCA(certPath, keyPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "incomplete")
+	assert.Contains(t, err.Error(), tenantCACreateCommandHint)
+}
+
+func TestLoadTenantCA_RoundTripsCreatedCA(t *testing.T) {
+	certPath, keyPath := tenantCAPaths(t)
+
+	created, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com", "lab.example.org"})
+	require.NoError(t, err)
+
+	loaded, err := LoadTenantCA(certPath, keyPath)
+	require.NoError(t, err)
+
+	// Same root: identical serial number and PEM prove LoadTenantCA loaded
+	// rather than fabricated anything.
+	assert.Equal(t, 0, created.root.SerialNumber.Cmp(loaded.root.SerialNumber))
+	assert.Equal(t, created.rootPEM, loaded.rootPEM)
+	assert.Equal(t, []string{"home.example.com", "lab.example.org"}, loaded.PermittedDomains())
+
+	// PermittedDomains reflects exactly what was baked in at creation, read
+	// back from the certificate rather than a parallel list.
+	assert.True(t, loaded.Authorized("home.example.com"))
+	assert.True(t, loaded.Authorized("foo.lab.example.org"))
+	assert.False(t, loaded.Authorized("evil.example.net"))
+}
+
 func TestPermittedDomains_ReturnsDefensiveCopy(t *testing.T) {
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})

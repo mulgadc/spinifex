@@ -1661,6 +1661,26 @@ func (d *Daemon) startCluster() error {
 	// expires while the API reports success. ELBv2 is already up (above).
 	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
 
+	// The tenant private CA is optional, unlike the master key above: a
+	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
+	// no reason to have one, so its absence must not block daemon startup.
+	// LoadTenantCA (load-only — see privateca.go) leaves TenantCA nil rather
+	// than creating a root here, because creation needs an explicit permitted-
+	// domains list that has no safe default; a PRIVATE_CA RequestCertificate
+	// against a nil TenantCA already fails loudly with an actionable error
+	// (see ACMServiceImpl.RequestCertificate). Both states are logged here so an
+	// operator can tell at a glance, from daemon startup logs alone, which one
+	// they are in.
+	configDir := filepath.Dir(d.configPath)
+	tenantCA, tenantCAErr := handlers_acm.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	if tenantCAErr != nil {
+		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
+			"err", tenantCAErr)
+	} else {
+		d.acmService.TenantCA = tenantCA
+		slog.Info("ACM: tenant private CA wired", "permitted_domains", tenantCA.PermittedDomains())
+	}
+
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS
 	// timeouts) when JetStream is unavailable.

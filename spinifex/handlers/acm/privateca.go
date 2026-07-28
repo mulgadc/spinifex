@@ -66,6 +66,13 @@ type TenantCA struct {
 	rootPEM string // cached PEM encoding of root, returned as the chain for every issued leaf.
 }
 
+var _ CertAuthority = (*TenantCA)(nil)
+
+// tenantCACreateCommandHint names the admin command that creates the tenant
+// CA, quoted into every "no tenant CA here" error so an operator lands on the
+// fix without having to go spelunking through docs.
+const tenantCACreateCommandHint = "spx admin cert create-tenant-ca --domain <domain>"
+
 // LoadOrCreateTenantCA loads the tenant root from certPath/keyPath, creating
 // it on first use with permittedDomains baked in as x509 name constraints.
 //
@@ -85,7 +92,17 @@ func LoadOrCreateTenantCA(certPath, keyPath string, permittedDomains []string) (
 
 	switch {
 	case certExists && keyExists:
-		return loadTenantCA(certPath, keyPath, normalized)
+		ca, err := readTenantCAFiles(certPath, keyPath)
+		if err != nil {
+			return nil, err
+		}
+		if uncovered := uncoveredDomains(normalized, ca.root.PermittedDNSDomains); len(uncovered) > 0 {
+			return nil, fmt.Errorf(
+				"privateca: tenant CA at %s does not cover domain(s) %s; name constraints are frozen at creation — regenerate the tenant CA (delete %s and %s) and redistribute the new root to every client trust store",
+				certPath, strings.Join(uncovered, ", "), certPath, keyPath,
+			)
+		}
+		return ca, nil
 	case certExists != keyExists:
 		// One file present without its counterpart is an ambiguous, corrupt
 		// state. Guessing wrong here (e.g. regenerating over a surviving key)
@@ -99,10 +116,42 @@ func LoadOrCreateTenantCA(certPath, keyPath string, permittedDomains []string) (
 	}
 }
 
-// loadTenantCA reads an existing root and key pair and verifies that
-// permittedDomains is fully covered by the constraints already baked into
-// the certificate.
-func loadTenantCA(certPath, keyPath string, permittedDomains []string) (*TenantCA, error) {
+// LoadTenantCA loads an existing tenant root from certPath/keyPath. Unlike
+// LoadOrCreateTenantCA, it never creates one — there is no permitted-domains
+// argument to bake in, because the daemon (this function's only caller) has
+// paths but not a domain list to create with. The permitted domains come from
+// the certificate itself once loaded (see PermittedDomains), not from a
+// caller-supplied list, so there is nothing to drift-check here.
+//
+// Absent or half-present files return a clearly-worded, actionable error
+// naming the admin command that creates the CA, rather than a bare "file not
+// found" — this is the first thing an operator sees when PRIVATE_CA issuance
+// is unreachable.
+func LoadTenantCA(certPath, keyPath string) (*TenantCA, error) {
+	certExists := fileExists(certPath)
+	keyExists := fileExists(keyPath)
+
+	switch {
+	case certExists && keyExists:
+		return readTenantCAFiles(certPath, keyPath)
+	case certExists != keyExists:
+		return nil, fmt.Errorf(
+			"privateca: tenant CA at %s is incomplete (cert present=%v, key present=%v); restore the missing file from backup or remove both and recreate with %q",
+			certPath, certExists, keyExists, tenantCACreateCommandHint,
+		)
+	default:
+		return nil, fmt.Errorf(
+			"privateca: no tenant CA found at %s; PRIVATE_CA certificate issuance is unavailable until one is created — run %q",
+			certPath, tenantCACreateCommandHint,
+		)
+	}
+}
+
+// readTenantCAFiles reads and parses an existing root and key pair from disk,
+// verifying the key matches the certificate's public key. It performs no
+// domain-coverage check; callers that need one (LoadOrCreateTenantCA) apply it
+// themselves against the freshly loaded root's own PermittedDNSDomains.
+func readTenantCAFiles(certPath, keyPath string) (*TenantCA, error) {
 	certPEMBytes, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("privateca: read tenant CA cert: %w", err)
@@ -136,13 +185,6 @@ func loadTenantCA(certPath, keyPath string, permittedDomains []string) (*TenantC
 	}
 	if !key.PublicKey.Equal(root.PublicKey) {
 		return nil, fmt.Errorf("privateca: tenant CA key at %s does not match the public key in cert at %s", keyPath, certPath)
-	}
-
-	if uncovered := uncoveredDomains(permittedDomains, root.PermittedDNSDomains); len(uncovered) > 0 {
-		return nil, fmt.Errorf(
-			"privateca: tenant CA at %s does not cover domain(s) %s; name constraints are frozen at creation — regenerate the tenant CA (delete %s and %s) and redistribute the new root to every client trust store",
-			certPath, strings.Join(uncovered, ", "), certPath, keyPath,
-		)
 	}
 
 	return &TenantCA{root: root, key: key, rootPEM: string(certPEMBytes)}, nil

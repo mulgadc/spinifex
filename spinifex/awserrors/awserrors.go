@@ -378,6 +378,16 @@ var (
 	ErrorResourceNotFound    = "ResourceNotFound"
 	ErrorEKSResourceInUse    = "ResourceInUseException"
 	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
+	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
+	// wire code "ResourceInUseException", so this is a distinct, self-documenting
+	// name for ACM call sites rather than a second ErrorLookup entry — ErrorLookup
+	// is keyed by wire code across every service, so it can only hold one message
+	// per code. Naming it ErrorACMResourceInUse stops an ACM call site reading
+	// "EKS" while making no claim that the returned message text is ACM-flavored;
+	// it is still EKS's "cluster already exists" wording until ErrorLookup (or its
+	// caller in gateway.ErrorHandler) is keyed per-service instead of globally.
+	ErrorACMResourceInUse = ErrorEKSResourceInUse
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"

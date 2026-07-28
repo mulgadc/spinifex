@@ -79,6 +79,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | Command | Flags | Description |
 |---------|-------|-------------|
 | `spx admin cert renew` | `--extra-ip` (additional IPs for SANs), `--extra-dns` (additional DNS names for SANs) | Reads existing CA → regenerates server certificate with all current network interface IPs and machine hostname in SANs → writes new cert. Use after adding a new network interface or changing IP addresses. |
+| `spx admin cert create-tenant-ca` | `--domain` (required, repeatable — permitted domains baked into the CA's name constraints), `--regenerate` (replace an existing tenant CA, requires confirmation), `--yes` (skip the `--regenerate` confirmation prompt) | Creates the tenant root CA that ACM's `PRIVATE_CA` validation mode signs leaf certificates from — a separate, independent root from the platform CA. Idempotent: running it again against an existing tenant CA reports the current state rather than regenerating; `--regenerate` is required to replace the root, which invalidates every device's existing trust. |
 
 ### Upgrade Management
 
@@ -896,7 +897,7 @@ and `aws_acm_certificate_validation` still blocks correctly by polling until
 | `list-certificates` | — | `--certificate-statuses`, `--includes`, `--max-items`, `--next-token` | **DONE** |
 | `delete-certificate` | `--certificate-arn` | — | **DONE** |
 | `request-certificate` | `--domain-name`, `--subject-alternative-names`, `--tags` | `--validation-method`, `--certificate-authority-arn`, `--options`, `--idempotency-token` | **PARTIAL** — `PRIVATE_CA` issues synchronously; `PROVIDER_API`/`MANUAL_TXT` are accepted and correctly shaped but stay `PENDING_VALIDATION` until a later issuance worker lands |
-| `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | — | `--certificate-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
+| `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | `--certificate-arn`, `--tags`/`--tag-keys` | — | **DONE** |
 | `export-certificate` | — | `--certificate-arn`, `--passphrase` | **NOT STARTED** |
 
 ---

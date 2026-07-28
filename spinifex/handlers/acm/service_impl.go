@@ -431,7 +431,7 @@ func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.Delet
 	}
 	if len(rec.InUseBy) > 0 {
 		slog.InfoContext(ctx, "DeleteCertificate: refused, certificate in use", "arn", rec.CertificateArn, "in_use_by", rec.InUseBy)
-		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		return nil, errors.New(awserrors.ErrorACMResourceInUse)
 	}
 	if _, err := s.store.DeleteCert(ctx, aws.StringValue(input.CertificateArn)); err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -430,6 +431,50 @@ func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
 	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility))
 }
 
+// TestRequestCertificate_PrivateCA_RealTenantCA_IssuesAndChains exercises the
+// PRIVATE_CA path against a real *TenantCA (handlers/acm/privateca.go), not
+// fakeCertAuthority above — this is what daemon wiring actually plugs in, and
+// the daemon-wiring slice adds no coverage for the seam between
+// RequestCertificate and the real implementation without a test like this one.
+func TestRequestCertificate_PrivateCA_RealTenantCA_IssuesAndChains(t *testing.T) {
+	svc := setupACMService(t)
+	dir := t.TempDir()
+	ca, err := LoadOrCreateTenantCA(
+		filepath.Join(dir, "tenant-ca.pem"),
+		filepath.Join(dir, "tenant-ca.key"),
+		[]string{"real.example.com"},
+	)
+	require.NoError(t, err)
+	svc.TenantCA = ca
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("leaf.real.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	d := desc.Certificate
+	assert.Equal(t, acm.CertificateStatusIssued, aws.StringValue(d.Status))
+	assert.Equal(t, acm.CertificateTypePrivate, aws.StringValue(d.Type))
+
+	rec, err := svc.store.GetCert(context.Background(), aws.StringValue(out.CertificateArn))
+	require.NoError(t, err)
+	leafBlock, _ := pem.Decode([]byte(rec.Certificate))
+	require.NotNil(t, leafBlock)
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	require.NoError(t, err)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.root)
+	_, err = leaf.Verify(x509.VerifyOptions{
+		DNSName:   "leaf.real.example.com",
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	require.NoError(t, err, "the leaf issued through RequestCertificate must chain to the real tenant CA")
+}
+
 func TestRequestCertificate_PrivateCA_DomainOutsidePermittedRejected(t *testing.T) {
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"allowed.example.com": true}}
@@ -526,7 +571,7 @@ func TestDeleteCertificate_RefusesWhenInUse(t *testing.T) {
 
 	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorEKSResourceInUse)
+	assert.Contains(t, err.Error(), awserrors.ErrorACMResourceInUse)
 
 	// Refused, not partially applied: the certificate must still be there.
 	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)

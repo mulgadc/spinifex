@@ -152,6 +152,11 @@ type NorthstarConfig struct {
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
+// RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at
+// 10.248.0.0/14, immediately below and disjoint from the EKS control-plane
+// supernet, so a name-hash collision can never place an RDS subnet in EKS space.
+const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
+
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
 // cluster) into individual endpoints, trimming whitespace and dropping empties.
 // A single endpoint yields a one-element slice; empty input yields nil. Both the

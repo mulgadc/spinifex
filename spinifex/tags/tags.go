@@ -20,6 +20,12 @@ const (
 	// so this value is not added to IsSystemManaged.
 	ManagedByECS = "ecs"
 
+	// ManagedByRDS identifies RDS-owned resources (DB engine VMs, the
+	// rds-postgres AMI, the shared RDS system VPC and its ENIs). Unlike
+	// ManagedByECS the VMs themselves carry it, marking them system-owned to the
+	// UI's listings and the platform's own sweeps.
+	ManagedByRDS = "rds"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 
@@ -39,5 +45,5 @@ const (
 // VMs bind a system.TerminateInstance.{id} subject so a cluster-wide teardown
 // invoked on any node can route a terminate to the owning node.
 func IsSystemManaged(managedBy string) bool {
-	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS
+	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS
 }

@@ -20,6 +20,12 @@ const (
 	// so this value is not added to IsSystemManaged.
 	ManagedByECS = "ecs"
 
+	// ManagedByRDS identifies RDS-owned resources (DB engine VMs, the
+	// rds-postgres AMI, the shared RDS system VPC and its ENIs). Unlike
+	// ManagedByECS the VMs themselves carry it, marking them system-owned to the
+	// UI's listings and the platform's own sweeps.
+	ManagedByRDS = "rds"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 

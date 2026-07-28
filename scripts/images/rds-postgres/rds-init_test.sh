@@ -73,7 +73,7 @@ for a in "$@"; do
     case "$a" in --pgdata=*) pgdata="${a#--pgdata=}" ;; esac
 done
 mkdir -p "${pgdata}"
-echo 16 > "${pgdata}/PG_VERSION"
+echo 18 > "${pgdata}/PG_VERSION"
 echo "# stock postgresql.conf" > "${pgdata}/postgresql.conf"
 echo "local all all peer" > "${pgdata}/pg_hba.conf"
 exit 0
@@ -106,7 +106,7 @@ fail() { echo "FAIL: $*"; FAILS=$((FAILS + 1)); }
 pass() { echo "ok: $*"; }
 
 DATA_MOUNT="${WORK}/data"
-PGDATA="${DATA_MOUNT}/16/data"
+PGDATA="${DATA_MOUNT}/18/data"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
 

@@ -35,7 +35,7 @@
 # replaced VM comes back on its existing data volume without re-bootstrapping.
 set -eu
 
-PG_VERSION="${RDS_PG_VERSION:-16}"
+PG_VERSION="${RDS_PG_VERSION:-18}"
 PG_BIN="${RDS_PG_BIN:-/usr/libexec/postgresql${PG_VERSION}}"
 PG_USER="${RDS_PG_USER:-postgres}"
 

@@ -499,7 +499,7 @@ var AvailableImages = map[string]Images{
 	// of the image name.
 	"spinifex-rds-postgres": {
 		Name:         "spinifex-rds-postgres",
-		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 16 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
+		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 18 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
 		Distro:       "alpine",
 		Version:      "3.24.1",
 		Arch:         "x86_64",
@@ -509,7 +509,7 @@ var AvailableImages = map[string]Images{
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
 		BootMode:     "bios",
-		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "16"},
+		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18"},
 	},
 }
 

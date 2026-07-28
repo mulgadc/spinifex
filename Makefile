@@ -100,7 +100,7 @@ build-ecs-node-image: ## Build the spinifex-ecs-node AMI (Alpine + containerd + 
 import-ecs-node-image: ## Build + register the ecs-node AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=ecs-agent IMPORT=1
 
-build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + PostgreSQL 16 + rds-init; IMPORT=1 to register)
+build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + PostgreSQL 18 + rds-init; IMPORT=1 to register)
 	$(MAKE) build-system-image IMAGE=rds-postgres
 
 import-rds-postgres-image: ## Build + register the rds-postgres AMI (requires a running cluster)

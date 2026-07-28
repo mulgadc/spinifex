@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -315,8 +317,15 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		rec.UpdatedAt = now
 		// A lost CAS means a concurrent fetch consumed the password first, so
 		// this one degrades to attach rather than handing it to two agents.
+		// Any other write failure must surface: degrading on it would answer a
+		// genuine first boot with attach, and rds-init then blames the data
+		// volume for what is a control-plane write error.
 		if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
-			return out, nil //nolint:nilerr // losing the race is an attach, not a failure
+			if !errors.Is(err, jetstream.ErrKeyExists) {
+				return nil, fmt.Errorf("rds bootstrap: consume master password for %s: %w",
+					input.DBInstanceIdentifier, err)
+			}
+			return out, nil
 		}
 		out.Mode = BootstrapModeInitialize
 		out.MasterUserPassword = &password

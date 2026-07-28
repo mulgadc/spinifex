@@ -227,9 +227,13 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 	assert.NotContains(t, body, "MasterUserPassword", "the element must be absent, not empty")
 	assert.NotContains(t, body, password)
 
-	// The rest of the payload still has to reach the agent on an attach.
+	// The rest of the payload still has to reach the agent on an attach. The
+	// marshaller emits a struct's children in map order, so each element is
+	// asserted on its own rather than as an ordered pair.
 	assert.Contains(t, body, "<Port>5432</Port>")
-	assert.Contains(t, body, "<member><Name>shared_buffers</Name><Value>128MB</Value></member>")
+	assert.Contains(t, body, "<member>")
+	assert.Contains(t, body, "<Name>shared_buffers</Name>")
+	assert.Contains(t, body, "<Value>128MB</Value>")
 }
 
 func marshalResult(t *testing.T, action string, out any) string {

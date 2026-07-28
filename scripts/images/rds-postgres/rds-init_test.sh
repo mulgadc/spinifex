@@ -79,10 +79,15 @@ echo "local all all peer" > "${pgdata}/pg_hba.conf"
 exit 0
 EOF
 
-# pg_ctl stub: records start/stop of the bootstrap server.
+# pg_ctl stub: records start/stop of the bootstrap server. PGCTL_START_FAIL
+# simulates a cluster that will not come up, e.g. a parameter the guest cannot
+# allocate.
 cat > "${STUBBIN}/pg_ctl" <<'EOF'
 #!/bin/sh
 echo "pg_ctl $*" >> "${PGCTL_CALLS}"
+for a in "$@"; do
+    [ "$a" = "start" ] && [ "${PGCTL_START_FAIL:-0}" = "1" ] && exit 1
+done
 exit 0
 EOF
 
@@ -298,6 +303,37 @@ run_fails "bootstrap-fail"
 grep -q 'stop' "${PGCTL_CALLS}" \
     && pass "bootstrap-fail: bootstrap server stopped" || fail "bootstrap-fail: bootstrap server left running"
 unset PSQL_FAIL
+
+# --- Case 6c: the bootstrap server never starts ---
+# `set -e` aborts the moment pg_ctl start fails, so nothing inside
+# bootstrap_master runs. The datadir already carries PG_VERSION and a pg_hba
+# accepting scram, and the password is spent, so leaving it would attach on the
+# next boot and serve a database whose master role has no password.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PGCTL_START_FAIL=1
+export PGCTL_START_FAIL
+run_fails "bootstrap-nostart"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "bootstrap-nostart: datadir kept after the cluster failed to start" \
+    || pass "bootstrap-nostart: datadir cleared"
+unset PGCTL_START_FAIL
+
+# --- Case 6d: a pre-existing datadir is never swept by the trap ---
+# The clear is scoped to a datadir this invocation created. A torn write that
+# loses PG_VERSION over intact data takes the initialise branch, and the sweep
+# must not answer that by destroying the customer's data.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+mkdir -p "${PGDATA}"
+echo "customer data" > "${PGDATA}/base_survivor"
+INITDB_FAIL=1
+export INITDB_FAIL
+run_fails "preexisting-nosweep"
+[ -e "${PGDATA}/base_survivor" ] \
+    && pass "preexisting-nosweep: pre-existing datadir untouched" \
+    || fail "preexisting-nosweep: swept a datadir it did not create"
+unset INITDB_FAIL
 
 # --- Case 7: no serving cert -> TLS off rather than a failed start ---
 reset_state

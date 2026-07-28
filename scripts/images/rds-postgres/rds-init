@@ -55,6 +55,24 @@ MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
 
+# _created_datadir is set once initdb has built a datadir this invocation owns;
+# _bootstrapped once the master role exists. Between the two, the datadir carries
+# PG_VERSION but no usable master role, which clear_unfinished_datadir sweeps.
+_created_datadir=0
+_bootstrapped=0
+
+# clear_unfinished_datadir removes a datadir this invocation created but never
+# finished bootstrapping. It runs from an EXIT trap rather than a statement so
+# `set -e` on any unguarded step between initdb and a working master role cannot
+# skip it, which would leave a healthy-looking engine whose master role has no
+# password — unrepairable, since the one-shot password is already consumed.
+clear_unfinished_datadir() {
+    [ "${_created_datadir}" = "1" ] || return 0
+    [ "${_bootstrapped}" = "1" ] && return 0
+    rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after an unfinished bootstrap"
+    echo "[rds-init] ERROR: bootstrap did not complete; datadir ${PGDATA} cleared" >&2
+}
+
 # as_pg runs a command as the postgres user; the server refuses to run as root.
 as_pg() { su "${PG_USER}" -c "$1"; }
 
@@ -126,6 +144,9 @@ initialise_cluster() {
         fi
         fail "initdb failed and ${PGDATA} was not empty beforehand — refusing to clear it, since the contents may be a datadir whose PG_VERSION was lost; recover the data volume out of band"
     fi
+
+    # Only a datadir initdb built over an empty directory may be swept later.
+    _created_datadir="${_was_empty}"
 
     cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
 
@@ -269,16 +290,10 @@ bootstrap_master() {
     # would be reported as a pg_ctl error and skip the cleanup.
     stop_bootstrap_server || log "warning: the bootstrap server did not stop cleanly"
 
+    # The datadir is swept by the EXIT trap, which also covers the steps here
+    # that abort under `set -e` before this check is ever reached.
     if [ "${_rc}" -ne 0 ]; then
-        # PG_VERSION now exists, so leaving the datadir would have the next boot
-        # attach and start an engine whose master role has no password — and the
-        # one-shot password can never repair it.
-        #
-        # Clearing is safe only because this branch is reachable solely after an
-        # initdb into a directory that was empty beforehand. Anything that lets
-        # this run against a pre-existing datadir must drop the rm with it.
-        rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after a failed bootstrap"
-        fail "bootstrapping the master role/database failed (rc=${_rc}); datadir cleared"
+        fail "bootstrapping the master role/database failed (rc=${_rc})"
     fi
 }
 
@@ -330,8 +345,13 @@ if [ -s "${PGDATA}/PG_VERSION" ]; then
     install_runtime_config
 else
     initialise_cluster
+    # Armed from here so every step up to a working master role is covered, not
+    # just the ones whose status bootstrap_master checks.
+    trap clear_unfinished_datadir EXIT
     install_runtime_config
     bootstrap_master
+    _bootstrapped=1
+    trap - EXIT
 fi
 
 consume_secrets

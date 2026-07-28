@@ -558,6 +558,27 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	assert.Len(t, f.rts[first.PrivateRouteTableID].Associations, 2, "re-associating must not duplicate associations")
 }
 
+func TestEnsureRejectsASubnetParkedOnAnotherRouteTable(t *testing.T) {
+	f := newFakeEC2()
+	spec := testSpec("cp-demo")
+
+	first, err := Ensure(t.Context(), f.deps(), spec, "000000000000")
+	require.NoError(t, err)
+
+	// Move a private subnet onto the public table, as an operator or a competing
+	// component sharing this VPC could. AssociateRouteTable reports the subnet as
+	// already associated either way, so tolerating that blindly would report the
+	// VPC ready while the subnet has no route to the NAT gateway.
+	privRT, pubRT := f.rts[first.PrivateRouteTableID], f.rts[first.PublicRouteTableID]
+	moved := privRT.Associations[0]
+	privRT.Associations = privRT.Associations[1:]
+	pubRT.Associations = append(pubRT.Associations, moved)
+
+	_, err = Ensure(t.Context(), f.deps(), spec, "000000000000")
+	require.Error(t, err, "a private subnet on someone else's route table must fail loudly, not be reported ready without egress")
+	assert.ErrorContains(t, err, aws.StringValue(moved.SubnetId))
+}
+
 func TestEnsureConvergesAfterPartialFailure(t *testing.T) {
 	f := newFakeEC2()
 	spec := testSpec("cp-demo")

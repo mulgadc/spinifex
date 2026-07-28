@@ -24,6 +24,8 @@ type Deps struct {
 	CAKeyPath  string
 	// LoadCA overrides the file-backed loader in tests.
 	LoadCA CALoader
+	// Launch bundles the EC2-family collaborators a DB VM is composed from.
+	Launch LaunchDeps
 }
 
 // Service is the RDS control plane's KV-backed handler set. One per daemon.

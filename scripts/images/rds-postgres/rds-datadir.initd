@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# rds-datadir — boot oneshot that discovers the hot-plugged data volume,
+# formats it if it is new, and mounts it at the datadir mount point.
+#
+# It runs first of the three RDS services: rds-agent's bootstrap fetch and
+# rds-init's initdb both target a datadir that only exists once this has
+# mounted. Like rds-init it is ordered with `before`, not made a dependency:
+# if the volume never arrives this fails, rds-init then fails on its own
+# data-volume guard, and the engine stays down — which is the state the control
+# plane needs to see, rather than a cluster quietly created on the boot volume.
+
+description="Spinifex RDS data volume mount"
+
+depend() {
+    before rds-agent rds-init postgresql
+    after localmount
+}
+
+start() {
+    ebegin "Mounting the RDS data volume"
+    # Output goes to the console for the same reason rds-init's does: the
+    # host-side serial log is the only view of a boot that failed before the
+    # engine came up.
+    /usr/local/sbin/rds-datadir > /dev/console 2>&1
+    eend $?
+}

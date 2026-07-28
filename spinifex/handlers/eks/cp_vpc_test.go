@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
+	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Fakes for the managed control-plane VPC ("Set B") collaborators. They model
@@ -396,4 +401,20 @@ func (f *fakeNatGatewayProvisioner) DeleteNatGateway(_ context.Context, input *e
 		}
 	}
 	return &ec2.DeleteNatGatewayOutput{}, nil
+}
+
+// --- Address-space ownership ---
+
+func TestCPVPCSupernetIsDisjointFromOtherComponents(t *testing.T) {
+	supernet, err := netip.ParsePrefix(cpVPCSupernet)
+	require.NoError(t, err)
+	assert.Equal(t, supernet.Masked(), supernet, "a supernet with host bits set is rejected by the builder")
+	assert.Equal(t, 14, supernet.Bits(), "the builder carves a /22 out of a /14 and requires that shape")
+
+	// Every other component that builds a system VPC out of the same builder
+	// gets its own block, so an operator can tell from an address which
+	// component owns it.
+	rds := netip.MustParsePrefix(config.RDSDefaultSystemVPCSupernet)
+	assert.False(t, supernet.Overlaps(rds),
+		"the EKS control-plane space %s must not overlap the RDS system VPC space %s", supernet, rds)
 }

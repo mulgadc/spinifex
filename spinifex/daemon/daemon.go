@@ -1596,6 +1596,7 @@ func (d *Daemon) startCluster() error {
 	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(handlers_rds.Deps{
 		CACertPath: d.config.NATS.CACert,
 		CAKeyPath:  clusterCAKeyPath(d.config.NATS.CACert),
+		Launch:     d.buildRDSLaunchDeps(),
 	})
 
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {

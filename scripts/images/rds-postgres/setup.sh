@@ -10,9 +10,10 @@ set -eu
 # standard Alpine-cloud serial-console + fast boot-menu tweaks so
 # orchestrator-captured ttyS0 logs work.
 
-# INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-init is
-# executed directly by its service.
-chmod 0755 /etc/init.d/rds-init /etc/init.d/rds-agent /usr/local/sbin/rds-init
+# INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-init
+# and rds-datadir are executed directly by their services.
+chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-init /etc/init.d/rds-agent \
+    /usr/local/sbin/rds-datadir /usr/local/sbin/rds-init
 
 # Where cloud-init drops the agent's env file and the per-instance gateway CA.
 # Created here so the delivery lands in a root-only directory rather than
@@ -20,9 +21,9 @@ chmod 0755 /etc/init.d/rds-init /etc/init.d/rds-agent /usr/local/sbin/rds-init
 install -d -m 0700 /etc/spinifex-rds
 
 # Mount point for the instance's Viperblock data volume. It stays empty in the
-# image: the datadir is created one level inside it by rds-init, once the volume
-# is attached. Owned by postgres so the engine can traverse it if the volume's
-# own root is stricter than the default.
+# image: rds-datadir mounts the volume over it at boot and rds-init then creates
+# the datadir one level inside. Owned by postgres so the engine can traverse it
+# if the volume's own root is stricter than the default.
 install -d -m 0750 -o postgres -g postgres /var/lib/postgresql
 
 # Postmaster log plus the bootstrap server's log, on the boot volume — they are

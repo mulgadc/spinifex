@@ -55,10 +55,27 @@ const linkWithENI = `1: lo: <LOOPBACK,UP> mtu 65536 ... link/loopback 00:00:00:0
 2: eth0: <BROADCAST,UP> mtu 1500 ... link/ether 52:54:00:aa:bb:cc ...
 3: eth1: <BROADCAST,UP> mtu 1500 ... link/ether 52:54:00:de:ad:01 ...`
 
+// withDHCPClients pins which DHCP clients the netns sees, so a test asserts the
+// branch it names rather than whatever happens to be installed on the machine
+// running it. Without this the DHCP step is host-dependent: an Alpine CI box and
+// an Ubuntu dev box would exercise different code from the same test.
+func withDHCPClients(n *taskNetns, present map[string]bool, scriptOK bool) {
+	n.lookPath = func(f string) (string, error) {
+		if present[f] {
+			return "/sbin/" + f, nil
+		}
+		return "", errors.New("not found")
+	}
+	n.fileIsExec = func(string) bool { return scriptOK }
+}
+
+// newTestNetns defaults to the Alpine arrangement — udhcpc plus its config
+// script — so the sequence assertions below keep describing that platform.
 func newTestNetns(f *fakeNetRunner) *taskNetns {
 	n := newTaskNetns(f)
 	n.nicWait = 50 * time.Millisecond
 	n.poll = 5 * time.Millisecond
+	withDHCPClients(n, map[string]bool{"udhcpc": true}, true)
 	return n
 }
 
@@ -139,6 +156,79 @@ func TestNetns_SetupTearsDownOnStepFailure(t *testing.T) {
 	}
 	if !f.sawAny("ip netns del ecs-t-001") {
 		t.Errorf("expected teardown after step failure, got %v", f.joined())
+	}
+}
+
+// The image runs on two distributions with different DHCP clients, and picking
+// the wrong one fails as an opaque "network setup failed" with the task stuck
+// in STOPPED — `ip netns exec` exits 1, not 127, when it cannot exec the
+// binary. Each branch is asserted so that misresolution is a test failure.
+func TestNetns_DHCPStepPerPlatform(t *testing.T) {
+	tests := []struct {
+		name     string
+		present  map[string]bool
+		scriptOK bool
+		want     string
+		wantErr  bool
+	}{
+		{
+			name:     "alpine: udhcpc with its config script",
+			present:  map[string]bool{"udhcpc": true, "dhcpcd": true},
+			scriptOK: true,
+			want:     "ip netns exec ecs-t-001 udhcpc -i eth1 -q -n",
+		},
+		{
+			// Ubuntu ships no udhcpc at all — the case that broke awsvpc tasks.
+			name:    "ubuntu: no udhcpc, falls back to dhcpcd",
+			present: map[string]bool{"dhcpcd": true},
+			want:    "ip netns exec ecs-t-001 dhcpcd -q -1 -t 20 eth1",
+		},
+		{
+			// Debian/Ubuntu busybox ships the applet without the script, so
+			// presence of the binary alone must not select it.
+			name:     "udhcpc present but config script missing: still dhcpcd",
+			present:  map[string]bool{"udhcpc": true, "dhcpcd": true},
+			scriptOK: false,
+			want:     "ip netns exec ecs-t-001 dhcpcd -q -1 -t 20 eth1",
+		},
+		{
+			name:    "neither client: explicit error, not a silent bad command",
+			present: map[string]bool{},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newTestNetns(&fakeNetRunner{linkOut: linkWithENI})
+			withDHCPClients(n, tc.present, tc.scriptOK)
+			got, err := n.dhcpStep("ecs-t-001", "eth1")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error with no DHCP client, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dhcpStep: %v", err)
+			}
+			if joined := strings.Join(got, " "); joined != tc.want {
+				t.Errorf("want %q, got %q", tc.want, joined)
+			}
+		})
+	}
+}
+
+// A missing DHCP client must not leave the half-built netns behind for the next
+// attempt to trip over, same as any other failed setup step.
+func TestNetns_SetupTearsDownWhenNoDHCPClient(t *testing.T) {
+	f := &fakeNetRunner{linkOut: linkWithENI}
+	n := newTestNetns(f)
+	withDHCPClients(n, map[string]bool{}, false)
+	if _, err := n.Setup("t-001", "52:54:00:de:ad:01"); err == nil {
+		t.Fatal("want error when no DHCP client is available")
+	}
+	if !f.sawAny("ip netns del ecs-t-001") {
+		t.Errorf("expected teardown, got %v", f.joined())
 	}
 }
 

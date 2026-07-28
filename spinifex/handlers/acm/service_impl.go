@@ -50,12 +50,11 @@ type ACMServiceImpl struct {
 	store  *Store
 	region string
 
-	// dnsProviderConfigured and northstarHostsZone drive deriveValidationMode.
-	// Wired from config.Config at construction (cfg.ACM.DNSProvider != "" and
-	// cfg.Northstar.DefaultDomain != "" respectively); tests in this package
-	// may set them directly to exercise a mode without a full config.
+	// dnsProviderConfigured drives deriveValidationMode. Wired from
+	// config.Config at construction (cfg.ACM.DNSProvider != ""); tests in this
+	// package may set it directly to exercise PROVIDER_API without a full
+	// config.
 	dnsProviderConfigured bool
-	northstarHostsZone    bool
 
 	// TenantCA issues PRIVATE_CA leaves and authorizes domains against the
 	// tenant CA's name constraints. Nil until wired by the daemon
@@ -63,6 +62,18 @@ type ACMServiceImpl struct {
 	// fails loudly rather than silently skipping issuance when PRIVATE_CA is
 	// derived and no CA is wired.
 	TenantCA CertAuthority
+
+	// NorthstarHostsZone, when set, reports whether northstar hosts a zone
+	// covering domain — consulted once per requested domain (primary + every
+	// SAN) by deriveValidationMode. Wired by the daemon post-construction
+	// (mirroring CertMaterialUpdated below) to handlers/dns.HostsZone. A func
+	// field stands in for a direct import of handlers/dns, the same pattern
+	// CertMaterialUpdated uses for handlers/elbv2, so this package and its
+	// tests stay decoupled from handlers/dns's S3/northstar-config
+	// dependencies. Nil means "northstar hosts nothing" — the safe default for
+	// tests and any deployment that never wires it, so an unwired service can
+	// never accidentally select MANUAL_TXT for a zone it cannot actually see.
+	NorthstarHostsZone func(domain string) bool
 
 	// CertMaterialUpdated, when set, is invoked after new certificate material
 	// is written under an existing ARN so the caller can re-render every load
@@ -97,28 +108,82 @@ func NewACMServiceImplWithNATS(ctx context.Context, cfg *config.Config, nc *nats
 			svc.region = cfg.Region
 		}
 		svc.dnsProviderConfigured = cfg.ACM.DNSProvider != ""
-		svc.northstarHostsZone = cfg.Northstar.DefaultDomain != ""
 	}
 	return svc, nil
 }
 
-// deriveValidationMode selects a validation mode from deployment state, never
-// from configuration: a DNS provider credential means Spinifex can drive
-// PROVIDER_API's DNS-01 itself; northstar hosting the zone means the operator
-// can publish a challenge record by hand; neither leaves PRIVATE_CA as the
-// only option that needs no real, publicly delegated domain.
+// deriveValidationMode selects a validation mode from deployment state and the
+// full set of requested domains (primary + every SAN), never from
+// configuration alone or from the primary domain in isolation.
+//
+// Order, and why:
+//  1. PRIVATE_CA, when a tenant CA is wired and its name constraints authorize
+//     every requested domain. A name-constrained tenant CA is a definite,
+//     operator-declared local capability, so it is preferred even over
+//     northstar hosting the zone: northstar hosting a zone is evidence the
+//     zone is internal, and an internal zone can never complete MANUAL_TXT (a
+//     public CA cannot resolve it there) — PRIVATE_CA is the only mode that
+//     can actually issue for it.
+//  2. PROVIDER_API, when a DNS provider credential is configured. An operator
+//     who has wired provider credentials wants public trust driven
+//     automatically; that must not be downgraded just because northstar also
+//     happens to host the zone.
+//  3. MANUAL_TXT, when northstar hosts a zone covering every requested domain
+//     and neither of the above applied. This is last, not first: MANUAL_TXT
+//     means "the operator hand-publishes an ACME TXT record for a public CA to
+//     resolve", which can never complete for an internal zone — it is only
+//     offered once PRIVATE_CA, the mode that actually works there, has been
+//     ruled out.
+//  4. PRIVATE_CA otherwise — the same terminal fallback as before, which then
+//     fails the authorization check in RequestCertificate loudly when no
+//     tenant CA is wired or it does not cover the domain.
+//
+// Coverage in (1) and (3) is all-or-nothing across every domain: a request
+// with mixed coverage (some domains covered, some not) must not select a mode
+// it cannot actually serve for the domains it misses.
 // CNAME_DELEGATION is never selected here — it is deferred until northstar can
 // serve public authoritative queries, so northstar hosting the zone takes the
 // manual-TXT branch of that family for now.
-func (s *ACMServiceImpl) deriveValidationMode() string {
+func (s *ACMServiceImpl) deriveValidationMode(domains []string) string {
 	switch {
+	case s.TenantCA != nil && allAuthorized(s.TenantCA, domains):
+		return ValidationModePrivateCA
 	case s.dnsProviderConfigured:
 		return ValidationModeProviderAPI
-	case s.northstarHostsZone:
+	case s.northstarHostsAll(domains):
 		return ValidationModeManualTXT
 	default:
 		return ValidationModePrivateCA
 	}
+}
+
+// allAuthorized reports whether ca authorizes every domain in domains. ca must
+// be non-nil; domains must be non-empty (an empty set authorizes nothing).
+func allAuthorized(ca CertAuthority, domains []string) bool {
+	if len(domains) == 0 {
+		return false
+	}
+	for _, d := range domains {
+		if !ca.Authorized(d) {
+			return false
+		}
+	}
+	return true
+}
+
+// northstarHostsAll reports whether NorthstarHostsZone covers every domain in
+// domains. A nil NorthstarHostsZone (unwired service, or a test that never set
+// it) means northstar hosts nothing.
+func (s *ACMServiceImpl) northstarHostsAll(domains []string) bool {
+	if s.NorthstarHostsZone == nil || len(domains) == 0 {
+		return false
+	}
+	for _, d := range domains {
+		if !s.NorthstarHostsZone(d) {
+			return false
+		}
+	}
+	return true
 }
 
 // mintCertificateArn generates an ACM-style certificate ARN for accountID.
@@ -220,7 +285,7 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 	sans := aws.StringValueSlice(input.SubjectAlternativeNames)
 	allDomains := uniqueDomains(domain, sans)
 
-	mode := s.deriveValidationMode()
+	mode := s.deriveValidationMode(allDomains)
 
 	// PRIVATE_CA has no ACME CA to prove domain control, so request-time
 	// authorization is read from the tenant CA's own name constraints — the

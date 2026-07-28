@@ -390,7 +390,7 @@ func TestRequestCertificate_ProviderAPI_PendingValidationNoResourceRecord(t *tes
 
 func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *testing.T) {
 	svc := setupACMService(t)
-	svc.northstarHostsZone = true
+	svc.NorthstarHostsZone = func(domain string) bool { return true }
 
 	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
 		DomainName: aws.String("manual.example.com"),
@@ -408,6 +408,30 @@ func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *tes
 	assert.Equal(t, "_acme-challenge.manual.example.com.", aws.StringValue(rr.Name))
 	assert.Equal(t, acm.RenewalEligibilityIneligible, aws.StringValue(d.RenewalEligibility),
 		"MANUAL_TXT's challenge token rotates per order, so unattended renewal is impossible")
+}
+
+// TestRequestCertificate_PrivateCA_WinsOverNorthstarHostedZone is the
+// demo-critical regression: a homelab where northstar hosts the requested
+// zone AND the operator has a tenant CA constrained to it must issue
+// PRIVATE_CA (automatic, offline, renewable), not MANUAL_TXT (which can never
+// complete against an internal zone a public CA cannot resolve).
+func TestRequestCertificate_PrivateCA_WinsOverNorthstarHostedZone(t *testing.T) {
+	svc := setupACMService(t)
+	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"home.example.com": true}}
+	svc.NorthstarHostsZone = func(domain string) bool { return domain == "home.example.com" }
+
+	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("home.example.com"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
+	require.NoError(t, err)
+	d := desc.Certificate
+	assert.Equal(t, acm.CertificateStatusIssued, aws.StringValue(d.Status), "PRIVATE_CA issues synchronously, unlike MANUAL_TXT")
+	assert.Equal(t, acm.CertificateTypePrivate, aws.StringValue(d.Type))
+	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility),
+		"PRIVATE_CA is renewable; MANUAL_TXT, which this must not select, would not be")
 }
 
 func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {

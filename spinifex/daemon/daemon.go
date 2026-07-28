@@ -1661,6 +1661,15 @@ func (d *Daemon) startCluster() error {
 	// expires while the API reports success. ELBv2 is already up (above).
 	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
 
+	// deriveValidationMode needs to know whether northstar hosts a zone for a
+	// requested domain. handlers/acm deliberately does not import handlers/dns
+	// (which would pull its S3/northstar-config dependencies into every acm
+	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
+	// uses above to keep acm decoupled from elbv2.
+	d.acmService.NorthstarHostsZone = func(domain string) bool {
+		return handlers_dns.HostsZone(d.config, domain)
+	}
+
 	// The tenant private CA is optional, unlike the master key above: a
 	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
 	// no reason to have one, so its absence must not block daemon startup.

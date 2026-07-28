@@ -54,7 +54,7 @@ image_profiles() {
     case "$1" in
         ubuntu-gpu-nvidia)     echo "gpu-nvidia docker" ;;
         ubuntu-gpu-amd)        echo "gpu-amd docker" ;;
-        spinifex-eks-node-gpu) echo "gpu-nvidia ec2-node eks-common eks-agent" ;;
+        spinifex-eks-node-gpu) echo "gpu-nvidia eks-common eks-agent" ;;
         spinifex-ecs-node-gpu) echo "gpu-nvidia ecs" ;;
         # The CPU variant is the GPU one minus gpu-nvidia. ecs pulls nothing
         # from that profile: it adds no repositories, needs no network at build
@@ -65,7 +65,7 @@ image_profiles() {
         # present and the first-boot selector starts whichever the launch asked
         # for. eks-common comes first because it installs the k3s binary the
         # other two build on.
-        spinifex-eks-node)     echo "ec2-node eks-common eks-server eks-agent" ;;
+        spinifex-eks-node)     echo "eks-common eks-server eks-agent" ;;
         *)                     return 1 ;;
     esac
 }

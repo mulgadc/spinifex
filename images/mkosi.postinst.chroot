@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+# base postinst — sets the exec bit ExtraTrees= could not, and enables the two
+# EC2-guest helpers every image carries.
+
+# 0644 in git, and ExtraTrees= preserves source mode: without this the units die
+# with EACCES on a booted guest and nowhere earlier.
+chmod 0755 /usr/local/sbin/mulga-ebs-byid /usr/local/sbin/mulga-mgmt-net
+
+# The udev rule needs no enabling; the coldplug pass at boot does.
+#
+# Both are enabled on every image rather than gated on profile composition,
+# because neither question is answerable at build time: any image may later be
+# attached a volume, and any image may later be launched as a control plane.
+# mulga-ebs-byid is udev-driven and inert until a volume appears; mulga-mgmt-net
+# reads a per-launch fw_cfg blob only system VMs get and exits 0 when it is
+# absent. Deciding either at build time is the failure this avoids.
+systemctl enable mulga-ebs-byid mulga-mgmt-net
+
+echo "[base] postinst complete: mulga-ebs-byid and mulga-mgmt-net enabled"

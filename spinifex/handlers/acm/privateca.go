@@ -227,6 +227,21 @@ func createTenantCA(certPath, keyPath string, permittedDomains []string) (*Tenan
 		// stdlib. A single "" entry in each list therefore excludes every
 		// possible email address and URI outright — this root never expects
 		// to sign either.
+		//
+		// This CA is installed in device trust stores, so it is validated by
+		// non-Go verifiers too. Checked against OpenSSL 3.5.6: `openssl x509
+		// -text` parses a root built this way without error, printing empty
+		// "email:"/"URI:" excluded-subtree lines rather than rejecting the
+		// extension, and `openssl verify -CAfile` both accepts a valid
+		// in-scope leaf and rejects a leaf forged outside
+		// PermittedDNSDomains with "error 47: permitted subtree violation" —
+		// so the zero-length exclusion neither breaks parsing nor changes
+		// the DNS-constraint outcome on a non-Go client. If a future
+		// verifier turns out to disagree, drop these two fields rather than
+		// fight it: PermittedDNSDomains plus ExcludedIPRanges already carry
+		// the security argument, and IssueLeaf never emits an email or URI
+		// SAN, so the exclusions are redundant defense in depth, not load
+		// bearing.
 		ExcludedEmailAddresses: []string{""},
 		ExcludedURIDomains:     []string{""},
 	}

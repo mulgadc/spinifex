@@ -234,9 +234,21 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 
 	msg, err := sub.NextMsgWithContext(pollCtx)
 	if err != nil {
-		// An empty poll is the steady state, not an error: the agent simply
-		// polls again.
-		return &PollDBCommandsOutput{}, nil
+		// The context ending the wait is the steady state: either the long-poll
+		// window closed with no command, or the agent hung up. Keying off the
+		// context rather than a specific sentinel keeps this correct whichever
+		// deadline fires first.
+		if pollCtx.Err() != nil {
+			return &PollDBCommandsOutput{}, nil
+		}
+		// Anything else — a closed connection, a dead subscription, a slow
+		// consumer that dropped messages — means the channel is broken, not
+		// idle. Reporting that as an empty poll would have the agent re-poll at
+		// line rate against a channel no command can arrive on, and every
+		// command issued meanwhile is lost with nothing logged.
+		slog.ErrorContext(ctx, "RDS: command poll failed",
+			"dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var cmd handlers_rds.Command

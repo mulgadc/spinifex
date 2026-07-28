@@ -113,6 +113,15 @@ initialise_cluster() {
 
     install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "$(dirname "${PGDATA}")" "${PGDATA}"
 
+    # Whether the datadir was empty before initdb decides whether the failure
+    # cleanup below may run. We reach here on a zero-length or missing
+    # PG_VERSION, which a torn write or a partial restore can produce over an
+    # otherwise intact datadir — and "directory exists but is not empty" is one
+    # of the ways initdb then fails. Deleting in that case would destroy the
+    # customer's data in response to the one signal that it is still there.
+    _was_empty=0
+    [ -z "$(ls -A -- "${PGDATA}" 2>/dev/null)" ] && _was_empty=1
+
     log "initialising PostgreSQL ${PG_VERSION} cluster at ${PGDATA}"
     # ICU collation, not libc: musl has no locale support, so a libc-provider
     # cluster would silently behave as C regardless of what was asked for.
@@ -122,10 +131,13 @@ initialise_cluster() {
         --locale-provider=icu --icu-locale=en-001-x-icu --data-checksums \
         --auth-local=peer --auth-host=scram-sha-256"; then
         # A half-written datadir carries PG_VERSION and would look initialised on
-        # the next boot, starting a broken engine on it forever. Clear it so the
-        # retry runs initdb from scratch.
-        rm -rf -- "${PGDATA}"
-        fail "initdb failed"
+        # the next boot, starting a broken engine on it forever — but only what
+        # this invocation created may be cleared.
+        if [ "${_was_empty}" = "1" ]; then
+            rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after a failed initdb"
+            fail "initdb failed; datadir cleared"
+        fi
+        fail "initdb failed and ${PGDATA} was not empty beforehand — refusing to clear it, since the contents may be a datadir whose PG_VERSION was lost; recover the data volume out of band"
     fi
 
     cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
@@ -273,8 +285,30 @@ bootstrap_master() {
         create_database || _rc=$?
     fi
 
-    stop_bootstrap_server
-    [ "${_rc}" -eq 0 ] || fail "bootstrapping the master role/database failed"
+    # A stop that fails must not abort the script before the check below, or a
+    # failed bootstrap would be reported as a pg_ctl error and skip the cleanup.
+    stop_bootstrap_server || log "warning: the bootstrap server did not stop cleanly"
+
+    if [ "${_rc}" -ne 0 ]; then
+        # The same hazard initdb guards against, one step later: PG_VERSION now
+        # exists, so the next boot takes the attach path and starts an engine
+        # whose master role has no password — and the password is one-shot, so
+        # that fetch returns Mode=attach and can never repair it. postgresql is
+        # in the default runlevel independently of this oneshot, so leaving the
+        # datadir would serve a database nobody can log into.
+        #
+        # Clearing is safe only because this function is reachable solely from
+        # the branch where initdb just created the datadir in this invocation,
+        # over a directory that was empty beforehand. Anything that lets this
+        # run against a pre-existing datadir must drop the rm with it.
+        #
+        # The next boot does not retry: the handoff is tmpfs, so the re-fetch
+        # returns Mode=attach and initialise_cluster refuses an empty datadir.
+        # That is the intended outcome — it fails closed and visibly instead of
+        # serving an open database.
+        rm -rf -- "${PGDATA}" || log "warning: could not clear ${PGDATA} after a failed bootstrap"
+        fail "bootstrapping the master role/database failed (rc=${_rc}); datadir cleared"
+    fi
 }
 
 # apply_master_role creates the master role if initdb did not already make it the

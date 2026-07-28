@@ -8,9 +8,11 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,6 +229,86 @@ func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 	assert.Equal(t, BootstrapModeInitialize, out.Mode)
 	assert.Empty(t, out.ServingCertificate)
 	assert.Equal(t, int64(5432), out.Port)
+}
+
+// A configured CA that cannot be loaded must fail the fetch *without* consuming
+// the password, so the agent's retry succeeds once the CA is readable. The
+// failure is the cheap half; leaving the bootstrap state untouched is the half
+// that makes it recoverable, and it is what lets TLS become mandatory later
+// without a failed mint destroying a password per attempt.
+func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	loadErr := errors.New("read CA key /etc/spinifex/ca.key: permission denied")
+	broken := true
+	svc := NewService(nc, testRegion).WithDeps(Deps{
+		LoadCA: func() (*x509.Certificate, *rsa.PrivateKey, error) {
+			if broken {
+				return nil, nil, loadErr
+			}
+			return newTestCA(t)()
+		},
+	})
+	seedInstance(t, svc, defaultRecord())
+	ctx := context.Background()
+	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+
+	_, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
+	require.Error(t, err)
+
+	rec, raw := readRecord(t, svc)
+	require.False(t, rec.Bootstrap.Consumed, "a failed mint must not flip the one-way marker")
+	require.Contains(t, raw, "s3cr3t-master-pw", "the password must still be there to retry against")
+
+	// Once the CA is readable the retry bootstraps normally.
+	broken = false
+	out, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, BootstrapModeInitialize, out.Mode)
+	require.NotNil(t, out.MasterUserPassword)
+	assert.Equal(t, "s3cr3t-master-pw", *out.MasterUserPassword)
+	assert.NotEmpty(t, out.ServingCertificate)
+}
+
+// Concurrent bootstrap fetches must resolve to exactly one password holder, and
+// every caller must still be served TLS material regardless of who won. The CAS
+// is what provides the first half — swapping updateJSON for a plain put would
+// hand the same password to two agents with nothing failing.
+func TestGetDBBootstrapConfig_ConcurrentFetchesYieldOnePassword(t *testing.T) {
+	svc := newTestService(t)
+	seedInstance(t, svc, defaultRecord())
+	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+
+	const fetches = 4
+	outs := make([]*GetDBBootstrapConfigOutput, fetches)
+	errs := make([]error, fetches)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range fetches {
+		wg.Go(func() {
+			<-start
+			outs[i], errs[i] = svc.GetDBBootstrapConfig(context.Background(), in, testAccountID)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	withPassword := 0
+	for i := range fetches {
+		require.NoError(t, errs[i])
+		require.NotNil(t, outs[i])
+		if outs[i].MasterUserPassword != nil {
+			withPassword++
+			assert.Equal(t, BootstrapModeInitialize, outs[i].Mode)
+		}
+		// A caller that loses the race still boots an engine, and it must not
+		// boot it with ssl=off while the winner got TLS.
+		assert.NotEmpty(t, outs[i].ServingCertificate, "every fetch must be served a cert")
+		assert.NotEmpty(t, outs[i].ServingPrivateKey)
+	}
+	assert.Equal(t, 1, withPassword, "exactly one fetch may carry the master password")
+
+	_, raw := readRecord(t, svc)
+	assert.NotContains(t, raw, "s3cr3t-master-pw")
 }
 
 func TestGetDBBootstrapConfig_UnknownInstance(t *testing.T) {

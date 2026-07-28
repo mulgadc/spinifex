@@ -296,6 +296,22 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		Parameters:           rec.Bootstrap.ResolvedParameters,
 	}
 
+	// The cert is minted before the password is consumed. A mint failure then
+	// returns with the password still in KV, so the agent's retry succeeds once
+	// the CA is readable again; consuming first would discard a response whose
+	// one-shot side effect had already committed, leaving an instance that can
+	// never learn its master password. The ordering is also what lets TLS become
+	// mandatory later without that change burning a password per failed mint.
+	cert, err := s.mintServingCert(&rec)
+	if err != nil {
+		return nil, err
+	}
+	if cert != nil {
+		out.ServingCertificate = cert.CertificatePEM
+		out.ServingPrivateKey = cert.PrivateKeyPEM
+		out.CACertificate = cert.caPEM
+	}
+
 	if !rec.Bootstrap.Consumed {
 		password := rec.Bootstrap.MasterUserPassword
 		now := time.Now().UTC()
@@ -313,15 +329,6 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		out.MasterUserPassword = &password
 	}
 
-	cert, err := s.mintServingCert(&rec)
-	if err != nil {
-		return nil, err
-	}
-	if cert != nil {
-		out.ServingCertificate = cert.CertificatePEM
-		out.ServingPrivateKey = cert.PrivateKeyPEM
-		out.CACertificate = cert.caPEM
-	}
 	return out, nil
 }
 

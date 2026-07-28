@@ -94,6 +94,9 @@ cat > "${STUBBIN}/psql" <<'EOF'
     echo "--- psql $* [master=${RDS_MASTER_USERNAME:-} password=${RDS_MASTER_PASSWORD:-} db=${RDS_DB_NAME:-}]"
     cat
 } >> "${PSQL_CALLS}"
+# ON_ERROR_STOP makes a real psql exit non-zero on any SQL failure; the stub
+# reproduces that so the master-bootstrap failure path is exercisable.
+[ "${PSQL_FAIL:-0}" = "1" ] && exit 3
 exit 0
 EOF
 
@@ -148,7 +151,7 @@ reset_state() {
     : > "${INITDB_CALLS}"
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
-    unset INITDB_FAIL RDS_ALLOW_LOCAL_DATADIR || true
+    unset INITDB_FAIL PSQL_FAIL RDS_ALLOW_LOCAL_DATADIR || true
 }
 
 # run: invoke rds-init with every path knob pointed into the temp dir.
@@ -162,6 +165,7 @@ run() {
         RDS_MOUNTS_FILE="${MOUNTS}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
+        PSQL_FAIL="${PSQL_FAIL:-0}" \
         INITDB_CALLS="${INITDB_CALLS}" PGCTL_CALLS="${PGCTL_CALLS}" PSQL_CALLS="${PSQL_CALLS}" \
         sh "${SCRIPT}" </dev/null
 }
@@ -255,8 +259,45 @@ INITDB_FAIL=1
 export INITDB_FAIL
 run_fails "initdb-fail"
 [ -e "${PGDATA}/PG_VERSION" ] \
-    && fail "initdb-fail: half-written datadir kept" || pass "initdb-fail: datadir cleared for a retry"
+    && fail "initdb-fail: half-written datadir kept" || pass "initdb-fail: datadir cleared"
 unset INITDB_FAIL
+
+# --- Case 6a: a failed initdb over a NON-empty datadir must not delete it ---
+# A zero-length PG_VERSION over an otherwise intact datadir takes the
+# initialise path, and "directory not empty" is one way initdb then fails.
+# Clearing there would destroy customer data in response to the one signal
+# that it is still present.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+mkdir -p "${PGDATA}"
+: > "${PGDATA}/PG_VERSION"
+echo 'customer table data' > "${PGDATA}/base-relation"
+INITDB_FAIL=1
+export INITDB_FAIL
+run_fails "initdb-fail-nonempty"
+[ -f "${PGDATA}/base-relation" ] \
+    && pass "initdb-fail-nonempty: pre-existing datadir preserved" \
+    || fail "initdb-fail-nonempty: pre-existing datadir deleted"
+grep -q 'refusing to clear' "${WORK}/out" \
+    && pass "initdb-fail-nonempty: refusal explains why" || fail "initdb-fail-nonempty: no refusal message"
+unset INITDB_FAIL
+
+# --- Case 6b: a failed master bootstrap leaves nothing bootable either ---
+# postgresql is in the default runlevel independently of this oneshot, so a
+# datadir kept here would start an engine whose master role has no password —
+# and the password is one-shot, so the next fetch is `attach` and cannot repair
+# it. The datadir must go the same way a failed initdb's does.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PSQL_FAIL=1
+export PSQL_FAIL
+run_fails "bootstrap-fail"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "bootstrap-fail: datadir kept after a failed master bootstrap" \
+    || pass "bootstrap-fail: datadir cleared"
+grep -q 'stop' "${PGCTL_CALLS}" \
+    && pass "bootstrap-fail: bootstrap server stopped" || fail "bootstrap-fail: bootstrap server left running"
+unset PSQL_FAIL
 
 # --- Case 7: no serving cert -> TLS off rather than a failed start ---
 reset_state

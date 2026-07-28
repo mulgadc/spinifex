@@ -54,6 +54,12 @@ const (
 	// drives the QMP hot-plug pipeline, so it gets the same budget the gateway's
 	// AttachVolume uses.
 	attachRequestTimeout = 30 * time.Second
+
+	// rollbackTimeout bounds the unwind. It is a fresh budget rather than the
+	// caller's remaining one because the failure that triggers the unwind is
+	// often the caller's deadline expiring, and a rollback on a dead context
+	// deletes nothing.
+	rollbackTimeout = 60 * time.Second
 )
 
 // ErrEngineAMINotFound is returned when no AMI carries the requested engine's
@@ -176,13 +182,26 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	// Unwind in reverse creation order on any failure below. Each step appends
 	// its own undo as soon as the resource exists, so a failure between two
 	// steps can never leave the earlier one behind.
-	var rollback []func()
+	var rollback []func(context.Context)
+
+	// The VM is torn down before anything else regardless of when it was
+	// created: both ENIs and the data volume are attached to it while it runs,
+	// and their services reject deleting a resource that is still in use.
+	var terminateVM func(context.Context)
+
 	defer func() {
 		if err == nil {
 			return
 		}
+		// The unwind gets a context detached from the caller's, so a create that
+		// failed *because* the request deadline expired can still clean up.
+		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		if terminateVM != nil {
+			terminateVM(rbCtx)
+		}
 		for _, undo := range slices.Backward(rollback) {
-			undo()
+			undo(rbCtx)
 		}
 	}()
 
@@ -191,7 +210,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	if err != nil {
 		return nil, err
 	}
-	rollback = append(rollback, func() {
+	rollback = append(rollback, func(ctx context.Context) {
 		deleteLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemENI.id)
 	})
 
@@ -200,7 +219,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	if err != nil {
 		return nil, err
 	}
-	rollback = append(rollback, func() {
+	rollback = append(rollback, func(ctx context.Context) {
 		deleteLaunchENI(ctx, deps.VPC, in.AccountID, customerENI.id)
 	})
 
@@ -233,13 +252,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: launch DB VM for %s: launcher returned no instance", in.DBInstanceIdentifier)
 	}
 	instanceID := sysOut.InstanceID
-	rollback = append(rollback, func() {
+	terminateVM = func(ctx context.Context) {
 		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
 			!errors.Is(termErr, sysinstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "rds: rollback terminate of failed DB VM failed",
 				"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "err", termErr)
 		}
-	})
+	}
 
 	// The data volume is created in the system account alongside the VM: it is
 	// attached to a system-account instance, and the customer reaches its
@@ -263,7 +282,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: create data volume for %s: empty volume id", in.DBInstanceIdentifier)
 	}
 	volumeID := aws.StringValue(volume.VolumeId)
-	rollback = append(rollback, func() {
+	rollback = append(rollback, func(ctx context.Context) {
 		if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
 			slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
 				"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)

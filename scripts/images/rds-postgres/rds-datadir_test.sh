@@ -20,6 +20,10 @@ mkdir -p "${STUBBIN}"
 # "<dev> <fstype>", and exits non-zero for one that holds no filesystem.
 cat > "${STUBBIN}/blkid" <<'EOF'
 #!/bin/sh
+# BLKID_RC simulates a probe that could not run at all — 127 is a blkid missing
+# from the image, 4 an internal error. Both print nothing, which is precisely
+# what a genuinely blank disk prints, so only the exit status separates them.
+[ "${BLKID_RC:-0}" = "0" ] || exit "${BLKID_RC}"
 dev="$1"
 fstype=$(awk -v d="${dev}" '$1 == d { print $2 }' "${FS_TABLE}" 2>/dev/null)
 [ -n "${fstype}" ] || exit 2
@@ -96,7 +100,7 @@ reset_state() {
     : > "${MKFS_CALLS}"
     : > "${MOUNT_CALLS}"
     : > "${CHOWN_CALLS}"
-    unset MKFS_FAIL MOUNT_RC || true
+    unset MKFS_FAIL MOUNT_RC BLKID_RC || true
 }
 
 # run: invoke rds-datadir against the fake sysfs and a wait short enough that
@@ -109,6 +113,7 @@ run() {
         RDS_DATA_VOLUME_WAIT="${RDS_DATA_VOLUME_WAIT:-2}" \
         MKFS_FAIL="${MKFS_FAIL:-0}" \
         MOUNT_RC="${MOUNT_RC:-0}" \
+        BLKID_RC="${BLKID_RC:-0}" \
         sh "${SCRIPT}" </dev/null
 }
 
@@ -185,6 +190,33 @@ add_disk vdb vol0123456789abcdef
 MKFS_FAIL=1 run_fails "mkfs-fail"
 grep -q . "${MOUNT_CALLS}" \
     && fail "mkfs-fail: mounted after a failed format" || pass "mkfs-fail: not mounted"
+
+# --- Case 8: a probe that could not run is never read as a blank disk ---
+# The volume below holds a customer's filesystem. Deciding from blkid's empty
+# output rather than its exit status reformats it.
+for rc in 127 4; do
+    reset_state
+    add_disk vda
+    add_disk vdb vol0123456789abcdef
+    echo "${DEV_DIR}/vdb ext4" > "${FS_TABLE}"
+    BLKID_RC="${rc}" run_fails "blkid-exit-${rc}"
+    grep -q . "${MKFS_CALLS}" \
+        && fail "blkid-exit-${rc}: formatted a volume it could not probe" \
+        || pass "blkid-exit-${rc}: nothing formatted"
+    grep -q . "${MOUNT_CALLS}" \
+        && fail "blkid-exit-${rc}: mounted a volume it could not probe" \
+        || pass "blkid-exit-${rc}: not mounted"
+done
+
+# --- Case 9: sysfs listing a disk before its device node exists is not blank ---
+reset_state
+add_disk vda
+add_disk vdb vol0123456789abcdef
+rm -f "${DEV_DIR}/vdb"
+run_fails "no-device-node"
+grep -q . "${MKFS_CALLS}" \
+    && fail "no-device-node: formatted a device that does not exist yet" \
+    || pass "no-device-node: nothing formatted"
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-datadir cases"

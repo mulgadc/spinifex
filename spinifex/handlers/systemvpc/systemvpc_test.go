@@ -2,6 +2,7 @@ package handlers_systemvpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -236,11 +238,14 @@ func (f *fakeEC2) AssociateRouteTable(_ context.Context, in *ec2.AssociateRouteT
 	if !ok {
 		return nil, fmt.Errorf("no such route table %s", aws.StringValue(in.RouteTableId))
 	}
-	// A re-associated subnet keeps its existing association, as the service layer
-	// does, so a second Ensure does not double the association list.
-	for _, a := range rt.Associations {
-		if aws.StringValue(a.SubnetId) == aws.StringValue(in.SubnetId) {
-			return &ec2.AssociateRouteTableOutput{AssociationId: a.RouteTableAssociationId}, nil
+	// The real service is AWS-faithful and rejects a subnet that already carries
+	// an explicit association, on any table in the VPC. Ensure has to absorb that
+	// itself, so the fake must reproduce it rather than quietly succeeding.
+	for _, table := range f.rts {
+		for _, a := range table.Associations {
+			if aws.StringValue(a.SubnetId) == aws.StringValue(in.SubnetId) {
+				return nil, errors.New(awserrors.ErrorResourceAlreadyAssociated)
+			}
 		}
 	}
 	assocID := f.id("assoc", "rtbassoc", accountID)

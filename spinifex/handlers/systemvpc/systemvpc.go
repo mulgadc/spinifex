@@ -401,8 +401,7 @@ func ensureSubnet(ctx context.Context, vpcp VPCProvisioner, spec Spec, accountID
 
 // ensureRouteTable describe-or-creates the role-tagged route table, installs the
 // default route, and associates it to subnetIDs. Idempotent: a re-run reuses the
-// existing table and its associations (AssociateRouteTable is a no-op for an
-// already-associated subnet at the service layer).
+// existing table and re-drives the associations.
 func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec, accountID, vpcID, role string, route *ec2.CreateRouteInput, subnetIDs []string) (string, error) {
 	rtID, fresh, err := describeOrCreateRouteTable(ctx, rtp, spec, accountID, vpcID, role)
 	if err != nil {
@@ -418,10 +417,14 @@ func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec,
 		if sn == "" {
 			continue
 		}
+		// The subnet is already on this table whenever the VPC survived from an
+		// earlier Ensure. AssociateRouteTable is AWS-faithful and rejects that as
+		// Resource.AlreadyAssociated, so the idempotency belongs here: for a
+		// shared system VPC every Ensure after the first takes this path.
 		if _, err := rtp.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
 			RouteTableId: aws.String(rtID),
 			SubnetId:     aws.String(sn),
-		}, accountID); err != nil {
+		}, accountID); err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorResourceAlreadyAssociated) {
 			return "", fmt.Errorf("systemvpc: associate route table %s → subnet %s: %w", rtID, sn, err)
 		}
 	}

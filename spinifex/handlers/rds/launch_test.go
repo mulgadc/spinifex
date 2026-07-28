@@ -167,6 +167,12 @@ type fakeENIs struct {
 	// createErrOn fails the nth (1-based) create, to open the rollback window
 	// after the system NIC exists.
 	createErrOn int
+
+	// unwind is the harness-wide teardown log, and deleteCtxErr the state of the
+	// context the delete was handed — both are how the rollback's ordering and
+	// its independence from the caller's context become observable.
+	unwind       *[]string
+	deleteCtxErr error
 }
 
 var _ launchVPCProvisioner = (*fakeENIs)(nil)
@@ -186,8 +192,12 @@ func (f *fakeENIs) CreateNetworkInterface(_ context.Context, in *ec2.CreateNetwo
 	}}, nil
 }
 
-func (f *fakeENIs) DeleteNetworkInterface(_ context.Context, in *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+func (f *fakeENIs) DeleteNetworkInterface(ctx context.Context, in *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.deleted = append(f.deleted, aws.StringValue(in.NetworkInterfaceId))
+	f.deleteCtxErr = ctx.Err()
+	if f.unwind != nil {
+		*f.unwind = append(*f.unwind, "delete-eni")
+	}
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
@@ -198,6 +208,7 @@ type fakeLauncher struct {
 	input      *sysinstance.SystemInstanceInput
 	err        error
 	terminated []string
+	unwind     *[]string
 }
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
@@ -212,6 +223,9 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 
 func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
 	f.terminated = append(f.terminated, instanceID)
+	if f.unwind != nil {
+		*f.unwind = append(*f.unwind, "terminate")
+	}
 	return nil
 }
 
@@ -238,6 +252,9 @@ type fakeVolumes struct {
 	accts   []string
 	deleted []string
 	err     error
+
+	unwind       *[]string
+	deleteCtxErr error
 }
 
 var _ launchVolumeProvisioner = (*fakeVolumes)(nil)
@@ -251,8 +268,12 @@ func (f *fakeVolumes) CreateVolume(_ context.Context, in *ec2.CreateVolumeInput,
 	return &ec2.Volume{VolumeId: aws.String("vol-rdsdata01")}, nil
 }
 
-func (f *fakeVolumes) DeleteVolume(_ context.Context, in *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
+func (f *fakeVolumes) DeleteVolume(ctx context.Context, in *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
 	f.deleted = append(f.deleted, aws.StringValue(in.VolumeId))
+	f.deleteCtxErr = ctx.Err()
+	if f.unwind != nil {
+		*f.unwind = append(*f.unwind, "delete-volume")
+	}
 	return &ec2.DeleteVolumeOutput{}, nil
 }
 
@@ -260,12 +281,19 @@ func (f *fakeVolumes) DeleteVolume(_ context.Context, in *ec2.DeleteVolumeInput,
 type fakeAttacher struct {
 	accountID, instanceID, volumeID, device string
 	err                                     error
+
+	// onCall fires before the attach returns, so a case can cancel the caller's
+	// context at the moment the step that fails is running.
+	onCall func()
 }
 
 var _ volumeAttacher = (*fakeAttacher)(nil)
 
 func (f *fakeAttacher) AttachVolume(_ context.Context, accountID, instanceID, volumeID, device string) (string, error) {
 	f.accountID, f.instanceID, f.volumeID, f.device = accountID, instanceID, volumeID, device
+	if f.onCall != nil {
+		f.onCall()
+	}
 	if f.err != nil {
 		return "", f.err
 	}
@@ -280,10 +308,14 @@ type launchHarness struct {
 	images   *fakeImages
 	volumes  *fakeVolumes
 	attacher *fakeAttacher
+
+	// unwind is every teardown call in the order it happened, shared by the
+	// fakes that perform one.
+	unwind []string
 }
 
 func newLaunchHarness() *launchHarness {
-	return &launchHarness{
+	h := &launchHarness{
 		sysvpc:   &fakeSystemVPC{},
 		enis:     &fakeENIs{},
 		launcher: &fakeLauncher{},
@@ -293,6 +325,8 @@ func newLaunchHarness() *launchHarness {
 		volumes:  &fakeVolumes{},
 		attacher: &fakeAttacher{},
 	}
+	h.enis.unwind, h.launcher.unwind, h.volumes.unwind = &h.unwind, &h.unwind, &h.unwind
+	return h
 }
 
 func (h *launchHarness) deps() LaunchDeps {
@@ -461,6 +495,38 @@ func TestLaunchDBInstanceVMRollsBackEverythingItCreated(t *testing.T) {
 		assert.Equal(t, []string{"i-rds0001"}, h.launcher.terminated)
 		assert.ElementsMatch(t, []string{"eni-0001", "eni-0002"}, h.enis.deleted)
 	})
+}
+
+func TestLaunchDBInstanceVMTerminatesTheVMBeforeReleasingWhatIsAttachedToIt(t *testing.T) {
+	h := newLaunchHarness()
+	h.attacher.err = errors.New("no free hot-plug port")
+
+	_, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.Error(t, err)
+
+	// The data volume and both ENIs are attached to a running VM. Releasing one
+	// before the VM is gone is rejected as in-use, which the unwind can only log
+	// — so the resource survives as a billable orphan the customer cannot see.
+	require.Equal(t, []string{"terminate", "delete-volume", "delete-eni", "delete-eni"}, h.unwind)
+}
+
+func TestLaunchDBInstanceVMRollsBackAfterTheCallersContextIsDone(t *testing.T) {
+	h := newLaunchHarness()
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The most likely reason a late step fails is the caller's own deadline, so
+	// the unwind has to run on a context that outlives it. On the request's own
+	// context every delete below returns immediately and every resource leaks.
+	h.attacher.err = errors.New("deadline exceeded")
+	h.attacher.onCall = cancel
+
+	_, err := LaunchDBInstanceVM(ctx, h.deps(), testLaunchInput())
+	require.Error(t, err)
+
+	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
+	assert.ElementsMatch(t, []string{"eni-0001", "eni-0002"}, h.enis.deleted)
+	assert.NoError(t, h.volumes.deleteCtxErr, "the volume delete ran on the cancelled request context")
+	assert.NoError(t, h.enis.deleteCtxErr, "the ENI delete ran on the cancelled request context")
 }
 
 func TestLaunchDBInstanceVMRejectsIncompleteInput(t *testing.T) {

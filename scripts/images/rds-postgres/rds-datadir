@@ -69,7 +69,10 @@ await_data_disk() {
         if [ "${_count}" -gt 1 ]; then
             fail "found ${_count} attached data volumes ($(printf '%s\n' "${_found}" | tr '\n' ' ')); expected exactly one"
         fi
-        if [ "${_count}" = "1" ]; then
+        # The sysfs entry appears before the device node the probe needs, and a
+        # blkid pointed at a node that is not there yet reports the same "no
+        # filesystem" a blank disk does. So the wait is not over until both exist.
+        if [ "${_count}" = "1" ] && [ -e "${DEV_DIR}/${_found}" ]; then
             printf '%s\n' "${_found}"
             return 0
         fi
@@ -81,12 +84,25 @@ await_data_disk() {
     done
 }
 
-# fstype_of prints the filesystem on dev, or nothing if it holds none. It is the
-# only input to the decision to format, so an unreadable or unrecognised device
-# reads as "no filesystem" only when it is genuinely blank: has_partitions below
-# catches the case blkid cannot see through.
+# fstype_of prints the filesystem on dev, or nothing if it genuinely holds none,
+# and returns non-zero when it could not find out.
+#
+# The distinction is the whole safety of this script: it is the only input to the
+# decision to format, and a blkid that is missing from the image, that errored,
+# or that was pointed at a device node which has not appeared yet all print
+# exactly what a blank disk prints. So the exit status decides, never the
+# emptiness of the output. has_partitions cannot stand in for this — the
+# filesystem this script creates is whole-disk, with no partition table to find.
 fstype_of() {
-    blkid "$1" 2>/dev/null | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p'
+    if _out=$(blkid "$1" 2>/dev/null); then
+        _rc=0
+    else
+        _rc=$?
+    fi
+    # 0 is a signature found, 2 a clean probe that found none. Anything else
+    # means the probe did not run, which is not an answer.
+    [ "${_rc}" -eq 0 ] || [ "${_rc}" -eq 2 ] || return 1
+    printf '%s' "${_out}" | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p'
 }
 
 # has_partitions reports whether the kernel found a partition table on disk.
@@ -105,11 +121,18 @@ main() {
         return 0
     fi
 
+    # Checked before anything else: without it the probe below cannot run, and a
+    # probe that cannot run looks identical to a blank disk.
+    command -v blkid >/dev/null 2>&1 ||
+        fail "blkid is not installed in this image; refusing to tell a blank volume from a customer's data without it"
+
     _disk=$(await_data_disk)
     _dev="${DEV_DIR}/${_disk}"
     log "data volume attached as ${_dev} (serial $(cat "${SYS_BLOCK}/${_disk}/serial"))"
 
-    _fstype=$(fstype_of "${_dev}")
+    if ! _fstype=$(fstype_of "${_dev}"); then
+        fail "could not probe ${_dev} for a filesystem; refusing to decide whether it is blank"
+    fi
     if [ -z "${_fstype}" ]; then
         # A partition table with no whole-disk filesystem is somebody else's
         # disk — a restored image, a mis-targeted attach — and formatting it

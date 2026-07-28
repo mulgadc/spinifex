@@ -140,25 +140,18 @@ test-harness:
 	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
 
 # In-process integration tier: the real gateway router against embedded NATS
-# JetStream, with only the daemon-side NATS subjects stubbed. Build-tagged
-# `integration` so it's skipped by the default `go test ./spinifex/...` and by
-# `test-cover`/`test-race`. Nothing provisioned — no tofu, no docker, no
-# Spinifex daemons, so the whole package runs in well under a minute. It gets
-# its own PR-blocking CI job rather than the self-hosted, push-triggered live
-# e2e tiers, so a regression here is caught before it can be merged, not just
-# after.
+# JetStream, with only the daemon-side NATS subjects stubbed.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
-# of services/suites/fixtures + on-disk path existence. Subject content
-# vs source is enforced separately in Bead 5 drift lint.
+# of services/suites/fixtures + on-disk path existence.
 manifest-check:
 	@echo -e "\n....Checking service-interfaces.yaml...."
 	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
 
-# Drift guards (Bead 5): direct-create fixture lint + NATS subject lint,
+# Drift guards: direct-create fixture lint + NATS subject lint,
 # ratcheted against tests/e2e/manifest-lint/baseline.txt. Fails only on NEW
 # drift beyond the baseline.
 manifest-lint:
@@ -272,8 +265,7 @@ govulncheck:
 	$(_Q)go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
-# NilAway — advisory nil-panic analysis. Not in preflight: it has a known
-# false-positive rate, so findings are triaged by hand rather than gating commits.
+# NilAway — advisory nil-panic analysis. Not in preflight due to false positives
 nilaway:
 	@echo "Running nilaway..."
 	$(_Q)go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...

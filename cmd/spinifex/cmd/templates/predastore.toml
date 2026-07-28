@@ -3,9 +3,8 @@
 version = "4"
 region = "{{.Region}}"
 
-# Optionally configure port and host, or specify via daemon CLI options
-host = "0.0.0.0"
-port = 8443
+# The gateway listen address comes from the daemon CLI options: a top-level
+# host key would collide with the [[host]] topology table below.
 
 # Enable verbose debugging
 debug = false
@@ -20,52 +19,50 @@ debug = false
 data = 2
 parity = 1
 
-[[db]]
+# A host is one predastore process: it owns a socket and a data directory,
+# and runs the nodes pinned to it. A single-node deployment declares one host
+# and colocates every node in it, so all intra-cluster traffic goes over the
+# in-process pipe and no socket is bound. bind_addr/public_addr are unused
+# while everything is colocated; they only matter once nodes are split across
+# processes.
+[[host]]
 id = 1
-host = "127.0.0.1"
-port = 6660
-#raft_port = 7660       # Optional: Raft consensus port (default: port + 1000)
-#advertise_host = ""    # Optional: Address to advertise to other Raft nodes
-path = "distributed/db/node-1/"
-access_key_id = "{{.AccessKey}}"
-secret_access_key = "{{.SecretKey}}"
-leader = true      # Bootstrap leader hint
+bind_addr = "127.0.0.1:6660"
+public_addr = "127.0.0.1:6660"
+data_dir = "{{.PredastoreDataDir}}"
 
-[[db]]
-id = 2
-host = "127.0.0.1"
-port = 6661
-path = "distributed/db/node-2/"
-access_key_id = "{{.AccessKey}}"
-secret_access_key = "{{.SecretKey}}"
-
-[[db]]
-id = 3
-host = "127.0.0.1"
-port = 6662
-path = "distributed/db/node-3/"
-access_key_id = "{{.AccessKey}}"
-secret_access_key = "{{.SecretKey}}"
-
-# Shard nodes
-# Using distributed hash ring for object > shard placement.
-[[nodes]]
+# Shard nodes: the distributed hash ring places object shards across these.
+# RS(2,1) needs 3.
+[[node]]
 id = 1
-host = "127.0.0.1"
-port = 9991
-path = "distributed/nodes/node-1/"
+host_id = 1
+role = "shard-storage"
 
-[[nodes]]
+[[node]]
 id = 2
-host = "127.0.0.1"
-port = 9992
-path = "distributed/nodes/node-2/"
+host_id = 1
+role = "shard-storage"
 
-[[nodes]]
+[[node]]
 id = 3
-host = "127.0.0.1"
-port = 9993
-path = "distributed/nodes/node-3/"
+host_id = 1
+role = "shard-storage"
+
+# State replicas: the Raft quorum over global state (buckets, object index).
+[[node]]
+id = 4
+host_id = 1
+role = "state-replica"
+
+[[node]]
+id = 5
+host_id = 1
+role = "state-replica"
+
+[[node]]
+id = 6
+host_id = 1
+role = "state-replica"
 
 [[buckets]]
 name = "predastore"

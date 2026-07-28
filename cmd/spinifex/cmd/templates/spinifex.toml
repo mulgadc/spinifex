@@ -127,8 +127,8 @@ region = "{{.Region}}"
 bucket = "predastore"
 accesskey = "{{.AccessKey}}"
 secretkey = "{{.SecretKey}}"
-{{- if gt .PredastoreNodeID 0}}
-node_id = {{.PredastoreNodeID}}
+{{- if gt .PredastoreHostID 0}}
+host_id = {{.PredastoreHostID}}
 {{- end}}
 
 {{- if .NorthstarConfigPath}}

@@ -82,32 +82,62 @@ func (c *NClient4Client) socketTimeout(ctx context.Context) time.Duration {
 	return min(remaining, nclient4InitialRead)
 }
 
+// resolveHWAddr picks the chaddr for an exchange: the interface's own MAC when
+// the pool leases under it, otherwise the deterministic per-client-id MAC.
+//
+// A stored address that is empty or the wrong width is repaired rather than
+// passed through. nclient4 would put all zeros in chaddr and clientIDOption
+// would fall back to its untyped form, so the lease lands upstream with no
+// hardware address against it at all — the exact outcome option 61 was fixed to
+// stop, reached by a different route.
+func resolveHWAddr(bridge, clientID string, hwAddr net.HardwareAddr, useIfaceMAC bool) (net.HardwareAddr, error) {
+	if useIfaceMAC {
+		// The uplink drops foreign source MACs (WiFi/WWAN), so lease with the
+		// interface's own MAC; option 61 keeps leases apart on sane servers.
+		iface, err := net.InterfaceByName(bridge)
+		if err != nil {
+			return nil, fmt.Errorf("interface MAC for %s: %w", bridge, err)
+		}
+		if len(iface.HardwareAddr) == 0 {
+			return nil, fmt.Errorf("interface %s has no MAC", bridge)
+		}
+		return iface.HardwareAddr, nil
+	}
+	// All-zero is six bytes wide, so a width check alone lets it through — and it
+	// is the value that produces the unattributable lease in the first place.
+	if len(hwAddr) == 6 && !isZeroMAC(hwAddr) {
+		return hwAddr, nil
+	}
+	if clientID == "" {
+		return nil, fmt.Errorf("client_id or hw_addr is required")
+	}
+	hw, err := DeriveMAC(clientID)
+	if err != nil {
+		return nil, fmt.Errorf("derive hw_addr: %w", err)
+	}
+	return hw, nil
+}
+
+// isZeroMAC reports whether hw is all zeros, the placeholder a lease carries
+// when no hardware address was ever recorded for it.
+func isZeroMAC(hw net.HardwareAddr) bool {
+	for _, b := range hw {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Lease, error) {
 	if req.Bridge == "" {
 		return nil, fmt.Errorf("dhcp acquire: bridge is required")
 	}
-	switch {
-	case req.UseIfaceMAC:
-		// The uplink drops foreign source MACs (WiFi/WWAN), so lease with the
-		// interface's own MAC; option 61 keeps leases apart on sane servers.
-		iface, err := net.InterfaceByName(req.Bridge)
-		if err != nil {
-			return nil, fmt.Errorf("dhcp acquire: interface MAC for %s: %w", req.Bridge, err)
-		}
-		if len(iface.HardwareAddr) == 0 {
-			return nil, fmt.Errorf("dhcp acquire: interface %s has no MAC", req.Bridge)
-		}
-		req.HWAddr = iface.HardwareAddr
-	case len(req.HWAddr) == 0:
-		if req.ClientID == "" {
-			return nil, fmt.Errorf("dhcp acquire: client_id or hw_addr is required")
-		}
-		hw, err := DeriveMAC(req.ClientID)
-		if err != nil {
-			return nil, fmt.Errorf("dhcp acquire: derive hw_addr: %w", err)
-		}
-		req.HWAddr = hw
+	hw, err := resolveHWAddr(req.Bridge, req.ClientID, req.HWAddr, req.UseIfaceMAC)
+	if err != nil {
+		return nil, fmt.Errorf("dhcp acquire: %w", err)
 	}
+	req.HWAddr = hw
 
 	releasePromisc, err := enableBridgePromisc(req.Bridge)
 	if err != nil {
@@ -148,6 +178,11 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	if err != nil {
 		return nil, fmt.Errorf("dhcp renew: %w", err)
 	}
+	// A lease persisted before the chaddr was carried has none to renew under.
+	hwAddr, err := resolveHWAddr(lease.Bridge, lease.ClientID, lease.HWAddr, lease.UseIfaceMAC)
+	if err != nil {
+		return nil, fmt.Errorf("dhcp renew: %w", err)
+	}
 
 	releasePromisc, err := enableBridgePromisc(lease.Bridge)
 	if err != nil {
@@ -161,7 +196,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	}
 
 	client, err := nclient4.New(lease.Bridge,
-		nclient4.WithHWAddr(lease.HWAddr),
+		nclient4.WithHWAddr(hwAddr),
 		nclient4.WithTimeout(c.socketTimeout(ctx)),
 		nclient4.WithRetry(nclient4Tries),
 	)
@@ -171,7 +206,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	defer func() { _ = client.Close() }()
 
 	renewed, err := client.Renew(ctx, nclient4Lease,
-		IdentityModifiers(lease.ClientID, lease.Hostname, lease.VendorClass, lease.HWAddr)...)
+		IdentityModifiers(lease.ClientID, lease.Hostname, lease.VendorClass, hwAddr)...)
 	if err != nil {
 		return nil, fmt.Errorf("dhcp renew on %s (client=%s): %w", lease.Bridge, lease.ClientID, err)
 	}
@@ -181,7 +216,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 		ClientID:    lease.ClientID,
 		Hostname:    lease.Hostname,
 		VendorClass: lease.VendorClass,
-		HWAddr:      lease.HWAddr,
+		HWAddr:      hwAddr,
 		UseIfaceMAC: lease.UseIfaceMAC,
 	}, renewed), nil
 }
@@ -191,6 +226,11 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 		return nil
 	}
 	nclient4Lease, err := reconstructNClient4Lease(lease)
+	if err != nil {
+		return fmt.Errorf("dhcp release: %w", err)
+	}
+	// Must match what took the lease out, so it resolves the same way Acquire did.
+	hwAddr, err := resolveHWAddr(lease.Bridge, lease.ClientID, lease.HWAddr, lease.UseIfaceMAC)
 	if err != nil {
 		return fmt.Errorf("dhcp release: %w", err)
 	}
@@ -207,7 +247,7 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	}
 
 	client, err := nclient4.New(lease.Bridge,
-		nclient4.WithHWAddr(lease.HWAddr),
+		nclient4.WithHWAddr(hwAddr),
 		nclient4.WithTimeout(c.timeout),
 	)
 	if err != nil {
@@ -218,7 +258,7 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	// The server matches a RELEASE to a lease by client-id, so this must encode
 	// identically to the DISCOVER/REQUEST that took the lease out.
 	if err := client.Release(nclient4Lease,
-		dhcpv4.WithOption(clientIDOption(lease.ClientID, lease.HWAddr))); err != nil {
+		dhcpv4.WithOption(clientIDOption(lease.ClientID, hwAddr))); err != nil {
 		return fmt.Errorf("dhcp release on %s (client=%s): %w", lease.Bridge, lease.ClientID, err)
 	}
 	return nil

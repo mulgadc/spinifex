@@ -62,6 +62,50 @@ func TestSocketTimeoutNeverOutlivesTheCaller(t *testing.T) {
 	})
 }
 
+// Renew and Release read the chaddr back out of the lease store, so a lease
+// written before the chaddr was carried has none. Passing that through puts all
+// zeros in chaddr and drops option 61 to its untyped form, and the lease lands
+// upstream with no hardware address against it.
+func TestResolveHWAddrRepairsAMissingChaddr(t *testing.T) {
+	derived, err := DeriveMAC("eipalloc-1234")
+	if err != nil {
+		t.Fatalf("derive mac: %v", err)
+	}
+
+	t.Run("a usable address is kept", func(t *testing.T) {
+		got, err := resolveHWAddr("br-wan", "eipalloc-1234", derived, false)
+		if err != nil {
+			t.Fatalf("resolveHWAddr: %v", err)
+		}
+		if !bytes.Equal(got, derived) {
+			t.Fatalf("hw addr = %s, want the stored %s", got, derived)
+		}
+	})
+
+	for _, stored := range []net.HardwareAddr{nil, {}, make(net.HardwareAddr, 6)} {
+		t.Run("an unusable address is re-derived from the client-id", func(t *testing.T) {
+			got, err := resolveHWAddr("br-wan", "eipalloc-1234", stored, false)
+			if err != nil {
+				t.Fatalf("resolveHWAddr: %v", err)
+			}
+			// All-zero is six bytes wide and so passes a length check, yet it is
+			// the very value that produces an unattributable upstream lease.
+			if isZeroMAC(got) {
+				t.Fatalf("hw addr = %s, want a real address rather than zeros", got)
+			}
+			if !bytes.Equal(got, derived) {
+				t.Fatalf("hw addr = %s, want the derived %s", got, derived)
+			}
+		})
+	}
+
+	t.Run("no client-id leaves nothing to derive from", func(t *testing.T) {
+		if _, err := resolveHWAddr("br-wan", "", nil, false); err == nil {
+			t.Fatal("want an error rather than an exchange with a zero chaddr")
+		}
+	})
+}
+
 // Option 61 carries a leading hardware-type byte. Omitting it makes the server
 // consume the identifier's first character as the type, which is how leases end
 // up in the upstream table with no hardware address at all.

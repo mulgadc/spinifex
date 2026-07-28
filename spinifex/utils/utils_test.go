@@ -1684,6 +1684,6 @@ func TestAvailableImages_RDSPostgresEntry(t *testing.T) {
 	assert.Equal(t, "rds", img.Tags["spinifex:managed-by"],
 		"RDS image must carry the managed-by=rds tag instance launches resolve on")
 	assert.Equal(t, "postgres", img.Tags["engine"])
-	assert.Equal(t, "16", img.Tags["engine-version"],
+	assert.Equal(t, "18", img.Tags["engine-version"],
 		"the pinned PostgreSQL major version is what EngineVersion resolves against")
 }

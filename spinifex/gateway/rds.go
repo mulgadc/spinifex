@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 )
@@ -40,13 +41,13 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
+	caller, err := rdsCaller(r)
+	if err != nil {
 		slog.ErrorContext(r.Context(), "RDS_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
+		return err
 	}
 
-	xmlOutput, err := gateway_rds.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, accountID)
+	xmlOutput, err := gateway_rds.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, caller)
 	if err != nil {
 		return err
 	}
@@ -57,4 +58,29 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 		slog.ErrorContext(r.Context(), "Failed to write RDS response", "err", err)
 	}
 	return nil
+}
+
+// rdsCaller builds the identity the RDS dispatcher gates on. The internal agent
+// actions need more than the account: they admit only an assumed-role session
+// whose underlying role is the RDS instance role.
+//
+// The role name is parsed from the underlying role ARN, never from the session
+// name — the caller picks RoleSessionName at AssumeRole time, so trusting it
+// would let anyone name their way past the gate.
+func rdsCaller(r *http.Request) (gateway_rds.Caller, error) {
+	accountID := mustCtxString(r, ctxAccountID)
+	if accountID == "" {
+		return gateway_rds.Caller{}, errors.New(awserrors.ErrorServerInternal)
+	}
+	caller := gateway_rds.Caller{
+		AccountID:     accountID,
+		PrincipalType: mustCtxString(r, ctxPrincipalType),
+		SessionName:   mustCtxString(r, ctxIdentity),
+	}
+	if arn := mustCtxString(r, ctxUnderlyingRoleARN); arn != "" {
+		if roleAcct, roleName, err := auth.ParseRoleARN(arn); err == nil && roleAcct == accountID {
+			caller.RoleName = roleName
+		}
+	}
+	return caller, nil
 }

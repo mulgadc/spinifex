@@ -10,6 +10,10 @@ import (
 
 const testAccountID = "123456789012"
 
+// testCaller is an ordinary customer principal: enough for the customer actions,
+// and deliberately not enough for the internal agent actions.
+var testCaller = Caller{AccountID: testAccountID, PrincipalType: "user"}
+
 // v1Actions is the RDS v1 namespace from rds-v1.md §1. Keeping it as a literal
 // list rather than deriving it from the table under test means a dropped or
 // renamed action fails here instead of silently redefining the namespace.
@@ -85,7 +89,7 @@ func TestHasAction_UnknownAction(t *testing.T) {
 }
 
 func TestDispatch_UnknownAction(t *testing.T) {
-	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testAccountID)
+	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -96,28 +100,30 @@ func TestDispatch_UnknownAction(t *testing.T) {
 func TestDispatch_EveryActionResolves(t *testing.T) {
 	for action := range actions {
 		t.Run(action, func(t *testing.T) {
-			body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testAccountID)
+			body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller)
 			if err == nil {
 				assert.NotEmpty(t, body, "a successful action must return an XML body")
 				return
 			}
+			// AccessDenied is the fourth legitimate outcome: the internal agent
+			// actions gate on principal class, and testCaller is a customer.
 			assert.Contains(t,
-				[]string{awserrors.ErrorNotImplemented, awserrors.ErrorOperationNotSupported},
+				[]string{awserrors.ErrorNotImplemented, awserrors.ErrorOperationNotSupported, awserrors.ErrorAccessDenied},
 				err.Error(),
-				"a stubbed action must reject with NotImplemented or OperationNotSupported")
+				"a stubbed action must reject with NotImplemented, OperationNotSupported or AccessDenied")
 		})
 	}
 }
 
 func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "CreateDBInstance", map[string]string{"Action": "CreateDBInstance"}, nil, testAccountID)
+	_, err := Dispatch(t.Context(), "CreateDBInstance", map[string]string{"Action": "CreateDBInstance"}, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
 func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 	for _, action := range outOfScopeActions {
-		_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testAccountID)
+		_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller)
 		require.Error(t, err, "action %q", action)
 		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(), "action %q", action)
 	}
@@ -125,7 +131,7 @@ func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 
 func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 	body, err := Dispatch(t.Context(), "DescribeDBInstances",
-		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, nil, testAccountID)
+		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, nil, testCaller)
 	require.NoError(t, err)
 
 	// The IAM-style envelope the aws-sdk-go query unmarshaler expects, carrying
@@ -143,7 +149,7 @@ func TestDispatch_DescribeDBInstancesWithFilters(t *testing.T) {
 		"Action":               "DescribeDBInstances",
 		"DBInstanceIdentifier": "orders-db",
 		"MaxRecords":           "20",
-	}, nil, testAccountID)
+	}, nil, testCaller)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "<DescribeDBInstancesResult")
 }

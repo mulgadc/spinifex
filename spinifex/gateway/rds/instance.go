@@ -14,6 +14,6 @@ import (
 // honest answer for an account that has no DB instances, and it makes the whole
 // contract — Query request in, IAM-style XML envelope out — exercisable end to
 // end before any handler body exists.
-func DescribeDBInstances(_ context.Context, _ *rds.DescribeDBInstancesInput, _ *nats.Conn, _ string) (any, error) {
+func DescribeDBInstances(_ context.Context, _ *rds.DescribeDBInstancesInput, _ *nats.Conn, _ Caller) (any, error) {
 	return &rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}}, nil
 }

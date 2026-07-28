@@ -22,18 +22,41 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// principalTypeAssumedRole is the ctxPrincipalType value for an assumed-role
+// session. Only such a session can be an in-guest agent.
+const principalTypeAssumedRole = "assumed-role"
+
+// Caller is the authenticated identity behind one RDS request.
+//
+// Customer actions need only AccountID, but the internal agent actions have to
+// tell an instance role apart from a user, which the account alone cannot do.
+// RoleName is resolved from the session's underlying role ARN, never from the
+// session name, which the caller chooses.
+type Caller struct {
+	AccountID     string
+	PrincipalType string
+	RoleName      string
+	// SessionName is the RoleSessionName of an assumed-role session. For IMDS
+	// instance-role credentials it is the internal EC2 instance ID.
+	SessionName string
+}
+
 // Handler processes parsed query args for one action and returns XML response
 // bytes. It takes the NATS connection rather than the gateway config because the
 // gateway config lives in the parent package; every RDS handler reaches the
 // control plane over NATS and needs nothing else from it.
-type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, accountID string) ([]byte, error)
+type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error)
 
 // typed builds a Handler from a typed per-action function: it allocates the
 // input struct, parses the query params into it, calls the function and marshals
 // the output into the IAM-style XML envelope RDS shares with ELBv2 —
 // <ActionResponse><ActionResult>...</ActionResult></ActionResponse>.
-func typed[In any](handler func(context.Context, *In, *nats.Conn, string) (any, error)) Handler {
-	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, accountID string) ([]byte, error) {
+//
+// Every action receives the whole Caller rather than a bare account ID. Customer
+// actions use only its AccountID; the agent actions need the principal class and
+// role name to run their gate, and one adapter is simpler than two.
+func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, error)) Handler {
+	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
 		input := new(In)
 		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
 			// An over-long indexed list is a client-side malformation, not an
@@ -43,7 +66,7 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, string) (any, 
 			}
 			return nil, err
 		}
-		output, err := handler(ctx, input, nc, accountID)
+		output, err := handler(ctx, input, nc, caller)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +97,7 @@ func unsupported() Handler {
 // rejectWith returns a Handler that rejects every call with the given awserror
 // code, without parsing the request body.
 func rejectWith(code string) Handler {
-	return func(ctx context.Context, action string, _ map[string]string, _ *nats.Conn, _ string) ([]byte, error) {
+	return func(ctx context.Context, action string, _ map[string]string, _ *nats.Conn, _ Caller) ([]byte, error) {
 		slog.DebugContext(ctx, "RDS: action not available", "action", action, "code", code)
 		return nil, errors.New(code)
 	}
@@ -125,10 +148,10 @@ var actions = map[string]Handler{
 	// They are part of the namespace rather than a private channel because the
 	// agent reaches the control plane over SigV4-on-awsgw like every other
 	// in-guest agent in the platform.
-	"RegisterDBInstance":   pending(),
-	"SubmitDBStateChange":  pending(),
-	"PollDBCommands":       pending(),
-	"GetDBBootstrapConfig": pending(),
+	"RegisterDBInstance":   typed(RegisterDBInstance),
+	"SubmitDBStateChange":  typed(SubmitDBStateChange),
+	"PollDBCommands":       typed(PollDBCommands),
+	"GetDBBootstrapConfig": typed(GetDBBootstrapConfig),
 
 	// Recognised but out of v1 scope. Read replicas, Aurora clusters and option
 	// groups are not offered at all; point-in-time restore waits on WAL
@@ -159,10 +182,10 @@ func HasAction(action string) bool {
 // Dispatch runs the handler for action and returns its XML response body.
 // Callers are expected to have authorized the action already; the unknown-action
 // check here is a backstop, not the enforcement point.
-func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, accountID string) ([]byte, error) {
+func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
 	handler, ok := actions[action]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
-	return handler(ctx, action, q, nc, accountID)
+	return handler(ctx, action, q, nc, caller)
 }

@@ -153,9 +153,8 @@ func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
 	require.NoError(t, err)
 
 	// The command channel is a live subscription, so a directive published
-	// before the poll subscribes is simply gone — that is the contract, not a
-	// flake. Republishing until the poll returns is how the test synchronises
-	// without reaching into the subscription.
+	// before the poll subscribes is gone by contract. Republishing until the
+	// poll returns synchronises without reaching into the subscription.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {

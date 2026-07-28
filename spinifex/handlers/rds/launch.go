@@ -21,17 +21,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// A DB instance is a dual-NIC system VM (D5). Its primary NIC lives in the
-// shared RDS system VPC, which is what gives the in-guest agent egress to the
-// gateway; the customer-facing ENI is created in the customer's DB-subnet-group
-// subnet and injected cross-account as an extra NIC, so it is a pure ingress
-// path with no routing or peering involved. There is no single-NIC mode: DB
-// subnets are typically private with no NAT egress, so an agent on the customer
-// ENI alone could not reach the control plane at all.
+// A DB instance is a dual-NIC system VM. Its primary NIC lives in the shared
+// RDS system VPC, giving the in-guest agent egress to the gateway; the
+// customer-facing ENI is injected cross-account as a pure ingress path. There
+// is no single-NIC mode, since DB subnets typically have no NAT egress.
 //
-// The data volume is created and hot-plug attached after the VM is running
-// (D9) — SystemInstanceInput has no data-disk field — and is deliberately
-// separate from the boot volume so a VM replace can throw the boot volume away
+// The data volume is created and hot-plug attached after the VM is running, and
+// kept separate from the boot volume so a replace can discard the boot volume
 // and keep the datadir.
 
 const (
@@ -50,15 +46,13 @@ const (
 	engineTagKey        = "engine"
 	engineVersionTagKey = "engine-version"
 
-	// attachRequestTimeout bounds the data-volume attach round-trip. The attach
-	// drives the QMP hot-plug pipeline, so it gets the same budget the gateway's
-	// AttachVolume uses.
+	// attachRequestTimeout bounds the data-volume attach round-trip, matching
+	// the budget the gateway's AttachVolume gives the same QMP pipeline.
 	attachRequestTimeout = 30 * time.Second
 
-	// rollbackTimeout bounds the unwind. It is a fresh budget rather than the
-	// caller's remaining one because the failure that triggers the unwind is
-	// often the caller's deadline expiring, and a rollback on a dead context
-	// deletes nothing.
+	// rollbackTimeout bounds the unwind. A fresh budget rather than the caller's
+	// remainder, since the unwind is often triggered by that deadline expiring
+	// and a rollback on a dead context deletes nothing.
 	rollbackTimeout = 60 * time.Second
 )
 
@@ -76,8 +70,8 @@ type launchVPCProvisioner interface {
 }
 
 // launchInstanceLauncher is the system-instance surface the DB VM boots through.
-// The VM is system-managed so it gets a mgmt-bridge NIC alongside its VPC NICs,
-// which is how the agent reaches the gateway from a private subnet.
+// System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
+// how the agent reaches the gateway from a private subnet.
 type launchInstanceLauncher interface {
 	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
@@ -113,7 +107,7 @@ type LaunchDeps struct {
 }
 
 // LaunchInput describes one DB VM to boot. Everything here is already validated
-// by the caller — the launch helper resolves and wires, it does not police the
+// by the caller: the launch helper resolves and wires, it does not police the
 // AWS API surface.
 type LaunchInput struct {
 	DBInstanceIdentifier string
@@ -144,8 +138,8 @@ type LaunchOutput struct {
 	// SystemENIID is the primary NIC in the RDS system VPC. It is disposable —
 	// a VM replace makes a new one.
 	SystemENIID string
-	// CustomerENIID is the stable endpoint (D5): its private IP is the DNS
-	// target and survives a VM replace.
+	// CustomerENIID is the stable endpoint: its private IP is the DNS target
+	// and survives a VM replace.
 	CustomerENIID  string
 	CustomerENIIP  string
 	CustomerENIMac string
@@ -156,12 +150,7 @@ type LaunchOutput struct {
 
 // LaunchDBInstanceVM boots the dual-NIC DB VM for in and attaches its data
 // volume. On any failure every resource this call created is torn down, so a
-// caller retrying a failed create does not accumulate orphan ENIs, volumes and
-// VMs.
-//
-// It creates nothing the caller must persist before it returns: on success the
-// output names the two long-lived resources (customer ENI, data volume); on
-// error nothing survives.
+// retried create does not accumulate orphan ENIs, volumes and VMs.
 func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out *LaunchOutput, err error) {
 	if err := validateLaunchInput(in); err != nil {
 		return nil, err
@@ -180,21 +169,19 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
 
 	// Unwind in reverse creation order on any failure below. Each step appends
-	// its own undo as soon as the resource exists, so a failure between two
-	// steps can never leave the earlier one behind.
+	// its own undo as soon as the resource exists.
 	var rollback []func(context.Context)
 
-	// The VM is torn down before anything else regardless of when it was
-	// created: both ENIs and the data volume are attached to it while it runs,
-	// and their services reject deleting a resource that is still in use.
+	// The VM is torn down first regardless of creation order: the ENIs and data
+	// volume are attached while it runs, and deleting those is rejected as InUse.
 	var terminateVM func(context.Context)
 
 	defer func() {
 		if err == nil {
 			return
 		}
-		// The unwind gets a context detached from the caller's, so a create that
-		// failed *because* the request deadline expired can still clean up.
+		// A context detached from the caller's, so a create that failed *because*
+		// the request deadline expired can still clean up.
 		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancel()
 		if terminateVM != nil {
@@ -327,8 +314,8 @@ func validateLaunchInput(in LaunchInput) error {
 	return nil
 }
 
-// launchENI is a created interface's identity, which the launcher needs in full
-// (the MAC and IP are what the guest's NIC is configured from).
+// launchENI is a created interface's identity. The launcher needs all three:
+// the guest's NIC is configured from the MAC and IP.
 type launchENI struct {
 	id  string
 	ip  string
@@ -372,10 +359,8 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 }
 
 // deleteLaunchENI removes an ENI during rollback. The detach comes first because
-// a VM that was launched and then terminated can leave the attachment record
-// behind, which a plain delete rejects as InUse; an already-detached ENI makes
-// the detach a no-op. Best-effort: a leak is logged, never returned, since the
-// caller is already unwinding a failure it will report.
+// a terminated VM can leave the attachment record behind, which a plain delete
+// rejects as InUse. Best-effort: the caller is already unwinding a failure.
 func deleteLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, eniID string) {
 	if err := vpcSvc.DetachENI(ctx, accountID, eniID); err != nil && !awserrors.IsNotFound(err) {
 		slog.DebugContext(ctx, "rds: rollback ENI detach failed", "eniId", eniID, "err", err)
@@ -387,10 +372,9 @@ func deleteLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 	}
 }
 
-// resolveEngineAMI picks the engine's system AMI by its manifest tags. When
-// version is empty the newest image for the engine wins; when it is set only an
-// exact match does, so an EngineVersion request can never be served by a
-// different major version.
+// resolveEngineAMI picks the engine's system AMI by its manifest tags. An empty
+// version takes the newest image; a set one requires an exact match, so a
+// request can never be served by a different major version.
 func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, version string) (string, error) {
 	filters := []*ec2.Filter{
 		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByRDS})},
@@ -411,8 +395,8 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
 	}
 
-	// Several builds of the same engine version can be registered; the newest is
-	// the one an operator most recently blessed by importing it.
+	// Several builds of one engine version can be registered; the newest is the
+	// one an operator most recently imported.
 	images := out.Images
 	sort.Slice(images, func(i, j int) bool {
 		return aws.StringValue(images[i].CreationDate) > aws.StringValue(images[j].CreationDate)
@@ -429,8 +413,8 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 }
 
 // natsVolumeAttacher hot-plugs a volume through the per-instance ec2.cmd
-// subject. Only the node running the VM subscribes it, so the command is
-// self-routing and the launch helper does not need to know where the VM landed.
+// subject. Only the node running the VM subscribes it, so the command routes
+// itself and the launch helper need not know where the VM landed.
 type natsVolumeAttacher struct {
 	nc      *nats.Conn
 	timeout time.Duration

@@ -27,8 +27,8 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		if cfg.Port > 0 {
 			a.probe.setPort(int(cfg.Port))
 		}
-		// The mode is logged but never branched on: rds-init decides whether to
-		// initdb from the state of the datadir, not from what this fetch said.
+		// Mode is logged but never branched on: rds-init decides whether to
+		// initdb from the state of the datadir.
 		slog.Info("rds-agent: bootstrap config delivered",
 			"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters))
 		return nil
@@ -36,26 +36,22 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 }
 
 // The handoff files rds-init reads. They live on tmpfs, so nothing survives a
-// reboot and the next boot re-fetches in attach mode rather than reusing a
-// stale password or a cert that has since been re-minted.
+// reboot and the next boot re-fetches rather than reusing a stale password or a
+// re-minted cert.
 const (
 	handoffEnvFile    = "bootstrap.env"
 	handoffParamsFile = "parameters.conf"
 	handoffCertFile   = "server.crt"
 	handoffKeyFile    = "server.key"
 
-	// handoffMode is root-only. The engine runs as postgres and rds-init runs as
-	// root: nothing that reads these files needs them group- or world-readable,
-	// and one of them is the master password.
+	// Root-only: only rds-init reads these, and one holds the master password.
 	handoffMode    = 0o600
 	handoffDirMode = 0o700
 )
 
 // writeHandoff renders the bootstrap config into the files rds-init consumes.
-//
-// bootstrap.env is written last and renamed into place, so its appearance means
-// the whole handoff is complete. That is what the init script waits on, and it
-// is why a partial fetch cannot start a bootstrap against half a config.
+// bootstrap.env is written last and renamed into place, so its appearance —
+// which rds-init waits on — means the whole handoff is complete.
 func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) error {
 	if cfg.MasterUsername == "" {
 		return fmt.Errorf("bootstrap config carries no master username")
@@ -64,7 +60,7 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 		return fmt.Errorf("create handoff dir %s: %w", dir, err)
 	}
 	// MkdirAll leaves an existing directory's mode alone, and this one may have
-	// been created by something more permissive earlier in the boot.
+	// been created more permissively earlier in the boot.
 	if err := os.Chmod(dir, handoffDirMode); err != nil {
 		return fmt.Errorf("secure handoff dir %s: %w", dir, err)
 	}
@@ -72,9 +68,8 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 	if err := writeHandoffFile(dir, handoffParamsFile, renderParameters(cfg.Parameters)); err != nil {
 		return err
 	}
-	// The cert and key are minted per fetch and delivered together; a half pair
-	// would have rds-init start the engine with TLS configured against a key it
-	// does not have.
+	// Cert and key are written as a pair; half of one would start the engine
+	// with TLS configured against a key it does not have.
 	if cfg.ServingCertificate != "" && cfg.ServingPrivateKey != "" {
 		if err := writeHandoffFile(dir, handoffCertFile, cfg.ServingCertificate); err != nil {
 			return err
@@ -95,8 +90,8 @@ func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
 	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
 	writeEnvLine(&b, "RDS_MASTER_USERNAME", cfg.MasterUsername)
-	// Present only in initialize mode, which is the whole of D8: an attach
-	// fetch has no password to write and rds-init must not find a stale one.
+	// Present only in initialize mode: an attach fetch has no password to write
+	// and rds-init must not find a stale one.
 	if cfg.MasterUserPassword != nil {
 		writeEnvLine(&b, "RDS_MASTER_PASSWORD", *cfg.MasterUserPassword)
 	}
@@ -117,14 +112,13 @@ func writeEnvLine(b *strings.Builder, key, value string) {
 }
 
 // shellQuote wraps s in single quotes, which suppress every shell expansion.
-// The only character a single-quoted string cannot hold is a single quote
-// itself, so each one is closed, escaped and reopened.
+// An embedded quote is closed, escaped and reopened.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // renderParameters emits the resolved parameter group in postgresql.conf syntax.
-// Values are quoted so a setting with a space or a unit suffix survives; the
+// Values are quoted so a setting with a space or unit suffix survives; the
 // engine accepts quoted numerics and booleans too.
 func renderParameters(params []handlers_rds.Parameter) string {
 	var b strings.Builder
@@ -139,9 +133,8 @@ func renderParameters(params []handlers_rds.Parameter) string {
 }
 
 // writeHandoffFile writes one handoff file atomically: a temp file in the same
-// directory, created 0600 from the start, renamed over the target. The mode is
-// set at creation rather than after, so the content is never briefly readable at
-// the process umask.
+// directory, renamed over the target. The mode is set at creation, so the
+// content is never briefly readable at the process umask.
 func writeHandoffFile(dir, name, content string) error {
 	path := filepath.Join(dir, name)
 	tmp := path + ".new"

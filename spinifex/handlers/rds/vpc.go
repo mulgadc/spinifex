@@ -11,14 +11,13 @@ import (
 )
 
 // One shared RDS system VPC per region holds every DB VM's primary NIC. DB
-// instances are isolated from each other by their own customer-facing ENI and
-// security group, so a VPC per instance would add a NAT gateway and an EIP per
-// database without adding isolation.
+// instances are isolated by their own customer-facing ENI and security group,
+// so a VPC per instance would add a NAT gateway and EIP without adding
+// isolation.
 //
-// The VPC is the EKS control-plane VPC's sibling — same builder, same
-// public/private + NAT-gateway topology — but with RDS's own tag keys and its
-// own address space, so no EKS teardown or orphan reaper can reach it and no
-// address ambiguity survives.
+// It is the EKS control-plane VPC's sibling — same builder and topology — but
+// with RDS's own tag keys and address space, so no EKS teardown or orphan
+// reaper can reach it.
 const (
 	// rdsSystemVPCTagKey holds the system VPC's name on every resource in it.
 	rdsSystemVPCTagKey = "spinifex:rds-system-vpc"
@@ -64,14 +63,10 @@ func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec
 	}
 }
 
-// EnsureSystemVPC builds (idempotently) the region's shared RDS system VPC under
-// accountID — the system account, which owns every DB VM. A second call with the
-// same region returns the same refs and creates nothing.
-//
-// The private subnet its VMs sit in routes 0.0.0.0/0 to the VPC's NAT gateway,
-// giving the in-guest rds-agent the same egress the EKS control-plane VMs have.
-// The customer's DB subnet needs no equivalent: the customer-facing ENI is
-// ingress-only, which is why the DB VM is dual-NIC in the first place.
+// EnsureSystemVPC idempotently builds the region's shared RDS system VPC under
+// accountID, the system account that owns every DB VM. The private subnet its
+// VMs sit in routes 0.0.0.0/0 to the VPC's NAT gateway, which is the agent's
+// only egress to the gateway.
 func EnsureSystemVPC(ctx context.Context, deps handlers_systemvpc.Deps, cfg *config.RDSConfig, accountID, region string) (*handlers_systemvpc.Refs, error) {
 	if region == "" {
 		return nil, errors.New("rds: EnsureSystemVPC empty region")

@@ -1,14 +1,10 @@
 // Package gateway_rds implements the RDS surface on awsgw. RDS speaks the AWS
-// Query protocol with XML responses (rds-v1.md D2), so this package mirrors the
-// ELBv2 gateway shape: an action table, a typed-input adapter that parses query
-// params and marshals handler output into the IAM-style XML envelope, and one
-// function per action.
+// Query protocol, so this package mirrors the ELBv2 gateway shape: an action
+// table, a typed-input adapter, and one function per action.
 //
-// The table carries the whole v1 namespace from day one, with the actions whose
-// bodies land in a later phase registered as explicit stubs. That keeps an
-// unimplemented action distinguishable from an unknown one, and it means a
-// client driving the service sees a stable namespace rather than one that grows
-// action by action.
+// The table carries the whole namespace from day one, registering not-yet-built
+// actions as explicit stubs, so an unimplemented action stays distinguishable
+// from an unknown one.
 package gateway_rds
 
 import (
@@ -26,12 +22,9 @@ import (
 // session. Only such a session can be an in-guest agent.
 const principalTypeAssumedRole = "assumed-role"
 
-// Caller is the authenticated identity behind one RDS request.
-//
-// Customer actions need only AccountID, but the internal agent actions have to
-// tell an instance role apart from a user, which the account alone cannot do.
-// RoleName is resolved from the session's underlying role ARN, never from the
-// session name, which the caller chooses.
+// Caller is the authenticated identity behind one RDS request. Customer actions
+// need only AccountID; the internal agent actions have to tell an instance role
+// apart from a user, which the account alone cannot do.
 type Caller struct {
 	AccountID     string
 	PrincipalType string
@@ -42,19 +35,13 @@ type Caller struct {
 }
 
 // Handler processes parsed query args for one action and returns XML response
-// bytes. It takes the NATS connection rather than the gateway config because the
-// gateway config lives in the parent package; every RDS handler reaches the
-// control plane over NATS and needs nothing else from it.
+// bytes. It takes the NATS connection rather than the gateway config, which
+// lives in the parent package and offers nothing else a handler needs.
 type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error)
 
 // typed builds a Handler from a typed per-action function: it allocates the
 // input struct, parses the query params into it, calls the function and marshals
-// the output into the IAM-style XML envelope RDS shares with ELBv2 —
-// <ActionResponse><ActionResult>...</ActionResult></ActionResponse>.
-//
-// Every action receives the whole Caller rather than a bare account ID. Customer
-// actions use only its AccountID; the agent actions need the principal class and
-// role name to run their gate, and one adapter is simpler than two.
+// the output into the IAM-style <ActionResponse><ActionResult> envelope.
 func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, error)) Handler {
 	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
 		input := new(In)
@@ -79,17 +66,16 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 	}
 }
 
-// pending registers an action that belongs to the v1 namespace but whose body
-// lands in a later phase. It fails with NotImplemented so a caller learns the
-// action is recognised and simply not ready yet — never a silent success.
+// pending registers a namespace action whose body lands in a later phase. It
+// fails with NotImplemented, so a caller learns the action is recognised and
+// simply not ready — never a silent success.
 func pending() Handler {
 	return rejectWith(awserrors.ErrorNotImplemented)
 }
 
 // unsupported registers an action that is recognised but deliberately outside
-// v1 — read replicas, Aurora clusters, option groups, point-in-time restore.
-// These fail loudly rather than being left unknown, so a client sees "not
-// offered" instead of "you typo'd the action name".
+// v1. These fail loudly, so a client sees "not offered" rather than "you typo'd
+// the action name".
 func unsupported() Handler {
 	return rejectWith(awserrors.ErrorOperationNotSupported)
 }
@@ -103,8 +89,8 @@ func rejectWith(code string) Handler {
 	}
 }
 
-// actions is the RDS v1 action namespace (rds-v1.md §1). DescribeDBInstances is
-// the one live action in this phase; everything else is a stub.
+// actions is the RDS v1 action namespace. DescribeDBInstances and the internal
+// agent actions are live; everything else is a stub.
 var actions = map[string]Handler{
 	// Instance lifecycle.
 	"CreateDBInstance":    pending(),
@@ -145,17 +131,16 @@ var actions = map[string]Handler{
 	"DescribeEvents": pending(),
 
 	// Internal agent actions, callable only by the in-guest agent's system role.
-	// They are part of the namespace rather than a private channel because the
-	// agent reaches the control plane over SigV4-on-awsgw like every other
-	// in-guest agent in the platform.
+	// They share the namespace because the agent reaches the control plane over
+	// SigV4-on-awsgw like every other in-guest agent.
 	"RegisterDBInstance":   typed(RegisterDBInstance),
 	"SubmitDBStateChange":  typed(SubmitDBStateChange),
 	"PollDBCommands":       typed(PollDBCommands),
 	"GetDBBootstrapConfig": typed(GetDBBootstrapConfig),
 
-	// Recognised but out of v1 scope. Read replicas, Aurora clusters and option
+	// Recognised but out of scope. Read replicas, Aurora clusters and option
 	// groups are not offered at all; point-in-time restore waits on WAL
-	// archiving in v1.1.
+	// archiving.
 	"CreateDBInstanceReadReplica":    unsupported(),
 	"PromoteReadReplica":             unsupported(),
 	"CreateDBCluster":                unsupported(),
@@ -171,9 +156,8 @@ var actions = map[string]Handler{
 }
 
 // HasAction reports whether action is part of the RDS namespace this gateway
-// serves. The dispatcher checks it before the IAM policy check so an unknown
-// action is rejected as InvalidAction rather than evaluated — and logged — as a
-// denied rds:<garbage> permission.
+// serves. The dispatcher checks it before the IAM policy check, so an unknown
+// action is rejected as InvalidAction rather than logged as a denial.
 func HasAction(action string) bool {
 	_, ok := actions[action]
 	return ok

@@ -6,13 +6,11 @@ import (
 )
 
 // buildRDSLaunchDeps assembles the collaborators a DB VM is composed from: the
-// EC2 VPC-family services the shared RDS system VPC is built out of, the ENI
-// surface both of the VM's NICs are created through, the system-instance
-// launcher, the AMI resolver, and the data volume's create + hot-plug attach.
+// system VPC's EC2 services, the ENI surface, the instance launcher, the AMI
+// resolver and the data volume's create + attach.
 //
-// All of them are already initialised by the time an RDS launch can run — the
-// first one arrives over the gateway, long after service init — so unlike the
-// EKS/ECS IAM deps none of this is built lazily.
+// A launch can only arrive over the gateway, long after service init, so unlike
+// the EKS/ECS IAM deps none of this is built lazily.
 func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
 	return handlers_rds.LaunchDeps{
 		Config: d.config,

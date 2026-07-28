@@ -7,13 +7,8 @@ import (
 )
 
 // register registers the VM and adopts what the control plane answers with: the
-// authoritative DB instance identifier and the heartbeat cadence. Both stay
-// control-plane-owned rather than being guessed in the guest — the identifier
-// because the gateway resolves it from the caller's credentials, the cadence
-// because the staleness window it feeds is the control plane's to set.
-//
-// Registration is idempotent, so an agent restart re-registers rather than
-// needing to know whether it had registered before.
+// authoritative DB instance identifier and the heartbeat cadence. It is
+// idempotent, so a restart re-registers rather than tracking whether it had.
 func (a *Agent) register(ctx context.Context) error {
 	return retry(ctx, "register", func(ctx context.Context) error {
 		out, err := a.cp.Register(ctx, a.id)

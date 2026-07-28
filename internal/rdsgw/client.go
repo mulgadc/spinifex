@@ -1,12 +1,7 @@
 // Package rdsgw is the on-VM SigV4 client the rds-agent uses to reach the AWS
-// gateway over HTTPS instead of connecting to NATS directly, keeping the bus
-// host-internal (the gateway relays agent calls onto rds.bus.* host-side).
-//
-// It is the structural sibling of internal/ecsgw — an on-VM client signing with
-// the instance-role credentials — over a different transport: RDS speaks the
-// AWS Query protocol with XML responses (rds-v1.md D2), not JSON 1.1, so a call
-// is a form-encoded Action= POST and a response is the IAM-style
-// <ActionResponse><ActionResult> envelope.
+// gateway over HTTPS, keeping NATS host-internal. Unlike internal/ecsgw it
+// speaks the AWS Query protocol: a form-encoded Action= POST answered with the
+// IAM-style <ActionResponse><ActionResult> envelope.
 package rdsgw
 
 import (
@@ -35,13 +30,11 @@ const (
 	// signingService is the SigV4 credential scope. The gateway routes on the
 	// scope rather than the path, so this is what selects the RDS surface.
 	signingService = "rds"
-	// apiVersion is the RDS Query API version. The gateway ignores it, but a
-	// Query request without one is malformed to a real RDS endpoint, and this
-	// client should stay pointable at one.
+	// apiVersion is the RDS Query API version. The gateway ignores it, but real
+	// RDS rejects a request without one and this client stays pointable there.
 	apiVersion = "2014-10-31"
-	// defaultTimeout bounds a single call when the caller asks for none. It is
-	// generous enough for the command long poll, whose window the gateway caps
-	// at 20s; per-call deadlines are the caller's to set on the context.
+	// defaultTimeout bounds a single call when the caller asks for none, with
+	// room for the command long poll; per-call deadlines ride the context.
 	defaultTimeout = 40 * time.Second
 )
 
@@ -54,15 +47,9 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New builds a client. signer supplies the SigV4 credentials — production
-// passes a gwsign IMDS signer, which retrieves per call so rotated instance-role
-// credentials take effect without a restart. caPath optionally pins the gateway
-// TLS CA; empty relies on the system trust store. region defaults to us-east-1
-// when empty (SigV4 requires a non-empty region).
-//
-// The IMDS datapath can lag VM boot by minutes, so New deliberately does not
-// wait for credentials: an agent's boot-critical calls already retry, and
-// failing to start here would only move the same wait somewhere less visible.
+// New builds a client. caPath optionally pins the gateway TLS CA; empty relies
+// on the system trust store. region defaults to us-east-1, since SigV4 requires
+// a non-empty one. It never blocks on credentials — the caller's calls retry.
 func New(baseURL, caPath string, signer *gwsign.Signer, region string, timeout time.Duration) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("rdsgw: baseURL is required")
@@ -177,12 +164,8 @@ func (c *Client) Call(ctx context.Context, action string, params url.Values, out
 }
 
 // decodeResult reads the <ActionResult> element out of the gateway's
-// <ActionResponse> envelope into out.
-//
-// It scans for the element rather than declaring the envelope as a type because
-// the wrapper names are per-action, and it uses encoding/xml rather than the SDK
-// unmarshaler because the handler output types hold plain values where the SDK
-// shapes hold pointers.
+// <ActionResponse> envelope into out. It scans for the element rather than
+// declaring the envelope as a type, since the wrapper names are per-action.
 func decodeResult(body []byte, action string, out any) error {
 	want := action + "Result"
 	dec := xml.NewDecoder(bytes.NewReader(body))
@@ -201,9 +184,8 @@ func decodeResult(body []byte, action string, out any) error {
 }
 
 // parseAPIError builds an *APIError from an error response body. A body that is
-// not the expected envelope still yields an APIError carrying the status and the
-// raw text, so a gateway failing ahead of its own error rendering (a proxy, a
-// TLS terminator) is reported rather than reduced to a bare status code.
+// not the expected envelope still yields an APIError carrying the status and raw
+// text, so a proxy or TLS terminator failing ahead of the gateway is reported.
 func parseAPIError(action string, status int, body []byte) error {
 	apiErr := &APIError{Action: action, StatusCode: status}
 	var envelope errorResponse

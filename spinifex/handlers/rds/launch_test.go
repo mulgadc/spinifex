@@ -27,10 +27,8 @@ const (
 // --- Fakes ---
 
 // fakeSystemVPC is the whole EC2 VPC family as the system-VPC builder sees it:
-// every describe is empty and every create succeeds, so one Ensure builds a
-// complete topology out of canned ids. The builder's own idempotency and
-// ownership rules are covered in the systemvpc package; here it only has to
-// yield a private subnet for the DB VM's primary NIC.
+// every describe is empty and every create succeeds. The builder's own rules are
+// covered in its package; here it only yields a private subnet for the DB VM.
 type fakeSystemVPC struct {
 	seq int
 	// igwCreated flips the IGW describe from "none attached" (the pre-create

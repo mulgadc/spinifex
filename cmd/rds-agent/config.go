@@ -20,19 +20,15 @@ const (
 )
 
 // config is the static settings the agent reads at boot, delivered per-instance
-// by cloud-init.
-//
-// It carries no secrets and no account identity by design: IMDS is readable by
-// anything in the guest, so the master password reaches the VM only through an
-// authenticated GetDBBootstrapConfig call. Nor does the agent state who it is —
-// the gateway resolves the DB instance from the instance-role credentials the
-// call is signed with. DBInstanceIdentifier is therefore optional; when set, it
-// is sent so a mis-provisioned VM is rejected instead of acting on whatever
-// instance the control plane maps it to.
+// by cloud-init. It carries no secrets: IMDS is readable by anything in the
+// guest, so the master password only arrives via GetDBBootstrapConfig.
 type config struct {
-	GatewayURL           string
-	GatewayCA            string
-	Region               string
+	GatewayURL string
+	GatewayCA  string
+	Region     string
+	// DBInstanceIdentifier is optional — the gateway resolves the instance from
+	// the caller's credentials. When set it is sent, so a mis-provisioned VM is
+	// rejected rather than acting on whatever instance it maps to.
 	DBInstanceIdentifier string
 	// EngineVersion is what this image actually ships. Empty leaves the control
 	// plane's recorded version alone rather than clearing it.

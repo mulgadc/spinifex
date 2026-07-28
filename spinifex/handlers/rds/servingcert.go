@@ -14,7 +14,7 @@ import (
 )
 
 // Serving-cert parameters. The lifetime is deliberately short: the cert is
-// re-minted on every bootstrap fetch and never persisted (D14), so expiry costs
+// re-minted on every bootstrap fetch and never persisted, so expiry costs
 // nothing and a leaked key ages out on its own.
 const (
 	servingCertKeyBits  = 2048
@@ -26,9 +26,9 @@ const (
 // implementation stays the only thing that needs read access to ca.key.
 type CALoader func() (*x509.Certificate, *rsa.PrivateKey, error)
 
-// ServingCertRequest names the one instance a cert is being minted for.
-// DNSName is empty on deployments without northstar, where the endpoint is the
-// bare ENI IP (D6) — which is why the IP SAN is the required one.
+// ServingCertRequest names the one instance a cert is being minted for. DNSName
+// is empty on deployments without northstar, where the endpoint is the bare ENI
+// IP — which is why the IP SAN is the required one.
 type ServingCertRequest struct {
 	DBInstanceIdentifier string
 	PrivateIP            string
@@ -42,11 +42,8 @@ type ServingCert struct {
 }
 
 // MintServingCert issues a server certificate for one DB instance signed by the
-// cluster CA.
-//
-// Unlike admin.GenerateSignedCert this writes no files and adds no SANs of its
-// own: that helper injects every local interface IP, which for a DB serving cert
-// would name the host rather than the database.
+// cluster CA. Unlike admin.GenerateSignedCert it writes no files and adds no
+// SANs of its own, which would name the host rather than the database.
 func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req ServingCertRequest) (*ServingCert, error) {
 	if caCert == nil || caKey == nil {
 		return nil, errors.New("rds serving cert: nil CA keypair")

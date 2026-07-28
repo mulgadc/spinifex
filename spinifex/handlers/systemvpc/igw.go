@@ -12,13 +12,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// IGWProvisioner is the narrow Internet Gateway surface the system VPC needs. An
-// internet-facing endpoint allocates an external front-end IP and an OVN
-// dnat_and_snat for it, but the external switch + localnet + gateway LRP that
-// make that IP answerable on the physical wire are built only when an IGW is
-// attached to the VPC. A system VPC has no customer to provision one, so the
-// owning component ensures it itself. The daemon adapts the concrete IGW service
-// onto this.
+// IGWProvisioner is the narrow Internet Gateway surface the system VPC needs.
+// The external switch, localnet and gateway LRP that make a front-end IP
+// answerable on the wire are built only once an IGW is attached, and a system
+// VPC has no customer to provision one.
 type IGWProvisioner interface {
 	DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error)
 	CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error)
@@ -27,14 +24,12 @@ type IGWProvisioner interface {
 	DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error)
 }
 
-// EnsureIGW guarantees vpcID has an attached Internet Gateway. Idempotent and
-// non-destructive: if the VPC already has an attached IGW (customer-provisioned
-// or from a prior launch) it is reused as-is and left untagged; only when none
-// exists is an owner-tagged IGW created and attached.
+// EnsureIGW guarantees vpcID has an attached Internet Gateway. An IGW already
+// attached is reused as-is and left untagged; only when none exists is an
+// owner-tagged one created.
 //
-// Exported for VPCs outside a system VPC's own topology — a component that needs
-// an IGW on a customer VPC reaches it through here rather than duplicating the
-// reuse rule.
+// Exported so a component needing an IGW on a customer VPC reaches it through
+// here rather than duplicating the reuse rule.
 func EnsureIGW(ctx context.Context, igwp IGWProvisioner, owner Owner, accountID, vpcID string) error {
 	if vpcID == "" {
 		return errors.New("systemvpc: EnsureIGW empty vpc id")

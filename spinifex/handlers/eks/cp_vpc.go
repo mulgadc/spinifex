@@ -7,16 +7,14 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// The managed control-plane VPC ("Set B") is the spinifex analogue of AWS EKS's
-// hidden managed-account VPC: CreateCluster builds it automatically, it is owned
-// by the system account (admin.SystemAccountID), and the customer never
-// provisions or sees it. The internet-facing NLB lives in its public subnet and
-// the k3s control-plane VM(s) in its private subnet(s); a NAT gateway gives the
-// private CP egress for image pulls.
+// The managed control-plane VPC is the spinifex analogue of AWS EKS's hidden
+// managed-account VPC: CreateCluster builds it, the system account owns it, and
+// the customer never sees it. The NLB lives in its public subnet, the k3s
+// control-plane VMs in its NAT-routed private subnets.
 //
-// The topology itself is the shared systemvpc builder — EKS supplies only the
-// identity (its own tag keys, so no other component's sweep can reach these
-// resources) and the address space.
+// The topology is the shared systemvpc builder; EKS supplies only the identity
+// — its own tag keys, so no other component's sweep reaches these resources —
+// and the address space.
 const (
 	// cpVPCRolePrefix namespaces the CP VPC's role tag values ("cp-vpc",
 	// "cp-public", …). Baked into live deployments' tags: changing it orphans
@@ -30,10 +28,8 @@ const (
 )
 
 // cpVPCPrivateSubnetCount is how many private CP subnets the managed VPC carves.
-// One today: the placement rule (CP ⇒ private subnet) is identical for single-
-// and multi-node clusters, so all control-plane VMs share the private subnet;
-// per-AZ private-subnet spread is a follow-up sizing concern, not a placement
-// fork.
+// One today: the placement rule is identical for single- and multi-node
+// clusters, so all control-plane VMs share the private subnet.
 const cpVPCPrivateSubnetCount = 1
 
 // cpVPCRoles are the role-tag values the managed CP VPC's resources carry.
@@ -118,10 +114,9 @@ func EnsureClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 
 // DeleteClusterCPVPC tears down the managed control-plane VPC for clusterName.
 //
-// knownRefs is the caller's last-persisted cp-vpc state record (ClusterMeta's
-// ManagedCPVPC), used only as an OVN-GC target fallback when the tag-indexed EC2
-// VPC is already gone. Pass nil when no such record exists (e.g. the billable
-// reaper, which acts once the cluster meta itself is gone).
+// knownRefs is the caller's last-persisted cp-vpc record, used only as an OVN-GC
+// fallback when the tag-indexed EC2 VPC is already gone. Pass nil when no such
+// record exists, e.g. the billable reaper acting after the cluster meta.
 func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName string, knownRefs *ManagedCPVPC) error {
 	gcFallback := ""
 	if knownRefs != nil {

@@ -12,9 +12,8 @@ import (
 type igwProvisioner = handlers_systemvpc.IGWProvisioner
 
 // EnsureClusterIGW guarantees vpcID has an attached Internet Gateway so an
-// internet-facing cluster endpoint is reachable on the external network. An
-// already-attached IGW (customer-provisioned or from a prior launch) is reused
-// as-is; only when none exists is a cluster-owned one created.
+// internet-facing cluster endpoint is reachable. An already-attached IGW is
+// reused as-is; only when none exists is a cluster-owned one created.
 func EnsureClusterIGW(ctx context.Context, igwp igwProvisioner, accountID, vpcID, clusterName string) error {
 	if clusterName == "" {
 		return errors.New("eks: EnsureClusterIGW empty cluster name")

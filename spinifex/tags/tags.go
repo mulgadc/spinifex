@@ -22,10 +22,8 @@ const (
 
 	// ManagedByRDS identifies RDS-owned resources (DB engine VMs, the
 	// rds-postgres AMI, the shared RDS system VPC and its ENIs). Unlike
-	// ManagedByECS the VMs themselves carry it: a DB instance runs in the system
-	// account, so it is already absent from the customer's account-scoped
-	// DescribeInstances, and this marks it system-owned to the UI's listings and
-	// to the platform's own sweeps.
+	// ManagedByECS the VMs themselves carry it, marking them system-owned to the
+	// UI's listings and the platform's own sweeps.
 	ManagedByRDS = "rds"
 
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.

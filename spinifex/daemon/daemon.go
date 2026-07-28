@@ -1049,9 +1049,8 @@ func (d *Daemon) subscribeAll() error {
 	}
 
 	// RDS agent protocol. The register/health subjects are Layer-2 bus wildcards
-	// the gateway relays onto; the account and DB segments are addressing only,
-	// since the payload the gateway writes is authoritative. The command channel
-	// has no subscription here — it is a live long poll held open by the gateway.
+	// the gateway relays onto, addressing only — the payload is authoritative.
+	// The command channel is a live long poll held open by the gateway.
 	if d.rdsService != nil {
 		subs = append(subs,
 			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
@@ -1591,8 +1590,8 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// RDS control plane: KV-backed agent-protocol handlers. The cluster CA signs
-	// the per-instance serving certs, which are minted per bootstrap fetch and
-	// never persisted; ca.key sits beside the configured ca.pem.
+	// the per-instance serving certs, minted per bootstrap fetch and never
+	// persisted; ca.key sits beside the configured ca.pem.
 	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(handlers_rds.Deps{
 		CACertPath: d.config.NATS.CACert,
 		CAKeyPath:  clusterCAKeyPath(d.config.NATS.CACert),

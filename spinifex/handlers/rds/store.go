@@ -15,18 +15,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// JetStream KV bucket constants for the RDS control plane (rds-v1.md D3).
+// JetStream KV buckets for the RDS control plane. "rds-account-{accountID}"
+// holds all customer-visible state, created lazily so accounts with no DB
+// instances never grow a bucket.
 //
-// Per-account bucket "rds-account-{accountID}" holds all customer-visible DB
-// instance, snapshot, subnet-group, parameter-group and automated-backup state.
-// It is created lazily on first touch (no daemon-boot pre-creation) so accounts
-// with no DB instances never grow a bucket.
-//
-// System bucket "rds-system" holds the instanceID → DB instance reverse index.
-// The in-guest agent's IMDS credentials are minted under the system account, so
-// its session name yields an instance ID with no account attached; without the
-// index every heartbeat would have to enumerate every KV bucket in the cluster
-// to find its own record. The index makes it a single Get.
+// "rds-system" holds the instanceID → DB instance reverse index. Agent IMDS
+// credentials are minted under the system account, so without the index every
+// heartbeat would have to enumerate every bucket to find its own record.
 const (
 	KVBucketRDSAccountPrefix  = "rds-account-"
 	KVBucketRDSAccountVersion = 1
@@ -37,7 +32,7 @@ const (
 	KVBucketRDSSystemHistory = 1
 )
 
-// Key-path helpers for the per-account bucket. The layout matches rds-v1.md D3:
+// Key-path helpers for the per-account bucket:
 //
 //	db-instances/{dbInstanceIdentifier}
 //	db-snapshots/{dbSnapshotIdentifier}
@@ -126,9 +121,8 @@ func AutomatedBackupKey(dbInstanceIdentifier, ts string) string {
 }
 
 // RetainedVolumesPrefix returns the KV key prefix under which data volumes held
-// alive by surviving snapshots live (D10). A COW snapshot references its source
-// volume's chunk files, so deleting a DB instance cannot delete a volume any
-// snapshot still points at.
+// alive by surviving snapshots live. A COW snapshot references its source
+// volume's chunks, so deleting a DB instance cannot delete such a volume.
 func RetainedVolumesPrefix() string {
 	return "retained-volumes/"
 }

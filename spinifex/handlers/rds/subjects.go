@@ -2,9 +2,8 @@ package handlers_rds
 
 import "fmt"
 
-// Layer-2 bus subjects (D7). The agent never publishes to these itself — the
-// gateway relays its SigV4 calls onto them, keeping NATS host-internal exactly
-// as it is for ecs-agent and lbagent.
+// Layer-2 bus subjects. The agent never publishes to these itself — the gateway
+// relays its SigV4 calls onto them, keeping NATS host-internal.
 //
 // Instance identity on the bus is {accountID}.{dbInstanceIdentifier}, matching
 // the KV layout and deliberately not the internal EC2 instance ID, which changes
@@ -40,9 +39,8 @@ func BusHealthSubject(accountID, dbInstanceIdentifier string) string {
 }
 
 // BusCommandSubject is the reconciler → agent directive channel. It is a live
-// long poll rather than a durable queue: a command published while no agent is
-// polling is lost and the issuer times out, which is what lets a set-password
-// that cannot reach the agent fail loudly instead of deferring cleartext.
+// long poll rather than a durable queue, so a set-password that cannot reach
+// the agent fails loudly instead of deferring cleartext.
 func BusCommandSubject(accountID, dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s.%s.command", busPrefix, accountID, dbInstanceIdentifier)
 }

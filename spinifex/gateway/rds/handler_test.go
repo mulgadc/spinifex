@@ -14,9 +14,9 @@ const testAccountID = "123456789012"
 // and deliberately not enough for the internal agent actions.
 var testCaller = Caller{AccountID: testAccountID, PrincipalType: "user"}
 
-// v1Actions is the RDS v1 namespace from rds-v1.md §1. Keeping it as a literal
-// list rather than deriving it from the table under test means a dropped or
-// renamed action fails here instead of silently redefining the namespace.
+// v1Actions is the RDS v1 namespace as a literal list rather than one derived
+// from the table under test, so a dropped or renamed action fails here instead
+// of silently redefining the namespace.
 var v1Actions = []string{
 	"CreateDBInstance",
 	"DescribeDBInstances",

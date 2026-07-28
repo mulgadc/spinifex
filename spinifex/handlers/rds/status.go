@@ -2,11 +2,9 @@ package handlers_rds
 
 import "slices"
 
-// Status is a DB instance lifecycle state (rds-v1.md D4). It is the only
-// instance state the API exposes: the control plane derives it from the
-// underlying VM, data volume and agent heartbeat, and never surfaces the EC2
-// instance state directly, so a customer cannot come to depend on the fact that
-// a DB instance happens to be a VM.
+// Status is a DB instance lifecycle state, the only instance state the API
+// exposes. It is derived from the VM, data volume and agent heartbeat, so a
+// customer never comes to depend on a DB instance happening to be a VM.
 type Status string
 
 const (
@@ -39,10 +37,9 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// transitions is the D4 state machine: for each status, the states it may move
-// to. Every non-terminal state can reach failed and deleting, because a delete
-// is accepted at any point and any step can fail; the interesting content is
-// which lifecycle state each transitional status settles back into.
+// transitions is the lifecycle state machine: for each status, the states it may
+// move to. Every non-terminal state can reach failed and deleting, since a
+// delete is accepted at any point and any step can fail.
 var transitions = map[Status][]Status{
 	StatusCreating:   {StatusAvailable, StatusFailed, StatusDeleting},
 	StatusAvailable:  {StatusModifying, StatusBackingUp, StatusRebooting, StatusStopping, StatusRecovering, StatusFailed, StatusDeleting},
@@ -61,9 +58,8 @@ var transitions = map[Status][]Status{
 }
 
 // transitional lists the statuses that mean "the control plane is already acting
-// on this instance". The recovery classifier consults it so a VM that is down
-// because a lifecycle operation took it down is not mistaken for a failure and
-// recovered out from under the operation driving it.
+// on this instance". The recovery classifier consults it so a VM taken down by a
+// lifecycle operation is not recovered out from under it.
 var transitional = map[Status]bool{
 	StatusCreating:   true,
 	StatusModifying:  true,
@@ -94,9 +90,9 @@ func (s Status) Transitional() bool {
 	return transitional[s]
 }
 
-// CanTransition reports whether from → to is a legal move in the D4 lifecycle.
-// A no-op (from == to) is legal for any valid status so a repeated observation
-// of the same state is not treated as an illegal transition.
+// CanTransition reports whether from → to is a legal lifecycle move. A no-op is
+// legal for any valid status, so a repeated observation of the same state is not
+// treated as an illegal transition.
 func CanTransition(from, to Status) bool {
 	if !from.Valid() || !to.Valid() {
 		return false

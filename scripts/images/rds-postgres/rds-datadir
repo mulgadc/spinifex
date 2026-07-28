@@ -2,12 +2,10 @@
 # rds-datadir — prepare and mount the instance's data volume at the datadir
 # mount point, before rds-init bootstraps the cluster onto it.
 #
-# The data volume is created and hot-plugged after the VM is launched, so it is
-# not on the QEMU command line and cannot be in /etc/fstab: the guest has to
-# discover it. Spinifex attaches Viperblock data volumes as virtio-blk with
-# serial = volume-id (dashes stripped), exposed by the kernel at
-# /sys/block/<dev>/serial, and the boot volume is attached without a serial —
-# so a `vol*` serial identifies the data volume and nothing else.
+# The volume is hot-plugged after launch, so it cannot be in /etc/fstab and the
+# guest has to discover it. Data volumes are attached as virtio-blk with
+# serial = volume-id, and the boot volume carries no serial — so a `vol*` serial
+# identifies the data volume and nothing else.
 #
 # This is the one place in the image that may format a block device, so every
 # branch that is not "an empty disk we just attached" refuses:
@@ -28,9 +26,9 @@ SYS_BLOCK="${RDS_SYS_BLOCK:-/sys/block}"
 DEV_DIR="${RDS_DEV_DIR:-/dev}"
 MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 
-# How long to wait for the attach. The control plane creates and hot-plugs the
-# volume as soon as the VM is launched, so this covers the boot racing the
-# attach, not an attach that never happens.
+# How long to wait for the attach. The control plane hot-plugs the volume as
+# soon as the VM launches, so this covers the boot racing the attach, not an
+# attach that never happens.
 WAIT_SECS="${RDS_DATA_VOLUME_WAIT:-120}"
 
 # Filesystem label written at format time. Purely diagnostic: discovery is by
@@ -69,9 +67,9 @@ await_data_disk() {
         if [ "${_count}" -gt 1 ]; then
             fail "found ${_count} attached data volumes ($(printf '%s\n' "${_found}" | tr '\n' ' ')); expected exactly one"
         fi
-        # The sysfs entry appears before the device node the probe needs, and a
-        # blkid pointed at a node that is not there yet reports the same "no
-        # filesystem" a blank disk does. So the wait is not over until both exist.
+        # The sysfs entry appears before the device node, and blkid on a missing
+        # node reports the same "no filesystem" a blank disk does — so the wait
+        # is not over until both exist.
         if [ "${_count}" = "1" ] && [ -e "${DEV_DIR}/${_found}" ]; then
             printf '%s\n' "${_found}"
             return 0
@@ -87,12 +85,9 @@ await_data_disk() {
 # fstype_of prints the filesystem on dev, or nothing if it genuinely holds none,
 # and returns non-zero when it could not find out.
 #
-# The distinction is the whole safety of this script: it is the only input to the
-# decision to format, and a blkid that is missing from the image, that errored,
-# or that was pointed at a device node which has not appeared yet all print
-# exactly what a blank disk prints. So the exit status decides, never the
-# emptiness of the output. has_partitions cannot stand in for this — the
-# filesystem this script creates is whole-disk, with no partition table to find.
+# A blkid that is missing, errored, or pointed at an absent node prints exactly
+# what a blank disk prints, so the exit status decides and never the emptiness
+# of the output. has_partitions cannot stand in: the filesystem is whole-disk.
 fstype_of() {
     if _out=$(blkid "$1" 2>/dev/null); then
         _rc=0
@@ -135,8 +130,8 @@ main() {
     fi
     if [ -z "${_fstype}" ]; then
         # A partition table with no whole-disk filesystem is somebody else's
-        # disk — a restored image, a mis-targeted attach — and formatting it
-        # would destroy it.
+        # disk — a restored image, a mis-targeted attach — so formatting would
+        # destroy it.
         if has_partitions "${_disk}"; then
             fail "${_dev} carries a partition table but no filesystem; refusing to format it"
         fi
@@ -152,9 +147,9 @@ main() {
 
     mount "${_dev}" "${DATA_MOUNT}" || fail "could not mount ${_dev} at ${DATA_MOUNT}"
 
-    # The mount replaces the image's mount point, whose ownership it does not
-    # inherit: a freshly formatted volume's root is root-owned 0755, which
-    # initdb — running as postgres — cannot create the datadir under.
+    # The mount does not inherit the image mount point's ownership: a freshly
+    # formatted volume's root is root-owned 0755, which initdb (as postgres)
+    # cannot create the datadir under.
     chown "${PG_USER}:${PG_USER}" "${DATA_MOUNT}" ||
         fail "could not set ${PG_USER} ownership on ${DATA_MOUNT}"
     chmod 0750 "${DATA_MOUNT}"

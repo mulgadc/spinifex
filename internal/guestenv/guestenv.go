@@ -11,16 +11,13 @@ import (
 )
 
 // Loader resolves one setting at a time from an env file, letting a real
-// environment variable win. The override matters because the file is delivered
-// per-instance: an operator debugging a guest can export a value without
-// editing what cloud-init wrote, and a test can drive a binary with no file at
-// all.
+// environment variable win — so an operator or a test can override what
+// cloud-init wrote without editing it.
 type Loader map[string]string
 
 // Load parses the KEY=value file at path. A missing or unreadable file yields
-// an empty Loader rather than an error — the settings it carries are all
-// optional or defaulted, and a guest whose file never arrived must still start
-// far enough to report why.
+// an empty Loader rather than an error: the settings are all optional, and a
+// guest whose file never arrived must still start far enough to report why.
 func Load(path string) Loader {
 	out := Loader{}
 	f, err := os.Open(path)

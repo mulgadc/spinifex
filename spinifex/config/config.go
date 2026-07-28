@@ -154,13 +154,12 @@ type NorthstarConfig struct {
 }
 
 // RDSConfig holds the shared RDS system VPC knobs. Every DB VM's primary NIC
-// lives in that VPC, which is what gives the in-guest agent management egress
-// while the customer-facing ENI stays ingress-only.
+// lives in that VPC, which gives the in-guest agent management egress while the
+// customer-facing ENI stays ingress-only.
 type RDSConfig struct {
 	// SystemVPCSupernet is the IPv4 /14 the system VPC's /22 is carved from.
-	// Empty defaults to RDSDefaultSystemVPCSupernet. Override only to avoid a
-	// clash with an existing on-prem range; it must not overlap the EKS
-	// control-plane supernet or any customer VPC CIDR.
+	// Override only to avoid clashing with an existing on-prem range; it must
+	// not overlap the EKS control-plane supernet or any customer VPC CIDR.
 	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
 
 	// SystemVPCPrivateSubnets is how many private subnets the system VPC carves
@@ -170,10 +169,8 @@ type RDSConfig struct {
 }
 
 // RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at
-// 10.248.0.0/14 (10.248–10.251), immediately below the EKS control-plane
-// supernet at 10.252.0.0/14 and disjoint from it: an operator reading an address
-// can tell which component owns it, and a name-hash collision can never place an
-// RDS subnet inside EKS's space.
+// 10.248.0.0/14, immediately below and disjoint from the EKS control-plane
+// supernet, so a name-hash collision can never place an RDS subnet in EKS space.
 const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT

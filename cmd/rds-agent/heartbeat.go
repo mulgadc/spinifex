@@ -9,9 +9,8 @@ import (
 )
 
 // heartbeater periodically reports the engine's health to the control plane.
-// The beat carries the probe's result rather than the agent's own liveness: an
-// agent that is up while the engine is down is exactly the case the recovery
-// reconciler has to be able to see.
+// The beat carries the probe's result, not the agent's own liveness: an agent
+// up while the engine is down is what the recovery reconciler must see.
 type heartbeater struct {
 	cp       controlPlane
 	probe    *engineProbe
@@ -26,9 +25,9 @@ func newHeartbeater(cp controlPlane, probe *engineProbe, interval time.Duration)
 	return &heartbeater{cp: cp, probe: probe, interval: interval}
 }
 
-// setInterval adopts a cadence the control plane returned. It is called before
-// Run starts and from Run's own goroutine afterwards, so the interval is never
-// written concurrently with the loop reading it.
+// setInterval adopts a cadence the control plane returned. Called before Run
+// starts and from Run's own goroutine after, so the interval is never written
+// concurrently with the loop reading it.
 func (h *heartbeater) setInterval(d time.Duration) {
 	if d > 0 {
 		h.interval = d
@@ -41,8 +40,8 @@ func (h *heartbeater) beat(ctx context.Context) {
 
 	out, err := h.cp.SubmitState(ctx, h.id, health, message)
 	if err != nil {
-		// A dropped beat is not escalated here: the control plane already treats
-		// a missing heartbeat as staleness, and the next tick retries.
+		// Not escalated: the control plane already treats a missing heartbeat as
+		// staleness, and the next tick retries.
 		slog.Warn("rds-agent: heartbeat failed", "health", health, "err", err)
 		return
 	}
@@ -50,9 +49,8 @@ func (h *heartbeater) beat(ctx context.Context) {
 	h.setInterval(time.Duration(out.HeartbeatIntervalSeconds) * time.Second)
 }
 
-// Run beats every interval until ctx is cancelled. A timer rather than a ticker,
-// so a cadence the control plane changes mid-run takes effect on the next beat
-// instead of at a restart.
+// Run beats every interval until ctx is cancelled. A timer rather than a
+// ticker, so a cadence change takes effect on the next beat, not at a restart.
 func (h *heartbeater) Run(ctx context.Context) {
 	timer := time.NewTimer(h.interval)
 	defer timer.Stop()

@@ -173,10 +173,8 @@ func TestCall_AbsentOptionalStaysNil(t *testing.T) {
 }
 
 // commandsResult mirrors the gateway's PollDBCommands output on both sides of
-// the wire: the locationName tags drive the marshal the gateway performs, the
-// xml tags the decode the agent performs. A command carries the three shapes
-// the tags have to survive — a locationName the field name does not spell
-// (CommandId), a member-wrapped list, and a timestamp.
+// the wire: the locationName tags drive the gateway's marshal, the xml tags the
+// agent's decode.
 type commandsResult struct {
 	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member" xml:"Commands>member"`
 }

@@ -2,10 +2,9 @@ package handlers_rds
 
 import "fmt"
 
-// ARN builders for the RDS resource types (rds-v1.md D17). The shapes are AWS
-// exact — RDS uses a colon separator between resource type and name, unlike the
-// slash-separated ECS/EKS ARNs — so tags, resource-scoped IAM policies and
-// Terraform state round-trip against the real service.
+// ARN builders for the RDS resource types. RDS separates resource type and name
+// with a colon, unlike the slash-separated ECS/EKS ARNs, so resource-scoped IAM
+// policies and Terraform state round-trip against the real service.
 
 // DBInstanceARN returns the ARN of a DB instance.
 func DBInstanceARN(region, accountID, dbInstanceIdentifier string) string {

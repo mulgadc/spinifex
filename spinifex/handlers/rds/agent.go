@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
-// Bootstrap modes returned by GetDBBootstrapConfig (D8, Q2).
+// Bootstrap modes returned by GetDBBootstrapConfig.
 const (
 	// BootstrapModeInitialize is the first fetch for an instance. It carries the
 	// master password and flips the one-way marker.
@@ -20,18 +20,14 @@ const (
 	BootstrapModeAttach = "attach"
 )
 
-// The agent protocol types below are internal agent↔control-plane shapes rather
-// than AWS SDK types. They carry both json and locationName tags because the
-// same value crosses NATS as JSON and leaves the gateway as Query-protocol XML.
-// Optional fields are pointers so a nil renders as an absent XML element rather
-// than an empty one — which is what keeps MasterUserPassword out of an attach
-// response entirely.
+// The agent protocol types below are internal agent↔control-plane shapes. They
+// carry both json and locationName tags because the same value crosses NATS as
+// JSON and leaves the gateway as Query-protocol XML. Optional fields are
+// pointers so a nil renders as an absent element, keeping MasterUserPassword
+// out of an attach response entirely.
 //
-// The in-guest agent decodes the same XML with encoding/xml, which matches on
-// the Go field name, so an xml tag appears only where the wire name differs
-// from it: a locationName the field name does not already spell, and the
-// <Parameters><member> nesting locationNameList produces. internal/rdsgw
-// round-trips each of these types to hold that alignment.
+// The agent decodes that XML with encoding/xml, which matches on the Go field
+// name, so an xml tag appears only where the wire name differs.
 
 // RegisterDBInstanceInput is the agent's boot-time registration. InstanceID and
 // DBInstanceIdentifier are set by the gateway from the caller's resolved
@@ -77,8 +73,8 @@ type GetDBBootstrapConfigInput struct {
 }
 
 // GetDBBootstrapConfigOutput is everything rds-init needs to bootstrap or
-// attach. The serving cert and key are minted per call and never persisted
-// (D14); MasterUserPassword is present only in initialize mode.
+// attach. The serving cert and key are minted per call and never persisted;
+// MasterUserPassword is present only in initialize mode.
 type GetDBBootstrapConfigOutput struct {
 	Mode                 string  `json:"mode" locationName:"Mode"`
 	DBInstanceIdentifier string  `json:"dbInstanceIdentifier" locationName:"DBInstanceIdentifier"`
@@ -93,7 +89,7 @@ type GetDBBootstrapConfigOutput struct {
 
 	// ServingCertificate/ServingPrivateKey are empty when no cluster CA is
 	// configured; the agent then starts the engine without TLS rather than
-	// failing to boot, since TLS is offered and not enforced (D14).
+	// failing to boot, since TLS is offered and not enforced.
 	ServingCertificate string `json:"servingCertificate,omitempty" locationName:"ServingCertificate"`
 	ServingPrivateKey  string `json:"servingPrivateKey,omitempty" locationName:"ServingPrivateKey"`
 	CACertificate      string `json:"caCertificate,omitempty" locationName:"CACertificate"`
@@ -174,7 +170,7 @@ func (s *Service) RegisterDBInstance(ctx context.Context, input *RegisterDBInsta
 
 // SubmitDBStateChange records the agent's engine health. It persists on a change
 // of health or message and on the slower floor, holding intermediate beats in
-// memory so a steady fleet stays off the KV hot path (D13).
+// memory so a steady fleet stays off the KV hot path.
 func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, accountID string) (*SubmitDBStateChangeOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -251,10 +247,9 @@ func (s *Service) noteBeat(accountID, dbID string, health EngineHealth, message 
 	return false
 }
 
-// LastSeen returns the in-memory beat time for an instance, which is fresher
-// than the record's persisted LastSeen. The false result means this node has
-// seen no beat — after a leader change that is normal, and the caller falls back
-// to the record.
+// LastSeen returns the in-memory beat time for an instance, fresher than the
+// record's persisted LastSeen. A false result means this node has seen no beat,
+// which is normal after a leader change; the caller falls back to the record.
 func (s *Service) LastSeen(accountID, dbID string) (time.Time, bool) {
 	s.livenessMu.Lock()
 	defer s.livenessMu.Unlock()
@@ -266,12 +261,8 @@ func (s *Service) LastSeen(accountID, dbID string) (time.Time, bool) {
 }
 
 // GetDBBootstrapConfig serves the agent's boot material and, on the first call,
-// the master password.
-//
-// The mode is decided by the bootstrapConsumed marker, not by the action being
-// one-shot: the consuming call clears the cleartext password and sets the marker
-// in a single CAS, so a replay reads attach and the password is unrecoverable,
-// while a fresh VM over an existing datadir still gets everything else (Q2).
+// the master password. The consuming call clears the cleartext and sets the
+// marker in a single CAS, so a replay reads attach and gets everything else.
 func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -302,12 +293,9 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		Parameters:           rec.Bootstrap.ResolvedParameters,
 	}
 
-	// The cert is minted before the password is consumed. A mint failure then
-	// returns with the password still in KV, so the agent's retry succeeds once
-	// the CA is readable again; consuming first would discard a response whose
-	// one-shot side effect had already committed, leaving an instance that can
-	// never learn its master password. The ordering is also what lets TLS become
-	// mandatory later without that change burning a password per failed mint.
+	// The cert is minted before the password is consumed, so a mint failure
+	// leaves the password in KV for the agent's retry. Consuming first would
+	// leave an instance that can never learn its master password.
 	cert, err := s.mintServingCert(&rec)
 	if err != nil {
 		return nil, err
@@ -325,9 +313,8 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		rec.Bootstrap.Consumed = true
 		rec.Bootstrap.ConsumedAt = &now
 		rec.UpdatedAt = now
-		// A lost CAS means a concurrent fetch consumed the password first. That
-		// caller owns it, so this one degrades to attach rather than handing the
-		// same password to two agents.
+		// A lost CAS means a concurrent fetch consumed the password first, so
+		// this one degrades to attach rather than handing it to two agents.
 		if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
 			return out, nil //nolint:nilerr // losing the race is an attach, not a failure
 		}
@@ -368,9 +355,8 @@ func (s *Service) mintServingCert(rec *DBInstanceRecord) (*bootstrapCert, error)
 }
 
 // InstanceIndexEntry maps an internal EC2 instance ID to the DB instance it
-// backs. It is the reverse lookup the agent actions resolve against, so an
-// agent's system-account credentials do not require scanning every per-account
-// bucket in the cluster (D3).
+// backs, so an agent's system-account credentials resolve with one Get instead
+// of a scan across every per-account bucket.
 type InstanceIndexEntry struct {
 	AccountID            string `json:"accountId"`
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`

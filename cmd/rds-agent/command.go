@@ -13,24 +13,20 @@ import (
 // returns the message reported back to the issuer.
 type commandHandler func(ctx context.Context, cmd handlers_rds.Command) (string, error)
 
-// commandRegistry maps a command type to the handler that performs it. It is a
-// registry rather than a dispatch switch so the phases that own the concrete
-// guest operations — live password apply and parameter reload, storage grow,
-// snapshot quiesce — add an entry instead of editing a growing switch.
+// commandRegistry maps a command type to the handler that performs it. A
+// registry rather than a dispatch switch, so guest operations — password apply,
+// parameter reload, storage grow, snapshot quiesce — add an entry each.
 type commandRegistry map[string]commandHandler
 
-// newCommandRegistry returns the directives this build can execute. It is
-// deliberately empty: this phase delivers the channel, and each operation lands
-// with the phase that owns it. An unregistered type is replied to as
-// unsupported, so a control plane ahead of the guest gets a clear answer rather
-// than a timeout.
+// newCommandRegistry returns the directives this build can execute. Currently
+// empty; an unregistered type is replied to as unsupported, so a control plane
+// ahead of the guest gets a clear answer rather than a timeout.
 func newCommandRegistry() commandRegistry {
 	return commandRegistry{}
 }
 
-// pollErrorBackoff spaces retries after a failed poll. Without it a broken
-// channel — a gateway that is down, credentials that no longer authorize — would
-// be re-polled at line rate for as long as it stayed broken.
+// pollErrorBackoff spaces retries after a failed poll, so a broken channel is
+// not re-polled at line rate for as long as it stays broken.
 const pollErrorBackoff = 5 * time.Second
 
 // commander runs the agent's command channel: a long poll that carries back the
@@ -40,9 +36,9 @@ type commander struct {
 	id       identity
 	registry commandRegistry
 	wait     time.Duration
-	// pending holds replies not yet accepted by a poll. They are cleared only
-	// once a poll has carried them, so a failed poll re-delivers rather than
-	// dropping the result of work the guest actually did.
+	// pending holds replies not yet accepted by a poll. Cleared only once a poll
+	// has carried them, so a failed poll re-delivers rather than dropping the
+	// result of work the guest actually did.
 	pending []handlers_rds.CommandReply
 }
 
@@ -83,7 +79,7 @@ func (c *commander) Run(ctx context.Context) {
 
 // execute runs one command and turns the outcome into a reply. Every command
 // gets one: the issuer is blocked on this command ID, so a silent drop costs it
-// a full timeout and tells it nothing about why.
+// a full timeout.
 func (c *commander) execute(ctx context.Context, cmd handlers_rds.Command) handlers_rds.CommandReply {
 	handler, ok := c.registry[cmd.Type]
 	if !ok {

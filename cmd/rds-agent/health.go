@@ -29,12 +29,9 @@ func execProbeRunner(ctx context.Context, name string, args ...string) (int, err
 	return -1, err
 }
 
-// engineProbe reports whether the local engine is serving.
-//
-// It shells out to pg_isready rather than opening a TCP connection: an open port
-// only proves the postmaster is listening, while pg_isready completes a startup
-// exchange, which is what separates an engine that is serving from one still in
-// recovery.
+// engineProbe reports whether the local engine is serving. It shells out to
+// pg_isready rather than dialling the port, since only a startup exchange
+// separates an engine that is serving from one still in recovery.
 type engineProbe struct {
 	run    probeRunner
 	binary string
@@ -43,9 +40,8 @@ type engineProbe struct {
 	// goroutine than the heartbeat that reads it.
 	port atomic.Int64
 	// seenHealthy latches once the engine has answered. The agent is up well
-	// before rds-init has finished initdb, so a down engine means "starting"
-	// until it has served once and "unhealthy" after — the same observation,
-	// read as a boot in progress or as a failure depending on which it can be.
+	// before rds-init finishes initdb, so a down engine means "starting" until
+	// it has served once and "unhealthy" after.
 	seenHealthy bool
 }
 
@@ -69,8 +65,8 @@ func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, str
 	switch {
 	case err != nil:
 		// The probe could not run — a missing binary, a broken image. Reporting
-		// healthy on the strength of nothing is the one answer that would hide
-		// it, so this degrades exactly like an engine that did not answer.
+		// healthy on the strength of nothing would hide it, so this degrades
+		// exactly like an engine that did not answer.
 		return p.degraded(), fmt.Sprintf("engine probe could not run: %v", err)
 	case code == 0:
 		p.seenHealthy = true

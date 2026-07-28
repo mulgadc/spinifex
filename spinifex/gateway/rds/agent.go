@@ -35,15 +35,13 @@ type agentIdentity struct {
 	InstanceID           string
 }
 
-// authorizeAgent resolves the caller to exactly one DB instance, or rejects it.
+// authorizeAgent resolves the caller to exactly one DB instance, or rejects it:
+// system account, rdsInstanceRole, and a reverse-index hit for the session's
+// instance ID.
 //
-// The gate is deliberately coarse at this phase: system account, rdsInstanceRole,
-// and a reverse-index hit for the session's instance ID. The binding to the
-// caller's attested instance identity is tightened later.
-//
-// requestedID is the DBInstanceIdentifier from the request body. It is only ever
-// used to reject a mismatch — the authoritative identifier comes from the index,
-// so an agent cannot act on another instance by asking to.
+// requestedID, from the request body, is only ever used to reject a mismatch —
+// the authoritative identifier comes from the index, so an agent cannot act on
+// another instance by asking to.
 func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requestedID string) (*agentIdentity, error) {
 	if caller.PrincipalType != principalTypeAssumedRole ||
 		caller.AccountID != utils.GlobalAccountID ||
@@ -55,8 +53,8 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 	}
 
 	// IMDS instance-role credentials set RoleSessionName to the internal EC2
-	// instance ID, which is the reverse-index key. The role ARN is what proves
-	// the caller is an RDS VM; the session name only says which one.
+	// instance ID, the reverse-index key. The role ARN proves the caller is an
+	// RDS VM; the session name only says which one.
 	entry, err := lookupInstanceIndex(ctx, nc, caller.SessionName)
 	if err != nil {
 		slog.ErrorContext(ctx, "RDS: instance-index lookup failed", "instanceID", caller.SessionName, "err", err)
@@ -80,10 +78,9 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 	}, nil
 }
 
-// lookupInstanceIndex reads the rds-system reverse index directly from
-// JetStream. The gateway reads KV directly here rather than adding a NATS
-// round trip, matching the OIDC discovery and client-token paths, because this
-// runs on every agent call.
+// lookupInstanceIndex reads the rds-system reverse index straight from
+// JetStream rather than adding a NATS round trip, matching the OIDC discovery
+// and client-token paths, because this runs on every agent call.
 func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) (*handlers_rds.InstanceIndexEntry, error) {
 	if nc == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
@@ -179,8 +176,7 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 }
 
 // PollDBCommandsInput carries results for commands delivered on an earlier poll
-// and asks for the next one. Replies ride the poll rather than using their own
-// action, matching the ECS ack-on-poll shape.
+// and asks for the next one, matching the ECS ack-on-poll shape.
 type PollDBCommandsInput struct {
 	DBInstanceIdentifier string                      `locationName:"DBInstanceIdentifier"`
 	WaitTimeSeconds      int64                       `locationName:"WaitTimeSeconds"`
@@ -194,12 +190,9 @@ type PollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member"`
 }
 
-// PollDBCommands is the agent's long poll for control-plane directives.
-//
-// The channel is a live subscription, not a durable queue: a command published
-// while no agent is polling is lost and its issuer times out. That is the
-// intended contract — it is what lets a set-password that cannot reach the agent
-// fail loudly rather than leave cleartext queued in KV.
+// PollDBCommands is the agent's long poll for control-plane directives. The
+// channel is a live subscription, not a durable queue, so a set-password that
+// cannot reach the agent fails loudly rather than queueing cleartext in KV.
 func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -220,9 +213,8 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 		slog.ErrorContext(ctx, "RDS: command subscribe failed", "dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	// Unsubscribing on every exit path is what keeps a poll from leaving a
-	// subscription behind that would swallow a later command from a queue group
-	// nobody is reading.
+	// Unsubscribing on every exit path stops an abandoned subscription
+	// swallowing a later command from a queue group nobody is reading.
 	defer func() {
 		if err := sub.Unsubscribe(); err != nil {
 			slog.DebugContext(ctx, "RDS: command unsubscribe failed", "err", err)
@@ -234,18 +226,14 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 
 	msg, err := sub.NextMsgWithContext(pollCtx)
 	if err != nil {
-		// The context ending the wait is the steady state: either the long-poll
-		// window closed with no command, or the agent hung up. Keying off the
-		// context rather than a specific sentinel keeps this correct whichever
-		// deadline fires first.
+		// The context ending the wait is the steady state: the window closed with
+		// no command, or the agent hung up.
 		if pollCtx.Err() != nil {
 			return &PollDBCommandsOutput{}, nil
 		}
-		// Anything else — a closed connection, a dead subscription, a slow
-		// consumer that dropped messages — means the channel is broken, not
-		// idle. Reporting that as an empty poll would have the agent re-poll at
-		// line rate against a channel no command can arrive on, and every
-		// command issued meanwhile is lost with nothing logged.
+		// Anything else means the channel is broken, not idle. Reporting that as
+		// an empty poll would have the agent re-poll at line rate against a
+		// channel no command can arrive on.
 		slog.ErrorContext(ctx, "RDS: command poll failed",
 			"dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

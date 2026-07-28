@@ -3,16 +3,13 @@
 # before the engine starts: initdb on a fresh data volume, master password,
 # initial database, resolved parameters and the serving cert.
 #
-# It is ordered `before postgresql` rather than made a dependency of it: the
-# engine service is configured with auto_setup="no", so if this oneshot fails
-# postgresql refuses to start on the uninitialised datadir instead of silently
-# creating an empty cluster.
+# Ordered `before postgresql` rather than made a dependency of it: the engine
+# runs with auto_setup="no", so a failure here leaves postgresql refusing to
+# start rather than silently creating an empty cluster.
 #
-# rds-agent fetches the bootstrap config this reads and does not return from its
-# own start until the handoff is on disk, so `after rds-agent` is what makes the
-# handoff present by the time this runs. It is `after`, not `need`: the agent
-# stays up retrying a fetch that failed, and this oneshot should fail on the
-# missing handoff — visibly, with the engine down — rather than be skipped.
+# `after rds-agent`, not `need`: the agent does not return from its own start
+# until the handoff is on disk, and a failed fetch should leave this oneshot
+# failing visibly on the missing handoff rather than being skipped.
 
 description="Spinifex RDS PostgreSQL bootstrap"
 
@@ -24,9 +21,9 @@ depend() {
 
 start() {
     ebegin "Bootstrapping the RDS PostgreSQL instance"
-    # Output goes to the console: the VM has no operator login, and the serial
-    # log the orchestrator captures host-side is the only view of a bootstrap
-    # that failed before the engine ever came up.
+    # Output goes to the console: the VM has no operator login, so the host-side
+    # serial log is the only view of a bootstrap that failed before the engine
+    # came up.
     /usr/local/sbin/rds-init > /dev/console 2>&1
     eend $?
 }

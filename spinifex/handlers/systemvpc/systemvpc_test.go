@@ -18,11 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeEC2 is an in-memory stand-in for the whole EC2 VPC family, sufficient for
-// the describe-or-create logic under test: resources remember the tags they were
-// created with, and describes honour the tag + attribute filters this package
-// builds. It counts creates so idempotency is observable, and records the
-// account every call ran under so ownership cannot silently cross accounts.
+// fakeEC2 is an in-memory stand-in for the whole EC2 VPC family: resources
+// remember their creation tags and describes honour this package's filters. It
+// counts creates so idempotency is observable, and records the calling account.
 type fakeEC2 struct {
 	mu   sync.Mutex
 	seq  int

@@ -232,10 +232,8 @@ func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 }
 
 // A configured CA that cannot be loaded must fail the fetch *without* consuming
-// the password, so the agent's retry succeeds once the CA is readable. The
-// failure is the cheap half; leaving the bootstrap state untouched is the half
-// that makes it recoverable, and it is what lets TLS become mandatory later
-// without a failed mint destroying a password per attempt.
+// the password. Leaving the bootstrap state untouched is what makes the agent's
+// retry succeed once the CA is readable again.
 func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	loadErr := errors.New("read CA key /etc/spinifex/ca.key: permission denied")
@@ -270,9 +268,8 @@ func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T
 }
 
 // Concurrent bootstrap fetches must resolve to exactly one password holder, and
-// every caller must still be served TLS material regardless of who won. The CAS
-// is what provides the first half — swapping updateJSON for a plain put would
-// hand the same password to two agents with nothing failing.
+// every caller must still be served TLS material. The CAS provides the first
+// half: a plain put would hand the same password to two agents silently.
 func TestGetDBBootstrapConfig_ConcurrentFetchesYieldOnePassword(t *testing.T) {
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())

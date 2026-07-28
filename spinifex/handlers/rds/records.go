@@ -2,10 +2,9 @@ package handlers_rds
 
 import "time"
 
-// DBInstanceRecord is the KV record at db-instances/{dbInstanceIdentifier}
-// (D3). Fields are grouped by writer: the AWS API owns the
-// configuration, the reconciler the plumbing, the agent protocol Bootstrap and
-// Agent.
+// DBInstanceRecord is the KV record at db-instances/{dbInstanceIdentifier}.
+// Fields are grouped by writer: the AWS API owns the configuration, the
+// reconciler the plumbing, the agent protocol Bootstrap and Agent.
 type DBInstanceRecord struct {
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	AccountID            string `json:"accountId"`
@@ -20,12 +19,12 @@ type DBInstanceRecord struct {
 	Port             int64  `json:"port"`
 
 	// InstanceID is the current VM and changes on every replace, which is why
-	// the bus subject keys off the DB instance identifier instead (D7).
+	// the bus subject keys off the DB instance identifier instead.
 	InstanceID   string `json:"instanceId,omitempty"`
 	DataVolumeID string `json:"dataVolumeId,omitempty"`
 	ENIID        string `json:"eniId,omitempty"`
-	// ENIPrivateIP is stable across VM replace (D5), so it serves as both the
-	// fallback endpoint (D6) and a durable IP SAN on the serving cert (D14).
+	// ENIPrivateIP is stable across VM replace, so it serves as both the
+	// fallback endpoint and a durable IP SAN on the serving cert.
 	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
 	EndpointAddress string `json:"endpointAddress,omitempty"`
 	// DNSName is the vanity hostname when northstar is configured. Kept apart
@@ -41,9 +40,8 @@ type DBInstanceRecord struct {
 }
 
 // BootstrapState is what GetDBBootstrapConfig serves, plus the marker scoping
-// the master password to a single fetch (D8, Q2). The marker scopes the
-// password, not the action: replace, start-after-stop, recovery and restore all
-// boot a fresh agent whose first call is this one.
+// the master password to a single fetch. The marker scopes the password, not
+// the action: replace, recovery and restore all re-fetch without one.
 type BootstrapState struct {
 	// MasterUserPassword is cleared by the same CAS that sets Consumed, so the
 	// cleartext outlives only the boot it serves.
@@ -51,8 +49,8 @@ type BootstrapState struct {
 	// Consumed only ever flips forward.
 	Consumed   bool       `json:"consumed"`
 	ConsumedAt *time.Time `json:"consumedAt,omitempty"`
-	// ResolvedParameters are already evaluated against the instance class (D20),
-	// so the agent receives literals and never a formula.
+	// ResolvedParameters are already evaluated against the instance class, so
+	// the agent receives literals and never a formula.
 	ResolvedParameters []Parameter `json:"resolvedParameters,omitempty"`
 }
 
@@ -66,7 +64,7 @@ type Parameter struct {
 
 // EngineHealth is the agent's view of the engine, separate from Status: the
 // reconciler needs both to tell "stopped because we stopped it" from "stopped
-// because it died" (rds-4/rds-6).
+// because it died".
 type EngineHealth string
 
 const (
@@ -105,15 +103,14 @@ type AgentState struct {
 	Message       string       `json:"message,omitempty"`
 	RegisteredAt  *time.Time   `json:"registeredAt,omitempty"`
 	// LastSeen is the last *persisted* beat. Beats in between are held in leader
-	// memory (D13), so this trails the truth by up to the persist floor and is
-	// not a precise timestamp.
+	// memory, so this trails the truth by up to the persist floor.
 	LastSeen *time.Time `json:"lastSeen,omitempty"`
 }
 
-// Heartbeat cadence (D13).
+// Heartbeat cadence.
 const (
 	// HeartbeatInterval is returned to the agent on register and on every state
-	// change, so the cadence is control-plane-owned rather than baked into the AMI.
+	// change, so the cadence is control-plane-owned, not baked into the AMI.
 	HeartbeatInterval = 30 * time.Second
 	// HeartbeatStaleAfter is three missed ticks.
 	HeartbeatStaleAfter = 3 * HeartbeatInterval

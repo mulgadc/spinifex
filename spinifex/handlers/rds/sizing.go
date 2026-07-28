@@ -10,10 +10,8 @@ import (
 )
 
 // dbInstanceClasses maps the curated db.* names RDS exposes onto the EC2
-// instance type that actually sizes the VM (rds-v1.md D15). db.* is a naming
-// facade for AWS compatibility, not a second sizing table: every entry resolves
-// through the platform's vendor-agnostic instance-type definitions, so a class
-// and its EC2 equivalent can never drift apart on vCPU or memory.
+// instance type that sizes the VM. db.* is a naming facade, not a second sizing
+// table: every entry resolves through the platform's instance-type definitions.
 var dbInstanceClasses = map[string]string{
 	"db.t3.micro":  "t3.micro",
 	"db.t3.small":  "t3.small",
@@ -24,9 +22,8 @@ var dbInstanceClasses = map[string]string{
 }
 
 // InstanceTypeForClass resolves a db.* instance class to the EC2 instance type
-// the DB VM launches as. A class outside the curated set, or one whose EC2
-// equivalent the sizing table does not know, is rejected here at validation
-// rather than surfacing as a launch failure after the volume and ENI exist.
+// the DB VM launches as. An unknown class is rejected here at validation rather
+// than surfacing as a launch failure after the volume and ENI exist.
 func InstanceTypeForClass(class string) (string, error) {
 	instanceType, ok := dbInstanceClasses[class]
 	if !ok {

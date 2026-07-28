@@ -11,9 +11,8 @@ import (
 )
 
 // RDS_Request dispatches AWS Query-protocol RDS requests. RDS shares the
-// query-in/XML-out shape of ELBv2 (rds-v1.md D2): the action comes from the
-// Action= form param and the response is the IAM-style XML envelope, so the
-// aws-sdk-go query unmarshaler reads both success and error bodies natively.
+// query-in/XML-out shape of ELBv2: the action comes from the Action= form param
+// and the response is the IAM-style XML envelope.
 func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) error {
 	queryArgs, err := readQueryArgs(r)
 	if err != nil {
@@ -25,9 +24,9 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 	if action == "" {
 		return errors.New(awserrors.ErrorMissingAction)
 	}
-	// Resolve the action before the policy check so an unrecognised one is
+	// Resolve the action before the policy check, so an unrecognised one is
 	// rejected as InvalidAction rather than evaluated as an rds:<garbage>
-	// permission the caller could never hold.
+	// permission.
 	if !gateway_rds.HasAction(action) {
 		slog.DebugContext(r.Context(), "RDS: unknown action", "action", action)
 		return errors.New(awserrors.ErrorInvalidAction)
@@ -60,13 +59,9 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 	return nil
 }
 
-// rdsCaller builds the identity the RDS dispatcher gates on. The internal agent
-// actions need more than the account: they admit only an assumed-role session
-// whose underlying role is the RDS instance role.
-//
-// The role name is parsed from the underlying role ARN, never from the session
-// name — the caller picks RoleSessionName at AssumeRole time, so trusting it
-// would let anyone name their way past the gate.
+// rdsCaller builds the identity the RDS dispatcher gates on. The role name is
+// parsed from the underlying role ARN, never the session name, which the caller
+// picks at AssumeRole time and could name its way past the gate with.
 func rdsCaller(r *http.Request) (gateway_rds.Caller, error) {
 	accountID := mustCtxString(r, ctxAccountID)
 	if accountID == "" {

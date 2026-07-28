@@ -16,10 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fakes for the managed control-plane VPC ("Set B") collaborators. They model
-// describe-or-create idempotency by storing each resource with the tag map its
-// create spec carried, so a re-describe under the same cluster+role filters
-// returns the existing resource rather than a duplicate.
+// Fakes for the managed control-plane VPC collaborators. They model
+// describe-or-create idempotency by storing each resource with its create tags,
+// so a re-describe under the same filters returns it rather than a duplicate.
 
 var (
 	_ vpcProvisioner        = (*fakeVPCProvisioner)(nil)

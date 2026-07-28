@@ -35,8 +35,8 @@ type Service struct {
 	deps   Deps
 
 	// liveness holds the heartbeat state that never reaches KV. Beats are
-	// counted here and persisted only on change or on the slower floor (D13),
-	// so a steady fleet does not write KV twice a minute per instance.
+	// counted here and persisted only on change or on the slower floor, so a
+	// steady fleet does not write KV twice a minute per instance.
 	livenessMu sync.Mutex
 	liveness   map[string]*agentLiveness
 }
@@ -86,9 +86,9 @@ func (s *Service) systemBucket(ctx context.Context) (jetstream.KeyValue, error) 
 	return GetOrCreateSystemBucket(ctx, js)
 }
 
-// loadCA resolves the cluster CA keypair, preferring an injected loader.
-// Returns a nil cert when no CA is configured, which callers treat as "mint no
-// serving cert" rather than as a failure.
+// loadCA resolves the cluster CA keypair, preferring an injected loader. A nil
+// cert means no CA is configured, which callers treat as "mint no serving cert"
+// rather than as a failure.
 func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	if s.deps.LoadCA != nil {
 		return s.deps.LoadCA()

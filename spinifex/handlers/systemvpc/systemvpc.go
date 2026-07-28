@@ -1,14 +1,11 @@
 // Package handlers_systemvpc builds the managed VPCs Spinifex platform
 // components run their own VMs in — the analogue of AWS's hidden managed-account
-// VPCs. A component (EKS control planes, RDS DB instances) asks for one by name;
-// it is owned by the system account, the customer never provisions or sees it,
-// and it carries a public subnet routed to an IGW plus private subnets routed to
-// a NAT gateway so private-subnet VMs still have egress.
+// VPCs. A component asks for one by name; it is owned by the system account and
+// carries a public subnet routed to an IGW plus NAT-routed private subnets.
 //
 // The topology is composed from the real EC2 VPC-family APIs rather than direct
-// OVN mutation, so per-subnet egress gating (public 1000 reroute / NAT-GW
-// reroute / private 1100 drop) is wired by the existing topology subscribers off
-// the route-table events those APIs publish.
+// OVN mutation, so per-subnet egress gating is wired by the existing topology
+// subscribers off the route-table events those APIs publish.
 //
 // Every lookup is a describe-or-create keyed on the owner + role tags a Spec
 // carries, so two components never see each other's resources and a relaunch
@@ -66,9 +63,8 @@ type Spec struct {
 	// system VPCs.
 	RolePrefix string
 	// Supernet is the IPv4 /14 this VPC's /22 is carved from. Components must
-	// not share one: a collision is survivable (VPCs are L3-isolated OVN logical
-	// routers egressing via distinct external IPs) but leaves an operator unable
-	// to tell from an address which component owns it.
+	// not share one: a collision is survivable, but leaves an operator unable to
+	// tell from an address which component owns it.
 	Supernet string
 	// PrivateSubnets is how many private subnets to carve, clamped to 1..3.
 	PrivateSubnets int
@@ -174,10 +170,8 @@ type Refs struct {
 }
 
 // cidrs derives the VPC CIDR + subnet CIDRs deterministically from the spec's
-// name. The /22 is carved from the spec's /14 supernet; subnet 0 (.0/24) is
-// public, subnets 1..PrivateSubnets are private. A hash collision between two
-// names within one component is non-fatal (VPCs are L3-isolated); a proper
-// managed-IPAM allocator is a follow-up.
+// name. The /22 is carved from the spec's /14 supernet; subnet 0 is public,
+// subnets 1..PrivateSubnets are private. A hash collision is non-fatal.
 func (s Spec) cidrs() (vpcCIDR, publicCIDR string, privateCIDRs []string, err error) {
 	base, err := s.supernetBase()
 	if err != nil {
@@ -202,8 +196,8 @@ func (s Spec) cidrs() (vpcCIDR, publicCIDR string, privateCIDRs []string, err er
 }
 
 // supernetBase validates the spec's supernet and returns its network address.
-// The /14 is required so the 256-block hash index cannot walk past the space the
-// component was allotted and into a neighbouring component's.
+// The /14 is required so the 256-block hash index cannot walk past the space
+// the component was allotted.
 func (s Spec) supernetBase() ([4]byte, error) {
 	prefix, err := netip.ParsePrefix(s.Supernet)
 	if err != nil {
@@ -262,15 +256,13 @@ func (s Spec) validate() error {
 	return err
 }
 
-// Ensure builds (idempotently) the managed system VPC described by spec under
-// accountID: a VPC, an attached IGW, a public subnet routed to the IGW,
-// PrivateSubnets private subnet(s) routed to a NAT gateway, and the NAT gateway
-// itself. Each resource is describe-or-create keyed on the owner + role tags, so
-// a relaunch after partial failure converges rather than duplicating.
+// Ensure idempotently builds the managed system VPC described by spec: a VPC, an
+// attached IGW, an IGW-routed public subnet, NAT-routed private subnets, and the
+// NAT gateway itself. Each resource is describe-or-create on the role tags.
 //
 // The route-table associations publish the topology events the per-subnet egress
-// subscribers consume, so the OVN policy split (public 1000 / NAT-GW reroute /
-// private 1100 drop) falls out without any direct OVN mutation here.
+// subscribers consume, so the OVN policy split falls out without any direct OVN
+// mutation here.
 func Ensure(ctx context.Context, deps Deps, spec Spec, accountID string) (*Refs, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err
@@ -417,10 +409,9 @@ func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec,
 		if sn == "" {
 			continue
 		}
-		// The subnet is already on this table whenever the VPC survived from an
-		// earlier Ensure. AssociateRouteTable is AWS-faithful and rejects that as
-		// Resource.AlreadyAssociated, so the idempotency belongs here: for a
-		// shared system VPC every Ensure after the first takes this path.
+		// A subnet surviving an earlier Ensure is already on this table, which
+		// AssociateRouteTable rejects as Resource.AlreadyAssociated. For a shared
+		// system VPC every Ensure after the first takes this path.
 		if _, err := rtp.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
 			RouteTableId: aws.String(rtID),
 			SubnetId:     aws.String(sn),
@@ -503,28 +494,21 @@ func ensureNatGateway(ctx context.Context, deps Deps, spec Spec, accountID, publ
 }
 
 // Delete tears down the managed system VPC in dependency order: NAT gateway
-// (+ its EIP) → route tables → subnets → IGW → VPC. Tag-driven (not
-// record-driven) so a partial create still converges to a clean delete.
-// Best-effort: every step is attempted and failures are logged; the final VPC
-// delete failure is returned so the caller can surface a leak. Safe to call when
-// nothing was provisioned (all describes return empty).
+// (+ its EIP) → route tables → subnets → IGW → VPC. Tag-driven, so a partial
+// create still converges, and best-effort apart from the final VPC delete.
 //
-// gcFallbackVpcID is the caller's last-persisted VpcId, used only as an OVN-GC
-// target when the tag-indexed EC2 VPC is already gone — the live describe can no
-// longer name it, but the caller's record still can. Pass "" when no such record
-// exists (e.g. an orphan reaper acting once the owning record is gone).
+// gcFallbackVpcID is the caller's last-persisted VpcId, used as an OVN-GC target
+// when the tag-indexed EC2 VPC is already gone. Pass "" when no such record
+// exists, e.g. an orphan reaper acting after the owning record.
 func Delete(ctx context.Context, deps Deps, spec Spec, accountID, gcFallbackVpcID string) error {
 	if err := spec.validate(); err != nil {
 		return err
 	}
 	roles := spec.Roles()
 
-	// 1. Route tables: disassociate every subnet, then delete. Disassociation
-	// publishes the egress-reroute removal for each subnet. Route tables go first
-	// so the NAT gateway's live route refs are gone before its delete — the NAT
-	// GW delete is guarded against live route forwards, so deleting it while the
-	// private RT still routes 0.0.0.0/0 to it would fail (and strand its billable
-	// EIP).
+	// 1. Route tables: disassociate every subnet, then delete. They go first so
+	// the NAT gateway's live route refs are gone before its own delete, which is
+	// guarded against live forwards and would otherwise strand its billable EIP.
 	for _, role := range []string{roles.PublicRT, roles.PrivateRT} {
 		rtOut, err := deps.RT.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: spec.roleFilters(role)}, accountID)
 		if err != nil {
@@ -601,12 +585,9 @@ func Delete(ctx context.Context, deps Deps, spec Spec, accountID, gcFallbackVpcI
 		return fmt.Errorf("systemvpc: describe vpc for delete (%s): %w", spec.Name, err)
 	}
 
-	// The tag-indexed VPC is already gone — a prior re-drive completed the EC2
-	// delete, or it was reclaimed out-of-band. Idempotent success: nothing left
-	// to delete here. Its OVN logical router/subnets/egress-drop policies may
-	// still be orphaned if that prior delete's fire-and-forget vpc.delete event
-	// never reached vpcd (e.g. NATS was down), so GC still runs below against
-	// gcFallbackVpcID — the only surviving reference to its identity.
+	// The tag-indexed VPC is already gone, so this is an idempotent success. Its
+	// OVN state may still be orphaned if that delete's fire-and-forget vpc.delete
+	// never reached vpcd, so GC runs against gcFallbackVpcID.
 	if vpcOut == nil || len(vpcOut.Vpcs) == 0 {
 		gcTopology(ctx, deps.NATSConn, spec.Name, gcFallbackVpcID)
 		return nil
@@ -617,14 +598,9 @@ func Delete(ctx context.Context, deps Deps, spec Spec, accountID, gcFallbackVpcI
 		slog.WarnContext(ctx, "systemvpc Delete: delete IGW failed", "vpc", vpcID, "err", err)
 	}
 
-	// Sweep residual subnets by VPC identity, not by role tag.
-	//
-	// The tagged sweep above only finds subnets that survived long enough to be
-	// tagged. A create that fails partway leaves untagged subnets behind, which
-	// the tagged sweep cannot see. DeleteVpc then rejects with
-	// DependencyViolation, and because teardown is re-driven on a timer the
-	// owning record sits in its deleting state forever, retrying the same doomed
-	// delete.
+	// Sweep residual subnets by VPC identity, not by role tag: a create that
+	// failed before tagging leaves subnets the tagged sweep cannot see, and
+	// DeleteVpc then rejects with DependencyViolation on every re-drive.
 	if snOut, err := deps.VPC.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})}},
 	}, accountID); err != nil {
@@ -673,13 +649,12 @@ func Delete(ctx context.Context, deps Deps, spec Spec, accountID, gcFallbackVpcI
 }
 
 // gcTopology republishes vpc.delete for vpcID so vpcd's topology manager gets
-// another chance to remove the VPC's OVN logical router, subnets, DHCP options,
-// and SubnetEgressPriorityDrop policies (owned by the router row, so OVSDB
-// cascades their removal with it). That cleanup normally runs only as a side
-// effect of a *live* DeleteVpc KV mutation — a re-drive against an already-gone
-// VPC does not mutate the KV again, so a lost or never-delivered event would
-// otherwise orphan the OVN state forever. Best-effort and idempotent: a nil conn
-// or empty vpcID is a no-op, and vpcd tolerates re-deleting an absent router.
+// another chance to remove the VPC's OVN logical router and everything OVSDB
+// cascades with it.
+//
+// That cleanup normally runs only off a live DeleteVpc KV mutation, so without
+// this a lost event would orphan the OVN state forever. Best-effort and
+// idempotent: vpcd tolerates re-deleting an absent router.
 func gcTopology(ctx context.Context, nc *nats.Conn, name, vpcID string) {
 	if nc == nil || vpcID == "" {
 		return

@@ -493,10 +493,9 @@ var AvailableImages = map[string]Images{
 		Tags:     map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
 	},
 
-	// RDS PostgreSQL system AMI. Resolved by spinifex:managed-by=rds plus the
-	// engine tags — CreateDBInstance maps an Engine/EngineVersion request onto
-	// them, so the pinned major version is recorded here rather than parsed out
-	// of the image name.
+	// RDS PostgreSQL system AMI, resolved by spinifex:managed-by=rds plus the
+	// engine tags an Engine/EngineVersion request maps onto — so the pinned
+	// major version is recorded here, not parsed out of the image name.
 	"spinifex-rds-postgres": {
 		Name:         "spinifex-rds-postgres",
 		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 18 + rds-init (initdb, master password, parameters and TLS applied at first boot)",

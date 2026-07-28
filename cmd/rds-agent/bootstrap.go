@@ -1,0 +1,168 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+)
+
+// bootstrap fetches the boot material and writes the handoff rds-init is
+// blocked waiting for, then points the health probe at the port the control
+// plane actually assigned.
+func (a *Agent) bootstrap(ctx context.Context) error {
+	return retry(ctx, "bootstrap fetch", func(ctx context.Context) error {
+		cfg, err := a.cp.GetBootstrapConfig(ctx, a.id)
+		if err != nil {
+			return err
+		}
+		if err := writeHandoff(a.cfg.HandoffDir, cfg); err != nil {
+			return err
+		}
+		if cfg.Port > 0 {
+			a.probe.setPort(int(cfg.Port))
+		}
+		// The mode is logged but never branched on: rds-init decides whether to
+		// initdb from the state of the datadir, not from what this fetch said.
+		slog.Info("rds-agent: bootstrap config delivered",
+			"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters))
+		return nil
+	})
+}
+
+// The handoff files rds-init reads. They live on tmpfs, so nothing survives a
+// reboot and the next boot re-fetches in attach mode rather than reusing a
+// stale password or a cert that has since been re-minted.
+const (
+	handoffEnvFile    = "bootstrap.env"
+	handoffParamsFile = "parameters.conf"
+	handoffCertFile   = "server.crt"
+	handoffKeyFile    = "server.key"
+
+	// handoffMode is root-only. The engine runs as postgres and rds-init runs as
+	// root: nothing that reads these files needs them group- or world-readable,
+	// and one of them is the master password.
+	handoffMode    = 0o600
+	handoffDirMode = 0o700
+)
+
+// writeHandoff renders the bootstrap config into the files rds-init consumes.
+//
+// bootstrap.env is written last and renamed into place, so its appearance means
+// the whole handoff is complete. That is what the init script waits on, and it
+// is why a partial fetch cannot start a bootstrap against half a config.
+func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) error {
+	if cfg.MasterUsername == "" {
+		return fmt.Errorf("bootstrap config carries no master username")
+	}
+	if err := os.MkdirAll(dir, handoffDirMode); err != nil {
+		return fmt.Errorf("create handoff dir %s: %w", dir, err)
+	}
+	// MkdirAll leaves an existing directory's mode alone, and this one may have
+	// been created by something more permissive earlier in the boot.
+	if err := os.Chmod(dir, handoffDirMode); err != nil {
+		return fmt.Errorf("secure handoff dir %s: %w", dir, err)
+	}
+
+	if err := writeHandoffFile(dir, handoffParamsFile, renderParameters(cfg.Parameters)); err != nil {
+		return err
+	}
+	// The cert and key are minted per fetch and delivered together; a half pair
+	// would have rds-init start the engine with TLS configured against a key it
+	// does not have.
+	if cfg.ServingCertificate != "" && cfg.ServingPrivateKey != "" {
+		if err := writeHandoffFile(dir, handoffCertFile, cfg.ServingCertificate); err != nil {
+			return err
+		}
+		if err := writeHandoffFile(dir, handoffKeyFile, cfg.ServingPrivateKey); err != nil {
+			return err
+		}
+	}
+
+	return writeHandoffFile(dir, handoffEnvFile, renderBootstrapEnv(cfg))
+}
+
+// renderBootstrapEnv builds the KEY=value fragment rds-init sources. Every value
+// is single-quoted because the file is read by `.` in a shell: an unquoted
+// password containing a space, a `$` or a `;` would be word-split or executed.
+func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
+	var b strings.Builder
+	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
+	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
+	writeEnvLine(&b, "RDS_MASTER_USERNAME", cfg.MasterUsername)
+	// Present only in initialize mode, which is the whole of D8: an attach
+	// fetch has no password to write and rds-init must not find a stale one.
+	if cfg.MasterUserPassword != nil {
+		writeEnvLine(&b, "RDS_MASTER_PASSWORD", *cfg.MasterUserPassword)
+	}
+	if cfg.DBName != "" {
+		writeEnvLine(&b, "RDS_DB_NAME", cfg.DBName)
+	}
+	if cfg.Port > 0 {
+		writeEnvLine(&b, "RDS_PORT", strconv.FormatInt(cfg.Port, 10))
+	}
+	return b.String()
+}
+
+func writeEnvLine(b *strings.Builder, key, value string) {
+	b.WriteString(key)
+	b.WriteString("=")
+	b.WriteString(shellQuote(value))
+	b.WriteString("\n")
+}
+
+// shellQuote wraps s in single quotes, which suppress every shell expansion.
+// The only character a single-quoted string cannot hold is a single quote
+// itself, so each one is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// renderParameters emits the resolved parameter group in postgresql.conf syntax.
+// Values are quoted so a setting with a space or a unit suffix survives; the
+// engine accepts quoted numerics and booleans too.
+func renderParameters(params []handlers_rds.Parameter) string {
+	var b strings.Builder
+	b.WriteString("# Resolved parameter group, written by rds-agent.\n")
+	for _, p := range params {
+		if p.Name == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s = '%s'\n", p.Name, strings.ReplaceAll(p.Value, "'", "''"))
+	}
+	return b.String()
+}
+
+// writeHandoffFile writes one handoff file atomically: a temp file in the same
+// directory, created 0600 from the start, renamed over the target. The mode is
+// set at creation rather than after, so the content is never briefly readable at
+// the process umask.
+func writeHandoffFile(dir, name, content string) error {
+	path := filepath.Join(dir, name)
+	tmp := path + ".new"
+
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, handoffMode)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", tmp, err)
+	}
+	// A failed write must not leave the temp file behind holding a password.
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("install %s: %w", path, err)
+	}
+	return nil
+}

@@ -26,6 +26,12 @@ const (
 // Optional fields are pointers so a nil renders as an absent XML element rather
 // than an empty one — which is what keeps MasterUserPassword out of an attach
 // response entirely.
+//
+// The in-guest agent decodes the same XML with encoding/xml, which matches on
+// the Go field name, so an xml tag appears only where the wire name differs
+// from it: a locationName the field name does not already spell, and the
+// <Parameters><member> nesting locationNameList produces. internal/rdsgw
+// round-trips each of these types to hold that alignment.
 
 // RegisterDBInstanceInput is the agent's boot-time registration. InstanceID and
 // DBInstanceIdentifier are set by the gateway from the caller's resolved
@@ -83,7 +89,7 @@ type GetDBBootstrapConfigOutput struct {
 	MasterUserPassword   *string `json:"masterUserPassword,omitempty" locationName:"MasterUserPassword"`
 	Port                 int64   `json:"port" locationName:"Port"`
 
-	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member"`
+	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member" xml:"Parameters>member"`
 
 	// ServingCertificate/ServingPrivateKey are empty when no cluster CA is
 	// configured; the agent then starts the engine without TLS rather than
@@ -97,16 +103,16 @@ type GetDBBootstrapConfigOutput struct {
 // types land with their owning phases — live password apply, parameter reload,
 // filesystem grow, snapshot quiesce.
 type Command struct {
-	CommandID  string      `json:"commandId" locationName:"CommandId"`
+	CommandID  string      `json:"commandId" locationName:"CommandId" xml:"CommandId"`
 	Type       string      `json:"type" locationName:"Type"`
-	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member"`
+	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member" xml:"Parameters>member"`
 	IssuedAt   *time.Time  `json:"issuedAt,omitempty" locationName:"IssuedAt" type:"timestamp"`
 }
 
 // CommandReply is the agent's result for a command delivered on an earlier poll,
 // carried on the next poll request and republished to the issuer.
 type CommandReply struct {
-	CommandID string `json:"commandId" locationName:"CommandId"`
+	CommandID string `json:"commandId" locationName:"CommandId" xml:"CommandId"`
 	Status    string `json:"status" locationName:"Status"`
 	Message   string `json:"message,omitempty" locationName:"Message"`
 }

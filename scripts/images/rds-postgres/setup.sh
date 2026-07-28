@@ -5,13 +5,19 @@ set -eu
 #
 # Runs inside the libguestfs appliance (via virt-customize --run) under
 # build-system-image.sh, after packages and INSTALL_FILES are placed. Sets exec
-# bits on the bootstrap oneshot, creates the datadir mount point and the log
-# directory, and applies the standard Alpine-cloud serial-console + fast
-# boot-menu tweaks so orchestrator-captured ttyS0 logs work.
+# bits on the init scripts and the bootstrap oneshot, creates the agent config
+# directory, the datadir mount point and the log directory, and applies the
+# standard Alpine-cloud serial-console + fast boot-menu tweaks so
+# orchestrator-captured ttyS0 logs work.
 
 # INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-init is
 # executed directly by its service.
-chmod 0755 /etc/init.d/rds-init /usr/local/sbin/rds-init
+chmod 0755 /etc/init.d/rds-init /etc/init.d/rds-agent /usr/local/sbin/rds-init
+
+# Where cloud-init drops the agent's env file and the per-instance gateway CA.
+# Created here so the delivery lands in a root-only directory rather than
+# whatever a first write would create it as.
+install -d -m 0700 /etc/spinifex-rds
 
 # Mount point for the instance's Viperblock data volume. It stays empty in the
 # image: the datadir is created one level inside it by rds-init, once the volume

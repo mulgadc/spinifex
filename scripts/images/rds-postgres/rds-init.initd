@@ -8,13 +8,17 @@
 # postgresql refuses to start on the uninitialised datadir instead of silently
 # creating an empty cluster.
 #
-# rds-agent (which fetches the bootstrap config this reads) is ordered before
-# this service by its own init script.
+# rds-agent fetches the bootstrap config this reads and does not return from its
+# own start until the handoff is on disk, so `after rds-agent` is what makes the
+# handoff present by the time this runs. It is `after`, not `need`: the agent
+# stays up retrying a fetch that failed, and this oneshot should fail on the
+# missing handoff — visibly, with the engine down — rather than be skipped.
 
 description="Spinifex RDS PostgreSQL bootstrap"
 
 depend() {
     need net
+    after rds-agent
     before postgresql
 }
 

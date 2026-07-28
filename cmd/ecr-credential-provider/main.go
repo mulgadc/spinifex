@@ -12,17 +12,16 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/ecrauth"
+	"github.com/mulgadc/spinifex/internal/guestenv"
 	"github.com/mulgadc/spinifex/internal/imdscreds"
 
 	_ "github.com/mulgadc/spinifex/internal/fipsboot"
@@ -144,13 +143,7 @@ func cacheDurationFrom(expiresAt time.Time) string {
 // loadConfig reads the cloud-init env file then lets real env vars override. The
 // IMDS base is fixed (not in the env file) but overridable for tests.
 func loadConfig(envFile string) config {
-	env := parseEnvFile(envFile)
-	get := func(key string) string {
-		if v := os.Getenv(key); v != "" {
-			return v
-		}
-		return env[key]
-	}
+	get := guestenv.Load(envFile).Get
 
 	cfg := config{
 		GatewayURL: get("EKS_GATEWAY_URL"),
@@ -165,29 +158,6 @@ func loadConfig(envFile string) config {
 		cfg.IMDSBase = defaultIMDSBase
 	}
 	return cfg
-}
-
-// parseEnvFile reads a simple KEY=value file; missing files yield an empty map.
-func parseEnvFile(path string) map[string]string {
-	out := map[string]string{}
-	f, err := os.Open(path)
-	if err != nil {
-		return out
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		out[strings.TrimSpace(key)] = strings.TrimSpace(val)
-	}
-	return out
 }
 
 // emitEmpty writes a valid CredentialProviderResponse with no auth entries.

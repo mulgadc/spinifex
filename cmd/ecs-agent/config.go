@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"os"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/mulgadc/spinifex/internal/guestenv"
 )
 
 const (
@@ -40,13 +39,7 @@ type config struct {
 
 // loadConfig reads the cloud-init env file then lets real env vars override.
 func loadConfig(envFile string) config {
-	env := parseEnvFile(envFile)
-	get := func(key string) string {
-		if v := os.Getenv(key); v != "" {
-			return v
-		}
-		return env[key]
-	}
+	get := guestenv.Load(envFile).Get
 
 	cfg := config{
 		GatewayURL:       get("ECS_GATEWAY_URL"),
@@ -93,27 +86,4 @@ func loadConfig(envFile string) config {
 		}
 	}
 	return cfg
-}
-
-// parseEnvFile reads a simple KEY=value file; missing files yield an empty map.
-func parseEnvFile(path string) map[string]string {
-	out := map[string]string{}
-	f, err := os.Open(path)
-	if err != nil {
-		return out
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		out[strings.TrimSpace(key)] = strings.TrimSpace(val)
-	}
-	return out
 }

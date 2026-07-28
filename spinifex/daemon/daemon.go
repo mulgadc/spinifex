@@ -152,6 +152,7 @@ type Daemon struct {
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
 	acmService            *handlers_acm.ACMServiceImpl
+	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -1093,6 +1094,12 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"acm.ListTagsForCertificate", handleNATSRequest(d.acmService.ListTagsForCertificate), "spinifex-workers"},
 			natsSub{"acm.AddTagsToCertificate", handleNATSRequest(d.acmService.AddTagsToCertificate), "spinifex-workers"},
 			natsSub{"acm.RemoveTagsFromCertificate", handleNATSRequest(d.acmService.RemoveTagsFromCertificate), "spinifex-workers"},
+			// ForceRenewCertificate is not an AWS API — it is the operator-
+			// triggered path `spx admin cert force-renew` uses to reissue a
+			// PRIVATE_CA certificate immediately, bypassing the renewal worker's
+			// window and failure backoff, primarily to verify the ELBv2 fan-out
+			// without waiting out the proportional window.
+			natsSub{"acm.ForceRenewCertificate", handleNATSRequest(d.acmRenewalWorker.ForceRenewCertificate), "spinifex-workers"},
 		)
 	}
 
@@ -1689,6 +1696,23 @@ func (d *Daemon) startCluster() error {
 		d.acmService.TenantCA = tenantCA
 		slog.Info("ACM: tenant private CA wired", "permitted_domains", tenantCA.PermittedDomains())
 	}
+
+	// The renewal worker scans for PRIVATE_CA certificates past their
+	// proportional renewal window and reissues them under their existing ARN.
+	// It reads d.acmService.TenantCA/CertMaterialUpdated live on every scan
+	// rather than a snapshot taken here, so it starts unconditionally: a
+	// tenant CA loaded later (or never, on a public-certificates-only
+	// deployment) is not a startup dependency — the worker just finds
+	// nothing to renew until one is wired.
+	d.acmRenewalWorker = handlers_acm.NewWorker(d.acmService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ACM renewal worker goroutine panicked", "recover", r)
+			}
+		}()
+		d.acmRenewalWorker.Run(d.ctx)
+	})
 
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS

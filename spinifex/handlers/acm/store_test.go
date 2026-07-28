@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -245,4 +246,102 @@ func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
 	assert.Equal(t, rec.ACMEOrderURL, got.ACMEOrderURL)
 	assert.Equal(t, rec.LeaseHolder, got.LeaseHolder)
 	assert.Equal(t, rec.RenewalEligibility, got.RenewalEligibility)
+}
+
+// TestListAllCertMetadata_DoesNotDecryptPrivateKey is the renewal worker's
+// scan path (Worker.scanOnce calls this directly): it must return metadata
+// without ever touching AES-GCM or materialising plaintext key PEM, because
+// the renewal predicate never reads PrivateKey and the scan runs on every
+// tick for every certificate in the store.
+func TestListAllCertMetadata_DoesNotDecryptPrivateKey(t *testing.T) {
+	store := setupStore(t)
+	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/metadata-only"
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
+		CertificateArn: arn, AccountID: testAccountID, DomainName: "metadata.example.com", PrivateKey: plaintext,
+	}))
+
+	recs, err := store.ListAllCertMetadata(t.Context())
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	assert.Equal(t, "metadata.example.com", recs[0].DomainName, "metadata fields must still be populated")
+	assert.Empty(t, recs[0].PrivateKey, "ListAllCertMetadata must not return the plaintext key")
+	assert.NotContains(t, recs[0].PrivateKey, "BEGIN EC PRIVATE KEY")
+
+	// And GetCert on the same record still decrypts fine — proves the scan
+	// path never touched (or corrupted) the stored ciphertext.
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, got.PrivateKey)
+}
+
+// TestListAllCertMetadata_CrossesAccounts asserts the renewal worker's scan
+// sees every account's certificates, unlike the account-scoped ListCerts used
+// by the ListCertificates API.
+func TestListAllCertMetadata_CrossesAccounts(t *testing.T) {
+	store := setupStore(t)
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
+		CertificateArn: "arn:aws:acm:ap-southeast-2:1:certificate/acct-a", AccountID: "000000000001",
+	}))
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
+		CertificateArn: "arn:aws:acm:ap-southeast-2:2:certificate/acct-b", AccountID: "000000000002",
+	}))
+
+	recs, err := store.ListAllCertMetadata(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, recs, 2)
+}
+
+// TestAcquireLease_LeavesPrivateKeyEncrypted mirrors
+// TestAddInUseBy_LeavesPrivateKeyEncrypted: AcquireLease is the same
+// raw-CAS-write shape (get, mutate a couple of fields, marshal, CAS Update),
+// and that shape has already produced one silent-plaintext-write bug in this
+// package, so every write path over CertRecord gets this guard.
+func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
+	store := setupStore(t)
+	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-encrypted"
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
+		CertificateArn: arn, AccountID: testAccountID, PrivateKey: plaintext,
+	}))
+
+	acquired, err := store.AcquireLease(t.Context(), arn, "node-a", 5*time.Minute, time.Now())
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	require.NoError(t, err)
+	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY",
+		"AcquireLease must not write the private key back in plaintext")
+
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, got.PrivateKey, "the key must still decrypt after a lease acquire")
+	assert.Equal(t, "node-a", got.LeaseHolder)
+}
+
+// TestReleaseLease_LeavesPrivateKeyEncrypted is AcquireLease's counterpart
+// for the release path — same raw-CAS shape, same guard.
+func TestReleaseLease_LeavesPrivateKeyEncrypted(t *testing.T) {
+	store := setupStore(t)
+	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
+	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-release-encrypted"
+	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
+		CertificateArn: arn, AccountID: testAccountID, PrivateKey: plaintext,
+	}))
+	acquired, err := store.AcquireLease(t.Context(), arn, "node-a", 5*time.Minute, time.Now())
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	require.NoError(t, store.ReleaseLease(t.Context(), arn, "node-a"))
+
+	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	require.NoError(t, err)
+	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY",
+		"ReleaseLease must not write the private key back in plaintext")
+
+	got, err := store.GetCert(t.Context(), arn)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, got.PrivateKey, "the key must still decrypt after a lease release")
+	assert.Empty(t, got.LeaseHolder, "a released lease must clear the holder")
 }

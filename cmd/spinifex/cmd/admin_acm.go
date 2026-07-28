@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +35,26 @@ operator-driven action via --regenerate.`,
 	Run: runCertCreateTenantCA,
 }
 
+// certForceRenewCmd reissues a PRIVATE_CA certificate immediately, over NATS
+// against the running daemon's renewal worker — distinct from certRenewCmd
+// ("spx admin cert renew"), which regenerates the node's own server TLS
+// certificate offline and is unrelated to ACM.
+var certForceRenewCmd = &cobra.Command{
+	Use:   "force-renew",
+	Short: "Reissue an ACM PRIVATE_CA certificate immediately, bypassing its renewal window",
+	Long: `Reissues the given ACM certificate under its existing ARN right now, instead of
+waiting for the renewal worker's proportional window to elapse. Only PRIVATE_CA
+certificates (tenant-CA-issued) can be force-renewed; imported and public
+certificates are refused.
+
+This talks to the running daemon over NATS, taking the same per-certificate
+lease the scheduled renewal worker uses, so it is safe to run against a live
+deployment. It exists primarily to verify the ELBv2 fan-out — that every load
+balancer referencing the certificate re-renders with the new leaf — without
+waiting out the real renewal window.`,
+	Run: runCertForceRenew,
+}
+
 func init() {
 	certCmd.AddCommand(certCreateTenantCACmd)
 	certCreateTenantCACmd.Flags().StringSlice("domain", nil, "Domain the tenant CA is permitted to sign for (repeatable)")
@@ -40,6 +63,46 @@ func init() {
 	if err := certCreateTenantCACmd.MarkFlagRequired("domain"); err != nil {
 		panic(err)
 	}
+
+	certCmd.AddCommand(certForceRenewCmd)
+	certForceRenewCmd.Flags().String("arn", "", "Certificate ARN to force-renew (required)")
+	certForceRenewCmd.Flags().String("account", "", "Account ID that owns the certificate; defaults to the bootstrap account")
+	if err := certForceRenewCmd.MarkFlagRequired("arn"); err != nil {
+		panic(err)
+	}
+}
+
+func runCertForceRenew(cmd *cobra.Command, _ []string) {
+	certArn, _ := cmd.Flags().GetString("arn")
+	accountID, _ := cmd.Flags().GetString("account")
+	if accountID == "" {
+		accountID = admin.DefaultAccountID()
+	}
+
+	_, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fmt.Printf("Force-renewing %s (account %s)...\n", certArn, accountID)
+	out, err := utils.NATSRequest[handlers_acm.ForceRenewCertificateOutput](
+		ctx, nc, "acm.ForceRenewCertificate",
+		&handlers_acm.ForceRenewCertificateInput{CertificateArn: certArn},
+		30*time.Second, accountID,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Reissued %s\n", out.CertificateArn)
+	fmt.Printf("  Serial:    %s\n", out.Serial)
+	fmt.Printf("  NotAfter:  %s\n", out.NotAfter.Format(time.RFC3339))
 }
 
 func runCertCreateTenantCA(cmd *cobra.Command, _ []string) {

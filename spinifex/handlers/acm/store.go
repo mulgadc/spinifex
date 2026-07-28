@@ -293,8 +293,42 @@ func (s *Store) DeleteCert(ctx context.Context, certArn string) (bool, error) {
 	return true, nil
 }
 
-// ListCerts returns all certificate records owned by accountID.
+// ListCerts returns all certificate records owned by accountID, with
+// PrivateKey resolved to plaintext PEM — ListCertificates (its only caller
+// today) does not itself read PrivateKey, but this is a general-purpose,
+// account-scoped accessor and decrypting is the safe, unsurprising default
+// for it, matching GetCert.
 func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord, error) {
+	return s.listCerts(ctx, func(rec *CertRecord) bool { return rec.AccountID == accountID }, true)
+}
+
+// ListAllCertMetadata returns every certificate record's metadata, across
+// every account, with PrivateKey left empty rather than decrypted.
+//
+// This exists for the renewal worker's scan, which only ever reads
+// Type/Status/RenewalEligibility/NotBefore/NotAfter/RenewalSummary/
+// CertificateArn to decide what is due — decrypting every stored private key
+// on every scan tick, forever, to answer a question that never looks at the
+// key is needless AES-GCM work that scales with certificate count, and
+// needless plaintext exposure of exactly the material this store exists to
+// protect. The worker re-fetches the one certificate it actually renews via
+// GetCert (which does decrypt) once it has won that certificate's lease.
+//
+// PrivateKey is cleared to "" here rather than left as ciphertext, so a
+// caller cannot mistake ciphertext for usable key material in a field typed
+// as plaintext PEM everywhere else in this package.
+func (s *Store) ListAllCertMetadata(ctx context.Context) ([]*CertRecord, error) {
+	return s.listCerts(ctx, func(*CertRecord) bool { return true }, false)
+}
+
+// listCerts walks every cert key in the bucket, keeping only the records for
+// which keep returns true. When decrypt is true, PrivateKey is resolved to
+// plaintext PEM as GetCert does, and a record whose key cannot be decrypted
+// is skipped and logged rather than failing the whole scan. When decrypt is
+// false, PrivateKey is cleared to "" instead of decrypted — see
+// ListAllCertMetadata — and an undecryptable key is not a reason to skip the
+// record, since nothing here reads it.
+func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decrypt bool) ([]*CertRecord, error) {
 	keys, err := s.kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -315,12 +349,16 @@ func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord,
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			continue
 		}
-		if rec.AccountID != accountID {
+		if !keep(&rec) {
 			continue
 		}
-		if err := s.decryptPrivateKey(&rec); err != nil {
-			slog.Warn("ListCerts: skipping cert with undecryptable private key", "arn", rec.CertificateArn, "err", err)
-			continue
+		if decrypt {
+			if err := s.decryptPrivateKey(&rec); err != nil {
+				slog.Warn("listCerts: skipping cert with undecryptable private key", "arn", rec.CertificateArn, "err", err)
+				continue
+			}
+		} else {
+			rec.PrivateKey = ""
 		}
 		out = append(out, &rec)
 	}
@@ -424,4 +462,85 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 		return nil
 	}
 	return fmt.Errorf("acm store: exceeded %d CAS attempts updating InUseBy for %s", maxInUseByCASAttempts, certArn)
+}
+
+// AcquireLease attempts to take the per-certificate issuance/renewal lease on
+// certArn for holderID, valid until now+ttl. The lease lives on the record
+// itself (CertRecord.LeaseHolder/LeaseExpiresAt) rather than in a separate
+// leader-election bucket — contrast handlers/eks/cluster_reconciler.go, which
+// leases a whole cluster for the life of a Run loop — because the unit of
+// work here is one certificate, reissued and released in a single pass.
+//
+// Succeeds (true) when the lease is unheld, expired, or already held by
+// holderID, so a worker that restarts mid-renewal with the same holderID
+// does not need to release first. Returns (false, nil), not an error, when a
+// different holder's lease is still live or a concurrent acquirer won the
+// CAS race — the caller should skip this certificate and let the current
+// holder finish or the lease expire.
+func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl time.Duration, now time.Time) (bool, error) {
+	key := certKey(certArn)
+	entry, err := s.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	var rec CertRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return false, fmt.Errorf("unmarshal cert: %w", err)
+	}
+	if rec.LeaseHolder != "" && rec.LeaseHolder != holderID && rec.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	rec.LeaseHolder = holderID
+	rec.LeaseExpiresAt = now.Add(ttl)
+	data, err := json.Marshal(&rec)
+	if err != nil {
+		return false, fmt.Errorf("marshal cert: %w", err)
+	}
+	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			// Lost the race to a concurrent acquirer between Get and Update;
+			// the caller skips this tick rather than retrying immediately.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// ReleaseLease clears certArn's lease if it is still held by holderID, so the
+// next scan (on this node or another) can pick the certificate up immediately
+// instead of waiting out the TTL. Best-effort: a failed release just leaves
+// the lease for LeaseExpiresAt to reap.
+func (s *Store) ReleaseLease(ctx context.Context, certArn, holderID string) error {
+	key := certKey(certArn)
+	entry, err := s.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil
+		}
+		return err
+	}
+	var rec CertRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return fmt.Errorf("unmarshal cert: %w", err)
+	}
+	if rec.LeaseHolder != holderID {
+		return nil // already released, expired, or taken over by another holder
+	}
+	rec.LeaseHolder = ""
+	rec.LeaseExpiresAt = time.Time{}
+	data, err := json.Marshal(&rec)
+	if err != nil {
+		return fmt.Errorf("marshal cert: %w", err)
+	}
+	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			return nil // record changed concurrently; nothing to clean up
+		}
+		return err
+	}
+	return nil
 }

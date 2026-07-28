@@ -499,9 +499,9 @@ var AvailableImages = map[string]Images{
 	// of the image name.
 	"spinifex-rds-postgres": {
 		Name:         "spinifex-rds-postgres",
-		Description:  "Mulga RDS PostgreSQL image — Alpine 3.21.7 + PostgreSQL 16 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
+		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 16 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
 		Distro:       "alpine",
-		Version:      "3.21.7",
+		Version:      "3.24.1",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
 		CreatedAt:    time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),

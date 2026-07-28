@@ -386,7 +386,10 @@ func (w *Worker) ForceRenewCertificate(ctx context.Context, input *ForceRenewCer
 		return nil, fmt.Errorf("acm renewal: %s is currently leased by another node; try again shortly", input.CertificateArn)
 	}
 
-	renewed, err := w.svc.store.GetCert(ctx, input.CertificateArn)
+	// Re-read for the post-renewal outcome only: serial, validity and renewal
+	// status. The new key was already written by the reissue above and is not
+	// read here, so this takes the metadata read.
+	renewed, err := w.svc.store.GetCertMetadata(ctx, input.CertificateArn)
 	if err != nil {
 		return nil, fmt.Errorf("get renewed cert: %w", err)
 	}

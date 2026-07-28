@@ -45,6 +45,9 @@ var acmActions = map[string]acmHandler{
 	"DescribeCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.DescribeCertificate(ctx, gw.NATSConn, acct, b)
 	},
+	"GetCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_acm.GetCertificate(ctx, gw.NATSConn, acct, b)
+	},
 	"ListCertificates": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.ListCertificates(ctx, gw.NATSConn, acct, b)
 	},

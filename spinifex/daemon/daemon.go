@@ -1089,6 +1089,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"acm.ImportCertificate", handleNATSRequest(d.acmService.ImportCertificate), "spinifex-workers"},
 			natsSub{"acm.RequestCertificate", handleNATSRequest(d.acmService.RequestCertificate), "spinifex-workers"},
 			natsSub{"acm.DescribeCertificate", handleNATSRequest(d.acmService.DescribeCertificate), "spinifex-workers"},
+			natsSub{"acm.GetCertificate", handleNATSRequest(d.acmService.GetCertificate), "spinifex-workers"},
 			natsSub{"acm.ListCertificates", handleNATSRequest(d.acmService.ListCertificates), "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", handleNATSRequest(d.acmService.DeleteCertificate), "spinifex-workers"},
 			natsSub{"acm.ListTagsForCertificate", handleNATSRequest(d.acmService.ListTagsForCertificate), "spinifex-workers"},

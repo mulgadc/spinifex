@@ -458,9 +458,37 @@ func (s *ACMServiceImpl) DescribeCertificate(ctx context.Context, input *acm.Des
 	return &acm.DescribeCertificateOutput{Certificate: recordToDetail(rec)}, nil
 }
 
+// GetCertificate returns the PEM-encoded certificate body and chain for an
+// owned ARN. This is the only ACM read that hands back the certificate itself
+// rather than metadata about it — it is what a client pinning the issuing chain
+// fetches, and what Terraform reads to feed a certificate into another
+// resource. It returns no key material: ACM discloses none through any API.
+func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCertificateInput, accountID string) (*acm.GetCertificateOutput, error) {
+	if input == nil || aws.StringValue(input.CertificateArn) == "" {
+		return nil, errors.New(awserrors.ErrorACMInvalidArn)
+	}
+	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
+	if err != nil {
+		return nil, err
+	}
+	// A requested certificate has a record before it has a body. Returning an
+	// empty string here would read as a successfully fetched empty certificate,
+	// so a not-yet-issued cert is a distinct retryable error, as in AWS.
+	if rec.Certificate == "" {
+		return nil, errors.New(awserrors.ErrorACMRequestInProgress)
+	}
+	out := &acm.GetCertificateOutput{Certificate: aws.String(rec.Certificate)}
+	// Left absent rather than empty for a self-signed leaf with no chain.
+	if rec.CertificateChain != "" {
+		out.CertificateChain = aws.String(rec.CertificateChain)
+	}
+	return out, nil
+}
+
 // ListCertificates returns summaries for every cert owned by accountID.
+// Summaries carry no key material, so this takes the metadata-only accessor.
 func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
-	recs, err := s.store.ListCerts(ctx, accountID)
+	recs, err := s.store.ListCertMetadata(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -506,8 +534,12 @@ func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.Delet
 
 // lookupOwned fetches a cert by ARN, returning ResourceNotFound when absent or
 // owned by a different account (no cross-account disclosure).
+//
+// Takes the metadata read: no caller of this helper reads PrivateKey, so an
+// ownership check must not decrypt one. A caller that does need the key
+// fetches it explicitly via store.GetCert once ownership is established.
 func (s *ACMServiceImpl) lookupOwned(ctx context.Context, certArn, accountID string) (*CertRecord, error) {
-	rec, err := s.store.GetCert(ctx, certArn)
+	rec, err := s.store.GetCertMetadata(ctx, certArn)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}

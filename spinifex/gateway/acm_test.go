@@ -32,6 +32,7 @@ func TestACMActionsMap_AllActionsRegistered(t *testing.T) {
 	expected := []string{
 		"ImportCertificate",
 		"DescribeCertificate",
+		"GetCertificate",
 		"ListCertificates",
 		"DeleteCertificate",
 		"ListTagsForCertificate",

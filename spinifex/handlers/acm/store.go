@@ -214,8 +214,35 @@ func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
 	return err
 }
 
-// GetCert retrieves a certificate by ARN, returning (nil, nil) when absent.
+// GetCert retrieves a certificate by ARN with PrivateKey decrypted to
+// plaintext PEM, returning (nil, nil) when absent. Use it only where the key
+// itself is needed (HAProxy fan-out, reissue); everything else wants
+// GetCertMetadata.
 func (s *Store) GetCert(ctx context.Context, certArn string) (*CertRecord, error) {
+	return s.getCert(ctx, certArn, true)
+}
+
+// GetCertMetadata retrieves a certificate by ARN with PrivateKey left empty
+// rather than decrypted, returning (nil, nil) when absent.
+//
+// This is the right read for every caller that answers a question about a
+// certificate rather than serving it: ownership checks, Describe, Delete, tag
+// reads and GetCertificate all ignore the key, and decrypting it for them
+// produces plaintext of exactly the material this store exists to protect
+// with no caller to consume it.
+//
+// A record whose key cannot be decrypted is still returned here, since
+// nothing on this path reads it — an unreadable key must not make a
+// certificate undescribable or undeletable.
+func (s *Store) GetCertMetadata(ctx context.Context, certArn string) (*CertRecord, error) {
+	return s.getCert(ctx, certArn, false)
+}
+
+// getCert reads and unmarshals one certificate record, resolving PrivateKey to
+// plaintext PEM when decrypt is true and clearing it to "" otherwise, so a
+// caller cannot mistake ciphertext for usable key material in a field typed as
+// plaintext PEM everywhere else in this package.
+func (s *Store) getCert(ctx context.Context, certArn string, decrypt bool) (*CertRecord, error) {
 	entry, err := s.kv.Get(ctx, certKey(certArn))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -226,6 +253,10 @@ func (s *Store) GetCert(ctx context.Context, certArn string) (*CertRecord, error
 	var rec CertRecord
 	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 		return nil, fmt.Errorf("unmarshal cert: %w", err)
+	}
+	if !decrypt {
+		rec.PrivateKey = ""
+		return &rec, nil
 	}
 	if err := s.decryptPrivateKey(&rec); err != nil {
 		return nil, err
@@ -293,13 +324,18 @@ func (s *Store) DeleteCert(ctx context.Context, certArn string) (bool, error) {
 	return true, nil
 }
 
-// ListCerts returns all certificate records owned by accountID, with
-// PrivateKey resolved to plaintext PEM — ListCertificates (its only caller
-// today) does not itself read PrivateKey, but this is a general-purpose,
-// account-scoped accessor and decrypting is the safe, unsurprising default
-// for it, matching GetCert.
-func (s *Store) ListCerts(ctx context.Context, accountID string) ([]*CertRecord, error) {
-	return s.listCerts(ctx, func(rec *CertRecord) bool { return rec.AccountID == accountID }, true)
+// ListCertMetadata returns metadata for every certificate owned by accountID,
+// with PrivateKey left empty rather than decrypted.
+//
+// Listing is a summary operation: ListCertificates, its only caller, reads
+// ARN/domain/status/type/algorithm/validity/InUseBy and never the key. A
+// decrypting variant existed here and cost an AES-GCM open per stored
+// certificate on every list call, scaling with certificate count, to produce
+// plaintext of exactly the material this store exists to protect and that no
+// caller then read. A caller needing key material fetches the one certificate
+// it wants via GetCert.
+func (s *Store) ListCertMetadata(ctx context.Context, accountID string) ([]*CertRecord, error) {
+	return s.listCerts(ctx, func(rec *CertRecord) bool { return rec.AccountID == accountID }, false)
 }
 
 // ListAllCertMetadata returns every certificate record's metadata, across

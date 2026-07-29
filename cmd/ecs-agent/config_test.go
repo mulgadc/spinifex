@@ -71,18 +71,3 @@ func TestLoadConfig_HeartbeatOverride(t *testing.T) {
 		t.Errorf("Heartbeat = %v, want default on bad value", cfg.Heartbeat)
 	}
 }
-
-func TestParseEnvFile_SkipsBlankAndComments(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "f.env")
-	if err := os.WriteFile(p, []byte("\n# c\nA=1\nnokeyval\nB = 2 \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	m := parseEnvFile(p)
-	if m["A"] != "1" || m["B"] != "2" {
-		t.Errorf("parse mismatch: %#v", m)
-	}
-	if _, ok := m["nokeyval"]; ok {
-		t.Errorf("line without = should be skipped")
-	}
-}

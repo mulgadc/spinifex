@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# rds-init — boot oneshot that bootstraps or attaches the PostgreSQL cluster
+# before the engine starts.
+#
+# `before postgresql` rather than a dependency of it: the engine runs with
+# auto_setup="no", so a failure here leaves postgresql refusing to start rather
+# than silently creating an empty cluster. `after rds-agent`, not `need`, so a
+# failed fetch fails this oneshot visibly rather than skipping it.
+
+description="Spinifex RDS PostgreSQL bootstrap"
+
+depend() {
+    need net
+    after rds-agent
+    before postgresql
+}
+
+start() {
+    ebegin "Bootstrapping the RDS PostgreSQL instance"
+    # The VM has no operator login, so the host-side serial log is the only view
+    # of a bootstrap that failed before the engine came up.
+    /usr/local/sbin/rds-init > /dev/console 2>&1
+    eend $?
+}

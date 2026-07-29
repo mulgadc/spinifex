@@ -103,6 +103,7 @@ type Config struct {
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
+	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -150,6 +151,18 @@ type NorthstarConfig struct {
 	// without reading the credential-bearing northstar.toml.
 	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
+}
+
+// Every DB VM's primary NIC lives in the shared system VPC, which gives the
+// in-guest agent management egress while the customer ENI stays ingress-only.
+type RDSConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// EKS control-plane supernet or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+
+	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
+	// can place across.
+	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
 }
 
 // RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at

@@ -56,6 +56,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
@@ -148,6 +149,7 @@ type Daemon struct {
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
+	rdsService            *handlers_rds.Service
 	acmService            *handlers_acm.ACMServiceImpl
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
@@ -760,6 +762,17 @@ func natsMetricAction(topic, node string) string {
 	return strings.TrimSuffix(action, "."+node)
 }
 
+// clusterCAKeyPath derives the CA private key path from the configured CA
+// certificate path — they are written as a pair into the same config directory.
+// Returns "" when no CA cert is configured, which disables cert minting rather
+// than guessing at a path.
+func clusterCAKeyPath(caCertPath string) string {
+	if caCertPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(caCertPath), "ca.key")
+}
+
 // natsSub defines a single NATS subscription entry for the table-driven setup.
 type natsSub struct {
 	topic      string
@@ -1032,6 +1045,16 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.CreateCapacityProvider", handleNATSRequest(d.ecsService.CreateCapacityProvider), "spinifex-workers"},
 			natsSub{"ecs.DescribeCapacityProviders", handleNATSRequest(d.ecsService.DescribeCapacityProviders), "spinifex-workers"},
 			natsSub{"ecs.DeleteCapacityProvider", handleNATSRequest(d.ecsService.DeleteCapacityProvider), "spinifex-workers"},
+		)
+	}
+
+	// RDS agent protocol. The register/health subjects are Layer-2 bus wildcards
+	// the gateway relays onto, addressing only — the payload is authoritative.
+	if d.rdsService != nil {
+		subs = append(subs,
+			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.rdsService.SubmitDBStateChange), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
 		)
 	}
 
@@ -1564,6 +1587,15 @@ func (d *Daemon) startCluster() error {
 			d.ecsScheduler.Run(d.ctx)
 		})
 	}
+
+	// RDS control plane: KV-backed agent-protocol handlers. The cluster CA signs
+	// the per-instance serving certs, minted per bootstrap fetch and never
+	// persisted; ca.key sits beside the configured ca.pem.
+	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(handlers_rds.Deps{
+		CACertPath: d.config.NATS.CACert,
+		CAKeyPath:  clusterCAKeyPath(d.config.NATS.CACert),
+		Launch:     d.buildRDSLaunchDeps(),
+	})
 
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
 		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn)

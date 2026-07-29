@@ -458,6 +458,9 @@ var (
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
 
+	// RDS-specific error codes.
+	ErrorDBInstanceNotFound = "DBInstanceNotFound"
+
 	// ECR-specific error codes.
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
@@ -1022,6 +1025,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorIAMLimitExceeded:           {HTTPCode: 409, Message: "The request was rejected because it attempted to create resources beyond the current AWS account limits."},
 	ErrorIAMMalformedPolicyDocument: {HTTPCode: 400, Message: "The policy document is malformed."},
 	ErrorAccessDenied:               {HTTPCode: 403, Message: "User is not authorized to perform this action."},
+
+	// RDS error codes
+	ErrorDBInstanceNotFound: {HTTPCode: 404, Message: "DBInstanceIdentifier does not refer to an existing DB instance."},
 
 	// ECR error codes
 	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},

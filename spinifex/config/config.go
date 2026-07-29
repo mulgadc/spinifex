@@ -163,6 +163,11 @@ type RDSConfig struct {
 	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
 	// can place across.
 	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
+
+	// How long a creating DB instance may go without a healthy agent heartbeat
+	// before the reconciler marks it failed. Zero takes the built-in default,
+	// which covers a cold boot plus initdb on the smallest instance class.
+	BootstrapTimeoutSeconds int `json:"BootstrapTimeoutSeconds" mapstructure:"bootstrap_timeout_seconds"`
 }
 
 // RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at

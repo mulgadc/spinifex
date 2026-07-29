@@ -17,6 +17,11 @@ const (
 	// control-plane read rather than reconciler↔agent traffic.
 	SubjectGetDBBootstrapConfig = "rds.GetDBBootstrapConfig"
 
+	// Layer-1 customer action subjects, answered by whichever daemon the queue
+	// group picks — a create does its own orchestration inline.
+	SubjectCreateDBInstance    = "rds.CreateDBInstance"
+	SubjectDescribeDBInstances = "rds.DescribeDBInstances"
+
 	// Queue groups are scoped per subject, so one name shares command delivery
 	// across gateway nodes for the whole fleet.
 	CommandQueueGroup = "spinifex-rds-agents"

@@ -150,6 +150,7 @@ type Daemon struct {
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
 	rdsService            *handlers_rds.Service
+	rdsReconciler         *handlers_rds.Reconciler
 	acmService            *handlers_acm.ACMServiceImpl
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
@@ -1055,6 +1056,8 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.rdsService.SubmitDBStateChange), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.rdsService.CreateDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.rdsService.DescribeDBInstances), "spinifex-workers"},
 		)
 	}
 
@@ -1588,13 +1591,21 @@ func (d *Daemon) startCluster() error {
 		})
 	}
 
-	// RDS control plane: KV-backed agent-protocol handlers. The cluster CA signs
-	// the per-instance serving certs, minted per bootstrap fetch and never
-	// persisted; ca.key sits beside the configured ca.pem.
-	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(handlers_rds.Deps{
-		CACertPath: d.config.NATS.CACert,
-		CAKeyPath:  clusterCAKeyPath(d.config.NATS.CACert),
-		Launch:     d.buildRDSLaunchDeps(),
+	// RDS control plane: KV-backed agent-protocol handlers plus the customer
+	// actions. The cluster CA signs the per-instance serving certs, minted per
+	// bootstrap fetch and never persisted; ca.key sits beside the configured ca.pem.
+	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(d.buildRDSDeps())
+
+	// One leader across the cluster derives DB instance status from the agent
+	// heartbeat; every node keeps serving the API.
+	d.rdsReconciler = handlers_rds.NewReconciler(d.rdsService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("RDS reconciler goroutine panicked", "recover", r)
+			}
+		}()
+		d.rdsReconciler.Run(d.ctx)
 	})
 
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {

@@ -24,13 +24,34 @@ type Deps struct {
 	// Overrides the file-backed CA loader in tests.
 	LoadCA CALoader
 	Launch LaunchDeps
+	// Resolves the customer subnet and validates the security groups the
+	// customer ENI is created with.
+	Network networkResolver
+	// Find-or-creates the rdsInstanceRole instance profile granted at launch.
+	IAM IAMProvider
+	// Lets the reconciler confirm a DB VM is running before calling its
+	// instance available. Nil leaves the transition on the heartbeat alone.
+	InstanceState InstanceStateResolver
+	// The northstar base zone. Empty means no vanity hostname, and the endpoint
+	// is the customer-ENI IP instead (D6).
+	BaseDomain string
+	// Identifies this node in the reconciler lease.
+	HolderID string
+	// Seeded into the DB VM's cloud-init so the in-guest agent can reach the
+	// gateway and pin its TLS. No credentials: those come from IMDS.
+	GatewayURL    string
+	GatewayCACert string
+	// Overrides how long the reconciler waits for the first healthy heartbeat.
+	// Zero takes defaultBootstrapTimeout.
+	BootstrapTimeout time.Duration
 }
 
 // The RDS control plane's KV-backed handler set. One per daemon.
 type Service struct {
-	nc     *nats.Conn
-	region string
-	deps   Deps
+	nc         *nats.Conn
+	region     string
+	baseDomain string
+	deps       Deps
 
 	// Heartbeat state that never reaches KV: beats are counted here and
 	// persisted only on change or on the slower floor.
@@ -52,7 +73,15 @@ func NewService(nc *nats.Conn, region string) *Service {
 
 func (s *Service) WithDeps(d Deps) *Service {
 	s.deps = d
+	s.baseDomain = d.BaseDomain
 	return s
+}
+
+func (s *Service) bootstrapTimeout() time.Duration {
+	if s.deps.BootstrapTimeout > 0 {
+		return s.deps.BootstrapTimeout
+	}
+	return defaultBootstrapTimeout
 }
 
 func (s *Service) js() (jetstream.JetStream, error) {
@@ -130,6 +159,19 @@ func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) erro
 	}
 	if _, err := kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("put %s: %w", key, err)
+	}
+	return nil
+}
+
+// Writes v at key only if nothing is stored there, so the key doubles as a
+// cluster-wide reservation. Returns jetstream.ErrKeyExists when it is taken.
+func createJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if _, err := kv.Create(ctx, key, data); err != nil {
+		return err
 	}
 	return nil
 }

@@ -1,0 +1,135 @@
+package handlers_rds
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+)
+
+// The customer-account VPC surface CreateDBInstance reads to place the endpoint
+// ENI. Read-only: the ENI itself is created through the launch deps.
+type networkResolver interface {
+	DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error)
+	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
+	DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
+}
+
+// Where the customer-facing ENI lands.
+type endpointPlacement struct {
+	VpcID            string
+	SubnetID         string
+	SecurityGroupIDs []string
+}
+
+// Until DB subnet groups land in rds-7 the placement is the account's default
+// VPC, mirroring AWS's own behaviour when a request names no subnet group. A
+// named group is rejected in validation rather than silently resolved here.
+func (s *Service) resolvePlacement(ctx context.Context, accountID string, req *validatedCreate) (*endpointPlacement, error) {
+	if s.deps.Network == nil {
+		return nil, fmt.Errorf("%s: RDS networking is not wired on this node", awserrors.ErrorServerInternal)
+	}
+
+	vpcID, err := s.defaultVPCID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	subnetID, err := s.firstSubnetID(ctx, accountID, vpcID)
+	if err != nil {
+		return nil, err
+	}
+	groupIDs, err := s.resolveSecurityGroups(ctx, accountID, vpcID, req.SecurityGroupIDs)
+	if err != nil {
+		return nil, err
+	}
+	return &endpointPlacement{VpcID: vpcID, SubnetID: subnetID, SecurityGroupIDs: groupIDs}, nil
+}
+
+func (s *Service) defaultVPCID(ctx context.Context, accountID string) (string, error) {
+	out, err := s.deps.Network.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("isDefault"), Values: aws.StringSlice([]string{"true"})}},
+	}, accountID)
+	if err != nil {
+		return "", fmt.Errorf("rds: describe default VPC: %w", err)
+	}
+	if out != nil {
+		for _, vpc := range out.Vpcs {
+			if id := aws.StringValue(vpc.VpcId); id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s: no default VPC in this account to place the DB endpoint in",
+		awserrors.ErrorDBInvalidVPCNetworkState)
+}
+
+// Sorted so a repeated create in the same account is placed deterministically
+// rather than wherever the describe happened to order its results.
+func (s *Service) firstSubnetID(ctx context.Context, accountID, vpcID string) (string, error) {
+	out, err := s.deps.Network.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})}},
+	}, accountID)
+	if err != nil {
+		return "", fmt.Errorf("rds: describe subnets in %s: %w", vpcID, err)
+	}
+	var ids []string
+	if out != nil {
+		for _, subnet := range out.Subnets {
+			if id := aws.StringValue(subnet.SubnetId); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("%s: default VPC %s has no subnet to place the DB endpoint in",
+			awserrors.ErrorDBInvalidVPCNetworkState, vpcID)
+	}
+	slices.Sort(ids)
+	return ids[0], nil
+}
+
+// An unset list takes the VPC's default group, matching AWS. A supplied one is
+// checked against the placement VPC, because an ENI cannot carry a group from
+// another VPC and the launch would otherwise fail after the record exists.
+func (s *Service) resolveSecurityGroups(ctx context.Context, accountID, vpcID string, requested []string) ([]string, error) {
+	out, err := s.deps.Network.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})}},
+	}, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("rds: describe security groups in %s: %w", vpcID, err)
+	}
+
+	inVPC := map[string]string{}
+	defaultGroupID := ""
+	if out != nil {
+		for _, group := range out.SecurityGroups {
+			id := aws.StringValue(group.GroupId)
+			if id == "" {
+				continue
+			}
+			name := aws.StringValue(group.GroupName)
+			inVPC[id] = name
+			if name == "default" {
+				defaultGroupID = id
+			}
+		}
+	}
+
+	if len(requested) == 0 {
+		if defaultGroupID == "" {
+			return nil, fmt.Errorf("%s: VPC %s has no default security group",
+				awserrors.ErrorDBInvalidVPCNetworkState, vpcID)
+		}
+		return []string{defaultGroupID}, nil
+	}
+	for _, id := range requested {
+		if _, ok := inVPC[id]; !ok {
+			return nil, fmt.Errorf("%s: security group %s is not in VPC %s",
+				awserrors.ErrorInvalidParameterValue, id, vpcID)
+		}
+	}
+	return requested, nil
+}

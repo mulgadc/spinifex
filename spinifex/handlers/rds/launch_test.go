@@ -207,6 +207,10 @@ type fakeLauncher struct {
 	err        error
 	terminated []string
 	unwind     *[]string
+
+	// onLaunch runs once the VM exists, for tests that need to disturb state
+	// after the launch has committed resources but before the caller records it.
+	onLaunch func()
 }
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
@@ -215,6 +219,9 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	f.input = in
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.onLaunch != nil {
+		f.onLaunch()
 	}
 	return &sysinstance.SystemInstanceOutput{InstanceID: "i-rds0001", MgmtIP: "172.30.0.9"}, nil
 }
@@ -251,6 +258,10 @@ type fakeVolumes struct {
 	deleted []string
 	err     error
 
+	// encrypted is what the created volume reports about itself, which is what
+	// the launch's encrypted-storage guard reads — not the request's echo.
+	encrypted bool
+
 	unwind       *[]string
 	deleteCtxErr error
 }
@@ -263,7 +274,7 @@ func (f *fakeVolumes) CreateVolume(_ context.Context, in *ec2.CreateVolumeInput,
 	}
 	f.created = append(f.created, in)
 	f.accts = append(f.accts, accountID)
-	return &ec2.Volume{VolumeId: aws.String("vol-rdsdata01")}, nil
+	return &ec2.Volume{VolumeId: aws.String("vol-rdsdata01"), Encrypted: aws.Bool(f.encrypted)}, nil
 }
 
 func (f *fakeVolumes) DeleteVolume(ctx context.Context, in *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {

@@ -107,12 +107,17 @@ func TestDHCPPoolAllocatorRejectsPoolMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "pool mismatch")
 }
 
-func TestDHCPPoolAllocatorReleaseUnknownIPIsNoop(t *testing.T) {
+// An untracked IP must not report success. Answering SUCCESS with nothing sent
+// upstream is what let stranded leases accumulate unnoticed; every caller of
+// Release logs and continues, so surfacing the error costs no teardown progress.
+func TestDHCPPoolAllocatorReleaseUnknownIPErrors(t *testing.T) {
 	fake := dhcp.NewFake()
 	pool := external.ExternalPoolConfig{Name: "wan", Source: external.SourceDHCP, BindBridge: "br-wan"}
 	allocator, _ := newPoolAllocator(t, fake, pool)
 
 	addr := netip.MustParseAddr("198.51.100.99")
-	assert.NoError(t, allocator.Release(context.Background(), "wan", addr, ""))
+	err := allocator.Release(context.Background(), "wan", addr, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no tracked lease for ip 198.51.100.99")
 	assert.Equal(t, 0, fake.ReleaseCount())
 }

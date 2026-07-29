@@ -744,9 +744,13 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp lease store: %w", err)
 	}
+	// Labels option 12 with this host so the upstream lease table groups by the
+	// node that took each lease.
+	nodeName, _ := os.Hostname()
 	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{
-		Client: dhcp.NewNClient4(0),
-		Store:  store,
+		Client:   dhcp.NewNClient4(0),
+		Store:    store,
+		NodeName: nodeName,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp manager: %w", err)

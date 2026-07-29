@@ -82,6 +82,54 @@ func TestManagerStartDropsExpiredLeases(t *testing.T) {
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 	assert.Equal(t, 0, fake.RenewCount())
 	assert.Equal(t, 0, mgr.LoopCount())
+	// No raw offer/ack, so nclient4 could not rebuild the lease; the release is
+	// skipped rather than attempted and logged as a failure.
+	assert.Equal(t, 0, fake.ReleaseCount())
+}
+
+// Dropping the KV entry without a RELEASE abandons the address instead of
+// returning it, and an upstream server that ages leases by liveness then holds
+// it indefinitely. That is how 20 addresses were stranded on the office LAN.
+func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
+	fake := dhcp.NewFake()
+	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
+
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: "eipalloc-stale", HWAddr: hw,
+	})
+	require.NoError(t, err)
+	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
+	lease.LeaseDuration = time.Hour
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
+
+	require.NoError(t, mgr.Start(context.Background()))
+	assert.Equal(t, 1, fake.ReleaseCount(), "expired lease must be returned upstream before the KV entry is dropped")
+	_, err = store.Get(t.Context(), "eipalloc-stale")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
+// A release that fails must not strand the KV entry too, and must not abort
+// adoption of the remaining leases.
+func TestManagerStartDropsExpiredLeaseWhenReleaseFails(t *testing.T) {
+	fake := dhcp.NewFake()
+	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
+
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: "eipalloc-stale", HWAddr: hw,
+	})
+	require.NoError(t, err)
+	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
+	lease.LeaseDuration = time.Hour
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
+	fake.ReleaseHook = func(*dhcp.Lease) error { return errors.New("upstream unreachable") }
+
+	require.NoError(t, mgr.Start(context.Background()))
+	_, err = store.Get(t.Context(), "eipalloc-stale")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestManagerStartTwiceErrors(t *testing.T) {

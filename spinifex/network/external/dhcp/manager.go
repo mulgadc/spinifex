@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -49,6 +50,9 @@ type ManagerConfig struct {
 	// IfaceIPs lists the IPs bound to a named interface; tests override.
 	// Used to detect MAC-keyed upstream routers on interface-MAC pools.
 	IfaceIPs func(iface string) ([]net.IP, error)
+	// NodeName labels outbound option 12 so upstream lease tables group by the
+	// host that took the lease. Defaults to the OS hostname.
+	NodeName string
 }
 
 // Manager owns active DHCP leases in vpcd: one renewal goroutine per
@@ -61,6 +65,7 @@ type Manager struct {
 	acquireSchedule []time.Duration
 	acquireBudget   time.Duration
 	ifaceIPs        func(iface string) ([]net.IP, error)
+	nodeName        string
 
 	sf singleflight.Group
 
@@ -108,6 +113,11 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if ifaceIPs == nil {
 		ifaceIPs = defaultIfaceIPs
 	}
+	nodeName := cfg.NodeName
+	if nodeName == "" {
+		// A missing hostname only costs attribution, so it is not fatal.
+		nodeName, _ = os.Hostname()
+	}
 	return &Manager{
 		client:          cfg.Client,
 		store:           cfg.Store,
@@ -115,8 +125,29 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		acquireSchedule: schedule,
 		acquireBudget:   budget,
 		ifaceIPs:        ifaceIPs,
+		nodeName:        nodeName,
 		loops:           map[string]*leaseLoop{},
 	}, nil
+}
+
+// leaseHostname composes option 12 as "<node>-<client-id>". chaddr is a derived
+// HashMAC and option 61 carries that same MAC, so without this the upstream
+// lease table has no field identifying which physical host took the lease.
+func (m *Manager) leaseHostname(clientID string) string {
+	if m.nodeName == "" {
+		return clientID
+	}
+	return m.nodeName + "-" + clientID
+}
+
+// leaseVendorClass tags option 60 with the node. Option 12 already carries the
+// node, but it is unique per lease; this keeps one value per host so an upstream
+// lease table can group on it directly.
+func (m *Manager) leaseVendorClass() string {
+	if m.nodeName == "" {
+		return defaultVendorClass
+	}
+	return defaultVendorClass + "/" + m.nodeName
 }
 
 // Start scans the KV bucket and spawns a renewal goroutine per live lease,
@@ -147,6 +178,10 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 		if !e.Lease.ExpiresAt().After(now) {
+			// Dropping the KV entry alone abandons the binding rather than
+			// returning it: a server that ages leases by liveness keeps the
+			// address for as long as anything answers ARP for it.
+			m.releaseExpiredUpstream(ctx, e.Lease)
 			if delErr := m.store.Delete(ctx, e.Lease.ClientID); delErr != nil {
 				slog.Warn("dhcp manager: drop expired lease failed", "client_id", e.Lease.ClientID, "err", delErr)
 			}
@@ -155,6 +190,27 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.spawnLoop(e, true)
 	}
 	return nil
+}
+
+// expiredReleaseTimeout bounds the best-effort RELEASE sent for a lease that
+// already expired locally. Adoption must not stall behind an unreachable
+// server, so this is deliberately short.
+const expiredReleaseTimeout = 5 * time.Second
+
+// releaseExpiredUpstream returns an already-expired lease to the server on a
+// best-effort basis. Failure is logged and swallowed: the KV entry is dropped
+// either way, and a lease persisted without raw offer/ack bytes cannot be
+// reconstructed, so it is skipped rather than attempted and logged as an error.
+func (m *Manager) releaseExpiredUpstream(ctx context.Context, l *Lease) {
+	if l == nil || len(l.RawOffer) == 0 || len(l.RawACK) == 0 {
+		return
+	}
+	relCtx, cancel := context.WithTimeout(ctx, expiredReleaseTimeout)
+	defer cancel()
+	if err := m.client.Release(relCtx, l); err != nil {
+		slog.Warn("dhcp manager: release of expired lease failed; address may be stranded upstream",
+			"client_id", l.ClientID, "ip", l.IP, "err", err)
+	}
 }
 
 // Stop cancels every renewal goroutine and waits for them to exit.
@@ -427,8 +483,12 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 		case err == nil:
 			clientID = entry.Lease.ClientID
 		case errors.Is(err, jetstream.ErrKeyNotFound):
-			slog.Warn("dhcp manager: release for unknown IP", "pool", req.PoolName, "ip", req.IP)
-			_ = msg.Respond(emptyReleaseReply)
+			// Answering SUCCESS here told the caller the address was freed when
+			// nothing went on the wire, so the upstream lease sat stranded and
+			// silent. Callers log-and-continue on a release error, so failing
+			// loudly surfaces the strand without wedging teardown.
+			slog.Warn("dhcp manager: release for untracked IP; nothing sent upstream", "pool", req.PoolName, "ip", req.IP)
+			respondReleaseErr(msg, fmt.Sprintf("no tracked lease for ip %s in pool %q; upstream lease may be stranded", req.IP, req.PoolName))
 			return
 		default:
 			respondReleaseErr(msg, fmt.Sprintf("lookup release ip: %v", err))
@@ -479,11 +539,19 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	if err != nil {
 		return nil, err
 	}
+	hostname := req.Hostname
+	if hostname == "" {
+		hostname = m.leaseHostname(req.ClientID)
+	}
+	vendorClass := req.VendorClass
+	if vendorClass == "" {
+		vendorClass = m.leaseVendorClass()
+	}
 	lease, err := m.acquireWithBackoff(ctx, AcquireRequest{
 		Bridge:      req.Bridge,
 		ClientID:    req.ClientID,
-		Hostname:    req.Hostname,
-		VendorClass: req.VendorClass,
+		Hostname:    hostname,
+		VendorClass: vendorClass,
 		HWAddr:      hw,
 		UseIfaceMAC: req.UseIfaceMAC,
 	})

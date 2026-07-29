@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,139 @@ func TestResolveHWAddrRepairsAMissingChaddr(t *testing.T) {
 	t.Run("no client-id leaves nothing to derive from", func(t *testing.T) {
 		if _, err := resolveHWAddr("br-wan", "", nil, false); err == nil {
 			t.Fatal("want an error rather than an exchange with a zero chaddr")
+		}
+	})
+}
+
+// resolveHWAddr's useIfaceMAC branch leases with the bind interface's own MAC
+// instead of a derived one, for uplinks that drop foreign source MACs. It must
+// fail closed on a bad interface rather than fall through to a derived or zero
+// chaddr, and must ignore the client-id entirely once an interface MAC exists.
+func TestResolveHWAddrUsesTheInterfaceMACWhenConfigured(t *testing.T) {
+	t.Run("an unknown interface name errors", func(t *testing.T) {
+		if _, err := resolveHWAddr("mulga-no-such-iface0", "eipalloc-1234", nil, true); err == nil {
+			t.Fatal("want an error rather than a nil MAC for a nonexistent interface")
+		}
+	})
+
+	t.Run("an interface with no hardware address errors", func(t *testing.T) {
+		iface, err := net.InterfaceByName("lo")
+		if err != nil {
+			t.Skip("no loopback interface available on this host")
+		}
+		if len(iface.HardwareAddr) != 0 {
+			t.Skip("lo unexpectedly carries a hardware address on this host")
+		}
+		if _, err := resolveHWAddr("lo", "eipalloc-1234", nil, true); err == nil {
+			t.Fatal("want an error rather than an empty MAC")
+		}
+	})
+
+	t.Run("an interface with a MAC is returned verbatim, ignoring the client-id", func(t *testing.T) {
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			t.Fatalf("list interfaces: %v", err)
+		}
+		var target *net.Interface
+		for i := range ifaces {
+			if len(ifaces[i].HardwareAddr) > 0 {
+				target = &ifaces[i]
+				break
+			}
+		}
+		if target == nil {
+			t.Skip("no interface with a hardware address available on this host")
+		}
+		got, err := resolveHWAddr(target.Name, "eipalloc-1234", nil, true)
+		if err != nil {
+			t.Fatalf("resolveHWAddr: %v", err)
+		}
+		if !bytes.Equal(got, target.HardwareAddr) {
+			t.Fatalf("hw addr = %s, want the interface's own %s", got, target.HardwareAddr)
+		}
+	})
+}
+
+// rawDHCPv4Message returns a syntactically valid, arbitrary DHCPv4 wire
+// message for use as a Lease's RawOffer/RawACK. Renew and Release only need
+// something reconstructNClient4Lease can parse before chaddr resolution runs.
+func rawDHCPv4Message(t *testing.T) []byte {
+	t.Helper()
+	msg, err := dhcpv4.New()
+	if err != nil {
+		t.Fatalf("build dhcpv4 message: %v", err)
+	}
+	return msg.ToBytes()
+}
+
+// Acquire, Renew and Release each resolve a chaddr before opening a socket, so
+// all three fail the same way against a bridge that cannot exist — proof they
+// share one resolution path rather than three independently maintained ones.
+// nclient4.New rejects an unknown interface name itself, so this needs no
+// privileges and no live DHCP server.
+func TestAcquireRenewReleaseFailToOpenAnUnknownBridge(t *testing.T) {
+	const noSuchBridge = "mulga-no-such-br0"
+	c := NewNClient4(time.Second)
+
+	derived, err := DeriveMAC("eipalloc-1234")
+	if err != nil {
+		t.Fatalf("derive mac: %v", err)
+	}
+	lease := &Lease{
+		Bridge:   noSuchBridge,
+		ClientID: "eipalloc-1234",
+		HWAddr:   derived,
+		RawOffer: rawDHCPv4Message(t),
+		RawACK:   rawDHCPv4Message(t),
+	}
+
+	t.Run("Acquire", func(t *testing.T) {
+		_, err := c.Acquire(context.Background(), AcquireRequest{
+			Bridge:   noSuchBridge,
+			ClientID: "eipalloc-1234",
+		})
+		if err == nil || !strings.Contains(err.Error(), noSuchBridge) {
+			t.Fatalf("Acquire err = %v, want an error mentioning %s", err, noSuchBridge)
+		}
+	})
+
+	t.Run("Renew", func(t *testing.T) {
+		_, err := c.Renew(context.Background(), lease)
+		if err == nil || !strings.Contains(err.Error(), noSuchBridge) {
+			t.Fatalf("Renew err = %v, want an error mentioning %s", err, noSuchBridge)
+		}
+	})
+
+	t.Run("Release", func(t *testing.T) {
+		if err := c.Release(context.Background(), lease); err == nil || !strings.Contains(err.Error(), noSuchBridge) {
+			t.Fatalf("Release err = %v, want an error mentioning %s", err, noSuchBridge)
+		}
+	})
+}
+
+// A lease persisted before the chaddr was carried has neither a hardware
+// address nor a client-id to derive one from. Renew and Release must refuse
+// it before opening a socket rather than exchange with a zero chaddr — the
+// same class of bug option 61 was fixed to stop, reached by a different route.
+func TestRenewReleaseRefuseALeaseWithNoResolvableChaddr(t *testing.T) {
+	c := NewNClient4(time.Second)
+	lease := &Lease{
+		Bridge:   "br-wan",
+		ClientID: "",
+		HWAddr:   nil,
+		RawOffer: rawDHCPv4Message(t),
+		RawACK:   rawDHCPv4Message(t),
+	}
+
+	t.Run("Renew", func(t *testing.T) {
+		if _, err := c.Renew(context.Background(), lease); err == nil {
+			t.Fatal("want an error rather than a renew with a zero chaddr")
+		}
+	})
+
+	t.Run("Release", func(t *testing.T) {
+		if err := c.Release(context.Background(), lease); err == nil {
+			t.Fatal("want an error rather than a release with a zero chaddr")
 		}
 	})
 }

@@ -48,6 +48,9 @@ mkdir -p /etc/rancher/k3s/config.yaml.d /etc/spinifex-eks
 # Role-agnostic services only. Anything role-specific is enabled by the
 # first-boot selector, not baked. mulga-ebs-byid is not here: it serves any
 # guest with an attached volume, so the base image enables it for every image.
-systemctl enable mulga-eks-provider-id mulga-vpc-mtu
+#
+# Whether these start at boot is declared in 30-mulga-eks-common.preset, not
+# here: mkosi runs preset-all after every postinst, resetting each unit to
+# policy and discarding whatever a postinst enabled or disabled.
 
-echo "[eks-common] postinst complete: k3s ${K3S_VERSION} installed, node services enabled"
+echo "[eks-common] postinst complete: k3s ${K3S_VERSION} installed, node services start-at-boot left to preset policy"

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# ecs postinst — wires the CNI bin path and enables the runtime + agent.
+# ecs postinst — wires the CNI bin path for the runtime + agent.
 
 # Built on the host and delivered via staging/. Without this check an empty
 # staging tree ships an image whose agent simply never starts.
@@ -21,6 +21,10 @@ ln -sf /usr/lib/cni /opt/cni/bin
 # latter from cloud-init at launch.
 mkdir -p /var/lib/containerd /etc/spinifex-ecs
 
-systemctl enable containerd ecs-ca-install ecs-agent
+# Whether containerd/ecs-ca-install/ecs-agent start at boot — and whether the
+# unrelated cni-dhcp units the containernetworking-plugins package enables by
+# default are turned back off — is declared in 40-mulga-ecs.preset, not here:
+# mkosi runs preset-all after every postinst, resetting each unit to policy and
+# discarding whatever a postinst enabled or disabled.
 
-echo "[ecs] postinst complete: containerd + ecs-agent enabled"
+echo "[ecs] postinst complete: runtime + agent start-at-boot left to preset policy"

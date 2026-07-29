@@ -1,0 +1,18 @@
+# mulga-eks-provider-id and mulga-vpc-mtu are role-agnostic: every EKS node,
+# server or agent, needs the kubelet drop-in and the flannel VXLAN MTU pin
+# regardless of which role the first-boot selector picks. So unlike the
+# role-selected units in eks-server's 40- file, these are unconditional here.
+#
+# This has to be a preset file rather than the postinst's `systemctl enable`:
+# mkosi runs preset-all after every profile's postinst, resetting every unit to
+# policy and discarding whatever the postinst asked for. With no policy file at
+# all the fallthrough is "enable" anyway, so this changes nothing about the
+# image shipped today — but that "today" only holds because nothing
+# contradicts the default, and stating it here means an upstream package
+# change can't silently flip it.
+#
+# Numbered ahead of eks-server's 40- and eks-agent's 50- so a future rename
+# collision would be caught by first-match-wins favouring the more specific
+# file, not this common one; today the unit sets don't overlap at all.
+enable mulga-eks-provider-id.service
+enable mulga-vpc-mtu.service

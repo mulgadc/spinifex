@@ -149,7 +149,11 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 	if err != nil {
 		return nil, err
 	}
-	if err := s.applyPendingModifications(ctx, kv, accountID, moved); err != nil {
+	// Under the lease, or the reconciler's sweep of modifying instances re-enters
+	// this same change while it is still running.
+	if _, err := s.withModifyLease(ctx, kv, id, func() error {
+		return s.applyPendingModifications(ctx, kv, accountID, moved)
+	}); err != nil {
 		return nil, s.failTransition(ctx, kv, accountID, moved,
 			fmt.Sprintf("the DB instance could not be modified: %v", err))
 	}

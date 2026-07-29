@@ -35,6 +35,10 @@ type DBInstanceRecord struct {
 	// in effect, which is also what tells the reconciler a modify is finished.
 	PendingModifiedValues *PendingModifiedValues `json:"pendingModifiedValues,omitempty"`
 
+	// Held by whichever worker is applying those values, so a second one does
+	// not enter the same change. Nil when nothing is being applied.
+	ModifyLease *ModifyLease `json:"modifyLease,omitempty"`
+
 	// Where the customer ENI was placed, so a replace lands the new VM's ENI in
 	// the same subnet and security groups without re-deriving them.
 	SubnetID             string   `json:"subnetId,omitempty"`
@@ -129,6 +133,22 @@ func (p *PendingModifiedValues) empty() bool {
 // the nil case has to read as "nothing outstanding" rather than panic.
 func (p *PendingModifiedValues) growingFilesystem() bool {
 	return p != nil && p.FilesystemGrowPending
+}
+
+// Claimed for as long as a worker is applying PendingModifiedValues, and
+// renewed while it works. A modify still inside its own API call and one a dead
+// leader abandoned are the same record otherwise — both are modifying with
+// values not yet applied — so this is the only thing that tells them apart.
+type ModifyLease struct {
+	// The node and the claim, so two workers on one node are still distinct.
+	Holder    string    `json:"holder"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// Whether someone is still renewing it. An expired lease is what makes an
+// abandoned modify resumable rather than stuck behind a worker that is gone.
+func (l *ModifyLease) live() bool {
+	return l != nil && time.Now().UTC().Before(l.ExpiresAt)
 }
 
 var _ TaggedRecord = (*DBInstanceRecord)(nil)

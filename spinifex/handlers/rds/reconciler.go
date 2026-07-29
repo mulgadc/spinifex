@@ -277,16 +277,30 @@ func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyVal
 	// VM, so it is re-run rather than waited on: every step is idempotent, and
 	// the record is what says which ones are outstanding.
 	if !pending.empty() && !pending.growingFilesystem() {
-		err := r.svc.applyPendingModifications(ctx, kv, accountID, rec)
-		if err == nil {
-			return nil
-		}
-		if overrun {
-			return r.transition(ctx, kv, rev, rec, StatusFailed,
+		// The lease is what separates the two: a change still inside its own API
+		// call holds it, and one whose worker died does not.
+		resumed, err := r.svc.withModifyLease(ctx, kv, rec.DBInstanceIdentifier, func() error {
+			return r.svc.applyPendingModifications(ctx, kv, accountID, rec)
+		})
+		switch {
+		case err != nil && overrun:
+			// Claiming and releasing the lease moved the record, so this pass's
+			// revision is stale by now and a CAS on it would lose to our own
+			// write on every pass — leaving the instance modifying forever.
+			return r.transitionFresh(ctx, kv, rec.DBInstanceIdentifier, StatusFailed,
 				fmt.Sprintf("the DB instance could not be modified within %s: %v", transitionTimeout, err))
+		case err != nil:
+			slog.WarnContext(ctx, "rds reconciler: resuming a modify failed; retrying next pass",
+				"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		case !resumed && overrun:
+			// Held for longer than the whole budget, so the holder is wedged
+			// rather than working; failing it is what lets the customer retry.
+			return r.transition(ctx, kv, rev, rec, StatusFailed,
+				fmt.Sprintf("the DB instance was still being modified after %s", transitionTimeout))
+		case !resumed:
+			slog.DebugContext(ctx, "rds reconciler: a modify is already in flight; leaving it to its holder",
+				"dbInstance", rec.DBInstanceIdentifier)
 		}
-		slog.WarnContext(ctx, "rds reconciler: resuming a modify failed; retrying next pass",
-			"dbInstance", rec.DBInstanceIdentifier, "err", err)
 		return nil
 	}
 
@@ -434,6 +448,17 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	slog.InfoContext(ctx, "rds reconciler: DB instance transitioned",
 		"dbInstance", rec.DBInstanceIdentifier, "from", from, "to", to, "reason", reason)
 	return nil
+}
+
+// transition against a freshly read revision, for a caller that has written the
+// record itself since the pass opened and so cannot use the revision it read.
+func (r *Reconciler) transitionFresh(ctx context.Context, kv jetstream.KeyValue, id string, to Status, reason string) error {
+	var rec DBInstanceRecord
+	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
+	if err != nil || !found {
+		return err
+	}
+	return r.transition(ctx, kv, rev, &rec, to, reason)
 }
 
 // Adapts an EC2 describe fan-out to the reconciler's narrow state lookup.

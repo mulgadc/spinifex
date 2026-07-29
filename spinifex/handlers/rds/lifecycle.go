@@ -282,24 +282,38 @@ func (s *Service) failTransition(ctx context.Context, kv jetstream.KeyValue, acc
 // A read-modify-write under CAS, replayed on contention so a concurrent agent
 // heartbeat cannot make a lifecycle write disappear.
 func (s *Service) updateInstance(ctx context.Context, kv jetstream.KeyValue, id string, mutate func(*DBInstanceRecord)) error {
+	_, err := s.updateInstanceIf(ctx, kv, id, func(rec *DBInstanceRecord) bool {
+		mutate(rec)
+		return true
+	})
+	return err
+}
+
+// updateInstance for a caller that can only decide whether to write once it has
+// seen the record it would overwrite — a lease claim, whose whole question is
+// whether someone else holds it. Reports whether the write happened; a mutate
+// that returns false leaves the record untouched and is not an error.
+func (s *Service) updateInstanceIf(ctx context.Context, kv jetstream.KeyValue, id string, mutate func(*DBInstanceRecord) bool) (bool, error) {
 	key := DBInstanceKey(id)
 	for range tagWriteAttempts {
 		rec, rev, err := s.getDBInstance(ctx, kv, id)
 		if err != nil {
-			return err
+			return false, err
 		}
-		mutate(rec)
+		if !mutate(rec) {
+			return false, nil
+		}
 		rec.UpdatedAt = time.Now().UTC()
 
 		err = updateJSON(ctx, kv, key, rev, rec)
 		if err == nil {
-			return nil
+			return true, nil
 		}
 		if !errors.Is(err, jetstream.ErrKeyExists) {
-			return err
+			return false, err
 		}
 	}
-	return fmt.Errorf("rds: update of %s contended after %d attempts", key, tagWriteAttempts)
+	return false, fmt.Errorf("rds: update of %s contended after %d attempts", key, tagWriteAttempts)
 }
 
 func joinStatuses(statuses []Status) string {

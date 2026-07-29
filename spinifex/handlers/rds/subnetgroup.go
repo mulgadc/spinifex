@@ -38,7 +38,7 @@ const subnetGroupStatusComplete = "Complete"
 // instance at all.
 func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSubnetGroupInput, accountID string) (*rds.CreateDBSubnetGroupOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBSubnetGroupName)
 	if err := validateDBGroupName("DBSubnetGroupName", name); err != nil {
@@ -77,8 +77,8 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 	// one winner instead of both reporting success over each other's subnets.
 	if err := createJSON(ctx, kv, DBSubnetGroupKey(name), &rec); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, fmt.Errorf("%s: DB subnet group %s already exists",
-				awserrors.ErrorDBSubnetGroupAlreadyExists, name)
+			return nil, awserrors.Errorf(awserrors.ErrorDBSubnetGroupAlreadyExists,
+				"DB subnet group %s already exists", name)
 		}
 		return nil, err
 	}
@@ -131,11 +131,11 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 // ENI was placed, and would make destroy ordering ambiguous.
 func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBSubnetGroupName)
 	if name == "" {
-		return nil, fmt.Errorf("%s: DBSubnetGroupName is required", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBSubnetGroupName is required")
 	}
 
 	kv, err := s.bucket(ctx, accountID)
@@ -152,8 +152,8 @@ func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSu
 		return nil, err
 	}
 	if len(users) > 0 {
-		return nil, fmt.Errorf("%s: DB subnet group %s is still used by %s",
-			awserrors.ErrorDBSubnetGroupInvalidState, name, strings.Join(users, ", "))
+		return nil, awserrors.Errorf(awserrors.ErrorDBSubnetGroupInvalidState,
+			"DB subnet group %s is still used by %s", name, strings.Join(users, ", "))
 	}
 
 	if err := kv.Delete(ctx, DBSubnetGroupKey(name)); err != nil {
@@ -169,15 +169,15 @@ func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSu
 // reported as not found rather than leaked.
 func (s *Service) resolveGroupSubnets(ctx context.Context, accountID string, requested []string) ([]DBSubnetGroupSubnet, string, error) {
 	if s.deps.Network == nil {
-		return nil, "", fmt.Errorf("%s: RDS networking is not wired on this node", awserrors.ErrorServerInternal)
+		return nil, "", awserrors.Errorf(awserrors.ErrorServerInternal, "RDS networking is not wired on this node")
 	}
 	switch {
 	case len(requested) == 0:
-		return nil, "", fmt.Errorf("%s: SubnetIds must name at least one subnet",
-			awserrors.ErrorInvalidParameterValue)
+		return nil, "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"SubnetIds must name at least one subnet")
 	case len(requested) > maxSubnetsPerGroup:
-		return nil, "", fmt.Errorf("%s: a DB subnet group may hold at most %d subnets, got %d",
-			awserrors.ErrorInvalidParameterValue, maxSubnetsPerGroup, len(requested))
+		return nil, "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"a DB subnet group may hold at most %d subnets, got %d", maxSubnetsPerGroup, len(requested))
 	}
 
 	out, err := s.deps.Network.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
@@ -201,23 +201,23 @@ func (s *Service) resolveGroupSubnets(ctx context.Context, accountID string, req
 	seen := make(map[string]bool, len(requested))
 	for _, id := range requested {
 		if seen[id] {
-			return nil, "", fmt.Errorf("%s: subnet %s is named more than once",
-				awserrors.ErrorDBSubnetInvalid, id)
+			return nil, "", awserrors.Errorf(awserrors.ErrorDBSubnetInvalid, "subnet %s is named more than once", id)
 		}
 		seen[id] = true
 
 		subnet, ok := found[id]
 		if !ok {
-			return nil, "", fmt.Errorf("%s: subnet %s does not exist in this account",
-				awserrors.ErrorDBSubnetInvalid, id)
+			return nil, "", awserrors.Errorf(awserrors.ErrorDBSubnetInvalid,
+				"subnet %s does not exist in this account", id)
 		}
 		subnetVPC := aws.StringValue(subnet.VpcId)
 		if vpcID == "" {
 			vpcID = subnetVPC
 		}
 		if subnetVPC != vpcID {
-			return nil, "", fmt.Errorf("%s: subnet %s is in VPC %s while the group's other subnets are in %s; "+
-				"a DB subnet group must span one VPC", awserrors.ErrorDBSubnetInvalid, id, subnetVPC, vpcID)
+			return nil, "", awserrors.Errorf(awserrors.ErrorDBSubnetInvalid,
+				"subnet %s is in VPC %s while the group's other subnets are in %s; "+
+					"a DB subnet group must span one VPC", id, subnetVPC, vpcID)
 		}
 		// Read off the subnet rather than stamped from the platform's single zone,
 		// so the response needs no change when V2 makes AZs real.
@@ -227,7 +227,7 @@ func (s *Service) resolveGroupSubnets(ctx context.Context, accountID string, req
 		})
 	}
 	if vpcID == "" {
-		return nil, "", fmt.Errorf("%s: the named subnets report no VPC", awserrors.ErrorDBSubnetInvalid)
+		return nil, "", awserrors.Errorf(awserrors.ErrorDBSubnetInvalid, "the named subnets report no VPC")
 	}
 	return subnets, vpcID, nil
 }
@@ -241,7 +241,7 @@ func getDBSubnetGroup(ctx context.Context, kv jetstream.KeyValue, name string) (
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, fmt.Errorf("%s: DB subnet group %s not found", awserrors.ErrorDBSubnetGroupNotFound, name)
+		return nil, 0, awserrors.Errorf(awserrors.ErrorDBSubnetGroupNotFound, "DB subnet group %s not found", name)
 	}
 	return &rec, rev, nil
 }
@@ -299,20 +299,19 @@ func (s *Service) projectSubnetGroup(rec *DBSubnetGroupRecord) *rds.DBSubnetGrou
 func validateDBGroupName(field, name string) error {
 	switch {
 	case name == "":
-		return fmt.Errorf("%s: %s is required", awserrors.ErrorInvalidParameterValue, field)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is required", field)
 	case len(name) > maxDBGroupNameLen:
-		return fmt.Errorf("%s: %s must be at most %d characters",
-			awserrors.ErrorInvalidParameterValue, field, maxDBGroupNameLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"%s must be at most %d characters", field, maxDBGroupNameLen)
 	case !isLetter(rune(name[0])):
-		return fmt.Errorf("%s: %s must begin with a letter", awserrors.ErrorInvalidParameterValue, field)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s must begin with a letter", field)
 	case strings.EqualFold(name, "default"):
-		return fmt.Errorf("%s: %s may not be \"default\", which the service reserves",
-			awserrors.ErrorInvalidParameterValue, field)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"%s may not be \"default\", which the service reserves", field)
 	// A slash would split the name across the KV key layout's own separator, so
 	// one group's parameters would land under another's prefix.
 	case strings.ContainsAny(name, "/ \t\n"):
-		return fmt.Errorf("%s: %s may not contain slashes or whitespace",
-			awserrors.ErrorInvalidParameterValue, field)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s may not contain slashes or whitespace", field)
 	}
 	return nil
 }
@@ -320,10 +319,10 @@ func validateDBGroupName(field, name string) error {
 func validateDBGroupDescription(field, description string) error {
 	switch {
 	case description == "":
-		return fmt.Errorf("%s: %s is required", awserrors.ErrorInvalidParameterValue, field)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is required", field)
 	case len(description) > maxDBGroupDescriptionLen:
-		return fmt.Errorf("%s: %s must be at most %d characters",
-			awserrors.ErrorInvalidParameterValue, field, maxDBGroupDescriptionLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"%s must be at most %d characters", field, maxDBGroupDescriptionLen)
 	}
 	return nil
 }

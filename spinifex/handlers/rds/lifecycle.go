@@ -47,7 +47,7 @@ const instanceCommandTimeout = 90 * time.Second
 // to, and silently ignoring it would report a failover that never happened.
 func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInstanceInput, accountID string) (*rds.RebootDBInstanceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	if aws.BoolValue(input.ForceFailover) {
 		return nil, unimplemented("ForceFailover", "this platform is single-AZ; there is no standby to fail over to")
@@ -93,7 +93,7 @@ func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInsta
 // datadir at the same address (D5/D9).
 func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, accountID string) (*rds.StopDBInstanceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	// A pre-stop snapshot is rds-8's; accepting it here would report a snapshot
 	// the customer would then not find.
@@ -128,7 +128,7 @@ func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceI
 // The engine replays WAL when the graceful stop did not complete.
 func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanceInput, accountID string) (*rds.StartDBInstanceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 
 	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier),
@@ -213,7 +213,7 @@ func (s *Service) stopEngineOrRecordFallback(ctx context.Context, accountID stri
 // the stop already running.
 func (s *Service) beginTransition(ctx context.Context, accountID, id string, to Status, from ...Status) (*DBInstanceRecord, jetstream.KeyValue, error) {
 	if id == "" {
-		return nil, nil, fmt.Errorf("%s: DBInstanceIdentifier is required", awserrors.ErrorInvalidParameterValue)
+		return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	}
 	if s.deps.Instances == nil {
 		return nil, nil, errors.New("rds: no instance command path configured")
@@ -227,11 +227,12 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 		return nil, nil, err
 	}
 	if !slices.Contains(from, rec.Status) {
-		return nil, nil, fmt.Errorf("%s: DB instance %s is %s; the operation requires it to be %s",
-			awserrors.ErrorDBInstanceInvalidState, id, rec.Status, joinStatuses(from))
+		return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+			"DB instance %s is %s; the operation requires it to be %s", id, rec.Status, joinStatuses(from))
 	}
 	if rec.InstanceID == "" {
-		return nil, nil, fmt.Errorf("%s: DB instance %s has no VM to act on", awserrors.ErrorDBInstanceInvalidState, id)
+		return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+			"DB instance %s has no VM to act on", id)
 	}
 
 	now := time.Now().UTC()
@@ -245,8 +246,8 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, nil, fmt.Errorf("%s: DB instance %s changed state concurrently; retry the operation",
-				awserrors.ErrorDBInstanceInvalidState, id)
+			return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+				"DB instance %s changed state concurrently; retry the operation", id)
 		}
 		return nil, nil, err
 	}
@@ -280,7 +281,7 @@ func (s *Service) failTransition(ctx context.Context, kv jetstream.KeyValue, acc
 			"dbInstance", rec.DBInstanceIdentifier, "err", err)
 	}
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier, reason, EventCategoryFailure)
-	return fmt.Errorf("%s: %s", awserrors.ErrorDBInstanceInvalidState, reason)
+	return awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState, "%s", reason)
 }
 
 // A read-modify-write under CAS, replayed on contention so a concurrent agent

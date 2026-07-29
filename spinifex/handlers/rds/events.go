@@ -163,13 +163,14 @@ func (s *Service) DescribeEvents(ctx context.Context, input *rds.DescribeEventsI
 	sourceType := aws.StringValue(input.SourceType)
 	sourceIdentifier := aws.StringValue(input.SourceIdentifier)
 	if sourceType != "" && !validEventSourceType(sourceType) {
-		return nil, fmt.Errorf("%s: SourceType %q is not an RDS event source", awserrors.ErrorInvalidParameterValue, sourceType)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"SourceType %q is not an RDS event source", sourceType)
 	}
 	// AWS's own rule: an identifier is meaningless without the type, since two
 	// resource kinds may share a name.
 	if sourceIdentifier != "" && sourceType == "" {
-		return nil, fmt.Errorf("%s: SourceType is required when SourceIdentifier is supplied",
-			awserrors.ErrorInvalidParameterCombination)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"SourceType is required when SourceIdentifier is supplied")
 	}
 
 	kv, err := s.bucket(ctx, accountID)
@@ -259,7 +260,7 @@ func eventWindow(input *rds.DescribeEventsInput) (timeWindow, error) {
 		window.end = input.EndTime.UTC()
 	}
 	if window.end.Before(window.start) {
-		return timeWindow{}, fmt.Errorf("%s: EndTime is before StartTime", awserrors.ErrorInvalidParameterCombination)
+		return timeWindow{}, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination, "EndTime is before StartTime")
 	}
 	return window, nil
 }

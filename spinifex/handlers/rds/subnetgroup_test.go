@@ -70,7 +70,8 @@ func TestCreateDBSubnetGroup_RejectsAMissingSubnet(t *testing.T) {
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
 		subnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-nowhere"), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetInvalid)
+	assert.Equal(t, awserrors.ErrorDBSubnetInvalid, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.Contains(t, err.Error(), "subnet-nowhere")
 }
 
@@ -87,7 +88,8 @@ func TestCreateDBSubnetGroup_RejectsACrossVPCSet(t *testing.T) {
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
 		subnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-other"), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetInvalid)
+	assert.Equal(t, awserrors.ErrorDBSubnetInvalid, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.Contains(t, err.Error(), "must span one VPC")
 }
 
@@ -99,7 +101,8 @@ func TestCreateDBSubnetGroup_RejectsACrossAccountSubnet(t *testing.T) {
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
 		subnetGroupInput(testSubnetGroup, "subnet-foreign"), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetInvalid)
+	assert.Equal(t, awserrors.ErrorDBSubnetInvalid, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.Equal(t, []string{testAccountID}, h.network.accts,
 		"the subnet describe must be issued against the caller's own account")
 }
@@ -130,7 +133,8 @@ func TestCreateDBSubnetGroup_RejectsMalformedRequests(t *testing.T) {
 
 			_, err := h.svc.CreateDBSubnetGroup(t.Context(), input, testAccountID)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, tc.want, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
 		})
 	}
 }
@@ -144,7 +148,8 @@ func TestCreateDBSubnetGroup_RejectsADuplicateName(t *testing.T) {
 
 	_, err = h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetGroupAlreadyExists)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupAlreadyExists, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 func TestDescribeDBSubnetGroups_ListsAndNames(t *testing.T) {
@@ -175,7 +180,8 @@ func TestDescribeDBSubnetGroups_RejectsAnUnknownName(t *testing.T) {
 	_, err := h.svc.DescribeDBSubnetGroups(t.Context(),
 		&rds.DescribeDBSubnetGroupsInput{DBSubnetGroupName: aws.String("absent")}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 func TestDeleteDBSubnetGroup_RemovesAnUnusedGroup(t *testing.T) {
@@ -189,7 +195,8 @@ func TestDeleteDBSubnetGroup_RemovesAnUnusedGroup(t *testing.T) {
 
 	_, err = h.svc.DescribeDBSubnetGroups(t.Context(),
 		&rds.DescribeDBSubnetGroupsInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, testAccountID)
-	assert.ErrorContains(t, err, awserrors.ErrorDBSubnetGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // A group referenced only by a deleting instance is refused too, so teardown
@@ -215,7 +222,8 @@ func TestDeleteDBSubnetGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T) {
 			_, err = h.svc.DeleteDBSubnetGroup(t.Context(),
 				&rds.DeleteDBSubnetGroupInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, testAccountID)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetGroupInvalidState)
+			assert.Equal(t, awserrors.ErrorDBSubnetGroupInvalidState, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
 			assert.Contains(t, err.Error(), testDBInstanceID)
 		})
 	}
@@ -240,6 +248,35 @@ func TestCreateDBInstance_PlacesTheEndpointFromTheNamedSubnetGroup(t *testing.T)
 	assert.Equal(t, testDefaultVPC, rec.VpcID)
 }
 
+// Asserted through the describe rather than the record: the group the instance
+// was placed from is only useful to a client if it survives the projection, and
+// the Terraform provider reads db_subnet_group_name from exactly here.
+func TestDescribeDBInstances_ReportsTheSubnetGroupTheInstanceWasPlacedFrom(t *testing.T) {
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), testAccountID)
+	require.NoError(t, err)
+
+	input := validCreateInput()
+	input.DBSubnetGroupName = aws.String(testSubnetGroup)
+	created, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, created.DBInstance)
+	require.NotNil(t, created.DBInstance.DBSubnetGroup)
+	assert.Equal(t, testSubnetGroup, aws.StringValue(created.DBInstance.DBSubnetGroup.DBSubnetGroupName))
+
+	out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(testDBInstanceID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBInstances, 1)
+
+	group := out.DBInstances[0].DBSubnetGroup
+	require.NotNil(t, group)
+	assert.Equal(t, testSubnetGroup, aws.StringValue(group.DBSubnetGroupName))
+	assert.Equal(t, testDefaultVPC, aws.StringValue(group.VpcId))
+	assert.Equal(t, subnetGroupStatusComplete, aws.StringValue(group.SubnetGroupStatus))
+}
+
 // Placing the endpoint somewhere else would put it in a subnet nobody chose, so
 // a group that does not exist fails the create rather than falling back.
 func TestCreateDBInstance_RejectsAnUnknownSubnetGroup(t *testing.T) {
@@ -249,7 +286,8 @@ func TestCreateDBInstance_RejectsAnUnknownSubnetGroup(t *testing.T) {
 	input.DBSubnetGroupName = aws.String("absent")
 	_, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.False(t, h.recordExists(t, testDBInstanceID),
 		"a rejected create must reserve nothing")
 }

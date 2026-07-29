@@ -48,8 +48,8 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 		return nil, err
 	}
 	if rec.DeletionProtection {
-		return nil, fmt.Errorf("%s: DB instance %s cannot be deleted because deletion protection is enabled",
-			awserrors.ErrorInvalidParameterCombination, id)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"DB instance %s cannot be deleted because deletion protection is enabled", id)
 	}
 	if err := s.checkFinalSnapshotAvailable(ctx, kv, rec, finalSnapshot); err != nil {
 		return nil, err
@@ -59,8 +59,8 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	// Keeping the first one silently would answer a caller who asked for a final
 	// snapshot with no snapshot, or snapshot for one who asked to skip.
 	if rec.Status == StatusDeleting && finalSnapshot != rec.FinalSnapshotIdentifier {
-		return nil, fmt.Errorf("%s: DB instance %s is already being deleted with %s; a retry must repeat that choice",
-			awserrors.ErrorDBInstanceInvalidState, id, snapshotChoice(rec.FinalSnapshotIdentifier))
+		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+			"DB instance %s is already being deleted with %s; a retry must repeat that choice", id, snapshotChoice(rec.FinalSnapshotIdentifier))
 	}
 
 	// A repeat of a delete already under way re-runs the teardown rather than
@@ -74,8 +74,8 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 		rec.UpdatedAt = now
 		if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
 			if errors.Is(err, jetstream.ErrKeyExists) {
-				return nil, fmt.Errorf("%s: DB instance %s changed state concurrently; retry the delete",
-					awserrors.ErrorDBInstanceInvalidState, id)
+				return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+					"DB instance %s changed state concurrently; retry the delete", id)
 			}
 			return nil, err
 		}
@@ -95,21 +95,21 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 // would otherwise silently destroy the only copy of the data.
 func validateDeleteRequest(input *rds.DeleteDBInstanceInput) (string, error) {
 	if input == nil {
-		return "", fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	if aws.StringValue(input.DBInstanceIdentifier) == "" {
-		return "", fmt.Errorf("%s: DBInstanceIdentifier is required", awserrors.ErrorInvalidParameterValue)
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	}
 
 	skip := aws.BoolValue(input.SkipFinalSnapshot)
 	identifier := aws.StringValue(input.FinalDBSnapshotIdentifier)
 	switch {
 	case skip && identifier != "":
-		return "", fmt.Errorf("%s: FinalDBSnapshotIdentifier cannot be supplied with SkipFinalSnapshot",
-			awserrors.ErrorInvalidParameterCombination)
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"FinalDBSnapshotIdentifier cannot be supplied with SkipFinalSnapshot")
 	case !skip && identifier == "":
-		return "", fmt.Errorf("%s: FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is set",
-			awserrors.ErrorInvalidParameterCombination)
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is set")
 	}
 	if identifier != "" {
 		if err := validateDBInstanceIdentifier(identifier); err != nil {
@@ -152,7 +152,7 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv jetstream.
 	if finalSnapshotIsOurs(&existing, rec) {
 		return nil
 	}
-	return fmt.Errorf("%s: DB snapshot %s already exists", awserrors.ErrorDBSnapshotAlreadyExists, identifier)
+	return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists, "DB snapshot %s already exists", identifier)
 }
 
 // The teardown chain. Ordering is forced by what holds what: the VM has to go
@@ -231,8 +231,8 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, 
 	}
 	if found {
 		if !finalSnapshotIsOurs(&existing, rec) {
-			return fmt.Errorf("%s: DB snapshot %s already exists",
-				awserrors.ErrorDBSnapshotAlreadyExists, rec.FinalSnapshotIdentifier)
+			return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
+				"DB snapshot %s already exists", rec.FinalSnapshotIdentifier)
 		}
 		return nil
 	}

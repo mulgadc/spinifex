@@ -1,6 +1,10 @@
 package awserrors
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 type ErrorMessage struct {
 	HTTPCode int
@@ -561,6 +565,14 @@ func ResolveErrorCode(err error) (string, bool) {
 		return ResolveErrorCode(wrapped.Unwrap())
 	}
 	return "", false
+}
+
+// Errorf returns an error carrying an AWS error code where ResolveErrorCode can
+// find it, alongside a message for the logs and the traces. Formatting the code
+// into the message with %s instead leaves it unresolvable, so a handler's 400
+// reaches the client as a 500 with its own code stripped.
+func Errorf(code, format string, args ...any) error {
+	return fmt.Errorf(format+": %w", append(args, errors.New(code))...)
 }
 
 // ValidErrorCodeFromError resolves err or returns ErrorServerInternal.

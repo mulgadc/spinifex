@@ -109,7 +109,8 @@ func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := validateParameterValue(tc.param, tc.value)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
@@ -167,7 +168,8 @@ func TestResolveEffectiveParameters_RevalidatesStoredOverrides(t *testing.T) {
 func TestResolveEffectiveParameters_RejectsAnUnknownClass(t *testing.T) {
 	_, err := ResolveEffectiveParameters("db.x99.mega", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // AllowedValues is what tells a customer what an integer means, so a unitful

@@ -32,7 +32,7 @@ type endpointPlacement struct {
 // cannot carry a group from another one.
 func (s *Service) resolvePlacement(ctx context.Context, kv jetstream.KeyValue, accountID string, req *validatedCreate) (*endpointPlacement, error) {
 	if s.deps.Network == nil {
-		return nil, fmt.Errorf("%s: RDS networking is not wired on this node", awserrors.ErrorServerInternal)
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "RDS networking is not wired on this node")
 	}
 
 	var vpcID, subnetID string
@@ -75,8 +75,8 @@ func subnetFromGroup(group *DBSubnetGroupRecord) (string, error) {
 		}
 	}
 	if len(ids) == 0 {
-		return "", fmt.Errorf("%s: DB subnet group %s holds no subnet to place the DB endpoint in",
-			awserrors.ErrorDBInvalidVPCNetworkState, group.Name)
+		return "", awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
+			"DB subnet group %s holds no subnet to place the DB endpoint in", group.Name)
 	}
 	slices.Sort(ids)
 	return ids[0], nil
@@ -96,8 +96,8 @@ func (s *Service) defaultVPCID(ctx context.Context, accountID string) (string, e
 			}
 		}
 	}
-	return "", fmt.Errorf("%s: no default VPC in this account to place the DB endpoint in",
-		awserrors.ErrorDBInvalidVPCNetworkState)
+	return "", awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
+		"no default VPC in this account to place the DB endpoint in")
 }
 
 // Sorted so a repeated create in the same account is placed deterministically
@@ -118,8 +118,8 @@ func (s *Service) firstSubnetID(ctx context.Context, accountID, vpcID string) (s
 		}
 	}
 	if len(ids) == 0 {
-		return "", fmt.Errorf("%s: default VPC %s has no subnet to place the DB endpoint in",
-			awserrors.ErrorDBInvalidVPCNetworkState, vpcID)
+		return "", awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
+			"default VPC %s has no subnet to place the DB endpoint in", vpcID)
 	}
 	slices.Sort(ids)
 	return ids[0], nil
@@ -154,15 +154,15 @@ func (s *Service) resolveSecurityGroups(ctx context.Context, accountID, vpcID st
 
 	if len(requested) == 0 {
 		if defaultGroupID == "" {
-			return nil, fmt.Errorf("%s: VPC %s has no default security group",
-				awserrors.ErrorDBInvalidVPCNetworkState, vpcID)
+			return nil, awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
+				"VPC %s has no default security group", vpcID)
 		}
 		return []string{defaultGroupID}, nil
 	}
 	for _, id := range requested {
 		if _, ok := inVPC[id]; !ok {
-			return nil, fmt.Errorf("%s: security group %s is not in VPC %s",
-				awserrors.ErrorInvalidParameterValue, id, vpcID)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"security group %s is not in VPC %s", id, vpcID)
 		}
 	}
 	return requested, nil

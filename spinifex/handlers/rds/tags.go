@@ -68,7 +68,7 @@ var taggableResources = map[ResourceKind]taggableResource{
 
 func (s *Service) ListTagsForResource(ctx context.Context, input *rds.ListTagsForResourceInput, accountID string) (*rds.ListTagsForResourceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	resource, parsed, err := s.resolveTaggable(aws.StringValue(input.ResourceName), accountID)
 	if err != nil {
@@ -89,7 +89,7 @@ func (s *Service) ListTagsForResource(ctx context.Context, input *rds.ListTagsFo
 // apply converges instead of failing on the second run.
 func (s *Service) AddTagsToResource(ctx context.Context, input *rds.AddTagsToResourceInput, accountID string) (*rds.AddTagsToResourceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	resource, parsed, err := s.resolveTaggable(aws.StringValue(input.ResourceName), accountID)
 	if err != nil {
@@ -111,8 +111,8 @@ func (s *Service) AddTagsToResource(ctx context.Context, input *rds.AddTagsToRes
 		// Checked against the merge rather than the request: 40 existing tags plus
 		// 40 new ones is over the limit even though neither side is.
 		if len(merged) > maxTagsPerResource {
-			return nil, fmt.Errorf("%s: a resource may carry at most %d tags; this request would leave %d",
-				awserrors.ErrorInvalidParameterValue, maxTagsPerResource, len(merged))
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"a resource may carry at most %d tags; this request would leave %d", maxTagsPerResource, len(merged))
 		}
 		return merged, nil
 	})
@@ -126,7 +126,7 @@ func (s *Service) AddTagsToResource(ctx context.Context, input *rds.AddTagsToRes
 // destroy must not fail on the tags it already removed.
 func (s *Service) RemoveTagsFromResource(ctx context.Context, input *rds.RemoveTagsFromResourceInput, accountID string) (*rds.RemoveTagsFromResourceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	resource, parsed, err := s.resolveTaggable(aws.StringValue(input.ResourceName), accountID)
 	if err != nil {
@@ -166,8 +166,8 @@ func (s *Service) resolveTaggable(resourceName, accountID string) (taggableResou
 	}
 	resource, ok := taggableResources[parsed.Kind]
 	if !ok {
-		return taggableResource{}, ParsedARN{}, fmt.Errorf("%s: tagging %s resources is not supported yet",
-			awserrors.ErrorInvalidParameterValue, parsed.Kind)
+		return taggableResource{}, ParsedARN{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"tagging %s resources is not supported yet", parsed.Kind)
 	}
 	return resource, parsed, nil
 }
@@ -220,13 +220,13 @@ func mutateTags(ctx context.Context, kv jetstream.KeyValue, resource taggableRes
 // within one request keeps its last value, as AWS does.
 func validateTags(tags []*rds.Tag) (map[string]string, error) {
 	if len(tags) > maxTagsPerResource {
-		return nil, fmt.Errorf("%s: at most %d tags may be supplied, got %d",
-			awserrors.ErrorInvalidParameterValue, maxTagsPerResource, len(tags))
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"at most %d tags may be supplied, got %d", maxTagsPerResource, len(tags))
 	}
 	out := make(map[string]string, len(tags))
 	for _, tag := range tags {
 		if tag == nil {
-			return nil, fmt.Errorf("%s: a tag entry is empty", awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "a tag entry is empty")
 		}
 		key := aws.StringValue(tag.Key)
 		if err := validateTagKey(key); err != nil {
@@ -234,8 +234,8 @@ func validateTags(tags []*rds.Tag) (map[string]string, error) {
 		}
 		value := aws.StringValue(tag.Value)
 		if len(value) > maxTagValueLen {
-			return nil, fmt.Errorf("%s: tag value for key %q may be at most %d characters",
-				awserrors.ErrorInvalidParameterValue, key, maxTagValueLen)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"tag value for key %q may be at most %d characters", key, maxTagValueLen)
 		}
 		out[key] = value
 	}
@@ -245,13 +245,13 @@ func validateTags(tags []*rds.Tag) (map[string]string, error) {
 func validateTagKey(key string) error {
 	switch {
 	case key == "":
-		return fmt.Errorf("%s: a tag key may not be empty", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "a tag key may not be empty")
 	case len(key) > maxTagKeyLen:
-		return fmt.Errorf("%s: tag key %q may be at most %d characters",
-			awserrors.ErrorInvalidParameterValue, key, maxTagKeyLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"tag key %q may be at most %d characters", key, maxTagKeyLen)
 	case strings.HasPrefix(strings.ToLower(key), reservedTagPrefix):
-		return fmt.Errorf("%s: tag key %q uses the reserved %q prefix",
-			awserrors.ErrorInvalidParameterValue, key, reservedTagPrefix)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"tag key %q uses the reserved %q prefix", key, reservedTagPrefix)
 	}
 	return nil
 }

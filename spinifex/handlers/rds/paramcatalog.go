@@ -483,13 +483,13 @@ func formatBound(v float64) string {
 func classMemoryMiB(instanceClass string) (int64, error) {
 	instanceType, err := InstanceTypeForClass(instanceClass)
 	if err != nil {
-		return 0, fmt.Errorf("%s: DBInstanceClass %q is not supported; supported classes are %s",
-			awserrors.ErrorInvalidParameterValue, instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
+		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
 	}
 	memoryMiB, ok := instancetypes.DefaultMemoryMiB(instanceType)
 	if !ok || memoryMiB <= 0 {
-		return 0, fmt.Errorf("%s: no memory footprint is known for instance type %s",
-			awserrors.ErrorServerInternal, instanceType)
+		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
+			"no memory footprint is known for instance type %s", instanceType)
 	}
 	return memoryMiB, nil
 }
@@ -502,9 +502,9 @@ func rejectFormulaValue(name, value string) error {
 	if !strings.ContainsAny(value, "{}") && !strings.Contains(value, "DBInstanceClass") {
 		return nil
 	}
-	return fmt.Errorf("%s: the value %q of parameter %s is a formula; only literal values are accepted, "+
-		"and the size-derived defaults are computed for you",
-		awserrors.ErrorInvalidParameterValue, value, name)
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"the value %q of parameter %s is a formula; only literal values are accepted, "+
+			"and the size-derived defaults are computed for you", value, name)
 }
 
 // Checks one customer-supplied value against its catalog entry. A parameter the
@@ -514,12 +514,12 @@ func rejectFormulaValue(name, value string) error {
 func validateParameterValue(name, value string) (ParameterSpec, error) {
 	spec, ok := LookupParameter(name)
 	if !ok {
-		return ParameterSpec{}, fmt.Errorf("%s: %q is not a parameter this engine exposes",
-			awserrors.ErrorInvalidParameterValue, name)
+		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"%q is not a parameter this engine exposes", name)
 	}
 	if !spec.IsModifiable {
-		return ParameterSpec{}, fmt.Errorf("%s: parameter %s is not modifiable",
-			awserrors.ErrorInvalidParameterValue, spec.Name)
+		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s is not modifiable", spec.Name)
 	}
 	if err := rejectFormulaValue(spec.Name, value); err != nil {
 		return ParameterSpec{}, err
@@ -527,8 +527,8 @@ func validateParameterValue(name, value string) (ParameterSpec, error) {
 
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return ParameterSpec{}, fmt.Errorf("%s: parameter %s was given an empty value",
-			awserrors.ErrorInvalidParameterValue, spec.Name)
+		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s was given an empty value", spec.Name)
 	}
 	switch spec.DataType {
 	case paramTypeInteger:
@@ -553,8 +553,8 @@ func validateParameterValue(name, value string) (ParameterSpec, error) {
 		}
 	case paramTypeEnum:
 		if !slices.Contains(spec.Enum, strings.ToLower(trimmed)) {
-			return ParameterSpec{}, fmt.Errorf("%s: parameter %s does not accept %q; allowed values are %s",
-				awserrors.ErrorInvalidParameterValue, spec.Name, value, strings.Join(spec.Enum, ", "))
+			return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
 		}
 	}
 	return spec, nil
@@ -572,13 +572,13 @@ func validBoolean(value string) bool {
 }
 
 func typeError(spec ParameterSpec, value, want string) error {
-	return fmt.Errorf("%s: parameter %s takes %s, not %q",
-		awserrors.ErrorInvalidParameterValue, spec.Name, want, value)
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"parameter %s takes %s, not %q", spec.Name, want, value)
 }
 
 func rangeError(spec ParameterSpec, value string) error {
-	return fmt.Errorf("%s: the value %q of parameter %s is outside its allowed range %s",
-		awserrors.ErrorInvalidParameterValue, value, spec.Name, spec.AllowedValues())
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"the value %q of parameter %s is outside its allowed range %s", value, spec.Name, spec.AllowedValues())
 }
 
 // The full parameter set an instance runs with: every catalog default evaluated

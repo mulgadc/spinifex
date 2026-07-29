@@ -28,7 +28,7 @@ const defaultParameterGroupPrefix = "default."
 // default group resolve to the same effective set.
 func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateDBParameterGroupInput, accountID string) (*rds.CreateDBParameterGroupOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBParameterGroupName)
 	if err := validateDBGroupName("DBParameterGroupName", name); err != nil {
@@ -37,8 +37,8 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 	// Rejected rather than accepted-and-shadowed: a customer group under the
 	// reserved prefix would be indistinguishable from the implicit one.
 	if isDefaultParameterGroupName(name) {
-		return nil, fmt.Errorf("%s: DBParameterGroupName may not begin with %q, which the service reserves",
-			awserrors.ErrorInvalidParameterValue, defaultParameterGroupPrefix)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBParameterGroupName may not begin with %q, which the service reserves", defaultParameterGroupPrefix)
 	}
 	description := aws.StringValue(input.Description)
 	if err := validateDBGroupDescription("Description", description); err != nil {
@@ -69,8 +69,8 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 	}
 	if err := createJSON(ctx, kv, DBParameterGroupMetaKey(name), &rec); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, fmt.Errorf("%s: DB parameter group %s already exists",
-				awserrors.ErrorDBParameterGroupAlreadyExists, name)
+			return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupAlreadyExists,
+				"DB parameter group %s already exists", name)
 		}
 		return nil, err
 	}
@@ -134,23 +134,23 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 // the group exactly as it was rather than half-applied.
 func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyDBParameterGroupInput, accountID string) (*rds.DBParameterGroupNameMessage, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBParameterGroupName)
 	if name == "" {
-		return nil, fmt.Errorf("%s: DBParameterGroupName is required", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBParameterGroupName is required")
 	}
 	if isDefaultParameterGroupName(name) {
-		return nil, fmt.Errorf("%s: DB parameter group %s is a default group and cannot be modified",
-			awserrors.ErrorInvalidParameterValue, name)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DB parameter group %s is a default group and cannot be modified", name)
 	}
 	if len(input.Parameters) == 0 {
-		return nil, fmt.Errorf("%s: Parameters must name at least one parameter",
-			awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Parameters must name at least one parameter")
 	}
 	if len(input.Parameters) > maxParametersPerModify {
-		return nil, fmt.Errorf("%s: at most %d parameters may be modified in one request, got %d",
-			awserrors.ErrorInvalidParameterValue, maxParametersPerModify, len(input.Parameters))
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"at most %d parameters may be modified in one request, got %d", maxParametersPerModify, len(input.Parameters))
 	}
 
 	updates, err := validateParameterUpdates(input.Parameters)
@@ -189,18 +189,18 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 // anything has to see literals, and D20 keeps formulas off this surface.
 func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeDBParametersInput, accountID string) (*rds.DescribeDBParametersOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBParameterGroupName)
 	if name == "" {
-		return nil, fmt.Errorf("%s: DBParameterGroupName is required", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBParameterGroupName is required")
 	}
 	source := strings.ToLower(strings.TrimSpace(aws.StringValue(input.Source)))
 	switch source {
 	case "", ParameterSourceUser, ParameterSourceEngineDefault:
 	default:
-		return nil, fmt.Errorf("%s: Source %q is not one of %s or %s",
-			awserrors.ErrorInvalidParameterValue, source, ParameterSourceUser, ParameterSourceEngineDefault)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Source %q is not one of %s or %s", source, ParameterSourceUser, ParameterSourceEngineDefault)
 	}
 
 	kv, err := s.bucket(ctx, accountID)
@@ -239,15 +239,15 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 // fails cleanly rather than leaving a live engine's configuration unreadable.
 func (s *Service) DeleteDBParameterGroup(ctx context.Context, input *rds.DeleteDBParameterGroupInput, accountID string) (*rds.DeleteDBParameterGroupOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBParameterGroupName)
 	if name == "" {
-		return nil, fmt.Errorf("%s: DBParameterGroupName is required", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBParameterGroupName is required")
 	}
 	if isDefaultParameterGroupName(name) {
-		return nil, fmt.Errorf("%s: DB parameter group %s is a default group and cannot be deleted",
-			awserrors.ErrorDBParameterGroupInvalidState, name)
+		return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupInvalidState,
+			"DB parameter group %s is a default group and cannot be deleted", name)
 	}
 
 	kv, err := s.bucket(ctx, accountID)
@@ -265,8 +265,8 @@ func (s *Service) DeleteDBParameterGroup(ctx context.Context, input *rds.DeleteD
 		return nil, err
 	}
 	if len(users) > 0 {
-		return nil, fmt.Errorf("%s: DB parameter group %s is still used by %s",
-			awserrors.ErrorDBParameterGroupInvalidState, name, strings.Join(users, ", "))
+		return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupInvalidState,
+			"DB parameter group %s is still used by %s", name, strings.Join(users, ", "))
 	}
 
 	// The values go first: a crash between the two leaves orphaned parameter keys
@@ -301,7 +301,7 @@ func validateParameterUpdates(params []*rds.Parameter) ([]parameterUpdate, error
 	byName := make(map[string]parameterUpdate, len(params))
 	for _, param := range params {
 		if param == nil {
-			return nil, fmt.Errorf("%s: a parameter entry is empty", awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "a parameter entry is empty")
 		}
 		spec, err := validateParameterValue(aws.StringValue(param.ParameterName), aws.StringValue(param.ParameterValue))
 		if err != nil {
@@ -340,13 +340,13 @@ func resolveApplyMethod(spec ParameterSpec, requested string) (string, error) {
 		return ApplyMethodPendingReboot, nil
 	case ApplyMethodImmediate:
 		if spec.ApplyType == ApplyTypeStatic {
-			return "", fmt.Errorf("%s: parameter %s is static, so ApplyMethod must be %s",
-				awserrors.ErrorInvalidParameterValue, spec.Name, ApplyMethodPendingReboot)
+			return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"parameter %s is static, so ApplyMethod must be %s", spec.Name, ApplyMethodPendingReboot)
 		}
 		return ApplyMethodImmediate, nil
 	default:
-		return "", fmt.Errorf("%s: ApplyMethod %q is not one of %s or %s",
-			awserrors.ErrorInvalidParameterValue, requested, ApplyMethodImmediate, ApplyMethodPendingReboot)
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"ApplyMethod %q is not one of %s or %s", requested, ApplyMethodImmediate, ApplyMethodPendingReboot)
 	}
 }
 
@@ -366,7 +366,7 @@ func getDBParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID, 
 	if engine, ok := engineForDefaultParameterGroup(name); ok {
 		return defaultParameterGroupRecord(engine, accountID), 0, nil
 	}
-	return nil, 0, fmt.Errorf("%s: DB parameter group %s not found", awserrors.ErrorDBParameterGroupNotFound, name)
+	return nil, 0, awserrors.Errorf(awserrors.ErrorDBParameterGroupNotFound, "DB parameter group %s not found", name)
 }
 
 // The implicit group, identical for every account. It carries no tags and no
@@ -408,8 +408,8 @@ func validateParameterGroupFamily(family string) (string, error) {
 			return engine.ParameterGroupFamily(), nil
 		}
 	}
-	return "", fmt.Errorf("%s: DBParameterGroupFamily %q is not offered; %s is the only supported family",
-		awserrors.ErrorInvalidParameterValue, family, enginePostgres.ParameterGroupFamily())
+	return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"DBParameterGroupFamily %q is not offered; %s is the only supported family", family, enginePostgres.ParameterGroupFamily())
 }
 
 // The class DescribeDBParameters evaluates the size-derived defaults at. A group
@@ -417,7 +417,7 @@ func validateParameterGroupFamily(family string) (string, error) {
 // the one whose computed values a customer most needs to see before attaching
 // the group to anything.
 func describeParametersClass() string {
-	return SupportedInstanceClasses()[0]
+	return smallestInstanceClass()
 }
 
 func parameterSource(isOverride bool) string {

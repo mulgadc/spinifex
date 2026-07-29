@@ -160,7 +160,8 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if !ValidEngineHealth(input.EngineHealth) {
-		return nil, fmt.Errorf("%s: unknown engine health %q", awserrors.ErrorInvalidParameterValue, input.EngineHealth)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"unknown engine health %q", input.EngineHealth)
 	}
 
 	persist := s.noteBeat(accountID, input.DBInstanceIdentifier, input.EngineHealth, input.Message, false)

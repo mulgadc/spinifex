@@ -90,7 +90,8 @@ func TestCreateDBParameterGroup_DefaultsTheFamilyAndRejectsAnother(t *testing.T)
 	other.DBParameterGroupFamily = aws.String("mysql8.0")
 	_, err = h.svc.CreateDBParameterGroup(t.Context(), other, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // A customer group under the reserved prefix would be indistinguishable from the
@@ -100,7 +101,8 @@ func TestCreateDBParameterGroup_RejectsTheReservedPrefix(t *testing.T) {
 
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput("default.postgres18"), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.Contains(t, err.Error(), "default.")
 }
 
@@ -111,7 +113,8 @@ func TestCreateDBParameterGroup_RejectsADuplicateName(t *testing.T) {
 
 	_, err = h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupAlreadyExists)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupAlreadyExists, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // The default group is what CreateDBInstance resolves when a request names none,
@@ -156,14 +159,16 @@ func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {
 	_, err := h.svc.DescribeDBParameterGroups(t.Context(),
 		&rds.DescribeDBParameterGroupsInput{DBParameterGroupName: aws.String("absent")}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 
 	// A default.* name for an engine that does not exist is a not-found too,
 	// rather than a group that resolves to nothing.
 	_, err = h.svc.DescribeDBParameterGroups(t.Context(),
 		&rds.DescribeDBParameterGroupsInput{DBParameterGroupName: aws.String("default.mysql8")}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
@@ -234,7 +239,8 @@ func TestModifyDBParameterGroup_RejectsBadRequests(t *testing.T) {
 
 			_, err = h.svc.ModifyDBParameterGroup(t.Context(), tc.input, testAccountID)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
@@ -248,7 +254,8 @@ func TestModifyDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
 	_, err := h.svc.ModifyDBParameterGroup(t.Context(),
 		modifyParameters(testDefaultPG, parameter("work_mem", "16384", "")), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.Contains(t, err.Error(), "cannot be modified")
 }
 
@@ -258,7 +265,8 @@ func TestModifyDBParameterGroup_RejectsAnUnknownGroup(t *testing.T) {
 	_, err := h.svc.ModifyDBParameterGroup(t.Context(),
 		modifyParameters("absent", parameter("work_mem", "16384", "")), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // D20: a computed default reaches the customer as the literal it evaluated to,
@@ -270,7 +278,9 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	shared := params["shared_buffers"]
 	require.NotNil(t, shared)
 
-	memoryMiB, err := classMemoryMiB(describeParametersClass())
+	// The class is named rather than read back from describeParametersClass, which
+	// would make this assert the code agrees with itself.
+	memoryMiB, err := classMemoryMiB("db.t3.micro")
 	require.NoError(t, err)
 	assert.Equal(t, sharedBuffersFor(memoryMiB), aws.StringValue(shared.ParameterValue))
 	assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(shared.Source))
@@ -326,7 +336,8 @@ func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
 
 	_, err = h.svc.DescribeDBParameterGroups(t.Context(),
 		&rds.DescribeDBParameterGroupsInput{DBParameterGroupName: aws.String(testParameterGroup)}, testAccountID)
-	assert.ErrorContains(t, err, awserrors.ErrorDBParameterGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 func TestDeleteDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
@@ -335,7 +346,8 @@ func TestDeleteDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
 	_, err := h.svc.DeleteDBParameterGroup(t.Context(),
 		&rds.DeleteDBParameterGroupInput{DBParameterGroupName: aws.String(testDefaultPG)}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupInvalidState)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupInvalidState, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 }
 
 // Including a group only a deleting instance still names, so a destroy that
@@ -361,7 +373,8 @@ func TestDeleteDBParameterGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T)
 			_, err = h.svc.DeleteDBParameterGroup(t.Context(),
 				&rds.DeleteDBParameterGroupInput{DBParameterGroupName: aws.String(testParameterGroup)}, testAccountID)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupInvalidState)
+			assert.Equal(t, awserrors.ErrorDBParameterGroupInvalidState, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
 			assert.Contains(t, err.Error(), testDBInstanceID)
 		})
 	}
@@ -418,7 +431,8 @@ func TestCreateDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 	input.DBParameterGroupName = aws.String("absent")
 	_, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupNotFound)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
 	assert.False(t, h.recordExists(t, testDBInstanceID), "a rejected create must reserve nothing")
 }
 

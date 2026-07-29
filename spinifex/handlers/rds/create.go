@@ -52,8 +52,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	rec := newDBInstanceRecord(accountID, req, placement, parameters)
 	if createErr := createJSON(ctx, kv, key, &rec); createErr != nil {
 		if errors.Is(createErr, jetstream.ErrKeyExists) {
-			return nil, fmt.Errorf("%s: DB instance %s already exists",
-				awserrors.ErrorDBInstanceAlreadyExists, req.Identifier)
+			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
+				"DB instance %s already exists", req.Identifier)
 		}
 		return nil, createErr
 	}

@@ -207,6 +207,10 @@ type fakeLauncher struct {
 	err        error
 	terminated []string
 	unwind     *[]string
+
+	// onLaunch runs once the VM exists, for tests that need to disturb state
+	// after the launch has committed resources but before the caller records it.
+	onLaunch func()
 }
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
@@ -215,6 +219,9 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	f.input = in
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.onLaunch != nil {
+		f.onLaunch()
 	}
 	return &sysinstance.SystemInstanceOutput{InstanceID: "i-rds0001", MgmtIP: "172.30.0.9"}, nil
 }

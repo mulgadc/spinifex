@@ -94,8 +94,9 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 
 	// The launch already unwound everything on failure, so from here the resources
 	// exist and the record has to catch up with them.
-	if err = s.recordLaunch(ctx, kv, key, accountID, launched); err != nil {
-		s.terminateLaunched(ctx, launched)
+	stored, err := s.recordLaunch(ctx, kv, key, accountID, launched)
+	if err != nil {
+		s.unwindLaunched(ctx, launched)
 		return nil, err
 	}
 
@@ -106,14 +107,10 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		DBInstanceIdentifier: req.Identifier,
 		VMGeneration:         firstVMGeneration,
 	}); err != nil {
-		s.terminateLaunched(ctx, launched)
+		s.unwindLaunched(ctx, launched)
 		return nil, fmt.Errorf("rds: write instance index for %s: %w", req.Identifier, err)
 	}
 
-	stored, _, err := s.getDBInstance(ctx, kv, req.Identifier)
-	if err != nil {
-		return nil, err
-	}
 	// Published as soon as the ENI IP is known rather than on available, so the
 	// name resolves the moment the engine comes up; the security group is what
 	// gates connectivity until then.
@@ -152,16 +149,17 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 	}
 }
 
-// Folds the launch results into the reserved record. The endpoint is settled
-// here because the ENI IP — and so the vanity name — is only known now.
-func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID string, launched *LaunchOutput) error {
+// Folds the launch results into the reserved record and returns it as written.
+// The endpoint is settled here because the ENI IP — and so the vanity name — is
+// only known now.
+func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID string, launched *LaunchOutput) (*DBInstanceRecord, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !found {
-		return errors.New(awserrors.ErrorDBInstanceNotFound)
+		return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
 	}
 
 	rec.InstanceID = launched.InstanceID
@@ -180,17 +178,22 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	}
 	rec.UpdatedAt = time.Now().UTC()
 
-	return updateJSON(ctx, kv, key, rev, &rec)
+	if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
 }
 
 // The launch's own rollback only covers failures inside it. A failure after it
-// returned leaves a running VM the deferred record delete would orphan.
-func (s *Service) terminateLaunched(ctx context.Context, launched *LaunchOutput) {
-	if launched == nil || launched.InstanceID == "" || s.deps.Launch.Instance == nil {
+// returned has to run the same unwind: the deferred record delete removes the
+// only thing naming the VM, its two ENIs and the data volume, and nothing in
+// this phase reclaims them afterwards.
+func (s *Service) unwindLaunched(ctx context.Context, launched *LaunchOutput) {
+	if launched == nil || launched.Unwind == nil {
 		return
 	}
-	if err := s.deps.Launch.Instance.TerminateSystemInstance(launched.InstanceID); err != nil {
-		slog.WarnContext(ctx, "rds: rollback terminate of orphaned DB VM failed",
-			"instanceId", launched.InstanceID, "err", err)
-	}
+	slog.WarnContext(ctx, "rds: unwinding a DB instance that failed after launch",
+		"instanceId", launched.InstanceID, "dataVolumeId", launched.DataVolumeID,
+		"customerEniId", launched.CustomerENIID, "systemEniId", launched.SystemENIID)
+	launched.Unwind(ctx)
 }

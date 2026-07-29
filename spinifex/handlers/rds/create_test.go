@@ -294,6 +294,30 @@ func TestCreateDBInstance_LaunchFailureWithdrawsTheReservation(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// A failure after the launch returned has to tear down everything the launch
+// built. The deferred record delete removes the only thing naming the VM, its
+// two ENIs and the data volume, so anything left behind is unreclaimable.
+func TestCreateDBInstance_FailureAfterLaunchUnwindsEveryResource(t *testing.T) {
+	h := newCreateHarness(t, "")
+
+	// Dropping the reserved record while the launch is in flight fails the
+	// record-launch step, which is the first thing to run after the resources exist.
+	h.launch.launcher.onLaunch = func() {
+		kv, err := h.svc.bucket(t.Context(), testAccountID)
+		require.NoError(t, err)
+		require.NoError(t, kv.Delete(t.Context(), DBInstanceKey(testDBInstanceID)))
+	}
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+
+	// The VM goes first: the ENIs and volume are in-use while it runs.
+	assert.Equal(t, []string{"terminate", "delete-volume", "delete-eni", "delete-eni"}, h.launch.unwind)
+	assert.Contains(t, h.launch.launcher.terminated, "i-rds0001")
+	assert.Contains(t, h.launch.volumes.deleted, "vol-rdsdata01")
+	assert.Len(t, h.launch.enis.deleted, 2, "both the customer and system ENI are deleted")
+}
+
 // D19 honesty: the request may not be answered with an instance whose storage is
 // not actually encrypted, so an unencrypted volume fails the whole create.
 func TestCreateDBInstance_UnencryptedDataVolumeFailsTheCreate(t *testing.T) {

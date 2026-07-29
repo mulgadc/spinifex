@@ -22,9 +22,18 @@ type DBInstanceRecord struct {
 	// command channel and never persisted, so this records only that it changed.
 	MasterPasswordUpdatedAt *time.Time `json:"masterPasswordUpdatedAt,omitempty"`
 
-	// Blocks DeleteDBInstance outright (D18). Settable at create; rds-5b adds it
-	// to ModifyDBInstance.
+	// Blocks DeleteDBInstance outright (D18). Settable at create and modify.
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
+
+	// Stored by ModifyDBInstance but not yet acted on: rds-9's backup and
+	// maintenance machinery is what consumes them.
+	BackupRetentionPeriod      int64  `json:"backupRetentionPeriod,omitempty"`
+	PreferredBackupWindow      string `json:"preferredBackupWindow,omitempty"`
+	PreferredMaintenanceWindow string `json:"preferredMaintenanceWindow,omitempty"`
+
+	// What a modify asked for and has not yet delivered. Nil once everything is
+	// in effect, which is also what tells the reconciler a modify is finished.
+	PendingModifiedValues *PendingModifiedValues `json:"pendingModifiedValues,omitempty"`
 
 	// Where the customer ENI was placed, so a replace lands the new VM's ENI in
 	// the same subnet and security groups without re-deriving them.
@@ -83,6 +92,43 @@ type DBInstanceRecord struct {
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// The disruptive half of a modify: every field here takes the engine down, so
+// each is recorded before the work starts and cleared as it lands. That makes
+// one structure serve both meanings AWS gives PendingModifiedValues — a
+// deferred change waiting for its maintenance window, and an in-flight change a
+// crashed leader has to be able to finish (D12/D15/D16).
+//
+// MasterUserPassword is deliberately absent: D8 forbids persisting the
+// cleartext, and AWS applies a password change as soon as possible regardless
+// of ApplyImmediately, so there is nothing to defer.
+type PendingModifiedValues struct {
+	AllocatedStorage     *int64 `json:"allocatedStorage,omitempty"`
+	DBInstanceClass      string `json:"dbInstanceClass,omitempty"`
+	DBParameterGroupName string `json:"dbParameterGroupName,omitempty"`
+
+	// The data volume is already at its new size but the in-guest filesystem is
+	// not yet on it, so a resumed grow extends the filesystem rather than
+	// re-running a volume modify that would then be rejected as a shrink.
+	FilesystemGrowPending bool `json:"filesystemGrowPending,omitempty"`
+
+	// When the modify was accepted, so an operator can see how long a deferred
+	// change has been waiting on its window.
+	RequestedAt time.Time `json:"requestedAt"`
+}
+
+// Reports whether anything is still outstanding, which is what lets the record
+// drop the whole structure rather than keep an empty one.
+func (p *PendingModifiedValues) empty() bool {
+	return p == nil || (p.AllocatedStorage == nil && p.DBInstanceClass == "" &&
+		p.DBParameterGroupName == "" && !p.FilesystemGrowPending)
+}
+
+// An instance that has never been modified carries no pending values at all, so
+// the nil case has to read as "nothing outstanding" rather than panic.
+func (p *PendingModifiedValues) growingFilesystem() bool {
+	return p != nil && p.FilesystemGrowPending
 }
 
 var _ TaggedRecord = (*DBInstanceRecord)(nil)

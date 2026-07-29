@@ -43,7 +43,7 @@ func (f *fakeEngine) Stop(context.Context) error {
 
 func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 	engine := &fakeEngine{}
-	reply := newCommander(nil, newCommandRegistry(engine), 0).execute(context.Background(), handlers_rds.Command{
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), handlers_rds.Command{
 		CommandID: "cmd-1",
 		Type:      handlers_rds.CommandSetPassword,
 		Parameters: []handlers_rds.Parameter{
@@ -69,7 +69,7 @@ func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 // restart come back as the message the issuer parses.
 func TestCommandRegistry_ApplyParamsReportsPendingRestart(t *testing.T) {
 	engine := &fakeEngine{pending: []string{"shared_buffers", "max_connections"}}
-	reply := newCommander(nil, newCommandRegistry(engine), 0).execute(context.Background(), handlers_rds.Command{
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), handlers_rds.Command{
 		CommandID:  "cmd-2",
 		Type:       handlers_rds.CommandApplyParams,
 		Parameters: []handlers_rds.Parameter{{Name: "shared_buffers", Value: "256MB"}},
@@ -88,7 +88,7 @@ func TestCommandRegistry_ApplyParamsReportsPendingRestart(t *testing.T) {
 
 func TestCommandRegistry_StopEngineReachesTheEngine(t *testing.T) {
 	engine := &fakeEngine{}
-	reply := newCommander(nil, newCommandRegistry(engine), 0).execute(context.Background(),
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
 		handlers_rds.Command{CommandID: "cmd-3", Type: handlers_rds.CommandStopEngine})
 
 	if reply.Status != handlers_rds.CommandStatusSucceeded {
@@ -101,7 +101,7 @@ func TestCommandRegistry_StopEngineReachesTheEngine(t *testing.T) {
 
 func TestCommandRegistry_FailureRepliesFailed(t *testing.T) {
 	engine := &fakeEngine{err: errors.New("the engine did not stop")}
-	reply := newCommander(nil, newCommandRegistry(engine), 0).execute(context.Background(),
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
 		handlers_rds.Command{CommandID: "cmd-4", Type: handlers_rds.CommandStopEngine})
 
 	if reply.Status != handlers_rds.CommandStatusFailed {

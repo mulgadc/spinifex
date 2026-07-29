@@ -28,6 +28,7 @@ const (
 	SubjectStartDBInstance  = "rds.StartDBInstance"
 	SubjectStopDBInstance   = "rds.StopDBInstance"
 	SubjectDeleteDBInstance = "rds.DeleteDBInstance"
+	SubjectModifyDBInstance = "rds.ModifyDBInstance"
 
 	SubjectDescribeEvents = "rds.DescribeEvents"
 

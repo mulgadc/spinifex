@@ -103,7 +103,7 @@ func TestDispatch_UnknownAction(t *testing.T) {
 // The customer actions this phase implements forward to the daemon, so they are
 // dispatched against a stub responder rather than a nil connection.
 var liveActions = []string{
-	"CreateDBInstance", "DescribeDBInstances",
+	"CreateDBInstance", "DescribeDBInstances", "ModifyDBInstance",
 	"RebootDBInstance", "StartDBInstance", "StopDBInstance", "DeleteDBInstance",
 	"DescribeEvents",
 	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
@@ -118,6 +118,7 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
 		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
+	respondWith(t, nc, handlers_rds.SubjectModifyDBInstance, &rds.ModifyDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectRebootDBInstance, &rds.RebootDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectStartDBInstance, &rds.StartDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectStopDBInstance, &rds.StopDBInstanceOutput{})
@@ -178,7 +179,7 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 }
 
 func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "ModifyDBInstance", map[string]string{"Action": "ModifyDBInstance"}, nil, testCaller)
+	_, err := Dispatch(t.Context(), "CreateDBSnapshot", map[string]string{"Action": "CreateDBSnapshot"}, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }

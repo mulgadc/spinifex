@@ -103,6 +103,17 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 			Status:             aws.String("active"),
 		})
 	}
+	if rec.BackupRetentionPeriod > 0 {
+		out.BackupRetentionPeriod = aws.Int64(rec.BackupRetentionPeriod)
+	}
+	if rec.PreferredBackupWindow != "" {
+		out.PreferredBackupWindow = aws.String(rec.PreferredBackupWindow)
+	}
+	if rec.PreferredMaintenanceWindow != "" {
+		out.PreferredMaintenanceWindow = aws.String(rec.PreferredMaintenanceWindow)
+	}
+	out.PendingModifiedValues = projectPendingModifiedValues(rec.PendingModifiedValues)
+	out.DBParameterGroups = projectParameterGroup(rec)
 	// Absent until the ENI exists: an Endpoint with no address would have a
 	// client dial an empty host rather than wait for the instance to come up.
 	if rec.EndpointAddress != "" {
@@ -112,4 +123,48 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 		}
 	}
 	return out
+}
+
+// What a modify asked for and has not yet delivered. Nil when nothing is
+// outstanding, so a client polling a deferred change sees the field appear and
+// disappear rather than an empty element it has to interpret.
+//
+// A pending filesystem grow is deliberately absent: the volume is already at the
+// new size, so the customer's AllocatedStorage is the new one and reporting it
+// as still pending would show Terraform drift on a change that has landed. A
+// pending parameter group is absent too — AWS reports that on the parameter
+// group's own apply status, not here.
+func projectPendingModifiedValues(pending *PendingModifiedValues) *rds.PendingModifiedValues {
+	if pending.empty() || (pending.AllocatedStorage == nil && pending.DBInstanceClass == "") {
+		return nil
+	}
+	out := &rds.PendingModifiedValues{}
+	if pending.AllocatedStorage != nil {
+		out.AllocatedStorage = aws.Int64(*pending.AllocatedStorage)
+	}
+	if pending.DBInstanceClass != "" {
+		out.DBInstanceClass = aws.String(pending.DBInstanceClass)
+	}
+	return out
+}
+
+// AWS reports a parameter group's state on the membership rather than in
+// PendingModifiedValues, and the Terraform provider reads it there: applying
+// while a modify is draining, pending-reboot while static settings await the
+// restart that adopts them (D16).
+func projectParameterGroup(rec *DBInstanceRecord) []*rds.DBParameterGroupStatus {
+	if rec.DBParameterGroupName == "" {
+		return nil
+	}
+	status := "in-sync"
+	switch {
+	case rec.PendingModifiedValues != nil && rec.PendingModifiedValues.DBParameterGroupName != "":
+		status = "applying"
+	case len(rec.PendingRebootParameters) > 0:
+		status = "pending-reboot"
+	}
+	return []*rds.DBParameterGroupStatus{{
+		DBParameterGroupName: aws.String(rec.DBParameterGroupName),
+		ParameterApplyStatus: aws.String(status),
+	}}
 }

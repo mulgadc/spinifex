@@ -40,8 +40,9 @@ var transitions = map[Status][]Status{
 	StatusStarting:   {StatusAvailable, StatusFailed, StatusDeleting},
 	StatusRecovering: {StatusAvailable, StatusFailed, StatusDeleting},
 	// A failed instance is retried by the reconciler rather than being stuck:
-	// recovering is the reconciler's path back, available the heartbeat's.
-	StatusFailed:   {StatusRecovering, StatusAvailable, StatusDeleting},
+	// recovering is the reconciler's path back, available the heartbeat's, and
+	// modifying the customer's own retry of the change that failed.
+	StatusFailed:   {StatusRecovering, StatusAvailable, StatusModifying, StatusDeleting},
 	StatusDeleting: {StatusDeleted, StatusFailed},
 	StatusDeleted:  nil,
 }

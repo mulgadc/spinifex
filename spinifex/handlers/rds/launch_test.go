@@ -22,6 +22,11 @@ const (
 	testCustomerAccount = "123456789012"
 	testDBSubnet        = "subnet-customer-db"
 	testEngineAMI       = "ami-rds-postgres-18"
+
+	// The persisted endpoint a replace re-attaches: its address is the DNS
+	// target and its MAC is what the replacement VM's NIC has to come up with.
+	testEndpointIP  = "10.20.30.40"
+	testEndpointMAC = "02:00:00:00:aa:01"
 )
 
 // --- Fakes ---
@@ -171,6 +176,18 @@ type fakeENIs struct {
 	// its independence from the caller's context become observable.
 	unwind       *[]string
 	deleteCtxErr error
+
+	// A replace re-attaches the persisted endpoint ENI rather than minting one,
+	// so what it detached, read back and re-associated is where that becomes
+	// observable.
+	detached  []string
+	described []string
+	modified  []*ec2.ModifyNetworkInterfaceAttributeInput
+
+	// describeMissing makes the endpoint ENI read as gone, which is the state a
+	// replace must refuse to mint a replacement address for.
+	describeMissing bool
+	modifyErr       error
 }
 
 var _ launchVPCProvisioner = (*fakeENIs)(nil)
@@ -199,7 +216,38 @@ func (f *fakeENIs) DeleteNetworkInterface(ctx context.Context, in *ec2.DeleteNet
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
-func (f *fakeENIs) DetachENI(context.Context, string, string) error { return nil }
+func (f *fakeENIs) DetachENI(_ context.Context, _, eniID string) error {
+	f.detached = append(f.detached, eniID)
+	return nil
+}
+
+// Answers for whatever was asked about, since the launch only ever reads back
+// an ENI it or a previous launch created. The address is derived from the ID so
+// a re-attach observably keeps the endpoint it already had.
+func (f *fakeENIs) DescribeNetworkInterfaces(_ context.Context, in *ec2.DescribeNetworkInterfacesInput, _ string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	out := &ec2.DescribeNetworkInterfacesOutput{}
+	for _, id := range aws.StringValueSlice(in.NetworkInterfaceIds) {
+		f.described = append(f.described, id)
+		if f.describeMissing {
+			continue
+		}
+		out.NetworkInterfaces = append(out.NetworkInterfaces, &ec2.NetworkInterface{
+			NetworkInterfaceId: aws.String(id),
+			PrivateIpAddress:   aws.String(testEndpointIP),
+			MacAddress:         aws.String(testEndpointMAC),
+			SubnetId:           aws.String(testDBSubnet),
+		})
+	}
+	return out, nil
+}
+
+func (f *fakeENIs) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.ModifyNetworkInterfaceAttributeInput, _ string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
+	if f.modifyErr != nil {
+		return nil, f.modifyErr
+	}
+	f.modified = append(f.modified, in)
+	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
+}
 
 // fakeLauncher stands in for the system-instance launcher.
 type fakeLauncher struct {
@@ -207,6 +255,10 @@ type fakeLauncher struct {
 	err        error
 	terminated []string
 	unwind     *[]string
+
+	// terminateErr fails the teardown of the superseded VM, which is the step a
+	// replace cannot proceed past: the volume is still attached to it.
+	terminateErr error
 
 	// onLaunch runs once the VM exists, for tests that need to disturb state
 	// after the launch has committed resources but before the caller records it.
@@ -231,7 +283,7 @@ func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
 	if f.unwind != nil {
 		*f.unwind = append(*f.unwind, "terminate")
 	}
-	return nil
+	return f.terminateErr
 }
 
 // fakeImages answers the engine-AMI lookup from a canned image list.

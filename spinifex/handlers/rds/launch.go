@@ -53,6 +53,12 @@ type launchVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 	DetachENI(ctx context.Context, accountID, eniID string) error
+	// A replace re-attaches the persisted customer ENI, so it has to read back
+	// the MAC the launcher needs; only the IP is on the DB instance record.
+	DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
+	// Re-associates the customer ENI's security groups in place, which is what
+	// makes a VpcSecurityGroupIds modify need no VM replace and no new IP.
+	ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error)
 }
 
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
@@ -105,6 +111,13 @@ type LaunchInput struct {
 	// Fails the launch when the created data volume comes back unencrypted,
 	// rather than reporting an encryption the customer did not get.
 	RequireEncryptedData bool
+
+	// A replace re-uses the DB instance's persisted customer ENI and data
+	// volume instead of minting new ones (D5/D9): the endpoint address and the
+	// datadir are the identity that must survive the VM. Both empty is a
+	// create, which builds them.
+	ExistingCustomerENI string
+	ExistingDataVolume  string
 }
 
 type LaunchOutput struct {
@@ -119,7 +132,9 @@ type LaunchOutput struct {
 	DataDevice     string
 	MgmtIP         string
 	// The volume's own reported state, not an echo of the request, so
-	// DescribeDBInstances reports encryption the way EC2 does.
+	// DescribeDBInstances reports encryption the way EC2 does. Only set when
+	// this launch created the volume: a replace re-attaches one whose
+	// encryption the record already carries.
 	DataVolumeEncrypted bool
 	// Tears down everything this launch created, for a caller that fails after
 	// it returned. The launch runs it itself on its own failures, so it is only
@@ -182,14 +197,18 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		deleteLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemENI.id)
 	})
 
-	customerENI, err := createLaunchENI(ctx, deps.VPC, in.AccountID, in.SubnetID, in.SecurityGroupIDs,
-		"RDS endpoint ENI for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
+	// A replace adopts the ENI the endpoint already resolves to; only a create
+	// mints one, and only a create may unwind one — deleting the persisted ENI
+	// on a failed replace would take the endpoint with it.
+	customerENI, err := resolveCustomerENI(ctx, deps.VPC, in)
 	if err != nil {
 		return nil, err
 	}
-	rollback = append(rollback, func(ctx context.Context) {
-		deleteLaunchENI(ctx, deps.VPC, in.AccountID, customerENI.id)
-	})
+	if in.ExistingCustomerENI == "" {
+		rollback = append(rollback, func(ctx context.Context) {
+			deleteLaunchENI(ctx, deps.VPC, in.AccountID, customerENI.id)
+		})
+	}
 
 	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
 		BootMode:     sysinstance.BootAMI,
@@ -228,40 +247,45 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}
 
-	// Kept separate from the boot volume so a replace can discard the boot
-	// volume and keep the datadir, and owned by the system account.
-	volume, err := deps.Volume.CreateVolume(ctx, &ec2.CreateVolumeInput{
-		AvailabilityZone: aws.String(az),
-		Size:             aws.Int64(in.AllocatedStorage),
-		VolumeType:       aws.String("gp3"),
-		TagSpecifications: []*ec2.TagSpecification{{
-			ResourceType: aws.String("volume"),
-			Tags: []*ec2.Tag{
-				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
-				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(in.DBInstanceIdentifier)},
-			},
-		}},
-	}, utils.GlobalAccountID)
-	if err != nil {
-		return nil, fmt.Errorf("rds: create data volume for %s: %w", in.DBInstanceIdentifier, err)
-	}
-	if volume == nil || aws.StringValue(volume.VolumeId) == "" {
-		return nil, fmt.Errorf("rds: create data volume for %s: empty volume id", in.DBInstanceIdentifier)
-	}
-	volumeID := aws.StringValue(volume.VolumeId)
-	volumeEncrypted := aws.BoolValue(volume.Encrypted)
-	rollback = append(rollback, func(ctx context.Context) {
-		if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
-			slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
-				"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)
+	// A replace re-attaches the datadir it already has; only a create makes one,
+	// and only a create may unwind one.
+	volumeID, volumeEncrypted := in.ExistingDataVolume, false
+	if volumeID == "" {
+		// Kept separate from the boot volume so a replace can discard the boot
+		// volume and keep the datadir, and owned by the system account.
+		volume, volErr := deps.Volume.CreateVolume(ctx, &ec2.CreateVolumeInput{
+			AvailabilityZone: aws.String(az),
+			Size:             aws.Int64(in.AllocatedStorage),
+			VolumeType:       aws.String("gp3"),
+			TagSpecifications: []*ec2.TagSpecification{{
+				ResourceType: aws.String("volume"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
+					{Key: aws.String(rdsInstanceTagKey), Value: aws.String(in.DBInstanceIdentifier)},
+				},
+			}},
+		}, utils.GlobalAccountID)
+		if volErr != nil {
+			return nil, fmt.Errorf("rds: create data volume for %s: %w", in.DBInstanceIdentifier, volErr)
 		}
-	})
+		if volume == nil || aws.StringValue(volume.VolumeId) == "" {
+			return nil, fmt.Errorf("rds: create data volume for %s: empty volume id", in.DBInstanceIdentifier)
+		}
+		volumeID = aws.StringValue(volume.VolumeId)
+		volumeEncrypted = aws.BoolValue(volume.Encrypted)
+		rollback = append(rollback, func(ctx context.Context) {
+			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
+				slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
+					"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)
+			}
+		})
 
-	// Checked before the attach so an unencrypted volume is unwound rather than
-	// mounted: the cluster storage key is unset, which no retry here can fix.
-	if in.RequireEncryptedData && !volumeEncrypted {
-		return nil, fmt.Errorf("rds: data volume %s for %s was created unencrypted; the cluster storage key is not configured",
-			volumeID, in.DBInstanceIdentifier)
+		// Checked before the attach so an unencrypted volume is unwound rather than
+		// mounted: the cluster storage key is unset, which no retry here can fix.
+		if in.RequireEncryptedData && !volumeEncrypted {
+			return nil, fmt.Errorf("rds: data volume %s for %s was created unencrypted; the cluster storage key is not configured",
+				volumeID, in.DBInstanceIdentifier)
+		}
 	}
 
 	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
@@ -343,6 +367,47 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 		ip:  aws.StringValue(ni.PrivateIpAddress),
 		mac: aws.StringValue(ni.MacAddress),
 	}, nil
+}
+
+// The customer NIC this launch attaches: a fresh one for a create, the DB
+// instance's persisted one for a replace. The persisted case is read back
+// rather than reconstructed, because the launcher needs the MAC and only the
+// address is on the record.
+func resolveCustomerENI(ctx context.Context, vpcSvc launchVPCProvisioner, in LaunchInput) (*launchENI, error) {
+	if in.ExistingCustomerENI == "" {
+		return createLaunchENI(ctx, vpcSvc, in.AccountID, in.SubnetID, in.SecurityGroupIDs,
+			"RDS endpoint ENI for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
+	}
+
+	// The old VM is gone by now but its attachment record can outlive it, and a
+	// re-attach of an ENI that still reads as attached is rejected.
+	if err := vpcSvc.DetachENI(ctx, in.AccountID, in.ExistingCustomerENI); err != nil && !awserrors.IsNotFound(err) {
+		return nil, fmt.Errorf("rds: detach the endpoint ENI %s before re-attaching it: %w", in.ExistingCustomerENI, err)
+	}
+
+	out, err := vpcSvc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: aws.StringSlice([]string{in.ExistingCustomerENI}),
+	}, in.AccountID)
+	if err != nil {
+		return nil, fmt.Errorf("rds: read the endpoint ENI %s: %w", in.ExistingCustomerENI, err)
+	}
+	for _, ni := range out.NetworkInterfaces {
+		if aws.StringValue(ni.NetworkInterfaceId) != in.ExistingCustomerENI {
+			continue
+		}
+		eni := &launchENI{
+			id:  in.ExistingCustomerENI,
+			ip:  aws.StringValue(ni.PrivateIpAddress),
+			mac: aws.StringValue(ni.MacAddress),
+		}
+		if eni.ip == "" || eni.mac == "" {
+			return nil, fmt.Errorf("rds: endpoint ENI %s has no address or MAC to re-attach", in.ExistingCustomerENI)
+		}
+		return eni, nil
+	}
+	// Failing here is the only safe answer: minting a replacement would move the
+	// endpoint to a new address the DNS record and serving cert do not name.
+	return nil, fmt.Errorf("rds: endpoint ENI %s no longer exists", in.ExistingCustomerENI)
 }
 
 // Detach comes first because a terminated VM can leave the attachment record

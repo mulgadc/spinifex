@@ -81,7 +81,7 @@ var actions = map[string]Handler{
 	// Instance lifecycle.
 	"CreateDBInstance":    typed(CreateDBInstance),
 	"DescribeDBInstances": typed(DescribeDBInstances),
-	"ModifyDBInstance":    pending(),
+	"ModifyDBInstance":    typed(ModifyDBInstance),
 	"DeleteDBInstance":    typed(DeleteDBInstance),
 	"RebootDBInstance":    typed(RebootDBInstance),
 	"StartDBInstance":     typed(StartDBInstance),

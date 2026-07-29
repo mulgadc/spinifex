@@ -109,11 +109,7 @@ func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceI
 
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "stopping")
 
-	err = s.deps.Instances.StopInstance(ctx, rec.InstanceID)
-	if errors.Is(err, ErrInstanceNotOnNode) {
-		err = s.confirmVMNotRunning(ctx, accountID, rec.InstanceID)
-	}
-	if err != nil {
+	if err := s.stopInstanceVM(ctx, accountID, rec.InstanceID); err != nil {
 		return nil, s.failTransition(ctx, kv, accountID, rec,
 			fmt.Sprintf("the DB instance could not be stopped: %v", err))
 	}
@@ -151,6 +147,17 @@ func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanc
 	// Returned as starting: the reconciler flips it to available on the first
 	// healthy heartbeat from the restarted agent.
 	return &rds.StartDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+}
+
+// Stops the VM, treating an unanswered command as a stop only once the fleet
+// agrees the VM is not running. Shared with the storage grow, which needs the
+// VM genuinely down before ModifyVolume will touch its volume.
+func (s *Service) stopInstanceVM(ctx context.Context, accountID, instanceID string) error {
+	err := s.deps.Instances.StopInstance(ctx, instanceID)
+	if errors.Is(err, ErrInstanceNotOnNode) {
+		err = s.confirmVMNotRunning(ctx, accountID, instanceID)
+	}
+	return err
 }
 
 // The owning node's in-memory command path first, since it is the one that can

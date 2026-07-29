@@ -57,6 +57,13 @@ type config struct {
 	PGUser        string
 	RCService     string
 	EngineService string
+
+	// Where the data volume is mounted, and the two kernel surfaces a storage
+	// grow resolves its device from. Overridable so a test can point them at
+	// fixtures rather than at the running host's.
+	DataMount  string
+	MountsFile string
+	SysBlock   string
 }
 
 // Reads the cloud-init env file, then lets real env vars override.
@@ -78,6 +85,7 @@ func loadConfig(envFile string) config {
 		PGUser:               get("RDS_PG_USER"),
 		RCService:            get("RDS_RC_SERVICE"),
 		EngineService:        get("RDS_ENGINE_SERVICE"),
+		DataMount:            get("RDS_DATA_MOUNT"),
 		EnginePort:           defaultEnginePort,
 		PollWait:             defaultPollWait,
 	}
@@ -111,6 +119,13 @@ func loadConfig(envFile string) config {
 	if cfg.EngineService == "" {
 		cfg.EngineService = defaultEngineSvcName
 	}
+	// rds-datadir reads the same RDS_DATA_MOUNT, so the two agree on where the
+	// volume landed without either asserting it to the other.
+	if cfg.DataMount == "" {
+		cfg.DataMount = defaultDataMount
+	}
+	cfg.MountsFile = defaultMountsFile
+	cfg.SysBlock = defaultSysBlock
 	// The authoritative port comes from the bootstrap config; this is only what
 	// the probe uses until that first fetch lands.
 	if v := get("RDS_ENGINE_PORT"); v != "" {

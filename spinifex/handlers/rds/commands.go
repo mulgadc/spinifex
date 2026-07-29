@@ -17,11 +17,14 @@ import (
 // long poll over the gateway; this publishes on the bus subject that poll is
 // subscribed to and waits for the reply the agent carries back on its next one.
 
-// Command types. rds-5b adds grow-filesystem and rds-8 the snapshot quiesce.
+// Command types. rds-8 adds the snapshot quiesce.
 const (
 	CommandSetPassword = "set-password"
 	CommandApplyParams = "apply-params"
 	CommandStopEngine  = "stop-engine"
+	// Extends the in-guest filesystem onto a data volume the control plane has
+	// already grown (D12).
+	CommandGrowFilesystem = "grow-filesystem"
 )
 
 // Parameter names carried on a command. They are AWS-shaped rather than
@@ -38,6 +41,10 @@ const (
 	setPasswordTimeout = 30 * time.Second
 	applyParamsTimeout = 60 * time.Second
 	stopEngineTimeout  = 120 * time.Second
+	// growpart plus an online resize2fs/xfs_growfs. Both scale with the
+	// filesystem's metadata rather than with the volume, so this is generous
+	// rather than proportional to the grow.
+	growFilesystemTimeout = 180 * time.Second
 
 	// The channel is a live subscription rather than a durable queue (D8), so a
 	// command published between two of the agent's polls reaches nobody.
@@ -76,6 +83,14 @@ func (s *Service) applyParameters(ctx context.Context, accountID, dbInstanceIden
 // VM stops. Callers treat a failure as degradation, not as an error.
 func (s *Service) stopEngine(ctx context.Context, accountID, dbInstanceIdentifier string) error {
 	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandStopEngine, stopEngineTimeout, nil)
+	return err
+}
+
+// Extends the guest's filesystem onto the already-grown data volume. Issued
+// once the agent is back rather than during boot: both ext4 and XFS grow while
+// mounted, so this needs no ordering against the engine start (D12).
+func (s *Service) growFilesystem(ctx context.Context, accountID, dbInstanceIdentifier string) error {
+	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandGrowFilesystem, growFilesystemTimeout, nil)
 	return err
 }
 

@@ -59,6 +59,10 @@ func TestCanTransition_Lifecycle(t *testing.T) {
 		{StatusAvailable, StatusRecovering, true},
 		{StatusAvailable, StatusFailed, true},
 		{StatusFailed, StatusRecovering, true},
+		// A failed instance is exactly the one a customer retries a change on.
+		{StatusFailed, StatusModifying, true},
+		{StatusAvailable, StatusModifying, true},
+		{StatusModifying, StatusAvailable, true},
 		{StatusRecovering, StatusAvailable, true},
 
 		// A re-observation of the same state is not an illegal move.

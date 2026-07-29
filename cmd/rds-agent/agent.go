@@ -170,7 +170,7 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
 	a.engine = newPostgresEngine(cfg, execCommandRunner)
 	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
-	a.cmd = newCommander(cp, newCommandRegistry(a.engine), cfg.PollWait)
+	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
 	return a
 }
 

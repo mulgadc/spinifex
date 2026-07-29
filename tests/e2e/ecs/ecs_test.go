@@ -44,11 +44,26 @@ const (
 	ecsHostNetnsCmd = "sleep 600"
 )
 
+// ecsCredCheckCmd runs inside a task container and proves a task role is
+// actually usable, not just declared: it fetches the container's own
+// credentials from AWS_CONTAINER_CREDENTIALS_RELATIVE_URI (the endpoint
+// credendpoint.go DNATs onto 169.254.170.2:80) and grep-asserts the AWS SDK's
+// expected JSON fields are present. wget (nginx:alpine has no curl) exits
+// non-zero on any connection or HTTP failure, and `set -e` propagates that to
+// the container exit — so a dead endpoint stops the task instead of leaving an
+// unused env var that every other subtest's container ignores.
+var ecsCredCheckCmd = []string{"sh", "-c",
+	`set -e; body=$(wget -qO- "http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"); ` +
+		`echo "$body"; echo "$body" | grep -q '"AccessKeyId"'; echo "$body" | grep -q '"SecretAccessKey"'; ` +
+		`echo "$body" | grep -q '"Token"'; sleep 600`,
+}
+
 // TestECS drives the ECS data plane end-to-end against the local awsgw: a
 // customer VPC + a real container instance launched from the spinifex-ecs-node
 // AMI (which boots, registers over the gateway, and runs tasks through
 // containerd), then standalone tasks in all three network modes (awsvpc,
-// bridge, host) and an awsvpc service fronted by an ALB target group.
+// bridge, host), a task-role credential fetch from inside the container, and
+// an awsvpc service fronted by an ALB target group.
 //
 // One fixture (VPC + cluster + one node) is shared across subtests — node boot
 // + registration is the slow step, so re-provisioning per subtest would blow
@@ -87,6 +102,19 @@ func TestECS(t *testing.T) {
 		assert.Equal(t, "ElasticNetworkInterface", aws.StringValue(att.Type))
 		assert.NotEmpty(t, attachmentDetail(att, "privateIPv4Address"), "ENI must carry a private IP")
 		assert.NotEmpty(t, attachmentDetail(att, "networkInterfaceId"), "ENI must carry an interface id")
+	})
+
+	t.Run("TaskRoleCredentials", func(t *testing.T) {
+		tdArn := registerTaskDef(t, c, fx, "awsvpc", ecsCredCheckCmd)
+		task := runStandaloneTask(t, c, fx, tdArn, &ecs.NetworkConfiguration{
+			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{
+				Subnets:        aws.StringSlice([]string{fx.SubnetAID}),
+				SecurityGroups: aws.StringSlice([]string{fx.SGID}),
+			},
+		})
+		assert.Equal(t, "RUNNING", aws.StringValue(task.LastStatus),
+			"task must reach and stay RUNNING: ecsCredCheckCmd exits non-zero and stops "+
+				"the task on any credential-fetch failure, including a dead credential endpoint")
 	})
 
 	t.Run("TaskBridge", func(t *testing.T) {
@@ -340,7 +368,17 @@ func ensureInstanceProfile(t *testing.T, c *harness.AWSClient) {
 func createTaskRole(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 	t.Helper()
 	name := fx.ClusterName + "-task-role"
-	const trust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	// Trust both ecs-tasks.amazonaws.com (real-AWS shape) and ecsInstanceRole
+	// directly. Unlike real AWS, where the ECS service vends task credentials
+	// internally, this agent assumes the task role itself over the gateway using
+	// its own instance-role session (credendpoint.go's assumeOverGateway) — an
+	// HTTPS AssumeRole call, and evalTrustPolicy only matches a Service principal
+	// on the IMDS path, never HTTPS. Without the AWS-principal clause every
+	// task-role assumption here is denied, regardless of the credential endpoint.
+	trust := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[`+
+		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},`+
+		`{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::%s:role/ecsInstanceRole"},"Action":"sts:AssumeRole"}]}`,
+		fx.AccountID)
 	out, err := c.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(name),
 		AssumeRolePolicyDocument: aws.String(trust),

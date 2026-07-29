@@ -109,9 +109,9 @@ var actions = map[string]Handler{
 	"DeleteDBParameterGroup":    pending(),
 
 	// Tags.
-	"AddTagsToResource":      pending(),
-	"RemoveTagsFromResource": pending(),
-	"ListTagsForResource":    pending(),
+	"AddTagsToResource":      typed(AddTagsToResource),
+	"RemoveTagsFromResource": typed(RemoveTagsFromResource),
+	"ListTagsForResource":    typed(ListTagsForResource),
 
 	// Events.
 	"DescribeEvents": pending(),

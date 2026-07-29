@@ -48,6 +48,10 @@ func TestCreateDescribeConnect(t *testing.T) {
 		DBName:               aws.String(dbName),
 		MasterUsername:       aws.String(dbMasterUser),
 		MasterUserPassword:   aws.String(dbMasterPassword),
+		Tags: []*rds.Tag{
+			{Key: aws.String("env"), Value: aws.String("e2e")},
+			{Key: aws.String("suite"), Value: aws.String("rds")},
+		},
 	})
 	require.NoError(t, err, "create-db-instance")
 	require.NotNil(t, out.DBInstance)
@@ -87,6 +91,44 @@ func TestCreateDescribeConnect(t *testing.T) {
 		assert.Contains(t, ids, id, "an unfiltered describe must list the instance")
 	})
 
+	// The Terraform provider reads tags through ListTagsForResource on every
+	// apply, so this is the assertion that proves the provider's read path works.
+	t.Run("TagsRoundTrip", func(t *testing.T) {
+		requireAvailable(t, instance)
+		arn := aws.StringValue(instance.DBInstanceArn)
+		require.NotEmpty(t, arn, "an available instance must publish its ARN")
+
+		tags, err := f.AWS.RDS.ListTagsForResource(&rds.ListTagsForResourceInput{ResourceName: aws.String(arn)})
+		require.NoError(t, err, "list-tags-for-resource")
+		assert.Equal(t, map[string]string{"env": "e2e", "suite": "rds"}, tagMap(tags.TagList),
+			"the tags supplied at create must be readable back")
+
+		_, err = f.AWS.RDS.AddTagsToResource(&rds.AddTagsToResourceInput{
+			ResourceName: aws.String(arn),
+			Tags:         []*rds.Tag{{Key: aws.String("env"), Value: aws.String("e2e-updated")}},
+		})
+		require.NoError(t, err, "add-tags-to-resource")
+
+		_, err = f.AWS.RDS.RemoveTagsFromResource(&rds.RemoveTagsFromResourceInput{
+			ResourceName: aws.String(arn),
+			TagKeys:      aws.StringSlice([]string{"suite", "never-set"}),
+		})
+		require.NoError(t, err, "remove-tags-from-resource must ignore a key that is not present")
+
+		tags, err = f.AWS.RDS.ListTagsForResource(&rds.ListTagsForResourceInput{ResourceName: aws.String(arn)})
+		require.NoError(t, err, "list-tags-for-resource")
+		assert.Equal(t, map[string]string{"env": "e2e-updated"}, tagMap(tags.TagList))
+
+		// Terraform reads tags from the describe as well, so the two views
+		// disagreeing would show up as permanent drift.
+		described, err := f.AWS.RDS.DescribeDBInstances(&rds.DescribeDBInstancesInput{
+			DBInstanceIdentifier: aws.String(id),
+		})
+		require.NoError(t, err, "describe-db-instances")
+		require.Len(t, described.DBInstances, 1)
+		assert.Equal(t, map[string]string{"env": "e2e-updated"}, tagMap(described.DBInstances[0].TagList))
+	})
+
 	t.Run("EndpointResolves", func(t *testing.T) {
 		requireAvailable(t, instance)
 		host := aws.StringValue(instance.Endpoint.Address)
@@ -107,6 +149,14 @@ func TestCreateDescribeConnect(t *testing.T) {
 		requireAvailable(t, instance)
 		runSQLSmokeTest(t, instance)
 	})
+}
+
+func tagMap(tags []*rds.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	return out
 }
 
 func requireAvailable(t *testing.T, instance *rds.DBInstance) {

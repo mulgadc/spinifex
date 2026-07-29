@@ -48,6 +48,7 @@ type validatedCreate struct {
 	// this with a real DB subnet group lookup.
 	SubnetID             string
 	DBParameterGroupName string
+	Tags                 map[string]string
 }
 
 // Everything that can be decided from the request alone. Network resolution
@@ -128,6 +129,13 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		return nil, fmt.Errorf("%s: DB parameter group %q not found", awserrors.ErrorDBParameterGroupNotFound, paramGroup)
 	}
 
+	// Rejected before the identifier is reserved, so a create with bad tags
+	// leaves no partial record behind.
+	tags, err := validateTags(input.Tags)
+	if err != nil {
+		return nil, err
+	}
+
 	return &validatedCreate{
 		Identifier:           identifier,
 		Engine:               engine,
@@ -142,6 +150,7 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		DBName:               aws.StringValue(input.DBName),
 		SecurityGroupIDs:     aws.StringValueSlice(input.VpcSecurityGroupIds),
 		DBParameterGroupName: engine.DefaultParameterGroupName(),
+		Tags:                 tags,
 	}, nil
 }
 
@@ -221,9 +230,6 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 	}
 	if len(input.EnableCloudwatchLogsExports) > 0 {
 		return unimplemented("EnableCloudwatchLogsExports", "log export is not implemented")
-	}
-	if len(input.Tags) > 0 {
-		return unimplemented("Tags", "resource tagging is not implemented yet")
 	}
 	return nil
 }

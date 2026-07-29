@@ -102,7 +102,10 @@ func TestDispatch_UnknownAction(t *testing.T) {
 
 // The customer actions this phase implements forward to the daemon, so they are
 // dispatched against a stub responder rather than a nil connection.
-var liveActions = []string{"CreateDBInstance", "DescribeDBInstances"}
+var liveActions = []string{
+	"CreateDBInstance", "DescribeDBInstances",
+	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
+}
 
 // What is under test in this file is the action table and the XML envelope, not
 // the orchestration behind the subject, so the responder returns a fixed output.
@@ -113,6 +116,12 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
 		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
+	respondWith(t, nc, handlers_rds.SubjectAddTagsToResource, &rds.AddTagsToResourceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectRemoveTagsFromResource, &rds.RemoveTagsFromResourceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectListTagsForResource,
+		&rds.ListTagsForResourceOutput{TagList: []*rds.Tag{
+			{Key: aws.String("env"), Value: aws.String("prod")},
+		}})
 	return nc
 }
 
@@ -186,6 +195,90 @@ func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 		"<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances></DBInstances>"+
 			"</DescribeDBInstancesResult></DescribeDBInstancesResponse>",
 		string(body))
+}
+
+// AWS nests each tag inside the list rather than flattening it, and the SDK's
+// unmarshaler will not find a tag any other way.
+func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
+	body, err := Dispatch(t.Context(), "ListTagsForResource", map[string]string{
+		"Action":       "ListTagsForResource",
+		"ResourceName": handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
+	}, newStubbedNATS(t), testCaller)
+	require.NoError(t, err)
+
+	assert.Equal(t,
+		"<ListTagsForResourceResponse><ListTagsForResourceResult><TagList>"+
+			"<Tag><Key>env</Key><Value>prod</Value></Tag>"+
+			"</TagList></ListTagsForResourceResult></ListTagsForResourceResponse>",
+		string(body))
+}
+
+// RDS serializes a tag list under its own locationNameList, so the params
+// arrive as Tags.Tag.N.Key. Parsing them as anything else would drop the tags
+// and report a success that tagged nothing.
+func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	requests := make(chan rds.AddTagsToResourceInput, 1)
+	sub, err := nc.Subscribe(handlers_rds.SubjectAddTagsToResource, func(msg *nats.Msg) {
+		var in rds.AddTagsToResourceInput
+		if err := json.Unmarshal(msg.Data, &in); err != nil {
+			t.Errorf("unmarshal AddTagsToResource request: %v", err)
+			return
+		}
+		requests <- in
+		if err := msg.Respond([]byte(`{}`)); err != nil {
+			t.Logf("respond on %s: %v", handlers_rds.SubjectAddTagsToResource, err)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	arn := handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db")
+	_, err = Dispatch(t.Context(), "AddTagsToResource", map[string]string{
+		"Action":         "AddTagsToResource",
+		"ResourceName":   arn,
+		"Tags.Tag.1.Key": "env", "Tags.Tag.1.Value": "prod",
+		"Tags.Tag.2.Key": "team", "Tags.Tag.2.Value": "platform",
+	}, nc, testCaller)
+	require.NoError(t, err)
+
+	got := <-requests
+	assert.Equal(t, arn, aws.StringValue(got.ResourceName))
+	require.Len(t, got.Tags, 2)
+	assert.Equal(t, "env", aws.StringValue(got.Tags[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(got.Tags[0].Value))
+	assert.Equal(t, "team", aws.StringValue(got.Tags[1].Key))
+	assert.Equal(t, "platform", aws.StringValue(got.Tags[1].Value))
+}
+
+// TagKeys carries no locationNameList, so it keeps the default member wrapper
+// even though the sibling tag list does not.
+func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	requests := make(chan rds.RemoveTagsFromResourceInput, 1)
+	sub, err := nc.Subscribe(handlers_rds.SubjectRemoveTagsFromResource, func(msg *nats.Msg) {
+		var in rds.RemoveTagsFromResourceInput
+		if err := json.Unmarshal(msg.Data, &in); err != nil {
+			t.Errorf("unmarshal RemoveTagsFromResource request: %v", err)
+			return
+		}
+		requests <- in
+		if err := msg.Respond([]byte(`{}`)); err != nil {
+			t.Logf("respond on %s: %v", handlers_rds.SubjectRemoveTagsFromResource, err)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	_, err = Dispatch(t.Context(), "RemoveTagsFromResource", map[string]string{
+		"Action":           "RemoveTagsFromResource",
+		"ResourceName":     handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
+		"TagKeys.member.1": "env",
+		"TagKeys.member.2": "team",
+	}, nc, testCaller)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"env", "team"}, aws.StringValueSlice((<-requests).TagKeys))
 }
 
 // A filtered describe is still an empty result set, not a parse failure: the

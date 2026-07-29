@@ -392,9 +392,6 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 		{"CloudwatchLogsExports", func(in *rds.CreateDBInstanceInput) {
 			in.EnableCloudwatchLogsExports = aws.StringSlice([]string{"postgresql"})
 		}, "EnableCloudwatchLogsExports"},
-		{"Tags", func(in *rds.CreateDBInstanceInput) {
-			in.Tags = []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
-		}, "Tags"},
 	}
 
 	for _, tc := range cases {

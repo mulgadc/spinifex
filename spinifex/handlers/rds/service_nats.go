@@ -45,6 +45,21 @@ func (s *NATSService) DescribeDBInstances(ctx context.Context, input *rds.Descri
 		SubjectDescribeDBInstances, input, defaultTimeout, accountID)
 }
 
+func (s *NATSService) AddTagsToResource(ctx context.Context, input *rds.AddTagsToResourceInput, accountID string) (*rds.AddTagsToResourceOutput, error) {
+	return utils.NATSRequest[rds.AddTagsToResourceOutput](ctx, s.nc,
+		SubjectAddTagsToResource, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) RemoveTagsFromResource(ctx context.Context, input *rds.RemoveTagsFromResourceInput, accountID string) (*rds.RemoveTagsFromResourceOutput, error) {
+	return utils.NATSRequest[rds.RemoveTagsFromResourceOutput](ctx, s.nc,
+		SubjectRemoveTagsFromResource, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) ListTagsForResource(ctx context.Context, input *rds.ListTagsForResourceInput, accountID string) (*rds.ListTagsForResourceOutput, error) {
+	return utils.NATSRequest[rds.ListTagsForResourceOutput](ctx, s.nc,
+		SubjectListTagsForResource, input, defaultTimeout, accountID)
+}
+
 // Requested on the Layer-1 subject, not the bus.
 func (s *NATSService) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	return utils.NATSRequest[GetDBBootstrapConfigOutput](ctx, s.nc,

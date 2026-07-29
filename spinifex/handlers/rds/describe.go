@@ -86,6 +86,9 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 		MultiAZ:              aws.Bool(false),
 		PubliclyAccessible:   aws.Bool(false),
 		InstanceCreateTime:   aws.Time(rec.CreatedAt),
+		// The Terraform provider reads tags from the describe as well as from
+		// ListTagsForResource, so the two have to agree.
+		TagList: tagsToAWS(rec.Tags),
 	}
 	if rec.DBName != "" {
 		out.DBName = aws.String(rec.DBName)

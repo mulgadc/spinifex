@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,6 +30,15 @@ type engineOps interface {
 	// Shuts the engine down cleanly, so the data volume is checkpointed before
 	// the VM is stopped or snapshotted.
 	Stop(ctx context.Context) error
+}
+
+// The rollback half of the parameter path, kept off engineOps because it is not
+// a control-plane directive: nothing issues it, the agent runs it when the
+// engine fails to come up after a parameter change.
+type parameterRecovery interface {
+	// Reports whether the installed set differed and was replaced.
+	RestoreLastKnownGoodParameters() (bool, error)
+	Restart(ctx context.Context) error
 }
 
 // One child process. Env replaces the agent's own environment rather than
@@ -146,14 +156,42 @@ ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 	return nil
 }
 
-// The parameters go beside the data rather than into /etc, matching rds-init: a
-// class change boots a fresh root volume, which would otherwise revert them.
+// The include the resolved parameter set is rendered to, and the copy of the
+// last one the engine accepted. Both live beside the data rather than in /etc,
+// matching rds-init: a class change boots a fresh root volume, which would
+// otherwise revert them (D9).
+const (
+	parametersFileName = "10-rds-parameters.conf"
+	// Deliberately not a .conf name: include_dir globs *.conf, so the rollback
+	// copy must not be read as a second set of settings.
+	lastGoodFileName = "10-rds-parameters.last-good"
+)
+
+// Installs the resolved set, validates it with the engine's own config parser
+// before the engine ever adopts it, and reloads. A value the engine refuses is
+// rolled back here rather than left on the data volume, where it would survive
+// every VM replace and turn the next restart into a boot loop.
 func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
-	if err := e.installParameters(params); err != nil {
+	// The check has to run against the file in place, because the engine parses
+	// the datadir's own include_dir. The window that leaves is closed from both
+	// ends: the rollback below, and the last-known-good restore the agent runs at
+	// boot when the engine does not come up.
+	previous, restore, err := e.installParameters(params)
+	if err != nil {
 		return nil, err
 	}
+	if err := e.checkConfig(ctx); err != nil {
+		return nil, errors.Join(fmt.Errorf("the engine rejected the parameter set: %w", err), restore())
+	}
 	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
-		return nil, fmt.Errorf("reload the engine configuration: %w", err)
+		return nil, errors.Join(fmt.Errorf("reload the engine configuration: %w", err), restore())
+	}
+
+	// Recorded only once the engine has both parsed and adopted it, so the
+	// rollback target is a set that is known to work rather than the last one
+	// written.
+	if err := e.recordLastKnownGood(previous); err != nil {
+		return nil, err
 	}
 
 	// Read after the reload: a setting only becomes pending_restart once the
@@ -171,14 +209,85 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 	return pending, nil
 }
 
+func (e *postgresEngine) parametersPath() string {
+	return filepath.Join(e.pgData, "conf.d", parametersFileName)
+}
+
+func (e *postgresEngine) lastGoodPath() string {
+	return filepath.Join(e.pgData, "conf.d", lastGoodFileName)
+}
+
 // Written as root and handed to the engine's user, at the same path and mode
 // rds-init installs it at, so a later boot overwrites rather than shadows it.
-func (e *postgresEngine) installParameters(params []handlers_rds.Parameter) error {
-	dir := filepath.Join(e.pgData, "conf.d")
-	path := filepath.Join(dir, "10-rds-parameters.conf")
-	tmp := path + ".new"
+// Returns the content that was there and a func putting it back, so the caller
+// can undo the install without re-rendering anything.
+func (e *postgresEngine) installParameters(params []handlers_rds.Parameter) (previous []byte, restore func() error, err error) {
+	path := e.parametersPath()
+	// A missing file is the first-ever apply, and its rollback is a removal.
+	previous, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, nil, fmt.Errorf("read the installed parameters at %s: %w", path, readErr)
+	}
+	existed := readErr == nil
 
-	if err := os.WriteFile(tmp, []byte(renderParameters(params)), 0o600); err != nil {
+	if err := e.writeEngineFile(path, []byte(renderParameters(params))); err != nil {
+		return nil, nil, err
+	}
+	return previous, func() error {
+		if !existed {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("withdraw the rejected parameters at %s: %w", path, err)
+			}
+			return nil
+		}
+		return e.writeEngineFile(path, previous)
+	}, nil
+}
+
+// Keeps the rollback target in step with what the engine is actually running.
+// The first apply of an instance's life has no predecessor, so the freshly
+// accepted set becomes the target instead.
+func (e *postgresEngine) recordLastKnownGood(previous []byte) error {
+	content := previous
+	if content == nil {
+		var err error
+		if content, err = os.ReadFile(e.parametersPath()); err != nil {
+			return fmt.Errorf("read the accepted parameters: %w", err)
+		}
+	}
+	return e.writeEngineFile(e.lastGoodPath(), content)
+}
+
+// Puts the last set the engine accepted back in place, for a restart that failed
+// after a parameter change: the instance comes back on the old parameters rather
+// than boot-looping into recovery. Reports whether anything was restored.
+func (e *postgresEngine) RestoreLastKnownGoodParameters() (bool, error) {
+	lastGood, err := os.ReadFile(e.lastGoodPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the last known good parameters: %w", err)
+	}
+	current, err := os.ReadFile(e.parametersPath())
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read the installed parameters: %w", err)
+	}
+	if bytes.Equal(current, lastGood) {
+		return false, nil
+	}
+	if err := e.writeEngineFile(e.parametersPath(), lastGood); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Atomic: a temp file in the same directory, renamed over the target. The temp
+// name deliberately does not end in .conf, so a crash between write and rename
+// cannot leave the engine reading a half-written include.
+func (e *postgresEngine) writeEngineFile(path string, content []byte) error {
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
 	if err := e.chownToEngine(tmp); err != nil {
@@ -188,6 +297,22 @@ func (e *postgresEngine) installParameters(params []handlers_rds.Parameter) erro
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("install %s: %w", path, err)
+	}
+	return nil
+}
+
+// The engine's own parser, run offline against the datadir. Reading one setting
+// back is enough: postgres parses postgresql.conf and every include first, and
+// exits non-zero naming the file and line of an unknown parameter or a value
+// outside its range.
+func (e *postgresEngine) checkConfig(ctx context.Context) error {
+	if _, err := e.run(ctx, command{
+		Name: filepath.Join(filepath.Dir(e.psql), "postgres"),
+		Args: []string{"-D", e.pgData, "-C", "shared_buffers"},
+		Env:  []string{"PATH=" + defaultGuestPath},
+		User: e.osUser,
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -208,12 +333,22 @@ func (e *postgresEngine) chownToEngine(path string) error {
 // Through the service manager rather than pg_ctl, so the supervisor records the
 // engine as stopped and does not restart it underneath a VM that is going down.
 func (e *postgresEngine) Stop(ctx context.Context) error {
+	return e.serviceAction(ctx, "stop")
+}
+
+// Only the parameter rollback calls this: a restart the control plane wants goes
+// through RebootDBInstance, which cycles the VM.
+func (e *postgresEngine) Restart(ctx context.Context) error {
+	return e.serviceAction(ctx, "restart")
+}
+
+func (e *postgresEngine) serviceAction(ctx context.Context, action string) error {
 	if _, err := e.run(ctx, command{
 		Name: e.rcService,
-		Args: []string{e.service, "stop"},
+		Args: []string{e.service, action},
 		Env:  []string{"PATH=" + defaultGuestPath},
 	}); err != nil {
-		return fmt.Errorf("stop the %s service: %w", e.service, err)
+		return fmt.Errorf("%s the %s service: %w", action, e.service, err)
 	}
 	return nil
 }

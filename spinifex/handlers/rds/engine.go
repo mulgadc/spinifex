@@ -36,10 +36,17 @@ func (e Engine) EngineVersion() string {
 	return e.MajorVersion
 }
 
-// The parameter-group name AWS clients expect when none is named. rds-7
-// materialises the group itself; here it is only the name a request may carry.
+// The parameter-group name AWS clients expect when none is named. The group is
+// implicit: it is resolvable and reportable without ever having been created,
+// and is neither modifiable nor deletable.
 func (e Engine) DefaultParameterGroupName() string {
-	return "default." + e.Name + e.MajorVersion
+	return defaultParameterGroupPrefix + e.ParameterGroupFamily()
+}
+
+// The family every parameter group of this engine belongs to. v1 pins one major
+// per engine, so a family is a name rather than a version axis.
+func (e Engine) ParameterGroupFamily() string {
+	return e.Name + e.MajorVersion
 }
 
 // An unknown engine is rejected at validation, before any volume or ENI exists.

@@ -51,25 +51,52 @@ func (p *engineProbe) setPort(port int) {
 	p.port.Store(int64(port))
 }
 
+// What the engine is doing, before the seenHealthy latch collapses "never up"
+// and "was up and went away" into one health. The parameter rollback needs them
+// apart: a postmaster that is up and replaying WAL will come back on its own, one
+// that is not running at all after a parameter change will not.
+type engineState int
+
+const (
+	// Not answering at all, or the probe could not run.
+	engineAbsent engineState = iota
+	// The postmaster is up and rejecting connections: startup or crash recovery.
+	engineRecovering
+	engineServing
+)
+
 // Only the heartbeat calls this, so the seenHealthy latch is single-goroutine
 // state.
 func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, string) {
+	state, message := p.state(ctx)
+	switch state {
+	case engineServing:
+		p.seenHealthy = true
+		return handlers_rds.EngineHealthHealthy, ""
+	case engineRecovering:
+		return handlers_rds.EngineHealthStarting, message
+	default:
+		return p.degraded(), message
+	}
+}
+
+// The raw probe result. Safe to call from a goroutine other than the
+// heartbeat's: it touches no latched state.
+func (p *engineProbe) state(ctx context.Context) (engineState, string) {
 	port := strconv.FormatInt(p.port.Load(), 10)
 	code, err := p.run(ctx, p.binary, "-h", p.host, "-p", port, "-q")
 	switch {
 	case err != nil:
 		// A missing binary or broken image. Reporting healthy on the strength of
-		// nothing would hide it, so this degrades like an engine that did not answer.
-		return p.degraded(), fmt.Sprintf("engine probe could not run: %v", err)
+		// nothing would hide it, so this reads as absent like an engine that did
+		// not answer.
+		return engineAbsent, fmt.Sprintf("engine probe could not run: %v", err)
 	case code == 0:
-		p.seenHealthy = true
-		return handlers_rds.EngineHealthHealthy, ""
+		return engineServing, ""
 	case code == 1:
-		// pg_isready's "rejecting connections": the postmaster is up but in
-		// startup or crash recovery, which resolves on its own.
-		return handlers_rds.EngineHealthStarting, "engine is rejecting connections (startup or recovery)"
+		return engineRecovering, "engine is rejecting connections (startup or recovery)"
 	default:
-		return p.degraded(), fmt.Sprintf("engine did not respond on %s:%s", p.host, port)
+		return engineAbsent, fmt.Sprintf("engine did not respond on %s:%s", p.host, port)
 	}
 }
 

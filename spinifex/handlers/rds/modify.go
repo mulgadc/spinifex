@@ -202,15 +202,15 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		plan.InstanceClass, plan.InstanceType = class, instanceType
 	}
 
-	// The implicit default group is the only name that resolves until rds-7
-	// materialises real ones, so anything else is a group that does not exist.
+	// Resolved against KV here rather than at apply time, so a group that does
+	// not exist is rejected before the instance is moved into modifying.
 	if group := aws.StringValue(input.DBParameterGroupName); group != "" && group != rec.DBParameterGroupName {
-		engine, err := LookupEngine(rec.Engine)
+		kv, err := s.bucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if group != engine.DefaultParameterGroupName() {
-			return nil, fmt.Errorf("%s: DB parameter group %q not found", awserrors.ErrorDBParameterGroupNotFound, group)
+		if _, _, err := getDBParameterGroup(ctx, kv, accountID, group); err != nil {
+			return nil, err
 		}
 		plan.ParameterGroup = group
 	}

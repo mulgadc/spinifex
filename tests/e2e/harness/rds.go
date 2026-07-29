@@ -48,6 +48,25 @@ func WaitForDBInstanceAvailable(t *testing.T, c *AWSClient, id string, opts ...P
 	return last
 }
 
+// WaitForDBInstanceGone polls until the instance no longer exists. A group an
+// instance still references cannot be deleted, and a deleting instance still
+// counts, so a teardown that frees a group has to wait for the record to go.
+func WaitForDBInstanceGone(t *testing.T, c *AWSClient, id string, opts ...PollOpt) {
+	t.Helper()
+	cfg := applyOpts(pollCfg{timeout: 10 * time.Minute, interval: 10 * time.Second}, opts...)
+	EventuallyErr(t, func() error {
+		instance, err := DescribeDBInstance(c, id)
+		if ErrorCodeIs(err, "DBInstanceNotFound") {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("describe-db-instances %s: %w", id, err)
+		}
+		return fmt.Errorf("%s still exists with status=%s", id, aws.StringValue(instance.DBInstanceStatus))
+	}, cfg.timeout, cfg.interval)
+	t.Logf("DB instance %s is gone", id)
+}
+
 // DescribeDBInstance returns the single named DB instance. A named instance that
 // does not exist is an error from the API, not an empty list.
 func DescribeDBInstance(c *AWSClient, id string) (*rds.DBInstance, error) {

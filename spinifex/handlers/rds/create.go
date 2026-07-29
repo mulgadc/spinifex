@@ -28,12 +28,19 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	if err != nil {
 		return nil, err
 	}
-	placement, err := s.resolvePlacement(ctx, accountID, req)
+	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-
-	kv, err := s.bucket(ctx, accountID)
+	placement, err := s.resolvePlacement(ctx, kv, accountID, req)
+	if err != nil {
+		return nil, err
+	}
+	// Resolved before the identifier is reserved, so a create naming a group that
+	// does not exist leaves no record behind. The set is literals only: the
+	// class's memory has already been folded into every size-derived default, so
+	// the agent never sees a formula (D20).
+	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +49,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// Creating the record before anything is provisioned makes the identifier
 	// uniqueness check atomic against a concurrent create on another node — a
 	// prior read-then-write would let both pass and both launch a VM.
-	rec := newDBInstanceRecord(accountID, req, placement)
+	rec := newDBInstanceRecord(accountID, req, placement, parameters)
 	if createErr := createJSON(ctx, kv, key, &rec); createErr != nil {
 		if errors.Is(createErr, jetstream.ErrKeyExists) {
 			return nil, fmt.Errorf("%s: DB instance %s already exists",
@@ -125,7 +132,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 
 // The record as it stands before any resource exists: everything the request
 // determined, plus the staged master password the first bootstrap fetch consumes.
-func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement) DBInstanceRecord {
+func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement, parameters []Parameter) DBInstanceRecord {
 	now := time.Now().UTC()
 	return DBInstanceRecord{
 		DBInstanceIdentifier: req.Identifier,
@@ -142,12 +149,16 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		SubnetID:             placement.SubnetID,
 		VpcID:                placement.VpcID,
 		VpcSecurityGroupIDs:  placement.SecurityGroupIDs,
+		DBSubnetGroupName:    req.DBSubnetGroupName,
 		DBParameterGroupName: req.DBParameterGroupName,
 		DeletionProtection:   req.DeletionProtection,
 		Tags:                 req.Tags,
-		Bootstrap:            BootstrapState{MasterUserPassword: req.MasterPassword},
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		Bootstrap: BootstrapState{
+			MasterUserPassword: req.MasterPassword,
+			ResolvedParameters: parameters,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }
 

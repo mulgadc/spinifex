@@ -44,14 +44,25 @@ type taggableResource struct {
 	notFound  string
 }
 
-// DB instances are the only taggable resource that exists so far. rds-7 adds
-// subnet groups and parameter groups here, rds-8 snapshots — one entry each,
-// registered by the phase that creates the resource.
+// One entry per resource kind, registered by the phase that creates the
+// resource; rds-8 adds snapshots. A default parameter group is deliberately
+// absent: it has no stored record, so a tag written to it would have nowhere to
+// live and would read back as absent on the next apply.
 var taggableResources = map[ResourceKind]taggableResource{
 	ResourceKindDBInstance: {
 		key:       DBInstanceKey,
 		newRecord: func() TaggedRecord { return &DBInstanceRecord{} },
 		notFound:  awserrors.ErrorDBInstanceNotFound,
+	},
+	ResourceKindDBSubnetGroup: {
+		key:       DBSubnetGroupKey,
+		newRecord: func() TaggedRecord { return &DBSubnetGroupRecord{} },
+		notFound:  awserrors.ErrorDBSubnetGroupNotFound,
+	},
+	ResourceKindDBParameterGroup: {
+		key:       DBParameterGroupMetaKey,
+		newRecord: func() TaggedRecord { return &DBParameterGroupRecord{} },
+		notFound:  awserrors.ErrorDBParameterGroupNotFound,
 	},
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The customer-account VPC surface CreateDBInstance reads to place the endpoint
@@ -25,27 +26,60 @@ type endpointPlacement struct {
 	SecurityGroupIDs []string
 }
 
-// Until DB subnet groups land in rds-7 the placement is the account's default
-// VPC, mirroring AWS's own behaviour when a request names no subnet group. A
-// named group is rejected in validation rather than silently resolved here.
-func (s *Service) resolvePlacement(ctx context.Context, accountID string, req *validatedCreate) (*endpointPlacement, error) {
+// A named DB subnet group decides the VPC and the subnet; an unnamed one falls
+// back to the account's default VPC, mirroring AWS's own behaviour. The security
+// groups are validated against whichever VPC that resolved to, because an ENI
+// cannot carry a group from another one.
+func (s *Service) resolvePlacement(ctx context.Context, kv jetstream.KeyValue, accountID string, req *validatedCreate) (*endpointPlacement, error) {
 	if s.deps.Network == nil {
 		return nil, fmt.Errorf("%s: RDS networking is not wired on this node", awserrors.ErrorServerInternal)
 	}
 
-	vpcID, err := s.defaultVPCID(ctx, accountID)
-	if err != nil {
-		return nil, err
+	var vpcID, subnetID string
+	if req.DBSubnetGroupName != "" {
+		group, _, err := getDBSubnetGroup(ctx, kv, req.DBSubnetGroupName)
+		if err != nil {
+			return nil, err
+		}
+		subnetID, err = subnetFromGroup(group)
+		if err != nil {
+			return nil, err
+		}
+		vpcID = group.VpcID
+	} else {
+		var err error
+		if vpcID, err = s.defaultVPCID(ctx, accountID); err != nil {
+			return nil, err
+		}
+		if subnetID, err = s.firstSubnetID(ctx, accountID, vpcID); err != nil {
+			return nil, err
+		}
 	}
-	subnetID, err := s.firstSubnetID(ctx, accountID, vpcID)
-	if err != nil {
-		return nil, err
-	}
+
 	groupIDs, err := s.resolveSecurityGroups(ctx, accountID, vpcID, req.SecurityGroupIDs)
 	if err != nil {
 		return nil, err
 	}
 	return &endpointPlacement{VpcID: vpcID, SubnetID: subnetID, SecurityGroupIDs: groupIDs}, nil
+}
+
+// The subnet a group places an instance in. Sorted rather than first-listed, so
+// two instances created against the same group land the same way regardless of
+// the order the subnets were supplied in. Single-AZ makes the choice arbitrary
+// today; when V2 makes AZs real this is the one function that changes.
+func subnetFromGroup(group *DBSubnetGroupRecord) (string, error) {
+	ids := make([]string, 0, len(group.Subnets))
+	for _, subnet := range group.Subnets {
+		if subnet.SubnetID != "" {
+			ids = append(ids, subnet.SubnetID)
+		}
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("%s: DB subnet group %s holds no subnet to place the DB endpoint in",
+			awserrors.ErrorDBInvalidVPCNetworkState, group.Name)
+	}
+	slices.Sort(ids)
+	return ids[0], nil
 }
 
 func (s *Service) defaultVPCID(ctx context.Context, accountID string) (string, error) {

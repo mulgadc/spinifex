@@ -33,8 +33,21 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	// Parameters first, while the engine this modify started against is still
 	// the one running: the disruptive step below restarts it, which is also what
 	// puts any statically-scoped setting into effect.
-	if pending.DBParameterGroupName != "" {
-		if err := s.applyParameterGroup(ctx, kv, accountID, rec, pending.DBParameterGroupName); err != nil {
+	//
+	// A class change re-derives every size-derived default, so the set is
+	// recomputed when either the group or the class moves (D20). It is resolved
+	// against the class the instance is becoming: the include lives on the data
+	// volume, so it is the replacement VM that adopts it.
+	if pending.DBParameterGroupName != "" || pending.DBInstanceClass != "" {
+		group := pending.DBParameterGroupName
+		if group == "" {
+			group = rec.DBParameterGroupName
+		}
+		class := pending.DBInstanceClass
+		if class == "" {
+			class = rec.DBInstanceClass
+		}
+		if err := s.applyParameterGroup(ctx, kv, accountID, rec, group, class); err != nil {
 			return err
 		}
 	}
@@ -91,16 +104,29 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	})
 }
 
-// Installs the resolved parameter set into the engine's config and reloads it,
+// Re-resolves the effective set and installs it into the engine's config,
 // recording the settings the engine accepted but will not honour until it
 // restarts (D16). The set lives on the data volume, so it survives the VM
 // replace a class change performs and needs no second apply afterwards.
-func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group string) error {
-	pendingReboot, err := s.applyParameters(ctx, accountID, rec.DBInstanceIdentifier, rec.Bootstrap.ResolvedParameters)
+//
+// A re-resolve, never a merge: the whole set is recomputed from the catalog and
+// the new group's overrides, so a parameter the old group set and the new one
+// does not reverts to its default rather than lingering.
+func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group, instanceClass string) error {
+	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, group, instanceClass)
+	if err != nil {
+		return err
+	}
+	pendingReboot, err := s.applyParameters(ctx, accountID, rec.DBInstanceIdentifier, resolved)
 	if err != nil {
 		return fmt.Errorf("apply the parameters of %s to %s: %w", group, rec.DBInstanceIdentifier, err)
 	}
+	// Stored so a later VM replace boots against the same set the engine is
+	// already running, rather than re-deriving it from a group that may since
+	// have changed underneath the instance.
+	rec.Bootstrap.ResolvedParameters = resolved
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		stored.Bootstrap.ResolvedParameters = resolved
 		stored.PendingRebootParameters = pendingReboot
 	})
 }

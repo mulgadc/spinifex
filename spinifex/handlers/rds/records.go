@@ -244,6 +244,68 @@ type Parameter struct {
 	Value string `json:"value" locationName:"Value"`
 }
 
+// The db-subnet-groups/{name} record. The subnet list is stored verbatim rather
+// than reduced to a placement, so when V2 makes AZs real the group needs no
+// migration — only the code that chooses among its subnets changes.
+type DBSubnetGroupRecord struct {
+	Name        string `json:"name"`
+	AccountID   string `json:"accountId"`
+	Description string `json:"description"`
+	// Every subnet the customer supplied, in request order, each with the AZ
+	// recorded on the subnet itself rather than a hardcoded zone.
+	Subnets []DBSubnetGroupSubnet `json:"subnets"`
+	// The one VPC they all share, which is what makes the group usable for a
+	// placement at all.
+	VpcID string `json:"vpcId"`
+
+	Tags map[string]string `json:"tags,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type DBSubnetGroupSubnet struct {
+	SubnetID         string `json:"subnetId"`
+	AvailabilityZone string `json:"availabilityZone,omitempty"`
+}
+
+var _ TaggedRecord = (*DBSubnetGroupRecord)(nil)
+
+func (r *DBSubnetGroupRecord) GetTags() map[string]string { return r.Tags }
+
+func (r *DBSubnetGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
+
+// The db-parameter-groups/{name}/meta record. The values themselves live one key
+// each under .../params/, so a modify touching one parameter cannot clobber a
+// concurrent change to another (D3).
+type DBParameterGroupRecord struct {
+	Name        string `json:"name"`
+	AccountID   string `json:"accountId"`
+	Family      string `json:"family"`
+	Description string `json:"description"`
+
+	Tags map[string]string `json:"tags,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+var _ TaggedRecord = (*DBParameterGroupRecord)(nil)
+
+func (r *DBParameterGroupRecord) GetTags() map[string]string { return r.Tags }
+
+func (r *DBParameterGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
+
+// One stored override, at db-parameter-groups/{name}/params/{key}. ApplyMethod
+// is the customer's request rather than a fact: whether a change lands live is
+// decided by the parameter's own ApplyType (D16).
+type DBParameterRecord struct {
+	Name        string    `json:"name"`
+	Value       string    `json:"value"`
+	ApplyMethod string    `json:"applyMethod,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
 // Separate from Status: the reconciler needs both to tell "stopped because we
 // stopped it" from "stopped because it died".
 type EngineHealth string

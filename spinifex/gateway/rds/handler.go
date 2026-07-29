@@ -97,16 +97,16 @@ var actions = map[string]Handler{
 	"DescribeDBInstanceAutomatedBackups": pending(),
 
 	// Subnet groups.
-	"CreateDBSubnetGroup":    pending(),
-	"DescribeDBSubnetGroups": pending(),
-	"DeleteDBSubnetGroup":    pending(),
+	"CreateDBSubnetGroup":    typed(CreateDBSubnetGroup),
+	"DescribeDBSubnetGroups": typed(DescribeDBSubnetGroups),
+	"DeleteDBSubnetGroup":    typed(DeleteDBSubnetGroup),
 
 	// Parameter groups.
-	"CreateDBParameterGroup":    pending(),
-	"DescribeDBParameterGroups": pending(),
-	"ModifyDBParameterGroup":    pending(),
-	"DescribeDBParameters":      pending(),
-	"DeleteDBParameterGroup":    pending(),
+	"CreateDBParameterGroup":    typed(CreateDBParameterGroup),
+	"DescribeDBParameterGroups": typed(DescribeDBParameterGroups),
+	"ModifyDBParameterGroup":    typed(ModifyDBParameterGroup),
+	"DescribeDBParameters":      typed(DescribeDBParameters),
+	"DeleteDBParameterGroup":    typed(DeleteDBParameterGroup),
 
 	// Tags.
 	"AddTagsToResource":      typed(AddTagsToResource),

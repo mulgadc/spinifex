@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,8 @@ const (
 	testDefaultSG    = "sg-default01"
 	testBaseDomain   = "spx3.net"
 	testDBInstanceID = "orders-db"
+	// The one zone this platform exposes, which every subnet reports.
+	testZone = "spinifexz1"
 )
 
 // fakeNetwork is the customer account's VPC as the placement resolver reads it:
@@ -48,8 +51,8 @@ func newFakeNetwork() *fakeNetwork {
 		// Deliberately out of order: the resolver sorts, so the placement is the
 		// same on every repeat regardless of how the describe happened to order.
 		subnets: []*ec2.Subnet{
-			{SubnetId: aws.String("subnet-zebra")},
-			{SubnetId: aws.String("subnet-alpha")},
+			{SubnetId: aws.String("subnet-zebra"), VpcId: aws.String(testDefaultVPC), AvailabilityZone: aws.String(testZone)},
+			{SubnetId: aws.String("subnet-alpha"), VpcId: aws.String(testDefaultVPC), AvailabilityZone: aws.String(testZone)},
 		},
 		groups: []*ec2.SecurityGroup{
 			{GroupId: aws.String("sg-app01"), GroupName: aws.String("app")},
@@ -66,12 +69,25 @@ func (f *fakeNetwork) DescribeVpcs(_ context.Context, _ *ec2.DescribeVpcsInput, 
 	return &ec2.DescribeVpcsOutput{Vpcs: f.vpcs}, nil
 }
 
-func (f *fakeNetwork) DescribeSubnets(_ context.Context, _ *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error) {
+// Honours SubnetIds the way EC2 does — a named subnet that is not in this
+// account simply does not come back — which is what makes a subnet group's
+// existence and ownership checks observable.
+func (f *fakeNetwork) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error) {
 	f.accts = append(f.accts, accountID)
 	if f.subErr != nil {
 		return nil, f.subErr
 	}
-	return &ec2.DescribeSubnetsOutput{Subnets: f.subnets}, nil
+	if input == nil || len(input.SubnetIds) == 0 {
+		return &ec2.DescribeSubnetsOutput{Subnets: f.subnets}, nil
+	}
+	wanted := aws.StringValueSlice(input.SubnetIds)
+	var matched []*ec2.Subnet
+	for _, subnet := range f.subnets {
+		if slices.Contains(wanted, aws.StringValue(subnet.SubnetId)) {
+			matched = append(matched, subnet)
+		}
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: matched}, nil
 }
 
 func (f *fakeNetwork) DescribeSecurityGroups(_ context.Context, _ *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
@@ -442,14 +458,6 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 		{"PortTooLow", func(in *rds.CreateDBInstanceInput) { in.Port = aws.Int64(80) }, awserrors.ErrorInvalidParameterValue},
 		{"ReservedUsername", func(in *rds.CreateDBInstanceInput) { in.MasterUsername = aws.String("rdsadmin") }, awserrors.ErrorInvalidParameterValue},
 		{"ShortPassword", func(in *rds.CreateDBInstanceInput) { in.MasterUserPassword = aws.String("short") }, awserrors.ErrorInvalidParameterValue},
-		// Named groups do not exist until DB subnet groups land, and placing the
-		// endpoint somewhere else would put it in a subnet nobody chose.
-		{"NamedSubnetGroup", func(in *rds.CreateDBInstanceInput) {
-			in.DBSubnetGroupName = aws.String("db-private")
-		}, awserrors.ErrorDBSubnetGroupNotFound},
-		{"NamedParameterGroup", func(in *rds.CreateDBInstanceInput) {
-			in.DBParameterGroupName = aws.String("tuned-pg")
-		}, awserrors.ErrorDBParameterGroupNotFound},
 	}
 
 	for _, tc := range cases {

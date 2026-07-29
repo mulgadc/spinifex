@@ -468,6 +468,13 @@ var (
 	ErrorDBParameterGroupNotFound = "DBParameterGroupNotFound"
 	ErrorDBInvalidVPCNetworkState = "InvalidVPCNetworkStateFault"
 
+	ErrorDBSubnetGroupAlreadyExists    = "DBSubnetGroupAlreadyExists"
+	ErrorDBSubnetGroupInvalidState     = "InvalidDBSubnetGroupStateFault"
+	ErrorDBSubnetGroupDoesNotCoverAZs  = "DBSubnetGroupDoesNotCoverEnoughAZs"
+	ErrorDBSubnetInvalid               = "InvalidSubnet"
+	ErrorDBParameterGroupAlreadyExists = "DBParameterGroupAlreadyExists"
+	ErrorDBParameterGroupInvalidState  = "InvalidDBParameterGroupState"
+
 	// ECR-specific error codes.
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
@@ -1041,6 +1048,13 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDBSubnetGroupNotFound:    {HTTPCode: 404, Message: "DBSubnetGroupName does not refer to an existing DB subnet group."},
 	ErrorDBParameterGroupNotFound: {HTTPCode: 404, Message: "DBParameterGroupName does not refer to an existing DB parameter group."},
 	ErrorDBInvalidVPCNetworkState: {HTTPCode: 400, Message: "The DB subnet group does not cover all Availability Zones after it is created because of changes that were made."},
+
+	ErrorDBSubnetGroupAlreadyExists:    {HTTPCode: 400, Message: "The user already has a DB subnet group with the given name."},
+	ErrorDBSubnetGroupInvalidState:     {HTTPCode: 400, Message: "The DB subnet group is not in a state that allows the requested operation."},
+	ErrorDBSubnetGroupDoesNotCoverAZs:  {HTTPCode: 400, Message: "The DB subnet group does not cover enough Availability Zones."},
+	ErrorDBSubnetInvalid:               {HTTPCode: 400, Message: "The requested subnet is not valid, or multiple subnets were requested that are not all in a common VPC."},
+	ErrorDBParameterGroupAlreadyExists: {HTTPCode: 400, Message: "The user already has a DB parameter group with the given name."},
+	ErrorDBParameterGroupInvalidState:  {HTTPCode: 400, Message: "The DB parameter group is in use or is in an invalid state. It cannot be deleted."},
 
 	// ECR error codes
 	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},

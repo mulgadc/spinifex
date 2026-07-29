@@ -1067,6 +1067,14 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectAddTagsToResource, handleNATSRequest(d.rdsService.AddTagsToResource), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectRemoveTagsFromResource, handleNATSRequest(d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectListTagsForResource, handleNATSRequest(d.rdsService.ListTagsForResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBSubnetGroup, handleNATSRequest(d.rdsService.CreateDBSubnetGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBSubnetGroups, handleNATSRequest(d.rdsService.DescribeDBSubnetGroups), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBSubnetGroup, handleNATSRequest(d.rdsService.DeleteDBSubnetGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBParameterGroup, handleNATSRequest(d.rdsService.CreateDBParameterGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBParameterGroups, handleNATSRequest(d.rdsService.DescribeDBParameterGroups), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectModifyDBParameterGroup, handleNATSRequest(d.rdsService.ModifyDBParameterGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBParameters, handleNATSRequest(d.rdsService.DescribeDBParameters), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBParameterGroup, handleNATSRequest(d.rdsService.DeleteDBParameterGroup), "spinifex-workers"},
 		)
 	}
 

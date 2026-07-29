@@ -44,9 +44,9 @@ type validatedCreate struct {
 	MasterPassword   string
 	DBName           string
 	SecurityGroupIDs []string
-	// Empty means "resolve the account's default VPC subnet"; rds-7 replaces
-	// this with a real DB subnet group lookup.
-	SubnetID             string
+	// Empty means "resolve the account's default VPC subnet", matching AWS's own
+	// behaviour when a request names no subnet group.
+	DBSubnetGroupName    string
 	DBParameterGroupName string
 	DeletionProtection   bool
 	Tags                 map[string]string
@@ -115,19 +115,12 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		}
 	}
 
-	// No subnet groups exist until rds-7, so a named one cannot resolve. Saying
-	// so is the honest answer; silently placing the ENI somewhere else would put
-	// the endpoint in a subnet the customer did not choose.
-	if group := aws.StringValue(input.DBSubnetGroupName); group != "" {
-		return nil, fmt.Errorf("%s: DB subnet group %q not found", awserrors.ErrorDBSubnetGroupNotFound, group)
-	}
-
-	// The implicit default group is the one name that will resolve once rds-7
-	// materialises it, so accepting it now keeps a Terraform config that names
-	// it working across both phases.
+	// Both groups are resolved against KV by the caller, which is the only place
+	// they can be: this validates the request alone. An unnamed parameter group
+	// takes the engine's implicit default, matching AWS.
 	paramGroup := aws.StringValue(input.DBParameterGroupName)
-	if paramGroup != "" && paramGroup != engine.DefaultParameterGroupName() {
-		return nil, fmt.Errorf("%s: DB parameter group %q not found", awserrors.ErrorDBParameterGroupNotFound, paramGroup)
+	if paramGroup == "" {
+		paramGroup = engine.DefaultParameterGroupName()
 	}
 
 	// Rejected before the identifier is reserved, so a create with bad tags
@@ -150,7 +143,8 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		MasterPassword:       masterPassword,
 		DBName:               aws.StringValue(input.DBName),
 		SecurityGroupIDs:     aws.StringValueSlice(input.VpcSecurityGroupIds),
-		DBParameterGroupName: engine.DefaultParameterGroupName(),
+		DBSubnetGroupName:    aws.StringValue(input.DBSubnetGroupName),
+		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 		Tags:                 tags,
 	}, nil

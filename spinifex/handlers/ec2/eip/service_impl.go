@@ -80,7 +80,13 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 		publicIP, err = s.externalIPAM.AllocateFromPool(ctx, poolName, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.ErrorContext(ctx, "AllocateAddress: IPAM pool allocation failed", "pool", poolName, "err", err)
-			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
+			// Carry the allocator's own error rather than a flat capacity code:
+			// the gateway resolves the AWS code out of the wrap chain, so a
+			// genuinely exhausted pool still surfaces
+			// InsufficientAddressCapacity while an upstream DHCP or IPAM fault
+			// reports as itself instead of wearing a capacity code it did not
+			// earn.
+			return nil, fmt.Errorf("allocate from pool %s: %w", poolName, err)
 		}
 	} else {
 		// Allocate from the best pool matching region/AZ (empty strings = global fallback).
@@ -89,7 +95,7 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 		publicIP, poolName, err = s.externalIPAM.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.ErrorContext(ctx, "AllocateAddress: IPAM allocation failed", "err", err)
-			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
+			return nil, fmt.Errorf("allocate external IP: %w", err)
 		}
 	}
 

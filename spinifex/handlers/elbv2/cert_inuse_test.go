@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -256,9 +257,14 @@ func genLeafCertPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {
 func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
+	// Both services read the same bucket, so they must share one key or the
+	// reader gets ciphertext where it expects PEM.
+	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc)
+
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	require.NoError(t, err)
+	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
 	require.NoError(t, err)
 	// Mirrors the daemon.go wiring between the two services.
 	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert

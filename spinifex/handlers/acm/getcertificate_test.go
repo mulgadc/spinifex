@@ -165,7 +165,7 @@ func TestListPath_NeverTouchesKeyMaterial(t *testing.T) {
 // caller cannot mistake ciphertext for usable key material in a field that is
 // plaintext PEM everywhere else.
 func TestMetadataReads_ClearPrivateKey(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/cleared-1"
 	_, keyPEM := genCert(t, "cleared.example.com")
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
@@ -193,7 +193,7 @@ func TestMetadataReads_ClearPrivateKey(t *testing.T) {
 }
 
 func TestGetCertMetadata_AbsentReturnsNil(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 
 	rec, err := store.GetCertMetadata(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing")
 	require.NoError(t, err)

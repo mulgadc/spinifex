@@ -213,7 +213,7 @@ func TestNewStore_RequiresMasterKey(t *testing.T) {
 // delegation token, and the resumable ACME/lease state — survive a
 // PutCert/GetCert round trip unchanged, alongside the encrypted PrivateKey.
 func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/managed-1"
 	rec := &CertRecord{
 		CertificateArn:   arn,
@@ -254,7 +254,7 @@ func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
 // the renewal predicate never reads PrivateKey and the scan runs on every
 // tick for every certificate in the store.
 func TestListAllCertMetadata_DoesNotDecryptPrivateKey(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/metadata-only"
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
@@ -279,7 +279,7 @@ func TestListAllCertMetadata_DoesNotDecryptPrivateKey(t *testing.T) {
 // sees every account's certificates, unlike the account-scoped ListCerts used
 // by the ListCertificates API.
 func TestListAllCertMetadata_CrossesAccounts(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
 		CertificateArn: "arn:aws:acm:ap-southeast-2:1:certificate/acct-a", AccountID: "000000000001",
 	}))
@@ -298,7 +298,7 @@ func TestListAllCertMetadata_CrossesAccounts(t *testing.T) {
 // and that shape has already produced one silent-plaintext-write bug in this
 // package, so every write path over CertRecord gets this guard.
 func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-encrypted"
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
@@ -323,7 +323,7 @@ func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
 // TestReleaseLease_LeavesPrivateKeyEncrypted is AcquireLease's counterpart
 // for the release path — same raw-CAS shape, same guard.
 func TestReleaseLease_LeavesPrivateKeyEncrypted(t *testing.T) {
-	store := setupStore(t)
+	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-release-encrypted"
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{

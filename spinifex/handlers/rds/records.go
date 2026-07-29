@@ -52,12 +52,22 @@ type DBInstanceRecord struct {
 	// stale reason cannot outlive the failure it describes.
 	FailureReason string `json:"failureReason,omitempty"`
 
+	// Inline rather than a separate key space, so the record delete that ends the
+	// instance also ends its tags.
+	Tags map[string]string `json:"tags,omitempty"`
+
 	Bootstrap BootstrapState `json:"bootstrap"`
 	Agent     AgentState     `json:"agent"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+
+var _ TaggedRecord = (*DBInstanceRecord)(nil)
+
+func (r *DBInstanceRecord) GetTags() map[string]string { return r.Tags }
+
+func (r *DBInstanceRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
 // The Consumed marker scopes the master password to a single fetch, not the
 // action: replace, recovery and restore all re-fetch without one.

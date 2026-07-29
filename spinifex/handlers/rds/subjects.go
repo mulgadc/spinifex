@@ -22,6 +22,12 @@ const (
 	SubjectCreateDBInstance    = "rds.CreateDBInstance"
 	SubjectDescribeDBInstances = "rds.DescribeDBInstances"
 
+	// Tag actions address the resource by ARN, so one subject serves every
+	// resource type rather than one per kind.
+	SubjectAddTagsToResource      = "rds.AddTagsToResource"
+	SubjectRemoveTagsFromResource = "rds.RemoveTagsFromResource"
+	SubjectListTagsForResource    = "rds.ListTagsForResource"
+
 	// Queue groups are scoped per subject, so one name shares command delivery
 	// across gateway nodes for the whole fleet.
 	CommandQueueGroup = "spinifex-rds-agents"

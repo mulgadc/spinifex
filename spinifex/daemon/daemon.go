@@ -1058,6 +1058,9 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.rdsService.CreateDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.rdsService.DescribeDBInstances), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectAddTagsToResource, handleNATSRequest(d.rdsService.AddTagsToResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectRemoveTagsFromResource, handleNATSRequest(d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectListTagsForResource, handleNATSRequest(d.rdsService.ListTagsForResource), "spinifex-workers"},
 		)
 	}
 

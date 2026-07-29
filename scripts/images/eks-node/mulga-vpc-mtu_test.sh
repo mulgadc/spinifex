@@ -160,9 +160,9 @@ check "MULGA_VPC_NIC_MTU overrides both link and route" \
     "route replace default via 10.32.101.1 proto dhcp metric 1002 mtu 1408 dev eth0" \
     "$(grep '^route replace' "${CALLS}" | head -1)"
 
-# 6. UseMTU is forced off in the systemd-documented [DHCPv4] section (netplan's
-#    own render still uses the legacy [DHCP] alias) and networkd is reloaded so
-#    the change takes effect without waiting for the next boot.
+# 6. UseMTU is forced off under both the documented [DHCPv4] section and the
+#    legacy [DHCP] alias netplan renders, so the drop-in cannot parse cleanly and
+#    do nothing, and networkd is reloaded rather than waiting for a reboot.
 new_case usemtu-off
 printf '%s\n' 'default via 10.32.101.1 dev eth0 proto dhcp metric 1002 mtu 1320' > "${ROUTES_DEFAULT}"
 printf '%s\n' 'default via 10.32.101.1 proto dhcp metric 1002 mtu 1320' > "${ROUTES_DEV}"
@@ -173,6 +173,8 @@ PATH="${STUBBIN}:${PATH}" MULGA_NET_SYSFS="${SYSFS}" MULGA_NETPLAN_DIR="${NETPLA
 DROPIN="${NETPLAN}/10-netplan-eth0.network.d/10-mulga-usemtu.conf"
 check "drop-in targets the [DHCPv4] section" "[DHCPv4]" "$(sed -n '1p' "${DROPIN}" 2>/dev/null)"
 check "drop-in disables UseMTU" "UseMTU=false" "$(sed -n '2p' "${DROPIN}" 2>/dev/null)"
+check "drop-in also states the legacy [DHCP] alias" "[DHCP]" "$(sed -n '4p' "${DROPIN}" 2>/dev/null)"
+check "both sections disable UseMTU" "2" "$(grep -c '^UseMTU=false' "${DROPIN}" 2>/dev/null)"
 check "networkd is reloaded exactly once" "1" "$(grep -c '^networkctl reload' "${CALLS}")"
 
 # 7. Every rendered unit gets its own drop-in, keyed off its own filename, and

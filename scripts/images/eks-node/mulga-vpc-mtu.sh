@@ -103,7 +103,10 @@ usemtu_off() {
             continue
         fi
         conf="$dropdir/10-mulga-usemtu.conf"
-        if printf '[DHCPv4]\nUseMTU=false\n' > "$conf"; then
+        # [DHCPv4] is current; [DHCP] is the legacy alias netplan still renders.
+        # Whichever the running systemd parses, the other is inert, so stating
+        # both costs nothing and removes a silent no-op if they ever diverge.
+        if printf '[DHCPv4]\nUseMTU=false\n\n[DHCP]\nUseMTU=false\n' > "$conf"; then
             echo "[mulga-vpc-mtu] forced UseMTU=false for $unit via $conf"
             changed=1
         else

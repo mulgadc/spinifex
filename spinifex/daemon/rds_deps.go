@@ -57,6 +57,7 @@ func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
 		InstanceState: handlers_rds.NewDescribeInstanceState(d.describeInstancesFanOut),
 		Instances:     handlers_rds.NewNATSInstanceCommander(d.natsConn),
 		Snapshots:     d.snapshotService,
+		Storage:       d.volumeService,
 		BaseDomain:    d.dnsBaseDomain,
 		HolderID:      d.node,
 		// A DB VM reaches the daemon only over the mgmt bridge, the same

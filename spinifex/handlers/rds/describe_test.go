@@ -162,3 +162,70 @@ func TestDesiredDNSChanges_SkipsDeletedButKeepsFailed(t *testing.T) {
 	require.Len(t, changes, 1)
 	assert.Equal(t, failed.DNSName, changes[0].Name)
 }
+
+// A deferred change is what the customer polls for, and the Terraform provider
+// reads PendingModifiedValues to decide whether an apply has landed.
+func TestProjectDBInstance_ReportsTheDeferredChange(t *testing.T) {
+	h := newCreateHarness(t, "")
+
+	instance := h.svc.projectDBInstance(&DBInstanceRecord{
+		DBInstanceIdentifier: testDBInstanceID,
+		Status:               StatusAvailable,
+		DBInstanceClass:      "db.t3.medium",
+		AllocatedStorage:     20,
+		PendingModifiedValues: &PendingModifiedValues{
+			AllocatedStorage: aws.Int64(50),
+			DBInstanceClass:  "db.m5.large",
+		},
+	})
+
+	require.NotNil(t, instance.PendingModifiedValues)
+	assert.Equal(t, int64(50), aws.Int64Value(instance.PendingModifiedValues.AllocatedStorage))
+	assert.Equal(t, "db.m5.large", aws.StringValue(instance.PendingModifiedValues.DBInstanceClass))
+	// The current values still report what is actually in effect.
+	assert.Equal(t, int64(20), aws.Int64Value(instance.AllocatedStorage))
+	assert.Equal(t, "db.t3.medium", aws.StringValue(instance.DBInstanceClass))
+}
+
+// The volume is already at the new size once only the in-guest grow is left,
+// so reporting it as still pending would show Terraform drift on a change that
+// has landed.
+func TestProjectDBInstance_OmitsAPendingFilesystemGrow(t *testing.T) {
+	h := newCreateHarness(t, "")
+
+	instance := h.svc.projectDBInstance(&DBInstanceRecord{
+		DBInstanceIdentifier:  testDBInstanceID,
+		Status:                StatusModifying,
+		AllocatedStorage:      50,
+		PendingModifiedValues: &PendingModifiedValues{FilesystemGrowPending: true},
+	})
+	assert.Nil(t, instance.PendingModifiedValues)
+}
+
+// AWS reports a parameter group's state on the membership rather than in
+// PendingModifiedValues, and the Terraform provider reads it there.
+func TestProjectDBInstance_ReportsTheParameterGroupApplyStatus(t *testing.T) {
+	h := newCreateHarness(t, "")
+	rec := &DBInstanceRecord{
+		DBInstanceIdentifier: testDBInstanceID,
+		Status:               StatusAvailable,
+		DBParameterGroupName: "default.postgres18",
+	}
+
+	statusOf := func(rec *DBInstanceRecord) string {
+		groups := h.svc.projectDBInstance(rec).DBParameterGroups
+		require.Len(t, groups, 1)
+		assert.Equal(t, "default.postgres18", aws.StringValue(groups[0].DBParameterGroupName))
+		return aws.StringValue(groups[0].ParameterApplyStatus)
+	}
+
+	assert.Equal(t, "in-sync", statusOf(rec))
+
+	// D16: static settings are in the engine's config but not in effect until
+	// the restart that adopts them.
+	rec.PendingRebootParameters = []string{"shared_buffers"}
+	assert.Equal(t, "pending-reboot", statusOf(rec))
+
+	rec.PendingModifiedValues = &PendingModifiedValues{DBParameterGroupName: "default.postgres18"}
+	assert.Equal(t, "applying", statusOf(rec))
+}

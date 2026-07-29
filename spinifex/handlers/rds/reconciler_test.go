@@ -166,7 +166,7 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 // A settled instance, and a transition owned by a later phase, are both left
 // alone: touching one would race its owner.
 func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
-	for _, status := range []Status{StatusAvailable, StatusStopped, StatusModifying, StatusBackingUp, StatusFailed} {
+	for _, status := range []Status{StatusAvailable, StatusStopped, StatusBackingUp, StatusFailed} {
 		t.Run(string(status), func(t *testing.T) {
 			h := newReconcileHarness(t)
 			rec := healthyRecord()

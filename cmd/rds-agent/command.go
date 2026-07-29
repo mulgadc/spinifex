@@ -20,7 +20,7 @@ type commandRegistry map[string]commandHandler
 
 // An unregistered type is replied to as unsupported, so a control plane ahead
 // of the guest gets a clear answer rather than a timeout.
-func newCommandRegistry(engine engineOps) commandRegistry {
+func newCommandRegistry(engine engineOps, storage storageOps) commandRegistry {
 	return commandRegistry{
 		handlers_rds.CommandSetPassword: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
 			params := commandParams(cmd)
@@ -39,6 +39,9 @@ func newCommandRegistry(engine engineOps) commandRegistry {
 		},
 		handlers_rds.CommandStopEngine: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
 			return "", engine.Stop(ctx)
+		},
+		handlers_rds.CommandGrowFilesystem: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			return storage.GrowFilesystem(ctx)
 		},
 	}
 }

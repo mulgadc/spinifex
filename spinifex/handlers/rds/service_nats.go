@@ -21,6 +21,9 @@ const createTimeout = 5 * time.Minute
 const (
 	lifecycleTimeout = 4 * time.Minute
 	deleteTimeout    = 6 * time.Minute
+	// A class change terminates a VM and launches a replacement inline, so a
+	// modify needs a create's budget rather than a lifecycle op's.
+	modifyTimeout = 6 * time.Minute
 )
 
 // The gateway-side adapter that forwards each agent action as a NATS request to
@@ -66,6 +69,11 @@ func (s *NATSService) StartDBInstance(ctx context.Context, input *rds.StartDBIns
 func (s *NATSService) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, accountID string) (*rds.StopDBInstanceOutput, error) {
 	return utils.NATSRequest[rds.StopDBInstanceOutput](ctx, s.nc,
 		SubjectStopDBInstance, input, lifecycleTimeout, accountID)
+}
+
+func (s *NATSService) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInstanceInput, accountID string) (*rds.ModifyDBInstanceOutput, error) {
+	return utils.NATSRequest[rds.ModifyDBInstanceOutput](ctx, s.nc,
+		SubjectModifyDBInstance, input, modifyTimeout, accountID)
 }
 
 func (s *NATSService) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInstanceInput, accountID string) (*rds.DeleteDBInstanceOutput, error) {

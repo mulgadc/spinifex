@@ -213,6 +213,8 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
 	case StatusRebooting, StatusStarting:
 		return r.reconcileRestarting(ctx, kv, rev, accountID, &rec)
+	case StatusModifying:
+		return r.reconcileModifying(ctx, kv, rev, accountID, &rec)
 	case StatusStopping:
 		return r.reconcileStopping(ctx, kv, rev, accountID, &rec)
 	case StatusDeleting:
@@ -260,6 +262,78 @@ func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyVa
 			fmt.Sprintf("the database engine did not report healthy within %s of %s", transitionTimeout, rec.Status))
 	}
 	return nil
+}
+
+// A modify is the one transition with work left on both sides of the VM coming
+// back: the disruptive change itself, which a dead leader may have left
+// half-applied, and the in-guest filesystem grow, which can only run once the
+// agent is up again. Both are driven from here so a customer's modify completes
+// without them, not just without them watching.
+func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	pending := rec.PendingModifiedValues
+	overrun := time.Since(transitionStarted(rec)) > transitionTimeout
+
+	// Still-unapplied disruptive values mean the modify never got as far as the
+	// VM, so it is re-run rather than waited on: every step is idempotent, and
+	// the record is what says which ones are outstanding.
+	if !pending.empty() && !pending.growingFilesystem() {
+		// The lease is what separates the two: a change still inside its own API
+		// call holds it, and one whose worker died does not.
+		resumed, err := r.svc.withModifyLease(ctx, kv, rec.DBInstanceIdentifier, func() error {
+			return r.svc.applyPendingModifications(ctx, kv, accountID, rec)
+		})
+		switch {
+		case err != nil && overrun:
+			// Claiming and releasing the lease moved the record, so this pass's
+			// revision is stale by now and a CAS on it would lose to our own
+			// write on every pass — leaving the instance modifying forever.
+			return r.transitionFresh(ctx, kv, rec.DBInstanceIdentifier, StatusFailed,
+				fmt.Sprintf("the DB instance could not be modified within %s: %v", transitionTimeout, err))
+		case err != nil:
+			slog.WarnContext(ctx, "rds reconciler: resuming a modify failed; retrying next pass",
+				"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		case !resumed && overrun:
+			// Held for longer than the whole budget, so the holder is wedged
+			// rather than working; failing it is what lets the customer retry.
+			return r.transition(ctx, kv, rev, rec, StatusFailed,
+				fmt.Sprintf("the DB instance was still being modified after %s", transitionTimeout))
+		case !resumed:
+			slog.DebugContext(ctx, "rds reconciler: a modify is already in flight; leaving it to its holder",
+				"dbInstance", rec.DBInstanceIdentifier)
+		}
+		return nil
+	}
+
+	// The VM keeps its ID across a grow's restart and gets a new one across a
+	// class change, so only a beat sent after the modify began proves the engine
+	// is back rather than that it was up before the change started.
+	healthy, err := r.engineReady(ctx, accountID, rec, transitionStarted(rec))
+	if err != nil {
+		return err
+	}
+	if !healthy {
+		if overrun {
+			return r.transition(ctx, kv, rev, rec, StatusFailed,
+				fmt.Sprintf("the database engine did not report healthy within %s of the modification", transitionTimeout))
+		}
+		return nil
+	}
+
+	if pending.growingFilesystem() {
+		if err := r.svc.finishFilesystemGrow(ctx, kv, accountID, rec); err != nil {
+			if overrun {
+				return r.transition(ctx, kv, rev, rec, StatusFailed,
+					fmt.Sprintf("the filesystem could not be grown within %s: %v", transitionTimeout, err))
+			}
+			slog.WarnContext(ctx, "rds reconciler: extending the filesystem failed; retrying next pass",
+				"dbInstance", rec.DBInstanceIdentifier, "err", err)
+			return nil
+		}
+		// The record moved under the revision this pass read, so the transition
+		// is left to the next one rather than raced.
+		return nil
+	}
+	return r.transition(ctx, kv, rev, rec, StatusAvailable, "")
 }
 
 // A stop whose caller died leaves the VM possibly still running, so the stop is
@@ -374,6 +448,17 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	slog.InfoContext(ctx, "rds reconciler: DB instance transitioned",
 		"dbInstance", rec.DBInstanceIdentifier, "from", from, "to", to, "reason", reason)
 	return nil
+}
+
+// transition against a freshly read revision, for a caller that has written the
+// record itself since the pass opened and so cannot use the revision it read.
+func (r *Reconciler) transitionFresh(ctx context.Context, kv jetstream.KeyValue, id string, to Status, reason string) error {
+	var rec DBInstanceRecord
+	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
+	if err != nil || !found {
+		return err
+	}
+	return r.transition(ctx, kv, rev, &rec, to, reason)
 }
 
 // Adapts an EC2 describe fan-out to the reconciler's narrow state lookup.

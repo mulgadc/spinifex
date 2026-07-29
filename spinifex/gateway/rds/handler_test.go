@@ -1,10 +1,13 @@
 package gateway_rds
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -103,7 +106,7 @@ func TestDispatch_UnknownAction(t *testing.T) {
 // The customer actions this phase implements forward to the daemon, so they are
 // dispatched against a stub responder rather than a nil connection.
 var liveActions = []string{
-	"CreateDBInstance", "DescribeDBInstances",
+	"CreateDBInstance", "DescribeDBInstances", "ModifyDBInstance",
 	"RebootDBInstance", "StartDBInstance", "StopDBInstance", "DeleteDBInstance",
 	"DescribeEvents",
 	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
@@ -118,6 +121,7 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
 		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
+	respondWith(t, nc, handlers_rds.SubjectModifyDBInstance, &rds.ModifyDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectRebootDBInstance, &rds.RebootDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectStartDBInstance, &rds.StartDBInstanceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectStopDBInstance, &rds.StopDBInstanceOutput{})
@@ -178,7 +182,7 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 }
 
 func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "ModifyDBInstance", map[string]string{"Action": "ModifyDBInstance"}, nil, testCaller)
+	_, err := Dispatch(t.Context(), "CreateDBSnapshot", map[string]string{"Action": "CreateDBSnapshot"}, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
@@ -213,11 +217,13 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	}, newStubbedNATS(t), testCaller)
 	require.NoError(t, err)
 
-	assert.Equal(t,
-		"<ListTagsForResourceResponse><ListTagsForResourceResult><TagList>"+
-			"<Tag><Key>env</Key><Value>prod</Value></Tag>"+
-			"</TagList></ListTagsForResourceResult></ListTagsForResourceResponse>",
-		string(body))
+	// Decoded the way a real client decodes it, rather than compared byte-wise:
+	// BuildXML emits sibling elements in map order, so <Key> and <Value> swap
+	// places between runs.
+	var out rds.ListTagsForResourceOutput
+	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "ListTagsForResourceResult"))
+
+	assert.Equal(t, []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}, out.TagList)
 }
 
 // RDS serializes a tag list under its own locationNameList, so the params

@@ -30,6 +30,10 @@ func StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, nc *nat
 	return handlers_rds.NewNATSService(nc).StopDBInstance(ctx, input, caller.AccountID)
 }
 
+func ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInstanceInput, nc *nats.Conn, caller Caller) (any, error) {
+	return handlers_rds.NewNATSService(nc).ModifyDBInstance(ctx, input, caller.AccountID)
+}
+
 func DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInstanceInput, nc *nats.Conn, caller Caller) (any, error) {
 	return handlers_rds.NewNATSService(nc).DeleteDBInstance(ctx, input, caller.AccountID)
 }

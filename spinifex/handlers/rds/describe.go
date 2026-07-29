@@ -85,6 +85,7 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 		MasterUsername:       aws.String(rec.MasterUsername),
 		MultiAZ:              aws.Bool(false),
 		PubliclyAccessible:   aws.Bool(false),
+		DeletionProtection:   aws.Bool(rec.DeletionProtection),
 		InstanceCreateTime:   aws.Time(rec.CreatedAt),
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.

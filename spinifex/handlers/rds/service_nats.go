@@ -15,6 +15,14 @@ const defaultTimeout = 30 * time.Second
 // than the agent protocol's round-trip budget.
 const createTimeout = 5 * time.Minute
 
+// A lifecycle op waits on a graceful engine stop and then on the VM, both of
+// which are bounded but neither of which fits the default budget. A delete adds
+// the final snapshot and the teardown on top.
+const (
+	lifecycleTimeout = 4 * time.Minute
+	deleteTimeout    = 6 * time.Minute
+)
+
 // The gateway-side adapter that forwards each agent action as a NATS request to
 // the daemon's matching subscriber.
 type NATSService struct {
@@ -43,6 +51,31 @@ func (s *NATSService) CreateDBInstance(ctx context.Context, input *rds.CreateDBI
 func (s *NATSService) DescribeDBInstances(ctx context.Context, input *rds.DescribeDBInstancesInput, accountID string) (*rds.DescribeDBInstancesOutput, error) {
 	return utils.NATSRequest[rds.DescribeDBInstancesOutput](ctx, s.nc,
 		SubjectDescribeDBInstances, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) RebootDBInstance(ctx context.Context, input *rds.RebootDBInstanceInput, accountID string) (*rds.RebootDBInstanceOutput, error) {
+	return utils.NATSRequest[rds.RebootDBInstanceOutput](ctx, s.nc,
+		SubjectRebootDBInstance, input, lifecycleTimeout, accountID)
+}
+
+func (s *NATSService) StartDBInstance(ctx context.Context, input *rds.StartDBInstanceInput, accountID string) (*rds.StartDBInstanceOutput, error) {
+	return utils.NATSRequest[rds.StartDBInstanceOutput](ctx, s.nc,
+		SubjectStartDBInstance, input, lifecycleTimeout, accountID)
+}
+
+func (s *NATSService) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, accountID string) (*rds.StopDBInstanceOutput, error) {
+	return utils.NATSRequest[rds.StopDBInstanceOutput](ctx, s.nc,
+		SubjectStopDBInstance, input, lifecycleTimeout, accountID)
+}
+
+func (s *NATSService) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInstanceInput, accountID string) (*rds.DeleteDBInstanceOutput, error) {
+	return utils.NATSRequest[rds.DeleteDBInstanceOutput](ctx, s.nc,
+		SubjectDeleteDBInstance, input, deleteTimeout, accountID)
+}
+
+func (s *NATSService) DescribeEvents(ctx context.Context, input *rds.DescribeEventsInput, accountID string) (*rds.DescribeEventsOutput, error) {
+	return utils.NATSRequest[rds.DescribeEventsOutput](ctx, s.nc,
+		SubjectDescribeEvents, input, defaultTimeout, accountID)
 }
 
 func (s *NATSService) AddTagsToResource(ctx context.Context, input *rds.AddTagsToResourceInput, accountID string) (*rds.AddTagsToResourceOutput, error) {

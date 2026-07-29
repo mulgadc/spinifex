@@ -46,6 +46,7 @@ const (
 //	db-parameter-groups/{name}/params/{key}
 //	backups/{dbInstanceIdentifier}/automated/{ts}
 //	retained-volumes/{volumeID}
+//	events/{sourceType}/{sourceIdentifier}
 //
 // Tags live inline on each resource's own record rather than in a separate key
 // space, so there is no tags/ prefix here.
@@ -114,6 +115,20 @@ func RetainedVolumesPrefix() string {
 
 func RetainedVolumeKey(volumeID string) string {
 	return RetainedVolumesPrefix() + volumeID
+}
+
+// One bounded ring per resource rather than a key per event: DescribeEvents
+// always reads a whole resource's history, and a key per event would make the
+// 14-day trim a listing plus a delete per expired entry.
+//
+// The ring is deliberately outside the resource's own record, so a deleted DB
+// instance's events survive it for the rest of the retention window.
+func EventsPrefix() string {
+	return "events/"
+}
+
+func EventRingKey(sourceType, sourceIdentifier string) string {
+	return fmt.Sprintf("%s%s/%s", EventsPrefix(), sourceType, sourceIdentifier)
 }
 
 // Entries are rewritten on every VM replace (each mints a new instance ID) and

@@ -22,6 +22,15 @@ const (
 	SubjectCreateDBInstance    = "rds.CreateDBInstance"
 	SubjectDescribeDBInstances = "rds.DescribeDBInstances"
 
+	// Lifecycle actions. Each drives the VM and the in-guest engine inline, so
+	// the daemon answering one is doing the work rather than queueing it.
+	SubjectRebootDBInstance = "rds.RebootDBInstance"
+	SubjectStartDBInstance  = "rds.StartDBInstance"
+	SubjectStopDBInstance   = "rds.StopDBInstance"
+	SubjectDeleteDBInstance = "rds.DeleteDBInstance"
+
+	SubjectDescribeEvents = "rds.DescribeEvents"
+
 	// Tag actions address the resource by ARN, so one subject serves every
 	// resource type rather than one per kind.
 	SubjectAddTagsToResource      = "rds.AddTagsToResource"

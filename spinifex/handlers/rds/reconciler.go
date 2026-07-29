@@ -27,6 +27,11 @@ const (
 	// false failed is worse than a slow one, since the customer sees a broken
 	// create either way but only the false one is wrong.
 	defaultBootstrapTimeout = 20 * time.Minute
+
+	// How long a reboot, start, stop or delete may stay in flight before the
+	// reconciler calls it failed. It covers a cold boot plus a WAL replay, which
+	// is the longest a restart can honestly take.
+	transitionTimeout = 10 * time.Minute
 )
 
 // The EC2 lifecycle states a DB VM may be in and still be on its way up. The
@@ -194,42 +199,127 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue
 	return errors.Join(failures...)
 }
 
-// Only creating instances are acted on in this phase. Everything else is a
-// later phase's transition, and touching it here would race the owner.
+// The reconciler owns every transitional state that no single API call can
+// finish: the one it drives itself (creating), and the ones whose caller may
+// have died partway through. A settled instance is left alone.
 func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValue, accountID, id string) error {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {
 		return err
 	}
-	if rec.Status != StatusCreating {
+	switch rec.Status {
+	case StatusCreating:
+		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
+	case StatusRebooting, StatusStarting:
+		return r.reconcileRestarting(ctx, kv, rev, accountID, &rec)
+	case StatusStopping:
+		return r.reconcileStopping(ctx, kv, rev, accountID, &rec)
+	case StatusDeleting:
+		return r.reconcileDeleting(ctx, kv, rev, accountID, &rec)
+	default:
 		return nil
 	}
+}
 
-	healthy, err := r.bootstrapComplete(ctx, accountID, &rec)
+func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	// No lower bound on the heartbeat: the VM is new, so any beat naming it is
+	// necessarily this instance's.
+	healthy, err := r.engineReady(ctx, accountID, rec, time.Time{})
 	if err != nil {
 		return err
 	}
 	if healthy {
-		return r.transition(ctx, kv, rev, &rec, StatusAvailable, "")
+		return r.transition(ctx, kv, rev, rec, StatusAvailable, "")
 	}
 	timeout := r.svc.bootstrapTimeout()
 	if time.Since(rec.CreatedAt) > timeout {
-		return r.transition(ctx, kv, rev, &rec, StatusFailed,
+		return r.transition(ctx, kv, rev, rec, StatusFailed,
 			fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout))
 	}
 	return nil
 }
 
+// Reboot and start both end the same way: the engine comes back and says so.
+// The API call that began them returns before that happens, so this is what
+// actually lands the instance in available.
+func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	// The VM keeps its instance ID across a restart, so only a beat sent after
+	// the transition began proves the engine came back rather than that it was
+	// up before it went down.
+	started := transitionStarted(rec)
+	healthy, err := r.engineReady(ctx, accountID, rec, started)
+	if err != nil {
+		return err
+	}
+	if healthy {
+		return r.transition(ctx, kv, rev, rec, StatusAvailable, "")
+	}
+	if time.Since(started) > transitionTimeout {
+		return r.transition(ctx, kv, rev, rec, StatusFailed,
+			fmt.Sprintf("the database engine did not report healthy within %s of %s", transitionTimeout, rec.Status))
+	}
+	return nil
+}
+
+// A stop whose caller died leaves the VM possibly still running, so the stop is
+// re-issued rather than assumed: it is idempotent, and a VM no node holds is
+// already stopped.
+func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	if r.svc.deps.Instances == nil {
+		return errors.New("rds reconciler: no instance command path configured")
+	}
+	err := r.svc.deps.Instances.StopInstance(ctx, rec.InstanceID)
+	if err == nil || errors.Is(err, ErrInstanceNotOnNode) {
+		return r.transition(ctx, kv, rev, rec, StatusStopped, "")
+	}
+	if time.Since(transitionStarted(rec)) > transitionTimeout {
+		return r.transition(ctx, kv, rev, rec, StatusFailed,
+			fmt.Sprintf("the DB instance could not be stopped within %s: %v", transitionTimeout, err))
+	}
+	slog.WarnContext(ctx, "rds reconciler: resuming a stop failed; retrying next pass",
+		"dbInstance", rec.DBInstanceIdentifier, "err", err)
+	return nil
+}
+
+// Re-runs the teardown from wherever it stopped. Every step tolerates a missing
+// resource, so replaying it converges rather than failing on what it already
+// did; only a teardown still stuck past the bound is called failed, which is
+// what lets the customer retry the delete.
+func (r *Reconciler) reconcileDeleting(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec)
+	if err == nil {
+		return nil
+	}
+	if time.Since(transitionStarted(rec)) > transitionTimeout {
+		return r.transition(ctx, kv, rev, rec, StatusFailed,
+			fmt.Sprintf("the DB instance could not be deleted within %s: %v", transitionTimeout, err))
+	}
+	slog.WarnContext(ctx, "rds reconciler: resuming a delete failed; retrying next pass",
+		"dbInstance", rec.DBInstanceIdentifier, "err", err)
+	return nil
+}
+
+// When the transition began. A record written by an older control plane carries
+// no stamp, so its last write stands in — it is never earlier than the
+// transition, so the bound cannot be under-counted.
+func transitionStarted(rec *DBInstanceRecord) time.Time {
+	if rec.TransitionStartedAt != nil {
+		return *rec.TransitionStartedAt
+	}
+	return rec.UpdatedAt
+}
+
 // Both halves must hold: a healthy heartbeat from the record's *current* VM,
 // and that VM actually running. A stale beat from a superseded VM would
-// otherwise report a replaced instance as ready.
-func (r *Reconciler) bootstrapComplete(ctx context.Context, accountID string, rec *DBInstanceRecord) (bool, error) {
+// otherwise report a replaced instance as ready. Beats at or before since are
+// ignored, which is how a restart is told from the engine it restarted.
+func (r *Reconciler) engineReady(ctx context.Context, accountID string, rec *DBInstanceRecord, since time.Time) (bool, error) {
 	if rec.Agent.EngineHealth != EngineHealthHealthy || rec.InstanceID == "" ||
 		rec.Agent.InstanceID != rec.InstanceID {
 		return false, nil
 	}
-	if !r.heartbeatFresh(accountID, rec) {
+	if !r.heartbeatFresh(accountID, rec, since) {
 		return false, nil
 	}
 	if r.svc.deps.InstanceState == nil {
@@ -245,13 +335,16 @@ func (r *Reconciler) bootstrapComplete(ctx context.Context, accountID string, re
 // The in-memory beat is fresher than the persisted one but only this node sees
 // it, so a leader that has seen no beat falls back to the record — which trails
 // the truth by at most the persist floor.
-func (r *Reconciler) heartbeatFresh(accountID string, rec *DBInstanceRecord) bool {
+func (r *Reconciler) heartbeatFresh(accountID string, rec *DBInstanceRecord, since time.Time) bool {
 	lastSeen, ok := r.svc.LastSeen(accountID, rec.DBInstanceIdentifier)
 	if !ok {
 		if rec.Agent.LastSeen == nil {
 			return false
 		}
 		lastSeen = *rec.Agent.LastSeen
+	}
+	if !since.IsZero() && !lastSeen.After(since) {
+		return false
 	}
 	return time.Since(lastSeen) <= HeartbeatStaleAfter
 }

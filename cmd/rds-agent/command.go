@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -17,10 +18,39 @@ type commandHandler func(ctx context.Context, cmd handlers_rds.Command) (string,
 // apply, parameter reload, storage grow, snapshot quiesce — add an entry each.
 type commandRegistry map[string]commandHandler
 
-// Currently empty; an unregistered type is replied to as unsupported, so a
-// control plane ahead of the guest gets a clear answer rather than a timeout.
-func newCommandRegistry() commandRegistry {
-	return commandRegistry{}
+// An unregistered type is replied to as unsupported, so a control plane ahead
+// of the guest gets a clear answer rather than a timeout.
+func newCommandRegistry(engine engineOps) commandRegistry {
+	return commandRegistry{
+		handlers_rds.CommandSetPassword: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			params := commandParams(cmd)
+			return "", engine.SetPassword(ctx,
+				params[handlers_rds.CommandParamMasterUsername],
+				params[handlers_rds.CommandParamMasterUserPassword])
+		},
+		handlers_rds.CommandApplyParams: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			pending, err := engine.ApplyParameters(ctx, cmd.Parameters)
+			if err != nil {
+				return "", err
+			}
+			// The reply carries no structured payload, so the settings still
+			// awaiting a restart come back as the message itself.
+			return strings.Join(pending, ","), nil
+		},
+		handlers_rds.CommandStopEngine: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			return "", engine.Stop(ctx)
+		},
+	}
+}
+
+// A later value wins, so a malformed command carrying a parameter twice cannot
+// leave the handler acting on the first of two conflicting values.
+func commandParams(cmd handlers_rds.Command) map[string]string {
+	params := make(map[string]string, len(cmd.Parameters))
+	for _, p := range cmd.Parameters {
+		params[p.Name] = p.Value
+	}
+	return params
 }
 
 // Spaces retries after a failed poll, so a broken channel is not re-polled at

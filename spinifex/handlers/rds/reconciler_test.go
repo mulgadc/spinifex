@@ -163,10 +163,10 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 	assert.Equal(t, StatusCreating, status)
 }
 
-// Every other status belongs to a later phase's transition, and touching one
-// here would race its owner.
-func TestReconciler_OnlyActsOnCreatingInstances(t *testing.T) {
-	for _, status := range []Status{StatusAvailable, StatusModifying, StatusDeleting, StatusFailed} {
+// A settled instance, and a transition owned by a later phase, are both left
+// alone: touching one would race its owner.
+func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
+	for _, status := range []Status{StatusAvailable, StatusStopped, StatusModifying, StatusBackingUp, StatusFailed} {
 		t.Run(string(status), func(t *testing.T) {
 			h := newReconcileHarness(t)
 			rec := healthyRecord()
@@ -178,7 +178,7 @@ func TestReconciler_OnlyActsOnCreatingInstances(t *testing.T) {
 
 			got, _ := h.statusOf(t, testDBID)
 			assert.Equal(t, status, got)
-			assert.Empty(t, h.state.calls, "a non-creating instance is not even inspected")
+			assert.Empty(t, h.state.calls, "a settled instance is not even inspected")
 		})
 	}
 }

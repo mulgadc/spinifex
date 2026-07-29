@@ -18,6 +18,14 @@ type DBInstanceRecord struct {
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
+	// A one-way marker (D8). A rotated password is handed to the agent over the
+	// command channel and never persisted, so this records only that it changed.
+	MasterPasswordUpdatedAt *time.Time `json:"masterPasswordUpdatedAt,omitempty"`
+
+	// Blocks DeleteDBInstance outright (D18). Settable at create; rds-5b adds it
+	// to ModifyDBInstance.
+	DeletionProtection bool `json:"deletionProtection,omitempty"`
+
 	// Where the customer ENI was placed, so a replace lands the new VM's ENI in
 	// the same subnet and security groups without re-deriving them.
 	SubnetID             string   `json:"subnetId,omitempty"`
@@ -52,6 +60,20 @@ type DBInstanceRecord struct {
 	// stale reason cannot outlive the failure it describes.
 	FailureReason string `json:"failureReason,omitempty"`
 
+	// When the lifecycle op that put the instance in its current transitional
+	// state began. The reconciler bounds the transition from here and ignores
+	// heartbeats older than it, so a beat from before a reboot cannot be read as
+	// the reboot having finished.
+	TransitionStartedAt *time.Time `json:"transitionStartedAt,omitempty"`
+
+	// Named on the delete request and persisted before teardown starts, so a
+	// resumed delete takes the same final snapshot rather than none.
+	FinalSnapshotIdentifier string `json:"finalSnapshotIdentifier,omitempty"`
+
+	// Static parameters written to the engine's config but not yet in effect.
+	// Cleared by the reboot that applies them (D16).
+	PendingRebootParameters []string `json:"pendingRebootParameters,omitempty"`
+
 	// Inline rather than a separate key space, so the record delete that ends the
 	// instance also ends its tags.
 	Tags map[string]string `json:"tags,omitempty"`
@@ -81,6 +103,63 @@ type BootstrapState struct {
 	// Already evaluated against the instance class, so the agent receives
 	// literals and never a formula.
 	ResolvedParameters []Parameter `json:"resolvedParameters,omitempty"`
+}
+
+// Snapshot types and statuses, matching AWS. A final snapshot is manual: the
+// customer named it and only the customer removes it.
+const (
+	SnapshotTypeManual    = "manual"
+	SnapshotTypeAutomated = "automated"
+
+	SnapshotStatusAvailable = "available"
+)
+
+// The db-snapshots/{id} record. The EC2 snapshot holds the data; this is the
+// RDS-level metadata a restore needs and DescribeDBSnapshots projects, captured
+// at snapshot time because the DB instance it describes may be gone by then.
+type DBSnapshotRecord struct {
+	DBSnapshotIdentifier string `json:"dbSnapshotIdentifier"`
+	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
+	AccountID            string `json:"accountId"`
+	SnapshotType         string `json:"snapshotType"`
+	Status               string `json:"status"`
+
+	// The EC2 snapshot the data lives in, and the volume whose chunks it
+	// references — which is why that volume is retained rather than deleted.
+	SnapshotID     string `json:"snapshotId"`
+	SourceVolumeID string `json:"sourceVolumeId"`
+
+	Engine           string `json:"engine"`
+	EngineVersion    string `json:"engineVersion"`
+	AllocatedStorage int64  `json:"allocatedStorage"`
+	StorageType      string `json:"storageType,omitempty"`
+	StorageEncrypted bool   `json:"storageEncrypted,omitempty"`
+	MasterUsername   string `json:"masterUsername"`
+	Port             int64  `json:"port"`
+	VpcID            string `json:"vpcId,omitempty"`
+
+	// True when the engine was still writing as it was taken, so a restore
+	// replays WAL. A final snapshot is taken with the engine already down, so it
+	// is never crash-consistent; rds-8's quiesce fallback is what sets this.
+	CrashConsistent bool `json:"crashConsistent,omitempty"`
+
+	Tags map[string]string `json:"tags,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// A data volume that outlived its DB instance because a COW snapshot still
+// references its chunks (D10). The last DeleteDBSnapshot to empty Snapshots
+// deletes it; rds-9's reaper is the backstop for a crash in between.
+type RetainedVolumeRecord struct {
+	VolumeID  string `json:"volumeId"`
+	AccountID string `json:"accountId"`
+	// The instance it belonged to, so an operator can attribute the footprint
+	// after the DB instance record is gone.
+	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
+	// The DB snapshot identifiers holding it alive.
+	Snapshots  []string  `json:"snapshots"`
+	RetainedAt time.Time `json:"retainedAt"`
 }
 
 // A member list rather than a map because the XML marshaller renders a map as an

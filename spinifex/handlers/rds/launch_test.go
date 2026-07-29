@@ -606,6 +606,36 @@ func TestResolveEngineAMISkipsMalformedCatalogEntries(t *testing.T) {
 	assert.Equal(t, "ami-valid", amiID)
 }
 
+func TestResolveEngineAMIExcludesGPUTaggedBuilds(t *testing.T) {
+	h := newLaunchHarness()
+	h.images.images = []*ec2.Image{
+		{ImageId: aws.String(testEngineAMI), CreationDate: aws.String("2026-01-02T00:00:00Z")},
+		{
+			ImageId:      aws.String("ami-rds-postgres-18-gpu"),
+			CreationDate: aws.String("2026-05-01T00:00:00Z"),
+			Tags:         []*ec2.Tag{{Key: aws.String(tags.GPUVendorKey), Value: aws.String("nvidia")}},
+		},
+	}
+
+	amiID, err := resolveEngineAMI(t.Context(), h.images, "postgres", "18")
+	require.NoError(t, err)
+	assert.Equal(t, testEngineAMI, amiID,
+		"a newer GPU build carries the same engine tags, so newest-wins alone would boot it for an ordinary instance")
+}
+
+func TestResolveEngineAMIFailsWhenOnlyGPUBuildsMatch(t *testing.T) {
+	h := newLaunchHarness()
+	h.images.images = []*ec2.Image{{
+		ImageId:      aws.String("ami-rds-postgres-18-gpu"),
+		CreationDate: aws.String("2026-05-01T00:00:00Z"),
+		Tags:         []*ec2.Tag{{Key: aws.String(tags.GPUVendorKey), Value: aws.String("nvidia")}},
+	}}
+
+	_, err := resolveEngineAMI(t.Context(), h.images, "postgres", "18")
+	require.ErrorIs(t, err, ErrEngineAMINotFound,
+		"excluding the GPU build must fail the lookup, not fall through to it")
+}
+
 func TestLaunchDBInstanceVMFailsWithoutAnEngineAMI(t *testing.T) {
 	h := newLaunchHarness()
 	h.images.images = nil

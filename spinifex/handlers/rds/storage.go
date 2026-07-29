@@ -33,11 +33,11 @@ type volumeResizer interface {
 func validateStorageGrow(current, requested int64) error {
 	switch {
 	case requested < minAllocatedStorageGiB || requested > maxAllocatedStorageGiB:
-		return fmt.Errorf("%s: AllocatedStorage must be between %d and %d GiB",
-			awserrors.ErrorInvalidParameterValue, minAllocatedStorageGiB, maxAllocatedStorageGiB)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"AllocatedStorage must be between %d and %d GiB", minAllocatedStorageGiB, maxAllocatedStorageGiB)
 	case requested < current:
-		return fmt.Errorf("%s: AllocatedStorage cannot be reduced from %d to %d GiB; storage is grow-only",
-			awserrors.ErrorInvalidParameterCombination, current, requested)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"AllocatedStorage cannot be reduced from %d to %d GiB; storage is grow-only", current, requested)
 	}
 	return nil
 }

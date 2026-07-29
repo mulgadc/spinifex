@@ -93,5 +93,5 @@ func ParseARN(arn, region, accountID string) (ParsedARN, error) {
 }
 
 func arnError(arn, why string) error {
-	return fmt.Errorf("%s: %q is not a valid RDS ARN: %s", awserrors.ErrorInvalidParameterValue, arn, why)
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid RDS ARN: %s", arn, why)
 }

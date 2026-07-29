@@ -32,6 +32,18 @@ const (
 
 	SubjectDescribeEvents = "rds.DescribeEvents"
 
+	// Configuration resources. Plain KV CRUD, so unlike the instance actions
+	// none of them drives a VM and all take the default budget.
+	SubjectCreateDBSubnetGroup    = "rds.CreateDBSubnetGroup"
+	SubjectDescribeDBSubnetGroups = "rds.DescribeDBSubnetGroups"
+	SubjectDeleteDBSubnetGroup    = "rds.DeleteDBSubnetGroup"
+
+	SubjectCreateDBParameterGroup    = "rds.CreateDBParameterGroup"
+	SubjectDescribeDBParameterGroups = "rds.DescribeDBParameterGroups"
+	SubjectModifyDBParameterGroup    = "rds.ModifyDBParameterGroup"
+	SubjectDescribeDBParameters      = "rds.DescribeDBParameters"
+	SubjectDeleteDBParameterGroup    = "rds.DeleteDBParameterGroup"
+
 	// Tag actions address the resource by ARN, so one subject serves every
 	// resource type rather than one per kind.
 	SubjectAddTagsToResource      = "rds.AddTagsToResource"

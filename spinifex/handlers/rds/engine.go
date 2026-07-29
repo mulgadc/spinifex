@@ -2,7 +2,6 @@ package handlers_rds
 
 import (
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -36,18 +35,25 @@ func (e Engine) EngineVersion() string {
 	return e.MajorVersion
 }
 
-// The parameter-group name AWS clients expect when none is named. rds-7
-// materialises the group itself; here it is only the name a request may carry.
+// The parameter-group name AWS clients expect when none is named. The group is
+// implicit: it is resolvable and reportable without ever having been created,
+// and is neither modifiable nor deletable.
 func (e Engine) DefaultParameterGroupName() string {
-	return "default." + e.Name + e.MajorVersion
+	return defaultParameterGroupPrefix + e.ParameterGroupFamily()
+}
+
+// The family every parameter group of this engine belongs to. v1 pins one major
+// per engine, so a family is a name rather than a version axis.
+func (e Engine) ParameterGroupFamily() string {
+	return e.Name + e.MajorVersion
 }
 
 // An unknown engine is rejected at validation, before any volume or ENI exists.
 func LookupEngine(name string) (Engine, error) {
 	engine, ok := engines[strings.ToLower(strings.TrimSpace(name))]
 	if !ok {
-		return Engine{}, fmt.Errorf("%s: engine %q is not supported; supported engines are %s",
-			awserrors.ErrorInvalidParameterValue, name, strings.Join(SupportedEngines(), ", "))
+		return Engine{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"engine %q is not supported; supported engines are %s", name, strings.Join(SupportedEngines(), ", "))
 	}
 	return engine, nil
 }
@@ -67,38 +73,38 @@ func (e Engine) ValidateVersion(version string) error {
 	if major, _, ok := strings.Cut(v, "."); ok && major == e.MajorVersion {
 		return nil
 	}
-	return fmt.Errorf("%s: EngineVersion %q is not available; %s %s is the only supported version",
-		awserrors.ErrorInvalidParameterValue, version, e.Name, e.MajorVersion)
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"EngineVersion %q is not available; %s %s is the only supported version", version, e.Name, e.MajorVersion)
 }
 
 // Mirrors the engine's own rules rather than a generic identifier check, so a
 // name the control plane accepts cannot fail at initdb time inside the guest.
 func (e Engine) ValidateMasterUsername(username string) error {
 	if username == "" {
-		return fmt.Errorf("%s: MasterUsername is required", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername is required")
 	}
 	if len(username) > maxMasterUsernameLen {
-		return fmt.Errorf("%s: MasterUsername must be at most %d characters",
-			awserrors.ErrorInvalidParameterValue, maxMasterUsernameLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MasterUsername must be at most %d characters", maxMasterUsernameLen)
 	}
 	if !isLetter(rune(username[0])) {
-		return fmt.Errorf("%s: MasterUsername must begin with a letter", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername must begin with a letter")
 	}
 	for _, r := range username {
 		if !isLetter(r) && !isDigit(r) && r != '_' {
-			return fmt.Errorf("%s: MasterUsername may contain only letters, digits and underscores",
-				awserrors.ErrorInvalidParameterValue)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUsername may contain only letters, digits and underscores")
 		}
 	}
 	lower := strings.ToLower(username)
 	if slices.Contains(e.reservedUsernames, lower) {
-		return fmt.Errorf("%s: MasterUsername %q is reserved by %s",
-			awserrors.ErrorInvalidParameterValue, username, e.Name)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MasterUsername %q is reserved by %s", username, e.Name)
 	}
 	for _, prefix := range e.reservedUsernamePrefixes {
 		if strings.HasPrefix(lower, prefix) {
-			return fmt.Errorf("%s: MasterUsername may not begin with %q, which %s reserves",
-				awserrors.ErrorInvalidParameterValue, prefix, e.Name)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUsername may not begin with %q, which %s reserves", prefix, e.Name)
 		}
 	}
 	return nil
@@ -111,13 +117,13 @@ func ValidateMasterUserPassword(password string) error {
 	case password == "":
 		return errors.New(awserrors.ErrorInvalidParameterValue + ": MasterUserPassword is required")
 	case len(password) < minMasterPasswordLen || len(password) > maxMasterPasswordLen:
-		return fmt.Errorf("%s: MasterUserPassword must be between %d and %d characters",
-			awserrors.ErrorInvalidParameterValue, minMasterPasswordLen, maxMasterPasswordLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)
 	}
 	for _, r := range password {
 		if r == '/' || r == '"' || r == '@' || r == ' ' {
-			return fmt.Errorf("%s: MasterUserPassword may not contain '/', '\"', '@' or spaces",
-				awserrors.ErrorInvalidParameterValue)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUserPassword may not contain '/', '\"', '@' or spaces")
 		}
 	}
 	return nil

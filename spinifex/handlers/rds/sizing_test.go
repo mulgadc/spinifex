@@ -56,3 +56,19 @@ func TestSupportedInstanceClasses_SortedAndComplete(t *testing.T) {
 		"db.t3.large", "db.t3.medium", "db.t3.micro", "db.t3.small",
 	}, SupportedInstanceClasses())
 }
+
+// The literal matters: DescribeDBParameters reports its size-derived defaults at
+// this class, and the alphabetically first class is db.m5.large — eight times the
+// memory, so reading the head of the sorted list would advertise a shared_buffers
+// no small instance ever runs.
+func TestSmallestInstanceClass_IsTheLeastMemory(t *testing.T) {
+	assert.Equal(t, "db.t3.micro", smallestInstanceClass())
+
+	least, err := classMemoryMiB(smallestInstanceClass())
+	require.NoError(t, err)
+	for _, class := range SupportedInstanceClasses() {
+		memoryMiB, err := classMemoryMiB(class)
+		require.NoError(t, err, "every supported class needs a known footprint")
+		assert.LessOrEqual(t, least, memoryMiB, "class %q is smaller than the one reported as smallest", class)
+	}
+}

@@ -94,8 +94,18 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 	if rec.DBName != "" {
 		out.DBName = aws.String(rec.DBName)
 	}
-	if rec.VpcID != "" {
-		out.DBSubnetGroup = &rds.DBSubnetGroup{VpcId: aws.String(rec.VpcID)}
+	// The Terraform provider reads db_subnet_group_name off the describe, so an
+	// instance placed from a named group has to report it: an empty read-back is a
+	// perpetual diff on an attribute ModifyDBInstance then refuses to change.
+	if rec.VpcID != "" || rec.DBSubnetGroupName != "" {
+		out.DBSubnetGroup = &rds.DBSubnetGroup{}
+		if rec.VpcID != "" {
+			out.DBSubnetGroup.VpcId = aws.String(rec.VpcID)
+		}
+		if rec.DBSubnetGroupName != "" {
+			out.DBSubnetGroup.DBSubnetGroupName = aws.String(rec.DBSubnetGroupName)
+			out.DBSubnetGroup.SubnetGroupStatus = aws.String(subnetGroupStatusComplete)
+		}
 	}
 	for _, groupID := range rec.VpcSecurityGroupIDs {
 		out.VpcSecurityGroups = append(out.VpcSecurityGroups, &rds.VpcSecurityGroupMembership{

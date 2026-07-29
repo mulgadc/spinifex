@@ -155,8 +155,9 @@ type Agent struct {
 	engine        *postgresEngine
 	handoffWriter func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
 
-	hb  *heartbeater
-	cmd *commander
+	hb    *heartbeater
+	cmd   *commander
+	guard *paramGuard
 }
 
 // Assembles from already-built parts, so tests can pass fakes; New builds the
@@ -171,6 +172,7 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 	a.engine = newPostgresEngine(cfg, execCommandRunner)
 	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
+	a.guard = newParamGuard(a.engine, probe)
 	return a
 }
 
@@ -203,6 +205,10 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Directives are only meaningful against a bootstrapped engine.
 	go a.cmd.Run(ctx)
+
+	// Started after the handoff, so the window it measures covers the engine's
+	// own start rather than the time rds-init spent waiting for this agent.
+	go a.guard.Run(ctx)
 
 	<-ctx.Done()
 	return nil

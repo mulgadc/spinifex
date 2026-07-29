@@ -228,14 +228,65 @@ func AccountIDFromBucketName(bucket string) string {
 // The DB instance identifiers held in one account bucket. An empty bucket
 // yields no names rather than an error.
 func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
-	keys, err := kv.Keys(ctx)
+	return listNames(ctx, kv, DBInstancesPrefix())
+}
+
+func ListDBSubnetGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	return listNames(ctx, kv, DBSubnetGroupsPrefix())
+}
+
+// Walks the .../meta keys, which is what makes a group's own record findable
+// among the per-parameter keys hanging off the same prefix.
+func ListDBParameterGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	keys, err := bucketKeys(ctx, kv)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("rds: list keys: %w", err)
+		return nil, err
 	}
-	prefix := DBInstancesPrefix()
+	prefix := DBParameterGroupsPrefix()
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "/meta") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "/meta")
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// The stored overrides of one parameter group, keyed by parameter name.
+func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group string) (map[string]string, error) {
+	prefix := DBParameterGroupParamsPrefix(group)
+	names, err := listNames(ctx, kv, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		var rec DBParameterRecord
+		found, err := getJSON(ctx, kv, prefix+name, &rec)
+		if err != nil {
+			return nil, err
+		}
+		// A parameter reset between the listing and this read is simply gone,
+		// which is the answer a resolve one tick later would give too.
+		if found {
+			out[name] = rec.Value
+		}
+	}
+	return out, nil
+}
+
+// The leaf names directly under prefix. A nested key belongs to a sub-space and
+// is skipped rather than reported as a malformed name.
+func listNames(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
+	keys, err := bucketKeys(ctx, kv)
+	if err != nil {
+		return nil, err
+	}
 	names := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if !strings.HasPrefix(key, prefix) {
@@ -248,4 +299,17 @@ func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, er
 		names = append(names, name)
 	}
 	return names, nil
+}
+
+// An empty bucket yields no keys rather than an error, so a first-ever describe
+// answers with an empty list instead of failing.
+func bucketKeys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rds: list keys: %w", err)
+	}
+	return keys, nil
 }

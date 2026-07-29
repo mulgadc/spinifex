@@ -55,6 +55,27 @@ func DefaultVCPUs(instanceType string) (vcpus int, ok bool) {
 	return v, ok
 }
 
+// defaultMemoryMiBByInstanceType is the memory counterpart of the vCPU map, and
+// is host-independent for the same reason.
+var defaultMemoryMiBByInstanceType = func() map[string]int64 {
+	m := make(map[string]int64)
+	for _, def := range instanceFamilyDefs {
+		for _, size := range def.sizes {
+			m[def.name+"."+size.suffix] = int64(size.memoryGB * 1024)
+		}
+	}
+	return m
+}()
+
+// DefaultMemoryMiB returns the memory footprint of an instance type name; ok is
+// false for an unknown type. Callers that size a guest's own configuration —
+// RDS derives its engine memory parameters from it — need the figure without
+// generating the whole InstanceTypeInfo the host happens to support.
+func DefaultMemoryMiB(instanceType string) (memoryMiB int64, ok bool) {
+	v, ok := defaultMemoryMiBByInstanceType[instanceType]
+	return v, ok
+}
+
 // generateForGeneration creates instance types for the given CPU generation.
 // Cross-vendor siblings are included on x86_64 so a mixed Intel+AMD cluster
 // can serve either vendor family.

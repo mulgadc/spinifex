@@ -36,3 +36,22 @@ func InstanceTypeForClass(class string) (string, error) {
 func SupportedInstanceClasses() []string {
 	return slices.Sorted(maps.Keys(dbInstanceClasses))
 }
+
+// The supported class with the least memory. Deliberately computed from the
+// footprints rather than taken as the first name SupportedInstanceClasses
+// reports: that list is sorted alphabetically, so its head is db.m5.large.
+func smallestInstanceClass() string {
+	smallest, least := "", int64(0)
+	for _, class := range SupportedInstanceClasses() {
+		memoryMiB, err := classMemoryMiB(class)
+		// A class with no known footprint cannot be compared; the catalog's
+		// self-consistency test pins that every supported class has one.
+		if err != nil {
+			continue
+		}
+		if smallest == "" || memoryMiB < least {
+			smallest, least = class, memoryMiB
+		}
+	}
+	return smallest
+}

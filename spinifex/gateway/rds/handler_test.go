@@ -110,6 +110,9 @@ var liveActions = []string{
 	"RebootDBInstance", "StartDBInstance", "StopDBInstance", "DeleteDBInstance",
 	"DescribeEvents",
 	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
+	"CreateDBSubnetGroup", "DescribeDBSubnetGroups", "DeleteDBSubnetGroup",
+	"CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup",
+	"DescribeDBParameters", "DeleteDBParameterGroup",
 }
 
 // What is under test in this file is the action table and the XML envelope, not
@@ -133,6 +136,14 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.ListTagsForResourceOutput{TagList: []*rds.Tag{
 			{Key: aws.String("env"), Value: aws.String("prod")},
 		}})
+	respondWith(t, nc, handlers_rds.SubjectCreateDBSubnetGroup, &rds.CreateDBSubnetGroupOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBSubnetGroups, &rds.DescribeDBSubnetGroupsOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDeleteDBSubnetGroup, &rds.DeleteDBSubnetGroupOutput{})
+	respondWith(t, nc, handlers_rds.SubjectCreateDBParameterGroup, &rds.CreateDBParameterGroupOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameterGroups, &rds.DescribeDBParameterGroupsOutput{})
+	respondWith(t, nc, handlers_rds.SubjectModifyDBParameterGroup, &rds.DBParameterGroupNameMessage{})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameters, &rds.DescribeDBParametersOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDeleteDBParameterGroup, &rds.DeleteDBParameterGroupOutput{})
 	return nc
 }
 

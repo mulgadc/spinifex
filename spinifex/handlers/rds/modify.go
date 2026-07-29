@@ -74,11 +74,11 @@ func (p *modifyPlan) empty() bool {
 // address, and the DNS A-record are untouched by a grow and by a class change.
 func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInstanceInput, accountID string) (*rds.ModifyDBInstanceOutput, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	id := aws.StringValue(input.DBInstanceIdentifier)
 	if id == "" {
-		return nil, fmt.Errorf("%s: DBInstanceIdentifier is required", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	}
 	if err := rejectUnimplementedModify(input); err != nil {
 		return nil, err
@@ -107,8 +107,8 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 	// non-disruptive settings are record and ENI writes, legal from any settled
 	// state.
 	if plan.disruptive() && rec.Status != StatusAvailable && rec.Status != StatusFailed {
-		return nil, fmt.Errorf("%s: DB instance %s is %s; the requested modification requires it to be %s",
-			awserrors.ErrorDBInstanceInvalidState, id, rec.Status, StatusAvailable)
+		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+			"DB instance %s is %s; the requested modification requires it to be %s", id, rec.Status, StatusAvailable)
 	}
 
 	if err := s.applyImmediateModify(ctx, kv, accountID, rec, plan); err != nil {
@@ -196,21 +196,21 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	if class := aws.StringValue(input.DBInstanceClass); class != "" && class != rec.DBInstanceClass {
 		instanceType, err := InstanceTypeForClass(class)
 		if err != nil {
-			return nil, fmt.Errorf("%s: DBInstanceClass %q is not supported; supported classes are %s",
-				awserrors.ErrorInvalidParameterValue, class, strings.Join(SupportedInstanceClasses(), ", "))
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"DBInstanceClass %q is not supported; supported classes are %s", class, strings.Join(SupportedInstanceClasses(), ", "))
 		}
 		plan.InstanceClass, plan.InstanceType = class, instanceType
 	}
 
-	// The implicit default group is the only name that resolves until rds-7
-	// materialises real ones, so anything else is a group that does not exist.
+	// Resolved against KV here rather than at apply time, so a group that does
+	// not exist is rejected before the instance is moved into modifying.
 	if group := aws.StringValue(input.DBParameterGroupName); group != "" && group != rec.DBParameterGroupName {
-		engine, err := LookupEngine(rec.Engine)
+		kv, err := s.bucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if group != engine.DefaultParameterGroupName() {
-			return nil, fmt.Errorf("%s: DB parameter group %q not found", awserrors.ErrorDBParameterGroupNotFound, group)
+		if _, _, err := getDBParameterGroup(ctx, kv, accountID, group); err != nil {
+			return nil, err
 		}
 		plan.ParameterGroup = group
 	}
@@ -241,8 +241,8 @@ func (s *Service) planSecurityGroups(ctx context.Context, accountID string, rec 
 		return nil, nil
 	}
 	if rec.ENIID == "" {
-		return nil, fmt.Errorf("%s: DB instance %s has no endpoint ENI to re-associate",
-			awserrors.ErrorDBInstanceInvalidState, rec.DBInstanceIdentifier)
+		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+			"DB instance %s has no endpoint ENI to re-associate", rec.DBInstanceIdentifier)
 	}
 	// ModifyNetworkInterfaceAttribute validates the groups against the ENI's VPC
 	// itself, but doing it here keeps the rejection ahead of every other write in
@@ -260,8 +260,8 @@ func planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBInstanceRecord,
 	if input.BackupRetentionPeriod != nil {
 		days := aws.Int64Value(input.BackupRetentionPeriod)
 		if days < 0 || days > maxBackupRetentionDays {
-			return fmt.Errorf("%s: BackupRetentionPeriod must be between 0 and %d days",
-				awserrors.ErrorInvalidParameterValue, maxBackupRetentionDays)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"BackupRetentionPeriod must be between 0 and %d days", maxBackupRetentionDays)
 		}
 		if days != rec.BackupRetentionPeriod {
 			plan.BackupRetentionPeriod = aws.Int64(days)
@@ -288,7 +288,8 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 	// leaving cleartext queued for a later window (D8).
 	if plan.MasterUserPassword != "" {
 		if err := s.setMasterPassword(ctx, accountID, rec.DBInstanceIdentifier, rec.MasterUsername, plan.MasterUserPassword); err != nil {
-			return fmt.Errorf("%s: the master password could not be applied: %w", awserrors.ErrorDBInstanceInvalidState, err)
+			return awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+				"the master password could not be applied: %w", err)
 		}
 	}
 	// Done before the record write so a rejected group leaves the record still

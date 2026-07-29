@@ -220,14 +220,19 @@ func TestPostgresEngine_ApplyParametersInstallsAndReloads(t *testing.T) {
 	if !strings.Contains(string(installed), "shared_buffers = '256MB'") {
 		t.Errorf("installed parameters = %q, want the resolved value", installed)
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("ran %d commands, want a reload and a pending-restart read", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("ran %d commands, want a config check, a reload and a pending-restart read", len(runner.calls))
 	}
-	if !strings.Contains(runner.calls[0].Stdin, "pg_reload_conf") {
-		t.Errorf("first statement = %q, want the reload", runner.calls[0].Stdin)
+	// The check runs before the reload, so a value the engine would refuse never
+	// reaches a running cluster.
+	if !slices.Contains(runner.calls[0].Args, "-C") {
+		t.Errorf("first command = %v, want the offline config check", runner.calls[0].Args)
 	}
-	if !strings.Contains(runner.calls[1].Stdin, "pending_restart") {
-		t.Errorf("second statement = %q, want the pending-restart read", runner.calls[1].Stdin)
+	if !strings.Contains(runner.calls[1].Stdin, "pg_reload_conf") {
+		t.Errorf("second statement = %q, want the reload", runner.calls[1].Stdin)
+	}
+	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
+		t.Errorf("third statement = %q, want the pending-restart read", runner.calls[2].Stdin)
 	}
 	if len(pending) != 2 || pending[0] != "shared_buffers" || pending[1] != "max_connections" {
 		t.Errorf("pending = %v, want both settings the engine reported", pending)

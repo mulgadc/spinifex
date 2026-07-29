@@ -1,7 +1,6 @@
 package handlers_rds
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -44,9 +43,9 @@ type validatedCreate struct {
 	MasterPassword   string
 	DBName           string
 	SecurityGroupIDs []string
-	// Empty means "resolve the account's default VPC subnet"; rds-7 replaces
-	// this with a real DB subnet group lookup.
-	SubnetID             string
+	// Empty means "resolve the account's default VPC subnet", matching AWS's own
+	// behaviour when a request names no subnet group.
+	DBSubnetGroupName    string
 	DBParameterGroupName string
 	DeletionProtection   bool
 	Tags                 map[string]string
@@ -56,7 +55,7 @@ type validatedCreate struct {
 // runs afterwards, so a malformed request never reaches the VPC.
 func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, error) {
 	if input == nil {
-		return nil, fmt.Errorf("%s: empty request", awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	if err := rejectUnimplemented(input); err != nil {
 		return nil, err
@@ -78,14 +77,14 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 	instanceClass := aws.StringValue(input.DBInstanceClass)
 	instanceType, err := InstanceTypeForClass(instanceClass)
 	if err != nil {
-		return nil, fmt.Errorf("%s: DBInstanceClass %q is not supported; supported classes are %s",
-			awserrors.ErrorInvalidParameterValue, instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
 	}
 
 	storage := aws.Int64Value(input.AllocatedStorage)
 	if storage < minAllocatedStorageGiB || storage > maxAllocatedStorageGiB {
-		return nil, fmt.Errorf("%s: AllocatedStorage must be between %d and %d GiB",
-			awserrors.ErrorInvalidParameterValue, minAllocatedStorageGiB, maxAllocatedStorageGiB)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"AllocatedStorage must be between %d and %d GiB", minAllocatedStorageGiB, maxAllocatedStorageGiB)
 	}
 
 	storageType := strings.ToLower(strings.TrimSpace(aws.StringValue(input.StorageType)))
@@ -93,8 +92,8 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		storageType = storageTypeGP3
 	}
 	if storageType != storageTypeGP3 {
-		return nil, fmt.Errorf("%s: StorageType %q is not supported; only %q is offered",
-			awserrors.ErrorInvalidParameterValue, storageType, storageTypeGP3)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"StorageType %q is not supported; only %q is offered", storageType, storageTypeGP3)
 	}
 
 	masterUsername := aws.StringValue(input.MasterUsername)
@@ -110,24 +109,17 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 	if input.Port != nil {
 		port = aws.Int64Value(input.Port)
 		if port < minDBPort || port > maxDBPort {
-			return nil, fmt.Errorf("%s: Port must be between %d and %d",
-				awserrors.ErrorInvalidParameterValue, minDBPort, maxDBPort)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Port must be between %d and %d", minDBPort, maxDBPort)
 		}
 	}
 
-	// No subnet groups exist until rds-7, so a named one cannot resolve. Saying
-	// so is the honest answer; silently placing the ENI somewhere else would put
-	// the endpoint in a subnet the customer did not choose.
-	if group := aws.StringValue(input.DBSubnetGroupName); group != "" {
-		return nil, fmt.Errorf("%s: DB subnet group %q not found", awserrors.ErrorDBSubnetGroupNotFound, group)
-	}
-
-	// The implicit default group is the one name that will resolve once rds-7
-	// materialises it, so accepting it now keeps a Terraform config that names
-	// it working across both phases.
+	// Both groups are resolved against KV by the caller, which is the only place
+	// they can be: this validates the request alone. An unnamed parameter group
+	// takes the engine's implicit default, matching AWS.
 	paramGroup := aws.StringValue(input.DBParameterGroupName)
-	if paramGroup != "" && paramGroup != engine.DefaultParameterGroupName() {
-		return nil, fmt.Errorf("%s: DB parameter group %q not found", awserrors.ErrorDBParameterGroupNotFound, paramGroup)
+	if paramGroup == "" {
+		paramGroup = engine.DefaultParameterGroupName()
 	}
 
 	// Rejected before the identifier is reserved, so a create with bad tags
@@ -150,7 +142,8 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		MasterPassword:       masterPassword,
 		DBName:               aws.StringValue(input.DBName),
 		SecurityGroupIDs:     aws.StringValueSlice(input.VpcSecurityGroupIds),
-		DBParameterGroupName: engine.DefaultParameterGroupName(),
+		DBSubnetGroupName:    aws.StringValue(input.DBSubnetGroupName),
+		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 		Tags:                 tags,
 	}, nil
@@ -161,21 +154,22 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 func validateDBInstanceIdentifier(id string) error {
 	switch {
 	case id == "":
-		return fmt.Errorf("%s: DBInstanceIdentifier is required", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	case len(id) > maxDBInstanceIdentifierLen:
-		return fmt.Errorf("%s: DBInstanceIdentifier must be at most %d characters",
-			awserrors.ErrorInvalidParameterValue, maxDBInstanceIdentifierLen)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBInstanceIdentifier must be at most %d characters", maxDBInstanceIdentifierLen)
 	case !isLetter(rune(id[0])):
-		return fmt.Errorf("%s: DBInstanceIdentifier must begin with a letter", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier must begin with a letter")
 	case strings.HasSuffix(id, "-"):
-		return fmt.Errorf("%s: DBInstanceIdentifier may not end with a hyphen", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier may not end with a hyphen")
 	case strings.Contains(id, "--"):
-		return fmt.Errorf("%s: DBInstanceIdentifier may not contain consecutive hyphens", awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBInstanceIdentifier may not contain consecutive hyphens")
 	}
 	for _, r := range id {
 		if !isDigit(r) && r != '-' && (r < 'a' || r > 'z') {
-			return fmt.Errorf("%s: DBInstanceIdentifier may contain only lowercase letters, digits and hyphens",
-				awserrors.ErrorInvalidParameterValue)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"DBInstanceIdentifier may contain only lowercase letters, digits and hyphens")
 		}
 	}
 	return nil
@@ -234,5 +228,5 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 }
 
 func unimplemented(parameter, why string) error {
-	return fmt.Errorf("%s: %s is not supported: %s", awserrors.ErrorInvalidParameterValue, parameter, why)
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not supported: %s", parameter, why)
 }

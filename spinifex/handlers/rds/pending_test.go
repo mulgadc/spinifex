@@ -261,3 +261,75 @@ func TestReconciler_RetriesAFailedModifyInsideTheBudget(t *testing.T) {
 	require.NoError(t, h.rec.reconcileOnce(t.Context()))
 	assert.Equal(t, int64(50), h.record(t).AllocatedStorage)
 }
+
+// D20: the size-derived defaults are the reason a class change has to re-resolve
+// rather than carry the old set forward — a shared_buffers computed for the old
+// class is wrong at the new one in whichever direction the class moved.
+func TestApplyPendingModifications_ReResolvesTheParametersForTheNewClass(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.replyWith("shared_buffers")
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBInstanceClass: "db.m5.xlarge",
+		RequestedAt:     time.Now().UTC(),
+	})
+	seedReplaceable(t, h, rec)
+
+	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+
+	issued := h.agent.received()
+	require.NotEmpty(t, issued)
+	assert.Equal(t, CommandApplyParams, issued[0].Type)
+
+	applied := map[string]string{}
+	for _, param := range issued[0].Parameters {
+		applied[param.Name] = param.Value
+	}
+	memoryMiB, err := classMemoryMiB("db.m5.xlarge")
+	require.NoError(t, err)
+	assert.Equal(t, sharedBuffersFor(memoryMiB), applied["shared_buffers"],
+		"the set was resolved against the class the instance is becoming")
+
+	stored := h.record(t)
+	assert.Equal(t, applied["shared_buffers"], parameterValue(stored.Bootstrap.ResolvedParameters, "shared_buffers"),
+		"the stored set has to match what the engine was given, or the next replace boots on something else")
+}
+
+// A re-resolve rather than a merge: a parameter the old group set and the new
+// one does not reverts to its catalog default instead of lingering.
+func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.replyWith("")
+
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput("lean"), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBParameterGroupName: "lean",
+		RequestedAt:          time.Now().UTC(),
+	})
+	// What the old group had set, carried on the record as the engine's current
+	// values; the new group sets nothing.
+	rec.Bootstrap.ResolvedParameters = []Parameter{{Name: "work_mem", Value: "262144"}}
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+
+	issued := h.agent.received()
+	require.NotEmpty(t, issued)
+	applied := map[string]string{}
+	for _, param := range issued[0].Parameters {
+		applied[param.Name] = param.Value
+	}
+	workMem, _ := LookupParameter("work_mem")
+	assert.Equal(t, workMem.Default, applied["work_mem"],
+		"the old group's value should have reverted to the catalog default")
+}
+
+func parameterValue(params []Parameter, name string) string {
+	for _, param := range params {
+		if param.Name == name {
+			return param.Value
+		}
+	}
+	return ""
+}

@@ -101,6 +101,46 @@ func (s *NATSService) ListTagsForResource(ctx context.Context, input *rds.ListTa
 		SubjectListTagsForResource, input, defaultTimeout, accountID)
 }
 
+func (s *NATSService) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSubnetGroupInput, accountID string) (*rds.CreateDBSubnetGroupOutput, error) {
+	return utils.NATSRequest[rds.CreateDBSubnetGroupOutput](ctx, s.nc,
+		SubjectCreateDBSubnetGroup, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
+	return utils.NATSRequest[rds.DescribeDBSubnetGroupsOutput](ctx, s.nc,
+		SubjectDescribeDBSubnetGroups, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
+	return utils.NATSRequest[rds.DeleteDBSubnetGroupOutput](ctx, s.nc,
+		SubjectDeleteDBSubnetGroup, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) CreateDBParameterGroup(ctx context.Context, input *rds.CreateDBParameterGroupInput, accountID string) (*rds.CreateDBParameterGroupOutput, error) {
+	return utils.NATSRequest[rds.CreateDBParameterGroupOutput](ctx, s.nc,
+		SubjectCreateDBParameterGroup, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DescribeDBParameterGroups(ctx context.Context, input *rds.DescribeDBParameterGroupsInput, accountID string) (*rds.DescribeDBParameterGroupsOutput, error) {
+	return utils.NATSRequest[rds.DescribeDBParameterGroupsOutput](ctx, s.nc,
+		SubjectDescribeDBParameterGroups, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyDBParameterGroupInput, accountID string) (*rds.DBParameterGroupNameMessage, error) {
+	return utils.NATSRequest[rds.DBParameterGroupNameMessage](ctx, s.nc,
+		SubjectModifyDBParameterGroup, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DescribeDBParameters(ctx context.Context, input *rds.DescribeDBParametersInput, accountID string) (*rds.DescribeDBParametersOutput, error) {
+	return utils.NATSRequest[rds.DescribeDBParametersOutput](ctx, s.nc,
+		SubjectDescribeDBParameters, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DeleteDBParameterGroup(ctx context.Context, input *rds.DeleteDBParameterGroupInput, accountID string) (*rds.DeleteDBParameterGroupOutput, error) {
+	return utils.NATSRequest[rds.DeleteDBParameterGroupOutput](ctx, s.nc,
+		SubjectDeleteDBParameterGroup, input, defaultTimeout, accountID)
+}
+
 // Requested on the Layer-1 subject, not the bus.
 func (s *NATSService) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	return utils.NATSRequest[GetDBBootstrapConfigOutput](ctx, s.nc,

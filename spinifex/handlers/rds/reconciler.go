@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -194,7 +195,7 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue
 	var failures []error
 	for _, id := range ids {
 		if err := r.reconcileInstance(ctx, kv, accountID, id); err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", id, err))
+			failures = append(failures, awserrors.Errorf(id, "%w", err))
 		}
 	}
 	return errors.Join(failures...)

@@ -158,8 +158,11 @@ type RetainedVolumeRecord struct {
 	// after the DB instance record is gone.
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	// The DB snapshot identifiers holding it alive.
-	Snapshots  []string  `json:"snapshots"`
-	RetainedAt time.Time `json:"retainedAt"`
+	Snapshots []string `json:"snapshots"`
+	// Set when the volume store refused the delete without naming a holder, so a
+	// release must re-check rather than read the empty list as "nothing holds it".
+	HoldersUnresolved bool      `json:"holdersUnresolved,omitempty"`
+	RetainedAt        time.Time `json:"retainedAt"`
 }
 
 // A member list rather than a map because the XML marshaller renders a map as an

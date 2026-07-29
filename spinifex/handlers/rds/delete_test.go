@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -166,6 +167,92 @@ func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T)
 	require.True(t, found)
 	assert.Equal(t, testDBID, retained.DBInstanceIdentifier)
 	assert.Equal(t, []string{"snap-0001"}, retained.Snapshots)
+}
+
+// A snapshot record outlives the instance it came from, so an instance
+// re-created under the same name must not have a stale snapshot of a previous
+// data volume accepted as its own — the volume would then be deleted unbacked.
+func TestDeleteDBInstance_RejectsAFinalSnapshotIdentifierAlreadyTaken(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	// The snapshot left behind by the earlier instance of the same name.
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey("orders-db-final"), &DBSnapshotRecord{
+		DBSnapshotIdentifier: "orders-db-final",
+		DBInstanceIdentifier: testDBID,
+		SourceVolumeID:       "vol-rdsdata00",
+	}))
+
+	_, err = h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotAlreadyExists)
+
+	// Rejected before anything was torn down, so the customer loses nothing.
+	assert.True(t, h.recordExists(t, testDBID))
+	assert.Empty(t, h.launcher.terminated)
+	assert.Empty(t, h.volumes.deleted)
+	assert.Empty(t, h.snaps.created)
+}
+
+// Keeping the in-flight choice silently would answer a caller who asked for a
+// final snapshot with no snapshot at all.
+func TestDeleteDBInstance_RejectsARetryThatChangesTheSnapshotChoice(t *testing.T) {
+	cases := []struct {
+		name     string
+		inFlight string
+		retry    *rds.DeleteDBInstanceInput
+	}{
+		{"SnapshotRetryOfASkippedDelete", "", &rds.DeleteDBInstanceInput{
+			DBInstanceIdentifier:      aws.String(testDBID),
+			FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+		}},
+		{"SkipRetryOfASnapshottedDelete", "orders-db-final", skipFinalSnapshot()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t, false)
+			rec := availableRecord()
+			rec.Status = StatusDeleting
+			rec.FinalSnapshotIdentifier = tc.inFlight
+			seedInstance(t, h.svc, rec)
+
+			_, err := h.svc.DeleteDBInstance(t.Context(), tc.retry, testAccountID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceInvalidState)
+			assert.Contains(t, err.Error(), snapshotChoice(tc.inFlight))
+
+			assert.True(t, h.recordExists(t, testDBID))
+			assert.Empty(t, h.launcher.terminated)
+			assert.Empty(t, h.volumes.deleted)
+		})
+	}
+}
+
+// The volume store enforces against its own snapshot index, which can see a
+// reference the EC2 enumeration missed. Retaining converges; erroring would
+// wedge the delete on every retry until the bound marked it failed.
+func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.volumes.deleteErr = errors.New(awserrors.ErrorVolumeInUse)
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+	require.NoError(t, err)
+
+	retained, found := h.retainedVolume(t, "vol-rdsdata01")
+	require.True(t, found, "a volume the store refused to delete must be recorded, not forgotten")
+	assert.True(t, retained.HoldersUnresolved,
+		"nothing named a holder, so a release must re-check rather than trust the empty list")
+	assert.Equal(t, testDBID, retained.DBInstanceIdentifier)
+
+	// The teardown still completed: the record is what makes the volume findable.
+	assert.False(t, h.recordExists(t, testDBID))
 }
 
 // A teardown that died partway through is replayed, so every step has to treat

@@ -26,13 +26,19 @@ type fakeInstanceCommander struct {
 	// notOnNode makes StartInstance report the VM as held by no node, which is
 	// what sends the start down the stopped-instance path.
 	notOnNode bool
-	err       error
+	// stopNotOnNode is the same for a stop, which then has to confirm the VM is
+	// really down rather than assume it.
+	stopNotOnNode bool
+	err           error
 }
 
 var _ instanceCommander = (*fakeInstanceCommander)(nil)
 
 func (f *fakeInstanceCommander) StopInstance(_ context.Context, instanceID string) error {
 	f.calls = append(f.calls, "stop:"+instanceID)
+	if f.stopNotOnNode {
+		return ErrInstanceNotOnNode
+	}
 	return f.err
 }
 
@@ -155,6 +161,7 @@ type lifecycleHarness struct {
 	launcher *fakeLauncher
 	volumes  *fakeVolumes
 	agent    *stubAgent
+	vmState  *fakeInstanceState
 }
 
 // agentFails makes the stub agent reject every command, which is how the
@@ -170,12 +177,16 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 		enis:     &fakeENIs{},
 		launcher: &fakeLauncher{},
 		volumes:  &fakeVolumes{},
+		// The state an available instance's VM is in; a case that needs the VM
+		// down for a stop-confirmation path sets it.
+		vmState: &fakeInstanceState{state: instanceStateRunning},
 	}
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
-		LoadCA:    newTestCA(t),
-		Instances: h.cmdr,
-		Snapshots: h.snaps,
+		LoadCA:        newTestCA(t),
+		Instances:     h.cmdr,
+		Snapshots:     h.snaps,
+		InstanceState: h.vmState,
 		Launch: LaunchDeps{
 			VPC:      h.enis,
 			Instance: h.launcher,
@@ -294,6 +305,57 @@ func TestStopDBInstance_RecordsAFailedGracefulStopAndContinues(t *testing.T) {
 		}
 	}
 	assert.True(t, recorded, "a degraded shutdown must reach the customer's event ring")
+}
+
+// A node that is partitioned or restarting answers a power command exactly the
+// way one that never held the VM does. Writing stopped on that alone would
+// report a VM still serving on the customer ENI as stopped.
+func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopNotOnNode = true
+	h.vmState.state = instanceStateRunning
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.Error(t, err)
+
+	rec := h.record(t)
+	assert.Equal(t, StatusFailed, rec.Status)
+	assert.Contains(t, rec.FailureReason, "still running")
+}
+
+// The same unanswered command is the normal shape of a VM that is genuinely
+// down, and that stop has to converge rather than fail.
+func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopNotOnNode = true
+	h.vmState.state = "stopped"
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusStopped, h.record(t).Status)
+}
+
+// The reconciler resumes a stop with no caller watching, so it needs the same
+// confirmation before it calls an unanswered command a completed stop.
+func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopNotOnNode = true
+	h.vmState.state = instanceStateRunning
+	rec := availableRecord()
+	rec.Status = StatusStopping
+	started := time.Now().UTC()
+	rec.TransitionStartedAt = &started
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, NewReconciler(h.svc, "node-a").reconcileOnce(t.Context()))
+
+	// Left stopping so the next pass retries; the bound is what ends it.
+	assert.Equal(t, StatusStopping, h.record(t).Status)
 }
 
 // D5/D9: the data volume, the customer ENI and the DNS record are all retained,

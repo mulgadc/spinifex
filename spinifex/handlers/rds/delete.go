@@ -51,6 +51,17 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 		return nil, fmt.Errorf("%s: DB instance %s cannot be deleted because deletion protection is enabled",
 			awserrors.ErrorInvalidParameterCombination, id)
 	}
+	if err := s.checkFinalSnapshotAvailable(ctx, kv, rec, finalSnapshot); err != nil {
+		return nil, err
+	}
+
+	// A retry of a delete already under way has to repeat its snapshot choice.
+	// Keeping the first one silently would answer a caller who asked for a final
+	// snapshot with no snapshot, or snapshot for one who asked to skip.
+	if rec.Status == StatusDeleting && finalSnapshot != rec.FinalSnapshotIdentifier {
+		return nil, fmt.Errorf("%s: DB instance %s is already being deleted with %s; a retry must repeat that choice",
+			awserrors.ErrorDBInstanceInvalidState, id, snapshotChoice(rec.FinalSnapshotIdentifier))
+	}
 
 	// A repeat of a delete already under way re-runs the teardown rather than
 	// being rejected: the first call may have died partway through it.
@@ -106,6 +117,42 @@ func validateDeleteRequest(input *rds.DeleteDBInstanceInput) (string, error) {
 		}
 	}
 	return identifier, nil
+}
+
+// How the in-flight delete's snapshot choice reads back to the customer, in the
+// terms they supplied it in.
+func snapshotChoice(identifier string) string {
+	if identifier == "" {
+		return "SkipFinalSnapshot"
+	}
+	return "FinalDBSnapshotIdentifier " + identifier
+}
+
+// A snapshot record outlives the DB instance record it was taken from, so an
+// identifier reused by a later instance of the same name collides with the
+// earlier one. Only a record naming this same instance and its current data
+// volume is a resumed teardown's own work.
+func finalSnapshotIsOurs(existing *DBSnapshotRecord, rec *DBInstanceRecord) bool {
+	return existing.DBInstanceIdentifier == rec.DBInstanceIdentifier &&
+		existing.SourceVolumeID == rec.DataVolumeID
+}
+
+// Rejects a taken identifier before anything is torn down, as AWS does. Leaving
+// it to the snapshot step would terminate the VM first and then fail on an
+// error no retry can clear.
+func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord, identifier string) error {
+	if identifier == "" {
+		return nil
+	}
+	var existing DBSnapshotRecord
+	found, err := getJSON(ctx, kv, DBSnapshotKey(identifier), &existing)
+	if err != nil || !found {
+		return err
+	}
+	if finalSnapshotIsOurs(&existing, rec) {
+		return nil
+	}
+	return fmt.Errorf("%s: DB snapshot %s already exists", awserrors.ErrorDBSnapshotAlreadyExists, identifier)
 }
 
 // The teardown chain. Ordering is forced by what holds what: the VM has to go
@@ -183,7 +230,7 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, 
 		return err
 	}
 	if found {
-		if existing.DBInstanceIdentifier != rec.DBInstanceIdentifier {
+		if !finalSnapshotIsOurs(&existing, rec) {
 			return fmt.Errorf("%s: DB snapshot %s already exists",
 				awserrors.ErrorDBSnapshotAlreadyExists, rec.FinalSnapshotIdentifier)
 		}
@@ -255,29 +302,48 @@ func (s *Service) releaseDataVolume(ctx context.Context, kv jetstream.KeyValue, 
 		return err
 	}
 	if len(holders) > 0 {
-		retained := RetainedVolumeRecord{
-			VolumeID:             rec.DataVolumeID,
-			AccountID:            accountID,
-			DBInstanceIdentifier: rec.DBInstanceIdentifier,
-			Snapshots:            holders,
-			RetainedAt:           time.Now().UTC(),
-		}
-		if err := putJSON(ctx, kv, RetainedVolumeKey(rec.DataVolumeID), &retained); err != nil {
-			return err
-		}
-		slog.InfoContext(ctx, "rds: data volume retained; snapshots still reference its chunks",
-			"dbInstance", rec.DBInstanceIdentifier, "volumeId", rec.DataVolumeID, "snapshots", holders)
-		return nil
+		return s.retainDataVolume(ctx, kv, accountID, rec, holders, false)
 	}
 
 	if s.deps.Launch.Volume == nil {
 		return errors.New("rds: no volume service configured")
 	}
-	if _, err := s.deps.Launch.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+	_, err = s.deps.Launch.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(rec.DataVolumeID),
-	}, utils.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
+	}, utils.GlobalAccountID)
+	switch {
+	case err == nil || awserrors.IsNotFound(err):
+		return nil
+	case awserrors.IsErrorCode(err, awserrors.ErrorVolumeInUse):
+		// The volume store's own snapshot index sees a reference the enumeration
+		// above did not. Retaining is the safe reading of that disagreement;
+		// returning the error would wedge the delete on every retry instead.
+		return s.retainDataVolume(ctx, kv, accountID, rec, holders, true)
+	default:
 		return fmt.Errorf("rds: delete the data volume of %s: %w", rec.DBInstanceIdentifier, err)
 	}
+}
+
+// Records a volume the teardown left behind, with the snapshots holding it so
+// the last DeleteDBSnapshot can release it (D10). holdersUnresolved marks the
+// case where the volume store refused the delete but named nobody, so a release
+// has to re-check rather than trust an empty list.
+func (s *Service) retainDataVolume(ctx context.Context, kv jetstream.KeyValue, accountID string,
+	rec *DBInstanceRecord, holders []string, holdersUnresolved bool) error {
+	retained := RetainedVolumeRecord{
+		VolumeID:             rec.DataVolumeID,
+		AccountID:            accountID,
+		DBInstanceIdentifier: rec.DBInstanceIdentifier,
+		Snapshots:            holders,
+		HoldersUnresolved:    holdersUnresolved,
+		RetainedAt:           time.Now().UTC(),
+	}
+	if err := putJSON(ctx, kv, RetainedVolumeKey(rec.DataVolumeID), &retained); err != nil {
+		return err
+	}
+	slog.InfoContext(ctx, "rds: data volume retained; snapshots still reference its chunks",
+		"dbInstance", rec.DBInstanceIdentifier, "volumeId", rec.DataVolumeID,
+		"snapshots", holders, "holdersUnresolved", holdersUnresolved)
 	return nil
 }
 

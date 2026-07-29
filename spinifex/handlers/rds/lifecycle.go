@@ -109,7 +109,11 @@ func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceI
 
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "stopping")
 
-	if err := s.deps.Instances.StopInstance(ctx, rec.InstanceID); err != nil && !errors.Is(err, ErrInstanceNotOnNode) {
+	err = s.deps.Instances.StopInstance(ctx, rec.InstanceID)
+	if errors.Is(err, ErrInstanceNotOnNode) {
+		err = s.confirmVMNotRunning(ctx, accountID, rec.InstanceID)
+	}
+	if err != nil {
 		return nil, s.failTransition(ctx, kv, accountID, rec,
 			fmt.Sprintf("the DB instance could not be stopped: %v", err))
 	}
@@ -160,6 +164,26 @@ func (s *Service) startInstanceVM(ctx context.Context, instanceID string) error 
 	slog.InfoContext(ctx, "rds: no node holds the DB VM; relaunching it from its stopped-instance record",
 		"instanceId", instanceID)
 	return s.deps.Instances.StartStoppedInstance(ctx, instanceID)
+}
+
+// A power command no node answered usually means the VM is already down, which
+// is where a stop was going anyway — but a partitioned or restarting node looks
+// identical from here. The fleet-wide view has to agree before the record says
+// stopped, or a VM still serving on the customer ENI is reported as stopped.
+//
+// A nil resolver disables the check, matching the reconciler's health path.
+func (s *Service) confirmVMNotRunning(ctx context.Context, accountID, instanceID string) error {
+	if s.deps.InstanceState == nil {
+		return nil
+	}
+	state, err := s.deps.InstanceState.InstanceState(ctx, instanceID, accountID)
+	if err != nil {
+		return fmt.Errorf("no node is holding the DB VM and its state could not be resolved: %w", err)
+	}
+	if state == instanceStateRunning {
+		return errors.New("no node is holding the DB VM but it is still running")
+	}
+	return nil
 }
 
 // Asks the engine to shut down cleanly, and records an event rather than

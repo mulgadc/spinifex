@@ -264,6 +264,10 @@ type fakeVolumes struct {
 
 	unwind       *[]string
 	deleteCtxErr error
+
+	// What DeleteVolume refuses with, which is how the volume store's own
+	// snapshot index is made to disagree with the snapshot enumeration.
+	deleteErr error
 }
 
 var _ launchVolumeProvisioner = (*fakeVolumes)(nil)
@@ -282,6 +286,9 @@ func (f *fakeVolumes) DeleteVolume(ctx context.Context, in *ec2.DeleteVolumeInpu
 	f.deleteCtxErr = ctx.Err()
 	if f.unwind != nil {
 		*f.unwind = append(*f.unwind, "delete-volume")
+	}
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
 	}
 	return &ec2.DeleteVolumeOutput{}, nil
 }

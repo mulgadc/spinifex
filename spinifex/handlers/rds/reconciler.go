@@ -264,13 +264,16 @@ func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyVa
 
 // A stop whose caller died leaves the VM possibly still running, so the stop is
 // re-issued rather than assumed: it is idempotent, and a VM no node holds is
-// already stopped.
+// confirmed down against the fleet before the record calls it stopped.
 func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	if r.svc.deps.Instances == nil {
 		return errors.New("rds reconciler: no instance command path configured")
 	}
 	err := r.svc.deps.Instances.StopInstance(ctx, rec.InstanceID)
-	if err == nil || errors.Is(err, ErrInstanceNotOnNode) {
+	if errors.Is(err, ErrInstanceNotOnNode) {
+		err = r.svc.confirmVMNotRunning(ctx, accountID, rec.InstanceID)
+	}
+	if err == nil {
 		return r.transition(ctx, kv, rev, rec, StatusStopped, "")
 	}
 	if time.Since(transitionStarted(rec)) > transitionTimeout {

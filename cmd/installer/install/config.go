@@ -2,7 +2,11 @@
 // collected configuration.
 package install
 
-import "fmt"
+import (
+	"fmt"
+	"net"
+	"strings"
+)
 
 // Plane names the three traffic planes a node presents. Each plane is a role
 // bound to a target, not a fixed NIC: the same three roles collapse onto one,
@@ -212,6 +216,25 @@ func (c *Config) Validate() error {
 		if r.Plane != PlaneWAN && len(r.Role.DNS) > 0 {
 			return fmt.Errorf("%s: DNS servers belong to the wan plane, which holds the default route", r.Plane)
 		}
+		// Netgen converts the mask with net.ParseIP, so a prefix length reaches
+		// it as garbage and fails the install after the disk is partitioned.
+		// Catch it here, where the operator can still fix it.
+		if m := strings.TrimSpace(r.Role.Mask); m != "" && !validDottedMask(m) {
+			return fmt.Errorf("%s: subnet mask %q must be dotted-decimal, e.g. 255.255.255.0", r.Plane, m)
+		}
 	}
 	return nil
+}
+
+// validDottedMask reports whether s is a contiguous dotted-decimal IPv4 subnet
+// mask. Prefix-length form ("24", "/24") is deliberately not accepted: netgen
+// parses the mask with net.ParseIP, so anything else fails the install itself.
+func validDottedMask(s string) bool {
+	ip := net.ParseIP(strings.TrimSpace(s))
+	if ip == nil || ip.To4() == nil {
+		return false
+	}
+	// Size reports zero bits for a non-contiguous mask, which netgen rejects too.
+	_, bits := net.IPMask(ip.To4()).Size()
+	return bits != 0
 }

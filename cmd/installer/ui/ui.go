@@ -867,13 +867,16 @@ func formatSectors(sectors string) string {
 	}
 }
 
-// validSubnetMask accepts dotted-decimal (255.255.255.0) or CIDR prefix (/24 or 24).
+// validSubnetMask accepts dotted-decimal only (255.255.255.0). Prefix length is
+// deliberately rejected: netgen converts the mask with net.ParseIP, so a "24"
+// accepted here passed validation and then failed the install itself with
+// "invalid mask: 24" — after the disk had already been partitioned.
 func validSubnetMask(s string) bool {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "/")
-	var prefix int
-	if _, err := fmt.Sscan(s, &prefix); err == nil && len(s) <= 2 {
-		return prefix >= 0 && prefix <= 32
+	ip := net.ParseIP(strings.TrimSpace(s))
+	if ip == nil || ip.To4() == nil {
+		return false
 	}
-	return net.ParseIP(s) != nil
+	_, bits := net.IPMask(ip.To4()).Size()
+	// Size reports zero bits for a non-contiguous mask, which netgen rejects too.
+	return bits != 0
 }

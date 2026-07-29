@@ -71,7 +71,7 @@ func newRoleForm(plane install.Plane, nic int) roleForm {
 		nic:      nic,
 		dhcp:     plane == install.PlaneWAN,
 		ip:       text(defaultIPPlaceholder(plane), 0),
-		mask:     text("255.255.255.0 or 24", 0),
+		mask:     text("255.255.255.0", 0),
 		gateway:  text("192.168.1.1", 0),
 		dns:      text("1.1.1.1, 8.8.8.8", 0),
 		vlan:     text("untagged", 4),
@@ -602,7 +602,7 @@ func (m model) validateRole(idx int) string {
 			return "Enter a valid IP address"
 		}
 		if !validSubnetMask(f.mask.Value()) {
-			return "Enter a valid subnet mask (255.255.255.0 or 24)"
+			return "Enter a dotted-decimal subnet mask, e.g. 255.255.255.0 or 255.255.0.0"
 		}
 		if f.plane == install.PlaneWAN && net.ParseIP(strings.TrimSpace(f.gateway.Value())) == nil {
 			return "Enter a valid gateway address"

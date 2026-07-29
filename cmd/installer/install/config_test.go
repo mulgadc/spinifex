@@ -404,3 +404,33 @@ func TestSlaveLinksAreNotRequiredForOnline(t *testing.T) {
 		t.Errorf("wan bridge must remain required for network-online:\n%s", got)
 	}
 }
+
+// A prefix length reaches netgen's net.ParseIP as garbage and fails the install
+// after the disk has been partitioned, so it has to be rejected up front. The
+// TUI advertised "255.255.255.0 or 24" while only the first ever worked.
+func TestValidateRejectsPrefixLengthMask(t *testing.T) {
+	for _, bad := range []string{"24", "/24", "16", "255.255.0", "255.0.255.0", "banana"} {
+		cfg := threeNIC()
+		cfg.LAN.Mask = bad
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("mask %q must be rejected", bad)
+		} else if !strings.Contains(err.Error(), "dotted-decimal") {
+			t.Errorf("mask %q: error should name the expected form, got: %v", bad, err)
+		}
+	}
+
+	for _, good := range []string{"255.255.255.0", "255.255.0.0", "255.255.255.252", "255.255.255.255"} {
+		cfg := threeNIC()
+		cfg.LAN.Mask = good
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("mask %q must be accepted: %v", good, err)
+		}
+	}
+
+	// A DHCP role carries no mask, and that must stay valid.
+	cfg := threeNIC()
+	cfg.LAN = NetworkRole{Interface: "ens1f0np0", DHCPMode: true}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("a DHCP role has no mask to check: %v", err)
+	}
+}

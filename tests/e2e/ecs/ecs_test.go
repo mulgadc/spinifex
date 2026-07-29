@@ -368,17 +368,11 @@ func ensureInstanceProfile(t *testing.T, c *harness.AWSClient) {
 func createTaskRole(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 	t.Helper()
 	name := fx.ClusterName + "-task-role"
-	// Trust both ecs-tasks.amazonaws.com (real-AWS shape) and ecsInstanceRole
-	// directly. Unlike real AWS, where the ECS service vends task credentials
-	// internally, this agent assumes the task role itself over the gateway using
-	// its own instance-role session (credendpoint.go's assumeOverGateway) — an
-	// HTTPS AssumeRole call, and evalTrustPolicy only matches a Service principal
-	// on the IMDS path, never HTTPS. Without the AWS-principal clause every
-	// task-role assumption here is denied, regardless of the credential endpoint.
-	trust := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[`+
-		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},`+
-		`{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::%s:role/ecsInstanceRole"},"Action":"sts:AssumeRole"}]}`,
-		fx.AccountID)
+	// The trust policy AWS documents for a task role, and nothing else: STS
+	// attributes ecs-tasks.amazonaws.com to the agent's container-instance session,
+	// so no AWS-principal clause naming the instance role is needed.
+	const trust = `{"Version":"2012-10-17","Statement":[` +
+		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	out, err := c.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(name),
 		AssumeRolePolicyDocument: aws.String(trust),

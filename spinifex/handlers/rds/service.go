@@ -32,6 +32,11 @@ type Deps struct {
 	// Lets the reconciler confirm a DB VM is running before calling its
 	// instance available. Nil leaves the transition on the heartbeat alone.
 	InstanceState InstanceStateResolver
+	// Drives the DB VM's power state for reboot, stop and start.
+	Instances instanceCommander
+	// Takes the final snapshot at delete, and reports which snapshots still
+	// reference a data volume before it can be deleted.
+	Snapshots snapshotProvider
 	// The northstar base zone. Empty means no vanity hostname, and the endpoint
 	// is the customer-ENI IP instead (D6).
 	BaseDomain string

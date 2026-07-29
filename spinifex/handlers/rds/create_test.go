@@ -379,7 +379,6 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 		{"MultiAZ", func(in *rds.CreateDBInstanceInput) { in.MultiAZ = aws.Bool(true) }, "MultiAZ"},
 		{"PubliclyAccessible", func(in *rds.CreateDBInstanceInput) { in.PubliclyAccessible = aws.Bool(true) }, "PubliclyAccessible"},
 		{"StorageEncryptedFalse", func(in *rds.CreateDBInstanceInput) { in.StorageEncrypted = aws.Bool(false) }, "StorageEncrypted"},
-		{"DeletionProtection", func(in *rds.CreateDBInstanceInput) { in.DeletionProtection = aws.Bool(true) }, "DeletionProtection"},
 		{"BackupRetentionPeriod", func(in *rds.CreateDBInstanceInput) { in.BackupRetentionPeriod = aws.Int64(7) }, "BackupRetentionPeriod"},
 		{"PreferredBackupWindow", func(in *rds.CreateDBInstanceInput) { in.PreferredBackupWindow = aws.String("03:00-04:00") }, "PreferredBackupWindow"},
 		{"PreferredMaintenanceWindow", func(in *rds.CreateDBInstanceInput) { in.PreferredMaintenanceWindow = aws.String("sun:05:00-sun:06:00") }, "PreferredMaintenanceWindow"},
@@ -404,6 +403,17 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// DeletionProtection is honoured from rds-5a onwards, so it has to be accepted
+// at create and carried onto the record DeleteDBInstance checks.
+func TestValidateCreateRequest_AcceptsDeletionProtection(t *testing.T) {
+	input := validCreateInput()
+	input.DeletionProtection = aws.Bool(true)
+
+	req, err := validateCreateRequest(input)
+	require.NoError(t, err)
+	assert.True(t, req.DeletionProtection)
 }
 
 func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {

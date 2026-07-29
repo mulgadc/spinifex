@@ -143,6 +143,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		VpcID:                placement.VpcID,
 		VpcSecurityGroupIDs:  placement.SecurityGroupIDs,
 		DBParameterGroupName: req.DBParameterGroupName,
+		DeletionProtection:   req.DeletionProtection,
 		Tags:                 req.Tags,
 		Bootstrap:            BootstrapState{MasterUserPassword: req.MasterPassword},
 		CreatedAt:            now,

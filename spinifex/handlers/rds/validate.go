@@ -48,6 +48,7 @@ type validatedCreate struct {
 	// this with a real DB subnet group lookup.
 	SubnetID             string
 	DBParameterGroupName string
+	DeletionProtection   bool
 	Tags                 map[string]string
 }
 
@@ -150,6 +151,7 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		DBName:               aws.StringValue(input.DBName),
 		SecurityGroupIDs:     aws.StringValueSlice(input.VpcSecurityGroupIds),
 		DBParameterGroupName: engine.DefaultParameterGroupName(),
+		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 		Tags:                 tags,
 	}, nil
 }
@@ -196,9 +198,6 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 	// not offered, and omitting it entirely still yields encrypted storage.
 	if input.StorageEncrypted != nil && !aws.BoolValue(input.StorageEncrypted) {
 		return unimplemented("StorageEncrypted=false", "unencrypted storage is not offered")
-	}
-	if aws.BoolValue(input.DeletionProtection) {
-		return unimplemented("DeletionProtection", "DeleteDBInstance does not honour it yet")
 	}
 	if aws.Int64Value(input.BackupRetentionPeriod) > 0 {
 		return unimplemented("BackupRetentionPeriod", "automated backups are not implemented yet")

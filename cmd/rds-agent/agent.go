@@ -152,6 +152,7 @@ type Agent struct {
 	id            identity
 	cp            controlPlane
 	probe         *engineProbe
+	engine        *postgresEngine
 	handoffWriter func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
 
 	hb  *heartbeater
@@ -167,8 +168,9 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 		EngineVersion:        cfg.EngineVersion,
 	}
 	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
+	a.engine = newPostgresEngine(cfg, execCommandRunner)
 	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
-	a.cmd = newCommander(cp, newCommandRegistry(), cfg.PollWait)
+	a.cmd = newCommander(cp, newCommandRegistry(a.engine), cfg.PollWait)
 	return a
 }
 

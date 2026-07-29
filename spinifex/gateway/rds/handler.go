@@ -82,10 +82,10 @@ var actions = map[string]Handler{
 	"CreateDBInstance":    typed(CreateDBInstance),
 	"DescribeDBInstances": typed(DescribeDBInstances),
 	"ModifyDBInstance":    pending(),
-	"DeleteDBInstance":    pending(),
-	"RebootDBInstance":    pending(),
-	"StartDBInstance":     pending(),
-	"StopDBInstance":      pending(),
+	"DeleteDBInstance":    typed(DeleteDBInstance),
+	"RebootDBInstance":    typed(RebootDBInstance),
+	"StartDBInstance":     typed(StartDBInstance),
+	"StopDBInstance":      typed(StopDBInstance),
 
 	// Snapshots.
 	"CreateDBSnapshot":                pending(),
@@ -114,7 +114,7 @@ var actions = map[string]Handler{
 	"ListTagsForResource":    typed(ListTagsForResource),
 
 	// Events.
-	"DescribeEvents": pending(),
+	"DescribeEvents": typed(DescribeEvents),
 
 	// Internal agent actions, callable only by the in-guest agent's system role.
 	// They share the namespace because the agent reaches the control plane over

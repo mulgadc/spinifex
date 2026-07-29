@@ -14,6 +14,15 @@ const (
 	defaultEngineHost = "127.0.0.1"
 	defaultEnginePort = 5432
 	defaultPGIsReady  = "pg_isready"
+
+	// The guest layout rds-init lays down. Overridable for the same reason it is
+	// there: a sibling engine preset points at its own paths.
+	defaultPGBin         = "/usr/libexec/postgresql18"
+	defaultPGData        = "/var/lib/postgresql/18/data"
+	defaultSocketDir     = "/run/postgresql"
+	defaultPGUser        = "postgres"
+	defaultRCService     = "rc-service"
+	defaultEngineSvcName = "postgresql"
 	// The long-poll window the agent asks the gateway to hold a request open
 	// for. The gateway caps it at 20s.
 	defaultPollWait = 20 * time.Second
@@ -38,6 +47,16 @@ type config struct {
 	// Overridable so a test or a sibling engine preset can point at its own.
 	PGIsReady string
 	PollWait  time.Duration
+
+	// Where the command handlers reach the engine: the client binaries, the
+	// datadir the parameter file is installed into, the socket they connect
+	// over, the OS user they drop to, and the service the stop goes through.
+	PGBin         string
+	PGData        string
+	SocketDir     string
+	PGUser        string
+	RCService     string
+	EngineService string
 }
 
 // Reads the cloud-init env file, then lets real env vars override.
@@ -53,6 +72,12 @@ func loadConfig(envFile string) config {
 		HandoffDir:           get("RDS_HANDOFF_DIR"),
 		EngineHost:           get("RDS_ENGINE_HOST"),
 		PGIsReady:            get("RDS_PG_ISREADY"),
+		PGBin:                get("RDS_PG_BIN"),
+		PGData:               get("RDS_PGDATA"),
+		SocketDir:            get("RDS_SOCKET_DIR"),
+		PGUser:               get("RDS_PG_USER"),
+		RCService:            get("RDS_RC_SERVICE"),
+		EngineService:        get("RDS_ENGINE_SERVICE"),
 		EnginePort:           defaultEnginePort,
 		PollWait:             defaultPollWait,
 	}
@@ -67,6 +92,24 @@ func loadConfig(envFile string) config {
 	}
 	if cfg.PGIsReady == "" {
 		cfg.PGIsReady = defaultPGIsReady
+	}
+	if cfg.PGBin == "" {
+		cfg.PGBin = defaultPGBin
+	}
+	if cfg.PGData == "" {
+		cfg.PGData = defaultPGData
+	}
+	if cfg.SocketDir == "" {
+		cfg.SocketDir = defaultSocketDir
+	}
+	if cfg.PGUser == "" {
+		cfg.PGUser = defaultPGUser
+	}
+	if cfg.RCService == "" {
+		cfg.RCService = defaultRCService
+	}
+	if cfg.EngineService == "" {
+		cfg.EngineService = defaultEngineSvcName
 	}
 	// The authoritative port comes from the bootstrap config; this is only what
 	// the probe uses until that first fetch lands.

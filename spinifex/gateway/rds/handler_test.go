@@ -104,6 +104,8 @@ func TestDispatch_UnknownAction(t *testing.T) {
 // dispatched against a stub responder rather than a nil connection.
 var liveActions = []string{
 	"CreateDBInstance", "DescribeDBInstances",
+	"RebootDBInstance", "StartDBInstance", "StopDBInstance", "DeleteDBInstance",
+	"DescribeEvents",
 	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
 }
 
@@ -116,6 +118,11 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
 		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
+	respondWith(t, nc, handlers_rds.SubjectRebootDBInstance, &rds.RebootDBInstanceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectStartDBInstance, &rds.StartDBInstanceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectStopDBInstance, &rds.StopDBInstanceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDeleteDBInstance, &rds.DeleteDBInstanceOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDescribeEvents, &rds.DescribeEventsOutput{})
 	respondWith(t, nc, handlers_rds.SubjectAddTagsToResource, &rds.AddTagsToResourceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectRemoveTagsFromResource, &rds.RemoveTagsFromResourceOutput{})
 	respondWith(t, nc, handlers_rds.SubjectListTagsForResource,

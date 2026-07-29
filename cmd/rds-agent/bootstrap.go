@@ -40,6 +40,7 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 	}
 	if cfg.Port > 0 {
 		a.probe.setPort(int(cfg.Port))
+		a.engine.setPort(int(cfg.Port))
 	}
 	// Mode is logged but never branched on: rds-init decides whether to initdb
 	// from the state of the datadir.

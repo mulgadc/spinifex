@@ -462,6 +462,8 @@ var (
 	// lookups, so the SDK's typed error matching round-trips.
 	ErrorDBInstanceNotFound       = "DBInstanceNotFound"
 	ErrorDBInstanceAlreadyExists  = "DBInstanceAlreadyExists"
+	ErrorDBInstanceInvalidState   = "InvalidDBInstanceState"
+	ErrorDBSnapshotAlreadyExists  = "DBSnapshotAlreadyExists"
 	ErrorDBSubnetGroupNotFound    = "DBSubnetGroupNotFoundFault"
 	ErrorDBParameterGroupNotFound = "DBParameterGroupNotFound"
 	ErrorDBInvalidVPCNetworkState = "InvalidVPCNetworkStateFault"
@@ -1034,6 +1036,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	// RDS error codes
 	ErrorDBInstanceNotFound:       {HTTPCode: 404, Message: "DBInstanceIdentifier does not refer to an existing DB instance."},
 	ErrorDBInstanceAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB instance with the given identifier."},
+	ErrorDBInstanceInvalidState:   {HTTPCode: 400, Message: "The DB instance is not in a state that allows the requested operation."},
+	ErrorDBSnapshotAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB snapshot with the given identifier."},
 	ErrorDBSubnetGroupNotFound:    {HTTPCode: 404, Message: "DBSubnetGroupName does not refer to an existing DB subnet group."},
 	ErrorDBParameterGroupNotFound: {HTTPCode: 404, Message: "DBParameterGroupName does not refer to an existing DB parameter group."},
 	ErrorDBInvalidVPCNetworkState: {HTTPCode: 400, Message: "The DB subnet group does not cover all Availability Zones after it is created because of changes that were made."},

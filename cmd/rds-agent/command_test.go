@@ -57,7 +57,7 @@ func TestCommander_FailedHandlerRepliesWithItsError(t *testing.T) {
 // for. The issuer is blocked on the command ID, so it gets an answer rather
 // than a timeout.
 func TestCommander_UnknownTypeRepliesFailedNotDropped(t *testing.T) {
-	reply := newCommander(nil, newCommandRegistry(), time.Second).execute(context.Background(),
+	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}), time.Second).execute(context.Background(),
 		handlers_rds.Command{CommandID: "cmd-3", Type: "quiesce"})
 
 	if reply.CommandID != "cmd-3" || reply.Status != handlers_rds.CommandStatusFailed {
@@ -107,7 +107,7 @@ func TestCommander_BacksOffAfterAFailedPoll(t *testing.T) {
 	cp := newFakeControlPlane()
 	cp.pollErr = errors.New("gateway unreachable")
 
-	c := newCommander(cp, newCommandRegistry(), 10*time.Millisecond)
+	c := newCommander(cp, newCommandRegistry(&fakeEngine{}), 10*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	done := make(chan struct{})

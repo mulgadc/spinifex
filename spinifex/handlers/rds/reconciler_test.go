@@ -163,10 +163,11 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 	assert.Equal(t, StatusCreating, status)
 }
 
-// A settled instance, and a transition owned by a later phase, are both left
-// alone: touching one would race its owner.
+// A deliberately stopped instance, and a transition owned by a later phase, are
+// both left alone: touching one would race its owner. available and failed are
+// the classifier's, and covered in recovery_test.go.
 func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
-	for _, status := range []Status{StatusAvailable, StatusStopped, StatusBackingUp, StatusFailed} {
+	for _, status := range []Status{StatusStopped, StatusBackingUp} {
 		t.Run(string(status), func(t *testing.T) {
 			h := newReconcileHarness(t)
 			rec := healthyRecord()

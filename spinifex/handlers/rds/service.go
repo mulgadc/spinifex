@@ -51,6 +51,9 @@ type Deps struct {
 	// Overrides how long the reconciler waits for the first healthy heartbeat.
 	// Zero takes defaultBootstrapTimeout.
 	BootstrapTimeout time.Duration
+	// Overrides how long an instance may be observed dark before the classifier
+	// calls it failed. Zero takes defaultFailureGrace.
+	FailureGrace time.Duration
 }
 
 // The RDS control plane's KV-backed handler set. One per daemon.
@@ -89,6 +92,13 @@ func (s *Service) bootstrapTimeout() time.Duration {
 		return s.deps.BootstrapTimeout
 	}
 	return defaultBootstrapTimeout
+}
+
+func (s *Service) failureGrace() time.Duration {
+	if s.deps.FailureGrace > 0 {
+		return s.deps.FailureGrace
+	}
+	return defaultFailureGrace
 }
 
 func (s *Service) js() (jetstream.JetStream, error) {

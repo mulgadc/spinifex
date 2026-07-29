@@ -168,6 +168,13 @@ type RDSConfig struct {
 	// before the reconciler marks it failed. Zero takes the built-in default,
 	// which covers a cold boot plus initdb on the smallest instance class.
 	BootstrapTimeoutSeconds int `json:"BootstrapTimeoutSeconds" mapstructure:"bootstrap_timeout_seconds"`
+
+	// How long an available DB instance may be observed with its VM down and its
+	// agent silent before the reconciler reports it failed. Zero takes the
+	// built-in default of one heartbeat interval, which requires two reconciler
+	// passes to agree; raise it to give EC2's own VM auto-restart more room
+	// before a customer sees the instance reported as failed.
+	FailureGraceSeconds int `json:"FailureGraceSeconds" mapstructure:"failure_grace_seconds"`
 }
 
 // RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at

@@ -65,6 +65,7 @@ func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
 		GatewayURL:       d.resolveSystemGatewayBaseURL(),
 		GatewayCACert:    gatewayCA,
 		BootstrapTimeout: time.Duration(d.config.RDS.BootstrapTimeoutSeconds) * time.Second,
+		FailureGrace:     time.Duration(d.config.RDS.FailureGraceSeconds) * time.Second,
 	}
 }
 

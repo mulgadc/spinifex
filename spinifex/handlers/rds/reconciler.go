@@ -48,9 +48,10 @@ type InstanceStateResolver interface {
 // control work; every node keeps serving the API, so a leaderless gap delays a
 // status transition without failing a request.
 //
-// This phase's responsibilities are the creating → available transition and
-// marking a stalled bootstrap failed. Auto-recovery (rds-6) and the backup
-// sweep (rds-9) extend the same loop.
+// Its responsibilities are the transitions no single API call can finish — the
+// ones it drives itself and the ones whose caller died partway through — plus
+// the failure classifier that gives a settled instance an honest health state.
+// The backup sweep (rds-9) extends the same loop.
 type Reconciler struct {
 	svc    *Service
 	holder string
@@ -219,6 +220,8 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 		return r.reconcileStopping(ctx, kv, rev, accountID, &rec)
 	case StatusDeleting:
 		return r.reconcileDeleting(ctx, kv, rev, accountID, &rec)
+	case StatusAvailable, StatusFailed:
+		return r.reconcileHealth(ctx, kv, rev, accountID, &rec)
 	default:
 		return nil
 	}

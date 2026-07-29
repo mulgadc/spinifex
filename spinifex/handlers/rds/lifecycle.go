@@ -237,6 +237,10 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 	now := time.Now().UTC()
 	rec.Status = to
 	rec.FailureReason = ""
+	// An explicit lifecycle op supersedes whatever the classifier had observed,
+	// so a clock left over from an earlier outage cannot shorten the grace on a
+	// fault the customer has just acted on.
+	rec.UnhealthySince = nil
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {

@@ -112,6 +112,17 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 	if rec.PreferredMaintenanceWindow != "" {
 		out.PreferredMaintenanceWindow = aws.String(rec.PreferredMaintenanceWindow)
 	}
+	// AWS has no dedicated failure-reason field on a DB instance, so the reason a
+	// failed instance carries is reported the one place a human-readable status
+	// message fits. Absent while the instance is healthy, as AWS leaves it.
+	if rec.FailureReason != "" {
+		out.StatusInfos = []*rds.DBInstanceStatusInfo{{
+			StatusType: aws.String("instance"),
+			Status:     aws.String(string(rec.Status)),
+			Normal:     aws.Bool(false),
+			Message:    aws.String(rec.FailureReason),
+		}}
+	}
 	out.PendingModifiedValues = projectPendingModifiedValues(rec.PendingModifiedValues)
 	out.DBParameterGroups = projectParameterGroup(rec)
 	// Absent until the ENI exists: an Endpoint with no address would have a

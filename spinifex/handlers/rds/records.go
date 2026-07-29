@@ -73,6 +73,12 @@ type DBInstanceRecord struct {
 	// stale reason cannot outlive the failure it describes.
 	FailureReason string `json:"failureReason,omitempty"`
 
+	// When the classifier first observed the instance dark, and the timestamp the
+	// failure grace window is measured from. Persisted rather than held in leader
+	// memory so a leader change does not restart the clock. Cleared only by a
+	// healthy heartbeat or an explicit lifecycle op (D13).
+	UnhealthySince *time.Time `json:"unhealthySince,omitempty"`
+
 	// When the lifecycle op that put the instance in its current transitional
 	// state began. The reconciler bounds the transition from here and ignores
 	// heartbeats older than it, so a beat from before a reboot cannot be read as
@@ -287,4 +293,8 @@ const (
 	// The floor at which an unchanged beat reaches KV: ~7 KV ops/sec of
 	// liveness at 200 instances rather than 40.
 	HeartbeatPersistEvery = 5
+	// How far behind a live agent the record's LastSeen can be while nothing is
+	// wrong. Beats are queue-group delivered, so a node that is not handling an
+	// instance's beats only ever sees them through KV.
+	HeartbeatPersistFloor = HeartbeatPersistEvery * HeartbeatInterval
 )

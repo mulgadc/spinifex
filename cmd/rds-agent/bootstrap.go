@@ -12,9 +12,8 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
-// bootstrap fetches the boot material and writes the handoff rds-init is
-// blocked waiting for, then points the health probe at the port the control
-// plane actually assigned.
+// Fetches the boot material and writes the handoff rds-init is blocked waiting
+// for, then points the health probe at the assigned port.
 func (a *Agent) bootstrap(ctx context.Context) error {
 	var cfg *handlers_rds.GetDBBootstrapConfigOutput
 	if err := retry(ctx, "bootstrap fetch", func(ctx context.Context) error {
@@ -63,7 +62,6 @@ const (
 	handoffDirMode = 0o700
 )
 
-// writeHandoff renders the bootstrap config into the files rds-init consumes.
 // bootstrap.env is written last and renamed into place, so its appearance —
 // which rds-init waits on — means the whole handoff is complete.
 func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) error {
@@ -96,9 +94,8 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 	return writeHandoffFile(dir, handoffEnvFile, renderBootstrapEnv(cfg))
 }
 
-// renderBootstrapEnv builds the KEY=value fragment rds-init sources. Every value
-// is single-quoted because the file is read by `.` in a shell: an unquoted
-// password containing a space, a `$` or a `;` would be word-split or executed.
+// Every value is single-quoted because rds-init sources this with `.`: an
+// unquoted password holding a space, `$` or `;` would be word-split or executed.
 func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 	var b strings.Builder
 	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
@@ -125,15 +122,14 @@ func writeEnvLine(b *strings.Builder, key, value string) {
 	b.WriteString("\n")
 }
 
-// shellQuote wraps s in single quotes, which suppress every shell expansion.
-// An embedded quote is closed, escaped and reopened.
+// Single quotes suppress every shell expansion; an embedded quote is closed,
+// escaped and reopened.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// renderParameters emits the resolved parameter group in postgresql.conf syntax.
-// Values are quoted so a setting with a space or unit suffix survives; the
-// engine accepts quoted numerics and booleans too.
+// postgresql.conf syntax. Values are quoted so a setting with a space or unit
+// suffix survives; the engine accepts quoted numerics and booleans too.
 func renderParameters(params []handlers_rds.Parameter) string {
 	var b strings.Builder
 	b.WriteString("# Resolved parameter group, written by rds-agent.\n")
@@ -146,9 +142,8 @@ func renderParameters(params []handlers_rds.Parameter) string {
 	return b.String()
 }
 
-// writeHandoffFile writes one handoff file atomically: a temp file in the same
-// directory, renamed over the target. The mode is set at creation, so the
-// content is never briefly readable at the process umask.
+// Atomic: a temp file in the same directory, renamed over the target. The mode
+// is set at creation, so content is never briefly readable at the process umask.
 func writeHandoffFile(dir, name, content string) error {
 	path := filepath.Join(dir, name)
 	tmp := path + ".new"

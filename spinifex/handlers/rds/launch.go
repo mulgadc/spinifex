@@ -20,55 +20,41 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// A DB instance is a dual-NIC system VM. Its primary NIC lives in the shared
-// RDS system VPC, giving the in-guest agent egress to the gateway; the
-// customer-facing ENI is injected cross-account as a pure ingress path. There
-// is no single-NIC mode, since DB subnets typically have no NAT egress.
-//
-// The data volume is created and hot-plug attached after the VM is running, and
-// kept separate from the boot volume so a replace can discard the boot volume
-// and keep the datadir.
+// A DB instance is a dual-NIC system VM: the primary NIC sits in the shared RDS
+// system VPC so the in-guest agent can reach the gateway, and the customer ENI
+// is injected cross-account as pure ingress. DB subnets rarely have NAT egress.
 
 const (
-	// dataVolumeDevice is the API-form device name the data volume attaches at.
-	// The guest locates it by volume serial rather than by this name, but a
-	// fixed name keeps the attachment record predictable across replaces.
+	// The guest locates the data volume by serial, not by this name; a fixed
+	// name only keeps the attachment record predictable across replaces.
 	dataVolumeDevice = "/dev/sdf"
 
-	// rdsInstanceTagKey links an ENI or volume back to the DB instance that owns
-	// it, so a teardown or leak sweep can find them without the KV record.
+	// Links an ENI or volume back to its DB instance, so a teardown or leak
+	// sweep can find them without the KV record.
 	rdsInstanceTagKey = "spinifex:rds-db-instance"
 
-	// engineTagKey and engineVersionTagKey are stamped on the engine AMIs by
-	// their image manifest, and are what an EngineVersion request resolves
-	// against.
+	// Stamped on the engine AMIs by their image manifest; an EngineVersion
+	// request resolves against these.
 	engineTagKey        = "engine"
 	engineVersionTagKey = "engine-version"
 
-	// attachRequestTimeout bounds the data-volume attach round-trip, matching
-	// the budget the gateway's AttachVolume gives the same QMP pipeline.
 	attachRequestTimeout = 30 * time.Second
 
-	// rollbackTimeout bounds the unwind. A fresh budget rather than the caller's
-	// remainder, since the unwind is often triggered by that deadline expiring
-	// and a rollback on a dead context deletes nothing.
+	// A fresh budget rather than the caller's remainder: the unwind is often
+	// triggered by that deadline expiring, and a dead context deletes nothing.
 	rollbackTimeout = 60 * time.Second
 )
 
-// ErrEngineAMINotFound is returned when no AMI carries the requested engine's
-// tags. A DB VM must never fall back to another image, so callers surface it as
-// a validation failure rather than launching something else.
+// A DB VM must never fall back to another image, so callers surface this as a
+// validation failure rather than launching something else.
 var ErrEngineAMINotFound = errors.New("rds: no AMI found for engine")
 
-// launchVPCProvisioner is the ENI surface the launch helper needs, in both the
-// system account (primary NIC) and the customer account (customer-facing ENI).
 type launchVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 	DetachENI(ctx context.Context, accountID, eniID string) error
 }
 
-// launchInstanceLauncher is the system-instance surface the DB VM boots through.
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
 // how the agent reaches the gateway from a private subnet.
 type launchInstanceLauncher interface {
@@ -76,25 +62,21 @@ type launchInstanceLauncher interface {
 	TerminateSystemInstance(instanceID string) error
 }
 
-// launchAMIResolver is the narrow AMI surface for resolving the engine image.
 type launchAMIResolver interface {
 	DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
 }
 
-// launchVolumeProvisioner creates and removes the decoupled data volume.
 type launchVolumeProvisioner interface {
 	CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error)
 	DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
 }
 
-// volumeAttacher hot-plugs a volume onto a running VM. Split from the volume
-// provisioner because attach is routed to the node owning the VM rather than
-// answered by whichever node picks the request up.
+// Split from launchVolumeProvisioner because attach is routed to the node
+// owning the VM, not answered by whichever node picks the request up.
 type volumeAttacher interface {
 	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error)
 }
 
-// LaunchDeps bundles the collaborators LaunchDBInstanceVM composes.
 type LaunchDeps struct {
 	Config    *config.Config
 	SystemVPC handlers_systemvpc.Deps
@@ -105,40 +87,28 @@ type LaunchDeps struct {
 	Attacher  volumeAttacher
 }
 
-// LaunchInput describes one DB VM to boot. Everything here is already validated
-// by the caller: the launch helper resolves and wires, it does not police the
-// AWS API surface.
+// Everything here is already validated by the caller: the launch helper
+// resolves and wires, it does not police the AWS API surface.
 type LaunchInput struct {
 	DBInstanceIdentifier string
-	// AccountID is the customer account that owns the DB, the subnet and the
-	// customer-facing ENI. The VM itself runs in the system account.
-	AccountID string
-	// SubnetID is the customer DB-subnet-group subnet the customer ENI lands in.
-	SubnetID string
-	// SecurityGroupIDs gate ingress on that ENI; they are the customer's.
-	SecurityGroupIDs []string
-	Engine           string
-	EngineVersion    string
-	// InstanceType is the EC2 type the db.* class resolved to.
-	InstanceType string
-	// AllocatedStorage is the data volume size in GiB.
-	AllocatedStorage int64
-	// UserData is the cloud-init blob carrying the agent's gateway endpoint.
-	UserData string
-	// IamInstanceProfileArn attaches the rdsInstanceRole so the agent signs with
-	// IMDS role credentials rather than a static secret in user-data.
+	// The customer account owning the DB, subnet and customer ENI. The VM
+	// itself runs in the system account.
+	AccountID             string
+	SubnetID              string
+	SecurityGroupIDs      []string
+	Engine                string
+	EngineVersion         string
+	InstanceType          string
+	AllocatedStorage      int64
+	UserData              string
 	IamInstanceProfileArn string
 }
 
-// LaunchOutput is what a booted DB VM is composed of. The caller persists the
-// customer ENI and data volume on the DBInstance record: both outlive the VM.
 type LaunchOutput struct {
 	InstanceID string
-	// SystemENIID is the primary NIC in the RDS system VPC. It is disposable —
-	// a VM replace makes a new one.
-	SystemENIID string
-	// CustomerENIID is the stable endpoint: its private IP is the DNS target
-	// and survives a VM replace.
+	// The system ENI is disposable — a replace makes a new one. The customer
+	// ENI is the stable endpoint: its IP is the DNS target and survives.
+	SystemENIID    string
 	CustomerENIID  string
 	CustomerENIIP  string
 	CustomerENIMac string
@@ -147,9 +117,8 @@ type LaunchOutput struct {
 	MgmtIP         string
 }
 
-// LaunchDBInstanceVM boots the dual-NIC DB VM for in and attaches its data
-// volume. On any failure every resource this call created is torn down, so a
-// retried create does not accumulate orphan ENIs, volumes and VMs.
+// On any failure every resource this call created is torn down, so a retried
+// create does not accumulate orphan ENIs, volumes and VMs.
 func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out *LaunchOutput, err error) {
 	if err := validateLaunchInput(in); err != nil {
 		return nil, err
@@ -246,9 +215,8 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}
 
-	// The data volume is created in the system account alongside the VM: it is
-	// attached to a system-account instance, and the customer reaches its
-	// contents only through the engine.
+	// Kept separate from the boot volume so a replace can discard the boot
+	// volume and keep the datadir, and owned by the system account.
 	volume, err := deps.Volume.CreateVolume(ctx, &ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(in.AllocatedStorage),
@@ -313,15 +281,12 @@ func validateLaunchInput(in LaunchInput) error {
 	return nil
 }
 
-// launchENI is a created interface's identity. The launcher needs all three:
-// the guest's NIC is configured from the MAC and IP.
 type launchENI struct {
 	id  string
 	ip  string
 	mac string
 }
 
-// createLaunchENI creates one of the DB VM's two NICs in accountID's subnet.
 // groups is nil for the system NIC, which is unreachable from any customer VPC
 // and so needs no security group of its own.
 func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string, groups []string, description, dbInstanceID string) (*launchENI, error) {
@@ -357,9 +322,8 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 	}, nil
 }
 
-// deleteLaunchENI removes an ENI during rollback. The detach comes first because
-// a terminated VM can leave the attachment record behind, which a plain delete
-// rejects as InUse. Best-effort: the caller is already unwinding a failure.
+// Detach comes first because a terminated VM can leave the attachment record
+// behind, which a plain delete rejects as InUse.
 func deleteLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, eniID string) {
 	if err := vpcSvc.DetachENI(ctx, accountID, eniID); err != nil && !awserrors.IsNotFound(err) {
 		slog.DebugContext(ctx, "rds: rollback ENI detach failed", "eniId", eniID, "err", err)
@@ -371,9 +335,8 @@ func deleteLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 	}
 }
 
-// resolveEngineAMI picks the engine's system AMI by its manifest tags. An empty
-// version takes the newest image; a set one requires an exact match, so a
-// request can never be served by a different major version.
+// An empty version takes the newest image; a set one requires an exact match,
+// so a request can never be served by a different major version.
 func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, version string) (string, error) {
 	filters := []*ec2.Filter{
 		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByRDS})},
@@ -419,9 +382,8 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 	return newestID, nil
 }
 
-// natsVolumeAttacher hot-plugs a volume through the per-instance ec2.cmd
-// subject. Only the node running the VM subscribes it, so the command routes
-// itself and the launch helper need not know where the VM landed.
+// Only the node running the VM subscribes the per-instance ec2.cmd subject, so
+// the command routes itself and the caller need not know where the VM landed.
 type natsVolumeAttacher struct {
 	nc      *nats.Conn
 	timeout time.Duration
@@ -429,13 +391,12 @@ type natsVolumeAttacher struct {
 
 var _ volumeAttacher = (*natsVolumeAttacher)(nil)
 
-// NewNATSVolumeAttacher builds the production volume attacher over nc.
 func NewNATSVolumeAttacher(nc *nats.Conn) volumeAttacher {
 	return &natsVolumeAttacher{nc: nc, timeout: attachRequestTimeout}
 }
 
-// AttachVolume returns the device name the attachment landed on, which can
-// differ from the requested one when the guest renames it.
+// Returns the device the attachment landed on, which can differ from the
+// requested one when the guest renames it.
 func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error) {
 	cmd := types.EC2InstanceCommand{
 		ID:         instanceID,

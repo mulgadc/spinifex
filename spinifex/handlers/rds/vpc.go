@@ -11,33 +11,25 @@ import (
 )
 
 // One shared RDS system VPC per region holds every DB VM's primary NIC. DB
-// instances are isolated by their own customer-facing ENI and security group,
-// so a VPC per instance would add a NAT gateway and EIP without adding
-// isolation.
+// instances are isolated by their own customer ENI and security group, so a VPC
+// per instance would add a NAT gateway and EIP without adding isolation.
 //
-// It is the EKS control-plane VPC's sibling — same builder and topology — but
-// with RDS's own tag keys and address space, so no EKS teardown or orphan
-// reaper can reach it.
+// Own tag keys and address space, so no EKS teardown or orphan reaper can reach
+// it even though it shares the EKS control-plane VPC's builder and topology.
 const (
-	// rdsSystemVPCTagKey holds the system VPC's name on every resource in it.
-	rdsSystemVPCTagKey = "spinifex:rds-system-vpc"
-
-	// rdsSystemVPCRoleTagKey distinguishes the resources within one system VPC.
+	rdsSystemVPCTagKey     = "spinifex:rds-system-vpc"
 	rdsSystemVPCRoleTagKey = "spinifex:rds-role"
-
-	// rdsSystemVPCRolePrefix namespaces those role values ("rds-vpc", …).
 	rdsSystemVPCRolePrefix = "rds"
 )
 
-// SystemVPCName is the system VPC's name for region. It seeds both the owner tag
-// and the deterministic address hash, so it must stay stable across releases.
+// Seeds both the owner tag and the deterministic address hash, so it must stay
+// stable across releases.
 func SystemVPCName(region string) string {
 	return "rds-system-" + region
 }
 
-// SystemVPCSpec is the build spec for the region's shared RDS system VPC. cfg
-// supplies the operator-overridable address space and subnet count; a nil or
-// unset cfg falls back to the defaults.
+// cfg supplies the operator-overridable address space and subnet count; a nil
+// or unset cfg falls back to the defaults.
 func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec {
 	supernet := config.RDSDefaultSystemVPCSupernet
 	privateSubnets := 1
@@ -63,10 +55,8 @@ func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec
 	}
 }
 
-// EnsureSystemVPC idempotently builds the region's shared RDS system VPC under
-// accountID, the system account that owns every DB VM. The private subnet its
-// VMs sit in routes 0.0.0.0/0 to the VPC's NAT gateway, which is the agent's
-// only egress to the gateway.
+// Idempotent. The private subnet the DB VMs sit in routes 0.0.0.0/0 to the
+// VPC's NAT gateway, which is the agent's only egress to the gateway.
 func EnsureSystemVPC(ctx context.Context, deps handlers_systemvpc.Deps, cfg *config.RDSConfig, accountID, region string) (*handlers_systemvpc.Refs, error) {
 	if region == "" {
 		return nil, errors.New("rds: EnsureSystemVPC empty region")

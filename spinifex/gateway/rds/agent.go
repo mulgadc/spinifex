@@ -15,12 +15,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// InstanceRoleName is the instance profile the RDS system VMs carry. Only a
-// session assumed from this role may call the internal agent actions.
+// Only a session assumed from this role may call the internal agent actions.
 const InstanceRoleName = "rdsInstanceRole"
 
 // Long-poll bounds for PollDBCommands. The ceiling keeps a poll inside the
-// gateway's own request timeout; the floor stops a misbehaving agent turning the
+// gateway's request timeout; the floor stops a misbehaving agent turning the
 // long poll into a busy loop.
 const (
 	minPollWait     = 1 * time.Second
@@ -28,17 +27,13 @@ const (
 	defaultPollWait = 20 * time.Second
 )
 
-// agentIdentity is the DB instance a caller has been proven to be.
+// The DB instance a caller has been proven to be.
 type agentIdentity struct {
 	AccountID            string
 	DBInstanceIdentifier string
 	InstanceID           string
 }
 
-// authorizeAgent resolves the caller to exactly one DB instance, or rejects it:
-// system account, rdsInstanceRole, and a reverse-index hit for the session's
-// instance ID.
-//
 // requestedID, from the request body, is only ever used to reject a mismatch —
 // the authoritative identifier comes from the index, so an agent cannot act on
 // another instance by asking to.
@@ -78,9 +73,8 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 	}, nil
 }
 
-// lookupInstanceIndex reads the rds-system reverse index straight from
-// JetStream rather than adding a NATS round trip, matching the OIDC discovery
-// and client-token paths, because this runs on every agent call.
+// Reads JetStream directly rather than adding a NATS round trip, matching the
+// OIDC discovery and client-token paths, because this runs on every agent call.
 func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) (*handlers_rds.InstanceIndexEntry, error) {
 	if nc == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
@@ -112,15 +106,13 @@ func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) 
 	return &out, nil
 }
 
-// RegisterDBInstanceInput is the agent's registration request. The identifier is
-// accepted but authoritative identity comes from the gate.
+// The identifier is accepted but authoritative identity comes from the gate.
 type RegisterDBInstanceInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 	AgentVersion         string `locationName:"AgentVersion"`
 	EngineVersion        string `locationName:"EngineVersion"`
 }
 
-// RegisterDBInstance records an agent's boot and refreshes its liveness.
 func RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -134,7 +126,6 @@ func RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, nc 
 	}, id.AccountID)
 }
 
-// SubmitDBStateChangeInput is the agent's periodic state-and-liveness beat.
 type SubmitDBStateChangeInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 	EngineHealth         string `locationName:"EngineHealth"`
@@ -142,7 +133,6 @@ type SubmitDBStateChangeInput struct {
 	Message              string `locationName:"Message"`
 }
 
-// SubmitDBStateChange records engine health and refreshes liveness.
 func SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -157,13 +147,11 @@ func SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, n
 	}, id.AccountID)
 }
 
-// GetDBBootstrapConfigInput is the agent's first call on every boot.
 type GetDBBootstrapConfigInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 }
 
-// GetDBBootstrapConfig serves the agent's boot material, including the master
-// password on the first fetch only.
+// Serves boot material, including the master password on the first fetch only.
 func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -175,24 +163,23 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 	}, id.AccountID)
 }
 
-// PollDBCommandsInput carries results for commands delivered on an earlier poll
-// and asks for the next one, matching the ECS ack-on-poll shape.
+// Carries results for commands delivered on an earlier poll and asks for the
+// next one, matching the ECS ack-on-poll shape.
 type PollDBCommandsInput struct {
 	DBInstanceIdentifier string                      `locationName:"DBInstanceIdentifier"`
 	WaitTimeSeconds      int64                       `locationName:"WaitTimeSeconds"`
 	Replies              []handlers_rds.CommandReply `locationName:"Replies" locationNameList:"member"`
 }
 
-// PollDBCommandsOutput carries at most one command per poll. Commands are
-// delivered one at a time because each is a discrete guest operation the agent
+// At most one command per poll: each is a discrete guest operation the agent
 // must complete and report before the next is safe to issue.
 type PollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member"`
 }
 
-// PollDBCommands is the agent's long poll for control-plane directives. The
-// channel is a live subscription, not a durable queue, so a set-password that
-// cannot reach the agent fails loudly rather than queueing cleartext in KV.
+// The command channel is a live subscription, not a durable queue, so a
+// set-password that cannot reach the agent fails loudly rather than queueing
+// cleartext in KV.
 func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -247,7 +234,6 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 	return &PollDBCommandsOutput{Commands: []handlers_rds.Command{cmd}}, nil
 }
 
-// pollWait clamps the caller's requested wait to the long-poll window.
 func pollWait(requested int64) time.Duration {
 	if requested <= 0 {
 		return defaultPollWait
@@ -255,8 +241,7 @@ func pollWait(requested int64) time.Duration {
 	return min(max(time.Duration(requested)*time.Second, minPollWait), maxPollWait)
 }
 
-// publishReplies forwards the agent's command results to the issuer. Failures
-// are logged rather than returned: a lost reply times the issuer out, which is
+// Failures are logged rather than returned: a lost reply times the issuer out,
 // the same outcome as a lost command and better than failing the whole poll.
 func publishReplies(ctx context.Context, nc *nats.Conn, id *agentIdentity, replies []handlers_rds.CommandReply) {
 	subject := handlers_rds.BusCommandReplySubject(id.AccountID, id.DBInstanceIdentifier)

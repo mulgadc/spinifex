@@ -2,7 +2,6 @@ package handlers_rds
 
 import "time"
 
-// DBInstanceRecord is the KV record at db-instances/{dbInstanceIdentifier}.
 // Fields are grouped by writer: the AWS API owns the configuration, the
 // reconciler the plumbing, the agent protocol Bootstrap and Agent.
 type DBInstanceRecord struct {
@@ -18,18 +17,17 @@ type DBInstanceRecord struct {
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
-	// InstanceID is the current VM and changes on every replace, which is why
-	// the bus subject keys off the DB instance identifier instead.
+	// Changes on every replace, which is why the bus subject keys off the DB
+	// instance identifier instead.
 	InstanceID   string `json:"instanceId,omitempty"`
 	DataVolumeID string `json:"dataVolumeId,omitempty"`
 	ENIID        string `json:"eniId,omitempty"`
-	// ENIPrivateIP is stable across VM replace, so it serves as both the
-	// fallback endpoint and a durable IP SAN on the serving cert.
+	// Stable across VM replace, so it serves as both the fallback endpoint and
+	// a durable IP SAN on the serving cert.
 	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
 	EndpointAddress string `json:"endpointAddress,omitempty"`
-	// DNSName is the vanity hostname when northstar is configured. Kept apart
-	// from EndpointAddress because the cert needs it as a DNS SAN even when the
-	// endpoint is the bare IP.
+	// The vanity hostname when northstar is configured. Kept apart from
+	// EndpointAddress because the cert needs it as a DNS SAN either way.
 	DNSName string `json:"dnsName,omitempty"`
 
 	Bootstrap BootstrapState `json:"bootstrap"`
@@ -39,48 +37,43 @@ type DBInstanceRecord struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// BootstrapState is what GetDBBootstrapConfig serves, plus the marker scoping
-// the master password to a single fetch. The marker scopes the password, not
-// the action: replace, recovery and restore all re-fetch without one.
+// The Consumed marker scopes the master password to a single fetch, not the
+// action: replace, recovery and restore all re-fetch without one.
 type BootstrapState struct {
-	// MasterUserPassword is cleared by the same CAS that sets Consumed, so the
-	// cleartext outlives only the boot it serves.
+	// Cleared by the same CAS that sets Consumed, so the cleartext outlives
+	// only the boot it serves.
 	MasterUserPassword string `json:"masterUserPassword,omitempty"`
-	// Consumed only ever flips forward.
+	// Only ever flips forward.
 	Consumed   bool       `json:"consumed"`
 	ConsumedAt *time.Time `json:"consumedAt,omitempty"`
-	// ResolvedParameters are already evaluated against the instance class, so
-	// the agent receives literals and never a formula.
+	// Already evaluated against the instance class, so the agent receives
+	// literals and never a formula.
 	ResolvedParameters []Parameter `json:"resolvedParameters,omitempty"`
 }
 
-// Parameter is one resolved engine parameter. A member list rather than a map
-// because the XML marshaller renders a map as an AWS-foreign <entry> shape in
-// nondeterministic order.
+// A member list rather than a map because the XML marshaller renders a map as an
+// AWS-foreign <entry> shape in nondeterministic order.
 type Parameter struct {
 	Name  string `json:"name" locationName:"Name"`
 	Value string `json:"value" locationName:"Value"`
 }
 
-// EngineHealth is the agent's view of the engine, separate from Status: the
-// reconciler needs both to tell "stopped because we stopped it" from "stopped
-// because it died".
+// Separate from Status: the reconciler needs both to tell "stopped because we
+// stopped it" from "stopped because it died".
 type EngineHealth string
 
 const (
-	// EngineHealthStarting covers initdb, crash recovery and parameter-apply
-	// restarts — not yet a failure.
+	// Covers initdb, crash recovery and parameter-apply restarts.
 	EngineHealthStarting EngineHealth = "starting"
 	EngineHealthHealthy  EngineHealth = "healthy"
-	// EngineHealthUnhealthy is the engine running but not serving.
+	// Running but not serving.
 	EngineHealthUnhealthy EngineHealth = "unhealthy"
-	// EngineHealthStopped is the engine deliberately down, e.g. quiesced for a
-	// snapshot or stopped ahead of a storage grow.
+	// Deliberately down, e.g. quiesced for a snapshot or a storage grow.
 	EngineHealthStopped EngineHealth = "stopped"
 )
 
-// ValidEngineHealth rejects unrecognised values at the boundary so a newer agent
-// cannot persist a health the reconciler will fail to classify.
+// Rejects unrecognised values at the boundary so a newer agent cannot persist a
+// health the reconciler will fail to classify.
 func ValidEngineHealth(h EngineHealth) bool {
 	switch h {
 	case EngineHealthStarting, EngineHealthHealthy, EngineHealthUnhealthy, EngineHealthStopped:
@@ -90,31 +83,28 @@ func ValidEngineHealth(h EngineHealth) bool {
 	}
 }
 
-// AgentState is what the in-guest rds-agent last reported. Written only by
-// RegisterDBInstance and SubmitDBStateChange.
+// Written only by RegisterDBInstance and SubmitDBStateChange.
 type AgentState struct {
-	// InstanceID identifies the reporting VM. A report from an instance other
-	// than the record's current one is a superseded VM still running after a
-	// replace.
+	// A report from an instance other than the record's current one is a
+	// superseded VM still running after a replace.
 	InstanceID    string       `json:"instanceId,omitempty"`
 	AgentVersion  string       `json:"agentVersion,omitempty"`
 	EngineVersion string       `json:"engineVersion,omitempty"`
 	EngineHealth  EngineHealth `json:"engineHealth,omitempty"`
 	Message       string       `json:"message,omitempty"`
 	RegisteredAt  *time.Time   `json:"registeredAt,omitempty"`
-	// LastSeen is the last *persisted* beat. Beats in between are held in leader
-	// memory, so this trails the truth by up to the persist floor.
+	// The last *persisted* beat. Beats in between are held in leader memory, so
+	// this trails the truth by up to the persist floor.
 	LastSeen *time.Time `json:"lastSeen,omitempty"`
 }
 
-// Heartbeat cadence.
 const (
-	// HeartbeatInterval is returned to the agent on register and on every state
-	// change, so the cadence is control-plane-owned, not baked into the AMI.
+	// Returned to the agent on register and on every state change, so the
+	// cadence is control-plane-owned, not baked into the AMI.
 	HeartbeatInterval = 30 * time.Second
-	// HeartbeatStaleAfter is three missed ticks.
+	// Three missed ticks.
 	HeartbeatStaleAfter = 3 * HeartbeatInterval
-	// HeartbeatPersistEvery is the floor at which an unchanged beat reaches KV:
-	// ~7 KV ops/sec of liveness at 200 instances rather than 40.
+	// The floor at which an unchanged beat reaches KV: ~7 KV ops/sec of
+	// liveness at 200 instances rather than 40.
 	HeartbeatPersistEvery = 5
 )

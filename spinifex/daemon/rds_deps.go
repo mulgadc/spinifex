@@ -5,10 +5,6 @@ import (
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
-// buildRDSLaunchDeps assembles the collaborators a DB VM is composed from: the
-// system VPC's EC2 services, the ENI surface, the instance launcher, the AMI
-// resolver and the data volume's create + attach.
-//
 // A launch can only arrive over the gateway, long after service init, so unlike
 // the EKS/ECS IAM deps none of this is built lazily.
 func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {

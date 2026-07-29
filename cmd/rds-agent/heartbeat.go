@@ -8,7 +8,6 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
-// heartbeater periodically reports the engine's health to the control plane.
 // The beat carries the probe's result, not the agent's own liveness: an agent
 // up while the engine is down is what the recovery reconciler must see.
 type heartbeater struct {
@@ -25,16 +24,14 @@ func newHeartbeater(cp controlPlane, probe *engineProbe, interval time.Duration)
 	return &heartbeater{cp: cp, probe: probe, interval: interval}
 }
 
-// setInterval adopts a cadence the control plane returned. Called before Run
-// starts and from Run's own goroutine after, so the interval is never written
-// concurrently with the loop reading it.
+// Called before Run starts and from Run's own goroutine after, so the interval
+// is never written concurrently with the loop reading it.
 func (h *heartbeater) setInterval(d time.Duration) {
 	if d > 0 {
 		h.interval = d
 	}
 }
 
-// beat probes the engine and reports what it found.
 func (h *heartbeater) beat(ctx context.Context) {
 	health, message := h.probe.Check(ctx)
 
@@ -49,8 +46,8 @@ func (h *heartbeater) beat(ctx context.Context) {
 	h.setInterval(time.Duration(out.HeartbeatIntervalSeconds) * time.Second)
 }
 
-// Run beats every interval until ctx is cancelled. A timer rather than a
-// ticker, so a cadence change takes effect on the next beat, not at a restart.
+// A timer rather than a ticker, so a cadence change takes effect on the next
+// beat, not at a restart.
 func (h *heartbeater) Run(ctx context.Context) {
 	timer := time.NewTimer(h.interval)
 	defer timer.Stop()

@@ -15,33 +15,29 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Deps are the host-side capabilities the RDS control plane needs beyond NATS.
+// Host-side capabilities the RDS control plane needs beyond NATS.
 type Deps struct {
-	// CACertPath and CAKeyPath locate the cluster CA the serving certs are
-	// signed by. Empty disables minting, and GetDBBootstrapConfig then returns
-	// no cert rather than failing the boot.
+	// The cluster CA the serving certs are signed by. Empty disables minting,
+	// and GetDBBootstrapConfig returns no cert rather than failing the boot.
 	CACertPath string
 	CAKeyPath  string
-	// LoadCA overrides the file-backed loader in tests.
+	// Overrides the file-backed CA loader in tests.
 	LoadCA CALoader
-	// Launch bundles the EC2-family collaborators a DB VM is composed from.
 	Launch LaunchDeps
 }
 
-// Service is the RDS control plane's KV-backed handler set. One per daemon.
+// The RDS control plane's KV-backed handler set. One per daemon.
 type Service struct {
 	nc     *nats.Conn
 	region string
 	deps   Deps
 
-	// liveness holds the heartbeat state that never reaches KV. Beats are
-	// counted here and persisted only on change or on the slower floor, so a
-	// steady fleet does not write KV twice a minute per instance.
+	// Heartbeat state that never reaches KV: beats are counted here and
+	// persisted only on change or on the slower floor.
 	livenessMu sync.Mutex
 	liveness   map[string]*agentLiveness
 }
 
-// agentLiveness is one instance's unpersisted beat state.
 type agentLiveness struct {
 	lastSeen     time.Time
 	health       EngineHealth
@@ -49,13 +45,11 @@ type agentLiveness struct {
 	beatsSinceKV int
 }
 
-// NewService constructs a Service bound to a NATS connection. region scopes the
-// ARNs it mints.
+// region scopes the ARNs the Service mints.
 func NewService(nc *nats.Conn, region string) *Service {
 	return &Service{nc: nc, region: region, liveness: make(map[string]*agentLiveness)}
 }
 
-// WithDeps attaches host capabilities and returns the Service for chaining.
 func (s *Service) WithDeps(d Deps) *Service {
 	s.deps = d
 	return s
@@ -68,7 +62,6 @@ func (s *Service) js() (jetstream.JetStream, error) {
 	return jetstream.New(s.nc)
 }
 
-// bucket returns the per-account KV handle, creating it on first use.
 func (s *Service) bucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
 	js, err := s.js()
 	if err != nil {
@@ -77,7 +70,6 @@ func (s *Service) bucket(ctx context.Context, accountID string) (jetstream.KeyVa
 	return GetOrCreateAccountBucket(ctx, js, accountID)
 }
 
-// systemBucket returns the shared rds-system KV handle holding the reverse index.
 func (s *Service) systemBucket(ctx context.Context) (jetstream.KeyValue, error) {
 	js, err := s.js()
 	if err != nil {
@@ -86,9 +78,8 @@ func (s *Service) systemBucket(ctx context.Context) (jetstream.KeyValue, error) 
 	return GetOrCreateSystemBucket(ctx, js)
 }
 
-// loadCA resolves the cluster CA keypair, preferring an injected loader. Both
-// empty paths deliberately disable TLS; a partial configuration is an error
-// rather than an accidental plaintext deployment.
+// Both paths empty deliberately disables TLS; a partial configuration is an
+// error rather than an accidental plaintext deployment.
 func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	if s.deps.LoadCA != nil {
 		return s.deps.LoadCA()
@@ -102,7 +93,7 @@ func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	return admin.LoadCAKeyPair(s.deps.CACertPath, s.deps.CAKeyPath)
 }
 
-// getJSON reads key into out. Returns (false, nil) when the key is absent.
+// Returns (false, nil) when the key is absent.
 func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
 	entry, err := kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -117,8 +108,7 @@ func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (b
 	return true, nil
 }
 
-// getJSONRevision is getJSON plus the entry revision, for callers that follow
-// the read with a CAS update.
+// getJSON plus the entry revision, for callers that follow with a CAS update.
 func getJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, out any) (uint64, bool, error) {
 	entry, err := kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -133,7 +123,6 @@ func getJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, out
 	return entry.Revision(), true, nil
 }
 
-// putJSON marshals v and writes it at key.
 func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -145,7 +134,7 @@ func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) erro
 	return nil
 }
 
-// updateJSON writes v at key only if the stored entry is still at rev.
+// Writes v at key only if the stored entry is still at rev.
 func updateJSON(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {

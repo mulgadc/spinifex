@@ -162,9 +162,8 @@ var charonRereadCAs = func() error {
 	return nil
 }
 
-// LoadCAKeyPair reads and parses the cluster CA certificate and its RSA private
-// key. Exported so runtime services that mint from the cluster CA reuse one
-// loader rather than each re-implementing the PEM/PKCS8 handling.
+// Exported so runtime services that mint from the cluster CA share one loader
+// rather than each re-implementing the PEM/PKCS8 handling.
 func LoadCAKeyPair(caCertPath, caKeyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	certPEM, err := os.ReadFile(caCertPath)
 	if err != nil {

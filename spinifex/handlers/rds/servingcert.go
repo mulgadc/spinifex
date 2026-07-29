@@ -13,37 +13,33 @@ import (
 	"time"
 )
 
-// Serving-cert parameters. The lifetime is deliberately short: the cert is
-// re-minted on every bootstrap fetch and never persisted, so expiry costs
-// nothing and a leaked key ages out on its own.
+// The lifetime is deliberately short: the cert is re-minted on every bootstrap
+// fetch and never persisted, so a leaked key ages out on its own.
 const (
 	servingCertKeyBits  = 2048
 	servingCertLifetime = 90 * 24 * time.Hour
 )
 
-// CALoader returns the cluster CA keypair used to sign per-instance serving
-// certs. Injected so tests mint from a throwaway CA and so the file-backed
-// implementation stays the only thing that needs read access to ca.key.
+// Injected so tests mint from a throwaway CA, and so the file-backed
+// implementation stays the only thing needing read access to ca.key.
 type CALoader func() (*x509.Certificate, *rsa.PrivateKey, error)
 
-// ServingCertRequest names the one instance a cert is being minted for. DNSName
-// is empty on deployments without northstar, where the endpoint is the bare ENI
-// IP — which is why the IP SAN is the required one.
+// DNSName is empty on deployments without northstar, where the endpoint is the
+// bare ENI IP — which is why the IP SAN is the required one.
 type ServingCertRequest struct {
 	DBInstanceIdentifier string
 	PrivateIP            string
 	DNSName              string
 }
 
-// ServingCert is a freshly minted keypair, PEM-encoded, in memory only.
+// PEM-encoded, in memory only.
 type ServingCert struct {
 	CertificatePEM string
 	PrivateKeyPEM  string
 }
 
-// MintServingCert issues a server certificate for one DB instance signed by the
-// cluster CA. Unlike admin.GenerateSignedCert it writes no files and adds no
-// SANs of its own, which would name the host rather than the database.
+// Unlike admin.GenerateSignedCert this writes no files and adds no SANs of its
+// own, which would name the host rather than the database.
 func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req ServingCertRequest) (*ServingCert, error) {
 	if caCert == nil || caKey == nil {
 		return nil, errors.New("rds serving cert: nil CA keypair")
@@ -97,8 +93,7 @@ func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req Servin
 	}, nil
 }
 
-// EncodeCertPEM re-encodes a parsed certificate, used to hand the agent the
-// cluster CA it should trust alongside its own serving cert.
+// Used to hand the agent the cluster CA it should trust alongside its own cert.
 func EncodeCertPEM(cert *x509.Certificate) string {
 	if cert == nil {
 		return ""

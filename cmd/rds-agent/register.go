@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// register registers the VM and adopts what the control plane answers with: the
-// authoritative DB instance identifier and the heartbeat cadence. It is
-// idempotent, so a restart re-registers rather than tracking whether it had.
+// Adopts the authoritative DB instance identifier and heartbeat cadence from
+// the response. Idempotent, so a restart re-registers unconditionally.
 func (a *Agent) register(ctx context.Context) error {
 	return retry(ctx, "register", func(ctx context.Context) error {
 		out, err := a.cp.Register(ctx, a.id)

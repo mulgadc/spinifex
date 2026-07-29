@@ -14,35 +14,33 @@ const (
 	defaultEngineHost = "127.0.0.1"
 	defaultEnginePort = 5432
 	defaultPGIsReady  = "pg_isready"
-	// defaultPollWait is the command long-poll window the agent asks the gateway
-	// to hold a request open for. The gateway caps it at 20s.
+	// The long-poll window the agent asks the gateway to hold a request open
+	// for. The gateway caps it at 20s.
 	defaultPollWait = 20 * time.Second
 )
 
-// config is the static settings the agent reads at boot, delivered per-instance
-// by cloud-init. It carries no secrets: IMDS is readable by anything in the
-// guest, so the master password only arrives via GetDBBootstrapConfig.
+// Static settings delivered per-instance by cloud-init. It carries no secrets:
+// IMDS is readable by anything in the guest, so the master password only
+// arrives via GetDBBootstrapConfig.
 type config struct {
 	GatewayURL string
 	GatewayCA  string
 	Region     string
-	// DBInstanceIdentifier is optional — the gateway resolves the instance from
-	// the caller's credentials. When set it is sent, so a mis-provisioned VM is
-	// rejected rather than acting on whatever instance it maps to.
+	// Optional — the gateway resolves the instance from the caller's
+	// credentials. When set it is sent, so a mis-provisioned VM is rejected.
 	DBInstanceIdentifier string
-	// EngineVersion is what this image actually ships. Empty leaves the control
-	// plane's recorded version alone rather than clearing it.
+	// What this image actually ships. Empty leaves the control plane's recorded
+	// version alone rather than clearing it.
 	EngineVersion string
 	HandoffDir    string
 	EngineHost    string
 	EnginePort    int
-	// PGIsReady is the engine probe binary, overridable so a test or a sibling
-	// engine preset can point at its own.
+	// Overridable so a test or a sibling engine preset can point at its own.
 	PGIsReady string
 	PollWait  time.Duration
 }
 
-// loadConfig reads the cloud-init env file then lets real env vars override.
+// Reads the cloud-init env file, then lets real env vars override.
 func loadConfig(envFile string) config {
 	get := guestenv.Load(envFile).Get
 

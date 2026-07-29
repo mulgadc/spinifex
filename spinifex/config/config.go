@@ -153,17 +153,14 @@ type NorthstarConfig struct {
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
-// RDSConfig holds the shared RDS system VPC knobs. Every DB VM's primary NIC
-// lives in that VPC, which gives the in-guest agent management egress while the
-// customer-facing ENI stays ingress-only.
+// Every DB VM's primary NIC lives in the shared system VPC, which gives the
+// in-guest agent management egress while the customer ENI stays ingress-only.
 type RDSConfig struct {
-	// SystemVPCSupernet is the IPv4 /14 the system VPC's /22 is carved from.
-	// Override only to avoid clashing with an existing on-prem range; it must
-	// not overlap the EKS control-plane supernet or any customer VPC CIDR.
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// EKS control-plane supernet or any customer VPC CIDR.
 	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
 
-	// SystemVPCPrivateSubnets is how many private subnets the system VPC carves
-	// (clamped to 1..3). Zero defaults to one, which is all a single-AZ platform
+	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
 	// can place across.
 	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
 }

@@ -38,15 +38,13 @@ FS_LABEL="${RDS_DATA_FS_LABEL:-rds-data}"
 log() { echo "[rds-datadir] $*"; }
 fail() { echo "[rds-datadir] ERROR: $*" >&2; exit 1; }
 
-# mounted reports whether DATA_MOUNT already has a filesystem on it, which makes
-# the whole script a no-op — an OpenRC restart must not try to mount twice.
+# An already-mounted DATA_MOUNT makes the whole script a no-op; an OpenRC restart
+# must not try to mount twice.
 mounted() {
     awk -v mnt="${DATA_MOUNT}" '$2 == mnt { found = 1 } END { exit !found }' "${MOUNTS_FILE}"
 }
 
-# data_disks lists the block devices whose virtio-blk serial marks them a
-# Spinifex volume. The boot volume is attached with no serial and so never
-# appears here.
+# The boot volume is attached with no serial and so never appears here.
 data_disks() {
     for _p in "${SYS_BLOCK}"/*; do
         [ -r "${_p}/serial" ] || continue
@@ -56,9 +54,8 @@ data_disks() {
     done
 }
 
-# await_data_disk returns the single data disk's device name, waiting for the
-# hot-plug to land. Two disks is a configuration this image cannot resolve
-# safely, so it fails rather than picking one.
+# Two disks is a configuration this image cannot resolve safely, so it fails
+# rather than picking one.
 await_data_disk() {
     _waited=0
     while :; do
@@ -82,12 +79,9 @@ await_data_disk() {
     done
 }
 
-# fstype_of prints the filesystem on dev, or nothing if it genuinely holds none,
-# and returns non-zero when it could not find out.
-#
-# A blkid that is missing, errored, or pointed at an absent node prints exactly
-# what a blank disk prints, so the exit status decides and never the emptiness
-# of the output. has_partitions cannot stand in: the filesystem is whole-disk.
+# Prints the filesystem on dev, nothing if it holds none, and returns non-zero
+# when it could not find out: a blkid that is missing, errored or pointed at an
+# absent node prints exactly what a blank disk prints, so only the status decides.
 fstype_of() {
     if _out=$(blkid "$1" 2>/dev/null); then
         _rc=0
@@ -100,7 +94,6 @@ fstype_of() {
     printf '%s' "${_out}" | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p'
 }
 
-# has_partitions reports whether the kernel found a partition table on disk.
 # Partitions appear as child directories of the disk in sysfs, which needs no
 # tool and no signature guessing.
 has_partitions() {

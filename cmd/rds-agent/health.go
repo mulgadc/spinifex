@@ -11,12 +11,10 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
-// probeRunner runs the engine probe and reports its exit status. A non-zero
-// exit is a result, not a fault, so it comes back as a code rather than an
-// error; err is reserved for the probe failing to run at all.
+// A non-zero exit is a result, not a fault, so it comes back as a code; err is
+// reserved for the probe failing to run at all.
 type probeRunner func(ctx context.Context, name string, args ...string) (int, error)
 
-// execProbeRunner runs the real probe binary.
 func execProbeRunner(ctx context.Context, name string, args ...string) (int, error) {
 	err := exec.CommandContext(ctx, name, args...).Run()
 	if err == nil {
@@ -29,19 +27,17 @@ func execProbeRunner(ctx context.Context, name string, args ...string) (int, err
 	return -1, err
 }
 
-// engineProbe reports whether the local engine is serving. It shells out to
-// pg_isready rather than dialling the port, since only a startup exchange
-// separates an engine that is serving from one still in recovery.
+// Shells out to pg_isready rather than dialling the port, since only a startup
+// exchange separates an engine that is serving from one still in recovery.
 type engineProbe struct {
 	run    probeRunner
 	binary string
 	host   string
-	// port is set from the bootstrap config once it lands, from a different
-	// goroutine than the heartbeat that reads it.
+	// Set from the bootstrap config once it lands, from a different goroutine
+	// than the heartbeat that reads it.
 	port atomic.Int64
-	// seenHealthy latches once the engine has answered. The agent is up well
-	// before rds-init finishes initdb, so a down engine means "starting" until
-	// it has served once and "unhealthy" after.
+	// Latches once the engine has answered. The agent is up well before initdb
+	// finishes, so a down engine is "starting" until it has served once.
 	seenHealthy bool
 }
 
@@ -51,22 +47,19 @@ func newEngineProbe(cfg config, run probeRunner) *engineProbe {
 	return p
 }
 
-// setPort points the probe at the port the control plane assigned.
 func (p *engineProbe) setPort(port int) {
 	p.port.Store(int64(port))
 }
 
-// Check probes the engine once and returns the health to report, with a message
-// explaining anything that is not healthy. Only the heartbeat calls it, so the
-// seenHealthy latch is single-goroutine state.
+// Only the heartbeat calls this, so the seenHealthy latch is single-goroutine
+// state.
 func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, string) {
 	port := strconv.FormatInt(p.port.Load(), 10)
 	code, err := p.run(ctx, p.binary, "-h", p.host, "-p", port, "-q")
 	switch {
 	case err != nil:
-		// The probe could not run — a missing binary, a broken image. Reporting
-		// healthy on the strength of nothing would hide it, so this degrades
-		// exactly like an engine that did not answer.
+		// A missing binary or broken image. Reporting healthy on the strength of
+		// nothing would hide it, so this degrades like an engine that did not answer.
 		return p.degraded(), fmt.Sprintf("engine probe could not run: %v", err)
 	case code == 0:
 		p.seenHealthy = true
@@ -80,8 +73,7 @@ func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, str
 	}
 }
 
-// degraded is how a non-answering engine is reported: starting until it has
-// answered once, unhealthy afterwards.
+// A non-answering engine: starting until it has answered once, unhealthy after.
 func (p *engineProbe) degraded() handlers_rds.EngineHealth {
 	if p.seenHealthy {
 		return handlers_rds.EngineHealthUnhealthy

@@ -1,11 +1,7 @@
 #!/sbin/openrc-run
-# rds-agent — Spinifex RDS in-guest agent. Registers the VM with the control
-# plane over TLS+SigV4 (never NATS), signing with the IMDS instance-role
-# credentials, then fetches the bootstrap config, heartbeats and polls.
-#
-# Static config comes from /etc/spinifex-rds/agent.env, dropped by cloud-init.
-# No secret arrives that way: the master password reaches the VM only in the
-# authenticated bootstrap response.
+# rds-agent — Spinifex RDS in-guest agent. Reaches the control plane over
+# TLS+SigV4 (never NATS), signing with IMDS instance-role credentials. Static
+# config comes from /etc/spinifex-rds/agent.env, which carries no secrets.
 
 description="Spinifex RDS instance agent"
 command="/usr/local/bin/rds-agent"
@@ -19,9 +15,8 @@ start_stop_daemon_args="--wait 2000"
 AGENT_ENV="/etc/spinifex-rds/agent.env"
 HANDOFF_ENV="${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env"
 
-# handoff_timeout bounds the wait for the first bootstrap fetch. The agent
-# retries indefinitely, so this is only how long the boot waits before letting
-# rds-init fail visibly rather than hanging forever with no engine.
+# The agent retries indefinitely, so this only bounds how long the boot waits
+# before letting rds-init fail visibly rather than hanging forever.
 handoff_timeout="${RDS_HANDOFF_TIMEOUT:-120}"
 
 depend() {
@@ -31,9 +26,8 @@ depend() {
 }
 
 start_pre() {
-    # Cloud-init drops the agent config here; OpenRC injects it into the agent's
-    # environment. An absent file is tolerated so the agent still starts and
-    # logs why it cannot reach the gateway.
+    # An absent file is tolerated, so the agent still starts and logs why it
+    # cannot reach the gateway.
     if [ -f "${AGENT_ENV}" ]; then
         # shellcheck disable=SC1090
         . "${AGENT_ENV}"

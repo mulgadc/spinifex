@@ -1050,7 +1050,6 @@ func (d *Daemon) subscribeAll() error {
 
 	// RDS agent protocol. The register/health subjects are Layer-2 bus wildcards
 	// the gateway relays onto, addressing only — the payload is authoritative.
-	// The command channel is a live long poll held open by the gateway.
 	if d.rdsService != nil {
 		subs = append(subs,
 			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},

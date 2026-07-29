@@ -13,54 +13,45 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
-// version is the agent build version, reported on registration.
 // Overridable via -ldflags "-X main.version=...".
 var version = "dev"
 
-// identity is what the agent says about itself on every call. The gateway
-// resolves the authoritative DB instance from the request's credentials, so
-// DBInstanceIdentifier is an assertion to be checked, not trusted.
+// The gateway resolves the authoritative DB instance from the request's
+// credentials, so DBInstanceIdentifier is an assertion to be checked, not
+// trusted.
 type identity struct {
 	DBInstanceIdentifier string
 	AgentVersion         string
 	EngineVersion        string
 }
 
-// controlPlane is the agent's channel to the AWS gateway. Every method is a
-// SigV4-signed Query request, so the NATS bus stays host-internal.
+// Every method is a SigV4-signed Query request, so the NATS bus stays
+// host-internal.
 type controlPlane interface {
-	// Register records this VM's boot. It is idempotent, and its response tells
-	// the agent which DB instance it backs and how often to beat.
 	Register(ctx context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error)
-	// SubmitState reports engine health, folding liveness into the same call so
-	// a healthy instance costs one round trip per tick.
 	SubmitState(ctx context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error)
-	// GetBootstrapConfig fetches the material rds-init needs. The first call of
-	// an instance's life returns Mode=initialize with the master password; every
-	// later call returns Mode=attach without it.
+	// The first call of an instance's life returns Mode=initialize with the
+	// master password; every later call returns Mode=attach without it.
 	GetBootstrapConfig(ctx context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error)
-	// PollCommands delivers replies for commands executed since the last poll
-	// and long-polls for the next directive.
 	PollCommands(ctx context.Context, id identity, replies []handlers_rds.CommandReply, wait time.Duration) ([]handlers_rds.Command, error)
 }
 
-// callTimeout bounds a register, heartbeat or bootstrap request. The long poll
-// sets its own deadline from the wait it asked the gateway to hold.
+// Bounds a register, heartbeat or bootstrap request. The long poll sets its own
+// deadline from the wait it asked the gateway to hold.
 const callTimeout = 15 * time.Second
 
-// pollSlack keeps the poll's deadline past the requested wait, so a gateway
-// answering at the end of its window is not cut off by the client.
+// Keeps the poll's deadline past the requested wait, so a gateway answering at
+// the end of its window is not cut off by the client.
 const pollSlack = 10 * time.Second
 
-// gatewayControlPlane implements controlPlane over the SigV4 Query client.
 type gatewayControlPlane struct {
 	client *rdsgw.Client
 }
 
 var _ controlPlane = (*gatewayControlPlane)(nil)
 
-// newGatewayControlPlane builds the client signing with the instance-role
-// credentials the SDK chain resolves from IMDS, against the pinned gateway CA.
+// Signs with the instance-role credentials the SDK chain resolves from IMDS,
+// against the pinned gateway CA.
 func newGatewayControlPlane(cfg config) (*gatewayControlPlane, error) {
 	signer, err := gwsign.NewIMDS(context.Background(), cfg.Region)
 	if err != nil {
@@ -121,8 +112,7 @@ func (g *gatewayControlPlane) GetBootstrapConfig(ctx context.Context, id identit
 	return &out, nil
 }
 
-// pollDBCommandsOutput mirrors the gateway's PollDBCommands result. Declared
-// here so the in-guest binary does not link the server side of the API.
+// Declared here so the in-guest binary does not link the server side of the API.
 type pollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `xml:"Commands>member"`
 }
@@ -149,16 +139,14 @@ func (g *gatewayControlPlane) PollCommands(ctx context.Context, id identity, rep
 	return out.Commands, nil
 }
 
-// setIfPresent adds a query parameter only when it has a value, so the gateway
-// can tell "no assertion" from "asserted as blank".
+// Only sets a parameter that has a value, so the gateway can tell "no
+// assertion" from "asserted as blank".
 func setIfPresent(params url.Values, key, value string) {
 	if value != "" {
 		params.Set(key, value)
 	}
 }
 
-// Agent registers the VM, delivers the bootstrap config rds-init is waiting on,
-// then heartbeats engine health and polls for directives until shutdown.
 type Agent struct {
 	cfg           config
 	id            identity
@@ -170,8 +158,8 @@ type Agent struct {
 	cmd *commander
 }
 
-// newAgent assembles an Agent from already-built parts. Tests use this directly
-// with fakes; New builds the production control plane and delegates here.
+// Assembles from already-built parts, so tests can pass fakes; New builds the
+// production control plane and delegates here.
 func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 	id := identity{
 		DBInstanceIdentifier: cfg.DBInstanceIdentifier,
@@ -184,8 +172,7 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 	return a
 }
 
-// New builds an Agent from config, including the SigV4 gateway client. It does
-// not wait for IMDS: the register loop rides out a datapath still coming up.
+// Does not wait for IMDS: the register loop rides out a datapath still coming up.
 func New(cfg config) (*Agent, error) {
 	if cfg.GatewayURL == "" {
 		return nil, fmt.Errorf("no gateway URL configured (RDS_GATEWAY_URL)")
@@ -197,8 +184,6 @@ func New(cfg config) (*Agent, error) {
 	return newAgent(cfg, cp, newEngineProbe(cfg, execProbeRunner)), nil
 }
 
-// Run drives the agent's whole life: register, deliver the bootstrap handoff,
-// then heartbeat and poll until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	// Registration comes first: its response is the agent's identity.
 	if err := a.register(ctx); err != nil {
@@ -229,9 +214,8 @@ const (
 	retryMax = 30 * time.Second
 )
 
-// retry runs fn until it succeeds or ctx ends, doubling the gap between
-// attempts. It never gives up on its own: an agent that stopped trying would
-// leave the control plane with no signal at all.
+// Never gives up on its own: an agent that stopped trying would leave the
+// control plane with no signal at all.
 func retry(ctx context.Context, what string, fn func(context.Context) error) error {
 	delay := retryMin
 	for attempt := 1; ; attempt++ {

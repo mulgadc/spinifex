@@ -1,11 +1,9 @@
 #!/bin/sh
 set -eu
 
-# setup.sh — guest customisation for the spinifex-rds-postgres AMI.
-#
-# Runs inside the libguestfs appliance under build-system-image.sh, after
-# packages and INSTALL_FILES are placed: exec bits, the agent config directory,
-# the datadir mount point, and the standard serial-console + boot-menu tweaks.
+# setup.sh — guest customisation for the spinifex-rds-postgres AMI. Runs inside
+# the libguestfs appliance under build-system-image.sh, after packages and
+# INSTALL_FILES are placed.
 
 # INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-init
 # and rds-datadir are executed directly by their services.
@@ -16,13 +14,11 @@ chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-init /etc/init.d/rds-agent \
 # so the delivery lands in a root-only directory.
 install -d -m 0700 /etc/spinifex-rds
 
-# Mount point for the data volume, empty in the image: rds-datadir mounts over
-# it at boot. Owned by postgres so the engine can traverse it if the volume's
-# own root is stricter than the default.
+# Empty in the image: rds-datadir mounts over it at boot. Postgres-owned so the
+# engine can traverse it if the volume's own root is stricter.
 install -d -m 0750 -o postgres -g postgres /var/lib/postgresql
 
-# Postmaster and bootstrap-server logs, on the boot volume: they are per-boot
-# diagnostics, and keeping them off the data volume keeps a snapshot to data.
+# Kept on the boot volume: per-boot diagnostics, so a snapshot stays data-only.
 install -d -m 0755 -o postgres -g postgres /var/log/postgresql
 
 # INSTALL_FILES replaces the stock conf.d wholesale; assert auto-setup is really

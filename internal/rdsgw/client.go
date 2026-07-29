@@ -27,19 +27,17 @@ import (
 )
 
 const (
-	// signingService is the SigV4 credential scope. The gateway routes on the
-	// scope rather than the path, so this is what selects the RDS surface.
+	// The SigV4 credential scope. The gateway routes on the scope rather than
+	// the path, so this is what selects the RDS surface.
 	signingService = "rds"
-	// apiVersion is the RDS Query API version. The gateway ignores it, but real
-	// RDS rejects a request without one and this client stays pointable there.
+	// The gateway ignores the version, but real RDS rejects a request without
+	// one and this client stays pointable there.
 	apiVersion = "2014-10-31"
-	// defaultTimeout bounds a single call when the caller asks for none, with
-	// room for the command long poll; per-call deadlines ride the context.
+	// Room for the command long poll; per-call deadlines ride the context.
 	defaultTimeout = 40 * time.Second
 )
 
-// Client posts SigV4-signed Query-protocol requests to the gateway for service
-// "rds". One client is reused for register/heartbeat/bootstrap/poll.
+// One client is reused for register/heartbeat/bootstrap/poll.
 type Client struct {
 	baseURL    string
 	signer     *gwsign.Signer
@@ -47,9 +45,8 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New builds a client. caPath optionally pins the gateway TLS CA; empty relies
-// on the system trust store. region defaults to us-east-1, since SigV4 requires
-// a non-empty one. It never blocks on credentials — the caller's calls retry.
+// caPath optionally pins the gateway TLS CA; empty relies on the system trust
+// store. region defaults to us-east-1, since SigV4 requires a non-empty one.
 func New(baseURL, caPath string, signer *gwsign.Signer, region string, timeout time.Duration) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("rdsgw: baseURL is required")
@@ -91,9 +88,8 @@ func New(baseURL, caPath string, signer *gwsign.Signer, region string, timeout t
 	}, nil
 }
 
-// APIError is a failure the gateway reported in the Query protocol's XML error
-// envelope. Code is the AWS error code, so a caller branches on the failure
-// class rather than matching message text.
+// Code is the AWS error code, so a caller branches on the failure class rather
+// than matching message text.
 type APIError struct {
 	Action     string
 	StatusCode int
@@ -108,8 +104,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("rds %s: %s (HTTP %d)", e.Action, e.Code, e.StatusCode)
 }
 
-// errorResponse mirrors the IAM-style error envelope the gateway's query
-// services return.
+// Mirrors the IAM-style error envelope the gateway's query services return.
 type errorResponse struct {
 	XMLName xml.Name `xml:"ErrorResponse"`
 	Error   struct {
@@ -119,10 +114,8 @@ type errorResponse struct {
 	RequestID string `xml:"RequestId"`
 }
 
-// Call signs and POSTs a Query request for action, unmarshalling the response's
-// <actionResult> element into out. params carries the action's own arguments;
-// Action and Version are set here. out may be nil when the caller has no use for
-// the result. A non-2xx yields an *APIError. No retry; callers wrap.
+// params carries the action's own arguments; Action and Version are set here.
+// out may be nil. A non-2xx yields an *APIError. No retry; callers wrap.
 func (c *Client) Call(ctx context.Context, action string, params url.Values, out any) error {
 	form := make(url.Values, len(params)+2)
 	maps.Copy(form, params)
@@ -163,9 +156,8 @@ func (c *Client) Call(ctx context.Context, action string, params url.Values, out
 	return nil
 }
 
-// decodeResult reads the <ActionResult> element out of the gateway's
-// <ActionResponse> envelope into out. It scans for the element rather than
-// declaring the envelope as a type, since the wrapper names are per-action.
+// Scans for the <ActionResult> element rather than declaring the envelope as a
+// type, since the wrapper names are per-action.
 func decodeResult(body []byte, action string, out any) error {
 	want := action + "Result"
 	dec := xml.NewDecoder(bytes.NewReader(body))
@@ -183,9 +175,8 @@ func decodeResult(body []byte, action string, out any) error {
 	}
 }
 
-// parseAPIError builds an *APIError from an error response body. A body that is
-// not the expected envelope still yields an APIError carrying the status and raw
-// text, so a proxy or TLS terminator failing ahead of the gateway is reported.
+// A body that is not the expected envelope still yields an APIError with the
+// status and raw text, so a proxy failing ahead of the gateway is reported.
 func parseAPIError(action string, status int, body []byte) error {
 	apiErr := &APIError{Action: action, StatusCode: status}
 	var envelope errorResponse

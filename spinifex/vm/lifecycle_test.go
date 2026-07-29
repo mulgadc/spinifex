@@ -423,6 +423,41 @@ func TestRun_VolumeMounterError_Propagates(t *testing.T) {
 	assert.Equal(t, StatePending, m.Status(instance), "status must be unchanged on Mount failure")
 }
 
+// TestRun_VolumeStateFailureRollsBackBeforeQEMU verifies launch does not expose
+// a writer when authoritative attachment state cannot be persisted.
+func TestRun_VolumeStateFailureRollsBackBeforeQEMU(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stateErr := errors.New("predastore unavailable")
+	mounter := &fakeVolumeMounter{}
+	stateUpdater := &fakeVolumeStateUpdater{err: stateErr}
+	m := NewManagerWithDeps(Deps{
+		VolumeMounter:      mounter,
+		VolumeStateUpdater: stateUpdater,
+	})
+	instance := &VM{
+		ID:     "i-state-fail",
+		Status: StatePending,
+		EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{{
+			Name: "vol-1", DeviceName: "/dev/sda1", Boot: true,
+		}}},
+	}
+	m.Insert(instance)
+
+	err := m.Run(t.Context(), instance)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, stateErr)
+	assert.Equal(t, []string{instance.ID}, mounter.mounted)
+	assert.Equal(t, []string{instance.ID}, mounter.unmounted,
+		"failed attachment-state persistence must roll back mounted volumes")
+	calls := stateUpdater.snapshot()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "in-use", calls[0].State)
+	assert.Equal(t, instance.ID, calls[0].InstanceID)
+	assert.NoFileExists(t, filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), instance.ID+".pid"),
+		"startQEMU must not run after attachment-state persistence fails")
+}
+
 // TestRun_AlreadyRunningPID_ReturnsError covers the live-PID guard
 // (lifecycle.go:81-91): when the PID file refers to a live process, Run
 // must return an error before touching volumes or firing hooks.

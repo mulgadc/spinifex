@@ -330,12 +330,18 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 		}
 	}
 
-	instance.Status = StateRunning
+	// Re-assert in-use state before advertising the surviving QEMU as running.
+	// A failed write leaves snapshot routing ambiguous, so recovery must fail
+	// closed rather than continue with a guest-writable available volume.
+	if err := m.markAttachedVolumesInUse(instance); err != nil {
+		if instance.QMPClient != nil && instance.QMPClient.Conn != nil {
+			_ = instance.QMPClient.Conn.Close()
+			instance.QMPClient = nil
+		}
+		return fmt.Errorf("persist attached volume state during reconnect: %w", err)
+	}
 
-	// Re-assert in-use state for every attached volume; a daemon restart
-	// otherwise leaves boot and non-boot volumes "available" while the
-	// instance runs (split-brain).
-	m.markAttachedVolumesInUse(instance)
+	instance.Status = StateRunning
 
 	if err := m.writeRunningState(); err != nil {
 		return fmt.Errorf("failed to persist reconnected instance state: %w", err)

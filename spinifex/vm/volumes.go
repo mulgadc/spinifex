@@ -30,16 +30,18 @@ const blockdevDelMaxAttempts = 20
 // margin; the ebs.unmount seal keeps its separate unmountSealTimeout.
 const detachAggregateTimeout = 3 * time.Minute
 
-// rollbackUnmount best-effort unmounts a volume while unwinding a failed
-// AttachVolume. The volume never took guest writes, so the unmount seal is a
-// no-op; a failure is logged and tolerated rather than masking the attach error.
-func (m *Manager) rollbackUnmount(req types.EBSRequest) {
+// rollbackUnmount unmounts a volume while unwinding a failed AttachVolume.
+// Callers keep the volume non-available when the seal fails so a later attach
+// cannot discard local state that may still be owned by the backend.
+func (m *Manager) rollbackUnmount(req types.EBSRequest) error {
 	if m.deps.VolumeMounter == nil {
-		return
+		return nil
 	}
 	if err := m.deps.VolumeMounter.UnmountOne(req); err != nil {
 		slog.Warn("AttachVolume: rollback unmount failed", "volume", req.Name, "err", err)
+		return err
 	}
+	return nil
 }
 
 // delIothreadBestEffort removes the per-volume iothread object on a failed
@@ -54,8 +56,25 @@ func (m *Manager) delIothreadBestEffort(ctx context.Context, instance *VM, iothr
 	}
 }
 
-// AttachVolume hot-plugs a volume via the QMP pipeline (mount → blockdev-add →
-// device_add). Partial state is rolled back on failure. If device is empty, the
+// rollbackHotAttach removes the QMP block backend before unmounting it. A
+// failed blockdev deletion must leave the NBD server mounted because QEMU still
+// owns it; false tells the caller to retain the fail-closed in-use state.
+func (m *Manager) rollbackHotAttach(ctx context.Context, instance *VM, req types.EBSRequest, nodeName, iothreadID string) bool {
+	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
+		Execute:   "blockdev-del",
+		Arguments: map[string]any{"node-name": nodeName},
+	}, instance.ID); err != nil {
+		slog.ErrorContext(ctx, "AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
+			"volumeId", req.Name, "err", err)
+		return false
+	}
+
+	m.delIothreadBestEffort(ctx, instance, iothreadID, req.Name)
+	return m.rollbackUnmount(req) == nil
+}
+
+// AttachVolume hot-plugs a volume via the pipeline mount → blockdev-add →
+// persist in-use → device_add. Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
 // Returns the AWS-API device name (/dev/sd[f-p]) echoed in the API response.
 func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string) (string, error) {
@@ -96,7 +115,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		// Empty-URI response leaves backend NBD state ambiguous; unmount
 		// defensively to avoid orphaning a half-started mount.
 		if errors.Is(err, ErrMountAmbiguous) {
-			m.rollbackUnmount(ebsRequest)
+			_ = m.rollbackUnmount(ebsRequest)
 		}
 		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
@@ -104,7 +123,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
-		m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ebsRequest)
 		return "", fmt.Errorf("parse NBDURI: %w", err)
 	}
 	serverArg := NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg()
@@ -127,7 +146,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	instance.EBSRequests.Mu.Unlock()
 	if hotplugPort == 0 {
 		slog.ErrorContext(ctx, "AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
-		m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ebsRequest)
 		return "", ErrAttachmentLimitExceeded
 	}
 	ebsRequest.HotplugPort = hotplugPort
@@ -140,7 +159,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		},
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
-		m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ebsRequest)
 		return "", fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
@@ -156,8 +175,21 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
 		m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
-		m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ebsRequest)
 		return "", fmt.Errorf("QMP blockdev-add: %w", err)
+	}
+
+	// Persist routing state before device_add makes the volume guest-writable.
+	// The API-form device name must be stored because DescribeVolumes attachment
+	// filters do not match the guest virtio path. A failed or ambiguous write
+	// aborts the attach and leaves any resulting in-use record fail-closed.
+	if m.deps.VolumeStateUpdater == nil {
+		m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID)
+		return "", errors.New("volume state updater not wired")
+	}
+	if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, device); err != nil {
+		m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID)
+		return "", fmt.Errorf("persist in-use state for volume %s: %w", volumeID, err)
 	}
 
 	// The virtio-blk-pci device must land on a free hot-plug PCIe root port
@@ -177,15 +209,11 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP device_add failed, rolling back blockdev",
 			"volumeId", volumeID, "err", err)
-		if _, delErr := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
-			Execute:   "blockdev-del",
-			Arguments: map[string]any{"node-name": nodeName},
-		}, instance.ID); delErr != nil {
-			slog.ErrorContext(ctx, "AttachVolume: rollback blockdev-del failed, skipping EBS unmount",
-				"volumeId", volumeID, "err", delErr)
-		} else {
-			m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
-			m.rollbackUnmount(ebsRequest)
+		if m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID) {
+			if stateErr := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "available", "", ""); stateErr != nil {
+				slog.ErrorContext(ctx, "AttachVolume: failed to restore available state after rollback",
+					"volumeId", volumeID, "err", stateErr)
+			}
 		}
 		return "", fmt.Errorf("QMP device_add: %w", err)
 	}
@@ -242,21 +270,6 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		mapping.Ebs.SetStatus("attached")
 		v.Instance.BlockDeviceMappings = append(v.Instance.BlockDeviceMappings, mapping)
 	})
-
-	// Volume metadata, by contrast, drives Volume.Attachments[].Device
-	// and the attachment.device filter on DescribeVolumes. The Terraform
-	// AWS provider polls that filter with the API-form name (/dev/sd[f-p])
-	// supplied in the .tf config, so storing the guest path here makes
-	// the filter reject every attached volume and the post-attach wait
-	// loop fails with "couldn't find resource". Always persist the API
-	// name even though it diverges from the BDM convention above —
-	// nothing in mulga-599 rewrites this field after attach.
-	if m.deps.VolumeStateUpdater != nil {
-		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, device); err != nil {
-			slog.ErrorContext(ctx, "AttachVolume: failed to update volume metadata",
-				"volumeId", volumeID, "err", err)
-		}
-	}
 
 	if err := m.writeRunningState(); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to write state", "err", err)

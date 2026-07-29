@@ -656,7 +656,10 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 // wired with the supplied QMP client. Used by AttachVolume rollback tests.
 func attachVolumeRunningInstance(t *testing.T, qmpClient *qmp.QMPClient, mounter VolumeMounter) (*Manager, *VM) {
 	t.Helper()
-	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+	m := NewManagerWithDeps(Deps{
+		VolumeMounter:      mounter,
+		VolumeStateUpdater: &fakeVolumeStateUpdater{},
+	})
 	v := &VM{
 		ID:        "i-1",
 		Status:    StateRunning,
@@ -764,6 +767,67 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
 }
 
+// TestAttachVolume_PersistsStateBeforeDeviceAdd verifies the routing record is
+// durable before QEMU exposes the volume to the guest.
+func TestAttachVolume_PersistsStateBeforeDeviceAdd(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "query-block" {
+			return map[string]any{"return": []qmp.BlockDevice{{
+				Inserted: &qmp.BlockInserted{},
+				QDev:     "/machine/peripheral/vdisk-vol-1/hotplug-ebs1/virtio-backend",
+			}}}
+		}
+		return nil
+	})
+	defer cancel()
+
+	var commandsAtUpdate []string
+	stateUpdater := &fakeVolumeStateUpdater{}
+	stateUpdater.onUpdate = func(update volumeStateUpdate) {
+		if update.State == "in-use" {
+			commandsAtUpdate = recorder.executes()
+		}
+	}
+	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
+
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"object-add", "blockdev-add"}, commandsAtUpdate,
+		"in-use state must be durable before device_add makes the volume writable")
+	assert.Contains(t, recorder.executes(), "device_add")
+}
+
+// TestAttachVolume_StateUpdateFailurePreventsDeviceAdd verifies attachment
+// state is no longer best-effort: a failed write rolls back the backend before
+// the guest can access it.
+func TestAttachVolume_StateUpdateFailurePreventsDeviceAdd(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		return nil
+	})
+	defer cancel()
+
+	stateErr := errors.New("predastore unavailable")
+	stateUpdater := &fakeVolumeStateUpdater{err: stateErr}
+	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
+
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, stateErr)
+	assert.Equal(t, []string{"object-add", "blockdev-add", "blockdev-del", "object-del"}, recorder.executes())
+	assert.NotContains(t, recorder.executes(), "device_add")
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
+	require.Len(t, stateUpdater.snapshot(), 1)
+	assert.Equal(t, "in-use", stateUpdater.snapshot()[0].State)
+}
+
 // TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts covers the
 // device_add-fail-then-rollback path where blockdev-del succeeds. The
 // rollback chain must run blockdev-del then UnmountOne in order.
@@ -782,7 +846,9 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	defer cancel()
 
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
-	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
+	stateUpdater := &fakeVolumeStateUpdater{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
 
 	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
 	require.Error(t, err)
@@ -790,6 +856,11 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
 		"successful blockdev-del rollback must be followed by UnmountOne")
+	calls := stateUpdater.snapshot()
+	require.Len(t, calls, 2)
+	assert.Equal(t, "in-use", calls[0].State)
+	assert.Equal(t, "available", calls[1].State,
+		"state returns to available only after the backend was removed and sealed")
 }
 
 // TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne

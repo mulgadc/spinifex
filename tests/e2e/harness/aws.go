@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/aws/aws-sdk-go/service/sts"
 )
 
@@ -41,6 +42,7 @@ type AWSClient struct {
 	ACM            *acm.ACM
 	ECR            *ecr.ECR
 	ECS            *ecs.ECS
+	RDS            *rds.RDS
 	Bedrock        *bedrock.Bedrock
 	BedrockRuntime *bedrockruntime.BedrockRuntime
 }
@@ -141,6 +143,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		ACM:            acm.New(sess),
 		ECR:            ecr.New(sess),
 		ECS:            ecs.New(sess),
+		RDS:            rds.New(sess),
 		Bedrock:        bedrock.New(sess),
 		BedrockRuntime: bedrockruntime.New(sess),
 	}

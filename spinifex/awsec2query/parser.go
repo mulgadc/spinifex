@@ -94,7 +94,7 @@ func setStructFields(v reflect.Value, params map[string]string, prefix string) e
 		// Handle slice fields (e.g., SecurityGroup.1, SecurityGroup.2)
 		if field.Kind() == reflect.Slice {
 			for _, queryKey := range queryKeys {
-				if err := setSliceField(field, params, queryKey); err != nil {
+				if err := setSliceField(field, params, queryKey, fieldType.Tag.Get("locationNameList")); err != nil {
 					return fmt.Errorf("error setting slice field %s: %w", fieldName, err)
 				}
 				if field.Len() > 0 {
@@ -108,7 +108,7 @@ func setStructFields(v reflect.Value, params map[string]string, prefix string) e
 		if field.Kind() == reflect.Pointer && field.Type().Elem().Kind() == reflect.Slice {
 			for _, queryKey := range queryKeys {
 				sliceField := reflect.New(field.Type().Elem()).Elem()
-				if err := setSliceField(sliceField, params, queryKey); err != nil {
+				if err := setSliceField(sliceField, params, queryKey, fieldType.Tag.Get("locationNameList")); err != nil {
 					return fmt.Errorf("error setting pointer to slice field %s: %w", fieldName, err)
 				}
 				if sliceField.Len() > 0 {
@@ -181,27 +181,42 @@ func setFieldValue(field reflect.Value, value string) error {
 // from adversarial indexes like `Filter.999999`.
 const maxSliceLen = 1024
 
-func setSliceField(field reflect.Value, params map[string]string, prefix string) error {
-	// Collect indexed items; supports EC2-style (Prefix.N) and IAM/ELBv2-style (Prefix.member.N).
-	indices := make(map[int]bool)
-	useMember := false
+// Records the 1-based indices of the entries stored under prefix, reporting
+// whether it matched anything at all.
+func collectIndices(params map[string]string, prefix string, indices map[int]bool) bool {
+	found := false
 	for key := range params {
-		if strings.HasPrefix(key, prefix+".member.") {
-			parts := strings.Split(key[len(prefix)+len(".member."):], ".")
-			if len(parts) > 0 {
-				if idx, err := strconv.Atoi(parts[0]); err == nil {
-					indices[idx] = true
-					useMember = true
-				}
-			}
-		} else if strings.HasPrefix(key, prefix+".") {
-			parts := strings.Split(key[len(prefix)+1:], ".")
-			if len(parts) > 0 {
-				if idx, err := strconv.Atoi(parts[0]); err == nil {
-					indices[idx] = true
-				}
-			}
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		head, _, _ := strings.Cut(key[len(prefix):], ".")
+		if idx, err := strconv.Atoi(head); err == nil {
+			indices[idx] = true
+			found = true
+		}
+	}
+	return found
+}
+
+// listName is the shape's locationNameList, if it declares one. Empty for the
+// majority of shapes, which use the default wrapper or none at all.
+func setSliceField(field reflect.Value, params map[string]string, prefix, listName string) error {
+	// Collect indexed items. A list is serialized EC2-style (Prefix.N),
+	// IAM/ELBv2-style (Prefix.member.N), or under its own locationNameList
+	// (Prefix.Tag.N, which is how RDS writes a tag list).
+	indices := make(map[int]bool)
+	wrapper := ""
+	for _, candidate := range []string{"member", listName} {
+		if candidate == "" {
+			continue
+		}
+		if collectIndices(params, prefix+"."+candidate+".", indices) {
+			wrapper = candidate
+			break
+		}
+	}
+	if wrapper == "" {
+		collectIndices(params, prefix+".", indices)
 	}
 
 	if len(indices) == 0 {
@@ -226,11 +241,9 @@ func setSliceField(field reflect.Value, params map[string]string, prefix string)
 	// Process each index
 	for idx := 1; idx <= denseLen; idx++ {
 		elem := slice.Index(idx - 1)
-		var indexPrefix string
-		if useMember {
-			indexPrefix = fmt.Sprintf("%s.member.%d", prefix, idx)
-		} else {
-			indexPrefix = fmt.Sprintf("%s.%d", prefix, idx)
+		indexPrefix := fmt.Sprintf("%s.%d", prefix, idx)
+		if wrapper != "" {
+			indexPrefix = fmt.Sprintf("%s.%s.%d", prefix, wrapper, idx)
 		}
 
 		// Handle different element types

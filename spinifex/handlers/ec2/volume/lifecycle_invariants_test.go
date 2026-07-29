@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -99,7 +100,7 @@ func TestVolumeTagMirror_WritesOnlyControlPlaneTagsObject(t *testing.T) {
 	svc.natsConn = startTestNATS(t)
 	volumeID := "vol-enc-tag-writer"
 	seedEncryptedConfig(t, memoryStore, volumeID)
-	require.NoError(t, svc.putVolumeState(context.Background(), volumeID, volumeStateRecord{
+	require.NoError(t, svc.putVolumeState(context.Background(), volumeID, volumestate.Record{
 		State:            "in-use",
 		AttachedInstance: "i-live0000000000",
 		DeviceName:       "/dev/nbd0",

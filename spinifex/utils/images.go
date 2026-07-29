@@ -334,30 +334,30 @@ var AvailableImages = map[string]Images{
 		BootMode:     "uefi",
 	},
 
-	"alpine-3.22.5-x86_64": {
-		Name:         "alpine-3.22.5-x86_64",
-		Description:  "Alpine Linux 3.22.5 x86_64 cloud image",
+	"alpine-3.24.1-x86_64": {
+		Name:         "alpine-3.24.1-x86_64",
+		Description:  "Alpine Linux 3.24.1 x86_64 cloud image",
 		Distro:       "alpine",
-		Version:      "3.22.5",
+		Version:      "3.24.1",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.5-x86_64-uefi-cloudinit-r0.qcow2",
-		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.5-x86_64-uefi-cloudinit-r0.qcow2.sha512",
+		CreatedAt:    time.Date(2026, 6, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
 		BootMode:     "uefi",
 	},
 
-	"alpine-3.22.5-arm64": {
-		Name:         "alpine-3.22.5-arm64",
-		Description:  "Alpine Linux 3.22.5 arm64 cloud image",
+	"alpine-3.24.1-arm64": {
+		Name:         "alpine-3.24.1-arm64",
+		Description:  "Alpine Linux 3.24.1 arm64 cloud image",
 		Distro:       "alpine",
-		Version:      "3.22.5",
+		Version:      "3.24.1",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.5-aarch64-uefi-cloudinit-r0.qcow2",
-		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.5-aarch64-uefi-cloudinit-r0.qcow2.sha512",
+		CreatedAt:    time.Date(2026, 6, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-aarch64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-aarch64-uefi-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
 		BootMode:     "uefi",
 	},
@@ -491,6 +491,23 @@ var AvailableImages = map[string]Images{
 		// is attached unless BootMode is uefi/uefi-preferred, see vm/lifecycle.go).
 		BootMode: "uefi",
 		Tags:     map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
+	},
+
+	// Resolved by spinifex:managed-by=rds plus the engine tags an
+	// Engine/EngineVersion request maps onto, not by parsing the image name.
+	"spinifex-rds-postgres": {
+		Name:         "spinifex-rds-postgres",
+		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 18 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
+		Distro:       "alpine",
+		Version:      "3.24.1",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18"},
 	},
 }
 

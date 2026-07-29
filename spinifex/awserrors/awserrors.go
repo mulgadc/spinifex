@@ -458,6 +458,14 @@ var (
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
 
+	// RDS-specific error codes. The "Fault" suffix is AWS's own for the group
+	// lookups, so the SDK's typed error matching round-trips.
+	ErrorDBInstanceNotFound       = "DBInstanceNotFound"
+	ErrorDBInstanceAlreadyExists  = "DBInstanceAlreadyExists"
+	ErrorDBSubnetGroupNotFound    = "DBSubnetGroupNotFoundFault"
+	ErrorDBParameterGroupNotFound = "DBParameterGroupNotFound"
+	ErrorDBInvalidVPCNetworkState = "InvalidVPCNetworkStateFault"
+
 	// ECR-specific error codes.
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
 	ErrorRepositoryPolicyNotFound = "RepositoryPolicyNotFoundException"
@@ -1022,6 +1030,13 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorIAMLimitExceeded:           {HTTPCode: 409, Message: "The request was rejected because it attempted to create resources beyond the current AWS account limits."},
 	ErrorIAMMalformedPolicyDocument: {HTTPCode: 400, Message: "The policy document is malformed."},
 	ErrorAccessDenied:               {HTTPCode: 403, Message: "User is not authorized to perform this action."},
+
+	// RDS error codes
+	ErrorDBInstanceNotFound:       {HTTPCode: 404, Message: "DBInstanceIdentifier does not refer to an existing DB instance."},
+	ErrorDBInstanceAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB instance with the given identifier."},
+	ErrorDBSubnetGroupNotFound:    {HTTPCode: 404, Message: "DBSubnetGroupName does not refer to an existing DB subnet group."},
+	ErrorDBParameterGroupNotFound: {HTTPCode: 404, Message: "DBParameterGroupName does not refer to an existing DB parameter group."},
+	ErrorDBInvalidVPCNetworkState: {HTTPCode: 400, Message: "The DB subnet group does not cover all Availability Zones after it is created because of changes that were made."},
 
 	// ECR error codes
 	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},

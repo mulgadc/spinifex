@@ -103,6 +103,7 @@ type Config struct {
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
+	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -151,6 +152,28 @@ type NorthstarConfig struct {
 	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
+
+// Every DB VM's primary NIC lives in the shared system VPC, which gives the
+// in-guest agent management egress while the customer ENI stays ingress-only.
+type RDSConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// EKS control-plane supernet or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+
+	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
+	// can place across.
+	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
+
+	// How long a creating DB instance may go without a healthy agent heartbeat
+	// before the reconciler marks it failed. Zero takes the built-in default,
+	// which covers a cold boot plus initdb on the smallest instance class.
+	BootstrapTimeoutSeconds int `json:"BootstrapTimeoutSeconds" mapstructure:"bootstrap_timeout_seconds"`
+}
+
+// RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at
+// 10.248.0.0/14, immediately below and disjoint from the EKS control-plane
+// supernet, so a name-hash collision can never place an RDS subnet in EKS space.
+const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
 // cluster) into individual endpoints, trimming whitespace and dropping empties.

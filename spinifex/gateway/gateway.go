@@ -135,6 +135,7 @@ var supportedServices = map[string]bool{
 	"ecs":                  true,
 	"ecr":                  true,
 	"acm":                  true,
+	"rds":                  true,
 	"tagging":              true,
 	"spinifex":             true,
 	"bedrock":              true,
@@ -263,7 +264,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 	}
 
 	var xmlBody string
-	if svc == "iam" || svc == "sts" {
+	if svc == "iam" || svc == "sts" || svc == "rds" {
 		iam := IAMErrorResponse{
 			Error: IAMErrorDetail{
 				Type:    "Sender",
@@ -315,7 +316,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 
 	var xmlErr []byte
-	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" {
+	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" || svc == "rds" {
 		xmlErr = GenerateIAMErrorResponse(errorCode, errorMsg.Message, requestID)
 	} else { // ec2, account, spinifex
 		xmlErr = GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
@@ -366,6 +367,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ECR_Request(w, r)
 	case "acm":
 		err = gw.ACM_Request(w, r)
+	case "rds":
+		err = gw.RDS_Request(w, r)
 	case "tagging":
 		err = gw.Tagging_Request(w, r)
 	case "spinifex":
@@ -575,7 +578,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	}
 
 	var xmlError []byte
-	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" {
+	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" || svc == "rds" {
 		xmlError = GenerateIAMErrorResponse(code, errorMsg.Message, requestId)
 	} else {
 		xmlError = GenerateEC2ErrorResponse(code, errorMsg.Message, requestId)

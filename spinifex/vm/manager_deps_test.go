@@ -205,9 +205,10 @@ var _ VolumeMounter = (*fakeVolumeMounter)(nil)
 // of the API-form name (e.g. /dev/sdf) shows up as the wrong stored
 // device on the recorded call.
 type fakeVolumeStateUpdater struct {
-	mu    sync.Mutex
-	calls []volumeStateUpdate
-	err   error
+	mu       sync.Mutex
+	calls    []volumeStateUpdate
+	err      error
+	onUpdate func(volumeStateUpdate)
 }
 
 type volumeStateUpdate struct {
@@ -218,15 +219,23 @@ type volumeStateUpdate struct {
 }
 
 func (f *fakeVolumeStateUpdater) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, volumeStateUpdate{
+	update := volumeStateUpdate{
 		VolumeID:         volumeID,
 		State:            state,
 		InstanceID:       instanceID,
 		AttachmentDevice: attachmentDevice,
-	})
-	return f.err
+	}
+
+	f.mu.Lock()
+	f.calls = append(f.calls, update)
+	err := f.err
+	hook := f.onUpdate
+	f.mu.Unlock()
+
+	if hook != nil {
+		hook(update)
+	}
+	return err
 }
 
 func (f *fakeVolumeStateUpdater) snapshot() []volumeStateUpdate {

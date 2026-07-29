@@ -75,6 +75,30 @@ func TestEKSNameAndChanges(t *testing.T) {
 	assert.Empty(t, EKSChanges(ActionUpsert, "my-cluster.ap-southeast-2.eks.spx3.net", "spx3.net", ""))
 }
 
+func TestRDSNameAndChanges(t *testing.T) {
+	assert.Equal(t, "orders-db.111122223333.ap-southeast-2.rds.spx3.net",
+		RDSName("orders-db", "111122223333", "ap-southeast-2", "spx3.net"))
+	assert.NotEqual(t,
+		RDSName("orders-db", "111122223333", "ap-southeast-2", "spx3.net"),
+		RDSName("orders-db", "444455556666", "ap-southeast-2", "spx3.net"),
+		"DB instance identifiers are unique per account, so the RRsets must differ")
+
+	// The target is the customer ENI's private IP: it survives a VM replace, so
+	// the record does not have to be rewritten when the instance is rebuilt.
+	changes := RDSChanges(ActionUpsert, "orders-db.111122223333.ap-southeast-2.rds.spx3.net", "spx3.net", "10.0.5.20")
+	require.Len(t, changes, 1)
+	assert.Equal(t, ActionUpsert, changes[0].Action)
+	assert.Equal(t, "spx3.net", changes[0].Zone)
+	assert.Equal(t, "A", changes[0].Type)
+	assert.Equal(t, "10.0.5.20", changes[0].Value)
+
+	// A deployment with no base domain, or an instance whose ENI IP is not known
+	// yet, yields no change rather than a record pointing nowhere.
+	assert.Empty(t, RDSChanges(ActionUpsert, "orders-db.111122223333.ap-southeast-2.rds.spx3.net", "", "10.0.5.20"))
+	assert.Empty(t, RDSChanges(ActionUpsert, "orders-db.111122223333.ap-southeast-2.rds.spx3.net", "spx3.net", ""))
+	assert.Empty(t, RDSChanges(ActionUpsert, "", "spx3.net", "10.0.5.20"))
+}
+
 func TestRelativeLabel(t *testing.T) {
 	assert.Empty(t, relativeLabel("spx3.net", "spx3.net"))
 	assert.Empty(t, relativeLabel("spx3.net.", "spx3.net"))

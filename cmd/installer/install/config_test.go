@@ -434,3 +434,30 @@ func TestValidateRejectsPrefixLengthMask(t *testing.T) {
 		t.Errorf("a DHCP role has no mask to check: %v", err)
 	}
 }
+
+// A bridged uplink must present the enslaved NIC's address. Left to its default
+// policy, systemd-networkd generates one for the bridge, so the node appears on
+// the wire as an address belonging to no NIC — DHCP requests carry a source that
+// disagrees with their own chaddr and the unicast reply is never delivered.
+func TestBridgeInheritsPortMAC(t *testing.T) {
+	dir := t.TempDir()
+	cfg := threeNIC()
+
+	for _, tc := range []struct {
+		plane  Plane
+		role   NetworkRole
+		manual bool
+	}{
+		{PlaneWAN, cfg.WAN, false},
+		{PlaneLAN, cfg.LAN, true},
+		{PlaneVPC, cfg.VPC, true},
+	} {
+		if err := writeNetworkdBridge(dir, tc.plane, tc.role, tc.manual); err != nil {
+			t.Fatal(err)
+		}
+		got := readFile(t, dir, "20-spinifex-"+string(tc.plane)+".netdev")
+		if !strings.Contains(got, "MACAddressPolicy=none") {
+			t.Errorf("%s bridge must inherit its port's MAC:\n%s", tc.plane, got)
+		}
+	}
+}

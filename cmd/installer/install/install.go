@@ -497,7 +497,13 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 		}
 	}
 
-	brNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=bridge\n", bridgeName)
+	// Without a policy systemd-networkd invents a MAC for the bridge, so the node
+	// appears on the wire as an address that belongs to no NIC — the DHCP server
+	// sees a request whose source does not match its own chaddr and the unicast
+	// reply goes nowhere. "none" leaves the kernel to inherit the enslaved port's
+	// address, which is what a bridged uplink is supposed to present, and keeps
+	// it stable across boots for switch MAC tables and DHCP reservations.
+	brNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=bridge\nMACAddressPolicy=none\n", bridgeName)
 	if role.MTU > 0 {
 		brNetdev += fmt.Sprintf("MTUBytes=%d\n", role.MTU)
 	}

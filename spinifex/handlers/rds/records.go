@@ -13,15 +13,29 @@ type DBInstanceRecord struct {
 	EngineVersion    string `json:"engineVersion"`
 	DBInstanceClass  string `json:"dbInstanceClass"`
 	AllocatedStorage int64  `json:"allocatedStorage"`
+	StorageType      string `json:"storageType,omitempty"`
 	DBName           string `json:"dbName,omitempty"`
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
+	// Where the customer ENI was placed, so a replace lands the new VM's ENI in
+	// the same subnet and security groups without re-deriving them.
+	SubnetID             string   `json:"subnetId,omitempty"`
+	VpcID                string   `json:"vpcId,omitempty"`
+	VpcSecurityGroupIDs  []string `json:"vpcSecurityGroupIds,omitempty"`
+	DBSubnetGroupName    string   `json:"dbSubnetGroupName,omitempty"`
+	DBParameterGroupName string   `json:"dbParameterGroupName,omitempty"`
+
 	// Changes on every replace, which is why the bus subject keys off the DB
 	// instance identifier instead.
-	InstanceID   string `json:"instanceId,omitempty"`
+	InstanceID string `json:"instanceId,omitempty"`
+	// Increments on every replace, so a superseded VM's agent is
+	// distinguishable from the current one.
+	VMGeneration int64  `json:"vmGeneration,omitempty"`
 	DataVolumeID string `json:"dataVolumeId,omitempty"`
 	ENIID        string `json:"eniId,omitempty"`
+	// Disposable: a replace mints a new one, unlike the customer ENI.
+	SystemENIID string `json:"systemEniId,omitempty"`
 	// Stable across VM replace, so it serves as both the fallback endpoint and
 	// a durable IP SAN on the serving cert.
 	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
@@ -29,6 +43,14 @@ type DBInstanceRecord struct {
 	// The vanity hostname when northstar is configured. Kept apart from
 	// EndpointAddress because the cert needs it as a DNS SAN either way.
 	DNSName string `json:"dnsName,omitempty"`
+
+	// Reported from the data volume's own state rather than echoed from the
+	// request, the way EC2 derives a volume's Encrypted.
+	StorageEncrypted bool `json:"storageEncrypted,omitempty"`
+
+	// Why the instance is failed. Cleared when it leaves the failed state, so a
+	// stale reason cannot outlive the failure it describes.
+	FailureReason string `json:"failureReason,omitempty"`
 
 	Bootstrap BootstrapState `json:"bootstrap"`
 	Agent     AgentState     `json:"agent"`

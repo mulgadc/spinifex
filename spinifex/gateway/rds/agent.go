@@ -15,9 +15,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Only a session assumed from this role may call the internal agent actions.
-const InstanceRoleName = "rdsInstanceRole"
-
 // Long-poll bounds for PollDBCommands. The ceiling keeps a poll inside the
 // gateway's request timeout; the floor stops a misbehaving agent turning the
 // long poll into a busy loop.
@@ -40,7 +37,7 @@ type agentIdentity struct {
 func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requestedID string) (*agentIdentity, error) {
 	if caller.PrincipalType != principalTypeAssumedRole ||
 		caller.AccountID != utils.GlobalAccountID ||
-		caller.RoleName != InstanceRoleName ||
+		caller.RoleName != handlers_rds.InstanceRoleName ||
 		caller.SessionName == "" {
 		slog.DebugContext(ctx, "RDS: internal action rejected for non-agent caller",
 			"principalType", caller.PrincipalType, "accountID", caller.AccountID, "roleName", caller.RoleName)

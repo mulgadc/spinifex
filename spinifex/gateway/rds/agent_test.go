@@ -26,7 +26,7 @@ func agentCaller() Caller {
 	return Caller{
 		AccountID:     utils.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
-		RoleName:      InstanceRoleName,
+		RoleName:      handlers_rds.InstanceRoleName,
 		SessionName:   testInstanceID,
 	}
 }
@@ -69,12 +69,12 @@ func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
 		name   string
 		caller Caller
 	}{
-		{"plain IAM user", Caller{AccountID: utils.GlobalAccountID, PrincipalType: "user", RoleName: InstanceRoleName, SessionName: testInstanceID}},
-		{"root", Caller{AccountID: utils.GlobalAccountID, PrincipalType: "root", RoleName: InstanceRoleName, SessionName: testInstanceID}},
-		{"customer account", Caller{AccountID: testAccountID, PrincipalType: principalTypeAssumedRole, RoleName: InstanceRoleName, SessionName: testInstanceID}},
+		{"plain IAM user", Caller{AccountID: utils.GlobalAccountID, PrincipalType: "user", RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
+		{"root", Caller{AccountID: utils.GlobalAccountID, PrincipalType: "root", RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
+		{"customer account", Caller{AccountID: testAccountID, PrincipalType: principalTypeAssumedRole, RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
 		{"another role", Caller{AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "ecsInstanceRole", SessionName: testInstanceID}},
 		{"unresolvable role", Caller{AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "", SessionName: testInstanceID}},
-		{"no session name", Caller{AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: InstanceRoleName, SessionName: ""}},
+		{"no session name", Caller{AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: handlers_rds.InstanceRoleName, SessionName: ""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

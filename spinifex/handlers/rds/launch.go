@@ -102,6 +102,9 @@ type LaunchInput struct {
 	AllocatedStorage      int64
 	UserData              string
 	IamInstanceProfileArn string
+	// Fails the launch when the created data volume comes back unencrypted,
+	// rather than reporting an encryption the customer did not get.
+	RequireEncryptedData bool
 }
 
 type LaunchOutput struct {
@@ -115,6 +118,9 @@ type LaunchOutput struct {
 	DataVolumeID   string
 	DataDevice     string
 	MgmtIP         string
+	// The volume's own reported state, not an echo of the request, so
+	// DescribeDBInstances reports encryption the way EC2 does.
+	DataVolumeEncrypted bool
 }
 
 // On any failure every resource this call created is torn down, so a retried
@@ -236,12 +242,20 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: create data volume for %s: empty volume id", in.DBInstanceIdentifier)
 	}
 	volumeID := aws.StringValue(volume.VolumeId)
+	volumeEncrypted := aws.BoolValue(volume.Encrypted)
 	rollback = append(rollback, func(ctx context.Context) {
 		if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
 			slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
 				"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)
 		}
 	})
+
+	// Checked before the attach so an unencrypted volume is unwound rather than
+	// mounted: the cluster storage key is unset, which no retry here can fix.
+	if in.RequireEncryptedData && !volumeEncrypted {
+		return nil, fmt.Errorf("rds: data volume %s for %s was created unencrypted; the cluster storage key is not configured",
+			volumeID, in.DBInstanceIdentifier)
+	}
 
 	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
 	if err != nil {
@@ -254,14 +268,15 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		"dataVolume", volumeID, "device", device)
 
 	return &LaunchOutput{
-		InstanceID:     instanceID,
-		SystemENIID:    systemENI.id,
-		CustomerENIID:  customerENI.id,
-		CustomerENIIP:  customerENI.ip,
-		CustomerENIMac: customerENI.mac,
-		DataVolumeID:   volumeID,
-		DataDevice:     device,
-		MgmtIP:         sysOut.MgmtIP,
+		InstanceID:          instanceID,
+		SystemENIID:         systemENI.id,
+		CustomerENIID:       customerENI.id,
+		CustomerENIIP:       customerENI.ip,
+		CustomerENIMac:      customerENI.mac,
+		DataVolumeID:        volumeID,
+		DataDevice:          device,
+		MgmtIP:              sysOut.MgmtIP,
+		DataVolumeEncrypted: volumeEncrypted,
 	}, nil
 }
 

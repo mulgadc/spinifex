@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -26,6 +28,13 @@ const (
 	KVBucketRDSSystem        = "rds-system"
 	KVBucketRDSSystemVersion = 1
 	KVBucketRDSSystemHistory = 1
+
+	// "spinifex-rds-leader" holds the single reconciler lease. Its TTL expires a
+	// lease whose holder died mid-cycle, so control work resumes without an
+	// operator.
+	KVBucketRDSLeader        = "spinifex-rds-leader"
+	KVBucketRDSLeaderVersion = 1
+	KVBucketRDSLeaderTTL     = 60 * time.Second
 )
 
 // Key-path helpers for the per-account bucket:
@@ -157,4 +166,71 @@ func GetOrCreateSystemBucket(ctx context.Context, js jetstream.JetStream) (jetst
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketRDSSystem, err)
 	}
 	return kv, nil
+}
+
+// kvutil.GetOrCreateBucket exposes no TTL knob, so the lease bucket takes the
+// direct CreateKeyValue path and falls back to an open on already-exists.
+func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:  KVBucketRDSLeader,
+		History: 1,
+		TTL:     KVBucketRDSLeaderTTL,
+	})
+	if err != nil {
+		kv, err = js.KeyValue(ctx, KVBucketRDSLeader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create or open RDS leader bucket %s: %w", KVBucketRDSLeader, err)
+		}
+	}
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketRDSLeader, kv, KVBucketRDSLeaderVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketRDSLeader, err)
+	}
+	return kv, nil
+}
+
+// Every RDS per-account bucket in the cluster. The reconciler and the DNS
+// desired-set both need a cross-tenant view, which only this provides.
+func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, error) {
+	all, err := kvutil.BucketNames(ctx, js)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(all))
+	for _, name := range all {
+		if strings.HasPrefix(name, KVBucketRDSAccountPrefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// The account a per-account bucket belongs to, for callers that enumerated
+// buckets rather than starting from an account.
+func AccountIDFromBucketName(bucket string) string {
+	return strings.TrimPrefix(bucket, KVBucketRDSAccountPrefix)
+}
+
+// The DB instance identifiers held in one account bucket. An empty bucket
+// yields no names rather than an error.
+func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rds: list keys: %w", err)
+	}
+	prefix := DBInstancesPrefix()
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, prefix)
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }

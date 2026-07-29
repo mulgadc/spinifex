@@ -1,9 +1,15 @@
 package gateway_rds
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,13 +100,43 @@ func TestDispatch_UnknownAction(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
 
+// The customer actions this phase implements forward to the daemon, so they are
+// dispatched against a stub responder rather than a nil connection.
+var liveActions = []string{"CreateDBInstance", "DescribeDBInstances"}
+
+// What is under test in this file is the action table and the XML envelope, not
+// the orchestration behind the subject, so the responder returns a fixed output.
+func newStubbedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	respondWith(t, nc, handlers_rds.SubjectCreateDBInstance,
+		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
+		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
+	return nc
+}
+
+func respondWith(t *testing.T, nc *nats.Conn, subject string, output any) {
+	t.Helper()
+	payload, err := json.Marshal(output)
+	require.NoError(t, err)
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		if err := msg.Respond(payload); err != nil {
+			t.Logf("respond on %s: %v", subject, err)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
 // Every registered action must dispatch to something: either a real response or
 // one of the two deliberate rejections. Anything else means an action was wired
 // to a handler that fails for an unrelated reason.
 func TestDispatch_EveryActionResolves(t *testing.T) {
+	nc := newStubbedNATS(t)
 	for action := range actions {
 		t.Run(action, func(t *testing.T) {
-			body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller)
+			body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nc, testCaller)
 			if err == nil {
 				assert.NotEmpty(t, body, "a successful action must return an XML body")
 				return
@@ -115,8 +151,18 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 	}
 }
 
+// The actions this phase implements must have left the pending stub behind.
+func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
+	nc := newStubbedNATS(t)
+	for _, action := range liveActions {
+		body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nc, testCaller)
+		require.NoError(t, err, "action %q", action)
+		assert.Contains(t, string(body), "<"+action+"Result", "action %q", action)
+	}
+}
+
 func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "CreateDBInstance", map[string]string{"Action": "CreateDBInstance"}, nil, testCaller)
+	_, err := Dispatch(t.Context(), "ModifyDBInstance", map[string]string{"Action": "ModifyDBInstance"}, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
@@ -131,7 +177,7 @@ func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 
 func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 	body, err := Dispatch(t.Context(), "DescribeDBInstances",
-		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, nil, testCaller)
+		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, newStubbedNATS(t), testCaller)
 	require.NoError(t, err)
 
 	// The IAM-style envelope the aws-sdk-go query unmarshaler expects, carrying
@@ -149,7 +195,7 @@ func TestDispatch_DescribeDBInstancesWithFilters(t *testing.T) {
 		"Action":               "DescribeDBInstances",
 		"DBInstanceIdentifier": "orders-db",
 		"MaxRecords":           "20",
-	}, nil, testCaller)
+	}, newStubbedNATS(t), testCaller)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "<DescribeDBInstancesResult")
 }

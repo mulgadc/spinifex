@@ -79,7 +79,7 @@ func rejectWith(code string) Handler {
 // explicit stubs, so an unimplemented action stays distinct from an unknown one.
 var actions = map[string]Handler{
 	// Instance lifecycle.
-	"CreateDBInstance":    pending(),
+	"CreateDBInstance":    typed(CreateDBInstance),
 	"DescribeDBInstances": typed(DescribeDBInstances),
 	"ModifyDBInstance":    pending(),
 	"DeleteDBInstance":    pending(),

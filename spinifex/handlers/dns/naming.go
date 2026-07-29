@@ -115,6 +115,31 @@ func EKSChanges(action Action, dnsName, baseDomain, endpointIP string) []Change 
 	}}
 }
 
+// RDSName is the account-qualified DNS name for a DB instance's endpoint:
+// {dbInstanceIdentifier}.{accountID}.{region}.rds.{baseDomain}. DB instance
+// identifiers are only unique within an account, so the account label prevents
+// cross-tenant RRset collisions.
+func RDSName(dbInstanceIdentifier, accountID, region, baseDomain string) string {
+	return fmt.Sprintf("%s.%s.%s.rds.%s", dbInstanceIdentifier, accountID, region, baseDomain)
+}
+
+// RDSChanges builds the record-set change for a DB instance's endpoint. The
+// target is the customer ENI's private IP, which survives a VM replace, so the
+// record does not have to be rewritten when the instance is rebuilt. Returns no
+// change when the name, zone, or IP is unavailable.
+func RDSChanges(action Action, dnsName, baseDomain, eniIP string) []Change {
+	if dnsName == "" || baseDomain == "" || eniIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  eniIP,
+	}}
+}
+
 // privateZoneOrDefault returns the configured internal domain or the
 // compute.internal default when unset.
 func privateZoneOrDefault(internalDomain string) string {

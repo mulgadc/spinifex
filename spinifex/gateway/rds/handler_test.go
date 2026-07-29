@@ -1,10 +1,13 @@
 package gateway_rds
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -214,11 +217,13 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	}, newStubbedNATS(t), testCaller)
 	require.NoError(t, err)
 
-	assert.Equal(t,
-		"<ListTagsForResourceResponse><ListTagsForResourceResult><TagList>"+
-			"<Tag><Key>env</Key><Value>prod</Value></Tag>"+
-			"</TagList></ListTagsForResourceResult></ListTagsForResourceResponse>",
-		string(body))
+	// Decoded the way a real client decodes it, rather than compared byte-wise:
+	// BuildXML emits sibling elements in map order, so <Key> and <Value> swap
+	// places between runs.
+	var out rds.ListTagsForResourceOutput
+	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "ListTagsForResourceResult"))
+
+	assert.Equal(t, []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}, out.TagList)
 }
 
 // RDS serializes a tag list under its own locationNameList, so the params

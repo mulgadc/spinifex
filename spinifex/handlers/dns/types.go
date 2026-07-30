@@ -1,7 +1,8 @@
-// Package dns is the control-plane DNS record writer. It
-// is the single queue-group consumer of dns.recordset.change events and owns the
-// read-modify-write of zone TOML files in s3://northstar/, using the system
-// predastore credentials. Northstar itself stays read-only (N4 intact).
+// Package dns is the control-plane DNS record writer. Every daemon consumes
+// dns.recordset.change from one queue group and owns the read-modify-write of
+// zone TOML files in s3://northstar/, using the system predastore credentials.
+// The queue group balances load, so the read-modify-write is serialised per zone
+// by an explicit lock. Northstar itself stays read-only (N4 intact).
 package dns
 
 import "time"
@@ -15,8 +16,14 @@ const (
 	// PUT so every northstar instance reloads just that zone immediately, instead
 	// of waiting for the next S3 sync poll. No queue group: all servers consume.
 	SubjectZoneReload = "dns.zone.reload"
-	// QueueGroup serialises producers to exactly one writer per message.
+	// QueueGroup delivers each message to exactly one writer. It does NOT
+	// serialise distinct messages: concurrent changes land on different daemons in
+	// parallel, so the per-zone read-modify-write takes its own lock.
 	QueueGroup = "spinifex-workers"
+	// KVBucketDNSReconcile elects the one node that publishes a converging batch
+	// per drift cycle. Its own bucket, so the election never blocks another
+	// reconcile loop.
+	KVBucketDNSReconcile = "spinifex-dns-reconcile"
 	// PrivateZone is the fixed AWS-parity private DNS zone (IMDS synthHostname).
 	PrivateZone = "compute.internal"
 	// DefaultTTL is applied when a change omits a TTL.

@@ -10,9 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// execRunner runs the command directly when uid 0, otherwise via sudo.
+// execRunner escalates only the commands that need it — see utils.NeedsPrivilege.
+// The OVS/OVN socket clients reach their daemons over the group-owned control
+// sockets and run as the service user; ip/iptables/dhcpcd still go via sudo.
 type execRunner struct{}
 
 var _ Runner = execRunner{}
@@ -22,10 +26,10 @@ func NewExecRunner() Runner { return execRunner{} }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var cmd *exec.Cmd
-	if os.Getuid() == 0 {
-		cmd = exec.CommandContext(ctx, name, args...)
-	} else {
+	if utils.NeedsPrivilege(name) {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
+	} else {
+		cmd = exec.CommandContext(ctx, name, args...)
 	}
 	// Capture stdout and stderr separately so stderr is not folded into parsed
 	// output: under a restrictive CapabilityBoundingSet (no CAP_AUDIT_WRITE) sudo
@@ -36,29 +40,6 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	if err := cmd.Run(); err != nil {
 		// On failure hand back stdout+stderr so callers matching diagnostics on the
 		// error path (e.g. "File exists" idempotency) still see them.
-		out := append(stdout.Bytes(), stderr.Bytes()...)
-		return out, fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), strings.TrimSpace(string(out)), err)
-	}
-	return stdout.Bytes(), nil
-}
-
-// directRunner runs the command as the calling user, never via sudo. It serves
-// the read-only OVS/OVN probes: setup-ovn.sh group-owns db.sock and the ctl
-// sockets to `spinifex`, so the service users reach them without a privilege
-// transition. Mutating call sites keep execRunner.
-type directRunner struct{}
-
-var _ Runner = directRunner{}
-
-// NewDirectRunner returns a Runner that never escalates.
-func NewDirectRunner() Runner { return directRunner{} }
-
-func (directRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
 		out := append(stdout.Bytes(), stderr.Bytes()...)
 		return out, fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 	}

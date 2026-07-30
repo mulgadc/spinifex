@@ -65,13 +65,11 @@ var waitForFlowsHV = func() error {
 	return nil
 }
 
-// sudoCommand wraps exec.Command with sudo when not root; OVS/OVN commands require elevated privileges.
-func sudoCommand(name string, args ...string) *exec.Cmd {
-	if os.Getuid() == 0 {
-		return exec.Command(name, args...)
-	}
-	return exec.Command("sudo", append([]string{name}, args...)...)
-}
+// sudoCommand is utils.SudoCommand, which escalates only what genuinely needs
+// it. Every caller here is an OVS/OVN socket client, so none of them escalate;
+// a local copy that always sudoed silently bypassed that policy and broke the
+// flows-ready barrier once the grants were removed.
+var sudoCommand = utils.SudoCommand
 
 var serviceName = "vpcd"
 

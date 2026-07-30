@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -99,14 +101,18 @@ func TestHealthStatus_FailedProbesReportUnset(t *testing.T) {
 	}
 }
 
-// directRunner must invoke the binary itself. Its whole purpose is to reach the
-// group-owned OVS/OVN sockets without a privilege transition.
-func TestDirectRunner_RunsWithoutSudo(t *testing.T) {
-	out, err := NewDirectRunner().Run(context.Background(), "/bin/echo", "spinifex")
-	if err != nil {
-		t.Fatalf("directRunner.Run: %v", err)
-	}
-	if strings.TrimSpace(string(out)) != "spinifex" {
-		t.Errorf("output = %q, want %q", strings.TrimSpace(string(out)), "spinifex")
+// Every tool healthStatus probes must be one the escalation policy classifies as
+// unprivileged, or the probe would need a sudoers grant to read a status.
+func TestHealthStatus_ProbesAreSocketClients(t *testing.T) {
+	s := newStubRunner()
+	stubHealthyOVN(s)
+
+	healthStatus(context.Background(), s)
+
+	for _, c := range s.calls {
+		tool := strings.Fields(c)[0]
+		if utils.NeedsPrivilege(tool) {
+			t.Errorf("probe tool %q is classified as needing privilege; health must only use socket clients", tool)
+		}
 	}
 }

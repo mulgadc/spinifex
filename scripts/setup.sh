@@ -191,21 +191,26 @@ install_sudoers() {
 # unit's rlimits rather than the system defaults, which is the RG-9 intent.
 Defaults:spinifex-daemon,spinifex-vpcd !pam_session
 
-# Spinifex daemon: tap devices, OVS bridge management, and DHCP for external IPs
+# The OVS/OVN client tools are deliberately absent. They do all their work over
+# control sockets that setup-ovn.sh group-owns to `spinifex`, so they run as the
+# service user. Granting them would be worse than pointless: a NOPASSWD rule for
+# them takes unrestricted args, and ovs-vsctl/ovn-nbctl/ovn-appctl all accept
+# --log-file=PATH, which writes a root-owned file wherever the caller points it.
+#
+# ovs-ofctl is the exception that keeps its grant: it talks to a per-bridge
+# <bridge>.mgmt socket created by ovs-vswitchd when the bridge appears, including
+# bridges spinifex creates at runtime, so it cannot be group-owned up front.
+
+# Spinifex daemon: tap devices, OpenFlow rules, and DHCP for external IPs.
 # ovs-ofctl installs the per-tap IMDS datapath flows on br-imds; sysctl sets the
 # per-endpoint rp_filter/accept_local the asymmetric reply path needs.
 spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
-spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl, /usr/bin/ovs-ofctl
+spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-ofctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/sysctl -qw net.ipv4.conf.*
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
-spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/systemctl is-active openvswitch-ipsec.service
-spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl set NB_Global . ipsec=true
 
-# Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
+# Spinifex VPC daemon: link and firewall management, and DHCP for external IPs
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl, /usr/bin/ovn-sbctl, /usr/bin/ovn-appctl
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/systemctl is-active --quiet ovn-controller
 spinifex-vpcd ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 # Routed-NAT mode: transit masquerade + per-EIP FORWARD accepts, proxy-ARP
 # delay tune, and gratuitous ARP announcements for host-delivered EIPs.

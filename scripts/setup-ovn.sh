@@ -999,7 +999,12 @@ if [ -d /var/run/ovn ]; then
     chmod 0750 /var/run/ovn 2>/dev/null || true
 fi
 
-for s in /var/run/openvswitch/db.sock /var/run/openvswitch/*.ctl /var/run/ovn/*.ctl; do
+# ovn??_db.sock are the NB/SB databases themselves, which ovn-nbctl and
+# ovn-sbctl connect to. Bridge <name>.mgmt sockets are deliberately NOT here:
+# ovs-vswitchd creates one whenever a bridge appears, including bridges spinifex
+# creates at runtime, so ovs-ofctl keeps its sudo grant.
+for s in /var/run/openvswitch/db.sock /var/run/openvswitch/*.ctl \
+    /var/run/ovn/*.ctl /var/run/ovn/ovnnb_db.sock /var/run/ovn/ovnsb_db.sock; do
     if [ -S "$s" ]; then
         chgrp "$GROUP" "$s" 2>/dev/null || true
         chmod 0660 "$s" 2>/dev/null || true

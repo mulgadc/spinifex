@@ -61,7 +61,9 @@ func TestManagerStartScansAndReaffirms(t *testing.T) {
 	assert.Equal(t, 2, mgr.LoopCount())
 }
 
-func TestManagerStartDropsExpiredLeases(t *testing.T) {
+// Deleting an expired lease at startup leaves whatever was configured from it
+// forwarding on an address nothing holds, so the lease is re-acquired instead.
+func TestManagerStartReacquiresExpiredLeases(t *testing.T) {
 	fake := dhcp.NewFake()
 	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
 	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
@@ -78,18 +80,21 @@ func TestManagerStartDropsExpiredLeases(t *testing.T) {
 	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: expired}))
 
 	require.NoError(t, mgr.Start(context.Background()))
-	_, err := store.Get(t.Context(), "eipalloc-old")
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	require.Eventually(t, func() bool { return fake.AcquireCount() == 1 }, time.Second, 10*time.Millisecond,
+		"an expired lease whose resource still exists must be re-DORA'd, not dropped")
+	entry, err := store.Get(t.Context(), "eipalloc-old")
+	require.NoError(t, err)
+	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String(), "the KV record must name the new address")
+	assert.Equal(t, 1, mgr.LoopCount())
+	// A reaffirm RENEW on a lease the server has already aged out only delays
+	// the re-DORA behind its timeout.
 	assert.Equal(t, 0, fake.RenewCount())
-	assert.Equal(t, 0, mgr.LoopCount())
-	// No raw offer/ack, so nclient4 could not rebuild the lease; the release is
-	// skipped rather than attempted and logged as a failure.
-	assert.Equal(t, 0, fake.ReleaseCount())
 }
 
-// Dropping the KV entry without a RELEASE abandons the address instead of
-// returning it, and an upstream server that ages leases by liveness then holds
-// it indefinitely. That is how 20 addresses were stranded on the office LAN.
+// The re-DORA can land elsewhere, and the expired address is then held by
+// nobody: an upstream server that ages leases by liveness keeps it indefinitely.
+// That is how 20 addresses were stranded on the office LAN.
 func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 	fake := dhcp.NewFake()
 	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
@@ -100,14 +105,46 @@ func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 		Bridge: "br-wan", ClientID: "eipalloc-stale", HWAddr: hw,
 	})
 	require.NoError(t, err)
+	lease.IP = net.IPv4(192, 0, 2, 50)
 	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
 	lease.LeaseDuration = time.Hour
 	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
 
 	require.NoError(t, mgr.Start(context.Background()))
-	assert.Equal(t, 1, fake.ReleaseCount(), "expired lease must be returned upstream before the KV entry is dropped")
-	_, err = store.Get(t.Context(), "eipalloc-stale")
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	require.Eventually(t, func() bool { return fake.ReleaseCount() == 1 }, time.Second, 10*time.Millisecond,
+		"the superseded address must be returned upstream once the re-DORA lands elsewhere")
+	entry, err := store.Get(t.Context(), "eipalloc-stale")
+	require.NoError(t, err)
+	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String())
+}
+
+// An expired lease that comes back on the same address needs no release and no
+// rebind — the datapath is already correct.
+func TestManagerStartReacquireOntoSameIPDoesNotRelease(t *testing.T) {
+	fake := dhcp.NewFake()
+	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
+
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: "eipalloc-same", HWAddr: hw,
+	})
+	require.NoError(t, err)
+	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
+	lease.LeaseDuration = time.Hour
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
+
+	hookCalls := 0
+	mgr.SetIPChangeHook(func(context.Context, dhcp.Entry, net.IP) error {
+		hookCalls++
+		return nil
+	})
+	require.NoError(t, mgr.Start(context.Background()))
+
+	require.Eventually(t, func() bool { return fake.AcquireCount() == 2 }, time.Second, 10*time.Millisecond)
+	assert.Zero(t, fake.ReleaseCount())
+	assert.Zero(t, hookCalls)
 }
 
 // seedLiveLease puts a BOUND lease for clientID in the store and returns it.
@@ -234,9 +271,9 @@ func TestManagerRenewOntoNewIPReleasesOldWithoutHook(t *testing.T) {
 	assert.Equal(t, "192.0.2.201", entry.Lease.IP.String())
 }
 
-// A release that fails must not strand the KV entry too, and must not abort
-// adoption of the remaining leases.
-func TestManagerStartDropsExpiredLeaseWhenReleaseFails(t *testing.T) {
+// The release of the superseded address is best-effort: failing it must not cost
+// the new lease, which is the only address the resource now has.
+func TestManagerStartKeepsNewLeaseWhenStaleReleaseFails(t *testing.T) {
 	fake := dhcp.NewFake()
 	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
 	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
@@ -246,14 +283,18 @@ func TestManagerStartDropsExpiredLeaseWhenReleaseFails(t *testing.T) {
 		Bridge: "br-wan", ClientID: "eipalloc-stale", HWAddr: hw,
 	})
 	require.NoError(t, err)
+	lease.IP = net.IPv4(192, 0, 2, 50)
 	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
 	lease.LeaseDuration = time.Hour
 	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
 	fake.ReleaseHook = func(*dhcp.Lease) error { return errors.New("upstream unreachable") }
 
 	require.NoError(t, mgr.Start(context.Background()))
-	_, err = store.Get(t.Context(), "eipalloc-stale")
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "eipalloc-stale")
+		return getErr == nil && entry.Lease.IP.String() == "192.0.2.100"
+	}, time.Second, 10*time.Millisecond, "the re-acquired address must be persisted despite the failed release")
 }
 
 func TestManagerStartTwiceErrors(t *testing.T) {

@@ -26,13 +26,16 @@ const renewJitter = time.Second
 // background until the server comes back (per plan §Failure modes).
 const postExpiryBackoff = 30 * time.Second
 
-// defaultAcquireSchedule is the per-attempt timeout schedule for the
-// outer DORA backoff. Mirrors the deleted dhcp_manager.go retransmit
-// schedule — recovers under STP convergence on a freshly-up bridge.
-var defaultAcquireSchedule = []time.Duration{4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second}
+// defaultAcquireSchedule is the per-attempt timeout schedule for the outer DORA
+// backoff. Four attempts still ride out STP convergence on a freshly-up bridge,
+// but the total is held under an AWS client's read timeout: botocore defaults to
+// 60s and sends no retry token, so a ladder that outlasts it turns one
+// AllocateAddress into two leases with no way to tell them apart.
+var defaultAcquireSchedule = []time.Duration{4 * time.Second, 8 * time.Second, 12 * time.Second, 16 * time.Second}
 
-// defaultAcquireBudget caps the wallclock for the full DORA loop.
-const defaultAcquireBudget = 90 * time.Second
+// defaultAcquireBudget caps the wallclock for the full DORA loop. Sized to leave
+// the daemon room to answer inside a 60s client read timeout, per the schedule.
+const defaultAcquireBudget = 45 * time.Second
 
 // acquireAttemptJitter is the ± window applied to each per-attempt
 // timeout so concurrent acquires across vpcds don't synchronise.
@@ -75,6 +78,7 @@ type Manager struct {
 	parentCtx    context.Context
 	parentCancel context.CancelFunc
 	ipChangeHook IPChangeHook
+	leaseOwner   LeaseOwner
 
 	wg sync.WaitGroup
 }
@@ -174,9 +178,10 @@ func (m *Manager) leaseVendorClass() string {
 	return defaultVendorClass + "/" + m.nodeName
 }
 
-// Start scans the KV bucket and spawns a renewal goroutine per live lease,
-// re-issuing a RENEW to confirm the upstream binding (RFC 2131 INIT-REBOOT).
-// Expired entries are deleted. Repeated calls return an error.
+// Start scans the KV bucket and spawns a renewal goroutine per lease, re-issuing
+// a RENEW to confirm the upstream binding (RFC 2131 INIT-REBOOT). Leases that
+// expired while the manager was down get a loop too, which re-DORAs immediately.
+// Repeated calls return an error.
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	if m.closed {
@@ -201,17 +206,18 @@ func (m *Manager) Start(ctx context.Context) error {
 		if e.Lease == nil {
 			continue
 		}
-		if !e.Lease.ExpiresAt().After(now) {
-			// Dropping the KV entry alone abandons the binding rather than
-			// returning it: a server that ages leases by liveness keeps the
-			// address for as long as anything answers ARP for it.
-			m.releaseStaleUpstream(ctx, e.Lease)
-			if delErr := m.store.Delete(ctx, e.Lease.ClientID); delErr != nil {
-				slog.Warn("dhcp manager: drop expired lease failed", "client_id", e.Lease.ClientID, "err", delErr)
-			}
-			continue
+		expired := !e.Lease.ExpiresAt().After(now)
+		if expired {
+			// Deleting the entry here would strand whatever was configured from
+			// it: the caller still holds the resource, so the datapath keeps
+			// forwarding on an address nothing renews. The loop re-DORAs on its
+			// first pass instead, and the IP change hook rebinds from there.
+			slog.Warn("dhcp manager: lease expired while stopped; re-acquiring",
+				"client_id", e.Lease.ClientID, "purpose", e.Purpose, "ip", e.Lease.IP)
 		}
-		m.spawnLoop(e, true)
+		// A reaffirm RENEW is pointless on a lease the server has already aged
+		// out, and would only delay the re-DORA behind its timeout.
+		m.spawnLoop(e, !expired)
 	}
 	return nil
 }

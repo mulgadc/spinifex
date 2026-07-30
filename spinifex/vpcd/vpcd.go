@@ -608,6 +608,10 @@ func launchService(cfg *Config) error {
 	// manager that owns the gateway datapath does not exist until now.
 	if dhcpMgr != nil {
 		dhcpMgr.SetIPChangeHook(leaseIPChangeHook(igwMgr, nc))
+		// Nothing else returns an address whose resource was deleted out from
+		// under its lease, so the sweep runs for the life of the daemon.
+		dhcpMgr.SetLeaseOwner(&leaseOwnerResolver{nc: nc, igwMgr: igwMgr})
+		go runLeaseReaper(ctx, dhcpMgr, leaseReapInterval, leaseReapStartDelay)
 	}
 	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
 	if err != nil {

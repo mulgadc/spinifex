@@ -11,6 +11,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// defaultRPCTimeout bounds a DORA RPC. It sits above the manager's acquire
+// budget so a failing acquire reports its own error rather than a timeout, and
+// below the 60s read timeout an AWS client defaults to, so the caller hears the
+// outcome instead of giving up and retrying into a second lease.
+const defaultRPCTimeout = 50 * time.Second
+
 // NATSClient is the daemon-side DHCP wrapper: marshals acquire/release RPC
 // calls over NATS to the bridge-owning vpcd.
 type NATSClient struct {
@@ -18,12 +24,11 @@ type NATSClient struct {
 	timeout time.Duration
 }
 
-// NewNATSClient wraps nc with the given RPC timeout. timeout <= 0
-// defaults to 60s — DORA + raw_offer/ack persistence can take seconds
-// on a busy upstream server.
+// NewNATSClient wraps nc with the given RPC timeout. timeout <= 0 defaults to
+// defaultRPCTimeout.
 func NewNATSClient(nc *nats.Conn, timeout time.Duration) *NATSClient {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = defaultRPCTimeout
 	}
 	return &NATSClient{nc: nc, timeout: timeout}
 }

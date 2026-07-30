@@ -21,6 +21,10 @@ const (
 	// reconcile, because the records naming these addresses (an EIP's
 	// PublicIp, an ENI's PublicIpAddress) live daemon-side.
 	TopicLeaseChanged = "vpc.dhcp.lease-changed"
+	// TopicOwnerCheck asks whether the resource a lease was taken for still
+	// exists. Daemon-ward for the same reason as TopicLeaseChanged: vpcd holds
+	// the leases, the daemon holds the records.
+	TopicOwnerCheck = "vpc.dhcp.owner-check"
 )
 
 // LeaseChangedRequest asks the owner of a lease's resource record to move it
@@ -39,6 +43,43 @@ type LeaseChangedRequest struct {
 // record still names an address vpcd no longer holds, so callers surface it.
 type LeaseChangedReply struct {
 	Error string `json:"error,omitempty"`
+}
+
+// OwnerCheckRequest asks whether the resource behind a lease still exists.
+// ClientID is the resource's own id for EIP and ENI-public leases; VPCID
+// identifies a gateway LRP lease.
+type OwnerCheckRequest struct {
+	ClientID string `json:"client_id"`
+	Purpose  string `json:"purpose"`
+	VPCID    string `json:"vpc_id,omitempty"`
+}
+
+// OwnerCheckReply reports "alive", "gone" or "unknown". Anything the responder
+// cannot answer stays unknown, which the reaper treats as keep — a lookup
+// failure must never be read as a deletion.
+type OwnerCheckReply struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// Wire values for OwnerCheckReply.Status.
+const (
+	OwnerStatusAlive   = "alive"
+	OwnerStatusGone    = "gone"
+	OwnerStatusUnknown = "unknown"
+)
+
+// ParseOwnerStatus maps a wire status onto OwnerStatus. Anything unrecognised
+// is unknown, so a newer responder's verdict is never mistaken for "gone".
+func ParseOwnerStatus(s string) OwnerStatus {
+	switch s {
+	case OwnerStatusAlive:
+		return OwnerAlive
+	case OwnerStatusGone:
+		return OwnerGone
+	default:
+		return OwnerUnknown
+	}
 }
 
 // acquireWireRequest is the JSON payload sent by daemon-side

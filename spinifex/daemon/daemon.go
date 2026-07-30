@@ -1125,6 +1125,7 @@ func (d *Daemon) subscribeAll() error {
 		// vpcd holds the leases, but the records naming those addresses live
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
+		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
 	)
 
 	for _, s := range subs {

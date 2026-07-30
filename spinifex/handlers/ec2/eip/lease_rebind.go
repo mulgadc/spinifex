@@ -62,6 +62,30 @@ func (s *EIPServiceImpl) RebindPublicIP(ctx context.Context, allocationID, oldIP
 	return nil
 }
 
+// AllocationExists reports whether an allocation record survives, without
+// knowing its account. Used to decide whether a DHCP lease still has an owner,
+// so a listing failure is an error rather than a false — releasing an address on
+// a KV timeout would be worse than keeping an orphan.
+func (s *EIPServiceImpl) AllocationExists(ctx context.Context, allocationID string) (bool, error) {
+	if allocationID == "" {
+		return false, errors.New("allocation exists: allocationID required")
+	}
+	keys, err := s.eipKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("list EIP records: %w", err)
+	}
+	suffix := "." + allocationID
+	for _, k := range keys {
+		if k != utils.VersionKey && strings.HasSuffix(k, suffix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // findByAllocationIDAnyAccount locates an allocation without knowing its
 // account. vpcd's lease store keys on the client-id alone, so the owning
 // account is not available at the point the lease moves.

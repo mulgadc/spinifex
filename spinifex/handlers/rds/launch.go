@@ -132,10 +132,11 @@ type LaunchOutput struct {
 	DataDevice     string
 	MgmtIP         string
 	// The volume's own reported state, not an echo of the request, so
-	// DescribeDBInstances reports encryption the way EC2 does. Only set when
-	// this launch created the volume: a replace re-attaches one whose
-	// encryption the record already carries.
+	// DescribeDBInstances reports encryption the way EC2 does. Meaningful only
+	// when this launch created the volume; a replace or restore attaches one
+	// whose encryption the record already carries.
 	DataVolumeEncrypted bool
+	CreatedDataVolume   bool
 	// Tears down everything this launch created, for a caller that fails after
 	// it returned. The launch runs it itself on its own failures, so it is only
 	// ever invoked once.
@@ -308,6 +309,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		DataDevice:          device,
 		MgmtIP:              sysOut.MgmtIP,
 		DataVolumeEncrypted: volumeEncrypted,
+		CreatedDataVolume:   in.ExistingDataVolume == "",
 		Unwind:              unwind,
 	}, nil
 }

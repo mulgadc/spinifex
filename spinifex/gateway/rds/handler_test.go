@@ -113,6 +113,8 @@ var liveActions = []string{
 	"CreateDBSubnetGroup", "DescribeDBSubnetGroups", "DeleteDBSubnetGroup",
 	"CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup",
 	"DescribeDBParameters", "DeleteDBParameterGroup",
+	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
+	"RestoreDBInstanceFromDBSnapshot",
 }
 
 // What is under test in this file is the action table and the XML envelope, not
@@ -144,6 +146,12 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 	respondWith(t, nc, handlers_rds.SubjectModifyDBParameterGroup, &rds.DBParameterGroupNameMessage{})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameters, &rds.DescribeDBParametersOutput{})
 	respondWith(t, nc, handlers_rds.SubjectDeleteDBParameterGroup, &rds.DeleteDBParameterGroupOutput{})
+	respondWith(t, nc, handlers_rds.SubjectCreateDBSnapshot,
+		&rds.CreateDBSnapshotOutput{DBSnapshot: &rds.DBSnapshot{DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade")}})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBSnapshots, &rds.DescribeDBSnapshotsOutput{})
+	respondWith(t, nc, handlers_rds.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
+	respondWith(t, nc, handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot,
+		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
 	return nc
 }
 
@@ -193,7 +201,8 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 }
 
 func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "CreateDBSnapshot", map[string]string{"Action": "CreateDBSnapshot"}, nil, testCaller)
+	_, err := Dispatch(t.Context(), "DescribeDBInstanceAutomatedBackups",
+		map[string]string{"Action": "DescribeDBInstanceAutomatedBackups"}, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }

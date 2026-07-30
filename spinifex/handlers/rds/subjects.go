@@ -32,6 +32,13 @@ const (
 
 	SubjectDescribeEvents = "rds.DescribeEvents"
 
+	// Backup and recovery. A create quiesces the engine and a restore launches a
+	// VM, so both are as much orchestration as the lifecycle actions above.
+	SubjectCreateDBSnapshot                = "rds.CreateDBSnapshot"
+	SubjectDescribeDBSnapshots             = "rds.DescribeDBSnapshots"
+	SubjectDeleteDBSnapshot                = "rds.DeleteDBSnapshot"
+	SubjectRestoreDBInstanceFromDBSnapshot = "rds.RestoreDBInstanceFromDBSnapshot"
+
 	// Configuration resources. Plain KV CRUD, so unlike the instance actions
 	// none of them drives a VM and all take the default budget.
 	SubjectCreateDBSubnetGroup    = "rds.CreateDBSubnetGroup"

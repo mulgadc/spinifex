@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
@@ -30,6 +32,12 @@ type engineOps interface {
 	// Shuts the engine down cleanly, so the data volume is checkpointed before
 	// the VM is stopped or snapshotted.
 	Stop(ctx context.Context) error
+	// Puts the engine into backup mode so the datadir can be snapshotted at a
+	// checkpoint. Releases itself after hold, whatever happens to the caller.
+	Quiesce(ctx context.Context, label string, hold time.Duration) error
+	// Takes the engine back out of backup mode. Fails when no hold is active,
+	// which is how a hold that expired mid-snapshot becomes visible.
+	Unquiesce(ctx context.Context) error
 }
 
 // The rollback half of the parameter path, kept off engineOps because it is not
@@ -102,6 +110,7 @@ func lookupCredential(username string) (*syscall.Credential, error) {
 // agent drops to the postgres OS user rather than holding a password of its own.
 type postgresEngine struct {
 	run       commandRunner
+	startSess sessionRunner
 	psql      string
 	rcService string
 	service   string
@@ -111,13 +120,19 @@ type postgresEngine struct {
 	// Set from the bootstrap config, on a different goroutine than the commands
 	// that read it.
 	port atomic.Int64
+
+	// The backup mode currently held, if any. Guarded because the expiry timer
+	// releases it on its own goroutine.
+	mu   sync.Mutex
+	held *quiesceHold
 }
 
 var _ engineOps = (*postgresEngine)(nil)
 
-func newPostgresEngine(cfg config, run commandRunner) *postgresEngine {
+func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner) *postgresEngine {
 	e := &postgresEngine{
 		run:       run,
+		startSess: startSess,
 		psql:      filepath.Join(cfg.PGBin, "psql"),
 		rcService: cfg.RCService,
 		service:   cfg.EngineService,
@@ -360,20 +375,26 @@ const defaultGuestPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 // visible in the process table.
 func (e *postgresEngine) psqlRun(ctx context.Context, sql string, env ...string) (string, error) {
 	return e.run(ctx, command{
-		Name: e.psql,
-		Args: []string{
-			"--no-psqlrc", "--quiet", "--no-align", "--tuples-only",
-			"-v", "ON_ERROR_STOP=1",
-			"-h", e.socketDir,
-			"-p", strconv.FormatInt(e.port.Load(), 10),
-			"-U", e.osUser,
-			"-d", "postgres",
-			"-f", "-",
-		},
+		Name:  e.psql,
+		Args:  e.psqlArgs(),
 		Env:   append([]string{"PATH=" + defaultGuestPath}, env...),
 		Stdin: sql,
 		User:  e.osUser,
 	})
+}
+
+// Reading the script from stdin is what lets one invocation serve both a
+// one-shot run and a session held open across several statements.
+func (e *postgresEngine) psqlArgs() []string {
+	return []string{
+		"--no-psqlrc", "--quiet", "--no-align", "--tuples-only",
+		"-v", "ON_ERROR_STOP=1",
+		"-h", e.socketDir,
+		"-p", strconv.FormatInt(e.port.Load(), 10),
+		"-U", e.osUser,
+		"-d", "postgres",
+		"-f", "-",
+	}
 }
 
 func redact(s, secret string) string {

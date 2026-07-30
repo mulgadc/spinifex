@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -64,35 +66,93 @@ func (f *fakeInstanceCommander) StartStoppedInstance(_ context.Context, instance
 // DescribeSnapshots reports against the data volume, which is what decides
 // between deleting the volume and retaining it.
 type fakeSnapshots struct {
-	created     []*ec2.CreateSnapshotInput
-	holding     []string
-	createErr   error
-	describeErr error
+	created       []*ec2.CreateSnapshotInput
+	holding       []string
+	deleted       []string
+	createErr     error
+	describeErr   error
+	deleteErr     error
+	beforeCreate  func()
+	afterDescribe func()
+	// The tags each created snapshot carries, which is what a tag-filtered
+	// describe resolves a DB snapshot identifier through.
+	tagged map[string]map[string]string
 }
 
 var _ snapshotProvider = (*fakeSnapshots)(nil)
 
 func (f *fakeSnapshots) CreateSnapshot(_ context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+	if f.beforeCreate != nil {
+		f.beforeCreate()
+	}
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
 	f.created = append(f.created, input)
-	id := "snap-0001"
+	id := fmt.Sprintf("snap-%04d", len(f.created))
+	if f.tagged == nil {
+		f.tagged = map[string]map[string]string{}
+	}
+	f.tagged[id] = map[string]string{}
+	for _, spec := range input.TagSpecifications {
+		for _, tag := range spec.Tags {
+			f.tagged[id][aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+		}
+	}
 	// A snapshot pins the chunks of the volume it was taken from, so taking one
 	// is also what makes that volume undeletable.
 	f.holding = append(f.holding, id)
 	return &ec2.Snapshot{SnapshotId: aws.String(id), VolumeId: input.VolumeId}, nil
 }
 
-func (f *fakeSnapshots) DescribeSnapshots(_ context.Context, _ *ec2.DescribeSnapshotsInput, _ string) (*ec2.DescribeSnapshotsOutput, error) {
+// A tag filter is answered from the recorded tags; anything else reports every
+// holder, which is what the volume-release path asks for.
+func (f *fakeSnapshots) DescribeSnapshots(_ context.Context, input *ec2.DescribeSnapshotsInput, _ string) (*ec2.DescribeSnapshotsOutput, error) {
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
 	out := &ec2.DescribeSnapshotsOutput{}
 	for _, id := range f.holding {
+		if !f.matchesFilters(id, input) {
+			continue
+		}
 		out.Snapshots = append(out.Snapshots, &ec2.Snapshot{SnapshotId: aws.String(id)})
 	}
+	if f.afterDescribe != nil {
+		f.afterDescribe()
+	}
 	return out, nil
+}
+
+func (f *fakeSnapshots) DescribeSnapshotsStrict(ctx context.Context, input *ec2.DescribeSnapshotsInput,
+	accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+	return f.DescribeSnapshots(ctx, input, accountID)
+}
+
+func (f *fakeSnapshots) matchesFilters(id string, input *ec2.DescribeSnapshotsInput) bool {
+	if input == nil {
+		return true
+	}
+	for _, filter := range input.Filters {
+		key, ok := strings.CutPrefix(aws.StringValue(filter.Name), "tag:")
+		if !ok {
+			continue
+		}
+		if !slices.Contains(aws.StringValueSlice(filter.Values), f.tagged[id][key]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *fakeSnapshots) DeleteSnapshot(_ context.Context, input *ec2.DeleteSnapshotInput, _ string) (*ec2.DeleteSnapshotOutput, error) {
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
+	id := aws.StringValue(input.SnapshotId)
+	f.deleted = append(f.deleted, id)
+	f.holding = slices.DeleteFunc(f.holding, func(held string) bool { return held == id })
+	return &ec2.DeleteSnapshotOutput{}, nil
 }
 
 // stubAgent answers the command channel the way the in-guest agent does: it

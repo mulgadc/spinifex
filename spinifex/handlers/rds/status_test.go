@@ -69,8 +69,9 @@ func TestCanTransition_Lifecycle(t *testing.T) {
 		{StatusAvailable, StatusAvailable, true},
 		{StatusDeleted, StatusDeleted, true},
 
-		// A stopped instance has no VM, so it cannot be backing up or rebooting.
-		{StatusStopped, StatusBackingUp, false},
+		// A stopped instance has no VM to reboot, but its datadir was sealed by the
+		// stop, which is exactly what a snapshot wants to read.
+		{StatusStopped, StatusBackingUp, true},
 		{StatusStopped, StatusRebooting, false},
 		{StatusStopped, StatusAvailable, false},
 

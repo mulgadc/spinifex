@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,7 +44,30 @@ func newCommandRegistry(engine engineOps, storage storageOps) commandRegistry {
 		handlers_rds.CommandGrowFilesystem: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
 			return storage.GrowFilesystem(ctx)
 		},
+		handlers_rds.CommandQuiesce: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			params := commandParams(cmd)
+			hold, err := quiesceHoldFrom(params[handlers_rds.CommandParamQuiesceDeadlineSeconds])
+			if err != nil {
+				return "", err
+			}
+			return "", engine.Quiesce(ctx, params[handlers_rds.CommandParamQuiesceLabel], hold)
+		},
+		handlers_rds.CommandUnquiesce: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
+			return "", engine.Unquiesce(ctx)
+		},
 	}
+}
+
+// The control plane's hold deadline. A missing or unreadable one is refused
+// rather than defaulted: a hold the guest chose the length of would not be the
+// bound the control plane is relying on.
+func quiesceHoldFrom(value string) (time.Duration, error) {
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds <= 0 {
+		return 0, fmt.Errorf("%s must be a positive number of seconds, got %q",
+			handlers_rds.CommandParamQuiesceDeadlineSeconds, value)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // A later value wins, so a malformed command carrying a parameter twice cannot

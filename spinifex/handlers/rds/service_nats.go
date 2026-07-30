@@ -26,6 +26,16 @@ const (
 	modifyTimeout = 6 * time.Minute
 )
 
+// A snapshot create holds the engine quiesced while the COW snapshot is cut, and
+// a delete may have to release the retained source volume behind it. A restore
+// creates a volume from the snapshot and then launches a VM on it, so it costs a
+// create plus the volume.
+const (
+	snapshotTimeout       = 6 * time.Minute
+	snapshotDeleteTimeout = 4 * time.Minute
+	restoreTimeout        = 8 * time.Minute
+)
+
 // The gateway-side adapter that forwards each agent action as a NATS request to
 // the daemon's matching subscriber.
 type NATSService struct {
@@ -79,6 +89,26 @@ func (s *NATSService) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBI
 func (s *NATSService) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInstanceInput, accountID string) (*rds.DeleteDBInstanceOutput, error) {
 	return utils.NATSRequest[rds.DeleteDBInstanceOutput](ctx, s.nc,
 		SubjectDeleteDBInstance, input, deleteTimeout, accountID)
+}
+
+func (s *NATSService) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnapshotInput, accountID string) (*rds.CreateDBSnapshotOutput, error) {
+	return utils.NATSRequest[rds.CreateDBSnapshotOutput](ctx, s.nc,
+		SubjectCreateDBSnapshot, input, snapshotTimeout, accountID)
+}
+
+func (s *NATSService) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDBSnapshotsInput, accountID string) (*rds.DescribeDBSnapshotsOutput, error) {
+	return utils.NATSRequest[rds.DescribeDBSnapshotsOutput](ctx, s.nc,
+		SubjectDescribeDBSnapshots, input, defaultTimeout, accountID)
+}
+
+func (s *NATSService) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnapshotInput, accountID string) (*rds.DeleteDBSnapshotOutput, error) {
+	return utils.NATSRequest[rds.DeleteDBSnapshotOutput](ctx, s.nc,
+		SubjectDeleteDBSnapshot, input, snapshotDeleteTimeout, accountID)
+}
+
+func (s *NATSService) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, accountID string) (*rds.RestoreDBInstanceFromDBSnapshotOutput, error) {
+	return utils.NATSRequest[rds.RestoreDBInstanceFromDBSnapshotOutput](ctx, s.nc,
+		SubjectRestoreDBInstanceFromDBSnapshot, input, restoreTimeout, accountID)
 }
 
 func (s *NATSService) DescribeEvents(ctx context.Context, input *rds.DescribeEventsInput, accountID string) (*rds.DescribeEventsOutput, error) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 // long poll over the gateway; this publishes on the bus subject that poll is
 // subscribed to and waits for the reply the agent carries back on its next one.
 
-// Command types. rds-8 adds the snapshot quiesce.
 const (
 	CommandSetPassword = "set-password"
 	CommandApplyParams = "apply-params"
@@ -25,6 +25,11 @@ const (
 	// Extends the in-guest filesystem onto a data volume the control plane has
 	// already grown (D12).
 	CommandGrowFilesystem = "grow-filesystem"
+	// Holds the engine at a checkpoint for the length of a snapshot, and releases
+	// it again (D10). The hold is a session the agent keeps open, so the pair is
+	// two commands rather than one with a duration.
+	CommandQuiesce   = "quiesce"
+	CommandUnquiesce = "unquiesce"
 )
 
 // Parameter names carried on a command. They are AWS-shaped rather than
@@ -32,6 +37,11 @@ const (
 const (
 	CommandParamMasterUsername     = "MasterUsername"
 	CommandParamMasterUserPassword = "MasterUserPassword"
+
+	// The backup label the engine records, and how long the agent holds the
+	// quiesce before releasing it unasked.
+	CommandParamQuiesceLabel           = "QuiesceLabel"
+	CommandParamQuiesceDeadlineSeconds = "QuiesceDeadlineSeconds"
 )
 
 // Per-command budgets. A password apply is one statement; a parameter apply
@@ -45,6 +55,17 @@ const (
 	// filesystem's metadata rather than with the volume, so this is generous
 	// rather than proportional to the grow.
 	growFilesystemTimeout = 180 * time.Second
+
+	// A quiesce forces an immediate checkpoint, which is bounded by the dirty set
+	// the same way a graceful stop is; the release is one statement.
+	quiesceTimeout   = 120 * time.Second
+	unquiesceTimeout = 60 * time.Second
+
+	// How long the agent holds the backup session before releasing it unasked. It
+	// covers the drain and the whole ec2.CreateSnapshot round trip with room to
+	// spare, so a control plane that dies mid-snapshot costs the engine this much
+	// time in backup mode rather than the rest of its life.
+	quiesceHold = 6 * time.Minute
 
 	// The channel is a live subscription rather than a durable queue (D8), so a
 	// command published between two of the agent's polls reaches nobody.
@@ -91,6 +112,26 @@ func (s *Service) stopEngine(ctx context.Context, accountID, dbInstanceIdentifie
 // mounted, so this needs no ordering against the engine start (D12).
 func (s *Service) growFilesystem(ctx context.Context, accountID, dbInstanceIdentifier string) error {
 	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandGrowFilesystem, growFilesystemTimeout, nil)
+	return err
+}
+
+// Holds the engine at a checkpoint so the data volume can be snapshotted at a
+// consistent point. The agent keeps the backup session open until the release
+// below, or until the deadline expires — so a control plane that dies here does
+// not leave the engine in backup mode indefinitely (D10).
+func (s *Service) quiesceEngine(ctx context.Context, accountID, dbInstanceIdentifier, label string) error {
+	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandQuiesce, quiesceTimeout, []Parameter{
+		{Name: CommandParamQuiesceLabel, Value: label},
+		{Name: CommandParamQuiesceDeadlineSeconds, Value: strconv.Itoa(int(quiesceHold.Seconds()))},
+	})
+	return err
+}
+
+// Releases the held backup session. Idempotent on the agent side, so a release
+// that races the deadline is a success rather than an error the caller has to
+// interpret.
+func (s *Service) unquiesceEngine(ctx context.Context, accountID, dbInstanceIdentifier string) error {
+	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandUnquiesce, unquiesceTimeout, nil)
 	return err
 }
 

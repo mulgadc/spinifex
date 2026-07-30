@@ -4,7 +4,6 @@ package rds
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -138,10 +137,13 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	})
 
 	// The only assertion that proves the resolved set reached the engine rather
-	// than merely being stored: the running cluster reports the override.
+	// than merely being stored: the running cluster reports the override. Asked
+	// from the client VM, since the endpoint is reachable from nowhere else.
 	t.Run("TheEngineRunsTheOverride", func(t *testing.T) {
 		requireAvailable(t, instance)
-		out := runSQL(t, instance, "SHOW work_mem;")
+		client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
+		out := harness.PSQL(t, client, conn, "SHOW work_mem;")
 		assert.Equal(t, "8MB", strings.TrimSpace(out), "the engine is not running the group's work_mem")
 	})
 
@@ -284,29 +286,4 @@ func dbParameterGroupName(instance *rds.DBInstance) string {
 		return ""
 	}
 	return aws.StringValue(instance.DBParameterGroups[0].DBParameterGroupName)
-}
-
-// Shells to psql for the same reason the smoke test does: no production driver
-// dependency for the suite. Skips when psql is absent.
-func runSQL(t *testing.T, instance *rds.DBInstance, statement string) string {
-	t.Helper()
-	psql, err := exec.LookPath("psql")
-	if err != nil {
-		t.Skip("psql not on PATH; skipping the in-engine assertion")
-	}
-
-	host := aws.StringValue(instance.Endpoint.Address)
-	port := aws.Int64Value(instance.Endpoint.Port)
-	cmd := exec.Command(psql, //nolint:gosec // psql is LookPath-resolved, args test-controlled
-		"--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
-		"--set", "ON_ERROR_STOP=1",
-		"--host", host, "--port", fmt.Sprint(port),
-		"--username", dbMasterUser, "--dbname", dbName,
-		"--command", statement,
-	)
-	cmd.Env = append(cmd.Environ(), "PGPASSWORD="+dbMasterPassword, "PGCONNECT_TIMEOUT=30")
-
-	output, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "psql against %s:%d: %s", host, port, output)
-	return string(output)
 }

@@ -12,6 +12,7 @@
 package rds
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -46,6 +47,7 @@ const (
 var (
 	pkgFixOnce sync.Once
 	pkgFix     *Fixture
+	pkgFixErr  error
 )
 
 // Fixture carries per-process state shared across every Test* in this package.
@@ -56,14 +58,30 @@ type Fixture struct {
 	Region     string
 	BaseDomain string
 
+	// The Ensure* fixture the client VM and its keypair hang off. Process-scoped
+	// rather than bound to a test: the client guest is shared by every test that
+	// needs a connection, and must outlive whichever one built it.
+	Harness *harness.Fixture
+
 	// The system-account client, built on first use: it shells to sudo, and only
 	// the tests that reach behind a DB instance need one.
 	systemOnce sync.Once
 	system     *harness.AWSClient
 }
 
+// TestMain drains the process fixture's cleanup chain after the run, so the
+// client VM and its keypair are reclaimed whichever test built them. A leaked
+// resource fails the run: the suite may have passed, but it left state behind
+// that the next run trips over.
 func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+	code := m.Run()
+	if pkgFix != nil && pkgFix.Harness != nil {
+		if err := pkgFix.Harness.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e teardown: %v\n", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // requireRDSFixture returns the package-scoped Fixture, building it on first
@@ -76,6 +94,11 @@ func requireRDSFixture(t *testing.T) *Fixture {
 		}
 		env := harness.LoadEnv(t)
 		awsCli := harness.NewAWSClient(t, env)
+		h, err := harness.NewProcessFixture(awsCli)
+		if err != nil {
+			pkgFixErr = err
+			return
+		}
 		region := os.Getenv("SPINIFEX_AWS_REGION")
 		if region == "" {
 			region = defaultRegion
@@ -86,8 +109,12 @@ func requireRDSFixture(t *testing.T) *Fixture {
 			Account:    harness.IAMAccountID(t, awsCli),
 			Region:     region,
 			BaseDomain: harness.NorthstarBaseDomain(env),
+			Harness:    h,
 		}
 	})
+	if pkgFixErr != nil {
+		t.Fatalf("rds fixture init failed: %v", pkgFixErr)
+	}
 	if pkgFix == nil {
 		t.Skip("SPINIFEX_E2E is unset")
 	}

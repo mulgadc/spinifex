@@ -168,6 +168,94 @@ var awsManagedPolicyDocs = map[string]string{
 		]
 	}`,
 
+	// Verb prefixes rather than the rds:* AWS publishes: rds:* would also match
+	// the internal agent actions the gateway reserves for a DB VM's own role, and
+	// a document appearing to grant those would be a lie in GetPolicyVersion.
+	"arn:aws:iam::aws:policy/AmazonRDSFullAccess": `{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": [
+					"rds:Add*",
+					"rds:Copy*",
+					"rds:Create*",
+					"rds:Delete*",
+					"rds:Describe*",
+					"rds:Download*",
+					"rds:Failover*",
+					"rds:List*",
+					"rds:Modify*",
+					"rds:Promote*",
+					"rds:Purchase*",
+					"rds:Reboot*",
+					"rds:Remove*",
+					"rds:Reset*",
+					"rds:Restore*",
+					"rds:Start*",
+					"rds:Stop*"
+				],
+				"Resource": "*"
+			},
+			{
+				"Effect": "Allow",
+				"Action": [
+					"ec2:DescribeAccountAttributes",
+					"ec2:DescribeAvailabilityZones",
+					"ec2:DescribeInternetGateways",
+					"ec2:DescribeSecurityGroups",
+					"ec2:DescribeSubnets",
+					"ec2:DescribeVpcAttribute",
+					"ec2:DescribeVpcs",
+					"cloudwatch:GetMetricStatistics",
+					"cloudwatch:ListMetrics",
+					"logs:DescribeLogStreams",
+					"logs:GetLogEvents",
+					"sns:ListSubscriptions",
+					"sns:ListTopics",
+					"sns:Publish"
+				],
+				"Resource": "*"
+			},
+			{
+				"Sid": "AllowServiceLinkedRole",
+				"Effect": "Allow",
+				"Action": "iam:CreateServiceLinkedRole",
+				"Resource": "*"
+			}
+		]
+	}`,
+
+	"arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess": `{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": [
+					"rds:Describe*",
+					"rds:ListTagsForResource",
+					"rds:DownloadDBLogFilePortion"
+				],
+				"Resource": "*"
+			},
+			{
+				"Effect": "Allow",
+				"Action": [
+					"ec2:DescribeAccountAttributes",
+					"ec2:DescribeAvailabilityZones",
+					"ec2:DescribeSecurityGroups",
+					"ec2:DescribeSubnets",
+					"ec2:DescribeVpcs",
+					"cloudwatch:GetMetricStatistics",
+					"cloudwatch:ListMetrics",
+					"logs:DescribeLogStreams",
+					"logs:GetLogEvents"
+				],
+				"Resource": "*"
+			}
+		]
+	}`,
+
 	"arn:aws:iam::aws:policy/AmazonEKSServicePolicy": `{
 		"Version": "2012-10-17",
 		"Statement": [

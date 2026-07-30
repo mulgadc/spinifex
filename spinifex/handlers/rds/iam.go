@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"encoding/json"
 	"log/slog"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -13,11 +14,38 @@ const (
 	InstanceRoleName = "rdsInstanceRole"
 
 	instanceRoleInlinePolicyName = "spinifex-rds-instance-internal"
-
-	// Only the four internal agent actions. The customer-facing rds:* set is
-	// rds-10a's; granting it here would let a DB VM manage its account's fleet.
-	instanceRoleInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["rds:RegisterDBInstance","rds:SubmitDBStateChange","rds:PollDBCommands","rds:GetDBBootstrapConfig"],"Resource":"*"}]}`
 )
+
+// The agent-only actions. The gateway's principal-class gate reserves exactly
+// this set, and the role below grants exactly it — one list, so adding a fifth
+// cannot leave the gate and the grant disagreeing.
+var InternalAgentActions = []string{
+	"RegisterDBInstance",
+	"SubmitDBStateChange",
+	"PollDBCommands",
+	"GetDBBootstrapConfig",
+}
+
+// Never rds:*: granting the customer surface here would let a Postgres RCE on
+// one DB VM manage its account's whole fleet.
+var instanceRoleInlinePolicy = func() string {
+	actions := make(handlers_iam.StringOrArr, 0, len(InternalAgentActions))
+	for _, action := range InternalAgentActions {
+		actions = append(actions, "rds:"+action)
+	}
+	doc, err := json.Marshal(handlers_iam.PolicyDocument{
+		Version: "2012-10-17",
+		Statement: []handlers_iam.Statement{{
+			Effect:   handlers_iam.PolicyEffectAllow,
+			Action:   actions,
+			Resource: handlers_iam.StringOrArr{"*"},
+		}},
+	})
+	if err != nil {
+		panic("rds: cannot marshal the instance-role policy: " + err.Error())
+	}
+	return string(doc)
+}()
 
 // Resolved per launch rather than held, mirroring EKS: the KV-backed IAM
 // service has no responders until JetStream is up, so an eager build races

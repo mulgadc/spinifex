@@ -69,70 +69,86 @@ func rejectWith(code string) Handler {
 	}
 }
 
+// One entry per action: what serves it, whether it is agent-only, and which
+// resource its policy check evaluates against. Both authorization facts live on
+// the table so a new action cannot be added without deciding either.
+type actionDef struct {
+	handler Handler
+	// Agent-only: refused to every customer principal by class, before any
+	// policy is evaluated.
+	internal bool
+	// nil evaluates against "*", which is right for creates and for describes
+	// that filter rather than address one resource.
+	scope *resourceScope
+}
+
 // The whole namespace is registered from day one, so an action outside v1 stays
 // distinct from an unknown one.
-var actions = map[string]Handler{
+var actions = map[string]actionDef{
 	// Instance lifecycle.
-	"CreateDBInstance":    typed(CreateDBInstance),
-	"DescribeDBInstances": typed(DescribeDBInstances),
-	"ModifyDBInstance":    typed(ModifyDBInstance),
-	"DeleteDBInstance":    typed(DeleteDBInstance),
-	"RebootDBInstance":    typed(RebootDBInstance),
-	"StartDBInstance":     typed(StartDBInstance),
-	"StopDBInstance":      typed(StopDBInstance),
+	"CreateDBInstance":    {handler: typed(CreateDBInstance)},
+	"DescribeDBInstances": {handler: typed(DescribeDBInstances)},
+	"ModifyDBInstance":    {handler: typed(ModifyDBInstance), scope: dbInstanceScope},
+	"DeleteDBInstance":    {handler: typed(DeleteDBInstance), scope: dbInstanceScope},
+	"RebootDBInstance":    {handler: typed(RebootDBInstance), scope: dbInstanceScope},
+	"StartDBInstance":     {handler: typed(StartDBInstance), scope: dbInstanceScope},
+	"StopDBInstance":      {handler: typed(StopDBInstance), scope: dbInstanceScope},
 
-	// Snapshots.
-	"CreateDBSnapshot":                typed(CreateDBSnapshot),
-	"DescribeDBSnapshots":             typed(DescribeDBSnapshots),
-	"DeleteDBSnapshot":                typed(DeleteDBSnapshot),
-	"RestoreDBInstanceFromDBSnapshot": typed(RestoreDBInstanceFromDBSnapshot),
+	// Snapshots. A create names two resources — the source instance and the new
+	// snapshot — so it is not scoped to either.
+	"CreateDBSnapshot":                {handler: typed(CreateDBSnapshot)},
+	"DescribeDBSnapshots":             {handler: typed(DescribeDBSnapshots)},
+	"DeleteDBSnapshot":                {handler: typed(DeleteDBSnapshot), scope: dbSnapshotScope},
+	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot)},
 
 	// Automated backups.
-	"DescribeDBInstanceAutomatedBackups": typed(DescribeDBInstanceAutomatedBackups),
+	"DescribeDBInstanceAutomatedBackups": {handler: typed(DescribeDBInstanceAutomatedBackups)},
 
 	// Subnet groups.
-	"CreateDBSubnetGroup":    typed(CreateDBSubnetGroup),
-	"DescribeDBSubnetGroups": typed(DescribeDBSubnetGroups),
-	"DeleteDBSubnetGroup":    typed(DeleteDBSubnetGroup),
+	"CreateDBSubnetGroup":    {handler: typed(CreateDBSubnetGroup)},
+	"DescribeDBSubnetGroups": {handler: typed(DescribeDBSubnetGroups)},
+	"DeleteDBSubnetGroup":    {handler: typed(DeleteDBSubnetGroup), scope: dbSubnetGroupScope},
 
-	// Parameter groups.
-	"CreateDBParameterGroup":    typed(CreateDBParameterGroup),
-	"DescribeDBParameterGroups": typed(DescribeDBParameterGroups),
-	"ModifyDBParameterGroup":    typed(ModifyDBParameterGroup),
-	"DescribeDBParameters":      typed(DescribeDBParameters),
-	"DeleteDBParameterGroup":    typed(DeleteDBParameterGroup),
+	// Parameter groups. DescribeDBParameters is scoped despite being a describe:
+	// its parameter group is required and singular, so it addresses one resource.
+	"CreateDBParameterGroup":    {handler: typed(CreateDBParameterGroup)},
+	"DescribeDBParameterGroups": {handler: typed(DescribeDBParameterGroups)},
+	"ModifyDBParameterGroup":    {handler: typed(ModifyDBParameterGroup), scope: dbParameterGroupScope},
+	"DescribeDBParameters":      {handler: typed(DescribeDBParameters), scope: dbParameterGroupScope},
+	"DeleteDBParameterGroup":    {handler: typed(DeleteDBParameterGroup), scope: dbParameterGroupScope},
 
-	// Tags.
-	"AddTagsToResource":      typed(AddTagsToResource),
-	"RemoveTagsFromResource": typed(RemoveTagsFromResource),
-	"ListTagsForResource":    typed(ListTagsForResource),
+	// Tags. The request names its resource by ARN, so the scope validates one
+	// rather than building it.
+	"AddTagsToResource":      {handler: typed(AddTagsToResource), scope: taggedResourceScope},
+	"RemoveTagsFromResource": {handler: typed(RemoveTagsFromResource), scope: taggedResourceScope},
+	"ListTagsForResource":    {handler: typed(ListTagsForResource), scope: taggedResourceScope},
 
-	// Events.
-	"DescribeEvents": typed(DescribeEvents),
+	// Events. The ring is per-account and a filter names no single resource.
+	"DescribeEvents": {handler: typed(DescribeEvents)},
 
 	// Internal agent actions, callable only by the in-guest agent's system role.
 	// They share the namespace because the agent reaches the control plane over
 	// SigV4-on-awsgw like every other in-guest agent.
-	"RegisterDBInstance":   typed(RegisterDBInstance),
-	"SubmitDBStateChange":  typed(SubmitDBStateChange),
-	"PollDBCommands":       typed(PollDBCommands),
-	"GetDBBootstrapConfig": typed(GetDBBootstrapConfig),
+	"RegisterDBInstance":   {handler: typed(RegisterDBInstance), internal: true},
+	"SubmitDBStateChange":  {handler: typed(SubmitDBStateChange), internal: true},
+	"PollDBCommands":       {handler: typed(PollDBCommands), internal: true},
+	"GetDBBootstrapConfig": {handler: typed(GetDBBootstrapConfig), internal: true},
 
 	// Recognised but out of scope. Read replicas, Aurora clusters and option
 	// groups are not offered at all; point-in-time restore waits on WAL
 	// archiving.
-	"CreateDBInstanceReadReplica":    unsupported(),
-	"PromoteReadReplica":             unsupported(),
-	"CreateDBCluster":                unsupported(),
-	"ModifyDBCluster":                unsupported(),
-	"DeleteDBCluster":                unsupported(),
-	"DescribeDBClusters":             unsupported(),
-	"FailoverDBCluster":              unsupported(),
-	"CreateOptionGroup":              unsupported(),
-	"ModifyOptionGroup":              unsupported(),
-	"DeleteOptionGroup":              unsupported(),
-	"DescribeOptionGroups":           unsupported(),
-	"RestoreDBInstanceToPointInTime": unsupported(),
+	"CreateDBInstanceReadReplica":    {handler: unsupported()},
+	"PromoteReadReplica":             {handler: unsupported()},
+	"CreateDBCluster":                {handler: unsupported()},
+	"ModifyDBCluster":                {handler: unsupported()},
+	"DeleteDBCluster":                {handler: unsupported()},
+	"DescribeDBClusters":             {handler: unsupported()},
+	"FailoverDBCluster":              {handler: unsupported()},
+	"CreateOptionGroup":              {handler: unsupported()},
+	"ModifyOptionGroup":              {handler: unsupported()},
+	"DeleteOptionGroup":              {handler: unsupported()},
+	"DescribeOptionGroups":           {handler: unsupported()},
+	"RestoreDBInstanceToPointInTime": {handler: unsupported()},
 }
 
 // Checked before the IAM policy check, so an unknown action is rejected as
@@ -142,12 +158,13 @@ func HasAction(action string) bool {
 	return ok
 }
 
-// Callers are expected to have authorized the action already; the
-// unknown-action check here is a backstop, not the enforcement point.
+// Callers are expected to have authorized the action already; the unknown-action
+// check here is a backstop, not the enforcement point. The internal actions
+// re-run their own gate, so skipping AuthorizeCaller still cannot reach one.
 func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
-	handler, ok := actions[action]
+	def, ok := actions[action]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
-	return handler(ctx, action, q, nc, caller)
+	return def.handler(ctx, action, q, nc, caller)
 }

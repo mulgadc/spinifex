@@ -1,0 +1,212 @@
+package gateway_rds
+
+import (
+	"slices"
+	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const testRegion = "ap-southeast-2"
+
+// The set the gate refuses to customers must be the set the instance role
+// grants. Deriving one from the other would let both drift together.
+func TestActions_InternalSetMatchesTheInstanceRoleGrant(t *testing.T) {
+	var internal []string
+	for action, def := range actions {
+		if def.internal {
+			internal = append(internal, action)
+		}
+	}
+	slices.Sort(internal)
+	want := slices.Clone(handlers_rds.InternalAgentActions)
+	slices.Sort(want)
+	assert.Equal(t, want, internal)
+}
+
+func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
+	callers := []struct {
+		name   string
+		caller Caller
+	}{
+		{"customer user", testCaller},
+		{"customer role session", Caller{
+			AccountID: testAccountID, PrincipalType: principalTypeAssumedRole,
+			RoleName: "admin", SessionName: "alice",
+		}},
+		// The one an rds:* admin grant would otherwise carry all the way in.
+		{"customer session named like an instance", Caller{
+			AccountID: testAccountID, PrincipalType: principalTypeAssumedRole,
+			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
+		}},
+		{"system user rather than a session", Caller{
+			AccountID: utils.GlobalAccountID, PrincipalType: "user",
+			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
+		}},
+		{"system session under another role", Caller{
+			AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
+			RoleName: "ecsInstanceRole", SessionName: testInstanceID,
+		}},
+	}
+	for _, action := range handlers_rds.InternalAgentActions {
+		for _, tt := range callers {
+			t.Run(action+"/"+tt.name, func(t *testing.T) {
+				err := AuthorizeCaller(t.Context(), action, tt.caller)
+				require.Error(t, err)
+				assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+			})
+		}
+	}
+}
+
+// The class gate says the caller is an RDS VM. Which instance it is stays
+// authorizeAgent's question, so no NATS lookup happens here.
+func TestAuthorizeCaller_AdmitsTheAgentPrincipalClass(t *testing.T) {
+	for _, action := range handlers_rds.InternalAgentActions {
+		t.Run(action, func(t *testing.T) {
+			require.NoError(t, AuthorizeCaller(t.Context(), action, agentCaller()))
+		})
+	}
+}
+
+// Customer actions carry no class requirement: the policy check decides, which
+// is what denies the instance role its account's fleet.
+func TestAuthorizeCaller_LeavesCustomerActionsToPolicy(t *testing.T) {
+	for _, action := range []string{"CreateDBInstance", "DescribeDBInstances", "DeleteDBInstance"} {
+		require.NoError(t, AuthorizeCaller(t.Context(), action, testCaller), "action %q", action)
+		require.NoError(t, AuthorizeCaller(t.Context(), action, agentCaller()), "action %q", action)
+	}
+}
+
+func TestAuthorizeCaller_UnknownAction(t *testing.T) {
+	err := AuthorizeCaller(t.Context(), "NotAnRDSAction", agentCaller())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
+}
+
+func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
+	tests := []struct {
+		action string
+		params map[string]string
+		want   string
+	}{
+		{"ModifyDBInstance", map[string]string{"DBInstanceIdentifier": "orders-db"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"DeleteDBInstance", map[string]string{"DBInstanceIdentifier": "orders-db"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"RebootDBInstance", map[string]string{"DBInstanceIdentifier": "orders-db"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"StartDBInstance", map[string]string{"DBInstanceIdentifier": "orders-db"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"StopDBInstance", map[string]string{"DBInstanceIdentifier": "orders-db"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"DeleteDBSnapshot", map[string]string{"DBSnapshotIdentifier": "orders-db-pre-upgrade"},
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
+		{"DeleteDBSubnetGroup", map[string]string{"DBSubnetGroupName": "db-private"},
+			"arn:aws:rds:ap-southeast-2:123456789012:subgrp:db-private"},
+		{"ModifyDBParameterGroup", map[string]string{"DBParameterGroupName": "pg16-tuned"},
+			"arn:aws:rds:ap-southeast-2:123456789012:pg:pg16-tuned"},
+		{"DescribeDBParameters", map[string]string{"DBParameterGroupName": "pg16-tuned"},
+			"arn:aws:rds:ap-southeast-2:123456789012:pg:pg16-tuned"},
+		{"DeleteDBParameterGroup", map[string]string{"DBParameterGroupName": "pg16-tuned"},
+			"arn:aws:rds:ap-southeast-2:123456789012:pg:pg16-tuned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// A create names no existing resource, and a plural describe filters rather than
+// addresses, so both are evaluated against "*".
+func TestResourceARN_UnscopedActions(t *testing.T) {
+	unscoped := []string{
+		"CreateDBInstance", "DescribeDBInstances", "CreateDBSnapshot", "DescribeDBSnapshots",
+		"RestoreDBInstanceFromDBSnapshot", "DescribeDBInstanceAutomatedBackups",
+		"CreateDBSubnetGroup", "DescribeDBSubnetGroups",
+		"CreateDBParameterGroup", "DescribeDBParameterGroups",
+		"DescribeEvents",
+		"RegisterDBInstance", "SubmitDBStateChange", "PollDBCommands", "GetDBBootstrapConfig",
+	}
+	for _, action := range unscoped {
+		t.Run(action, func(t *testing.T) {
+			// The identifiers a scoped action would consume are supplied on purpose:
+			// an unscoped action must ignore them rather than narrow itself.
+			got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{
+				"DBInstanceIdentifier": "orders-db",
+				"DBSnapshotIdentifier": "orders-db-pre-upgrade",
+			})
+			require.NoError(t, err)
+			assert.Equal(t, anyResource, got)
+		})
+	}
+}
+
+// The tag actions name their resource by ARN, so the scope validates the ARN it
+// was given rather than rebuilding it from an identifier.
+func TestResourceARN_TagActionsUseTheSuppliedARN(t *testing.T) {
+	arn := handlers_rds.DBSnapshotARN(testRegion, testAccountID, "orders-db-pre-upgrade")
+	for _, action := range []string{"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource"} {
+		t.Run(action, func(t *testing.T) {
+			got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{"ResourceName": arn})
+			require.NoError(t, err)
+			assert.Equal(t, arn, got)
+		})
+	}
+}
+
+func TestResourceARN_RejectsUnusableARNs(t *testing.T) {
+	tests := []struct {
+		name         string
+		resourceName string
+	}{
+		{"another account", handlers_rds.DBInstanceARN(testRegion, "999988887777", "orders-db")},
+		{"another region", handlers_rds.DBInstanceARN("us-east-1", testAccountID, "orders-db")},
+		{"another service", "arn:aws:ec2:" + testRegion + ":" + testAccountID + ":instance/i-0abc123"},
+		{"not an ARN", "orders-db"},
+		{"unknown resource type", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":cluster:orders"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResourceARN("ListTagsForResource", testRegion, testAccountID,
+				map[string]string{"ResourceName": tt.resourceName})
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+		})
+	}
+}
+
+// A missing identifier is the handler's validation fault to report. Answering it
+// with a denial here would tell the caller the wrong thing about their policy.
+func TestResourceARN_MissingIdentifierFallsBackToAnyResource(t *testing.T) {
+	for _, action := range []string{"DeleteDBInstance", "DescribeDBParameters", "ListTagsForResource"} {
+		got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{})
+		require.NoError(t, err, "action %q", action)
+		assert.Equal(t, anyResource, got, "action %q", action)
+	}
+}
+
+// An unknown action must not resolve to "*": a caller that reached here without
+// the dispatcher's action check would otherwise evaluate rds:<garbage> against
+// every resource in the account and be told it was fine.
+func TestResourceARN_UnknownAction(t *testing.T) {
+	_, err := ResourceARN("NotAnRDSAction", testRegion, testAccountID, nil)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
+}
+
+// Every registered action must resolve a resource without error, so an action
+// added with a scope but no identifier in the request cannot fail the request.
+func TestResourceARN_EveryActionResolves(t *testing.T) {
+	for action := range actions {
+		_, err := ResourceARN(action, testRegion, testAccountID, map[string]string{"Action": action})
+		require.NoError(t, err, "action %q", action)
+	}
+}

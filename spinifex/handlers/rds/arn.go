@@ -12,20 +12,26 @@ import (
 // against the real service.
 
 func DBInstanceARN(region, accountID, dbInstanceIdentifier string) string {
-	return fmt.Sprintf("arn:aws:rds:%s:%s:db:%s", region, accountID, dbInstanceIdentifier)
+	return FormatARN(ResourceKindDBInstance, region, accountID, dbInstanceIdentifier)
 }
 
 // Manual and automated snapshots share the one resource type.
 func DBSnapshotARN(region, accountID, dbSnapshotIdentifier string) string {
-	return fmt.Sprintf("arn:aws:rds:%s:%s:snapshot:%s", region, accountID, dbSnapshotIdentifier)
+	return FormatARN(ResourceKindDBSnapshot, region, accountID, dbSnapshotIdentifier)
 }
 
 func DBSubnetGroupARN(region, accountID, name string) string {
-	return fmt.Sprintf("arn:aws:rds:%s:%s:subgrp:%s", region, accountID, name)
+	return FormatARN(ResourceKindDBSubnetGroup, region, accountID, name)
 }
 
 func DBParameterGroupARN(region, accountID, name string) string {
-	return fmt.Sprintf("arn:aws:rds:%s:%s:pg:%s", region, accountID, name)
+	return FormatARN(ResourceKindDBParameterGroup, region, accountID, name)
+}
+
+// The one place the ARN shape is written, for callers that already hold a kind
+// rather than a resource type of their own.
+func FormatARN(kind ResourceKind, region, accountID, identifier string) string {
+	return fmt.Sprintf("arn:aws:rds:%s:%s:%s:%s", region, accountID, kind, identifier)
 }
 
 // The resource-type segment of an RDS ARN, and the key the tag registry and

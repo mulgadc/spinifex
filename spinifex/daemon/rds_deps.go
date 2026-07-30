@@ -66,6 +66,13 @@ func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
 		GatewayCACert:    gatewayCA,
 		BootstrapTimeout: time.Duration(d.config.RDS.BootstrapTimeoutSeconds) * time.Second,
 		FailureGrace:     time.Duration(d.config.RDS.FailureGraceSeconds) * time.Second,
+		Backup: handlers_rds.BackupPolicy{
+			RetentionCapDays:       int64(d.config.RDS.BackupRetentionCapDays),
+			RetentionDays:          int64(d.config.RDS.BackupRetentionDays),
+			BackupWindowBlock:      d.config.RDS.BackupWindowBlock,
+			MaintenanceWindowBlock: d.config.RDS.MaintenanceWindowBlock,
+			SweepDeleteLimit:       d.config.RDS.BackupSweepDeleteLimit,
+		},
 	}
 }
 

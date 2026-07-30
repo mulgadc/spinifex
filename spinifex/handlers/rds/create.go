@@ -24,7 +24,7 @@ const firstVMGeneration = 1
 // record. The instance is returned at status=creating; the reconciler flips it
 // to available on the first healthy agent heartbeat (D7).
 func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInstanceInput, accountID string) (out *rds.CreateDBInstanceOutput, err error) {
-	req, err := validateCreateRequest(input)
+	req, err := s.validateCreateRequest(input)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,12 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		DBSubnetGroupName:    req.DBSubnetGroupName,
 		DBParameterGroupName: req.DBParameterGroupName,
 		DeletionProtection:   req.DeletionProtection,
-		Tags:                 req.Tags,
+
+		BackupRetentionPeriod:      req.BackupRetentionPeriod,
+		PreferredBackupWindow:      req.PreferredBackupWindow,
+		PreferredMaintenanceWindow: req.PreferredMaintenanceWindow,
+
+		Tags: req.Tags,
 		Bootstrap: BootstrapState{
 			MasterUserPassword: req.MasterPassword,
 			ResolvedParameters: parameters,

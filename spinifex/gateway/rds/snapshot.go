@@ -26,3 +26,10 @@ func DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnapshotInput, nc 
 func RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, nc *nats.Conn, caller Caller) (any, error) {
 	return handlers_rds.NewNATSService(nc).RestoreDBInstanceFromDBSnapshot(ctx, input, caller.AccountID)
 }
+
+// One DBInstanceAutomatedBackup per instance with automated backups. The
+// individual snapshots stay listable through DescribeDBSnapshots with
+// --snapshot-type automated, which is where AWS puts them too.
+func DescribeDBInstanceAutomatedBackups(ctx context.Context, input *rds.DescribeDBInstanceAutomatedBackupsInput, nc *nats.Conn, caller Caller) (any, error) {
+	return handlers_rds.NewNATSService(nc).DescribeDBInstanceAutomatedBackups(ctx, input, caller.AccountID)
+}

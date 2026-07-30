@@ -113,15 +113,12 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 			Status:             aws.String("active"),
 		})
 	}
-	if rec.BackupRetentionPeriod > 0 {
-		out.BackupRetentionPeriod = aws.Int64(rec.BackupRetentionPeriod)
-	}
-	if rec.PreferredBackupWindow != "" {
-		out.PreferredBackupWindow = aws.String(rec.PreferredBackupWindow)
-	}
-	if rec.PreferredMaintenanceWindow != "" {
-		out.PreferredMaintenanceWindow = aws.String(rec.PreferredMaintenanceWindow)
-	}
+	// Always reported, zero included: the Terraform provider reads all three back,
+	// and an absent backup_retention_period on an instance with backups disabled is
+	// a perpetual diff rather than an honest omission.
+	out.BackupRetentionPeriod = aws.Int64(rec.BackupRetentionPeriod)
+	out.PreferredBackupWindow = aws.String(s.reportedBackupWindow(rec))
+	out.PreferredMaintenanceWindow = aws.String(s.reportedMaintenanceWindow(rec))
 	// AWS has no dedicated failure-reason field on a DB instance, so the reason a
 	// failed instance carries is reported the one place a human-readable status
 	// message fits. Absent while the instance is healthy, as AWS leaves it.

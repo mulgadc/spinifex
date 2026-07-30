@@ -63,9 +63,29 @@ func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnaps
 	if err != nil {
 		return nil, err
 	}
+	record, err := s.snapshotDBInstance(ctx, kv, rev, accountID, rec, req)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.CreateDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(record)}, nil
+}
+
+// The one snapshot path (D10). A customer's CreateDBSnapshot and an rds-9
+// automated backup differ only in who asks and in the type stamped on the record;
+// the quiesce, the node-addressed EC2 snapshot, the db-snapshots record and the
+// per-instance in-flight guard are the same for both.
+//
+// rev is the revision the caller read the DB instance at: the CAS that moves it
+// into backing-up is what serialises the two kinds of snapshot against each other
+// and against a lifecycle op.
+func (s *Service) snapshotDBInstance(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+	accountID string, rec *DBInstanceRecord, req *validatedSnapshot) (*DBSnapshotRecord, error) {
+	if s.deps.Snapshots == nil {
+		return nil, errors.New("rds: no snapshot service configured")
+	}
 	if rec.DataVolumeID == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
-			"DB instance %s has no data volume to snapshot", req.DBInstanceIdentifier)
+			"DB instance %s has no data volume to snapshot", rec.DBInstanceIdentifier)
 	}
 	// Checked before the instance is moved to backing-up, so a request naming a
 	// taken identifier leaves the instance where it was.
@@ -113,9 +133,9 @@ func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnaps
 		"DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
 	slog.InfoContext(ctx, "rds: DB snapshot created",
 		"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-		"snapshotId", snapshotID, "crashConsistent", crashConsistent)
+		"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
 
-	return &rds.CreateDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(&record)}, nil
+	return &record, nil
 }
 
 // Quiesces the engine, snapshots the data volume, and releases the engine again
@@ -258,33 +278,47 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 	if err != nil {
 		return nil, err
 	}
+	if err := s.removeDBSnapshot(ctx, kv, accountID, rec); err != nil {
+		return nil, err
+	}
+	// AWS answers with the snapshot as it last stood, the way a delete of a DB
+	// instance answers with the record it just removed.
+	return &rds.DeleteDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(rec)}, nil
+}
+
+// Removes a DB snapshot, its EC2 data and — when this was the last reference — the
+// data volume behind it. Shared with rds-9's retention sweep, which cannot go
+// through DeleteDBSnapshot: that rejects the rds: namespace automated snapshots
+// live in, so a customer can never delete one by hand.
+func (s *Service) removeDBSnapshot(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBSnapshotRecord) error {
+	if s.deps.Snapshots == nil {
+		return errors.New("rds: no snapshot service configured")
+	}
+	id := rec.DBSnapshotIdentifier
 	// A snapshot still being taken has no data to remove and an in-flight writer
 	// that would recreate the record; the reconciler resolves it either way.
 	if rec.Status != SnapshotStatusAvailable {
-		return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
+		return awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
 			"DB snapshot %s is %s; it must be %s to be deleted", id, rec.Status, SnapshotStatusAvailable)
 	}
 
 	if err := s.deleteEC2Snapshot(ctx, kv, accountID, rec); err != nil {
-		return nil, err
+		return err
 	}
 	// After the EC2 snapshot, so the volume store no longer sees this reference
 	// when it decides whether the volume is still held.
 	if err := s.releaseRetainedVolume(ctx, kv, rec); err != nil {
-		return nil, err
+		return err
 	}
 	// Last: while it exists the snapshot is still nameable, and a retry re-runs
 	// the steps above, each of which tolerates work it has already done.
 	if err := kv.Delete(ctx, DBSnapshotKey(id)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return nil, fmt.Errorf("rds: delete the DB snapshot record for %s: %w", id, err)
+		return fmt.Errorf("rds: delete the DB snapshot record for %s: %w", id, err)
 	}
 
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, id, "DB snapshot deleted.", EventCategoryDeletion)
 	slog.InfoContext(ctx, "rds: DB snapshot deleted", "dbSnapshot", id, "snapshotId", rec.SnapshotID)
-
-	// AWS answers with the snapshot as it last stood, the way a delete of a DB
-	// instance answers with the record it just removed.
-	return &rds.DeleteDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(rec)}, nil
+	return nil
 }
 
 // A snapshot with a volume still reading through it cannot go, which is exactly
@@ -349,38 +383,59 @@ func (s *Service) releaseRetainedVolume(ctx context.Context, kv jetstream.KeyVal
 	if err != nil || !found {
 		return err
 	}
+	_, err = s.reclaimRetainedVolume(ctx, kv, &retained)
+	return err
+}
 
-	holders, err := s.snapshotsHolding(ctx, rec.SourceVolumeID)
+// Deletes a retained data volume once nothing holds it, or records the holders it
+// still has. Reports whether the volume actually went, which is what lets rds-9's
+// reaper count the ones it reclaimed.
+func (s *Service) reclaimRetainedVolume(ctx context.Context, kv jetstream.KeyValue,
+	retained *RetainedVolumeRecord) (bool, error) {
+	holders, err := s.snapshotsHolding(ctx, retained.VolumeID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(holders) > 0 {
 		retained.Snapshots = holders
 		retained.HoldersUnresolved = false
-		return putJSON(ctx, kv, RetainedVolumeKey(rec.SourceVolumeID), &retained)
+		return false, putJSON(ctx, kv, RetainedVolumeKey(retained.VolumeID), retained)
 	}
 
 	if s.deps.Launch.Volume == nil {
-		return errors.New("rds: no volume service configured")
+		return false, errors.New("rds: no volume service configured")
 	}
 	_, err = s.deps.Launch.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(rec.SourceVolumeID),
+		VolumeId: aws.String(retained.VolumeID),
 	}, utils.GlobalAccountID)
-	if err != nil && !awserrors.IsNotFound(err) {
-		return fmt.Errorf("rds: delete the retained data volume %s: %w", rec.SourceVolumeID, err)
+	switch {
+	case err == nil || awserrors.IsNotFound(err):
+	case awserrors.IsErrorCode(err, awserrors.ErrorVolumeInUse):
+		// The volume store's index sees a reference the enumeration above did not.
+		// The disagreement is recorded rather than returned, so the volume is
+		// re-checked on a later pass instead of failing this caller — which for a
+		// DeleteDBSnapshot has already removed the snapshot by now.
+		retained.HoldersUnresolved = true
+		return false, putJSON(ctx, kv, RetainedVolumeKey(retained.VolumeID), retained)
+	default:
+		return false, fmt.Errorf("rds: delete the retained data volume %s: %w", retained.VolumeID, err)
 	}
-	if err := kv.Delete(ctx, RetainedVolumeKey(rec.SourceVolumeID)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("rds: clear the retained-volume record for %s: %w", rec.SourceVolumeID, err)
+	if err := kv.Delete(ctx, RetainedVolumeKey(retained.VolumeID)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return false, fmt.Errorf("rds: clear the retained-volume record for %s: %w", retained.VolumeID, err)
 	}
 	slog.InfoContext(ctx, "rds: retained data volume reclaimed; its last snapshot is gone",
-		"volumeId", rec.SourceVolumeID, "dbSnapshot", rec.DBSnapshotIdentifier)
-	return nil
+		"volumeId", retained.VolumeID, "dbInstance", retained.DBInstanceIdentifier)
+	return true, nil
 }
 
-// The request as CreateDBSnapshot resolved it.
+// The request as CreateDBSnapshot resolved it, or as rds-9's scheduler and the
+// delete path's final-snapshot reservation construct it. SnapshotType is what the
+// record is stamped with, and the only thing separating an automated backup from
+// a manual snapshot once it exists.
 type validatedSnapshot struct {
 	DBSnapshotIdentifier string
 	DBInstanceIdentifier string
+	SnapshotType         string
 	Tags                 map[string]string
 }
 
@@ -403,6 +458,7 @@ func validateCreateSnapshotRequest(input *rds.CreateDBSnapshotInput) (*validated
 	return &validatedSnapshot{
 		DBSnapshotIdentifier: aws.StringValue(input.DBSnapshotIdentifier),
 		DBInstanceIdentifier: aws.StringValue(input.DBInstanceIdentifier),
+		SnapshotType:         SnapshotTypeManual,
 		Tags:                 tagMap,
 	}, nil
 }
@@ -432,10 +488,33 @@ func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (stri
 	}
 }
 
+// A name the caller is minting: a customer snapshot, or a final snapshot at
+// delete. The rds: namespace belongs to automated backups, so it is refused
+// wherever a name is created — and accepted by validateDBSnapshotReference, which
+// is what a restore from an automated backup goes through.
+func validateDBSnapshotIdentifier(id string) error {
+	// Ahead of the name rules, which would reject the colon too but as an opaque
+	// "may contain only lowercase letters, digits and hyphens".
+	if err := rejectAutomatedNamespace(id); err != nil {
+		return err
+	}
+	return validateDBSnapshotName(id)
+}
+
+// A reference to a snapshot that already exists. An automated backup carries the
+// prefix this plane minted it with, and restoring from one is the whole point of
+// keeping it, so the namespace is accepted here.
+func validateDBSnapshotReference(id string) error {
+	if rest, ok := strings.CutPrefix(id, automatedSnapshotPrefix); ok {
+		return validateDBSnapshotName(rest)
+	}
+	return validateDBSnapshotName(id)
+}
+
 // AWS's own rules. The character set is deliberately the DB instance
 // identifier's rather than AWS's laxer one, so every name a snapshot can be
 // created under is also a name DeleteDBInstance accepts for a final snapshot.
-func validateDBSnapshotIdentifier(id string) error {
+func validateDBSnapshotName(id string) error {
 	switch {
 	case id == "":
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBSnapshotIdentifier is required")
@@ -466,7 +545,7 @@ func newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validated
 		DBSnapshotIdentifier:    req.DBSnapshotIdentifier,
 		DBInstanceIdentifier:    rec.DBInstanceIdentifier,
 		AccountID:               accountID,
-		SnapshotType:            SnapshotTypeManual,
+		SnapshotType:            req.SnapshotType,
 		Status:                  SnapshotStatusCreating,
 		SourceVolumeID:          rec.DataVolumeID,
 		Engine:                  rec.Engine,

@@ -111,6 +111,12 @@ func (s *NATSService) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input
 		SubjectRestoreDBInstanceFromDBSnapshot, input, restoreTimeout, accountID)
 }
 
+func (s *NATSService) DescribeDBInstanceAutomatedBackups(ctx context.Context,
+	input *rds.DescribeDBInstanceAutomatedBackupsInput, accountID string) (*rds.DescribeDBInstanceAutomatedBackupsOutput, error) {
+	return utils.NATSRequest[rds.DescribeDBInstanceAutomatedBackupsOutput](ctx, s.nc,
+		SubjectDescribeDBInstanceAutomatedBackups, input, defaultTimeout, accountID)
+}
+
 func (s *NATSService) DescribeEvents(ctx context.Context, input *rds.DescribeEventsInput, accountID string) (*rds.DescribeEventsOutput, error) {
 	return utils.NATSRequest[rds.DescribeEventsOutput](ctx, s.nc,
 		SubjectDescribeEvents, input, defaultTimeout, accountID)

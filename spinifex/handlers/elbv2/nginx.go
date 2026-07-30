@@ -1,8 +1,10 @@
 package handlers_elbv2
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
-	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +12,10 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 )
+
+// maxDNSNameLen is the longest legal DNS name, so a map key cannot be padded out
+// to an unreasonable size by a certificate subject.
+const maxDNSNameLen = 253
 
 // NLB (L4) data plane. NLB listeners render an nginx `stream` config because HAProxy
 // has no UDP support; ALBs stay on HAProxy. Health checks are passive only
@@ -27,6 +33,15 @@ events {
 }
 
 stream {
+{{- range .CertMaps}}
+    map $ssl_server_name ${{.Var}} {
+        hostnames;
+        default {{.DefaultPath}};
+{{- range .Entries}}
+        "{{.Host}}" {{.Path}};
+{{- end}}
+    }
+{{end}}
 {{- range .Upstreams}}
     upstream {{.Name}} {
 {{- range .Servers}}
@@ -40,8 +55,8 @@ stream {
     server {
         listen {{.Port}}{{if .UDP}} udp{{end}}{{if .SSL}} ssl{{end}};
 {{- if .SSL}}
-        ssl_certificate {{.CertPath}};
-        ssl_certificate_key {{.CertPath}};
+        ssl_certificate {{.CertRef}};
+        ssl_certificate_key {{.CertRef}};
 {{- end}}
 {{- if .UDP}}
         proxy_responses 1;
@@ -59,8 +74,27 @@ var nginxStreamTmpl = template.Must(
 // nginxConfig is the render model for the NLB nginx `stream` config.
 type nginxConfig struct {
 	PIDPath   string
+	CertMaps  []nginxCertMap
 	Upstreams []nginxUpstream
 	Servers   []nginxServer
+}
+
+// nginxCertMap picks one TLS listener's certificate by SNI name. nginx allows a
+// single ssl_certificate per key type in a server block, so several names are
+// served by giving the directive a variable and mapping $ssl_server_name to a
+// path. `hostnames` in the rendered map is what makes a *.example.com key match
+// a subdomain, so a wildcard certificate's SAN works as written.
+type nginxCertMap struct {
+	Var         string
+	DefaultPath string
+	Entries     []nginxCertMapEntry
+}
+
+// nginxCertMapEntry is one SNI name → PEM path row. Host is lower-cased and
+// validated as a hostname before it reaches the config.
+type nginxCertMapEntry struct {
+	Host string
+	Path string
 }
 
 // nginxUpstream is one target group's backend pool. An empty pool renders a
@@ -81,10 +115,12 @@ type nginxUpstreamServer struct {
 // nginxServer is one listener's `server` block. TCP_UDP listeners expand to two
 // blocks on the same port (one TCP, one UDP).
 type nginxServer struct {
-	Port     int64
-	UDP      bool
-	SSL      bool
-	CertPath string
+	Port int64
+	UDP  bool
+	SSL  bool
+	// CertRef is what ssl_certificate is given: a literal PEM path for a
+	// single-certificate listener, or `$var` naming this listener's cert map.
+	CertRef  string
 	Upstream string
 }
 
@@ -140,15 +176,18 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 		}
 		upstream := addUpstream(da.TargetGroupArn)
 
-		var certPath string
+		var certRef string
 		if protocolRequiresCert(l.Protocol) {
-			pem, _ := resolveFrontendCert(lb, l, certPEMByArn)
-			if pem != "" {
-				certPath = nginxCertPath(lb, l)
+			ref, certMap, files := buildNginxCerts(lb, l, certPEMByArn)
+			certRef = ref
+			if certMap != nil {
+				cfg.CertMaps = append(cfg.CertMaps, *certMap)
+			}
+			for path, pem := range files {
 				if certFiles == nil {
 					certFiles = make(map[string]string)
 				}
-				certFiles[certPath] = pem
+				certFiles[path] = pem
 			}
 		}
 
@@ -162,8 +201,8 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 		default: // TCP, TLS
 			cfg.Servers = append(cfg.Servers, nginxServer{
 				Port:     l.Port,
-				SSL:      certPath != "",
-				CertPath: certPath,
+				SSL:      certRef != "",
+				CertRef:  certRef,
 				Upstream: upstream,
 			})
 		}
@@ -176,10 +215,111 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 	return buf.String(), certFiles, nil
 }
 
-// nginxCertPath is the stable absolute PEM path for a TLS listener under the
-// agent's nginx cert dir. Daemon-rendered and agent-written paths must match.
-func nginxCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
-	return filepath.Join(lbagent.NginxCertDir, fmt.Sprintf("%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+// buildNginxCerts resolves a TLS listener's certificates into the value for
+// ssl_certificate, an optional SNI map, and the PEMs to deliver. One certificate
+// renders as a literal path: a variable path makes nginx read the PEM on every
+// handshake, which the single-certificate case should not pay for.
+func buildNginxCerts(lb *LoadBalancerRecord, l *ListenerRecord, certPEMByArn map[string]string) (string, *nginxCertMap, map[string]string) {
+	certs := resolveFrontendCerts(lbagent.NginxCertDir, lb, l, certPEMByArn)
+	if len(certs) == 0 {
+		return "", nil, nil
+	}
+
+	files := map[string]string{certs[0].Path: certs[0].PEM}
+	if len(certs) == 1 {
+		return certs[0].Path, nil, files
+	}
+
+	cm := nginxCertMap{Var: nginxCertVar(l), DefaultPath: certs[0].Path}
+	claimed := make(map[string]bool)
+	for i, c := range certs {
+		names := certDNSNames(c.PEM)
+		if i == 0 {
+			// The default already answers every unmatched name, so it needs no
+			// rows — but its own names are claimed so no later certificate can
+			// take them. nginx rejects a duplicate map key outright.
+			for _, h := range names {
+				claimed[h] = true
+			}
+			continue
+		}
+		var selectable bool
+		for _, h := range names {
+			if claimed[h] {
+				continue
+			}
+			claimed[h] = true
+			cm.Entries = append(cm.Entries, nginxCertMapEntry{Host: h, Path: c.Path})
+			selectable = true
+		}
+		// A certificate no SNI name can select would only strand its private key
+		// on the load balancer, so it is not delivered.
+		if selectable {
+			files[c.Path] = c.PEM
+		}
+	}
+
+	if len(cm.Entries) == 0 {
+		return cm.DefaultPath, nil, files
+	}
+	return "$" + cm.Var, &cm, files
+}
+
+// nginxCertVar names the per-listener map variable. Scoped to the listener
+// because a map lives at stream level, and two listeners may attach different
+// certificates for the same name. nginx variables allow only [A-Za-z0-9_], which
+// sanitizeName's hyphens would break.
+func nginxCertVar(l *ListenerRecord) string {
+	return strings.ReplaceAll(sanitizeName("sslcert", l.ListenerID), "-", "_")
+}
+
+// nginxDNSNameRegex matches a hostname usable as a map key, optionally wildcarded
+// in the leftmost label. Deliberately stricter than the rule-condition host regex:
+// these come from a caller-supplied certificate subject and land in the config.
+var nginxDNSNameRegex = regexp.MustCompile(`^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
+
+// certDNSNames returns the names a combined PEM's leaf can be selected by: its
+// DNS SANs, or the subject CN when it has none. Anything that is not plainly a
+// hostname is dropped rather than rendered.
+func certDNSNames(combinedPEM string) []string {
+	leaf := parseLeafCert(combinedPEM)
+	if leaf == nil {
+		return nil
+	}
+	names := leaf.DNSNames
+	if len(names) == 0 && leaf.Subject.CommonName != "" {
+		names = []string{leaf.Subject.CommonName}
+	}
+
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if len(n) <= maxDNSNameLen && nginxDNSNameRegex.MatchString(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// parseLeafCert returns the first certificate in a combined cert+chain+key PEM,
+// which is the leaf by convention of how the material is assembled.
+func parseLeafCert(combinedPEM string) *x509.Certificate {
+	rest := []byte(combinedPEM)
+	for {
+		block, remainder := pem.Decode(rest)
+		if block == nil {
+			return nil
+		}
+		rest = remainder
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil
+		}
+		return leaf
+	}
 }
 
 // buildNLBHealthTargets returns backends the agent actively probes (nginx stream

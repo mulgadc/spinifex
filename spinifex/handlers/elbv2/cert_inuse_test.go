@@ -383,7 +383,8 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 
 // genLeafCertPEM returns a self-signed leaf certificate + private key as PEM,
 // mirroring handlers_acm's own test helper (unexported, different package).
-func genLeafCertPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {
+// dnsNames become SANs, which is how a renderer learns the names a cert serves.
+func genLeafCertPEM(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
@@ -395,6 +396,7 @@ func genLeafCertPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     dnsNames,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	require.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -351,7 +352,7 @@ func TestAddListenerCertificates_RerendersConfig(t *testing.T) {
 
 	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
 	require.NoError(t, err)
-	sniPath := sniCertPath(after, listener, testCertArn2)
+	sniPath := sniCertPath(lbagent.CertDir, after, listener, testCertArn2)
 	assert.Contains(t, after.CertFiles, sniPath, "the added cert needs its own PEM path")
 	assert.Contains(t, after.ConfigText, "crt "+sniPath, "HAProxy must be told to load the added cert")
 }
@@ -370,7 +371,7 @@ func TestRemoveListenerCertificates_RerendersConfig(t *testing.T) {
 	require.NoError(t, err)
 	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
 	require.NoError(t, err)
-	sniPath := sniCertPath(added, listener, testCertArn2)
+	sniPath := sniCertPath(lbagent.CertDir, added, listener, testCertArn2)
 	require.Contains(t, added.CertFiles, sniPath)
 
 	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
@@ -405,7 +406,7 @@ func TestListenerCerts_DefaultCertRendersFirstAndKeepsItsPath(t *testing.T) {
 	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
 	require.NoError(t, err)
 
-	defaultPath := frontendCertPath(lb, listener)
+	defaultPath := frontendCertPath(lbagent.CertDir, lb, listener)
 	assert.Contains(t, lb.CertFiles, defaultPath)
 	assert.Contains(t, lb.ConfigText, "ssl crt "+defaultPath,
 		"the default cert must be the first crt on the bind line")

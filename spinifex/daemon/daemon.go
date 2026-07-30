@@ -1790,8 +1790,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
 
-	// DNS record writer: the single queue-group consumer of
-	// dns.recordset.change. No-op when northstar S3 is not configured.
+	// DNS record writer: a queue-group consumer of dns.recordset.change. Every
+	// node subscribes, so the writer locks each zone before its
+	// read-modify-write. No-op when northstar S3 is not configured.
 	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
 		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
 	} else if sub != nil {
@@ -1799,10 +1800,10 @@ func (d *Daemon) startCluster() error {
 		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
 	}
 
-	// DNS drift backstop: periodically rebuild managed records
-	// from the live cross-tenant inventory and converge the zone. It publishes
-	// through the same queue-group writer, so every node running it serialises on
-	// one writer and never races the zone. No-op when northstar is not configured.
+	// DNS drift backstop: periodically rebuild managed records from the live
+	// cross-tenant inventory and converge the zone. Started on every node but
+	// gated on a per-cycle leader election, so one node publishes per interval.
+	// No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
 		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)

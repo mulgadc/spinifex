@@ -65,13 +65,11 @@ var waitForFlowsHV = func() error {
 	return nil
 }
 
-// sudoCommand wraps exec.Command with sudo when not root; OVS/OVN commands require elevated privileges.
-func sudoCommand(name string, args ...string) *exec.Cmd {
-	if os.Getuid() == 0 {
-		return exec.Command(name, args...)
-	}
-	return exec.Command("sudo", append([]string{name}, args...)...)
-}
+// sudoCommand is utils.SudoCommand, which escalates only what genuinely needs
+// it. Every caller here is an OVS/OVN socket client, so none of them escalate;
+// a local copy that always sudoed silently bypassed that policy and broke the
+// flows-ready barrier once the grants were removed.
+var sudoCommand = utils.SudoCommand
 
 var serviceName = "vpcd"
 
@@ -203,9 +201,11 @@ var checkBrInt = func() error {
 	return nil
 }
 
-// checkOVNController verifies ovn-controller is running. Tries legacy socket path, then OVN 22.03+ path, then systemctl.
+// checkOVNController verifies ovn-controller is running. ovn-appctl resolves a
+// bare target against /var/run/ovn where the socket and pidfile live; ovs-appctl
+// looks in /var/run/openvswitch and only ever logged a missing pidfile.
 var checkOVNController = func() error {
-	if sudoCommand("ovs-appctl", "-t", "ovn-controller", "version").Run() == nil {
+	if sudoCommand("ovn-appctl", "-t", "ovn-controller", "version").Run() == nil {
 		return nil
 	}
 	if matches, _ := filepath.Glob("/var/run/ovn/ovn-controller.*.ctl"); len(matches) > 0 {

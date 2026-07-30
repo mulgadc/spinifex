@@ -20,4 +20,10 @@ chmod 0755 /usr/local/sbin/mulga-ebs-byid /usr/local/sbin/mulga-mgmt-net
 # Whether either starts at boot is declared in 10-mulga-base.preset, not here:
 # mkosi runs preset-all after every postinst, resetting each unit to policy and
 # discarding whatever a postinst enabled or disabled.
-echo "[base] postinst complete: mulga-ebs-byid and mulga-mgmt-net start-at-boot left to preset policy"
+
+# openssh-server's postinst runs ssh-keygen during package install, baking an
+# identical host key pair into every image. sshd-keygen.service
+# (ConditionFirstBoot=yes, Before=ssh.service) regenerates them on first boot.
+rm -f /etc/ssh/ssh_host_*
+
+echo "[base] postinst complete: mulga-ebs-byid and mulga-mgmt-net start-at-boot left to preset policy, baked SSH host keys removed"

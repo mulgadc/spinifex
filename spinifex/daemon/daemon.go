@@ -1122,6 +1122,9 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DisassociateAddress", handleNATSRequest(d.eipService.DisassociateAddress), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddresses", handleNATSRequest(d.eipService.DescribeAddresses), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
+		// vpcd holds the leases, but the records naming those addresses live
+		// here, so the reconcile request flows daemon-ward.
+		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 	)
 
 	for _, s := range subs {

@@ -16,7 +16,30 @@ const (
 	// currently holds. Invoked on cluster teardown so an env reset returns
 	// its leases to the upstream pool instead of stranding them until TTL.
 	TopicDrain = "vpc.dhcp.drain"
+	// TopicLeaseChanged announces that a lease came back on a different
+	// address. Flows the opposite way to the others — vpcd asks the daemon to
+	// reconcile, because the records naming these addresses (an EIP's
+	// PublicIp, an ENI's PublicIpAddress) live daemon-side.
+	TopicLeaseChanged = "vpc.dhcp.lease-changed"
 )
+
+// LeaseChangedRequest asks the owner of a lease's resource record to move it
+// onto NewIP. Purpose selects the owning record; ClientID is that record's id
+// (an allocation id for EIPs, an ENI id for auto-assigned public IPs).
+type LeaseChangedRequest struct {
+	ClientID string `json:"client_id"`
+	Purpose  string `json:"purpose"`
+	PoolName string `json:"pool_name,omitempty"`
+	VPCID    string `json:"vpc_id,omitempty"`
+	OldIP    string `json:"old_ip"`
+	NewIP    string `json:"new_ip"`
+}
+
+// LeaseChangedReply carries an empty Error on success. A failure means the
+// record still names an address vpcd no longer holds, so callers surface it.
+type LeaseChangedReply struct {
+	Error string `json:"error,omitempty"`
+}
 
 // acquireWireRequest is the JSON payload sent by daemon-side
 // NATSClient.RequestAcquire and consumed by Manager.handleAcquireMsg.

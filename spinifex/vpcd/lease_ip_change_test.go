@@ -2,8 +2,10 @@ package vpcd
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
@@ -11,6 +13,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +58,8 @@ func TestLeaseIPChangeHookRebindsGatewayLRP(t *testing.T) {
 		Networks: []string{"192.168.1.115/23"},
 	}))
 
-	hook := leaseIPChangeHook(newHookIGWManager(t, m))
+	// nil conn: a gateway lease is rebound in-process, never over NATS.
+	hook := leaseIPChangeHook(newHookIGWManager(t, m), nil)
 	entry := gwLeaseEntry(dhcp.PurposeGatewayLRP, "vpc-1", "dhcp-gw-lrp-vpc-1", "192.168.1.146")
 	require.NoError(t, hook(context.Background(), entry, net.ParseIP("192.168.1.115")))
 
@@ -63,23 +68,71 @@ func TestLeaseIPChangeHookRebindsGatewayLRP(t *testing.T) {
 	assert.Equal(t, []string{"192.168.1.146/23"}, lrp.Networks)
 }
 
-// EIP, ENI-public and NATGW addresses are API-visible resources recorded outside
-// vpcd, so the hook must report the divergence rather than silently repoint a
-// datapath while DescribeAddresses still returns the old IP.
-func TestLeaseIPChangeHookReportsUnhandledPurposes(t *testing.T) {
-	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()))
+// EIP and ENI-public addresses are API-visible records owned daemon-side, so
+// the hook must hand the move over rather than repoint a datapath while
+// DescribeAddresses still returns the old IP.
+func TestLeaseIPChangeHookRequestsRecordRebind(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
 
-	for _, purpose := range []string{dhcp.PurposeEIP, dhcp.PurposeENIPublic, dhcp.PurposeNATGWExternal} {
-		entry := gwLeaseEntry(purpose, "", "eipalloc-1", "192.168.1.146")
-		err := hook(context.Background(), entry, net.ParseIP("192.168.1.115"))
-		require.Error(t, err, "purpose %q must not be silently accepted", purpose)
-		assert.Contains(t, err.Error(), "192.168.1.115")
-		assert.Contains(t, err.Error(), "192.168.1.146")
+	got := make(chan dhcp.LeaseChangedRequest, 1)
+	sub, err := nc.Subscribe(dhcp.TopicLeaseChanged, func(msg *nats.Msg) {
+		var req dhcp.LeaseChangedRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &req))
+		got <- req
+		reply, _ := json.Marshal(dhcp.LeaseChangedReply{})
+		require.NoError(t, msg.Respond(reply))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()), nc)
+	entry := gwLeaseEntry(dhcp.PurposeEIP, "vpc-1", "eipalloc-1", "192.168.1.146")
+	entry.PoolName = "wan"
+	require.NoError(t, hook(context.Background(), entry, net.ParseIP("192.168.1.115")))
+
+	select {
+	case req := <-got:
+		assert.Equal(t, "eipalloc-1", req.ClientID)
+		assert.Equal(t, dhcp.PurposeEIP, req.Purpose)
+		assert.Equal(t, "wan", req.PoolName)
+		assert.Equal(t, "192.168.1.115", req.OldIP)
+		assert.Equal(t, "192.168.1.146", req.NewIP)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no lease-changed request published")
 	}
 }
 
+// A rejected rebind means the record still names a released address, so the
+// hook must not report success.
+func TestLeaseIPChangeHookSurfacesRebindRejection(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	sub, err := nc.Subscribe(dhcp.TopicLeaseChanged, func(msg *nats.Msg) {
+		reply, _ := json.Marshal(dhcp.LeaseChangedReply{Error: "no EIP record for allocation eipalloc-1"})
+		require.NoError(t, msg.Respond(reply))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()), nc)
+	entry := gwLeaseEntry(dhcp.PurposeEIP, "", "eipalloc-1", "192.168.1.146")
+	err = hook(context.Background(), entry, net.ParseIP("192.168.1.115"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no EIP record for allocation eipalloc-1")
+}
+
+// No responder must not read as success either — nothing moved the record.
+func TestLeaseIPChangeHookErrorsWithoutResponder(t *testing.T) {
+	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()), nil)
+
+	entry := gwLeaseEntry(dhcp.PurposeENIPublic, "", "eni-1", "192.168.1.146")
+	err := hook(context.Background(), entry, net.ParseIP("192.168.1.115"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "eni-1")
+}
+
 func TestLeaseIPChangeHookRejectsGatewayLeaseWithoutVPC(t *testing.T) {
-	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()))
+	hook := leaseIPChangeHook(newHookIGWManager(t, mock.New()), nil)
 
 	entry := gwLeaseEntry(dhcp.PurposeGatewayLRP, "", "dhcp-gw-lrp-vpc-1", "192.168.1.146")
 	err := hook(context.Background(), entry, net.ParseIP("192.168.1.115"))

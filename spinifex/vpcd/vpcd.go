@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -606,7 +607,7 @@ func launchService(cfg *Config) error {
 	// Registered here rather than at manager construction because the IGW
 	// manager that owns the gateway datapath does not exist until now.
 	if dhcpMgr != nil {
-		dhcpMgr.SetIPChangeHook(leaseIPChangeHook(igwMgr))
+		dhcpMgr.SetIPChangeHook(leaseIPChangeHook(igwMgr, nc))
 	}
 	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
 	if err != nil {
@@ -773,26 +774,74 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	return mgr, subs, nil
 }
 
-// leaseIPChangeHook rebinds the datapath when a lease is re-issued on a new
-// address. Only gateway-LRP leases are handled here: their address is internal
-// transit plumbing vpcd owns outright. EIP, ENI-public and NATGW addresses are
-// API-visible resources whose records live outside vpcd, so those are reported
-// instead of silently repointed.
-func leaseIPChangeHook(igwMgr external.IGWManager) dhcp.IPChangeHook {
+// leaseRecordRebindTimeout bounds the daemon-side record reconcile. Larger than
+// the daemon's own budget so its error text wins over a deadline from here.
+const leaseRecordRebindTimeout = 75 * time.Second
+
+// leaseIPChangeHook rebinds whatever was bound to a lease's old address after it
+// moved. Gateway-LRP leases are internal transit plumbing vpcd owns outright, so
+// they are rebound in-process. EIP and ENI-public addresses are API-visible and
+// their records live daemon-side, so those go over TopicLeaseChanged.
+func leaseIPChangeHook(igwMgr external.IGWManager, nc *nats.Conn) dhcp.IPChangeHook {
 	return func(ctx context.Context, e dhcp.Entry, oldIP net.IP) error {
 		if e.Lease == nil {
 			return errors.New("lease ip change: nil lease")
 		}
-		if e.Purpose != dhcp.PurposeGatewayLRP {
-			return fmt.Errorf("no rebind handler for %q lease %s: address moved %s -> %s and the resource record still names %s",
-				e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP, oldIP)
+		if e.Purpose == dhcp.PurposeGatewayLRP {
+			if e.VPCID == "" {
+				return fmt.Errorf("gw-lrp lease %s carries no vpc_id; cannot rebind", e.Lease.ClientID)
+			}
+			prefixLen, _ := e.Lease.SubnetMask.Size()
+			return igwMgr.RebindGatewayIP(ctx, e.VPCID, e.Lease.IP.String(), prefixLen)
 		}
-		if e.VPCID == "" {
-			return fmt.Errorf("gw-lrp lease %s carries no vpc_id; cannot rebind", e.Lease.ClientID)
-		}
-		prefixLen, _ := e.Lease.SubnetMask.Size()
-		return igwMgr.RebindGatewayIP(ctx, e.VPCID, e.Lease.IP.String(), prefixLen)
+		return requestLeaseRecordRebind(ctx, nc, e, oldIP)
 	}
+}
+
+// requestLeaseRecordRebind asks the daemon to move the resource record naming
+// the old address. The old address is already released, so a failed or
+// unanswered request means an API-visible record advertises an address nothing
+// holds — it is returned so the manager logs it against the lease.
+func requestLeaseRecordRebind(ctx context.Context, nc *nats.Conn, e dhcp.Entry, oldIP net.IP) error {
+	if nc == nil {
+		return fmt.Errorf("no NATS connection to rebind %q lease %s (%s -> %s)",
+			e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP)
+	}
+	payload, err := json.Marshal(dhcp.LeaseChangedRequest{
+		ClientID: e.Lease.ClientID,
+		Purpose:  e.Purpose,
+		PoolName: e.PoolName,
+		VPCID:    e.VPCID,
+		OldIP:    ipString(oldIP),
+		NewIP:    ipString(e.Lease.IP),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal lease-changed request for %s: %w", e.Lease.ClientID, err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, leaseRecordRebindTimeout)
+	defer cancel()
+	msg, err := nc.RequestWithContext(reqCtx, dhcp.TopicLeaseChanged, payload)
+	if err != nil {
+		return fmt.Errorf("request rebind of %q lease %s (%s -> %s): %w",
+			e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP, err)
+	}
+	var reply dhcp.LeaseChangedReply
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		return fmt.Errorf("decode rebind reply for %s: %w", e.Lease.ClientID, err)
+	}
+	if reply.Error != "" {
+		return fmt.Errorf("rebind of %q lease %s rejected: %s", e.Purpose, e.Lease.ClientID, reply.Error)
+	}
+	return nil
+}
+
+// ipString renders an IP for the wire, tolerating nil.
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // pickGatewayAllocator returns a DHCPGatewayLRPAllocator for DHCP-sourced pools; otherwise StaticRangeAllocator.

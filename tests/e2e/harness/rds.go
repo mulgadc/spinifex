@@ -11,7 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The statuses a DB instance reports on its way up, the settled state a stop
@@ -159,6 +162,57 @@ func DescribeDBSnapshot(c *AWSClient, id string) (*rds.DBSnapshot, error) {
 		return nil, fmt.Errorf("describe %s returned %d snapshots, want 1", id, len(out.DBSnapshots))
 	}
 	return out.DBSnapshots[0], nil
+}
+
+// AgeAutomatedBackup rewinds the authoritative snapshot record so a live test
+// can place a new backup beyond whole-day retention without waiting a day.
+func AgeAutomatedBackup(t *testing.T, env *Env, accountID, snapshotID string, by time.Duration) {
+	t.Helper()
+	if by <= 0 {
+		t.Fatalf("AgeAutomatedBackup %s: age must be positive, got %s", snapshotID, by)
+	}
+
+	host, token, ca := natsConn(t, env)
+	nc, err := utils.ConnectNATS(host, token, ca)
+	if err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: connect NATS %s: %v", snapshotID, host, err)
+	}
+	defer nc.Close()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: jetstream context: %v", snapshotID, err)
+	}
+	kv, err := js.KeyValue(t.Context(), handlers_rds.AccountBucketName(accountID))
+	if err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: open account KV: %v", snapshotID, err)
+	}
+	key := handlers_rds.DBSnapshotKey(snapshotID)
+	entry, err := kv.Get(t.Context(), key)
+	if err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: read %s: %v", snapshotID, key, err)
+	}
+
+	var rec handlers_rds.DBSnapshotRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: decode %s: %v", snapshotID, key, err)
+	}
+	if rec.SnapshotType != handlers_rds.SnapshotTypeAutomated {
+		t.Fatalf("AgeAutomatedBackup %s: snapshot type is %q, want %q",
+			snapshotID, rec.SnapshotType, handlers_rds.SnapshotTypeAutomated)
+	}
+	if rec.CreatedAt.IsZero() {
+		t.Fatalf("AgeAutomatedBackup %s: snapshot has no creation time", snapshotID)
+	}
+	rec.CreatedAt = rec.CreatedAt.Add(-by)
+	payload, err := json.Marshal(&rec)
+	if err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: encode record: %v", snapshotID, err)
+	}
+	if _, err := kv.Update(t.Context(), key, payload, entry.Revision()); err != nil {
+		t.Fatalf("AgeAutomatedBackup %s: update %s: %v", snapshotID, key, err)
+	}
+	t.Logf("Aged automated backup %s by %s", snapshotID, by)
 }
 
 // ----------------------------------------------------------------------------

@@ -190,6 +190,13 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
 		return err
 	}
+	// Before the volume is released, so the automated backups are no longer holding
+	// its chunks when that decides between deleting and retaining it. AWS keeps
+	// automated backups after a delete as a separate resource; doing that here
+	// would pin the data volume indefinitely under rds-8's retention rule (D10).
+	if err := s.purgeAutomatedBackups(ctx, kv, accountID, rec.DBInstanceIdentifier); err != nil {
+		return fmt.Errorf("rds: sweep the automated backups of %s: %w", rec.DBInstanceIdentifier, err)
+	}
 	if err := s.releaseDataVolume(ctx, kv, accountID, rec); err != nil {
 		return err
 	}
@@ -240,8 +247,11 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv jetstream.KeyValu
 		return finalSnapshotReservation{}, nil
 	}
 
+	// Manual, deliberately: the customer named it, so only the customer removes it
+	// — which is also what keeps rds-9's retention sweep away from it.
 	record := newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
+		SnapshotType:         SnapshotTypeManual,
 		Tags:                 rec.Tags,
 	})
 	record.FinalSnapshot = true

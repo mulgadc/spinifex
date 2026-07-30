@@ -384,6 +384,10 @@ func TestCreateDBInstance_RequiresADefaultVPCWithASubnet(t *testing.T) {
 	assert.False(t, h.recordExists(t, testDBInstanceID))
 }
 
+// Create validation reads the backup policy off the service, so these cases
+// need one. A zero policy carries the built-in defaults.
+func newCreateValidator() *Service { return NewService(nil, testRegion) }
+
 // D19: a parameter that would create a false safety, security or availability
 // guarantee is rejected rather than silently dropped.
 func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
@@ -395,9 +399,6 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 		{"MultiAZ", func(in *rds.CreateDBInstanceInput) { in.MultiAZ = aws.Bool(true) }, "MultiAZ"},
 		{"PubliclyAccessible", func(in *rds.CreateDBInstanceInput) { in.PubliclyAccessible = aws.Bool(true) }, "PubliclyAccessible"},
 		{"StorageEncryptedFalse", func(in *rds.CreateDBInstanceInput) { in.StorageEncrypted = aws.Bool(false) }, "StorageEncrypted"},
-		{"BackupRetentionPeriod", func(in *rds.CreateDBInstanceInput) { in.BackupRetentionPeriod = aws.Int64(7) }, "BackupRetentionPeriod"},
-		{"PreferredBackupWindow", func(in *rds.CreateDBInstanceInput) { in.PreferredBackupWindow = aws.String("03:00-04:00") }, "PreferredBackupWindow"},
-		{"PreferredMaintenanceWindow", func(in *rds.CreateDBInstanceInput) { in.PreferredMaintenanceWindow = aws.String("sun:05:00-sun:06:00") }, "PreferredMaintenanceWindow"},
 		{"IAMDatabaseAuth", func(in *rds.CreateDBInstanceInput) { in.EnableIAMDatabaseAuthentication = aws.Bool(true) }, "EnableIAMDatabaseAuthentication"},
 		{"Iops", func(in *rds.CreateDBInstanceInput) { in.Iops = aws.Int64(3000) }, "Iops"},
 		{"KmsKeyId", func(in *rds.CreateDBInstanceInput) { in.KmsKeyId = aws.String("arn:aws:kms:::key/abc") }, "KmsKeyId"},
@@ -413,7 +414,7 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := validCreateInput()
 			tc.mutate(input)
-			_, err := validateCreateRequest(input)
+			_, err := newCreateValidator().validateCreateRequest(input)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 			assert.Contains(t, err.Error(), tc.wantErr)
@@ -427,7 +428,7 @@ func TestValidateCreateRequest_AcceptsDeletionProtection(t *testing.T) {
 	input := validCreateInput()
 	input.DeletionProtection = aws.Bool(true)
 
-	req, err := validateCreateRequest(input)
+	req, err := newCreateValidator().validateCreateRequest(input)
 	require.NoError(t, err)
 	assert.True(t, req.DeletionProtection)
 }
@@ -464,7 +465,7 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := validCreateInput()
 			tc.mutate(input)
-			_, err := validateCreateRequest(input)
+			_, err := newCreateValidator().validateCreateRequest(input)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantError)
 		})
@@ -476,7 +477,7 @@ func TestValidateCreateRequest_AcceptsTheImplicitDefaultParameterGroup(t *testin
 	input.DBParameterGroupName = aws.String("default.postgres18")
 	input.Port = aws.Int64(6543)
 
-	req, err := validateCreateRequest(input)
+	req, err := newCreateValidator().validateCreateRequest(input)
 	require.NoError(t, err)
 	assert.Equal(t, "default.postgres18", req.DBParameterGroupName)
 	assert.Equal(t, int64(6543), req.Port)
@@ -494,6 +495,6 @@ func TestValidateCreateRequest_AcceptsInertParameters(t *testing.T) {
 	input.MonitoringInterval = aws.Int64(60)
 	input.StorageEncrypted = aws.Bool(true)
 
-	_, err := validateCreateRequest(input)
+	_, err := newCreateValidator().validateCreateRequest(input)
 	require.NoError(t, err)
 }

@@ -48,12 +48,18 @@ type validatedCreate struct {
 	DBSubnetGroupName    string
 	DBParameterGroupName string
 	DeletionProtection   bool
-	Tags                 map[string]string
+	// Automated backups as they will be in force: the retention defaulted when the
+	// request names none, and both windows in canonical text — assigned from the
+	// instance identifier when unnamed, never left empty (rds-9).
+	BackupRetentionPeriod      int64
+	PreferredBackupWindow      string
+	PreferredMaintenanceWindow string
+	Tags                       map[string]string
 }
 
 // Everything that can be decided from the request alone. Network resolution
 // runs afterwards, so a malformed request never reaches the VPC.
-func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, error) {
+func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
@@ -122,6 +128,21 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		paramGroup = engine.DefaultParameterGroupName()
 	}
 
+	// Automated backups are on by default at the full retention cap, matching the
+	// console's own default. A request naming 0 explicitly still turns them off.
+	retention := s.defaultRetentionDays()
+	if input.BackupRetentionPeriod != nil {
+		retention = aws.Int64Value(input.BackupRetentionPeriod)
+		if err := s.validateRetentionPeriod(retention); err != nil {
+			return nil, err
+		}
+	}
+	backupWindow, maintenanceWindow, err := s.validateWindows(identifier,
+		aws.StringValue(input.PreferredBackupWindow), aws.StringValue(input.PreferredMaintenanceWindow))
+	if err != nil {
+		return nil, err
+	}
+
 	// Rejected before the identifier is reserved, so a create with bad tags
 	// leaves no partial record behind.
 	tags, err := validateTags(input.Tags)
@@ -145,7 +166,12 @@ func validateCreateRequest(input *rds.CreateDBInstanceInput) (*validatedCreate, 
 		DBSubnetGroupName:    aws.StringValue(input.DBSubnetGroupName),
 		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
-		Tags:                 tags,
+
+		BackupRetentionPeriod:      retention,
+		PreferredBackupWindow:      backupWindow,
+		PreferredMaintenanceWindow: maintenanceWindow,
+
+		Tags: tags,
 	}, nil
 }
 
@@ -192,15 +218,6 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 	// not offered, and omitting it entirely still yields encrypted storage.
 	if input.StorageEncrypted != nil && !aws.BoolValue(input.StorageEncrypted) {
 		return unimplemented("StorageEncrypted=false", "unencrypted storage is not offered")
-	}
-	if aws.Int64Value(input.BackupRetentionPeriod) > 0 {
-		return unimplemented("BackupRetentionPeriod", "automated backups are not implemented yet")
-	}
-	if aws.StringValue(input.PreferredBackupWindow) != "" {
-		return unimplemented("PreferredBackupWindow", "automated backups are not implemented yet")
-	}
-	if aws.StringValue(input.PreferredMaintenanceWindow) != "" {
-		return unimplemented("PreferredMaintenanceWindow", "maintenance windows are not implemented yet")
 	}
 	if aws.BoolValue(input.EnableIAMDatabaseAuthentication) {
 		return unimplemented("EnableIAMDatabaseAuthentication", "IAM database authentication is not implemented")

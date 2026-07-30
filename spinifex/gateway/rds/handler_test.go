@@ -115,6 +115,7 @@ var liveActions = []string{
 	"DescribeDBParameters", "DeleteDBParameterGroup",
 	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
 	"RestoreDBInstanceFromDBSnapshot",
+	"DescribeDBInstanceAutomatedBackups",
 }
 
 // What is under test in this file is the action table and the XML envelope, not
@@ -152,6 +153,8 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 	respondWith(t, nc, handlers_rds.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
 	respondWith(t, nc, handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot,
 		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
+	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstanceAutomatedBackups,
+		&rds.DescribeDBInstanceAutomatedBackupsOutput{})
 	return nc
 }
 
@@ -198,13 +201,6 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 		require.NoError(t, err, "action %q", action)
 		assert.Contains(t, string(body), "<"+action+"Result", "action %q", action)
 	}
-}
-
-func TestDispatch_PendingActionIsNotImplemented(t *testing.T) {
-	_, err := Dispatch(t.Context(), "DescribeDBInstanceAutomatedBackups",
-		map[string]string{"Action": "DescribeDBInstanceAutomatedBackups"}, nil, testCaller)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
 func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {

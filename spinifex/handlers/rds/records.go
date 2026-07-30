@@ -25,11 +25,29 @@ type DBInstanceRecord struct {
 	// Blocks DeleteDBInstance outright (D18). Settable at create and modify.
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
 
-	// Stored by ModifyDBInstance but not yet acted on: rds-9's backup and
-	// maintenance machinery is what consumes them.
+	// The backup policy in force. Both windows are stored in AWS's canonical text
+	// so a describe reads back the string a later modify compares against; an
+	// empty one is derived from the instance identifier rather than left unset.
 	BackupRetentionPeriod      int64  `json:"backupRetentionPeriod,omitempty"`
 	PreferredBackupWindow      string `json:"preferredBackupWindow,omitempty"`
 	PreferredMaintenanceWindow string `json:"preferredMaintenanceWindow,omitempty"`
+
+	// When the last automated backup succeeded. Persisted rather than held in
+	// leader memory, so leader churn, a daemon restart, or two nodes briefly
+	// believing they hold the lease cannot fire a second backup for one window.
+	LastAutomatedBackupAt *time.Time `json:"lastAutomatedBackupAt,omitempty"`
+
+	// When the last automated backup failed or was skipped, and how many have
+	// failed in a row. The stamp paces retries inside a window; the count makes a
+	// persistently failing backup visible and resets on the first success. Neither
+	// moves the instance out of available — a failed backup is an event, not an
+	// instance failure.
+	LastAutomatedBackupFailureAt *time.Time `json:"lastAutomatedBackupFailureAt,omitempty"`
+	AutomatedBackupFailures      int        `json:"automatedBackupFailures,omitempty"`
+
+	// When the maintenance window last opened a deferred modify, holding a window
+	// to one apply exactly as the backup stamp does.
+	LastMaintenanceWindowAt *time.Time `json:"lastMaintenanceWindowAt,omitempty"`
 
 	// What a modify asked for and has not yet delivered. Nil once everything is
 	// in effect, which is also what tells the reconciler a modify is finished.
@@ -265,6 +283,16 @@ var _ TaggedRecord = (*DBSnapshotRecord)(nil)
 func (r *DBSnapshotRecord) GetTags() map[string]string { return r.Tags }
 
 func (r *DBSnapshotRecord) SetTags(tags map[string]string) { r.Tags = tags }
+
+// The backups/{db}/automated/{ts} index entry. Deliberately thin: it exists so
+// the retention sweep can enumerate one instance's automated backups without a
+// bucket-wide snapshot scan, and everything else it needs — age, status, source
+// volume — is read from the db-snapshots record this names.
+type AutomatedBackupRecord struct {
+	DBInstanceIdentifier string    `json:"dbInstanceIdentifier"`
+	DBSnapshotIdentifier string    `json:"dbSnapshotIdentifier"`
+	CreatedAt            time.Time `json:"createdAt"`
+}
 
 // A data volume that outlived its DB instance because a COW snapshot still
 // references its chunks (D10). The last DeleteDBSnapshot to empty Snapshots

@@ -1068,6 +1068,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectDescribeDBSnapshots, handleNATSRequest(d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectDeleteDBSnapshot, handleNATSRequest(d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectDescribeEvents, handleNATSRequest(d.rdsService.DescribeEvents), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectAddTagsToResource, handleNATSRequest(d.rdsService.AddTagsToResource), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectRemoveTagsFromResource, handleNATSRequest(d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
@@ -1832,7 +1833,15 @@ func (d *Daemon) startCluster() error {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
 			reapers = append(reapers, d.eksService.NewDeletingReaper())
 		}
-		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
+		// The RDS automated-backup retention sweep is the one reaper here that
+		// deletes customer data, which is why it rides this backstop rather than the
+		// RDS reconciler: the KV-health gate above is what stops it reaping against a
+		// desired state it cannot read.
+		if d.rdsService != nil {
+			reapers = append(reapers, d.rdsService.NewBackupRetentionReaper())
+		}
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...).
+			WithLeaderElection(d.clusterSweepLease)
 		gc.Start(d.ctx)
 	}
 
@@ -1844,6 +1853,17 @@ func (d *Daemon) startCluster() error {
 	d.awaitShutdown()
 
 	return nil
+}
+
+// clusterSweepLease gates the GC's cluster-wide reapers so exactly one node runs
+// them. The RDS reconciler's lease is that election — cluster-singular, held
+// continuously, and re-evaluated on its own ticker — so being its holder is the
+// whole answer. Without it every ClusterWide reaper is skipped outright.
+func (d *Daemon) clusterSweepLease() (func(), bool) {
+	if d.rdsReconciler == nil {
+		return func() {}, false
+	}
+	return d.rdsReconciler.AcquireClusterLease()
 }
 
 // leakedVolumeInstances returns the set of instance IDs this node owns whose

@@ -30,7 +30,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	if err := validateDBInstanceIdentifier(aws.StringValue(input.DBInstanceIdentifier)); err != nil {
 		return nil, err
 	}
-	if err := validateDBSnapshotIdentifier(aws.StringValue(input.DBSnapshotIdentifier)); err != nil {
+	if err := validateDBSnapshotReference(aws.StringValue(input.DBSnapshotIdentifier)); err != nil {
 		return nil, err
 	}
 	if err := rejectUnimplementedRestore(input); err != nil {

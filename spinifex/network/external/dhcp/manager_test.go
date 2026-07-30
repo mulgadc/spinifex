@@ -110,6 +110,130 @@ func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
+// seedLiveLease puts a BOUND lease for clientID in the store and returns it.
+func seedLiveLease(t *testing.T, fake *dhcp.Fake, store *dhcp.Store, clientID, purpose, vpcID string) *dhcp.Lease {
+	t.Helper()
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: clientID, HWAddr: hw,
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{
+		Purpose: purpose, PoolName: "wan", VPCID: vpcID, Lease: lease,
+	}))
+	return lease
+}
+
+// renewOnto makes Renew answer with the same lease moved to ip — what a server
+// does when it NAKs the renew and the rebind lands elsewhere in the pool.
+func renewOnto(fake *dhcp.Fake, ip net.IP) {
+	fake.RenewHook = func(l *dhcp.Lease) (*dhcp.Lease, error) {
+		moved := *l
+		moved.IP = ip
+		moved.AcquiredAt = time.Now()
+		return &moved, nil
+	}
+}
+
+// A lease that comes back on a different IP must hand the old address back and
+// tell the datapath, or the old one is squatted with nothing renewing it.
+func TestManagerRenewOntoNewIPReleasesOldAndFiresHook(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+	old := seedLiveLease(t, fake, store, "dhcp-gw-lrp-vpc-1", dhcp.PurposeGatewayLRP, "vpc-1")
+	oldIP := old.IP
+	newIP := net.IPv4(192, 0, 2, 200)
+	renewOnto(fake, newIP)
+
+	var mu sync.Mutex
+	var gotOld, gotNew net.IP
+	var gotVPC string
+	mgr.SetIPChangeHook(func(_ context.Context, e dhcp.Entry, prev net.IP) error {
+		mu.Lock()
+		defer mu.Unlock()
+		gotOld, gotNew, gotVPC = prev, e.Lease.IP, e.VPCID
+		return nil
+	})
+
+	require.NoError(t, mgr.Start(context.Background()))
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotNew != nil
+	}, 5*time.Second, 10*time.Millisecond, "hook never fired for the moved lease")
+
+	mu.Lock()
+	assert.Equal(t, oldIP.String(), gotOld.String())
+	assert.Equal(t, newIP.String(), gotNew.String())
+	assert.Equal(t, "vpc-1", gotVPC)
+	mu.Unlock()
+	assert.Equal(t, 1, fake.ReleaseCount(), "the superseded address must be released upstream")
+
+	entry, err := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
+	require.NoError(t, err)
+	assert.Equal(t, newIP.String(), entry.Lease.IP.String(), "KV must hold the new address")
+}
+
+// The common case: a renewal that keeps its address must not release anything
+// or churn the datapath.
+func TestManagerRenewSameIPDoesNotReleaseOrFireHook(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+	seedLiveLease(t, fake, store, "dhcp-gw-lrp-vpc-1", dhcp.PurposeGatewayLRP, "vpc-1")
+
+	var hookCalls atomic.Int32
+	mgr.SetIPChangeHook(func(context.Context, dhcp.Entry, net.IP) error {
+		hookCalls.Add(1)
+		return nil
+	})
+
+	require.NoError(t, mgr.Start(context.Background()))
+	require.Eventually(t, func() bool { return fake.RenewCount() >= 1 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, 0, fake.ReleaseCount())
+	assert.Equal(t, int32(0), hookCalls.Load())
+}
+
+// A failing rebind must not cost the new lease as well — the manager holds it
+// either way, so dropping it here would strand both addresses.
+func TestManagerRenewOntoNewIPKeepsLeaseWhenHookFails(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+	seedLiveLease(t, fake, store, "dhcp-gw-lrp-vpc-1", dhcp.PurposeGatewayLRP, "vpc-1")
+	newIP := net.IPv4(192, 0, 2, 200)
+	renewOnto(fake, newIP)
+
+	var called atomic.Bool
+	mgr.SetIPChangeHook(func(context.Context, dhcp.Entry, net.IP) error {
+		called.Store(true)
+		return errors.New("ovn unreachable")
+	})
+
+	require.NoError(t, mgr.Start(context.Background()))
+	require.Eventually(t, func() bool { return called.Load() }, 5*time.Second, 10*time.Millisecond)
+
+	entry, err := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
+	require.NoError(t, err)
+	assert.Equal(t, newIP.String(), entry.Lease.IP.String())
+	assert.Equal(t, 1, mgr.LoopCount(), "the lease loop must survive a failed rebind")
+}
+
+// No registered hook still releases the superseded address: the leak half must
+// not depend on a datapath owner being wired up.
+func TestManagerRenewOntoNewIPReleasesOldWithoutHook(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+	seedLiveLease(t, fake, store, "eipalloc-1", dhcp.PurposeEIP, "")
+	renewOnto(fake, net.IPv4(192, 0, 2, 201))
+
+	require.NoError(t, mgr.Start(context.Background()))
+	require.Eventually(t, func() bool { return fake.ReleaseCount() == 1 }, 5*time.Second, 10*time.Millisecond,
+		"superseded address must be released even with no hook registered")
+
+	entry, err := store.Get(t.Context(), "eipalloc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "192.0.2.201", entry.Lease.IP.String())
+}
+
 // A release that fails must not strand the KV entry too, and must not abort
 // adoption of the remaining leases.
 func TestManagerStartDropsExpiredLeaseWhenReleaseFails(t *testing.T) {

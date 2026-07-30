@@ -602,6 +602,12 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
 	}
+	// The lease loop can land on a different address after a NAK or an expiry.
+	// Registered here rather than at manager construction because the IGW
+	// manager that owns the gateway datapath does not exist until now.
+	if dhcpMgr != nil {
+		dhcpMgr.SetIPChangeHook(leaseIPChangeHook(igwMgr))
+	}
 	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
 	if err != nil {
 		return fmt.Errorf("construct EIP manager: %w", err)
@@ -765,6 +771,28 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	}
 	slog.Info("vpcd: dhcp manager started", "az", cfg.AZ, "subscriptions", len(subs))
 	return mgr, subs, nil
+}
+
+// leaseIPChangeHook rebinds the datapath when a lease is re-issued on a new
+// address. Only gateway-LRP leases are handled here: their address is internal
+// transit plumbing vpcd owns outright. EIP, ENI-public and NATGW addresses are
+// API-visible resources whose records live outside vpcd, so those are reported
+// instead of silently repointed.
+func leaseIPChangeHook(igwMgr external.IGWManager) dhcp.IPChangeHook {
+	return func(ctx context.Context, e dhcp.Entry, oldIP net.IP) error {
+		if e.Lease == nil {
+			return errors.New("lease ip change: nil lease")
+		}
+		if e.Purpose != dhcp.PurposeGatewayLRP {
+			return fmt.Errorf("no rebind handler for %q lease %s: address moved %s -> %s and the resource record still names %s",
+				e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP, oldIP)
+		}
+		if e.VPCID == "" {
+			return fmt.Errorf("gw-lrp lease %s carries no vpc_id; cannot rebind", e.Lease.ClientID)
+		}
+		prefixLen, _ := e.Lease.SubnetMask.Size()
+		return igwMgr.RebindGatewayIP(ctx, e.VPCID, e.Lease.IP.String(), prefixLen)
+	}
 }
 
 // pickGatewayAllocator returns a DHCPGatewayLRPAllocator for DHCP-sourced pools; otherwise StaticRangeAllocator.

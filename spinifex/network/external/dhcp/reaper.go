@@ -59,6 +59,16 @@ func (m *Manager) leaseOwnerRef() LeaseOwner {
 	return m.leaseOwner
 }
 
+// Leases returns every lease this manager holds. For callers that reconcile a
+// datapath against the addresses actually leased.
+func (m *Manager) Leases(ctx context.Context) ([]Entry, error) {
+	entries, err := m.store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list leases: %w", err)
+	}
+	return entries, nil
+}
+
 // ReapOrphans releases leases whose owning resource no longer exists. Every
 // other leak in this subsystem ends with an address held by nobody, so this is
 // the only path that returns one without an operator. Returns the number

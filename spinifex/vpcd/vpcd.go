@@ -612,6 +612,9 @@ func launchService(cfg *Config) error {
 		// under its lease, so the sweep runs for the life of the daemon.
 		dhcpMgr.SetLeaseOwner(&leaseOwnerResolver{nc: nc, igwMgr: igwMgr})
 		go runLeaseReaper(ctx, dhcpMgr, leaseReapInterval, leaseReapStartDelay)
+		// Leases and gateway ports can already disagree by the time this vpcd
+		// starts, and no lease event will ever fire to correct them.
+		reconcileGatewayLeases(ctx, dhcpMgr, igwMgr)
 	}
 	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
 	if err != nil {

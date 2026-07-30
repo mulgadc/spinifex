@@ -79,6 +79,12 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 	}
 	s.syncCertInUseIndex(ctx, listener.LoadBalancerArn, certsBefore)
 
+	// The SNI set lives in the rendered config, so persisting the listener is
+	// only half the change: without this the certificate never reaches HAProxy.
+	if err := s.reloadListenerLB(ctx, &updated); err != nil {
+		return nil, err
+	}
+
 	return &elbv2.AddListenerCertificatesOutput{
 		Certificates: listenerCertsToSDK(certs),
 	}, nil
@@ -138,6 +144,12 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	s.syncCertInUseIndex(ctx, listener.LoadBalancerArn, certsBefore)
+
+	// Re-render so the detached certificate stops being served. Skipping this
+	// leaves HAProxy answering SNI for a certificate the listener no longer has.
+	if err := s.reloadListenerLB(ctx, &updated); err != nil {
+		return nil, err
+	}
 
 	return &elbv2.RemoveListenerCertificatesOutput{}, nil
 }

@@ -29,7 +29,7 @@ defaults
     timeout server 60s
 {{range .Frontends}}
 frontend {{.Name}}
-    bind *:{{.Port}}{{if .CertPath}} ssl crt {{.CertPath}}{{end}}
+    bind *:{{.Port}}{{if .CertPaths}} ssl{{range .CertPaths}} crt {{.}}{{end}}{{end}}
 {{- range .Rules}}
 {{- range .ACLs}}
     acl {{.Name}} {{.Expr}}
@@ -70,11 +70,14 @@ type HAProxyConfig struct {
 
 // HAProxyFrontend represents a listener frontend.
 type HAProxyFrontend struct {
-	Name           string
-	BindAddr       string
-	Port           int64
-	Protocol       string // listener protocol (HTTP/HTTPS/TCP/TLS); drives TLS termination
-	CertPath       string // combined-PEM path for `ssl crt`; empty for non-secure frontends
+	Name     string
+	BindAddr string
+	Port     int64
+	Protocol string // listener protocol (HTTP/HTTPS/TCP/TLS); drives TLS termination
+	// CertPaths are the combined-PEM paths for `ssl crt`, default certificate
+	// first, then each attached SNI certificate. Empty for non-secure frontends.
+	// HAProxy accepts crt more than once on a bind line and picks by SNI itself.
+	CertPaths      []string
 	DefaultBackend string
 	Rules          []HAProxyRule
 }
@@ -258,14 +261,14 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			DefaultBackend: defaultBackendName,
 		}
 
-		// Resolve the default cert and stage it for delivery to the agent.
+		// Resolve every attached cert and stage each for delivery to the agent.
 		if protocolRequiresCert(l.Protocol) {
-			if pem, path := resolveFrontendCert(lb, l, certPEMByArn); pem != "" {
-				frontend.CertPath = path
+			for _, c := range resolveFrontendCerts(lb, l, certPEMByArn) {
+				frontend.CertPaths = append(frontend.CertPaths, c.Path)
 				if cfg.CertFiles == nil {
 					cfg.CertFiles = make(map[string]string)
 				}
-				cfg.CertFiles[path] = pem
+				cfg.CertFiles[c.Path] = c.PEM
 			}
 		}
 
@@ -322,6 +325,65 @@ func resolveFrontendCert(lb *LoadBalancerRecord, l *ListenerRecord, certPEMByArn
 		return "", ""
 	}
 	return pem, frontendCertPath(lb, l)
+}
+
+// frontendCert is one staged PEM: the path the agent writes it to, and the
+// combined cert+chain+key it writes there.
+type frontendCert struct {
+	Path string
+	PEM  string
+}
+
+// resolveFrontendCerts returns every resolvable certificate attached to the
+// listener, default first so it is the one HAProxy falls back to when a client
+// sends no SNI. Certificates whose material cannot be resolved are skipped
+// rather than failing the render: a listener must keep serving its other names.
+func resolveFrontendCerts(lb *LoadBalancerRecord, l *ListenerRecord, certPEMByArn map[string]string) []frontendCert {
+	if len(l.Certificates) == 0 || certPEMByArn == nil {
+		return nil
+	}
+
+	out := make([]frontendCert, 0, len(l.Certificates))
+	if pem, path := resolveFrontendCert(lb, l, certPEMByArn); pem != "" {
+		out = append(out, frontendCert{Path: path, PEM: pem})
+	}
+
+	defaultArn := defaultCertArn(l)
+	for _, c := range l.Certificates {
+		if c.CertificateArn == defaultArn {
+			continue
+		}
+		pem, ok := certPEMByArn[c.CertificateArn]
+		if !ok || pem == "" {
+			continue
+		}
+		out = append(out, frontendCert{Path: sniCertPath(lb, l, c.CertificateArn), PEM: pem})
+	}
+	return out
+}
+
+// defaultCertArn returns the ARN resolveFrontendCert would treat as default, so
+// the two agree on which certificate is not an SNI extra.
+func defaultCertArn(l *ListenerRecord) string {
+	if len(l.Certificates) == 0 {
+		return ""
+	}
+	for _, c := range l.Certificates {
+		if c.IsDefault {
+			return c.CertificateArn
+		}
+	}
+	return l.Certificates[0].CertificateArn
+}
+
+// sniCertPath is the stable absolute PEM path for a non-default certificate.
+// Keyed on the certificate so it is distinct per cert and stable across renders;
+// the default cert keeps frontendCertPath's name so an existing deployment's
+// file does not move. sanitizeName also guarantees no path separators, which the
+// agent's write path rejects.
+func sniCertPath(lb *LoadBalancerRecord, l *ListenerRecord, certArn string) string {
+	return filepath.Join(lbagent.CertDir,
+		fmt.Sprintf("%s-%s-%s.pem", lb.LoadBalancerID, l.ListenerID, sanitizeName("cert", certArn)))
 }
 
 // registerRuleBackend registers the backend for a rule's single action and returns its name.

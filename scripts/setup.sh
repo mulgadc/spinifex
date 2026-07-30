@@ -184,6 +184,13 @@ create_service_users() {
 install_sudoers() {
     stage "installing scoped sudoers rules"
     $SUDO tee /etc/sudoers.d/spinifex-network > /dev/null << 'SUDOERS'
+# No PAM session for the service users. Every sudo call otherwise logs
+# "pam_limits: Could not set limit for 'core'": the units set LimitCORE=0 and
+# their CapabilityBoundingSet omits CAP_SYS_RESOURCE, so pam_limits cannot apply
+# the limits.conf default and warns. It also means sudo children inherit the
+# unit's rlimits rather than the system defaults, which is the RG-9 intent.
+Defaults:spinifex-daemon,spinifex-vpcd !pam_session
+
 # Spinifex daemon: tap devices, OVS bridge management, and DHCP for external IPs
 # ovs-ofctl installs the per-tap IMDS datapath flows on br-imds; sysctl sets the
 # per-endpoint rp_filter/accept_local the asymmetric reply path needs.

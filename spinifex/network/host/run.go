@@ -42,6 +42,29 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	return stdout.Bytes(), nil
 }
 
+// directRunner runs the command as the calling user, never via sudo. It serves
+// the read-only OVS/OVN probes: setup-ovn.sh group-owns db.sock and the ctl
+// sockets to `spinifex`, so the service users reach them without a privilege
+// transition. Mutating call sites keep execRunner.
+type directRunner struct{}
+
+var _ Runner = directRunner{}
+
+// NewDirectRunner returns a Runner that never escalates.
+func NewDirectRunner() Runner { return directRunner{} }
+
+func (directRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		out := append(stdout.Bytes(), stderr.Bytes()...)
+		return out, fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), strings.TrimSpace(string(out)), err)
+	}
+	return stdout.Bytes(), nil
+}
+
 // kernelReader satisfies InterfaceReader via the live kernel.
 type kernelReader struct{}
 

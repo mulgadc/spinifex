@@ -1005,6 +1005,17 @@ for s in /var/run/openvswitch/db.sock /var/run/openvswitch/*.ctl /var/run/ovn/*.
         chmod 0660 "$s" 2>/dev/null || true
     fi
 done
+
+# Group-WRITE on the pidfiles, not just read: `ovn-appctl -t <daemon>` resolves
+# the pid-named ctl socket through the pidfile, and OVS opens it O_RDWR to test
+# the fcntl liveness lock. Read-only fails the probe with EACCES. This also
+# tightens them from the 0644 they ship with.
+for p in /var/run/openvswitch/*.pid /var/run/ovn/*.pid; do
+    if [ -f "$p" ]; then
+        chgrp "$GROUP" "$p" 2>/dev/null || true
+        chmod 0660 "$p" 2>/dev/null || true
+    fi
+done
 HELPER
 sudo chmod 0755 "$PERMS_HELPER"
 sudo "$PERMS_HELPER"
@@ -1012,7 +1023,11 @@ echo "  OVS/OVN sockets: 0660 root:spinifex (group-scoped, no world access)"
 
 # Persist across restarts of both daemons. Rewritten unconditionally: an existing
 # file is the old 0666 override, and skipping would leave that exposure in place.
-for unit in openvswitch-switch:/var/run/openvswitch/db.sock "ovn-controller:/var/run/ovn/*.ctl"; do
+# openvswitch-ipsec is included because Step 10 restarts it after this sweep,
+# so its ctl socket would otherwise be the one file left at the shipped mode.
+for unit in openvswitch-switch:/var/run/openvswitch/db.sock \
+    "ovn-controller:/var/run/ovn/*.ctl" \
+    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"; do
     UNIT="${unit%%:*}"
     WAIT_GLOB="${unit#*:}"
     OVERRIDE_DIR="/etc/systemd/system/${UNIT}.service.d"

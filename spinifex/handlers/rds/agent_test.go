@@ -27,12 +27,14 @@ const (
 	testInstance = "i-0abc123"
 )
 
-// newTestCA builds a throwaway CA so cert minting is exercised without needing
-// the cluster's real ca.key, which the daemon user cannot read.
-func newTestCA(t *testing.T) CALoader {
-	t.Helper()
+// Minted once per package rather than per harness. An RSA-2048 keygen costs
+// ~140ms under GOFIPS140, and every fixture needs a CA, which dominated the
+// package's runtime. The CA is immutable, so sharing it is safe.
+var sharedTestCA = sync.OnceValues(func() (*x509.Certificate, *rsa.PrivateKey) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	tmpl := x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "Test Cluster CA"},
@@ -43,9 +45,21 @@ func newTestCA(t *testing.T) CALoader {
 		IsCA:                  true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	cert, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
+	return cert, key
+})
+
+// newTestCA builds a throwaway CA so cert minting is exercised without needing
+// the cluster's real ca.key, which the daemon user cannot read.
+func newTestCA(t *testing.T) CALoader {
+	t.Helper()
+	cert, key := sharedTestCA()
 	return func() (*x509.Certificate, *rsa.PrivateKey, error) { return cert, key, nil }
 }
 

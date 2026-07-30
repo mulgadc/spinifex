@@ -70,10 +70,10 @@ func DBSnapshotKey(dbSnapshotIdentifier string) string {
 }
 
 // A JetStream KV key admits no colon, and an automated backup's snapshot
-// identifier carries the rds: prefix AWS gives it. The colon is mapped to "=",
-// which is a legal key character and one no RDS identifier may contain, so the
-// mapping is reversible and a manual snapshot's key is unchanged.
-const kvKeyColon = "="
+// identifier carries the rds: prefix AWS gives it. The colon is mapped to ".",
+// the separator other stores compose keys from, and one no RDS identifier may
+// contain — so the mapping is reversible and a manual snapshot's key is unchanged.
+const kvKeyColon = "."
 
 func kvKeySegment(identifier string) string {
 	return strings.ReplaceAll(identifier, ":", kvKeyColon)

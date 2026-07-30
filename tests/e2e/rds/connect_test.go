@@ -42,6 +42,9 @@ const (
 // is no endpoint name to resolve at all.
 func TestConnectivity(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, 1)
+
 	id := fmt.Sprintf("%s-connect-%d", dbInstancePfx, time.Now().Unix())
 
 	// Started before the client VM is built so the two boots overlap: the create
@@ -49,8 +52,8 @@ func TestConnectivity(t *testing.T) {
 	harness.Phase(t, "Creating DB instance %q", id)
 	createDBInstance(t, f, id)
 
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	client := rdsClient(t, f)
+	instance := waitForAvailable(t, f, id)
 
 	endpoint := aws.StringValue(instance.Endpoint.Address)
 	require.NotEmpty(t, endpoint, "an available instance must publish an endpoint")

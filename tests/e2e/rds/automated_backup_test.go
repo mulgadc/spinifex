@@ -35,6 +35,11 @@ const (
 // slower than the window would otherwise miss it and there is no catch-up.
 func TestAutomatedBackups(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// The instance being backed up, plus the restore that holds one of its
+	// snapshots open across the sweep.
+	reserveDBVMs(t, 2)
+
 	id := fmt.Sprintf("%s-backup-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q with automated backups on", id)
@@ -42,7 +47,7 @@ func TestAutomatedBackups(t *testing.T) {
 		in.BackupRetentionPeriod = aws.Int64(1)
 	})
 
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	assert.Equal(t, int64(1), aws.Int64Value(instance.BackupRetentionPeriod))
 	// A create that names no window is assigned one, as AWS does, so a customer is
 	// never left believing nothing is scheduled.
@@ -140,7 +145,7 @@ func TestAutomatedBackups(t *testing.T) {
 		restoredID := fmt.Sprintf("%s-backup-reader-%d", dbInstancePfx, time.Now().Unix())
 		harness.Phase(t, "Restoring %q from automated snapshot %q", restoredID, inUse)
 		restoreFromSnapshot(t, f, restoredID, inUse)
-		harness.WaitForDBInstanceAvailable(t, f.AWS, restoredID)
+		waitForAvailable(t, f, restoredID)
 
 		for _, snapshotID := range []string{oldest, inUse, newest} {
 			harness.AgeAutomatedBackup(t, f.Env, f.Account, snapshotID, 2*24*time.Hour)

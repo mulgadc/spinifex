@@ -44,16 +44,19 @@ const (
 // last one leaves it rebooted rather than pristine.
 func TestLifecycle(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, 1)
+
 	suffix := time.Now().Unix()
 	id := fmt.Sprintf("%s-lifecycle-%d", dbInstancePfx, suffix)
 	paramGroup := fmt.Sprintf("%s-static-%d", dbInstancePfx, suffix)
 
 	harness.Phase(t, "Creating DB instance %q", id)
 	createDBInstance(t, f, id)
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	client := rdsClient(t, f)
 	system := f.SystemAWS(t)
 
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 	endpoint := conn.Host
 
@@ -103,7 +106,7 @@ func TestLifecycle(t *testing.T) {
 	t.Run("StartComesBackOnTheSameDatadirAndAddress", func(t *testing.T) {
 		_, err := f.AWS.RDS.StartDBInstance(&rds.StartDBInstanceInput{DBInstanceIdentifier: aws.String(id)})
 		require.NoError(t, err, "start-db-instance")
-		started := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		started := waitForAvailable(t, f, id)
 
 		require.NotNil(t, started.Endpoint)
 		assert.Equal(t, endpoint, aws.StringValue(started.Endpoint.Address), "the endpoint must survive a stop/start")
@@ -119,7 +122,7 @@ func TestLifecycle(t *testing.T) {
 
 		_, err := f.AWS.RDS.RebootDBInstance(&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(id)})
 		require.NoError(t, err, "reboot-db-instance")
-		harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		waitForAvailable(t, f, id)
 
 		out := harness.PSQL(t, client, conn, fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", lifecycleTable))
 		assert.Equal(t, lifecycleNote, strings.TrimSpace(out), "a reboot must not lose the datadir")
@@ -190,7 +193,7 @@ func TestLifecycle(t *testing.T) {
 
 		_, err = f.AWS.RDS.RebootDBInstance(&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(id)})
 		require.NoError(t, err, "reboot-db-instance")
-		rebooted := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		rebooted := waitForAvailable(t, f, id)
 
 		require.NotEmpty(t, rebooted.DBParameterGroups)
 		assert.Equal(t, "in-sync", aws.StringValue(rebooted.DBParameterGroups[0].ParameterApplyStatus),

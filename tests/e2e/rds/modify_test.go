@@ -54,14 +54,19 @@ const (
 // serial console instead.
 func TestModifyStorageAndClass(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// One throughout: the class change replaces the VM behind the instance rather
+	// than adding a second one.
+	reserveDBVMs(t, 1)
+
 	id := fmt.Sprintf("%s-modify-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q at %d GiB on %s", id, dbStorageGiB, dbClass)
 	createDBInstance(t, f, id)
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	client := rdsClient(t, f)
 	system := f.SystemAWS(t)
 
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 	endpoint := conn.Host
 	require.Equal(t, int64(dbStorageGiB), aws.Int64Value(instance.AllocatedStorage))
@@ -107,7 +112,7 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assert.Nil(t, out.DBInstance.PendingModifiedValues,
 			"a grow that has reached the volume must not still read as pending")
 
-		grown := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		grown := waitForAvailable(t, f, id)
 		assert.Equal(t, int64(grownStorageGiB), aws.Int64Value(grown.AllocatedStorage),
 			"the describe must report the grown size once the instance is back")
 		assert.Nil(t, grown.PendingModifiedValues, "nothing is outstanding once the filesystem grow has run")
@@ -150,7 +155,7 @@ func TestModifyStorageAndClass(t *testing.T) {
 			"the replacement VM has to boot and report healthy before the instance is available again")
 		assert.Equal(t, grownClass, aws.StringValue(out.DBInstance.DBInstanceClass))
 
-		changed := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		changed := waitForAvailable(t, f, id)
 		assert.Equal(t, grownClass, aws.StringValue(changed.DBInstanceClass))
 		assert.Equal(t, int64(grownStorageGiB), aws.Int64Value(changed.AllocatedStorage),
 			"a class change must not disturb the storage a previous grow landed")

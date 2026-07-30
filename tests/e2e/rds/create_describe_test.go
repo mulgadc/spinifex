@@ -24,6 +24,9 @@ import (
 // subtests, because booting the VM and running initdb is by far the slowest step.
 func TestCreateDescribe(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, 1)
+
 	id := fmt.Sprintf("%s-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q", id)
@@ -41,7 +44,7 @@ func TestCreateDescribe(t *testing.T) {
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailable", func(t *testing.T) {
-		instance = harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		instance = waitForAvailable(t, f, id)
 
 		assert.Equal(t, dbEngine, aws.StringValue(instance.Engine))
 		assert.Equal(t, dbClass, aws.StringValue(instance.DBInstanceClass))

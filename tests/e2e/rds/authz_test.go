@@ -26,12 +26,16 @@ import (
 // account administrator, against which every one of these checks passes.
 func TestAuthorization(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// The instance under test, plus the second tenant's short-lived twin.
+	reserveDBVMs(t, 2)
+
 	suffix := time.Now().Unix()
 	id := fmt.Sprintf("%s-authz-%d", dbInstancePfx, suffix)
 
 	harness.Phase(t, "Creating DB instance %q for the authorization matrix", id)
 	createDBInstance(t, f, id)
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	arn := aws.StringValue(instance.DBInstanceArn)
 	require.NotEmpty(t, arn, "an available instance must publish its ARN")
 

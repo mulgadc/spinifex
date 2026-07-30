@@ -12,15 +12,22 @@
 package rds
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/semaphore"
 )
 
 // Mirrors the AWS client's own default, since the endpoint name the control
@@ -44,10 +51,18 @@ const (
 	dbMasterPassword = "e2eSup3rSecret1"
 )
 
+// The suite's DB-VM concurrency cap. Each DB instance is a guest with its own
+// data volume on a node that is also running the cluster, and the phase budget
+// — 25 minutes wall clock — is written against four of them alive at once.
+// Every instance-owning test runs in parallel and takes its allowance from here.
+const maxConcurrentDBVMs = 4
+
 var (
 	pkgFixOnce sync.Once
 	pkgFix     *Fixture
 	pkgFixErr  error
+
+	dbVMSlots = semaphore.NewWeighted(maxConcurrentDBVMs)
 )
 
 // Fixture carries per-process state shared across every Test* in this package.
@@ -74,7 +89,19 @@ type Fixture struct {
 // resource fails the run: the suite may have passed, but it left state behind
 // that the next run trips over.
 func TestMain(m *testing.M) {
+	// How many tests may run at once is dbVMSlots' business, not the runner's CPU
+	// count: -test.parallel defaults to GOMAXPROCS, so a two-core CI VM would
+	// quietly halve the concurrency this suite's budget is written against. An
+	// explicit -test.parallel on the command line still wins, since flag parsing
+	// happens inside m.Run.
+	if err := flag.Set("test.parallel", strconv.Itoa(maxConcurrentDBVMs)); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: set test.parallel: %v\n", err)
+		os.Exit(1)
+	}
+
+	start := time.Now()
 	code := m.Run()
+	reportCreateLatencies(time.Since(start))
 	if pkgFix != nil && pkgFix.Harness != nil {
 		if err := pkgFix.Harness.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "e2e teardown: %v\n", err)
@@ -82,6 +109,110 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+// reserveDBVMs takes a test's whole DB-VM allowance in one acquisition, before
+// it creates anything. n is the test's peak, so a test that creates and deletes
+// one instance at a time reserves one however many it gets through.
+//
+// The acquisition is atomic because acquiring per instance deadlocks: four tests
+// each holding one slot and each waiting for a second would never progress.
+func reserveDBVMs(t *testing.T, n int64) {
+	t.Helper()
+	require.LessOrEqual(t, n, int64(maxConcurrentDBVMs),
+		"a test cannot reserve more DB VMs than the whole suite is allowed")
+
+	start := time.Now()
+	if err := dbVMSlots.Acquire(context.Background(), n); err != nil {
+		t.Fatalf("reserve %d DB-VM slots: %v", n, err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Logf("waited %s for %d of %d DB-VM slots", waited.Round(time.Second), n, maxConcurrentDBVMs)
+	}
+
+	// Registered before any instance's teardown, so LIFO hands the slots back
+	// only once the last DB VM this test owns is actually gone.
+	t.Cleanup(func() { dbVMSlots.Release(n) })
+}
+
+// Subtests report under their parent, so a create issued from one is attributed
+// to the top-level test that reserved the slot it is using.
+func topLevelName(t *testing.T) string {
+	name, _, _ := strings.Cut(t.Name(), "/")
+	return name
+}
+
+var (
+	clientVMMu sync.Mutex
+	clientVM   harness.SSHTarget
+)
+
+// rdsClient returns the shared client VM, built under a package lock. The
+// instance itself is memoised by the process fixture, but the keypair, default
+// VPC and security-group rules RDSClientVM readies first are not safe to drive
+// concurrently — and the tests that need a client now run in parallel.
+func rdsClient(t *testing.T, f *Fixture) harness.SSHTarget {
+	t.Helper()
+	clientVMMu.Lock()
+	defer clientVMMu.Unlock()
+	if clientVM.Host == "" {
+		clientVM = harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	}
+	return clientVM
+}
+
+var (
+	latencyMu         sync.Mutex
+	dbCreateStarted   = map[string]time.Time{}
+	dbCreateLatencies []dbCreateLatency
+)
+
+type dbCreateLatency struct {
+	test string
+	id   string
+	took time.Duration
+}
+
+// waitForAvailable waits for a DB instance and, the first time it does so for a
+// freshly created one, records how long create → available took. That boot is
+// the suite's dominant cost and the number the phase budget is written against,
+// so it is reported per instance rather than inferred from the run's total.
+func waitForAvailable(t *testing.T, f *Fixture, id string) *rds.DBInstance {
+	t.Helper()
+	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+
+	latencyMu.Lock()
+	started, first := dbCreateStarted[id]
+	took := time.Since(started)
+	if first {
+		delete(dbCreateStarted, id)
+		dbCreateLatencies = append(dbCreateLatencies,
+			dbCreateLatency{test: topLevelName(t), id: id, took: took})
+	}
+	latencyMu.Unlock()
+
+	if first {
+		t.Logf("%s reached available %s after its create was issued", id, took.Round(time.Second))
+	}
+	return instance
+}
+
+// reportCreateLatencies prints what every DB VM in the run cost, slowest first.
+// A suite that drifts past its budget should say which create got slower.
+func reportCreateLatencies(wall time.Duration) {
+	latencyMu.Lock()
+	defer latencyMu.Unlock()
+	if len(dbCreateLatencies) == 0 {
+		return
+	}
+	sort.Slice(dbCreateLatencies, func(i, j int) bool {
+		return dbCreateLatencies[i].took > dbCreateLatencies[j].took
+	})
+	fmt.Fprintf(os.Stderr, "\nRDS suite: %s wall clock, %d DB instances, ≤%d concurrent\n",
+		wall.Round(time.Second), len(dbCreateLatencies), maxConcurrentDBVMs)
+	for _, l := range dbCreateLatencies {
+		fmt.Fprintf(os.Stderr, "  create→available %8s  %s (%s)\n", l.took.Round(time.Second), l.id, l.test)
+	}
 }
 
 // requireRDSFixture returns the package-scoped Fixture, building it on first
@@ -153,16 +284,18 @@ func validCreateInput(id string) *rds.CreateDBInstanceInput {
 // createDBInstance creates the suite's standard instance and returns the create
 // response's own view of it — status creating, no endpoint yet.
 //
-// Every test that owns an instance goes through here, because the two things a
+// Every test that owns an instance goes through here, because the three things a
 // test that boots a DB VM must not forget are registered here: the teardown, so
-// a failed run does not charge the next one, and the failure-only diagnostic
-// bundle, without which "create timed out" names no owning phase.
+// a failed run does not charge the next one, the failure-only diagnostic bundle,
+// without which "create timed out" names no owning phase, and the charge against
+// the test's DB-VM reservation.
 func createDBInstance(t *testing.T, f *Fixture, id string, opts ...func(*rds.CreateDBInstanceInput)) *rds.DBInstance {
 	t.Helper()
 	in := validCreateInput(id)
 	for _, opt := range opts {
 		opt(in)
 	}
+	markDBCreateStarted(id)
 	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — the instance under test
 	require.NoError(t, err, "create-db-instance %s", id)
 	require.NotNil(t, out.DBInstance)
@@ -207,4 +340,11 @@ func deleteInstanceAs(t *testing.T, c *harness.AWSClient, id string) {
 		return
 	}
 	harness.WaitForDBInstanceGone(t, c, id)
+}
+
+// Stamps the create so waitForAvailable can report what the boot cost.
+func markDBCreateStarted(id string) {
+	latencyMu.Lock()
+	defer latencyMu.Unlock()
+	dbCreateStarted[id] = time.Now()
 }

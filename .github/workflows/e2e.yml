@@ -50,7 +50,7 @@ jobs:
     # provision a tofu VM and pay the Spinifex install only to run nothing and
     # tear down. Push triggers keep running via the null-check on
     # inputs.suites.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock')
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 50
     env:
@@ -248,6 +248,54 @@ jobs:
           kubectl version --client
           EOF
           ok "kubectl installed on VM"
+
+      # CreateDBInstance boots the DB VM from the rds-postgres AMI, so that image
+      # must be in the VM's image store before the suite runs — same split as the
+      # eks-node pair above: build on the runner (needs source + network), import
+      # on the VM (needs predastore/NATS). The suite's psql client needs no step
+      # here: it runs inside a client VM that installs postgresql-client from its
+      # own user-data, because a private-only endpoint is unreachable from the
+      # runner and from the cluster host alike.
+      - name: Build rds-postgres AMI (libguestfs, runner)
+        if: contains(env.SUITES, 'e2e-rds')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build rds-postgres AMI (libguestfs — no host devices)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          group_open "make build-rds-postgres-image"
+          make build-rds-postgres-image
+          group_close
+          ok "raw: $(du -h /tmp/rds-postgres-image-build/rds-postgres-alpine.raw | cut -f1)"
+
+      - name: Import rds-postgres AMI on VM
+        if: contains(env.SUITES, 'e2e-rds')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/rds-postgres/manifest.conf)"
+          # SYSTEM_TAG carries three tags, not one: managed-by marks it a system
+          # image and engine/engine-version are what an EngineVersion request
+          # resolves against. --tag is repeatable, so expand rather than pass the
+          # whole string as a single value.
+          TAG_ARGS=""
+          for tag in ${SYSTEM_TAG}; do TAG_ARGS="${TAG_ARGS} --tag ${tag}"; done
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import rds-postgres AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            /tmp/rds-postgres-image-build/rds-postgres-alpine.raw \
+            "$VM":/tmp/rds-postgres-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/rds-postgres-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}" >/dev/null 2>&1
+          ok "rds-postgres AMI imported"
 
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e

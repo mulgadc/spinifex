@@ -64,6 +64,11 @@ var unregisteredRDSActions = []string{
 // storage shrink.
 func TestAPIMatrix(t *testing.T) {
 	f := requireRDSFixture(t)
+	// Deliberately not parallel: it is the cheapest test in the suite and the one
+	// whose failures are the API's own, so it runs to completion before Go
+	// releases the parallel tests and the first DB VM boots.
+	reserveDBVMs(t, 1)
+
 	suffix := time.Now().Unix()
 	rejectedID := fmt.Sprintf("%s-rejected-%d", dbInstancePfx, suffix)
 

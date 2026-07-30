@@ -38,6 +38,12 @@ const (
 // deleted while it is still creating.
 func TestDelete(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// Two alive at once, not the three this test gets through: the restore is
+	// created after the protected instance it came from is gone, and so is the
+	// one deleted mid-create.
+	reserveDBVMs(t, 2)
+
 	suffix := time.Now().Unix()
 	protectedID := fmt.Sprintf("%s-final-%d", dbInstancePfx, suffix)
 	skippedID := fmt.Sprintf("%s-skipped-%d", dbInstancePfx, suffix)
@@ -54,10 +60,10 @@ func TestDelete(t *testing.T) {
 	t.Cleanup(func() { clearDeletionProtection(t, f, protectedID) })
 	createDBInstance(t, f, skippedID)
 
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	client := rdsClient(t, f)
 	system := f.SystemAWS(t)
 
-	protected := harness.WaitForDBInstanceAvailable(t, f.AWS, protectedID)
+	protected := waitForAvailable(t, f, protectedID)
 	assert.True(t, aws.BoolValue(protected.DeletionProtection),
 		"the flag supplied at create must be reported back, or a customer cannot tell they are protected")
 	protectedVMID := aws.StringValue(harness.DBInstanceVM(t, system, protectedID).InstanceId)
@@ -161,7 +167,7 @@ func TestDelete(t *testing.T) {
 	t.Run("TheFinalSnapshotRestoresTheRows", func(t *testing.T) {
 		harness.Phase(t, "Restoring %q from the final snapshot %q", restoredID, finalSnapshotID)
 		restoreFromSnapshot(t, f, restoredID, finalSnapshotID)
-		instance := harness.WaitForDBInstanceAvailable(t, f.AWS, restoredID)
+		instance := waitForAvailable(t, f, restoredID)
 
 		restoredConn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 		note := harness.PSQL(t, client, restoredConn,
@@ -185,7 +191,7 @@ func TestDelete(t *testing.T) {
 	// customer's subnet; a leaked record resolves to an address that is now
 	// somebody else's.
 	t.Run("SkipFinalSnapshotRemovesEverything", func(t *testing.T) {
-		skipped := harness.WaitForDBInstanceAvailable(t, f.AWS, skippedID)
+		skipped := waitForAvailable(t, f, skippedID)
 		require.NotNil(t, skipped.Endpoint)
 		endpoint := aws.StringValue(skipped.Endpoint.Address)
 		vmID := aws.StringValue(harness.DBInstanceVM(t, system, skippedID).InstanceId)

@@ -31,6 +31,9 @@ const (
 // refused while the instance holds them and accepted once it is gone.
 func TestSubnetAndParameterGroups(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, 1)
+
 	suffix := time.Now().Unix()
 	subnetGroup := fmt.Sprintf("%s-subnets-%d", dbInstancePfx, suffix)
 	paramGroup := fmt.Sprintf("%s-params-%d", dbInstancePfx, suffix)
@@ -130,7 +133,7 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailableOnTheResolvedParameters", func(t *testing.T) {
-		instance = harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		instance = waitForAvailable(t, f, id)
 		assert.Equal(t, subnetGroup, dbSubnetGroupName(instance),
 			"the describe must report the group the instance was placed from")
 		assert.Equal(t, paramGroup, dbParameterGroupName(instance))
@@ -141,7 +144,7 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	// from the client VM, since the endpoint is reachable from nowhere else.
 	t.Run("TheEngineRunsTheOverride", func(t *testing.T) {
 		requireAvailable(t, instance)
-		client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+		client := rdsClient(t, f)
 		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 		out := harness.PSQL(t, client, conn, "SHOW work_mem;")
 		assert.Equal(t, "8MB", strings.TrimSpace(out), "the engine is not running the group's work_mem")

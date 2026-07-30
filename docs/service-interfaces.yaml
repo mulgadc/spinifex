@@ -32,11 +32,13 @@ services:
       - "elbv2.*"
       - "acm.*"
       - "iam.*"
+      - "rds.*"
     depends_on:
       - "ec2.*"
       - "elbv2.*"
       - "acm.*"
       - "iam.*"
+      - "rds.*"
 
   spinifex_daemon:
     path: spinifex/services/spinifex
@@ -54,6 +56,7 @@ services:
       - spinifex/handlers/elbv2
       - spinifex/handlers/acm
       - spinifex/handlers/iam
+      - spinifex/handlers/rds
     subscribes:
       # EC2 instance lifecycle.
       - "ec2.RunInstances"
@@ -113,6 +116,15 @@ services:
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"
       - "elbv2.DescribeSSLPolicies"
+      # RDS control plane (handlers/rds/subjects.go). One wildcard rather than
+      # 30 literals: every action subject is registered from a constant, so a
+      # per-subject list would be a hand-mirror of that file with nothing
+      # checking it.
+      - "rds.*"
+      # Layer-2 agent bus: register and health are wildcard subscriptions over
+      # {account}.{db-instance}, so the subject is built at runtime and only the
+      # prefix is declarable.
+      - "rds.bus.*"
     publishes:
       # → vpcd
       - "vpc.create"
@@ -145,6 +157,9 @@ services:
       - "s3.*"
       # IAM lifecycle event
       - "iam.account.created"
+      # → the in-guest rds-agent: set-password and the like, published on the
+      # per-instance command subject and answered on its reply subject.
+      - "rds.bus.*"
     depends_on:
       - "vpc.*"
       - "ebs.*"

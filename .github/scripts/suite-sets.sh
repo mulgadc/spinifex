@@ -20,7 +20,11 @@
 # 8192 halves reverted a generation) and passes against the fixed one (0 of
 # 8192). A suite that has never been shown to go red for the reason it claims
 # does not belong here.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock"
+# rds is single-only for the opposite reason to lb: v1 has no multi-AZ
+# behaviour, so a second node adds no assertion. Its DB VMs are capped at four
+# concurrent by the suite's own semaphore, which is what keeps it inside the
+# job's 50-minute budget alongside the suites above.
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds"
 
 # Suites runnable against a multi-node environment.
 E2E_SUITES_MULTI="multinode lb cert"

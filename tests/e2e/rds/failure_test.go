@@ -29,14 +29,17 @@ const (
 // Starting that same VM again proves a healthy heartbeat clears the failure.
 func TestFailureDetection(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, 1)
+
 	id := fmt.Sprintf("%s-failure-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q", id)
 	createDBInstance(t, f, id)
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	client := rdsClient(t, f)
 	system := f.SystemAWS(t)
 
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 	assert.Equal(t, "1", strings.TrimSpace(harness.PSQL(t, client, conn, "SELECT 1;")),
 		"the engine must accept a connection before its VM is stopped")

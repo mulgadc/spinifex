@@ -48,6 +48,11 @@ const (
 // volume is released, which is an assertion that cannot be made while it exists.
 func TestSnapshotRestore(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// The source and the instance restored from its snapshot, which have to be
+	// alive together for the restore to be provably a point in time.
+	reserveDBVMs(t, 2)
+
 	suffix := time.Now().Unix()
 	sourceID := fmt.Sprintf("%s-snapsrc-%d", dbInstancePfx, suffix)
 	restoredID := fmt.Sprintf("%s-restored-%d", dbInstancePfx, suffix)
@@ -57,10 +62,10 @@ func TestSnapshotRestore(t *testing.T) {
 
 	harness.Phase(t, "Creating source DB instance %q", sourceID)
 	createDBInstance(t, f, sourceID)
-	client := harness.RDSClientVM(t, f.AWS, f.Harness, f.Env)
+	client := rdsClient(t, f)
 	system := f.SystemAWS(t)
 
-	source := harness.WaitForDBInstanceAvailable(t, f.AWS, sourceID)
+	source := waitForAvailable(t, f, sourceID)
 	sourceConn := harness.PSQLConnFor(t, source, dbMasterUser, dbMasterPassword, dbName)
 	sourceEndpoint := sourceConn.Host
 	sourceVolumeID := aws.StringValue(harness.DBInstanceDataVolume(t, system, sourceID).VolumeId)
@@ -125,7 +130,7 @@ func TestSnapshotRestore(t *testing.T) {
 			})
 		assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(restored.DBInstanceStatus))
 
-		instance := harness.WaitForDBInstanceAvailable(t, f.AWS, restoredID)
+		instance := waitForAvailable(t, f, restoredID)
 		assert.Equal(t, grownClass, aws.StringValue(instance.DBInstanceClass),
 			"the class override must be honoured; a restore is where a customer resizes")
 		assert.Equal(t, subnetGroup, dbSubnetGroupName(instance))
@@ -293,6 +298,7 @@ func restoreFromSnapshot(t *testing.T, f *Fixture, id, snapshotID string,
 	for _, opt := range opts {
 		opt(in)
 	}
+	markDBCreateStarted(id)
 	out, err := f.AWS.RDS.RestoreDBInstanceFromDBSnapshot(in) //nolint:staticcheck // e2e:allow-create — the restored instance under test
 	require.NoError(t, err, "restore-db-instance-from-db-snapshot %s", id)
 	require.NotNil(t, out.DBInstance)

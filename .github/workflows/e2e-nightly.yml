@@ -20,7 +20,7 @@ permissions:
 # trigger must stay in sync on main for cron to fire.
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
-  UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-24.04.qcow2
+  UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
   # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
   # empty string disables telemetry entirely.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
@@ -36,11 +36,11 @@ jobs:
       matrix:
         include:
           - { cell: 1,  install: binary, topo: single,     net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-single, extra: "" }
-          - { cell: 2,  install: binary, topo: single,     net: static, host: ubuntu-24.04, arch: x86_64, runner: ci-single, extra: "" }
-          - { cell: 3,  install: binary, topo: single,     net: dhcp,   host: ubuntu-24.04, arch: x86_64, runner: ci-single, extra: "" }
+          - { cell: 2,  install: binary, topo: single,     net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "" }
+          - { cell: 3,  install: binary, topo: single,     net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "" }
           - { cell: 8,  install: binary, topo: real-multi, net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "" }
-          - { cell: 9,  install: binary, topo: real-multi, net: static, host: ubuntu-24.04, arch: x86_64, runner: ci-multi,  extra: "" }
-          - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-24.04, arch: x86_64, runner: ci-multi,  extra: "" }
+          - { cell: 9,  install: binary, topo: real-multi, net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "" }
+          - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "" }
           - { cell: 17, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-pseudo, extra: "tofu-examples" }
           - { cell: 18, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "reboot-single" }
           - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single" }
@@ -128,10 +128,13 @@ jobs:
         run: |
           export TF_VAR_git_branch="${GIT_BRANCH}"
 
+          # Match the family, not a pinned version: an exact match silently stops
+          # overriding the image when the matrix bumps release, dropping the cell
+          # back onto the debian gold.
           TOFU_VAR_ARGS=""
-          if [ "$MATRIX_HOST" = "ubuntu-24.04" ]; then
-            TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}"
-          fi
+          case "$MATRIX_HOST" in
+            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
+          esac
 
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
@@ -370,10 +373,12 @@ jobs:
         env:
           MATRIX_HOST: ${{ matrix.host }}
         run: |
+          # Must mirror the Provision step's override, or destroy runs against a
+          # different image path than apply did.
           TOFU_VAR_ARGS=""
-          if [ "$MATRIX_HOST" = "ubuntu-24.04" ]; then
-            TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}"
-          fi
+          case "$MATRIX_HOST" in
+            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
+          esac
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1

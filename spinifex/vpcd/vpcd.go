@@ -201,9 +201,11 @@ var checkBrInt = func() error {
 	return nil
 }
 
-// checkOVNController verifies ovn-controller is running. Tries legacy socket path, then OVN 22.03+ path, then systemctl.
+// checkOVNController verifies ovn-controller is running. ovn-appctl resolves a
+// bare target against /var/run/ovn where the socket and pidfile live; ovs-appctl
+// looks in /var/run/openvswitch and only ever logged a missing pidfile.
 var checkOVNController = func() error {
-	if sudoCommand("ovs-appctl", "-t", "ovn-controller", "version").Run() == nil {
+	if sudoCommand("ovn-appctl", "-t", "ovn-controller", "version").Run() == nil {
 		return nil
 	}
 	if matches, _ := filepath.Glob("/var/run/ovn/ovn-controller.*.ctl"); len(matches) > 0 {

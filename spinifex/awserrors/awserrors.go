@@ -468,6 +468,8 @@ var (
 	ErrorDBInstanceAlreadyExists  = "DBInstanceAlreadyExists"
 	ErrorDBInstanceInvalidState   = "InvalidDBInstanceState"
 	ErrorDBSnapshotAlreadyExists  = "DBSnapshotAlreadyExists"
+	ErrorDBSnapshotNotFound       = "DBSnapshotNotFound"
+	ErrorDBSnapshotInvalidState   = "InvalidDBSnapshotState"
 	ErrorDBSubnetGroupNotFound    = "DBSubnetGroupNotFoundFault"
 	ErrorDBParameterGroupNotFound = "DBParameterGroupNotFound"
 	ErrorDBInvalidVPCNetworkState = "InvalidVPCNetworkStateFault"
@@ -1057,6 +1059,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDBInstanceAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB instance with the given identifier."},
 	ErrorDBInstanceInvalidState:   {HTTPCode: 400, Message: "The DB instance is not in a state that allows the requested operation."},
 	ErrorDBSnapshotAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB snapshot with the given identifier."},
+	ErrorDBSnapshotNotFound:       {HTTPCode: 404, Message: "DBSnapshotIdentifier does not refer to an existing DB snapshot."},
+	ErrorDBSnapshotInvalidState:   {HTTPCode: 400, Message: "The DB snapshot is not in a state that allows the requested operation."},
 	ErrorDBSubnetGroupNotFound:    {HTTPCode: 404, Message: "DBSubnetGroupName does not refer to an existing DB subnet group."},
 	ErrorDBParameterGroupNotFound: {HTTPCode: 404, Message: "DBParameterGroupName does not refer to an existing DB parameter group."},
 	ErrorDBInvalidVPCNetworkState: {HTTPCode: 400, Message: "The DB subnet group does not cover all Availability Zones after it is created because of changes that were made."},

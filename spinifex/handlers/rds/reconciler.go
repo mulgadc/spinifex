@@ -33,6 +33,11 @@ const (
 	// reconciler calls it failed. It covers a cold boot plus a WAL replay, which
 	// is the longest a restart can honestly take.
 	transitionTimeout = 10 * time.Minute
+
+	// How long a DB snapshot record may sit in creating before the reconciler
+	// settles it against EC2. Comfortably past the snapshot request's own budget,
+	// so a record still being written by a live worker is never touched.
+	snapshotResolveTimeout = 15 * time.Minute
 )
 
 // The EC2 lifecycle states a DB VM may be in and still be on its way up. The
@@ -198,6 +203,9 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue
 			failures = append(failures, awserrors.Errorf(id, "%w", err))
 		}
 	}
+	if err := r.reconcileSnapshots(ctx, kv, accountID); err != nil {
+		failures = append(failures, err)
+	}
 	return errors.Join(failures...)
 }
 
@@ -221,6 +229,8 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 		return r.reconcileStopping(ctx, kv, rev, accountID, &rec)
 	case StatusDeleting:
 		return r.reconcileDeleting(ctx, kv, rev, accountID, &rec)
+	case StatusBackingUp:
+		return r.reconcileBackingUp(ctx, kv, rev, accountID, &rec)
 	case StatusAvailable, StatusFailed:
 		return r.reconcileHealth(ctx, kv, rev, accountID, &rec)
 	default:
@@ -379,6 +389,124 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context, kv jetstream.KeyValu
 	slog.WarnContext(ctx, "rds reconciler: resuming a delete failed; retrying next pass",
 		"dbInstance", rec.DBInstanceIdentifier, "err", err)
 	return nil
+}
+
+// A snapshot holds its instance in backing-up for the length of the snapshot and
+// no longer, so an instance still there past the bound belongs to a worker that
+// died. It is returned to where the snapshot found it; the quiesce needs no
+// undoing, because the agent's own hold deadline is far shorter than this bound
+// and has already released the engine.
+func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	if time.Since(transitionStarted(rec)) <= transitionTimeout {
+		return nil
+	}
+	// The operation and the backing-up status are written in one CAS, so a record
+	// without one predates this phase; the health classifier settles the guess.
+	resume := StatusAvailable
+	if rec.SnapshotOperation != nil {
+		resume = rec.SnapshotOperation.ResumeStatus
+	}
+	rec.SnapshotOperation = nil
+	slog.WarnContext(ctx, "rds reconciler: a snapshot left its instance in backing-up; returning it",
+		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID, "resume", resume)
+	return r.transition(ctx, kv, rev, rec, resume, "")
+}
+
+// Settles the DB snapshot records a create never finished writing. The EC2
+// snapshot is the authority: it was tagged with the DB snapshot identifier before
+// the record was flipped, so its presence says the data exists and its absence
+// says the create died before cutting it.
+func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyValue, accountID string) error {
+	ids, err := ListDBSnapshotIDs(ctx, kv)
+	if err != nil {
+		return fmt.Errorf("list DB snapshots: %w", err)
+	}
+	var failures []error
+	for _, id := range ids {
+		var rec DBSnapshotRecord
+		rev, found, err := getJSONRevision(ctx, kv, DBSnapshotKey(id), &rec)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("read DB snapshot %s: %w", id, err))
+			continue
+		}
+		if !found || rec.Status != SnapshotStatusCreating ||
+			time.Since(rec.CreatedAt) <= snapshotResolveTimeout {
+			continue
+		}
+		if err := r.resolveCreatingSnapshot(ctx, kv, rev, accountID, &rec); err != nil {
+			failures = append(failures, fmt.Errorf("resolve DB snapshot %s: %w", id, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// Either adopts the EC2 snapshot the dead worker cut, or withdraws the record so
+// its identifier is usable again. A record left in creating would otherwise hold
+// the name forever while naming nothing a customer can restore.
+func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+	accountID string, rec *DBSnapshotRecord) error {
+	snapshotID, err := r.svc.findEC2SnapshotFor(ctx, rec.DBSnapshotIdentifier)
+	if err != nil {
+		return err
+	}
+	if snapshotID == "" {
+		if err := kv.Delete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier)); err != nil &&
+			!errors.Is(err, jetstream.ErrKeyNotFound) {
+			return err
+		}
+		r.svc.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
+			"The DB snapshot could not be completed and has been removed.",
+			EventCategoryFailure, EventCategoryBackup)
+		slog.WarnContext(ctx, "rds reconciler: withdrew a DB snapshot whose data was never cut",
+			"dbSnapshot", rec.DBSnapshotIdentifier, "accountId", accountID)
+		return nil
+	}
+
+	rec.SnapshotID = snapshotID
+	rec.Status = SnapshotStatusAvailable
+	// The worker died before it could report whether the quiesce held, so the
+	// conservative reading is the one that never overstates the snapshot.
+	rec.CrashConsistent = true
+	if err := updateJSON(ctx, kv, DBSnapshotKey(rec.DBSnapshotIdentifier), rev, rec); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			return nil
+		}
+		return err
+	}
+	r.svc.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
+		"DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
+	slog.InfoContext(ctx, "rds reconciler: adopted the EC2 snapshot of an unfinished DB snapshot",
+		"dbSnapshot", rec.DBSnapshotIdentifier, "snapshotId", snapshotID, "accountId", accountID)
+	return nil
+}
+
+// The EC2 snapshot a DB snapshot identifier owns, empty when none was cut. The
+// tag is written by CreateSnapshot itself, so a snapshot that exists carries it.
+func (s *Service) findEC2SnapshotFor(ctx context.Context, dbSnapshotIdentifier string) (string, error) {
+	if s.deps.Snapshots == nil {
+		return "", errors.New("rds: no snapshot service configured")
+	}
+	out, err := s.deps.Snapshots.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("tag:" + rdsSnapshotTagKey),
+			Values: aws.StringSlice([]string{dbSnapshotIdentifier}),
+		}},
+	}, utils.GlobalAccountID)
+	if err != nil {
+		if awserrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("rds: find the EC2 snapshot of %s: %w", dbSnapshotIdentifier, err)
+	}
+	if out == nil {
+		return "", nil
+	}
+	for _, snapshot := range out.Snapshots {
+		if id := aws.StringValue(snapshot.SnapshotId); id != "" {
+			return id, nil
+		}
+	}
+	return "", nil
 }
 
 // When the transition began. A record written by an older control plane carries

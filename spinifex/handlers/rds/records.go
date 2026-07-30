@@ -89,6 +89,14 @@ type DBInstanceRecord struct {
 	// resumed delete takes the same final snapshot rather than none.
 	FinalSnapshotIdentifier string `json:"finalSnapshotIdentifier,omitempty"`
 
+	// The snapshot currently being taken of this instance. Nil when none is.
+	SnapshotOperation *SnapshotOperation `json:"snapshotOperation,omitempty"`
+
+	// The DB snapshot this instance was restored from, if any. Kept so a
+	// DeleteDBSnapshot the restored volume still blocks can name what to remove
+	// first rather than reporting an opaque in-use fault.
+	RestoredFromDBSnapshot string `json:"restoredFromDbSnapshot,omitempty"`
+
 	// Static parameters written to the engine's config but not yet in effect.
 	// Cleared by the reboot that applies them (D16).
 	PendingRebootParameters []string `json:"pendingRebootParameters,omitempty"`
@@ -183,8 +191,23 @@ const (
 	SnapshotTypeManual    = "manual"
 	SnapshotTypeAutomated = "automated"
 
+	// The record is written creating before the EC2 snapshot is taken, so a crash
+	// in between leaves a reconcilable trace rather than an orphaned EC2 snapshot.
+	SnapshotStatusCreating  = "creating"
 	SnapshotStatusAvailable = "available"
 )
+
+// The snapshot operation holding a DB instance, written under the same CAS that
+// moves it to backing-up so a second request is rejected rather than queued. An
+// rds-9 automated snapshot and a manual one serialise against each other here.
+type SnapshotOperation struct {
+	DBSnapshotIdentifier string `json:"dbSnapshotIdentifier"`
+	// Where the instance goes when the snapshot finishes. Recorded rather than
+	// assumed, because snapshotting a stopped instance must not leave it looking
+	// available.
+	ResumeStatus Status    `json:"resumeStatus"`
+	StartedAt    time.Time `json:"startedAt"`
+}
 
 // The db-snapshots/{id} record. The EC2 snapshot holds the data; this is the
 // RDS-level metadata a restore needs and DescribeDBSnapshots projects, captured
@@ -203,12 +226,25 @@ type DBSnapshotRecord struct {
 
 	Engine           string `json:"engine"`
 	EngineVersion    string `json:"engineVersion"`
+	DBInstanceClass  string `json:"dbInstanceClass,omitempty"`
 	AllocatedStorage int64  `json:"allocatedStorage"`
 	StorageType      string `json:"storageType,omitempty"`
 	StorageEncrypted bool   `json:"storageEncrypted,omitempty"`
+	DBName           string `json:"dbName,omitempty"`
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
-	VpcID            string `json:"vpcId,omitempty"`
+
+	// The placement the source instance had, which a restore falls back to for
+	// every field the request leaves unspecified.
+	VpcID                string   `json:"vpcId,omitempty"`
+	VpcSecurityGroupIDs  []string `json:"vpcSecurityGroupIds,omitempty"`
+	DBSubnetGroupName    string   `json:"dbSubnetGroupName,omitempty"`
+	DBParameterGroupName string   `json:"dbParameterGroupName,omitempty"`
+
+	// Copied from the source instance so a restore keeps its rotation history: a
+	// later ModifyDBInstance --master-user-password still works, and the restored
+	// instance keeps the credentials the datadir was written with.
+	MasterPasswordUpdatedAt *time.Time `json:"masterPasswordUpdatedAt,omitempty"`
 
 	// True when the engine was still writing as it was taken, so a restore
 	// replays WAL. A final snapshot is taken with the engine already down, so it
@@ -220,6 +256,12 @@ type DBSnapshotRecord struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+var _ TaggedRecord = (*DBSnapshotRecord)(nil)
+
+func (r *DBSnapshotRecord) GetTags() map[string]string { return r.Tags }
+
+func (r *DBSnapshotRecord) SetTags(tags map[string]string) { r.Tags = tags }
+
 // A data volume that outlived its DB instance because a COW snapshot still
 // references its chunks (D10). The last DeleteDBSnapshot to empty Snapshots
 // deletes it; rds-9's reaper is the backstop for a crash in between.
@@ -229,7 +271,9 @@ type RetainedVolumeRecord struct {
 	// The instance it belonged to, so an operator can attribute the footprint
 	// after the DB instance record is gone.
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
-	// The DB snapshot identifiers holding it alive.
+	// The EC2 snapshot IDs holding it alive, read from the volume store's own
+	// index rather than from the RDS key space: that index is what DeleteVolume
+	// enforces against, so it is the only list a release can trust.
 	Snapshots []string `json:"snapshots"`
 	// Set when the volume store refused the delete without naming a holder, so a
 	// release must re-check rather than read the empty list as "nothing holds it".

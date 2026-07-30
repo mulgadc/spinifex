@@ -18,13 +18,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Takes the D18 final snapshot and answers whether a volume is still
-// referenced by one, which is what decides between deleting and retaining it.
-type snapshotProvider interface {
-	CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error)
-	DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error)
-}
-
 // Tears the DB instance down. AWS requires the caller to choose explicitly
 // between a final snapshot and none, so neither an accidental data loss nor an
 // accidental retained volume can happen by omission.
@@ -112,7 +105,7 @@ func validateDeleteRequest(input *rds.DeleteDBInstanceInput) (string, error) {
 			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is set")
 	}
 	if identifier != "" {
-		if err := validateDBInstanceIdentifier(identifier); err != nil {
+		if err := validateDBSnapshotIdentifier(identifier); err != nil {
 			return "", err
 		}
 	}
@@ -250,6 +243,7 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, 
 			Tags: []*ec2.Tag{
 				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
 				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(rec.DBInstanceIdentifier)},
+				{Key: aws.String(rdsSnapshotTagKey), Value: aws.String(rec.FinalSnapshotIdentifier)},
 			},
 		}},
 	}, utils.GlobalAccountID)
@@ -261,26 +255,14 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, 
 	}
 
 	// Everything a restore needs is copied here rather than referenced: the DB
-	// instance record is deleted moments later.
-	record := DBSnapshotRecord{
+	// instance record is deleted moments later. Taken with the engine already
+	// down, so it is never crash-consistent.
+	record := newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: rec.FinalSnapshotIdentifier,
-		DBInstanceIdentifier: rec.DBInstanceIdentifier,
-		AccountID:            accountID,
-		SnapshotType:         SnapshotTypeManual,
-		Status:               SnapshotStatusAvailable,
-		SnapshotID:           aws.StringValue(snapshot.SnapshotId),
-		SourceVolumeID:       rec.DataVolumeID,
-		Engine:               rec.Engine,
-		EngineVersion:        rec.EngineVersion,
-		AllocatedStorage:     rec.AllocatedStorage,
-		StorageType:          rec.StorageType,
-		StorageEncrypted:     rec.StorageEncrypted,
-		MasterUsername:       rec.MasterUsername,
-		Port:                 rec.Port,
-		VpcID:                rec.VpcID,
 		Tags:                 rec.Tags,
-		CreatedAt:            time.Now().UTC(),
-	}
+	})
+	record.SnapshotID = aws.StringValue(snapshot.SnapshotId)
+	record.Status = SnapshotStatusAvailable
 	if err := createJSON(ctx, kv, key, &record); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("rds: record the final snapshot of %s: %w", rec.DBInstanceIdentifier, err)
 	}

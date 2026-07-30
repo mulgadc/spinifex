@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
@@ -21,6 +22,9 @@ type fakeEngine struct {
 	params   []handlers_rds.Parameter
 	pending  []string
 	stopped  bool
+	label    string
+	hold     time.Duration
+	released bool
 	err      error
 }
 
@@ -38,6 +42,16 @@ func (f *fakeEngine) ApplyParameters(_ context.Context, params []handlers_rds.Pa
 
 func (f *fakeEngine) Stop(context.Context) error {
 	f.stopped = true
+	return f.err
+}
+
+func (f *fakeEngine) Quiesce(_ context.Context, label string, hold time.Duration) error {
+	f.label, f.hold = label, hold
+	return f.err
+}
+
+func (f *fakeEngine) Unquiesce(context.Context) error {
+	f.released = true
 	return f.err
 }
 
@@ -139,7 +153,7 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 		t.Fatalf("resolve the current user: %v", err)
 	}
 	cfg.PGUser = current.Username
-	return newPostgresEngine(cfg, run)
+	return newPostgresEngine(cfg, run, nil)
 }
 
 // D8: the password reaches psql through the environment and is re-quoted there,

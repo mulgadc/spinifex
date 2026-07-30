@@ -181,7 +181,11 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	rec.ENIID = launched.CustomerENIID
 	rec.ENIPrivateIP = launched.CustomerENIIP
 	rec.DataVolumeID = launched.DataVolumeID
-	rec.StorageEncrypted = launched.DataVolumeEncrypted
+	// Only a launch that made the volume can report its encryption; a restore
+	// attaches one it created itself, whose encryption the record already carries.
+	if launched.CreatedDataVolume {
+		rec.StorageEncrypted = launched.DataVolumeEncrypted
+	}
 	rec.DNSName = s.dnsName(accountID, rec.DBInstanceIdentifier)
 	// Without northstar there is no resolvable name, so the endpoint is the ENI
 	// IP itself — stable per D5 and therefore as durable as a hostname (D6).

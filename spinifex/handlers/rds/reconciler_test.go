@@ -163,25 +163,21 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 	assert.Equal(t, StatusCreating, status)
 }
 
-// A deliberately stopped instance, and a transition owned by a later phase, are
-// both left alone: touching one would race its owner. available and failed are
-// the classifier's, and covered in recovery_test.go.
+// A deliberately stopped instance is left alone: touching it would race its
+// owner. available and failed are the classifier's, and covered in
+// recovery_test.go.
 func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
-	for _, status := range []Status{StatusStopped, StatusBackingUp} {
-		t.Run(string(status), func(t *testing.T) {
-			h := newReconcileHarness(t)
-			rec := healthyRecord()
-			rec.Status = status
-			rec.CreatedAt = time.Now().UTC().Add(-24 * time.Hour)
-			seedInstance(t, h.svc, rec)
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	rec.Status = StatusStopped
+	rec.CreatedAt = time.Now().UTC().Add(-24 * time.Hour)
+	seedInstance(t, h.svc, rec)
 
-			require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
 
-			got, _ := h.statusOf(t, testDBID)
-			assert.Equal(t, status, got)
-			assert.Empty(t, h.state.calls, "a settled instance is not even inspected")
-		})
-	}
+	got, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusStopped, got)
+	assert.Empty(t, h.state.calls, "a settled instance is not even inspected")
 }
 
 // A VM-state lookup that fails is not evidence the instance is unhealthy, so the

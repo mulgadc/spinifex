@@ -219,17 +219,16 @@ func TestTagActions_MissingResourceIsTheResourcesOwnFault(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceNotFound)
 }
 
-// Snapshots are a valid ARN kind that no phase has built yet. Answering with an
-// empty list would be indistinguishable from an untagged snapshot and would let
-// an apply appear to tag something that does not exist.
-func TestTagActions_UnregisteredResourceTypeIsRejected(t *testing.T) {
+// Answering with an empty list would be indistinguishable from an untagged
+// snapshot and would let an apply appear to tag something that does not exist.
+func TestTagActions_MissingSnapshotIsRejected(t *testing.T) {
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
 		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, "orders-db-snap")),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotNotFound)
 }
 
 func TestTagActions_ForeignAccountARNIsRejected(t *testing.T) {

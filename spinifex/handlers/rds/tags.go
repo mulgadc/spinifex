@@ -45,14 +45,19 @@ type taggableResource struct {
 }
 
 // One entry per resource kind, registered by the phase that creates the
-// resource; rds-8 adds snapshots. A default parameter group is deliberately
-// absent: it has no stored record, so a tag written to it would have nowhere to
-// live and would read back as absent on the next apply.
+// resource. A default parameter group is deliberately absent: it has no stored
+// record, so a tag written to it would have nowhere to live and would read back
+// as absent on the next apply.
 var taggableResources = map[ResourceKind]taggableResource{
 	ResourceKindDBInstance: {
 		key:       DBInstanceKey,
 		newRecord: func() TaggedRecord { return &DBInstanceRecord{} },
 		notFound:  awserrors.ErrorDBInstanceNotFound,
+	},
+	ResourceKindDBSnapshot: {
+		key:       DBSnapshotKey,
+		newRecord: func() TaggedRecord { return &DBSnapshotRecord{} },
+		notFound:  awserrors.ErrorDBSnapshotNotFound,
 	},
 	ResourceKindDBSubnetGroup: {
 		key:       DBSubnetGroupKey,

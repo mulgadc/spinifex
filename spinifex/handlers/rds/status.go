@@ -30,13 +30,15 @@ const (
 // Every non-terminal state can reach failed and deleting, since a delete is
 // accepted at any point and any step can fail.
 var transitions = map[Status][]Status{
-	StatusCreating:   {StatusAvailable, StatusFailed, StatusDeleting},
-	StatusAvailable:  {StatusModifying, StatusBackingUp, StatusRebooting, StatusStopping, StatusRecovering, StatusFailed, StatusDeleting},
-	StatusModifying:  {StatusAvailable, StatusFailed, StatusDeleting},
-	StatusBackingUp:  {StatusAvailable, StatusFailed, StatusDeleting},
+	StatusCreating:  {StatusAvailable, StatusFailed, StatusDeleting},
+	StatusAvailable: {StatusModifying, StatusBackingUp, StatusRebooting, StatusStopping, StatusRecovering, StatusFailed, StatusDeleting},
+	StatusModifying: {StatusAvailable, StatusFailed, StatusDeleting},
+	// A snapshot of a stopped instance needs no quiesce and leaves it stopped, so
+	// backing-up has to be reachable from and returnable to both settled states.
+	StatusBackingUp:  {StatusAvailable, StatusStopped, StatusFailed, StatusDeleting},
 	StatusRebooting:  {StatusAvailable, StatusFailed, StatusDeleting},
 	StatusStopping:   {StatusStopped, StatusFailed, StatusDeleting},
-	StatusStopped:    {StatusStarting, StatusModifying, StatusFailed, StatusDeleting},
+	StatusStopped:    {StatusStarting, StatusModifying, StatusBackingUp, StatusFailed, StatusDeleting},
 	StatusStarting:   {StatusAvailable, StatusFailed, StatusDeleting},
 	StatusRecovering: {StatusAvailable, StatusFailed, StatusDeleting},
 	// A failed instance is retried by the reconciler rather than being stuck:
@@ -85,4 +87,29 @@ func CanTransition(from, to Status) bool {
 		return true
 	}
 	return slices.Contains(transitions[from], to)
+}
+
+// The snapshot's own lifecycle, separate from the instance's backing-up state
+// (D4): the instance is derived from an in-flight control-plane operation, while
+// the snapshot record moves creating → available once the data exists. There is
+// no failed state — a snapshot that never completed is removed rather than kept
+// as an unrestorable record.
+var snapshotTransitions = map[string][]string{
+	SnapshotStatusCreating:  {SnapshotStatusAvailable},
+	SnapshotStatusAvailable: nil,
+}
+
+func ValidSnapshotStatus(status string) bool {
+	_, ok := snapshotTransitions[status]
+	return ok
+}
+
+func CanTransitionSnapshot(from, to string) bool {
+	if !ValidSnapshotStatus(from) || !ValidSnapshotStatus(to) {
+		return false
+	}
+	if from == to {
+		return true
+	}
+	return slices.Contains(snapshotTransitions[from], to)
 }

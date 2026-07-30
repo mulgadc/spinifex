@@ -231,6 +231,12 @@ func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, er
 	return listNames(ctx, kv, DBInstancesPrefix())
 }
 
+// Manual and automated snapshots alike: the type is on the record, so a listing
+// filtered by it still has to read every one.
+func ListDBSnapshotIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	return listNames(ctx, kv, DBSnapshotsPrefix())
+}
+
 func ListDBSubnetGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
 	return listNames(ctx, kv, DBSubnetGroupsPrefix())
 }

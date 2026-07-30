@@ -88,10 +88,10 @@ var actions = map[string]Handler{
 	"StopDBInstance":      typed(StopDBInstance),
 
 	// Snapshots.
-	"CreateDBSnapshot":                pending(),
-	"DescribeDBSnapshots":             pending(),
-	"DeleteDBSnapshot":                pending(),
-	"RestoreDBInstanceFromDBSnapshot": pending(),
+	"CreateDBSnapshot":                typed(CreateDBSnapshot),
+	"DescribeDBSnapshots":             typed(DescribeDBSnapshots),
+	"DeleteDBSnapshot":                typed(DeleteDBSnapshot),
+	"RestoreDBInstanceFromDBSnapshot": typed(RestoreDBInstanceFromDBSnapshot),
 
 	// Automated backups.
 	"DescribeDBInstanceAutomatedBackups": pending(),

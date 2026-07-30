@@ -281,22 +281,68 @@ func formatWeekdayClock(offset time.Duration) string {
 // a hash over the configured block is stable for the life of the instance and
 // still spreads the fleet's quiesce load across it.
 func assignDailyWindow(block dailyWindow, identifier string) dailyWindow {
+	return assignDailySlot(block, identifier, 0)
+}
+
+// The assignment stepped on by whole slots through the block, wrapping at its
+// end. Stepping is what lets an assigned window move off one the customer named
+// rather than colliding with it.
+func assignDailySlot(block dailyWindow, identifier string, shift int64) dailyWindow {
 	slots := int64(block.length() / windowSlot)
 	if slots < 1 {
 		return block
 	}
 	slot := int64(windowHash(identifier) % uint64(slots)) //nolint:gosec // the modulus bounds it to the slot count
-	start := (block.start + time.Duration(slot)*windowSlot) % oneDay
+	start := (block.start + time.Duration((slot+shift)%slots)*windowSlot) % oneDay
 	return dailyWindow{start: start, end: (start + windowSlot) % oneDay}
 }
 
 // The same assignment plus a day, seeded apart from the backup window's so an
 // instance does not land on correlated positions within the two blocks.
 func assignWeeklyWindow(block dailyWindow, identifier string) weeklyWindow {
-	daily := assignDailyWindow(block, identifier)
+	return assignWeeklySlot(block, identifier, 0)
+}
+
+func assignWeeklySlot(block dailyWindow, identifier string, shift int64) weeklyWindow {
+	daily := assignDailySlot(block, identifier, shift)
 	day := int64(windowHash(identifier+"/maintenance") % 7)
 	start := (time.Duration(day)*oneDay + daily.start) % oneWeek
 	return weeklyWindow{start: start, end: (start + windowSlot) % oneWeek}
+}
+
+// The assigned backup window stepped clear of the maintenance window in force.
+// A window the customer did not name must never be the reason their request is
+// rejected, so the assignment moves — which is what AWS does with the window it
+// assigned itself. A block every slot of which collides falls back to the slot
+// beginning where the other window ends, so the pair is still separable when the
+// operator's block sits inside it.
+func assignDailyWindowClearOf(block dailyWindow, identifier string, avoid weeklyWindow) dailyWindow {
+	for shift := range int64(block.length() / windowSlot) {
+		if window := assignDailySlot(block, identifier, shift); !window.overlaps(avoid) {
+			return window
+		}
+	}
+	return slotAfter(avoid.timeOfDay().end)
+}
+
+func assignWeeklyWindowClearOf(block dailyWindow, identifier string, avoid dailyWindow) weeklyWindow {
+	for shift := range int64(block.length() / windowSlot) {
+		if window := assignWeeklySlot(block, identifier, shift); !avoid.overlaps(window) {
+			return window
+		}
+	}
+	day := int64(windowHash(identifier+"/maintenance") % 7)
+	daily := slotAfter(avoid.end)
+	start := (time.Duration(day)*oneDay + daily.start) % oneWeek
+	return weeklyWindow{start: start, end: (start + windowSlot) % oneWeek}
+}
+
+// The one slot beginning at offset. Whether it is free is the caller's overlap
+// check to make: for a window covering all but half an hour of the day there is
+// no free slot to find, and that pair is reported rather than placed.
+func slotAfter(offset time.Duration) dailyWindow {
+	start := (offset%oneDay + oneDay) % oneDay
+	return dailyWindow{start: start, end: (start + windowSlot) % oneDay}
 }
 
 func windowHash(value string) uint64 {

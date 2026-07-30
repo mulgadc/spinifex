@@ -268,6 +268,7 @@ func (s *Service) planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBIn
 	if backup == "" && maintenance == "" {
 		return nil
 	}
+	named := struct{ backup, maintenance bool }{backup != "", maintenance != ""}
 	if backup == "" {
 		backup = rec.PreferredBackupWindow
 	}
@@ -278,12 +279,17 @@ func (s *Service) planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBIn
 	if err != nil {
 		return err
 	}
+	// Only a window the request named is planned. The other side of the pair was
+	// resolved for the overlap check alone, and on a record that carries none that
+	// is an assignment — persisting it would report a window back to a customer who
+	// never set one, and show as drift in their next plan.
+	//
 	// Compared against the stored value in canonical form, so a request repeating
 	// the current window in different text is dropped rather than rewritten.
-	if resolvedBackup != rec.PreferredBackupWindow {
+	if named.backup && resolvedBackup != rec.PreferredBackupWindow {
 		plan.PreferredBackupWindow = resolvedBackup
 	}
-	if resolvedMaintenance != rec.PreferredMaintenanceWindow {
+	if named.maintenance && resolvedMaintenance != rec.PreferredMaintenanceWindow {
 		plan.PreferredMaintenanceWindow = resolvedMaintenance
 	}
 	return nil

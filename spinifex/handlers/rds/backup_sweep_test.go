@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -169,6 +171,43 @@ func TestSweep_RemovesEverythingWhenTheInstanceIsGone(t *testing.T) {
 	assert.Equal(t, 2, h.sweep(t))
 	assert.False(t, h.snapshotExists(t, newest))
 	assert.False(t, h.snapshotExists(t, older))
+}
+
+// A KV read served by a lagging replica reads exactly like a finished teardown,
+// and the branch it would select deletes a live instance's whole backup set. The
+// bucket listing is the corroboration that stops it.
+func TestSweep_LeavesTheBackupSetWhenTheRecordCannotBeRead(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	seedInstance(t, h.svc, retainingRecord(7))
+	newest := h.seedBackup(t, time.Hour)
+	older := h.seedBackup(t, 30*oneDay)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stale := missingKey{KeyValue: kv, key: DBInstanceKey(testDBID)}
+
+	reaped, err := h.svc.sweepInstanceBackups(t.Context(), stale, testAccountID, testDBID,
+		h.automatedStamps(t, testDBID), defaultSweepDeleteLimit)
+	require.Error(t, err, "an unreadable record is not proof the instance is gone")
+	assert.Zero(t, reaped)
+	assert.True(t, h.snapshotExists(t, newest))
+	assert.True(t, h.snapshotExists(t, older), "not even the over-retention one goes on an unread record")
+	assert.Len(t, h.automatedStamps(t, testDBID), 2)
+}
+
+// A bucket read that misses one key while every other read succeeds, which is
+// what a stale replica looks like from here.
+type missingKey struct {
+	jetstream.KeyValue
+
+	key string
+}
+
+func (m missingKey) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	if key == m.key {
+		return nil, jetstream.ErrKeyNotFound
+	}
+	return m.KeyValue.Get(ctx, key)
 }
 
 // An instance restored from the snapshot is still reading through it. That is a

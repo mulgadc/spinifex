@@ -128,6 +128,8 @@ func (s *Service) sweepInstanceBackups(ctx context.Context, kv jetstream.KeyValu
 	retention := time.Duration(0)
 	if found {
 		retention = time.Duration(rec.BackupRetentionPeriod) * oneDay
+	} else if err := confirmDBInstanceGone(ctx, kv, dbInstanceIdentifier); err != nil {
+		return 0, err
 	}
 
 	entries, err := s.loadAutomatedBackups(ctx, kv, dbInstanceIdentifier, stamps)
@@ -161,6 +163,25 @@ func (s *Service) sweepInstanceBackups(ctx context.Context, kv jetstream.KeyValu
 		}
 	}
 	return reaped, errors.Join(failures...)
+}
+
+// The corroboration the purge-everything branch needs before it runs. A single
+// absent key is not proof the instance is gone — a read served by a lagging
+// replica reads the same way — and that branch removes a live instance's whole
+// backup set, newest included. The bucket listing is a second, independent read
+// path, so an identifier it still names fails this instance's sweep instead.
+func confirmDBInstanceGone(ctx context.Context, kv jetstream.KeyValue, dbInstanceIdentifier string) error {
+	ids, err := ListDBInstanceIDs(ctx, kv)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(ids, dbInstanceIdentifier) {
+		return fmt.Errorf("rds: the record of %s could not be read while its bucket still names it; "+
+			"its automated backups are left alone", dbInstanceIdentifier)
+	}
+	slog.WarnContext(ctx, "rds: removing the whole automated backup set of a DB instance that no longer exists",
+		"dbInstance", dbInstanceIdentifier)
+	return nil
 }
 
 // The index entries of one instance, oldest first. An entry whose snapshot record

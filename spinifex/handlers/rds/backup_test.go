@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -223,6 +224,79 @@ func TestValidateWindows_AssignsStableNonOverlappingWindows(t *testing.T) {
 		assigned[backup] = true
 	}
 	assert.Greater(t, len(assigned), 1, "the fleet's quiesce load should spread across the block")
+}
+
+// A window the customer never sent must never be the reason their request is
+// refused. Naming one window inside the other's block is the ordinary Terraform
+// shape — backup_window set, maintenance_window left out — and assigning the
+// second one on top of it would fail the same identifier deterministically,
+// forever.
+func TestValidateWindows_AssignsAroundACustomerNamedWindow(t *testing.T) {
+	svc := NewService(nil, testRegion)
+	// Inside the other window's block, which is where a collision is possible at
+	// all: an hour of the maintenance block covers two of its assignable slots.
+	const insideMaintenanceBlock = "13:00-14:00"
+	const insideBackupBlock = "wed:04:00-wed:05:00"
+
+	for i := range 200 {
+		id := fmt.Sprintf("orders-db-%d", i)
+
+		backup, maintenance, err := svc.validateWindows(id, insideMaintenanceBlock, "")
+		require.NoError(t, err, "%s: a named backup window must not be refused over an assigned one", id)
+		assert.Equal(t, insideMaintenanceBlock, backup, "%s: the named window is kept as named", id)
+		assertWindowsDoNotOverlap(t, id, backup, maintenance)
+
+		backup, maintenance, err = svc.validateWindows(id, "", insideBackupBlock)
+		require.NoError(t, err, "%s: a named maintenance window must not be refused over an assigned one", id)
+		assert.Equal(t, insideBackupBlock, maintenance)
+		assertWindowsDoNotOverlap(t, id, backup, maintenance)
+	}
+
+	// Stable, like every other assignment: stepping off the named window must not
+	// make the result depend on when it was resolved.
+	first, second, err := svc.validateWindows(testDBID, insideMaintenanceBlock, "")
+	require.NoError(t, err)
+	again, alsoAgain, err := svc.validateWindows(testDBID, insideMaintenanceBlock, "")
+	require.NoError(t, err)
+	assert.Equal(t, first, again)
+	assert.Equal(t, second, alsoAgain)
+}
+
+// A pair the customer named in full is still refused — the assignment moving out
+// of the way is for windows the platform chose, not for the ones it was given.
+func TestValidateWindows_StillRejectsAPairTheCustomerNamed(t *testing.T) {
+	_, _, err := NewService(nil, testRegion).
+		validateWindows(testDBID, "13:00-14:00", "wed:13:30-wed:14:30")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterCombination)
+}
+
+// The window a record does not carry is derived the same way the request that
+// stored the other one derived it. Anything else would schedule the two passes
+// over each other on exactly the records that name one window.
+func TestResolvedWindows_AssignAroundTheStoredWindow(t *testing.T) {
+	svc := NewService(nil, testRegion)
+
+	for i := range 200 {
+		id := fmt.Sprintf("orders-db-%d", i)
+
+		backupOnly := &DBInstanceRecord{DBInstanceIdentifier: id, PreferredBackupWindow: "13:00-14:00"}
+		assertWindowsDoNotOverlap(t, id, svc.reportedBackupWindow(backupOnly), svc.reportedMaintenanceWindow(backupOnly))
+
+		maintenanceOnly := &DBInstanceRecord{DBInstanceIdentifier: id, PreferredMaintenanceWindow: "wed:04:00-wed:05:00"}
+		assertWindowsDoNotOverlap(t, id,
+			svc.reportedBackupWindow(maintenanceOnly), svc.reportedMaintenanceWindow(maintenanceOnly))
+	}
+}
+
+func assertWindowsDoNotOverlap(t *testing.T, id, backup, maintenance string) {
+	t.Helper()
+	backupWindow, err := parseDailyWindow("PreferredBackupWindow", backup)
+	require.NoError(t, err)
+	maintenanceWindow, err := parseWeeklyWindow("PreferredMaintenanceWindow", maintenance)
+	require.NoError(t, err)
+	assert.False(t, backupWindow.overlaps(maintenanceWindow),
+		"%s: %s and %s should not overlap", id, backup, maintenance)
 }
 
 // An operator's typo cannot be allowed to fail every create on the node, so the
@@ -463,6 +537,28 @@ func TestRunBackupWindow_IgnoresAMalformedStoredWindow(t *testing.T) {
 	assert.False(t, h.runBackupPass(t))
 	assert.Empty(t, h.snaps.created)
 	assert.Nil(t, h.instance(t, testDBID).LastAutomatedBackupFailureAt)
+}
+
+// The other half of the pair is resolved for the overlap check, not to be
+// written down. A record that carried no maintenance window before the modify
+// still carries none after it: reporting one back would show as drift in the next
+// plan of a config that never set it.
+func TestModifyDBInstance_DoesNotPersistTheWindowItWasNotGiven(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	rec := retainingRecord(7)
+	rec.PreferredMaintenanceWindow = ""
+	seedInstance(t, h.svc, rec)
+
+	out, err := h.svc.ModifyDBInstance(t.Context(), &rds.ModifyDBInstanceInput{
+		DBInstanceIdentifier:  aws.String(testDBID),
+		PreferredBackupWindow: aws.String("13:00-14:00"),
+	}, testAccountID)
+	require.NoError(t, err, "a backup window inside the maintenance block is not a rejection")
+	assert.Equal(t, "13:00-14:00", aws.StringValue(out.DBInstance.PreferredBackupWindow))
+
+	stored := h.instance(t, testDBID)
+	assert.Equal(t, "13:00-14:00", stored.PreferredBackupWindow)
+	assert.Empty(t, stored.PreferredMaintenanceWindow, "a window the request did not name is not stored")
 }
 
 // A record written before rds-9 carries no window at all, and still has to be

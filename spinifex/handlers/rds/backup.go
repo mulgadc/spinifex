@@ -135,17 +135,46 @@ func (s *Service) windowBlock(configured, fallback, kind string) dailyWindow {
 // named neither — takes the deterministic assignment, which is the same value
 // this phase persists at create.
 func (s *Service) resolvedBackupWindow(rec *DBInstanceRecord) (dailyWindow, error) {
-	if rec.PreferredBackupWindow == "" {
-		return assignDailyWindow(s.backupWindowBlock(), rec.DBInstanceIdentifier), nil
+	if rec.PreferredBackupWindow != "" {
+		return parseDailyWindow("PreferredBackupWindow", rec.PreferredBackupWindow)
 	}
-	return parseDailyWindow("PreferredBackupWindow", rec.PreferredBackupWindow)
+	// Assigned clear of the window the record does name, the same way the request
+	// that stored one and not the other resolved the pair — otherwise the two
+	// passes would be scheduled over each other on exactly those records.
+	block := s.backupWindowBlock()
+	maintenance, ok := storedMaintenanceWindow(rec)
+	if !ok {
+		return assignDailyWindow(block, rec.DBInstanceIdentifier), nil
+	}
+	return assignDailyWindowClearOf(block, rec.DBInstanceIdentifier, maintenance), nil
 }
 
 func (s *Service) resolvedMaintenanceWindow(rec *DBInstanceRecord) (weeklyWindow, error) {
-	if rec.PreferredMaintenanceWindow == "" {
-		return assignWeeklyWindow(s.maintenanceWindowBlock(), rec.DBInstanceIdentifier), nil
+	if rec.PreferredMaintenanceWindow != "" {
+		return parseWeeklyWindow("PreferredMaintenanceWindow", rec.PreferredMaintenanceWindow)
 	}
-	return parseWeeklyWindow("PreferredMaintenanceWindow", rec.PreferredMaintenanceWindow)
+	block := s.maintenanceWindowBlock()
+	backup, ok := s.scheduledBackupWindow(rec)
+	if !ok {
+		return assignWeeklyWindow(block, rec.DBInstanceIdentifier), nil
+	}
+	return assignWeeklyWindowClearOf(block, rec.DBInstanceIdentifier, backup), nil
+}
+
+// The windows the passes will actually fire on, when there are any. A window
+// neither named nor parseable is nothing to assign around: the pass that owns it
+// will not fire on it either.
+func storedMaintenanceWindow(rec *DBInstanceRecord) (weeklyWindow, bool) {
+	if rec.PreferredMaintenanceWindow == "" {
+		return weeklyWindow{}, false
+	}
+	window, err := parseWeeklyWindow("PreferredMaintenanceWindow", rec.PreferredMaintenanceWindow)
+	return window, err == nil
+}
+
+func (s *Service) scheduledBackupWindow(rec *DBInstanceRecord) (dailyWindow, bool) {
+	window, err := s.resolvedBackupWindow(rec)
+	return window, err == nil
 }
 
 // The windows as a describe reports them. A record written before rds-9 carries
@@ -480,7 +509,7 @@ func (s *Service) validateRetentionPeriod(days int64) error {
 // maintenance window, and the non-overlap check needs both to exist — which is
 // also why an unnamed window is assigned rather than left empty.
 func (s *Service) validateWindows(identifier, backup, maintenance string) (string, string, error) {
-	backupWindow := assignDailyWindow(s.backupWindowBlock(), identifier)
+	var backupWindow dailyWindow
 	if backup != "" {
 		parsed, err := parseDailyWindow("PreferredBackupWindow", backup)
 		if err != nil {
@@ -488,13 +517,26 @@ func (s *Service) validateWindows(identifier, backup, maintenance string) (strin
 		}
 		backupWindow = parsed
 	}
-	maintenanceWindow := assignWeeklyWindow(s.maintenanceWindowBlock(), identifier)
+	var maintenanceWindow weeklyWindow
 	if maintenance != "" {
 		parsed, err := parseWeeklyWindow("PreferredMaintenanceWindow", maintenance)
 		if err != nil {
 			return "", "", err
 		}
 		maintenanceWindow = parsed
+	}
+	// A window the customer named is placed first and an assigned one goes around
+	// it. Assigning both independently and then rejecting the overlap would fail a
+	// request over a window the customer never sent — and deterministically, so the
+	// same identifier would fail forever.
+	switch {
+	case backup == "" && maintenance == "":
+		backupWindow = assignDailyWindow(s.backupWindowBlock(), identifier)
+		maintenanceWindow = assignWeeklyWindowClearOf(s.maintenanceWindowBlock(), identifier, backupWindow)
+	case backup == "":
+		backupWindow = assignDailyWindowClearOf(s.backupWindowBlock(), identifier, maintenanceWindow)
+	case maintenance == "":
+		maintenanceWindow = assignWeeklyWindowClearOf(s.maintenanceWindowBlock(), identifier, backupWindow)
 	}
 	if backupWindow.overlaps(maintenanceWindow) {
 		return "", "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,

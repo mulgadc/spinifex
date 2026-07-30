@@ -10,7 +10,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -35,13 +34,10 @@ type agentIdentity struct {
 // the authoritative identifier comes from the index, so an agent cannot act on
 // another instance by asking to.
 func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requestedID string) (*agentIdentity, error) {
-	if caller.PrincipalType != principalTypeAssumedRole ||
-		caller.AccountID != utils.GlobalAccountID ||
-		caller.RoleName != handlers_rds.InstanceRoleName ||
-		caller.SessionName == "" {
-		slog.DebugContext(ctx, "RDS: internal action rejected for non-agent caller",
-			"principalType", caller.PrincipalType, "accountID", caller.AccountID, "roleName", caller.RoleName)
-		return nil, errors.New(awserrors.ErrorAccessDenied)
+	// Re-run at the handler even though the gateway gate already ran it: this is
+	// the check that must hold, and it must not depend on a caller remembering.
+	if err := requireAgentPrincipal(ctx, caller); err != nil {
+		return nil, err
 	}
 
 	// IMDS instance-role credentials set RoleSessionName to the internal EC2

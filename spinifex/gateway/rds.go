@@ -30,18 +30,28 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "rds", action); err != nil {
+	caller, err := rdsCaller(r)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "RDS_Request: no account ID in auth context")
+		return err
+	}
+
+	// Before the policy check, so no customer grant is ever evaluated against an
+	// internal agent action. See AuthorizeCaller.
+	if err := gateway_rds.AuthorizeCaller(r.Context(), action, caller); err != nil {
+		return err
+	}
+
+	resource, err := gateway_rds.ResourceARN(action, gw.Region, caller.AccountID, queryArgs)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResource(r, "rds", action, resource); err != nil {
 		return err
 	}
 
 	if gw.NATSConn == nil {
 		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	caller, err := rdsCaller(r)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "RDS_Request: no account ID in auth context")
-		return err
 	}
 
 	xmlOutput, err := gateway_rds.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, caller)

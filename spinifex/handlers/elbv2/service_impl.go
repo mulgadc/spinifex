@@ -942,6 +942,86 @@ func (s *ELBv2ServiceImpl) syncCertInUseIndex(ctx context.Context, lbArn string,
 	}
 }
 
+// ReconcileCertInUseIndex rebuilds the ACM InUseBy index from the listener
+// records currently persisted. syncCertInUseIndex only ever runs on a listener
+// mutation, so a listener that predates the index has no entry, and a
+// certificate with an empty index neither fans out on renewal nor trips
+// DeleteCertificate's in-use guard. Safe to call repeatedly: it writes only
+// differences, so a converged index costs zero writes.
+func (s *ELBv2ServiceImpl) ReconcileCertInUseIndex(ctx context.Context) error {
+	if s.acmStore == nil {
+		return nil
+	}
+
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		return fmt.Errorf("list load balancers: %w", err)
+	}
+
+	// certArn → the LB ARNs that should be indexed against it.
+	desired := make(map[string]map[string]bool)
+	for _, lb := range lbs {
+		used, usedErr := s.certsUsedByLB(ctx, lb.LoadBalancerArn)
+		if usedErr != nil {
+			// Skipping one LB would silently drop its entries, which is the bug
+			// being fixed, so give up rather than write a partial index.
+			return fmt.Errorf("list listeners for %s: %w", lb.LoadBalancerArn, usedErr)
+		}
+		for arn := range used {
+			if desired[arn] == nil {
+				desired[arn] = make(map[string]bool)
+			}
+			desired[arn][lb.LoadBalancerArn] = true
+		}
+	}
+
+	certs, err := s.acmStore.ListAllCertMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("list certificates: %w", err)
+	}
+
+	// Walking every certificate rather than only the referenced ones is what
+	// makes this a rebuild and not just a backfill: it also drops entries naming
+	// a load balancer that no longer exists.
+	added, removed := 0, 0
+	for _, rec := range certs {
+		want := desired[rec.CertificateArn]
+		have := make(map[string]bool, len(rec.InUseBy))
+		for _, arn := range rec.InUseBy {
+			have[arn] = true
+		}
+
+		for arn := range have {
+			if want[arn] {
+				continue
+			}
+			if err := s.acmStore.RemoveInUseBy(ctx, rec.CertificateArn, arn); err != nil {
+				slog.ErrorContext(ctx, "ReconcileCertInUseIndex: failed to remove InUseBy entry",
+					"certArn", rec.CertificateArn, "lbArn", arn, "err", err)
+				continue
+			}
+			removed++
+		}
+		for arn := range want {
+			if have[arn] {
+				continue
+			}
+			if err := s.acmStore.AddInUseBy(ctx, rec.CertificateArn, arn); err != nil {
+				slog.ErrorContext(ctx, "ReconcileCertInUseIndex: failed to add InUseBy entry",
+					"certArn", rec.CertificateArn, "lbArn", arn, "err", err)
+				continue
+			}
+			added++
+		}
+	}
+
+	if added > 0 || removed > 0 {
+		slog.InfoContext(ctx, "ReconcileCertInUseIndex: rebuilt ACM InUseBy index",
+			"certificates", len(certs), "loadBalancers", len(lbs), "added", added, "removed", removed)
+	}
+	return nil
+}
+
 // LBAgentHeartbeat processes a heartbeat from an LB agent. On first heartbeat
 // transitions LB provisioning→active, processes health, and returns the config hash.
 func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {

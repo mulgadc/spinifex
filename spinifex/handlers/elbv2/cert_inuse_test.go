@@ -222,6 +222,165 @@ func TestUpdateStoredConfigForCert_SkipsMissingOrInactiveLB(t *testing.T) {
 	assert.Empty(t, stored.ConfigHash, "a still-provisioning LB must not get a config built for it")
 }
 
+// clearInUseBy strips a certificate's index entry for lbArn without touching
+// its listeners, reproducing a listener that predates the index.
+func clearInUseBy(t *testing.T, svc *ELBv2ServiceImpl, certArn, lbArn string) {
+	t.Helper()
+	require.NoError(t, svc.acmStore.RemoveInUseBy(context.Background(), certArn, lbArn))
+	rec, err := svc.acmStore.GetCert(context.Background(), certArn)
+	require.NoError(t, err)
+	require.Empty(t, rec.InUseBy, "precondition: the index must start empty")
+}
+
+func TestReconcileCertInUseIndex_BackfillsPreExistingListener(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-rec1", "rec-lb1")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	clearInUseBy(t, svc, testCertArn, lb.LoadBalancerArn)
+
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy,
+		"the listener still references the cert, so the rebuild must restore the entry")
+}
+
+func TestReconcileCertInUseIndex_IsIdempotent(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-rec2", "rec-lb2")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	clearInUseBy(t, svc, testCertArn, lb.LoadBalancerArn)
+
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy, "a second run must not duplicate the entry")
+}
+
+func TestReconcileCertInUseIndex_RemovesEntryWithNoListener(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-rec3", "rec-lb3")
+
+	// The LB exists but no listener references the cert, so the entry is stale.
+	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn, lb.LoadBalancerArn))
+
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Empty(t, rec.InUseBy, "a rebuild must drop an entry no listener justifies")
+}
+
+func TestReconcileCertInUseIndex_RemovesEntryForDeletedLB(t *testing.T) {
+	svc := setupTestService(t)
+
+	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn,
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/gone/lb-rec-gone"))
+
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Empty(t, rec.InUseBy, "an entry naming a load balancer that no longer exists must be dropped")
+}
+
+func TestReconcileCertInUseIndex_TwoListenersSameLB_SingleEntry(t *testing.T) {
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-rec4", "rec-lb4")
+
+	_, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 8443), testAccountID)
+	require.NoError(t, err)
+	clearInUseBy(t, svc, testCertArn, lb.LoadBalancerArn)
+
+	require.NoError(t, svc.ReconcileCertInUseIndex(context.Background()))
+
+	rec, err := svc.acmStore.GetCert(context.Background(), testCertArn)
+	require.NoError(t, err)
+	assert.Equal(t, []string{lb.LoadBalancerArn}, rec.InUseBy, "two listeners on one LB must dedupe to one entry")
+}
+
+// A nil acmStore means HTTPS is unavailable, not that the index is broken, so
+// the reconcile has to no-op rather than panic on daemon startup.
+func TestReconcileCertInUseIndex_NilACMStore_NoOp(t *testing.T) {
+	require.NoError(t, (&ELBv2ServiceImpl{}).ReconcileCertInUseIndex(context.Background()))
+}
+
+// TestReconcileCertInUseIndex_RestoresRenewalFanOut is the regression test for
+// the reported symptom rather than the mechanism: with the index emptied, a
+// re-import reaches no load balancer and the served leaf goes stale silently.
+// After a reconcile the same re-import must fan out again.
+func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	require.NoError(t, err)
+	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
+	require.NoError(t, err)
+	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
+
+	origLeaf, origKey := genLeafCertPEM(t, "stale.example.com")
+	importOut, err := acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: origLeaf,
+		PrivateKey:  origKey,
+	}, testAccountID)
+	require.NoError(t, err)
+	certArn := aws.StringValue(importOut.CertificateArn)
+
+	lb := activeLB(t, elbv2Svc, "lb-rec5", "rec-lb5")
+	_, err = elbv2Svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, certArn, 443), testAccountID)
+	require.NoError(t, err)
+	clearInUseBy(t, elbv2Svc, certArn, lb.LoadBalancerArn)
+
+	stale, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-rec5")
+	require.NoError(t, err)
+
+	// Without an index entry the re-import succeeds but reaches nothing.
+	midLeaf, midKey := genLeafCertPEM(t, "ignored.example.com")
+	_, err = acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    midLeaf,
+		PrivateKey:     midKey,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	unchanged, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-rec5")
+	require.NoError(t, err)
+	require.Equal(t, stale.ConfigHash, unchanged.ConfigHash,
+		"precondition: an empty index is exactly why renewal goes unnoticed")
+
+	require.NoError(t, elbv2Svc.ReconcileCertInUseIndex(context.Background()))
+
+	newLeaf, newKey := genLeafCertPEM(t, "renewed.example.com")
+	_, err = acmSvc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    newLeaf,
+		PrivateKey:     newKey,
+		CertificateArn: aws.String(certArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := elbv2Svc.store.GetLoadBalancer(context.Background(), "lb-rec5")
+	require.NoError(t, err)
+	assert.NotEqual(t, unchanged.ConfigHash, after.ConfigHash, "the reconciled index must let the fan-out through")
+
+	var afterPEM string
+	for _, pemContent := range after.CertFiles {
+		afterPEM = pemContent
+	}
+	assert.Contains(t, afterPEM, string(newLeaf), "the rendered cert file must carry the renewed leaf")
+}
+
 // genLeafCertPEM returns a self-signed leaf certificate + private key as PEM,
 // mirroring handlers_acm's own test helper (unexported, different package).
 func genLeafCertPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {

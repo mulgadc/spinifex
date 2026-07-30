@@ -1574,6 +1574,16 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)
 	}
+
+	// The InUseBy index is otherwise only written by listener mutations, so
+	// listeners created before it existed would never fan out a renewed
+	// certificate. Not fatal: a stale index degrades renewal, which beats
+	// refusing to start. Every node reconciles the shared bucket at its own
+	// startup; the index writes are CAS-guarded, so concurrent runs converge.
+	if err := d.elbv2Service.ReconcileCertInUseIndex(d.ctx); err != nil {
+		slog.Error("failed to reconcile the ACM InUseBy index", "err", err)
+	}
+
 	if d.vpcService != nil {
 		d.elbv2Service.VPCService = d.vpcService
 	}

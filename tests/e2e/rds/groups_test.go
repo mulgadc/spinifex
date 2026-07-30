@@ -115,28 +115,19 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	})
 
 	harness.Phase(t, "Creating DB instance %q against both groups", id)
-	created, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
-		DBSubnetGroupName:    aws.String(subnetGroup),
-		DBParameterGroupName: aws.String(paramGroup),
+	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.DBSubnetGroupName = aws.String(subnetGroup)
+		in.DBParameterGroupName = aws.String(paramGroup)
 	})
-	require.NoError(t, err, "create-db-instance")
-	require.NotNil(t, created.DBInstance)
 
-	// Registered before the waits below, so a failure part-way still frees the
-	// groups the later deletes need.
+	// Registered after the create's own teardown so it runs first: the groups can
+	// only go once the instance has, and a failure part-way still frees them.
 	t.Cleanup(func() {
 		teardownGroups(t, f, id, subnetGroup, paramGroup)
 	})
 
-	assert.Equal(t, subnetGroup, dbSubnetGroupName(created.DBInstance))
-	assert.Equal(t, paramGroup, dbParameterGroupName(created.DBInstance))
+	assert.Equal(t, subnetGroup, dbSubnetGroupName(created))
+	assert.Equal(t, paramGroup, dbParameterGroupName(created))
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailableOnTheResolvedParameters", func(t *testing.T) {

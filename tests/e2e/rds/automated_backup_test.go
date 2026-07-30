@@ -31,18 +31,9 @@ func TestAutomatedBackups(t *testing.T) {
 	id := fmt.Sprintf("%s-backup-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q with automated backups on", id)
-	_, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier:  aws.String(id),
-		Engine:                aws.String(dbEngine),
-		DBInstanceClass:       aws.String(dbClass),
-		AllocatedStorage:      aws.Int64(dbStorageGiB),
-		DBName:                aws.String(dbName),
-		MasterUsername:        aws.String(dbMasterUser),
-		MasterUserPassword:    aws.String(dbMasterPassword),
-		BackupRetentionPeriod: aws.Int64(1),
+	createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.BackupRetentionPeriod = aws.Int64(1)
 	})
-	require.NoError(t, err, "create-db-instance")
-	t.Cleanup(func() { deleteInstance(t, f, id) })
 
 	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
 	assert.Equal(t, int64(1), aws.Int64Value(instance.BackupRetentionPeriod))
@@ -195,17 +186,4 @@ func weeklyWindowAt(start time.Time, length time.Duration) string {
 func weekdayClock(at time.Time) string {
 	at = at.UTC()
 	return strings.ToLower(at.Format("Mon")) + ":" + at.Format("15:04")
-}
-
-func deleteInstance(t *testing.T, f *Fixture, id string) {
-	t.Helper()
-	_, err := f.AWS.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
-		DBInstanceIdentifier: aws.String(id),
-		SkipFinalSnapshot:    aws.Bool(true),
-	})
-	if err != nil {
-		t.Logf("delete-db-instance %s: %v (left behind for manual teardown)", id, err)
-		return
-	}
-	harness.WaitForDBInstanceGone(t, f.AWS, id)
 }

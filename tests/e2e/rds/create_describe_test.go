@@ -28,29 +28,17 @@ func TestCreateDescribeConnect(t *testing.T) {
 	id := fmt.Sprintf("%s-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q", id)
-	out, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
-		Tags: []*rds.Tag{
+	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.Tags = []*rds.Tag{
 			{Key: aws.String("env"), Value: aws.String("e2e")},
 			{Key: aws.String("suite"), Value: aws.String("rds")},
-		},
+		}
 	})
-	require.NoError(t, err, "create-db-instance")
-	require.NotNil(t, out.DBInstance)
-	// Registered before the first wait, so an instance that never comes up is
-	// still taken down rather than held against the next run's budget.
-	t.Cleanup(func() { deleteInstance(t, f, id) })
 
 	// The create returns before the engine exists, so the customer sees creating
 	// and polls; the reconciler owns the flip to available.
-	assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, id, aws.StringValue(out.DBInstance.DBInstanceIdentifier))
+	assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(created.DBInstanceStatus))
+	assert.Equal(t, id, aws.StringValue(created.DBInstanceIdentifier))
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailable", func(t *testing.T) {

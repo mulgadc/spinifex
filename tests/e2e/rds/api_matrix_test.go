@@ -93,7 +93,7 @@ func TestAPIMatrix(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				in := validCreateInput(rejectedID)
 				tc.mutate(in)
-				expectCreateRefused(t, f, "InvalidParameterValue", in)
+				expectCreateRefused(t, f, f.AWS, "InvalidParameterValue", in)
 			})
 		}
 	})
@@ -147,7 +147,7 @@ func TestAPIMatrix(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				in := validCreateInput(rejectedID)
 				tc.mutate(in)
-				expectCreateRefused(t, f, tc.code, in)
+				expectCreateRefused(t, f, f.AWS, tc.code, in)
 			})
 		}
 	})
@@ -251,7 +251,7 @@ func TestAPIMatrix(t *testing.T) {
 	})
 
 	t.Run("DuplicateIdentifierIsRefused", func(t *testing.T) {
-		expectCreateRefused(t, f, "DBInstanceAlreadyExists", validCreateInput(probeID))
+		expectCreateRefused(t, f, f.AWS, "DBInstanceAlreadyExists", validCreateInput(probeID))
 	})
 
 	// Grow-only, and refused before the instance leaves its current state: a
@@ -266,32 +266,4 @@ func TestAPIMatrix(t *testing.T) {
 			return err
 		})
 	})
-}
-
-// The suite's own create request: valid as it stands, so a table case mutates
-// exactly the one field it is asserting about.
-func validCreateInput(id string) *rds.CreateDBInstanceInput {
-	return &rds.CreateDBInstanceInput{
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
-	}
-}
-
-// A create that must be refused. Deletes whatever it created if it was not,
-// because a create the matrix expected to fail is otherwise a DB VM nobody is
-// waiting for and nobody tears down.
-func expectCreateRefused(t *testing.T, f *Fixture, code string, in *rds.CreateDBInstanceInput) {
-	t.Helper()
-	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — asserted to be refused
-	if err == nil {
-		id := aws.StringValue(out.DBInstance.DBInstanceIdentifier)
-		deleteInstance(t, f, id)
-		t.Fatalf("create of %s was accepted; expected %s", id, code)
-	}
-	harness.AssertAWSError(t, err, code)
 }

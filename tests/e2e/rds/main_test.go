@@ -16,7 +16,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/require"
 )
 
 // Mirrors the AWS client's own default, since the endpoint name the control
@@ -52,6 +55,11 @@ type Fixture struct {
 	Account    string
 	Region     string
 	BaseDomain string
+
+	// The system-account client, built on first use: it shells to sudo, and only
+	// the tests that reach behind a DB instance need one.
+	systemOnce sync.Once
+	system     *harness.AWSClient
 }
 
 func TestMain(m *testing.M) {
@@ -84,4 +92,92 @@ func requireRDSFixture(t *testing.T) *Fixture {
 		t.Skip("SPINIFEX_E2E is unset")
 	}
 	return pkgFix
+}
+
+// SystemAWS returns the system-account client. The DB VM and its data volume
+// belong to that account and are filtered out of the suite's own describes, so
+// every assertion behind a DB instance goes through here.
+func (f *Fixture) SystemAWS(t *testing.T) *harness.AWSClient {
+	t.Helper()
+	f.systemOnce.Do(func() { f.system = harness.SystemAWSClient(t, f.Env) })
+	return f.system
+}
+
+// The clients and output directory a DB-instance diagnostic bundle needs.
+func (f *Fixture) dbDiag(t *testing.T) harness.DBDiag {
+	t.Helper()
+	return harness.DBDiag{Tenant: f.AWS, System: f.SystemAWS(t), Dir: harness.ArtifactDir(t, f.Env)}
+}
+
+// The suite's own create request: valid as it stands, so a caller mutates only
+// the field it cares about.
+func validCreateInput(id string) *rds.CreateDBInstanceInput {
+	return &rds.CreateDBInstanceInput{
+		DBInstanceIdentifier: aws.String(id),
+		Engine:               aws.String(dbEngine),
+		DBInstanceClass:      aws.String(dbClass),
+		AllocatedStorage:     aws.Int64(dbStorageGiB),
+		DBName:               aws.String(dbName),
+		MasterUsername:       aws.String(dbMasterUser),
+		MasterUserPassword:   aws.String(dbMasterPassword),
+	}
+}
+
+// createDBInstance creates the suite's standard instance and returns the create
+// response's own view of it — status creating, no endpoint yet.
+//
+// Every test that owns an instance goes through here, because the two things a
+// test that boots a DB VM must not forget are registered here: the teardown, so
+// a failed run does not charge the next one, and the failure-only diagnostic
+// bundle, without which "create timed out" names no owning phase.
+func createDBInstance(t *testing.T, f *Fixture, id string, opts ...func(*rds.CreateDBInstanceInput)) *rds.DBInstance {
+	t.Helper()
+	in := validCreateInput(id)
+	for _, opt := range opts {
+		opt(in)
+	}
+	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — the instance under test
+	require.NoError(t, err, "create-db-instance %s", id)
+	require.NotNil(t, out.DBInstance)
+	t.Cleanup(func() { deleteInstance(t, f, id) })
+	harness.CaptureDBDiagnostics(t, f.dbDiag(t), id)
+	return out.DBInstance
+}
+
+// A create that must be refused, made with whichever principal the assertion is
+// about. Deletes whatever it created if it was not refused: a create nobody
+// expected to succeed is otherwise a DB VM nobody waits for and nobody tears down.
+func expectCreateRefused(t *testing.T, f *Fixture, c *harness.AWSClient, code string, in *rds.CreateDBInstanceInput) {
+	t.Helper()
+	out, err := c.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — asserted to be refused
+	if err == nil {
+		id := aws.StringValue(out.DBInstance.DBInstanceIdentifier)
+		deleteInstance(t, f, id)
+		t.Fatalf("create of %s was accepted; expected %s", id, code)
+	}
+	harness.AssertAWSError(t, err, code)
+}
+
+// Teardown for one instance: idempotent, and waits for the record to go so a
+// group or a snapshot the next step deletes is no longer held.
+func deleteInstance(t *testing.T, f *Fixture, id string) {
+	t.Helper()
+	deleteInstanceAs(t, f.AWS, id)
+}
+
+// The same teardown for an instance another tenant owns, which only that
+// tenant's credentials can see at all.
+func deleteInstanceAs(t *testing.T, c *harness.AWSClient, id string) {
+	t.Helper()
+	_, err := c.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier: aws.String(id),
+		SkipFinalSnapshot:    aws.Bool(true),
+	})
+	if err != nil {
+		if !harness.ErrorCodeIs(err, "DBInstanceNotFound") {
+			t.Logf("delete-db-instance %s: %v (left behind for manual teardown)", id, err)
+		}
+		return
+	}
+	harness.WaitForDBInstanceGone(t, c, id)
 }

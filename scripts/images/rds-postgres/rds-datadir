@@ -1,0 +1,153 @@
+#!/bin/sh
+# rds-datadir — prepare and mount the instance's data volume at the datadir
+# mount point, before rds-init bootstraps the cluster onto it.
+#
+# The volume is hot-plugged after launch, so it cannot be in /etc/fstab and the
+# guest has to discover it. Data volumes are attached as virtio-blk with
+# serial = volume-id, and the boot volume carries no serial — so a `vol*` serial
+# identifies the data volume and nothing else.
+#
+# This is the one place in the image that may format a block device, so every
+# branch that is not "an empty disk we just attached" refuses:
+#
+#   - a disk carrying a partition table or an existing filesystem is mounted as
+#     found, never re-made (a replaced VM comes back on its existing volume);
+#   - more than one candidate disk is an error, not a guess;
+#   - no candidate within the wait window is an error, and rds-init then fails
+#     on the missing mount rather than initialising on the boot volume.
+set -eu
+
+# Mount point of the data volume. rds-init puts the datadir one level inside it.
+DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/postgresql}"
+
+PG_USER="${RDS_PG_USER:-postgres}"
+
+SYS_BLOCK="${RDS_SYS_BLOCK:-/sys/block}"
+DEV_DIR="${RDS_DEV_DIR:-/dev}"
+MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
+
+# How long to wait for the attach. The control plane hot-plugs the volume as
+# soon as the VM launches, so this covers the boot racing the attach, not an
+# attach that never happens.
+WAIT_SECS="${RDS_DATA_VOLUME_WAIT:-120}"
+
+# Filesystem label written at format time. Purely diagnostic: discovery is by
+# serial, so a volume whose label was changed out of band still mounts.
+FS_LABEL="${RDS_DATA_FS_LABEL:-rds-data}"
+
+log() { echo "[rds-datadir] $*"; }
+fail() { echo "[rds-datadir] ERROR: $*" >&2; exit 1; }
+
+# An already-mounted DATA_MOUNT makes the whole script a no-op; an OpenRC restart
+# must not try to mount twice.
+mounted() {
+    awk -v mnt="${DATA_MOUNT}" '$2 == mnt { found = 1 } END { exit !found }' "${MOUNTS_FILE}"
+}
+
+# The boot volume is attached with no serial and so never appears here.
+data_disks() {
+    for _p in "${SYS_BLOCK}"/*; do
+        [ -r "${_p}/serial" ] || continue
+        case "$(cat "${_p}/serial" 2>/dev/null)" in
+            vol*) basename "${_p}" ;;
+        esac
+    done
+}
+
+# Two disks is a configuration this image cannot resolve safely, so it fails
+# rather than picking one.
+await_data_disk() {
+    _waited=0
+    while :; do
+        _found=$(data_disks)
+        _count=$(printf '%s\n' "${_found}" | grep -c . || true)
+        if [ "${_count}" -gt 1 ]; then
+            fail "found ${_count} attached data volumes ($(printf '%s\n' "${_found}" | tr '\n' ' ')); expected exactly one"
+        fi
+        # The sysfs entry appears before the device node, and blkid on a missing
+        # node reports the same "no filesystem" a blank disk does — so the wait
+        # is not over until both exist.
+        if [ "${_count}" = "1" ] && [ -e "${DEV_DIR}/${_found}" ]; then
+            printf '%s\n' "${_found}"
+            return 0
+        fi
+        if [ "${_waited}" -ge "${WAIT_SECS}" ]; then
+            fail "no data volume attached after ${WAIT_SECS}s"
+        fi
+        sleep 1
+        _waited=$((_waited + 1))
+    done
+}
+
+# Prints the filesystem on dev, nothing if it holds none, and returns non-zero
+# when it could not find out: a blkid that is missing, errored or pointed at an
+# absent node prints exactly what a blank disk prints, so only the status decides.
+fstype_of() {
+    if _out=$(blkid "$1" 2>/dev/null); then
+        _rc=0
+    else
+        _rc=$?
+    fi
+    # 0 is a signature found, 2 a clean probe that found none. Anything else
+    # means the probe did not run, which is not an answer.
+    [ "${_rc}" -eq 0 ] || [ "${_rc}" -eq 2 ] || return 1
+    printf '%s' "${_out}" | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p'
+}
+
+# Partitions appear as child directories of the disk in sysfs, which needs no
+# tool and no signature guessing.
+has_partitions() {
+    for _part in "${SYS_BLOCK}/$1/$1"*; do
+        [ -d "${_part}" ] && return 0
+    done
+    return 1
+}
+
+main() {
+    if mounted; then
+        log "${DATA_MOUNT} is already a mount point; nothing to do"
+        return 0
+    fi
+
+    # Checked before anything else: without it the probe below cannot run, and a
+    # probe that cannot run looks identical to a blank disk.
+    command -v blkid >/dev/null 2>&1 ||
+        fail "blkid is not installed in this image; refusing to tell a blank volume from a customer's data without it"
+
+    _disk=$(await_data_disk)
+    _dev="${DEV_DIR}/${_disk}"
+    log "data volume attached as ${_dev} (serial $(cat "${SYS_BLOCK}/${_disk}/serial"))"
+
+    if ! _fstype=$(fstype_of "${_dev}"); then
+        fail "could not probe ${_dev} for a filesystem; refusing to decide whether it is blank"
+    fi
+    if [ -z "${_fstype}" ]; then
+        # A partition table with no whole-disk filesystem is somebody else's
+        # disk — a restored image, a mis-targeted attach — so formatting would
+        # destroy it.
+        if has_partitions "${_disk}"; then
+            fail "${_dev} carries a partition table but no filesystem; refusing to format it"
+        fi
+        log "formatting ${_dev} (ext4, label ${FS_LABEL})"
+        # -m 0: no reserved-for-root blocks. The customer paid for the whole
+        # volume and nothing but PostgreSQL writes to it.
+        mkfs.ext4 -q -L "${FS_LABEL}" -m 0 "${_dev}" ||
+            fail "mkfs.ext4 failed on ${_dev}"
+        _fstype=ext4
+    else
+        log "${_dev} already holds a ${_fstype} filesystem; mounting as found"
+    fi
+
+    mount "${_dev}" "${DATA_MOUNT}" || fail "could not mount ${_dev} at ${DATA_MOUNT}"
+
+    # The mount does not inherit the image mount point's ownership: a freshly
+    # formatted volume's root is root-owned 0755, which initdb (as postgres)
+    # cannot create the datadir under.
+    chown "${PG_USER}:${PG_USER}" "${DATA_MOUNT}" ||
+        fail "could not set ${PG_USER} ownership on ${DATA_MOUNT}"
+    chmod 0750 "${DATA_MOUNT}"
+
+    log "${DATA_MOUNT} ready on ${_dev}"
+}
+
+main "$@"

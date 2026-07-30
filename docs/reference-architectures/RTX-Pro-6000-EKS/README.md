@@ -372,11 +372,7 @@ The workloads module reads cluster coordinates, ECR image URIs, NodePort values,
 
 After the successful completion of the `make workloads` step, the dashboard should be available and displaying the outputs of the two worker nodes; YOLO computer vision in the left pane, and a LLM chat in the right pane, as shown in the images below.
 
-<p align="center"><img src="../../../.github/assets/images/rtx6000/yolo.png" alt="YOLO real-time object detection stream"></p>
-
-<p align="center"><img src="../../../.github/assets/images/rtx6000/llm-chat.png" alt="LLM chat interface"></p>
-
-
+<video src="https://iso.mulgadc.com/full-dashboard.mp4" controls width="100%" style="border-radius:6px"></video>
 
 ### 6. Teardown
 

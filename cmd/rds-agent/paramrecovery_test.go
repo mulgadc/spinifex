@@ -1,0 +1,230 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+)
+
+// A runner that fails only the offline config check, so the check's own
+// rejection is separable from a reload or a psql failure.
+type checkFailingRunner struct {
+	recordingRunner
+
+	checkErr error
+}
+
+func (r *checkFailingRunner) run(ctx context.Context, c command) (string, error) {
+	if slices.Contains(c.Args, "-C") {
+		r.calls = append(r.calls, c)
+		return "", r.checkErr
+	}
+	return r.recordingRunner.run(ctx, c)
+}
+
+// The failure this closes: a value the engine refuses would otherwise sit on the
+// data volume, where it survives every VM replace and turns the next restart
+// into a boot loop.
+func TestPostgresEngine_ApplyParametersRollsBackAValueTheEngineRejects(t *testing.T) {
+	runner := &checkFailingRunner{checkErr: errors.New(`unrecognized configuration parameter "work_men"`)}
+	engine := newTestEngine(t, runner.run)
+
+	// A first apply the engine accepted, which is what the rejected one has to
+	// roll back to.
+	runner.checkErr = nil
+	if _, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
+		t.Fatalf("first ApplyParameters: %v", err)
+	}
+	runner.checkErr = errors.New(`unrecognized configuration parameter "work_men"`)
+
+	if _, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "999999999"}}); err == nil {
+		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
+	}
+
+	installed, err := os.ReadFile(engine.parametersPath())
+	if err != nil {
+		t.Fatalf("read the installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "work_mem = '4096'") {
+		t.Errorf("installed parameters = %q, want the previous accepted set restored", installed)
+	}
+}
+
+// The first apply of an instance's life has nothing to roll back to, so a
+// rejection has to leave no include at all rather than an empty one.
+func TestPostgresEngine_ApplyParametersWithdrawsTheFirstRejectedSet(t *testing.T) {
+	runner := &checkFailingRunner{checkErr: errors.New("configuration file contains errors")}
+	engine := newTestEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "0"}}); err == nil {
+		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
+	}
+	if _, err := os.Stat(engine.parametersPath()); !os.IsNotExist(err) {
+		t.Errorf("the rejected include is still installed (stat err = %v)", err)
+	}
+}
+
+// The rollback target has to be a set the engine actually adopted, so a second
+// accepted apply leaves the first one as what a failed restart falls back to.
+func TestPostgresEngine_LastKnownGoodTracksTheAcceptedSet(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+
+	for _, value := range []string{"4096", "8192"} {
+		if _, err := engine.ApplyParameters(context.Background(),
+			[]handlers_rds.Parameter{{Name: "work_mem", Value: value}}); err != nil {
+			t.Fatalf("ApplyParameters(%s): %v", value, err)
+		}
+	}
+
+	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	if err != nil {
+		t.Fatalf("read the last known good parameters: %v", err)
+	}
+	if !strings.Contains(string(lastGood), "work_mem = '4096'") {
+		t.Errorf("last known good = %q, want the set the engine ran before the latest apply", lastGood)
+	}
+
+	// include_dir globs *.conf, so the rollback copy must not read as a second
+	// set of settings alongside the live one.
+	if strings.HasSuffix(engine.lastGoodPath(), ".conf") {
+		t.Errorf("the rollback copy at %s would be included by the engine", engine.lastGoodPath())
+	}
+}
+
+func TestPostgresEngine_RestoreLastKnownGoodParameters(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+
+	// Nothing to restore before anything has ever been applied.
+	restored, err := engine.RestoreLastKnownGoodParameters()
+	if err != nil {
+		t.Fatalf("RestoreLastKnownGoodParameters: %v", err)
+	}
+	if restored {
+		t.Error("restored a set with no last known good on disk")
+	}
+
+	for _, value := range []string{"4096", "8192"} {
+		if _, err := engine.ApplyParameters(context.Background(),
+			[]handlers_rds.Parameter{{Name: "work_mem", Value: value}}); err != nil {
+			t.Fatalf("ApplyParameters(%s): %v", value, err)
+		}
+	}
+
+	restored, err = engine.RestoreLastKnownGoodParameters()
+	if err != nil {
+		t.Fatalf("RestoreLastKnownGoodParameters: %v", err)
+	}
+	if !restored {
+		t.Fatal("did not restore a set that differs from the last known good")
+	}
+	installed, err := os.ReadFile(engine.parametersPath())
+	if err != nil {
+		t.Fatalf("read the installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "work_mem = '4096'") {
+		t.Errorf("installed = %q, want the last accepted set", installed)
+	}
+
+	// Idempotent: the second call finds them already equal and does nothing, so a
+	// repeated rollback cannot churn a cluster that is failing for another reason.
+	restored, err = engine.RestoreLastKnownGoodParameters()
+	if err != nil {
+		t.Fatalf("RestoreLastKnownGoodParameters: %v", err)
+	}
+	if restored {
+		t.Error("restored again when the installed set already matched")
+	}
+}
+
+// Stands in for the engine in the guard's tests: what matters is whether the
+// rollback and the restart were reached at all.
+type fakeRecovery struct {
+	restored   bool
+	restoreErr error
+	restarts   int
+}
+
+func (f *fakeRecovery) RestoreLastKnownGoodParameters() (bool, error) {
+	return f.restored, f.restoreErr
+}
+
+func (f *fakeRecovery) Restart(context.Context) error {
+	f.restarts++
+	return nil
+}
+
+// A probe whose result the test drives directly, standing in for pg_isready.
+func stubProbe(t *testing.T, code int, err error) *engineProbe {
+	t.Helper()
+	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	return newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+		return code, err
+	})
+}
+
+func newTestGuard(engine parameterRecovery, probe *engineProbe) *paramGuard {
+	g := newParamGuard(engine, probe)
+	// Real budgets are minutes, which is the point of them; the behaviour under
+	// test is the decision, not the wait.
+	g.after, g.poll = 20*time.Millisecond, time.Millisecond
+	return g
+}
+
+// pg_isready exit 2 is an engine that is not there at all, which after a
+// parameter change is the boot-loop shape this breaks.
+func TestParamGuard_RollsBackAndRestartsWhenTheEngineNeverComesUp(t *testing.T) {
+	engine := &fakeRecovery{restored: true}
+	newTestGuard(engine, stubProbe(t, 2, nil)).Run(t.Context())
+
+	if engine.restarts != 1 {
+		t.Errorf("restarts = %d, want the engine restarted on the rolled-back set", engine.restarts)
+	}
+}
+
+func TestParamGuard_DoesNothingWhenTheEngineIsServing(t *testing.T) {
+	engine := &fakeRecovery{restored: true}
+	newTestGuard(engine, stubProbe(t, 0, nil)).Run(t.Context())
+
+	if engine.restarts != 0 {
+		t.Errorf("restarts = %d, want none against a healthy engine", engine.restarts)
+	}
+}
+
+// pg_isready exit 1 is a postmaster that is up and replaying WAL. It is making
+// progress on its own, and restarting it would throw the recovery away.
+func TestParamGuard_LeavesARecoveringEngineAlone(t *testing.T) {
+	engine := &fakeRecovery{restored: true}
+	guard := newTestGuard(engine, stubProbe(t, 1, nil))
+	// Bounded so the deadline-resetting loop cannot run forever if it stops
+	// resetting; the assertion is that the rollback was never reached.
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	guard.Run(ctx)
+
+	if engine.restarts != 0 {
+		t.Errorf("restarts = %d, want none while the engine is recovering", engine.restarts)
+	}
+}
+
+// The parameters are only the cause if they differ from the set the engine last
+// accepted; restarting on an identical set would churn for nothing.
+func TestParamGuard_DoesNotRestartWhenTheParametersAreAlreadyTheAcceptedSet(t *testing.T) {
+	engine := &fakeRecovery{restored: false}
+	newTestGuard(engine, stubProbe(t, 2, nil)).Run(t.Context())
+
+	if engine.restarts != 0 {
+		t.Errorf("restarts = %d, want none when there was nothing to roll back", engine.restarts)
+	}
+}

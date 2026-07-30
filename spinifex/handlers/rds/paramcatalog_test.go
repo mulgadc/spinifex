@@ -1,0 +1,189 @@
+package handlers_rds
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The failure this guards is the one the phase opens by warning about, arriving
+// through the default path rather than a customer typo: a catalog change that
+// makes the smallest class unbootable has to fail here rather than in a create.
+func TestParameterCatalog_DefaultsSatisfyTheirOwnConstraintsAtEveryClass(t *testing.T) {
+	for _, class := range SupportedInstanceClasses() {
+		t.Run(class, func(t *testing.T) {
+			memoryMiB, err := classMemoryMiB(class)
+			require.NoError(t, err)
+
+			for _, name := range CatalogParameterNames() {
+				spec, ok := LookupParameter(name)
+				require.True(t, ok)
+
+				value := spec.DefaultAt(memoryMiB)
+				assert.NotEmpty(t, value, "%s has an empty default at %s", name, class)
+				// Validated by the same function a customer's value goes through, so
+				// a default cannot be something the API would reject.
+				_, err := validateParameterValue(name, value)
+				assert.NoError(t, err, "the default %q of %s is not a value %s accepts", value, name, class)
+			}
+		})
+	}
+}
+
+// Every entry has to be a shape the resolver and the describe can both render,
+// or a client reads a parameter with no type and no apply semantics.
+func TestParameterCatalog_EntriesAreWellFormed(t *testing.T) {
+	for _, name := range CatalogParameterNames() {
+		spec, _ := LookupParameter(name)
+
+		assert.Equal(t, name, spec.Name, "the catalog key and the spec name disagree")
+		assert.Contains(t, []string{ApplyTypeStatic, ApplyTypeDynamic}, spec.ApplyType, "%s", name)
+		assert.Contains(t, []string{paramTypeInteger, paramTypeReal, paramTypeBoolean, paramTypeString, paramTypeEnum},
+			spec.DataType, "%s", name)
+		if spec.DataType == paramTypeEnum {
+			assert.NotEmpty(t, spec.Enum, "%s is an enum with no allowed values", name)
+		}
+		if spec.DataType == paramTypeInteger || spec.DataType == paramTypeReal {
+			assert.Less(t, spec.Min, spec.Max, "%s has an empty range", name)
+		}
+	}
+}
+
+// D20: the size-derived defaults have to actually move with the class, or the
+// formulas are decoration and one end of the D15 range is mis-tuned.
+func TestParameterCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) {
+	smallest, err := classMemoryMiB("db.t3.micro")
+	require.NoError(t, err)
+	largest, err := classMemoryMiB("db.m5.xlarge")
+	require.NoError(t, err)
+	require.Less(t, smallest, largest)
+
+	for _, name := range []string{"shared_buffers", "effective_cache_size", "max_connections", "maintenance_work_mem"} {
+		spec, ok := LookupParameter(name)
+		require.True(t, ok, "%s is expected to carry a computed default", name)
+		require.NotNil(t, spec.DefaultFor, "%s should be size-derived", name)
+
+		small, err := strconv.ParseInt(spec.DefaultAt(smallest), 10, 64)
+		require.NoError(t, err)
+		large, err := strconv.ParseInt(spec.DefaultAt(largest), 10, 64)
+		require.NoError(t, err)
+		assert.Less(t, small, large, "%s does not grow with the class", name)
+	}
+}
+
+// shared_buffers is a quarter of class memory on real RDS, and it is the setting
+// whose being wrong at the small end stops the engine from starting.
+func TestParameterCatalog_SharedBuffersIsAQuarterOfClassMemory(t *testing.T) {
+	memoryMiB, err := classMemoryMiB("db.m5.large")
+	require.NoError(t, err)
+
+	blocks, err := strconv.ParseInt(sharedBuffersFor(memoryMiB), 10, 64)
+	require.NoError(t, err)
+	assert.Equal(t, memoryMiB/4, blocks*8/1024, "shared_buffers is not a quarter of the class's memory")
+}
+
+func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
+	cases := []struct {
+		name, param, value, want string
+	}{
+		{"UnknownName", "not_a_setting", "1", "is not a parameter this engine exposes"},
+		{"NotAnInteger", "max_connections", "many", "takes an integer"},
+		{"BelowRange", "max_connections", "1", "outside its allowed range"},
+		{"AboveRange", "max_connections", "500000", "outside its allowed range"},
+		{"NotAReal", "checkpoint_completion_target", "high", "takes a number"},
+		{"RealOutOfRange", "checkpoint_completion_target", "2", "outside its allowed range"},
+		{"NotABoolean", "autovacuum", "maybe", "takes a boolean"},
+		{"NotInEnum", "log_statement", "everything", "does not accept"},
+		{"Empty", "work_mem", "", "empty value"},
+		// AWS accepts these; passing one through would be a startup failure rather
+		// than an API error.
+		{"Formula", "shared_buffers", "{DBInstanceClassMemory/32768}", "is a formula"},
+		{"Reference", "max_connections", "DBInstanceClassMemory", "is a formula"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateParameterValue(tc.param, tc.value)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateParameterValue_AcceptsEveryEnginesSpellingOfABoolean(t *testing.T) {
+	for _, value := range []string{"on", "OFF", "true", "False", "yes", "no", "1", "0"} {
+		_, err := validateParameterValue("autovacuum", value)
+		assert.NoError(t, err, "autovacuum rejected %q, which the engine accepts", value)
+	}
+}
+
+// A group's overrides are laid over the whole catalog, not merged into a subset:
+// every parameter is present, and one the group does not set carries its default.
+func TestResolveEffectiveParameters_OverlaysOverridesOnDefaults(t *testing.T) {
+	resolved, err := ResolveEffectiveParameters("db.t3.medium", map[string]string{"work_mem": "16384"})
+	require.NoError(t, err)
+	require.Len(t, resolved, len(CatalogParameterNames()))
+
+	values := map[string]string{}
+	for _, param := range resolved {
+		values[param.Name] = param.Value
+	}
+	assert.Equal(t, "16384", values["work_mem"], "the override did not win")
+
+	memoryMiB, err := classMemoryMiB("db.t3.medium")
+	require.NoError(t, err)
+	assert.Equal(t, sharedBuffersFor(memoryMiB), values["shared_buffers"],
+		"a parameter the group does not set should carry its computed default")
+}
+
+// Sorted output is what lets a re-resolve that changed nothing produce a
+// byte-identical include, so an apply does not restart an engine for no reason.
+func TestResolveEffectiveParameters_IsSortedAndCarriesNoFormula(t *testing.T) {
+	resolved, err := ResolveEffectiveParameters("db.m5.xlarge", nil)
+	require.NoError(t, err)
+
+	for i := 1; i < len(resolved); i++ {
+		assert.Less(t, resolved[i-1].Name, resolved[i].Name, "the resolved set is not sorted by name")
+	}
+	for _, param := range resolved {
+		assert.NotContains(t, param.Value, "{", "%s reached the agent as a formula", param.Name)
+		assert.NotContains(t, param.Value, "DBInstanceClass", "%s reached the agent as a reference", param.Name)
+	}
+}
+
+// A stored value the catalog would now reject must not keep being handed to the
+// engine, so the resolve re-validates rather than trusting what was written.
+func TestResolveEffectiveParameters_RevalidatesStoredOverrides(t *testing.T) {
+	_, err := ResolveEffectiveParameters("db.t3.medium", map[string]string{"max_connections": "999999"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_connections")
+}
+
+func TestResolveEffectiveParameters_RejectsAnUnknownClass(t *testing.T) {
+	_, err := ResolveEffectiveParameters("db.x99.mega", nil)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+}
+
+// AllowedValues is what tells a customer what an integer means, so a unitful
+// parameter has to report its unit rather than a bare pair of numbers.
+func TestParameterSpec_AllowedValuesDescribesTheConstraint(t *testing.T) {
+	shared, _ := LookupParameter("shared_buffers")
+	assert.Equal(t, "16-4194304 (8kB)", shared.AllowedValues())
+
+	logStatement, _ := LookupParameter("log_statement")
+	assert.Equal(t, "none,ddl,mod,all", logStatement.AllowedValues())
+
+	timezone, _ := LookupParameter("timezone")
+	assert.Empty(t, timezone.AllowedValues(), "a free-form string has no constraint to report")
+
+	target, _ := LookupParameter("checkpoint_completion_target")
+	assert.True(t, strings.HasPrefix(target.AllowedValues(), "0-1"), "got %q", target.AllowedValues())
+}

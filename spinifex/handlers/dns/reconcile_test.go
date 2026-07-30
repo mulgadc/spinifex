@@ -98,6 +98,33 @@ func TestComputeConvergeNoPruneWhenNoAuthority(t *testing.T) {
 	assert.Empty(t, deletesOf(batch), "no authority means no deletions")
 }
 
+func TestComputeConvergePrunesRDSOnlyWhenEnumerated(t *testing.T) {
+	desired := []Change{upsert("orders-db.111122223333.ap-southeast-2.rds.spx3.net", "10.0.5.20")}
+	existing := map[string][]zoneRecord{testBase: {
+		existingA("orders-db.111122223333.ap-southeast-2.rds.", "10.0.5.20"),
+		existingA("dropped-db.111122223333.ap-southeast-2.rds.", "10.0.5.21"),
+		existingA("app-web-abc.ap-southeast-2.elb.", "1.1.1.1"),
+		existingA("ec2-4-4-4-4.ap-southeast-2.compute.", "4.4.4.4"),
+	}}
+
+	// Without RDS authority the deleted instance's record survives, and so does
+	// every other class this cycle could not enumerate.
+	batch, err := computeConverge(desired, existing, prunableFor(PruneScope{}))
+	require.NoError(t, err)
+	assert.Empty(t, deletesOf(batch), "RDS pruning is suppressed when the account buckets were not fully read")
+
+	batch, err = computeConverge(desired, existing, prunableFor(PruneScope{RDS: true}))
+	require.NoError(t, err)
+	deletes := deletesOf(batch)
+
+	require.Len(t, deletes, 1, "only the DB instance absent from the desired set is pruned")
+	assert.Equal(t, "dropped-db.111122223333.ap-southeast-2.rds.spx3.net", deletes[0].Name)
+	for _, d := range deletes {
+		assert.NotContains(t, d.Name, ".elb.", "RDS authority does not grant ELB pruning")
+		assert.NotContains(t, d.Name, ".compute.", "EC2 records are never pruned")
+	}
+}
+
 func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
 	desired := []Change{{
 		Action: ActionUpsert,

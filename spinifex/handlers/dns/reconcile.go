@@ -52,6 +52,7 @@ type DesiredSet struct {
 type PruneScope struct {
 	ELB bool
 	EKS bool
+	RDS bool
 }
 
 // Reconciler is the drift backstop. On a ticker it rebuilds the desired
@@ -264,8 +265,8 @@ func (r *Reconciler) computeBatch() ([]Change, error) {
 }
 
 // prunable returns the predicate deciding whether a (zone, label) record may be
-// deleted when absent from the desired set: load-balancer and EKS records in the
-// base domain, but only for the classes this cycle enumerated authoritatively
+// deleted when absent from the desired set: load-balancer, EKS and RDS records
+// in the base domain, but only for the classes this cycle enumerated authoritatively
 // across all tenants. EC2 (`.compute.`) records are never pruned (a node sees
 // only its own instances); structural (apex/NS/glue) records never match.
 func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
@@ -277,6 +278,9 @@ func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
 			return true
 		}
 		if scope.EKS && strings.Contains(label, ".eks.") {
+			return true
+		}
+		if scope.RDS && strings.Contains(label, ".rds.") {
 			return true
 		}
 		return false

@@ -7,9 +7,8 @@
 // in-guest agent reports healthy, the endpoint resolves and a client can speak
 // the wire protocol to it.
 //
-// The suite is opt-in beyond SPINIFEX_E2E: DeleteDBInstance is not implemented
-// yet, so a run leaves its DB instance and VM behind. Set SPINIFEX_E2E_RDS=1 to
-// accept that on a cluster you can rebuild.
+// Gated on SPINIFEX_E2E alone: every test here deletes the instances it creates,
+// so there is nothing left for an operator to accept.
 package rds
 
 import (
@@ -23,6 +22,23 @@ import (
 // Mirrors the AWS client's own default, since the endpoint name the control
 // plane publishes is region-qualified.
 const defaultRegion = "ap-southeast-2"
+
+// The instance spec every test in the suite creates from. The class is the D15
+// floor and the storage is the API's own minimum: nothing here needs more, and
+// each DB VM booted is charged against the phase's instance budget. Only a
+// class-sensitive assertion names a bigger class, and only a grow names a
+// bigger size.
+const (
+	dbInstancePfx = "rds-e2e"
+	dbEngine      = "postgres"
+	dbClass       = "db.t3.micro"
+	dbStorageGiB  = 20
+	dbName        = "orders"
+	dbMasterUser  = "appuser"
+	// No '/', '"', '@' or spaces: the characters the API rejects because they
+	// break a connection string or the engine's own role syntax.
+	dbMasterPassword = "e2eSup3rSecret1"
+)
 
 var (
 	pkgFixOnce sync.Once
@@ -43,11 +59,11 @@ func TestMain(m *testing.M) {
 }
 
 // requireRDSFixture returns the package-scoped Fixture, building it on first
-// call. Skips the calling test unless both gates are set.
+// call. Skips the calling test when the suite's gate is unset.
 func requireRDSFixture(t *testing.T) *Fixture {
 	t.Helper()
 	pkgFixOnce.Do(func() {
-		if os.Getenv("SPINIFEX_E2E") == "" || os.Getenv("SPINIFEX_E2E_RDS") != "1" {
+		if os.Getenv("SPINIFEX_E2E") == "" {
 			return
 		}
 		env := harness.LoadEnv(t)
@@ -65,7 +81,7 @@ func requireRDSFixture(t *testing.T) *Fixture {
 		}
 	})
 	if pkgFix == nil {
-		t.Skip("rds fixture unavailable (SPINIFEX_E2E unset, or SPINIFEX_E2E_RDS != 1 — the suite leaks a DB VM until DeleteDBInstance lands)")
+		t.Skip("SPINIFEX_E2E is unset")
 	}
 	return pkgFix
 }

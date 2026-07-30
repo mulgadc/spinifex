@@ -325,9 +325,8 @@ suites:
     # RDS create/describe/connect: CreateDBInstance boots a dual-NIC DB VM from
     # the engine AMI (predastore) with a Viperblock data volume (viperblockd) and
     # a customer ENI (vpcd), and the reconciler flips it to available on the
-    # in-guest agent's first healthy heartbeat over awsgw. Opt-in beyond
-    # SPINIFEX_E2E: DeleteDBInstance is not implemented, so a run leaves the
-    # instance behind.
+    # in-guest agent's first healthy heartbeat over awsgw. Every test deletes the
+    # instances it creates, so the suite needs no gate beyond SPINIFEX_E2E.
 
   e2e-ddil:
     path: tests/e2e/ddil

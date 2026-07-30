@@ -17,18 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	dbInstancePfx = "rds-e2e"
-	dbEngine      = "postgres"
-	dbClass       = "db.t3.medium"
-	dbStorageGiB  = 20
-	dbName        = "orders"
-	dbMasterUser  = "appuser"
-	// No '/', '"', '@' or spaces: the characters the API rejects because they
-	// break a connection string or the engine's own role syntax.
-	dbMasterPassword = "e2eSup3rSecret1"
-)
-
 // TestCreateDescribeConnect drives the first live RDS path: CreateDBInstance
 // (postgres, single-AZ) → available → an endpoint that resolves → a client that
 // connects with the master credentials and writes a row.
@@ -55,12 +43,14 @@ func TestCreateDescribeConnect(t *testing.T) {
 	})
 	require.NoError(t, err, "create-db-instance")
 	require.NotNil(t, out.DBInstance)
+	// Registered before the first wait, so an instance that never comes up is
+	// still taken down rather than held against the next run's budget.
+	t.Cleanup(func() { deleteInstance(t, f, id) })
 
 	// The create returns before the engine exists, so the customer sees creating
 	// and polls; the reconciler owns the flip to available.
 	assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(out.DBInstance.DBInstanceStatus))
 	assert.Equal(t, id, aws.StringValue(out.DBInstance.DBInstanceIdentifier))
-	t.Logf("DB instance %s left behind for manual teardown: DeleteDBInstance is not implemented yet", id)
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailable", func(t *testing.T) {

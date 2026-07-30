@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -315,4 +316,98 @@ func TestDescribeSSLPolicies(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2SSLPolicyNotFound)
+}
+
+// attachedCertListener puts an active LB and an HTTPS listener on it, returning
+// the LB's short ID and the listener ARN. An active LB is required:
+// updateStoredConfig no-ops while InstanceID is empty, which would make a
+// missing re-render indistinguishable from a suppressed one.
+func attachedCertListener(t *testing.T, svc *ELBv2ServiceImpl, id, name string) (string, string) {
+	t.Helper()
+	lb := activeLB(t, svc, id, name)
+	out, err := svc.CreateListener(context.Background(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+	return lb.LoadBalancerID, *out.Listeners[0].ListenerArn
+}
+
+func TestAddListenerCertificates_RerendersConfig(t *testing.T) {
+	svc := setupTestService(t)
+	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender1", "rerender-lb1")
+
+	before, err := svc.store.GetLoadBalancer(context.Background(), lbID)
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ConfigHash)
+	require.Len(t, before.CertFiles, 1, "only the default cert is staged before the SNI cert is added")
+
+	_, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  aws.String(listenerArn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.store.GetLoadBalancer(context.Background(), lbID)
+	require.NoError(t, err)
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash, "attaching an SNI cert must re-render the config")
+	assert.Len(t, after.CertFiles, 2, "the added cert must be staged for delivery to the agent")
+
+	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
+	require.NoError(t, err)
+	sniPath := sniCertPath(lbagent.CertDir, after, listener, testCertArn2)
+	assert.Contains(t, after.CertFiles, sniPath, "the added cert needs its own PEM path")
+	assert.Contains(t, after.ConfigText, "crt "+sniPath, "HAProxy must be told to load the added cert")
+}
+
+func TestRemoveListenerCertificates_RerendersConfig(t *testing.T) {
+	svc := setupTestService(t)
+	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender2", "rerender-lb2")
+
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  aws.String(listenerArn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	added, err := svc.store.GetLoadBalancer(context.Background(), lbID)
+	require.NoError(t, err)
+	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
+	require.NoError(t, err)
+	sniPath := sniCertPath(lbagent.CertDir, added, listener, testCertArn2)
+	require.Contains(t, added.CertFiles, sniPath)
+
+	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
+		ListenerArn:  aws.String(listenerArn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.store.GetLoadBalancer(context.Background(), lbID)
+	require.NoError(t, err)
+	assert.NotEqual(t, added.ConfigHash, after.ConfigHash, "detaching an SNI cert must re-render the config")
+	assert.NotContains(t, after.CertFiles, sniPath, "the detached cert must stop being staged")
+	assert.NotContains(t, after.ConfigText, "crt "+sniPath, "HAProxy must stop being told to load it")
+	assert.Len(t, after.CertFiles, 1, "the default cert stays")
+}
+
+// The default certificate keeps frontendCertPath's name so an upgrade does not
+// move an existing deployment's PEM, and it must render first so a client that
+// sends no SNI still gets it.
+func TestListenerCerts_DefaultCertRendersFirstAndKeepsItsPath(t *testing.T) {
+	svc := setupTestService(t)
+	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender3", "rerender-lb3")
+
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  aws.String(listenerArn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lb, err := svc.store.GetLoadBalancer(context.Background(), lbID)
+	require.NoError(t, err)
+	listener, err := svc.store.GetListenerByArn(context.Background(), listenerArn)
+	require.NoError(t, err)
+
+	defaultPath := frontendCertPath(lbagent.CertDir, lb, listener)
+	assert.Contains(t, lb.CertFiles, defaultPath)
+	assert.Contains(t, lb.ConfigText, "ssl crt "+defaultPath,
+		"the default cert must be the first crt on the bind line")
 }

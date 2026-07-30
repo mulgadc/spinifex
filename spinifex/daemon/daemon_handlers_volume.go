@@ -235,7 +235,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	if err != nil {
 		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
 		utils.MarkSpanError(span, err)
-		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+		respondWithServiceError(msg, err)
 		return
 	}
 

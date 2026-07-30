@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,7 +133,9 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 			DevNetworking: true,
 		},
 	}
-	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err)
 	elbv2Svc.VPCService = vpcSvc
 	elbv2Svc.GatewayURL = "https://10.20.0.5:9999"

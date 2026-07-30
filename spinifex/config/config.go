@@ -104,6 +104,7 @@ type Config struct {
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
 	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
+	ACM        ACMConfig        `json:"ACM" mapstructure:"acm"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -199,6 +200,26 @@ type RDSConfig struct {
 // 10.248.0.0/14, immediately below and disjoint from the EKS control-plane
 // supernet, so a name-hash collision can never place an RDS subnet in EKS space.
 const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
+
+// ACMConfig holds the operator-level ACM certificate-issuance configuration.
+// Deliberately small: four keys, nothing deployment-specific and nothing
+// derivable. In particular there is no allowed-domains list (public modes are
+// authorized by the ACME CA's own validation, PRIVATE_CA by the CA's own name
+// constraints), no default validation mode (derived from DNSProvider and
+// whether northstar hosts the zone, never configured), no renewal thresholds
+// (proportional, hence constants) and no private CA paths (folded into the
+// existing CA path handling in admin.ConfigSettings).
+type ACMConfig struct {
+	Enabled      bool   `json:"Enabled" mapstructure:"enabled"`
+	DirectoryURL string `json:"DirectoryURL" mapstructure:"directory_url"`
+	ContactEmail string `json:"ContactEmail" mapstructure:"contact_email"`
+	// DNSProvider is the lego DNS provider id used for PROVIDER_API DNS-01
+	// challenges. Its credentials come from environment variables per lego's
+	// own convention, never from this file — a provider token in a
+	// configuration file is a token in every backup. A non-empty value here is
+	// what selects PROVIDER_API at RequestCertificate time.
+	DNSProvider string `json:"DNSProvider" mapstructure:"dns_provider"`
+}
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT
 // cluster) into individual endpoints, trimming whitespace and dropping empties.

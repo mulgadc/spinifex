@@ -2,15 +2,24 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
+
+// acmNATSTimeout bounds the gateway's wait for a daemon-side ACM response.
+// RequestCertificate itself returns immediately (issuance is asynchronous),
+// so this is a network/queueing budget, not an issuance one.
+const acmNATSTimeout = 30 * time.Second
 
 // acmHandler invokes a per-action ACM gateway function.
 type acmHandler func(ctx context.Context, gw *GatewayConfig, accountID string, body []byte) (any, error)
@@ -20,8 +29,24 @@ var acmActions = map[string]acmHandler{
 	"ImportCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.ImportCertificate(ctx, gw.NATSConn, acct, b)
 	},
+	// RequestCertificate calls the daemon over NATS directly (rather than
+	// through package gateway_acm, which does not yet have a helper for it) —
+	// the same "acm.RequestCertificate" subject and request/response shape
+	// utils.NATSRequest uses everywhere else in this table.
+	"RequestCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
+		input := new(acm.RequestCertificateInput)
+		if len(b) > 0 {
+			if err := json.Unmarshal(b, input); err != nil {
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+		return utils.NATSRequest[acm.RequestCertificateOutput](ctx, gw.NATSConn, "acm.RequestCertificate", input, acmNATSTimeout, acct)
+	},
 	"DescribeCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.DescribeCertificate(ctx, gw.NATSConn, acct, b)
+	},
+	"GetCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
+		return gateway_acm.GetCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"ListCertificates": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
 		return gateway_acm.ListCertificates(ctx, gw.NATSConn, acct, b)

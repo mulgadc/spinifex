@@ -152,6 +152,7 @@ type Daemon struct {
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
 	acmService            *handlers_acm.ACMServiceImpl
+	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -1083,16 +1084,24 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// ACM gateway → daemon subscriptions (minimal certificate store).
+	// ACM gateway → daemon subscriptions (certificate import and managed issuance).
 	if d.acmService != nil {
 		subs = append(subs,
 			natsSub{"acm.ImportCertificate", handleNATSRequest(d.acmService.ImportCertificate), "spinifex-workers"},
+			natsSub{"acm.RequestCertificate", handleNATSRequest(d.acmService.RequestCertificate), "spinifex-workers"},
 			natsSub{"acm.DescribeCertificate", handleNATSRequest(d.acmService.DescribeCertificate), "spinifex-workers"},
+			natsSub{"acm.GetCertificate", handleNATSRequest(d.acmService.GetCertificate), "spinifex-workers"},
 			natsSub{"acm.ListCertificates", handleNATSRequest(d.acmService.ListCertificates), "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", handleNATSRequest(d.acmService.DeleteCertificate), "spinifex-workers"},
 			natsSub{"acm.ListTagsForCertificate", handleNATSRequest(d.acmService.ListTagsForCertificate), "spinifex-workers"},
 			natsSub{"acm.AddTagsToCertificate", handleNATSRequest(d.acmService.AddTagsToCertificate), "spinifex-workers"},
 			natsSub{"acm.RemoveTagsFromCertificate", handleNATSRequest(d.acmService.RemoveTagsFromCertificate), "spinifex-workers"},
+			// ForceRenewCertificate is not an AWS API — it is the operator-
+			// triggered path `spx admin cert force-renew` uses to reissue a
+			// PRIVATE_CA certificate immediately, bypassing the renewal worker's
+			// window and failure backoff, primarily to verify the ELBv2 fan-out
+			// without waiting out the proportional window.
+			natsSub{"acm.ForceRenewCertificate", handleNATSRequest(d.acmRenewalWorker.ForceRenewCertificate), "spinifex-workers"},
 		)
 	}
 
@@ -1551,12 +1560,31 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
 	}
 
+	// ELBv2 resolves listener certificate private keys through its own ACM
+	// Store over the same JetStream bucket the ACM service writes, so it needs
+	// the identical master key: unlike EKS/ECS's IAM dependency, there is no
+	// safe degraded mode for certificate private keys, so a missing key must
+	// fail daemon startup rather than leave HTTPS listeners uncreatable.
 	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*handlers_elbv2.ELBv2ServiceImpl, error) {
-		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
+		}
+		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)
 	}
+
+	// The InUseBy index is otherwise only written by listener mutations, so
+	// listeners created before it existed would never fan out a renewed
+	// certificate. Not fatal: a stale index degrades renewal, which beats
+	// refusing to start. Every node reconciles the shared bucket at its own
+	// startup; the index writes are CAS-guarded, so concurrent runs converge.
+	if err := d.elbv2Service.ReconcileCertInUseIndex(d.ctx); err != nil {
+		slog.Error("failed to reconcile the ACM InUseBy index", "err", err)
+	}
+
 	if d.vpcService != nil {
 		d.elbv2Service.VPCService = d.vpcService
 	}
@@ -1630,12 +1658,73 @@ func (d *Daemon) startCluster() error {
 		d.rdsReconciler.Run(d.ctx)
 	})
 
+	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
+	// (which degrades to "feature disabled" without a master key) there is no
+	// safe degraded mode here: a missing key must fail daemon startup, not
+	// silently persist keys unencrypted. initServiceWithRetry still retries with
+	// backoff — the key file can legitimately not be written yet during a
+	// concurrent boot — but a master key that never arrives fails startCluster
+	// after the retry window instead of leaving acmService permanently nil.
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
-		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
+		}
+		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
 	}
+	// Re-importing to an existing ARN must fan out to every load balancer that
+	// references it; otherwise HAProxy keeps serving the old leaf until it
+	// expires while the API reports success. ELBv2 is already up (above).
+	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
+
+	// deriveValidationMode needs to know whether northstar hosts a zone for a
+	// requested domain. handlers/acm deliberately does not import handlers/dns
+	// (which would pull its S3/northstar-config dependencies into every acm
+	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
+	// uses above to keep acm decoupled from elbv2.
+	d.acmService.NorthstarHostsZone = func(domain string) bool {
+		return handlers_dns.HostsZone(d.config, domain)
+	}
+
+	// The tenant private CA is optional, unlike the master key above: a
+	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
+	// no reason to have one, so its absence must not block daemon startup.
+	// LoadTenantCA (load-only — see privateca.go) leaves TenantCA nil rather
+	// than creating a root here, because creation needs an explicit permitted-
+	// domains list that has no safe default; a PRIVATE_CA RequestCertificate
+	// against a nil TenantCA already fails loudly with an actionable error
+	// (see ACMServiceImpl.RequestCertificate). Both states are logged here so an
+	// operator can tell at a glance, from daemon startup logs alone, which one
+	// they are in.
+	configDir := filepath.Dir(d.configPath)
+	tenantCA, tenantCAErr := handlers_acm.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	if tenantCAErr != nil {
+		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
+			"err", tenantCAErr)
+	} else {
+		d.acmService.TenantCA = tenantCA
+		slog.Info("ACM: tenant private CA wired", "permitted_domains", tenantCA.PermittedDomains())
+	}
+
+	// The renewal worker scans for PRIVATE_CA certificates past their
+	// proportional renewal window and reissues them under their existing ARN.
+	// It reads d.acmService.TenantCA/CertMaterialUpdated live on every scan
+	// rather than a snapshot taken here, so it starts unconditionally: a
+	// tenant CA loaded later (or never, on a public-certificates-only
+	// deployment) is not a startup dependency — the worker just finds
+	// nothing to renew until one is wired.
+	d.acmRenewalWorker = handlers_acm.NewWorker(d.acmService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ACM renewal worker goroutine panicked", "recover", r)
+			}
+		}()
+		d.acmRenewalWorker.Run(d.ctx)
+	})
 
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS

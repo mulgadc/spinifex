@@ -143,7 +143,10 @@ type ELBv2ServiceImpl struct {
 func (s *ELBv2ServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
-func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2ServiceImpl, error) {
+// masterKey is the same deployment key the ACM service is constructed with;
+// ELBv2 needs it to decrypt CertRecord.PrivateKey when resolving listener
+// certificates, since it opens its own Store over the shared ACM bucket.
+func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []byte) (*ELBv2ServiceImpl, error) {
 	region := "us-east-1"
 	nodeID := ""
 	if cfg != nil {
@@ -164,11 +167,14 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	}
 
 	// ACM store shares JetStream KV; its bucket opens under the service lifetime
-	// context. Non-fatal: failure only disables HTTPS termination.
-	acmStore, acmErr := handlers_acm.NewStore(ctx, nc)
+	// context. Fatal: a nil acmStore is indistinguishable from "certificate not
+	// found" everywhere it is consulted (resolveCertPEM, validateListenerCerts),
+	// so a construction failure here must fail the whole service rather than
+	// silently degrade every HTTPS listener.
+	acmStore, acmErr := handlers_acm.NewStore(ctx, nc, masterKey)
 	if acmErr != nil {
-		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
-		acmStore = nil
+		cancel()
+		return nil, fmt.Errorf("failed to create ELBv2 ACM store: %w", acmErr)
 	}
 
 	hc := newHealthChecker(store)
@@ -843,6 +849,175 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(ctx context.Context,
 		if err := s.updateStoredConfig(ctx, lb); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// UpdateStoredConfigForCert re-renders every load balancer that references
+// certArn, per the ACM InUseBy index, after new material has been written
+// under that ARN. Mirrors updateStoredConfigForTargetGroup: a load balancer
+// that no longer exists is skipped, and updateStoredConfig itself no-ops for
+// one that hasn't gone active (lb.InstanceID == ""), so neither can fail the
+// certificate write that triggered the fan-out. Zero load balancers in the
+// index is a no-op.
+func (s *ELBv2ServiceImpl) UpdateStoredConfigForCert(ctx context.Context, certArn string) error {
+	if s.acmStore == nil {
+		return nil
+	}
+	rec, err := s.acmStore.GetCert(ctx, certArn)
+	if err != nil {
+		slog.ErrorContext(ctx, "UpdateStoredConfigForCert: failed to load cert", "certArn", certArn, "err", err)
+		return fmt.Errorf("get cert: %w", err)
+	}
+	if rec == nil {
+		return nil
+	}
+
+	// InUseBy is already a de-duplicated set of LB ARNs, but re-key it here
+	// too so two listeners on the same LB never trigger a double render.
+	lbArns := make(map[string]bool, len(rec.InUseBy))
+	for _, arn := range rec.InUseBy {
+		lbArns[arn] = true
+	}
+
+	for lbArn := range lbArns {
+		lb, lbErr := s.store.GetLoadBalancerByArn(ctx, lbArn)
+		if lbErr != nil || lb == nil {
+			continue
+		}
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// certsUsedByLB returns the set of certificate ARNs referenced by any
+// listener currently persisted for lbArn. Used to reconcile the ACM InUseBy
+// index against listener mutations.
+func (s *ELBv2ServiceImpl) certsUsedByLB(ctx context.Context, lbArn string) (map[string]bool, error) {
+	listeners, err := s.store.ListListenersByLB(ctx, lbArn)
+	if err != nil {
+		return nil, err
+	}
+	used := make(map[string]bool, len(listeners))
+	for _, l := range listeners {
+		for _, c := range l.Certificates {
+			used[c.CertificateArn] = true
+		}
+	}
+	return used, nil
+}
+
+// syncCertInUseIndex reconciles the ACM InUseBy index for lbArn against a
+// pre-mutation certificate-usage snapshot (from certsUsedByLB), adding or
+// removing lbArn from each affected certificate's InUseBy set so the index
+// keeps tracking listeners as currently persisted. Best-effort: errors are
+// logged, not returned, since a listener mutation must not fail because
+// bookkeeping on an unrelated index failed.
+func (s *ELBv2ServiceImpl) syncCertInUseIndex(ctx context.Context, lbArn string, before map[string]bool) {
+	if s.acmStore == nil {
+		return
+	}
+	after, err := s.certsUsedByLB(ctx, lbArn)
+	if err != nil {
+		slog.ErrorContext(ctx, "syncCertInUseIndex: failed to list listeners", "lbArn", lbArn, "err", err)
+		return
+	}
+	for arn := range before {
+		if after[arn] {
+			continue
+		}
+		if err := s.acmStore.RemoveInUseBy(ctx, arn, lbArn); err != nil {
+			slog.ErrorContext(ctx, "syncCertInUseIndex: failed to remove InUseBy entry", "certArn", arn, "lbArn", lbArn, "err", err)
+		}
+	}
+	for arn := range after {
+		if before[arn] {
+			continue
+		}
+		if err := s.acmStore.AddInUseBy(ctx, arn, lbArn); err != nil {
+			slog.ErrorContext(ctx, "syncCertInUseIndex: failed to add InUseBy entry", "certArn", arn, "lbArn", lbArn, "err", err)
+		}
+	}
+}
+
+// ReconcileCertInUseIndex rebuilds the ACM InUseBy index from the listener
+// records currently persisted. syncCertInUseIndex only ever runs on a listener
+// mutation, so a listener that predates the index has no entry, and a
+// certificate with an empty index neither fans out on renewal nor trips
+// DeleteCertificate's in-use guard. Safe to call repeatedly: it writes only
+// differences, so a converged index costs zero writes.
+func (s *ELBv2ServiceImpl) ReconcileCertInUseIndex(ctx context.Context) error {
+	if s.acmStore == nil {
+		return nil
+	}
+
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		return fmt.Errorf("list load balancers: %w", err)
+	}
+
+	// certArn → the LB ARNs that should be indexed against it.
+	desired := make(map[string]map[string]bool)
+	for _, lb := range lbs {
+		used, usedErr := s.certsUsedByLB(ctx, lb.LoadBalancerArn)
+		if usedErr != nil {
+			// Skipping one LB would silently drop its entries, which is the bug
+			// being fixed, so give up rather than write a partial index.
+			return fmt.Errorf("list listeners for %s: %w", lb.LoadBalancerArn, usedErr)
+		}
+		for arn := range used {
+			if desired[arn] == nil {
+				desired[arn] = make(map[string]bool)
+			}
+			desired[arn][lb.LoadBalancerArn] = true
+		}
+	}
+
+	certs, err := s.acmStore.ListAllCertMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("list certificates: %w", err)
+	}
+
+	// Walking every certificate rather than only the referenced ones is what
+	// makes this a rebuild and not just a backfill: it also drops entries naming
+	// a load balancer that no longer exists.
+	added, removed := 0, 0
+	for _, rec := range certs {
+		want := desired[rec.CertificateArn]
+		have := make(map[string]bool, len(rec.InUseBy))
+		for _, arn := range rec.InUseBy {
+			have[arn] = true
+		}
+
+		for arn := range have {
+			if want[arn] {
+				continue
+			}
+			if err := s.acmStore.RemoveInUseBy(ctx, rec.CertificateArn, arn); err != nil {
+				slog.ErrorContext(ctx, "ReconcileCertInUseIndex: failed to remove InUseBy entry",
+					"certArn", rec.CertificateArn, "lbArn", arn, "err", err)
+				continue
+			}
+			removed++
+		}
+		for arn := range want {
+			if have[arn] {
+				continue
+			}
+			if err := s.acmStore.AddInUseBy(ctx, rec.CertificateArn, arn); err != nil {
+				slog.ErrorContext(ctx, "ReconcileCertInUseIndex: failed to add InUseBy entry",
+					"certArn", rec.CertificateArn, "lbArn", arn, "err", err)
+				continue
+			}
+			added++
+		}
+	}
+
+	if added > 0 || removed > 0 {
+		slog.InfoContext(ctx, "ReconcileCertInUseIndex: rebuilt ACM InUseBy index",
+			"certificates", len(certs), "loadBalancers", len(lbs), "added", added, "removed", removed)
 	}
 	return nil
 }
@@ -2495,10 +2670,18 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		Tags:            tags,
 	}
 
+	// Snapshot cert usage before persisting so the InUseBy index can be
+	// reconciled against it once the new listener is in the store.
+	certsBefore, certsBeforeErr := s.certsUsedByLB(ctx, lb.LoadBalancerArn)
+	if certsBeforeErr != nil {
+		slog.ErrorContext(ctx, "CreateListener: failed to snapshot cert usage", "lbArn", lb.LoadBalancerArn, "err", certsBeforeErr)
+	}
+
 	if err := s.store.PutListener(ctx, record); err != nil {
 		slog.ErrorContext(ctx, "CreateListener: failed to persist record", "listenerId", listenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.syncCertInUseIndex(ctx, lb.LoadBalancerArn, certsBefore)
 
 	// Open the listener port on the NLB's managed front-end SG so inbound
 	// traffic from the configured client CIDRs is admitted by the OVN ACL
@@ -2551,6 +2734,15 @@ func (s *ELBv2ServiceImpl) rollbackListener(ctx context.Context, record *Listene
 // DeleteListener and DeleteLoadBalancer so LB teardown never bypasses the rule
 // cascade and leaves orphan rules that pin a target group as ResourceInUse.
 func (s *ELBv2ServiceImpl) deleteListenerCascade(ctx context.Context, listener *ListenerRecord) error {
+	// Snapshot cert usage before the listener disappears so the InUseBy index
+	// can be reconciled once it's gone. Shared by DeleteListener, DeleteLoadBalancer's
+	// per-listener loop, and rollbackListener, so this is the single point where
+	// listener removal always keeps the index from drifting.
+	certsBefore, certsBeforeErr := s.certsUsedByLB(ctx, listener.LoadBalancerArn)
+	if certsBeforeErr != nil {
+		slog.ErrorContext(ctx, "deleteListenerCascade: failed to snapshot cert usage", "lbArn", listener.LoadBalancerArn, "err", certsBeforeErr)
+	}
+
 	rules, err := s.store.ListRulesByListener(ctx, listener.ListenerArn)
 	if err != nil {
 		return fmt.Errorf("list rules for listener %s: %w", listener.ListenerArn, err)
@@ -2563,6 +2755,8 @@ func (s *ELBv2ServiceImpl) deleteListenerCascade(ctx context.Context, listener *
 	if err := s.store.DeleteListener(ctx, listener.ListenerID); err != nil {
 		return fmt.Errorf("delete listener %s: %w", listener.ListenerID, err)
 	}
+
+	s.syncCertInUseIndex(ctx, listener.LoadBalancerArn, certsBefore)
 	return nil
 }
 
@@ -2632,6 +2826,13 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 	}
 	if lb == nil {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
+	}
+
+	// Snapshot cert usage before any mutation below so the InUseBy index can be
+	// reconciled once the change is persisted.
+	certsBefore, certsBeforeErr := s.certsUsedByLB(ctx, lb.LoadBalancerArn)
+	if certsBeforeErr != nil {
+		slog.ErrorContext(ctx, "ModifyListener: failed to snapshot cert usage", "lbArn", lb.LoadBalancerArn, "err", certsBeforeErr)
 	}
 
 	updated := *listener
@@ -2753,6 +2954,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 		slog.ErrorContext(ctx, "ModifyListener: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.syncCertInUseIndex(ctx, lb.LoadBalancerArn, certsBefore)
 
 	if err := s.updateStoredConfig(ctx, lb); err != nil {
 		slog.ErrorContext(ctx, "ModifyListener: failed to update config", "listenerArn", updated.ListenerArn, "err", err)

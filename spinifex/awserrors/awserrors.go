@@ -378,6 +378,20 @@ var (
 	ErrorResourceNotFound    = "ResourceNotFound"
 	ErrorEKSResourceInUse    = "ResourceInUseException"
 	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
+	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
+	// wire code "ResourceInUseException", so this is a distinct, self-documenting
+	// name for ACM call sites rather than a second ErrorLookup entry — ErrorLookup
+	// is keyed by wire code across every service, so it can only hold one message
+	// per code. Naming it ErrorACMResourceInUse stops an ACM call site reading
+	// "EKS" while making no claim that the returned message text is ACM-flavored;
+	// it is still EKS's "cluster already exists" wording until ErrorLookup (or its
+	// caller in gateway.ErrorHandler) is keyed per-service instead of globally.
+	ErrorACMResourceInUse = ErrorEKSResourceInUse
+	// ErrorACMRequestInProgress is what GetCertificate returns for a certificate
+	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
+	// client polling for the body can tell "not ready" apart from "not mine".
+	ErrorACMRequestInProgress = "RequestInProgressException"
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
@@ -810,6 +824,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidNatGatewayIDNotFound:                           {HTTPCode: 404, Message: "The specified NAT gateway ID does not exist. Ensure that you specify the AWS Region in which the NAT gateway is located, if it's not in the default Region."},
 	ErrorInvalidNetworkAclEntryNotFound:                        {HTTPCode: 404, Message: "The specified network ACL entry does not exist."},
 	ErrorACMInvalidArn:                                         {HTTPCode: 400, Message: "The requested Amazon Resource Name (ARN) does not refer to an existing resource."},
+	ErrorACMRequestInProgress:                                  {HTTPCode: 400, Message: "The certificate request is in process and the certificate in your account is not yet available."},
 	ErrorInvalidNetworkAclIDNotFound:                           {HTTPCode: 404, Message: "The specified network ACL does not exist. Ensure that you specify the AWS Region in which the network ACL is located, if it's not in the default Region."},
 	ErrorInvalidNetworkAclIdMalformed:                          {HTTPCode: 400, Message: "The specified network ACL ID is malformed. Ensure that you provide the ID in the form acl-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidNetworkInterfaceInUse:                          {HTTPCode: 409, Message: "The specified interface is currently in use and cannot be deleted or attached to another instance. Ensure that you have detached the network interface first. If a network interface is in use, you may also receive the InvalidParameterValue error."},

@@ -79,6 +79,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | Command | Flags | Description |
 |---------|-------|-------------|
 | `spx admin cert renew` | `--extra-ip` (additional IPs for SANs), `--extra-dns` (additional DNS names for SANs) | Reads existing CA → regenerates server certificate with all current network interface IPs and machine hostname in SANs → writes new cert. Use after adding a new network interface or changing IP addresses. |
+| `spx admin cert create-tenant-ca` | `--domain` (required, repeatable — permitted domains baked into the CA's name constraints), `--regenerate` (replace an existing tenant CA, requires confirmation), `--yes` (skip the `--regenerate` confirmation prompt) | Creates the tenant root CA that ACM's `PRIVATE_CA` validation mode signs leaf certificates from — a separate, independent root from the platform CA. Idempotent: running it again against an existing tenant CA reports the current state rather than regenerating; `--regenerate` is required to replace the root, which invalidates every device's existing trust. |
 
 ### Upgrade Management
 
@@ -862,7 +863,32 @@ The default certificate cannot be added/removed via these calls — set it on th
 
 ## ACM (AWS Certificate Manager)
 
-Import-only — Spinifex stores externally-issued certificates for ELBv2 listener references; it does not issue certificates or validate domains (`RequestCertificate`). Certs are account-scoped; `describe`/`delete` enforce ownership.
+Spinifex both stores externally-issued certificates (`import-certificate`) and
+issues its own (`request-certificate`) for ELBv2 listener references. Certs
+are account-scoped; `describe`/`delete` enforce ownership, and
+`delete-certificate` refuses with `ResourceInUseException` while any load
+balancer listener still references the ARN — no force flag, matching AWS.
+
+`request-certificate` mints a `CertificateArn` immediately and returns
+`PENDING_VALIDATION`; it never issues inline. The validation mode is derived
+from deployment state, never configured:
+
+| Mode | Who writes the DNS record | `ResourceRecord` returned | Renewal | Status |
+| --- | --- | --- | --- | --- |
+| `PROVIDER_API` | Spinifex, via the operator's DNS provider API | none | automatic | request accepted, `PENDING_VALIDATION` — the DNS-01 order is driven by a later worker |
+| `MANUAL_TXT` | the operator, by hand or Terraform | TXT, rotates per order | manual — `INELIGIBLE` | request accepted, `PENDING_VALIDATION` — same as above |
+| `CNAME_DELEGATION` | operator once, then Spinifex | CNAME, stable | automatic | deferred — never selected yet (northstar cannot serve public authoritative queries); an ARN-stable delegation token is minted on every managed certificate now so this lands as a non-breaking addition |
+| `PRIVATE_CA` | nobody — no validation | none | automatic | **DONE** — issues synchronously against the tenant CA, no domain outside its name constraints |
+
+`PROVIDER_API` is selected when a DNS provider credential is configured;
+`MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only
+option for a deployment with no real, publicly delegated domain. Terraform's
+canonical `aws_acm_certificate` → `aws_route53_record` →
+`aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in
+every mode: where Spinifex owns the record write, no `ResourceRecord` is
+emitted, so `for_each` over `domain_validation_options` yields zero records
+and `aws_acm_certificate_validation` still blocks correctly by polling until
+`ISSUED`.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -870,8 +896,8 @@ Import-only — Spinifex stores externally-issued certificates for ELBv2 listene
 | `describe-certificate` | `--certificate-arn` | — | **DONE** |
 | `list-certificates` | — | `--certificate-statuses`, `--includes`, `--max-items`, `--next-token` | **DONE** |
 | `delete-certificate` | `--certificate-arn` | — | **DONE** |
-| `request-certificate` | — | `--domain-name`, `--validation-method`, `--subject-alternative-names`, `--tags` | **NOT STARTED** |
-| `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | — | `--certificate-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
+| `request-certificate` | `--domain-name`, `--subject-alternative-names`, `--tags` | `--validation-method`, `--certificate-authority-arn`, `--options`, `--idempotency-token` | **PARTIAL** — `PRIVATE_CA` issues synchronously; `PROVIDER_API`/`MANUAL_TXT` are accepted and correctly shaped but stay `PENDING_VALIDATION` until a later issuance worker lands |
+| `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | `--certificate-arn`, `--tags`/`--tag-keys` | — | **DONE** |
 | `export-certificate` | — | `--certificate-arn`, `--passphrase` | **NOT STARTED** |
 
 ---

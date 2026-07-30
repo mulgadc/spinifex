@@ -16,7 +16,7 @@ import (
 
 // execRunner escalates only the commands that need it — see utils.NeedsPrivilege.
 // The OVS/OVN socket clients reach their daemons over the group-owned control
-// sockets and run as the service user; ip/iptables/dhcpcd still go via sudo.
+// sockets, and ip/iptables/arping run under the unit's ambient capabilities.
 type execRunner struct{}
 
 var _ Runner = execRunner{}
@@ -26,7 +26,7 @@ func NewExecRunner() Runner { return execRunner{} }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var cmd *exec.Cmd
-	if utils.NeedsPrivilege(name) {
+	if utils.NeedsPrivilege(name, args...) {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
 	} else {
 		cmd = exec.CommandContext(ctx, name, args...)

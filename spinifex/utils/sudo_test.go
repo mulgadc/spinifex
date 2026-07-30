@@ -5,9 +5,19 @@ import (
 	"testing"
 )
 
+// withAmbientCaps pins the ambient capability set for one test, so the result
+// does not depend on how the test binary itself was launched.
+func withAmbientCaps(t *testing.T, caps uint64) {
+	t.Helper()
+	orig := ambientCaps
+	ambientCaps = func() uint64 { return caps }
+	t.Cleanup(func() { ambientCaps = orig })
+}
+
 // A tool that needs real privilege is wrapped in sudo when we are not root, and
 // invoked directly when we are.
 func TestSudoCommand_PrivilegedTool(t *testing.T) {
+	withAmbientCaps(t, 0)
 	cmd := SudoCommand("ip", "link", "show")
 	args := cmd.Args
 
@@ -54,12 +64,69 @@ func TestPrivilegedToolsStillEscalate(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root: nothing is escalated, so the policy is not exercised")
 	}
+	withAmbientCaps(t, 0)
 	for _, tool := range []string{"ip", "iptables", "dhcpcd", "sysctl", "arping", "ovs-ofctl"} {
-		if !NeedsPrivilege(tool) {
+		if !NeedsPrivilege(tool, "net.ipv4.neigh.x=1") {
 			t.Errorf("%s is not escalated, but it needs root or an ambient capability", tool)
 		}
 		if args := SudoCommand(tool, "--version").Args; len(args) == 0 || args[0] != "sudo" {
 			t.Errorf("SudoCommand(%s) did not build a sudo invocation: %v", tool, args)
+		}
+	}
+}
+
+// vpcd holds CAP_NET_ADMIN and CAP_NET_RAW ambiently, so the kernel hands them
+// to each child on exec and these tools work as the service user. This is what
+// lets spinifex-vpcd carry no sudoers rules at all.
+func TestAmbientCapabilitiesReplaceSudo(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: nothing is escalated, so the policy is not exercised")
+	}
+	withAmbientCaps(t, 1<<capNetAdmin|1<<capNetRaw)
+
+	unescalated := [][]string{
+		{"ip", "addr", "replace", "10.0.0.1/24", "dev", "eth0"},
+		{"iptables", "-A", "FORWARD", "-j", "ACCEPT"},
+		{"arping", "-U", "-c", "2", "-I", "br-wan", "10.0.0.1"},
+		{"sysctl", "-w", "net.ipv4.neigh.br-wan.proxy_delay=0"},
+	}
+	for _, argv := range unescalated {
+		if NeedsPrivilege(argv[0], argv[1:]...) {
+			t.Errorf("%v is escalated despite the ambient capability", argv)
+		}
+	}
+
+	// The capability is per-tool, and for sysctl per-key: CAP_NET_ADMIN governs
+	// the net.* trees only, and nothing makes ovs-ofctl's root-owned
+	// <bridge>.mgmt socket readable.
+	escalated := [][]string{
+		{"sysctl", "-w", "vm.swappiness=10"},
+		{"ovs-ofctl", "dump-flows", "br-int"},
+		{"dhcpcd", "-q", "br-wan"},
+	}
+	for _, argv := range escalated {
+		if !NeedsPrivilege(argv[0], argv[1:]...) {
+			t.Errorf("%v is not escalated, but CAP_NET_ADMIN/CAP_NET_RAW do not cover it", argv)
+		}
+	}
+}
+
+// The daemon runs the same spx binary as vpcd but its unit grants no
+// CAP_NET_ADMIN, so the decision has to be made from the live capability set
+// rather than from the tool name.
+func TestDaemonAmbientSetStillEscalatesIP(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: nothing is escalated, so the policy is not exercised")
+	}
+	const capSysAdmin, capDACOverride = 21, 1
+	withAmbientCaps(t, 1<<capSysAdmin|1<<capDACOverride)
+
+	for _, argv := range [][]string{
+		{"ip", "tuntap", "add", "tap0", "mode", "tap"},
+		{"sysctl", "-qw", "net.ipv4.conf.tap0.rp_filter=0"},
+	} {
+		if !NeedsPrivilege(argv[0], argv[1:]...) {
+			t.Errorf("%v is not escalated, but the daemon holds no CAP_NET_ADMIN", argv)
 		}
 	}
 }

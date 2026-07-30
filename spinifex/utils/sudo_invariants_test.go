@@ -91,3 +91,45 @@ func TestRG10_SudoOnlyThroughThePolicy(t *testing.T) {
 			strings.Join(offenders, "\n  "))
 	}
 }
+
+// TestRG10_VPCDHoldsNoSudoersGrant pins the two halves that have to move
+// together: vpcd's unit grants CAP_NET_ADMIN and CAP_NET_RAW ambiently, and in
+// exchange it gets no sudoers rules. Re-adding a rule reopens the hole the caps
+// closed — every candidate takes unrestricted args, and `sudo ip netns exec
+// <ns> /bin/sh` is a root shell.
+func TestRG10_VPCDHoldsNoSudoersGrant(t *testing.T) {
+	root := repoRoot(t)
+
+	unit, err := os.ReadFile(filepath.Join(root, "build", "systemd", "spinifex-vpcd.service"))
+	if err != nil {
+		t.Fatalf("read vpcd unit: %v", err)
+	}
+	ambient := ambientLine(string(unit))
+	for _, capability := range []string{"CAP_NET_ADMIN", "CAP_NET_RAW"} {
+		if !strings.Contains(ambient, capability) {
+			t.Fatalf("RG-10: spinifex-vpcd.service must grant %s ambiently; without it "+
+				"ip/iptables/arping fail as the service user and the sudoers rules cannot stay removed", capability)
+		}
+	}
+
+	setup, err := os.ReadFile(filepath.Join(root, "scripts", "setup.sh"))
+	if err != nil {
+		t.Fatalf("read setup.sh: %v", err)
+	}
+	for i, line := range strings.Split(string(setup), "\n") {
+		if strings.HasPrefix(line, "spinifex-vpcd ALL=") {
+			t.Fatalf("RG-10: scripts/setup.sh:%d grants spinifex-vpcd a sudoers rule:\n  %s\n"+
+				"vpcd runs these under its ambient capabilities; add the capability to the unit instead.", i+1, line)
+		}
+	}
+}
+
+// ambientLine returns the unit's AmbientCapabilities= value, or "".
+func ambientLine(unit string) string {
+	for line := range strings.SplitSeq(unit, "\n") {
+		if v, ok := strings.CutPrefix(line, "AmbientCapabilities="); ok {
+			return v
+		}
+	}
+	return ""
+}

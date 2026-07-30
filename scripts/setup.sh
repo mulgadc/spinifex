@@ -189,7 +189,7 @@ install_sudoers() {
 # their CapabilityBoundingSet omits CAP_SYS_RESOURCE, so pam_limits cannot apply
 # the limits.conf default and warns. It also means sudo children inherit the
 # unit's rlimits rather than the system defaults, which is the RG-9 intent.
-Defaults:spinifex-daemon,spinifex-vpcd !pam_session
+Defaults:spinifex-daemon !pam_session
 
 # The OVS/OVN client tools are deliberately absent. They do all their work over
 # control sockets that setup-ovn.sh group-owns to `spinifex`, so they run as the
@@ -201,26 +201,22 @@ Defaults:spinifex-daemon,spinifex-vpcd !pam_session
 # <bridge>.mgmt socket created by ovs-vswitchd when the bridge appears, including
 # bridges spinifex creates at runtime, so it cannot be group-owned up front.
 
-# Spinifex daemon: tap devices, OpenFlow rules, and DHCP for external IPs.
-# ovs-ofctl installs the per-tap IMDS datapath flows on br-imds; sysctl sets the
-# per-endpoint rp_filter/accept_local the asymmetric reply path needs.
+# spinifex-vpcd has no rules at all. Its ip/iptables/sysctl/arping work is done
+# under the CAP_NET_ADMIN and CAP_NET_RAW its unit grants ambiently, which the
+# kernel passes to each child on exec. Those grants were also root-equivalent:
+# `sudo ip netns exec <ns> /bin/sh` is a root shell.
+
+# Spinifex daemon: tap devices and OpenFlow rules. Its unit holds no
+# CAP_NET_ADMIN, so unlike vpcd it cannot drop these. ovs-ofctl installs the
+# per-tap IMDS datapath flows on br-imds; sysctl sets the per-endpoint
+# rp_filter/accept_local the asymmetric reply path needs.
 spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-ofctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/sysctl -qw net.ipv4.conf.*
-spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
-
-# Spinifex VPC daemon: link and firewall management, and DHCP for external IPs
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
-spinifex-vpcd ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
-# Routed-NAT mode: transit masquerade + per-EIP FORWARD accepts, proxy-ARP
-# delay tune, and gratuitous ARP announcements for host-delivered EIPs.
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/iptables, /sbin/iptables
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.ipv4.neigh.*
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/arping, /usr/bin/arping
 SUDOERS
     $SUDO chmod 0440 /etc/sudoers.d/spinifex-network
     $SUDO visudo -cf /etc/sudoers.d/spinifex-network || fatal "Invalid sudoers syntax in spinifex-network"
-    info "Scoped sudoers rules installed for spinifex-daemon and spinifex-vpcd"
+    info "Scoped sudoers rules installed for spinifex-daemon (spinifex-vpcd needs none)"
 }
 
 # --- Install apt dependencies ---

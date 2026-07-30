@@ -218,6 +218,10 @@ type DBSnapshotRecord struct {
 	AccountID            string `json:"accountId"`
 	SnapshotType         string `json:"snapshotType"`
 	Status               string `json:"status"`
+	// Distinguishes a delete reservation from a concurrent manual snapshot of
+	// the same instance and volume. Older final snapshots are inferred while
+	// their source instance remains in deleting.
+	FinalSnapshot bool `json:"finalSnapshot,omitempty"`
 
 	// The EC2 snapshot the data lives in, and the volume whose chunks it
 	// references — which is why that volume is retained rather than deleted.

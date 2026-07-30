@@ -183,14 +183,22 @@ func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) erro
 // Writes v at key only if nothing is stored there, so the key doubles as a
 // cluster-wide reservation. Returns jetstream.ErrKeyExists when it is taken.
 func createJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
+	_, err := createJSONRevision(ctx, kv, key, v)
+	return err
+}
+
+// createJSON plus the created entry's revision, for callers that must undo only
+// the reservation they created rather than a concurrent replacement.
+func createJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, v any) (uint64, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := kv.Create(ctx, key, data); err != nil {
-		return err
+	rev, err := kv.Create(ctx, key, data)
+	if err != nil {
+		return 0, err
 	}
-	return nil
+	return rev, nil
 }
 
 // Writes v at key only if the stored entry is still at rev.

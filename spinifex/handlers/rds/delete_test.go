@@ -137,6 +137,8 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 	assert.Equal(t, CommandStopEngine, issued[0].Type)
 	require.Len(t, h.snaps.created, 1)
 	assert.Equal(t, "vol-rdsdata01", aws.StringValue(h.snaps.created[0].VolumeId))
+	assert.Equal(t, testAccountID,
+		tagOf(h.snaps.created[0].TagSpecifications, rdsSnapshotAccountTagKey))
 
 	// Everything a restore needs is copied onto the snapshot record: the DB
 	// instance record is deleted moments later.
@@ -147,6 +149,62 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 	assert.Equal(t, "snap-0001", snapshot.SnapshotID)
 	assert.Equal(t, "postgres", snapshot.Engine)
 	assert.Equal(t, "vol-rdsdata01", snapshot.SourceVolumeID)
+}
+
+func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+
+	h.snaps.beforeCreate = func() {
+		record, found := h.snapshotRecord(t, "orders-db-final")
+		require.True(t, found)
+		assert.Equal(t, SnapshotStatusCreating, record.Status)
+		assert.Empty(t, record.SnapshotID)
+	}
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+// A dead worker can leave the EC2 snapshot cut while its RDS record still says
+// creating. A retry adopts that exact account-scoped snapshot instead of
+// cutting another one and permanently pinning the source volume twice.
+func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusDeleting
+	rec.FinalSnapshotIdentifier = "orders-db-final"
+	seedInstance(t, h.svc, rec)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	creating := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
+		DBSnapshotIdentifier: rec.FinalSnapshotIdentifier,
+		Tags:                 rec.Tags,
+	})
+	require.NoError(t, createJSON(t.Context(), kv, DBSnapshotKey(rec.FinalSnapshotIdentifier), &creating))
+	h.snaps.holding = []string{"snap-cut-before-crash"}
+	h.snaps.tagged = map[string]map[string]string{
+		"snap-cut-before-crash": {
+			rdsSnapshotTagKey:        rec.FinalSnapshotIdentifier,
+			rdsSnapshotAccountTagKey: testAccountID,
+		},
+	}
+
+	_, err = h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String(rec.FinalSnapshotIdentifier),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Empty(t, h.snaps.created, "the retry must adopt the cut snapshot, not create another")
+	stored, found := h.snapshotRecord(t, rec.FinalSnapshotIdentifier)
+	require.True(t, found)
+	assert.Equal(t, SnapshotStatusAvailable, stored.Status)
+	assert.Equal(t, "snap-cut-before-crash", stored.SnapshotID)
 }
 
 // D10: a snapshot references its source volume's chunks, so the volume cannot

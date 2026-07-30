@@ -536,6 +536,18 @@ var describeSnapshotsValidFilters = map[string]bool{
 
 // DescribeSnapshots lists snapshots matching the specified criteria, scoped to the caller's account.
 func (s *SnapshotServiceImpl) DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+	return s.describeSnapshots(ctx, input, accountID, false)
+}
+
+// DescribeSnapshotsStrict is the control-plane lookup contract. A metadata read
+// failure makes the result non-authoritative, so it is returned rather than
+// hidden as an absent snapshot.
+func (s *SnapshotServiceImpl) DescribeSnapshotsStrict(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+	return s.describeSnapshots(ctx, input, accountID, true)
+}
+
+func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput,
+	accountID string, strict bool) (*ec2.DescribeSnapshotsOutput, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
@@ -594,6 +606,9 @@ func (s *SnapshotServiceImpl) DescribeSnapshots(ctx context.Context, input *ec2.
 		cfg, err := s.getSnapshotConfig(snapshotID)
 		if err != nil {
 			slog.WarnContext(ctx, "DescribeSnapshots failed to get config", "snapshotId", snapshotID, "err", err)
+			if strict {
+				return nil, fmt.Errorf("describe snapshot %s metadata: %w", snapshotID, err)
+			}
 			continue
 		}
 

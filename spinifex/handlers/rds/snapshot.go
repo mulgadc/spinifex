@@ -25,6 +25,9 @@ import (
 type snapshotProvider interface {
 	CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error)
 	DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error)
+	// Unlike the customer-facing describe, this fails on any unreadable snapshot
+	// metadata so reconciliation never mistakes a partial result for absence.
+	DescribeSnapshotsStrict(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error)
 	DeleteSnapshot(ctx context.Context, input *ec2.DeleteSnapshotInput, accountID string) (*ec2.DeleteSnapshotOutput, error)
 }
 
@@ -32,9 +35,12 @@ type snapshotProvider interface {
 // accepted here is also accepted as a FinalDBSnapshotIdentifier at delete.
 const maxDBSnapshotIdentifierLen = 255
 
-// Links the EC2 snapshot back to the RDS identifier that owns it, so a record
-// left stuck in creating can be reconciled against the snapshot it was taking.
-const rdsSnapshotTagKey = "spinifex:rds-db-snapshot"
+// Links the EC2 snapshot back to the account-scoped RDS identity that owns it,
+// so a record left stuck in creating cannot adopt another tenant's snapshot.
+const (
+	rdsSnapshotTagKey        = "spinifex:rds-db-snapshot"
+	rdsSnapshotAccountTagKey = "spinifex:rds-db-snapshot-account"
+)
 
 // Takes a customer-requested snapshot of the instance's data volume. The engine
 // is held at a checkpoint for the length of it, so the captured datadir is a
@@ -145,6 +151,7 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
 				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(rec.DBInstanceIdentifier)},
 				{Key: aws.String(rdsSnapshotTagKey), Value: aws.String(dbSnapshotIdentifier)},
+				{Key: aws.String(rdsSnapshotAccountTagKey), Value: aws.String(accountID)},
 			},
 		}},
 	}, utils.GlobalAccountID)

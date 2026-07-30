@@ -2,6 +2,7 @@ package handlers_rds
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -150,6 +151,7 @@ func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
 	assert.Equal(t, "vol-rdsdata01", aws.StringValue(h.snaps.created[0].VolumeId))
 	assert.Equal(t, tags.ManagedByRDS, tagOf(h.snaps.created[0].TagSpecifications, tags.ManagedByKey))
 	assert.Equal(t, testSnapshotID, tagOf(h.snaps.created[0].TagSpecifications, rdsSnapshotTagKey))
+	assert.Equal(t, testAccountID, tagOf(h.snaps.created[0].TagSpecifications, rdsSnapshotAccountTagKey))
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
@@ -514,7 +516,10 @@ func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
 	// The snapshot the dead worker cut, carrying the identifier's tag.
 	h.snaps.holding = append(h.snaps.holding, "snap-orphan")
-	h.snaps.tagged = map[string]map[string]string{"snap-orphan": {rdsSnapshotTagKey: testSnapshotID}}
+	h.snaps.tagged = map[string]map[string]string{"snap-orphan": {
+		rdsSnapshotTagKey:        testSnapshotID,
+		rdsSnapshotAccountTagKey: testAccountID,
+	}}
 
 	require.NoError(t, rec.reconcileOnce(t.Context()))
 
@@ -528,6 +533,129 @@ func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 
 // A record left in creating would hold its name forever while naming nothing a
 // customer can restore.
+func TestReconciler_DoesNotAdoptAnotherAccountsSnapshot(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	reconciler := NewReconciler(h.svc, "node-a")
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stale := DBSnapshotRecord{
+		DBSnapshotIdentifier: testSnapshotID,
+		AccountID:            testAccountID,
+		Status:               SnapshotStatusCreating,
+		CreatedAt:            time.Now().UTC().Add(-2 * snapshotResolveTimeout),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
+	h.snaps.holding = []string{"snap-other-account", "snap-this-account"}
+	h.snaps.tagged = map[string]map[string]string{
+		"snap-other-account": {
+			rdsSnapshotTagKey:        testSnapshotID,
+			rdsSnapshotAccountTagKey: "444455556666",
+		},
+		"snap-this-account": {
+			rdsSnapshotTagKey:        testSnapshotID,
+			rdsSnapshotAccountTagKey: testAccountID,
+		},
+	}
+
+	require.NoError(t, reconciler.reconcileOnce(t.Context()))
+
+	stored, found := h.snapshot(t, testSnapshotID)
+	require.True(t, found)
+	assert.Equal(t, SnapshotStatusAvailable, stored.Status)
+	assert.Equal(t, "snap-this-account", stored.SnapshotID)
+}
+
+func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	h.snaps.describeErr = errors.New("snapshot metadata temporarily unavailable")
+	reconciler := NewReconciler(h.svc, "node-a")
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stale := DBSnapshotRecord{
+		DBSnapshotIdentifier: testSnapshotID,
+		AccountID:            testAccountID,
+		Status:               SnapshotStatusCreating,
+		CreatedAt:            time.Now().UTC().Add(-2 * snapshotResolveTimeout),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
+
+	err = reconciler.reconcileOnce(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "metadata temporarily unavailable")
+
+	stored, found := h.snapshot(t, testSnapshotID)
+	require.True(t, found)
+	assert.Equal(t, SnapshotStatusCreating, stored.Status)
+}
+
+func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	reconciler := NewReconciler(h.svc, "node-a")
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stale := DBSnapshotRecord{
+		DBSnapshotIdentifier: testSnapshotID,
+		AccountID:            testAccountID,
+		Status:               SnapshotStatusCreating,
+		CreatedAt:            time.Now().UTC().Add(-2 * snapshotResolveTimeout),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
+	h.snaps.afterDescribe = func() {
+		h.snaps.afterDescribe = nil
+		var current DBSnapshotRecord
+		rev, found, getErr := getJSONRevision(t.Context(), kv, DBSnapshotKey(testSnapshotID), &current)
+		require.NoError(t, getErr)
+		require.True(t, found)
+		current.Status = SnapshotStatusAvailable
+		current.SnapshotID = "snap-completed-concurrently"
+		require.NoError(t, updateJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), rev, &current))
+	}
+
+	require.NoError(t, reconciler.reconcileOnce(t.Context()))
+
+	stored, found := h.snapshot(t, testSnapshotID)
+	require.True(t, found)
+	assert.Equal(t, SnapshotStatusAvailable, stored.Status)
+	assert.Equal(t, "snap-completed-concurrently", stored.SnapshotID)
+}
+
+func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	reconciler := NewReconciler(h.svc, "node-a")
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stale := DBSnapshotRecord{
+		DBSnapshotIdentifier: testSnapshotID,
+		AccountID:            testAccountID,
+		Status:               SnapshotStatusCreating,
+		CreatedAt:            time.Now().UTC().Add(-2 * snapshotResolveTimeout),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
+	matchingTags := map[string]string{
+		rdsSnapshotTagKey:        testSnapshotID,
+		rdsSnapshotAccountTagKey: testAccountID,
+	}
+	h.snaps.holding = []string{"snap-duplicate-a", "snap-duplicate-b"}
+	h.snaps.tagged = map[string]map[string]string{
+		"snap-duplicate-a": matchingTags,
+		"snap-duplicate-b": matchingTags,
+	}
+
+	err = reconciler.reconcileOnce(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "multiple EC2 snapshots")
+
+	stored, found := h.snapshot(t, testSnapshotID)
+	require.True(t, found)
+	assert.Equal(t, SnapshotStatusCreating, stored.Status)
+}
+
+// A completed authoritative lookup is the only evidence that no EC2 snapshot
+// was cut. Once it succeeds with no match, the stale name can be released.
 func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	rec := NewReconciler(h.svc, "node-a")

@@ -66,12 +66,14 @@ func (f *fakeInstanceCommander) StartStoppedInstance(_ context.Context, instance
 // DescribeSnapshots reports against the data volume, which is what decides
 // between deleting the volume and retaining it.
 type fakeSnapshots struct {
-	created     []*ec2.CreateSnapshotInput
-	holding     []string
-	deleted     []string
-	createErr   error
-	describeErr error
-	deleteErr   error
+	created       []*ec2.CreateSnapshotInput
+	holding       []string
+	deleted       []string
+	createErr     error
+	describeErr   error
+	deleteErr     error
+	beforeCreate  func()
+	afterDescribe func()
 	// The tags each created snapshot carries, which is what a tag-filtered
 	// describe resolves a DB snapshot identifier through.
 	tagged map[string]map[string]string
@@ -80,6 +82,9 @@ type fakeSnapshots struct {
 var _ snapshotProvider = (*fakeSnapshots)(nil)
 
 func (f *fakeSnapshots) CreateSnapshot(_ context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+	if f.beforeCreate != nil {
+		f.beforeCreate()
+	}
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -113,7 +118,15 @@ func (f *fakeSnapshots) DescribeSnapshots(_ context.Context, input *ec2.Describe
 		}
 		out.Snapshots = append(out.Snapshots, &ec2.Snapshot{SnapshotId: aws.String(id)})
 	}
+	if f.afterDescribe != nil {
+		f.afterDescribe()
+	}
 	return out, nil
+}
+
+func (f *fakeSnapshots) DescribeSnapshotsStrict(ctx context.Context, input *ec2.DescribeSnapshotsInput,
+	accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+	return f.DescribeSnapshots(ctx, input, accountID)
 }
 
 func (f *fakeSnapshots) matchesFilters(id string, input *ec2.DescribeSnapshotsInput) bool {

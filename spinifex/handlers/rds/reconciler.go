@@ -378,8 +378,8 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValu
 // did; only a teardown still stuck past the bound is called failed, which is
 // what lets the customer retry the delete.
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
-	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec)
-	if err == nil {
+	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
+	if err == nil || errors.Is(err, errFinalSnapshotInProgress) {
 		return nil
 	}
 	if time.Since(transitionStarted(rec)) > transitionTimeout {
@@ -445,14 +445,19 @@ func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyVal
 // the name forever while naming nothing a customer can restore.
 func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.KeyValue, rev uint64,
 	accountID string, rec *DBSnapshotRecord) error {
-	snapshotID, err := r.svc.findEC2SnapshotFor(ctx, rec.DBSnapshotIdentifier)
+	snapshotID, err := r.svc.findEC2SnapshotFor(ctx, accountID, rec.DBSnapshotIdentifier)
 	if err != nil {
 		return err
 	}
 	if snapshotID == "" {
-		if err := kv.Delete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier)); err != nil &&
-			!errors.Is(err, jetstream.ErrKeyNotFound) {
-			return err
+		if err := kv.Delete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier), jetstream.LastRevision(rev)); err != nil {
+			switch {
+			case errors.Is(err, jetstream.ErrKeyNotFound), errors.Is(err, jetstream.ErrKeyExists):
+				// A concurrent completion or delete owns the newer revision.
+				return nil
+			default:
+				return err
+			}
 		}
 		r.svc.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
 			"The DB snapshot could not be completed and has been removed.",
@@ -480,33 +485,49 @@ func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.K
 	return nil
 }
 
-// The EC2 snapshot a DB snapshot identifier owns, empty when none was cut. The
-// tag is written by CreateSnapshot itself, so a snapshot that exists carries it.
-func (s *Service) findEC2SnapshotFor(ctx context.Context, dbSnapshotIdentifier string) (string, error) {
+// The EC2 snapshot an account-scoped DB snapshot identifier owns, empty when
+// none was cut. Strict lookup is required because a partial metadata scan cannot
+// prove absence and must never cause reconciliation to withdraw the RDS record.
+func (s *Service) findEC2SnapshotFor(ctx context.Context, accountID, dbSnapshotIdentifier string) (string, error) {
 	if s.deps.Snapshots == nil {
 		return "", errors.New("rds: no snapshot service configured")
 	}
-	out, err := s.deps.Snapshots.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
-		Filters: []*ec2.Filter{{
-			Name:   aws.String("tag:" + rdsSnapshotTagKey),
-			Values: aws.StringSlice([]string{dbSnapshotIdentifier}),
-		}},
+	out, err := s.deps.Snapshots.DescribeSnapshotsStrict(ctx, &ec2.DescribeSnapshotsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("tag:" + rdsSnapshotTagKey),
+				Values: aws.StringSlice([]string{dbSnapshotIdentifier}),
+			},
+			{
+				Name:   aws.String("tag:" + rdsSnapshotAccountTagKey),
+				Values: aws.StringSlice([]string{accountID}),
+			},
+		},
 	}, utils.GlobalAccountID)
 	if err != nil {
 		if awserrors.IsNotFound(err) {
 			return "", nil
 		}
-		return "", fmt.Errorf("rds: find the EC2 snapshot of %s: %w", dbSnapshotIdentifier, err)
+		return "", fmt.Errorf("rds: find the EC2 snapshot of %s in account %s: %w",
+			dbSnapshotIdentifier, accountID, err)
 	}
 	if out == nil {
 		return "", nil
 	}
+
+	var found string
 	for _, snapshot := range out.Snapshots {
-		if id := aws.StringValue(snapshot.SnapshotId); id != "" {
-			return id, nil
+		id := aws.StringValue(snapshot.SnapshotId)
+		if id == "" {
+			continue
 		}
+		if found != "" {
+			return "", fmt.Errorf("rds: DB snapshot %s in account %s has multiple EC2 snapshots (%s and %s)",
+				dbSnapshotIdentifier, accountID, found, id)
+		}
+		found = id
 	}
-	return "", nil
+	return found, nil
 }
 
 // When the transition began. A record written by an older control plane carries

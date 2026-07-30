@@ -56,12 +56,6 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 	}
 }
 
-// An action whose body lands in a later phase: the caller learns it is
-// recognised and simply not ready — never a silent success.
-func pending() Handler {
-	return rejectWith(awserrors.ErrorNotImplemented)
-}
-
 // Recognised but deliberately outside v1, so a client sees "not offered" rather
 // than "you typo'd the action name".
 func unsupported() Handler {
@@ -75,8 +69,8 @@ func rejectWith(code string) Handler {
 	}
 }
 
-// The whole namespace is registered from day one, not-yet-built actions as
-// explicit stubs, so an unimplemented action stays distinct from an unknown one.
+// The whole namespace is registered from day one, so an action outside v1 stays
+// distinct from an unknown one.
 var actions = map[string]Handler{
 	// Instance lifecycle.
 	"CreateDBInstance":    typed(CreateDBInstance),
@@ -94,7 +88,7 @@ var actions = map[string]Handler{
 	"RestoreDBInstanceFromDBSnapshot": typed(RestoreDBInstanceFromDBSnapshot),
 
 	// Automated backups.
-	"DescribeDBInstanceAutomatedBackups": pending(),
+	"DescribeDBInstanceAutomatedBackups": typed(DescribeDBInstanceAutomatedBackups),
 
 	// Subnet groups.
 	"CreateDBSubnetGroup":    typed(CreateDBSubnetGroup),

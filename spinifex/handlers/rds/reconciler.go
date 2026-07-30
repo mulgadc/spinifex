@@ -98,6 +98,13 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
+// The shared GC backstop's cluster-wide gate. The reconciler's lease is already
+// cluster-singular and held continuously rather than claimed per sweep, so
+// holding it is the whole answer and there is nothing for the caller to release.
+func (r *Reconciler) AcquireClusterLease() (func(), bool) {
+	return func() {}, r.isLeader()
+}
+
 func (r *Reconciler) isLeader() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -200,6 +207,9 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue
 	var failures []error
 	for _, id := range ids {
 		if err := r.reconcileInstance(ctx, kv, accountID, id); err != nil {
+			failures = append(failures, awserrors.Errorf(id, "%w", err))
+		}
+		if err := r.reconcileWindows(ctx, kv, accountID, id); err != nil {
 			failures = append(failures, awserrors.Errorf(id, "%w", err))
 		}
 	}
@@ -410,6 +420,30 @@ func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv jetstream.KeyVal
 	slog.WarnContext(ctx, "rds reconciler: a snapshot left its instance in backing-up; returning it",
 		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID, "resume", resume)
 	return r.transition(ctx, kv, rev, rec, resume, "")
+}
+
+// The two scheduled passes (rds-9): the automated backup its backup window is
+// due, and the deferred modify its maintenance window opens. Both ride the leader
+// lease, and both are driven from a persisted stamp rather than a timer, so a
+// leader change cannot fire either of them twice for one window.
+//
+// The record is re-read rather than carried over from the status pass above,
+// which may have transitioned the instance — a backup must not be started against
+// a status that has since moved.
+func (r *Reconciler) reconcileWindows(ctx context.Context, kv jetstream.KeyValue, accountID, id string) error {
+	var rec DBInstanceRecord
+	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
+	if err != nil || !found {
+		return err
+	}
+	// A backup holds the instance in backing-up and a maintenance apply moves it to
+	// modifying, so the two can never run together: whichever fires owns the pass.
+	fired, err := r.svc.runBackupWindow(ctx, kv, rev, accountID, &rec)
+	if fired || err != nil {
+		return err
+	}
+	_, err = r.svc.runMaintenanceWindow(ctx, kv, rev, accountID, &rec)
+	return err
 }
 
 // Settles the DB snapshot records a create never finished writing. The EC2

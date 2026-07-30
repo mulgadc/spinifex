@@ -175,6 +175,24 @@ type RDSConfig struct {
 	// passes to agree; raise it to give EC2's own VM auto-restart more room
 	// before a customer sees the instance reported as failed.
 	FailureGraceSeconds int `json:"FailureGraceSeconds" mapstructure:"failure_grace_seconds"`
+
+	// The upper bound on a DB instance's BackupRetentionPeriod, and what a create
+	// that names none gets. Zero takes the built-in 7 for both. Retention length
+	// does not change the physical footprint of a backed-up volume — any snapshot
+	// latches viperblock chunk GC off for the life of the volume — so a short
+	// retention buys nothing but a smaller restore surface.
+	BackupRetentionCapDays int `json:"BackupRetentionCapDays" mapstructure:"backup_retention_cap_days"`
+	BackupRetentionDays    int `json:"BackupRetentionDays" mapstructure:"backup_retention_days"`
+
+	// The daily UTC blocks an unnamed backup or maintenance window is assigned
+	// inside, as hh24:mi-hh24:mi. They must not overlap: the windows derived from
+	// them must not either. Empty takes the built-in 03:00-11:00 and 11:00-19:00.
+	BackupWindowBlock      string `json:"BackupWindowBlock" mapstructure:"backup_window_block"`
+	MaintenanceWindowBlock string `json:"MaintenanceWindowBlock" mapstructure:"maintenance_window_block"`
+
+	// How many automated snapshots one retention pass may delete. Zero takes the
+	// built-in bound; a pass that under-collects is corrected two minutes later.
+	BackupSweepDeleteLimit int `json:"BackupSweepDeleteLimit" mapstructure:"backup_sweep_delete_limit"`
 }
 
 // RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at

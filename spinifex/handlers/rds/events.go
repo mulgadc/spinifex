@@ -55,6 +55,7 @@ const (
 	EventCategoryCreation            = "creation"
 	EventCategoryDeletion            = "deletion"
 	EventCategoryFailure             = "failure"
+	EventCategoryMaintenance         = "maintenance"
 	EventCategoryNotification        = "notification"
 	EventCategoryRecovery            = "recovery"
 )

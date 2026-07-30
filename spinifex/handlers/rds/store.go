@@ -66,7 +66,21 @@ func DBSnapshotsPrefix() string {
 }
 
 func DBSnapshotKey(dbSnapshotIdentifier string) string {
-	return DBSnapshotsPrefix() + dbSnapshotIdentifier
+	return DBSnapshotsPrefix() + kvKeySegment(dbSnapshotIdentifier)
+}
+
+// A JetStream KV key admits no colon, and an automated backup's snapshot
+// identifier carries the rds: prefix AWS gives it. The colon is mapped to "=",
+// which is a legal key character and one no RDS identifier may contain, so the
+// mapping is reversible and a manual snapshot's key is unchanged.
+const kvKeyColon = "="
+
+func kvKeySegment(identifier string) string {
+	return strings.ReplaceAll(identifier, ":", kvKeyColon)
+}
+
+func kvKeySegmentIdentifier(segment string) string {
+	return strings.ReplaceAll(segment, kvKeyColon, ":")
 }
 
 func DBSubnetGroupsPrefix() string {
@@ -99,8 +113,12 @@ func DBParameterGroupParamKey(name, param string) string {
 
 // Kept separate from db-snapshots/ so the retention sweep enumerates only
 // automated backups, ordered lexically by their timestamp suffix.
+func AutomatedBackupsRootPrefix() string {
+	return "backups/"
+}
+
 func AutomatedBackupsPrefix(dbInstanceIdentifier string) string {
-	return fmt.Sprintf("backups/%s/automated/", dbInstanceIdentifier)
+	return fmt.Sprintf("%s%s/automated/", AutomatedBackupsRootPrefix(), dbInstanceIdentifier)
 }
 
 func AutomatedBackupKey(dbInstanceIdentifier, ts string) string {
@@ -127,8 +145,10 @@ func EventsPrefix() string {
 	return "events/"
 }
 
+// The source identifier is escaped the same way a snapshot key is: an automated
+// backup's events hang off an identifier carrying a colon.
 func EventRingKey(sourceType, sourceIdentifier string) string {
-	return fmt.Sprintf("%s%s/%s", EventsPrefix(), sourceType, sourceIdentifier)
+	return fmt.Sprintf("%s%s/%s", EventsPrefix(), sourceType, kvKeySegment(sourceIdentifier))
 }
 
 // Entries are rewritten on every VM replace (each mints a new instance ID) and
@@ -234,7 +254,14 @@ func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, er
 // Manual and automated snapshots alike: the type is on the record, so a listing
 // filtered by it still has to read every one.
 func ListDBSnapshotIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
-	return listNames(ctx, kv, DBSnapshotsPrefix())
+	names, err := listNames(ctx, kv, DBSnapshotsPrefix())
+	if err != nil {
+		return nil, err
+	}
+	for i, name := range names {
+		names[i] = kvKeySegmentIdentifier(name)
+	}
+	return names, nil
 }
 
 func ListDBSubnetGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
@@ -284,6 +311,54 @@ func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group 
 		}
 	}
 	return out, nil
+}
+
+// Every account's automated-backup index, grouped by DB instance, from one
+// bucket listing: the retention sweep needs every instance's set, and a Keys call
+// per instance would cost one listing each.
+func ListAutomatedBackups(ctx context.Context, kv jetstream.KeyValue) (map[string][]string, error) {
+	keys, err := bucketKeys(ctx, kv)
+	if err != nil {
+		return nil, err
+	}
+	indexed := make(map[string][]string)
+	for _, key := range keys {
+		id, stamp, ok := splitAutomatedBackupKey(key)
+		if !ok {
+			continue
+		}
+		indexed[id] = append(indexed[id], stamp)
+	}
+	return indexed, nil
+}
+
+// One instance's automated-backup stamps, for the callers that already know
+// which instance they are acting on.
+func ListAutomatedBackupStamps(ctx context.Context, kv jetstream.KeyValue, dbInstanceIdentifier string) ([]string, error) {
+	return listNames(ctx, kv, AutomatedBackupsPrefix(dbInstanceIdentifier))
+}
+
+// The DB instance and timestamp a backups/ key names. The instance identifier
+// cannot contain a slash, so anything shaped otherwise belongs to a key space
+// this does not own.
+func splitAutomatedBackupKey(key string) (string, string, bool) {
+	rest, ok := strings.CutPrefix(key, AutomatedBackupsRootPrefix())
+	if !ok {
+		return "", "", false
+	}
+	id, rest, ok := strings.Cut(rest, "/")
+	if !ok || id == "" {
+		return "", "", false
+	}
+	stamp, ok := strings.CutPrefix(rest, "automated/")
+	if !ok || stamp == "" || strings.Contains(stamp, "/") {
+		return "", "", false
+	}
+	return id, stamp, true
+}
+
+func ListRetainedVolumeIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	return listNames(ctx, kv, RetainedVolumesPrefix())
 }
 
 // The leaf names directly under prefix. A nested key belongs to a sub-space and

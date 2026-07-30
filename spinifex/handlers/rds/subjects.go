@@ -39,6 +39,10 @@ const (
 	SubjectDeleteDBSnapshot                = "rds.DeleteDBSnapshot"
 	SubjectRestoreDBInstanceFromDBSnapshot = "rds.RestoreDBInstanceFromDBSnapshot"
 
+	// The automated-backup set, which is a KV read: the snapshots themselves are
+	// listed through DescribeDBSnapshots.
+	SubjectDescribeDBInstanceAutomatedBackups = "rds.DescribeDBInstanceAutomatedBackups"
+
 	// Configuration resources. Plain KV CRUD, so unlike the instance actions
 	// none of them drives a VM and all take the default budget.
 	SubjectCreateDBSubnetGroup    = "rds.CreateDBSubnetGroup"

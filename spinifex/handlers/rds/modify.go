@@ -16,11 +16,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// AWS's bound on automated-backup retention. Nothing consumes it until rds-9,
-// but accepting a value outside the range would store a setting that fails
-// later, in a window nobody is watching.
-const maxBackupRetentionDays = 35
-
 // The resolved effect of a ModifyDBInstance request: what changes now and what
 // is left for a maintenance window. Every field is a *difference* from the
 // stored record — Terraform sends the whole body on every apply, so a field
@@ -224,7 +219,7 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	if input.DeletionProtection != nil && aws.BoolValue(input.DeletionProtection) != rec.DeletionProtection {
 		plan.DeletionProtection = input.DeletionProtection
 	}
-	if err := planBackupSettings(input, rec, plan); err != nil {
+	if err := s.planBackupSettings(input, rec, plan); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -253,25 +248,43 @@ func (s *Service) planSecurityGroups(ctx context.Context, accountID string, rec 
 	return requested, nil
 }
 
-// The rds-9 fields. Stored rather than acted on here, but still bounds-checked:
-// a value outside AWS's range would fail in a maintenance window nobody is
-// watching rather than in the call that set it.
-func planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBInstanceRecord, plan *modifyPlan) error {
+// The rds-9 fields, now validated and effective rather than record-only. Both
+// windows are resolved as a pair even when the request names one, because AWS's
+// non-overlap rule is about the pair: a request moving the backup window onto the
+// stored maintenance window has to be rejected too.
+func (s *Service) planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBInstanceRecord, plan *modifyPlan) error {
 	if input.BackupRetentionPeriod != nil {
 		days := aws.Int64Value(input.BackupRetentionPeriod)
-		if days < 0 || days > maxBackupRetentionDays {
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"BackupRetentionPeriod must be between 0 and %d days", maxBackupRetentionDays)
+		if err := s.validateRetentionPeriod(days); err != nil {
+			return err
 		}
 		if days != rec.BackupRetentionPeriod {
 			plan.BackupRetentionPeriod = aws.Int64(days)
 		}
 	}
-	if window := aws.StringValue(input.PreferredBackupWindow); window != "" && window != rec.PreferredBackupWindow {
-		plan.PreferredBackupWindow = window
+
+	backup := aws.StringValue(input.PreferredBackupWindow)
+	maintenance := aws.StringValue(input.PreferredMaintenanceWindow)
+	if backup == "" && maintenance == "" {
+		return nil
 	}
-	if window := aws.StringValue(input.PreferredMaintenanceWindow); window != "" && window != rec.PreferredMaintenanceWindow {
-		plan.PreferredMaintenanceWindow = window
+	if backup == "" {
+		backup = rec.PreferredBackupWindow
+	}
+	if maintenance == "" {
+		maintenance = rec.PreferredMaintenanceWindow
+	}
+	resolvedBackup, resolvedMaintenance, err := s.validateWindows(rec.DBInstanceIdentifier, backup, maintenance)
+	if err != nil {
+		return err
+	}
+	// Compared against the stored value in canonical form, so a request repeating
+	// the current window in different text is dropped rather than rewritten.
+	if resolvedBackup != rec.PreferredBackupWindow {
+		plan.PreferredBackupWindow = resolvedBackup
+	}
+	if resolvedMaintenance != rec.PreferredMaintenanceWindow {
+		plan.PreferredMaintenanceWindow = resolvedMaintenance
 	}
 	return nil
 }
@@ -326,7 +339,34 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
 		"DB instance configuration changed.", EventCategoryConfigurationChange)
+
+	// Turning automated backups off has to remove the backups too, or the setting
+	// is cosmetic: while any snapshot of the data volume survives, viperblock's
+	// chunk GC stays latched off and the volume never reclaims an overwritten
+	// chunk. It takes effect on the volume's next attach, because that guard is
+	// cached for the life of the VB process.
+	if plan.BackupRetentionPeriod != nil && *plan.BackupRetentionPeriod == 0 {
+		s.disableAutomatedBackups(ctx, kv, accountID, rec.DBInstanceIdentifier)
+	}
 	return nil
+}
+
+// Sweeps an instance's automated backups after a BackupRetentionPeriod=0 modify.
+// The retention change itself has already landed, so a sweep that cannot finish
+// is reported rather than allowed to fail the modify: the retention reaper reads
+// the same zero retention and removes whatever is left, including the newest.
+func (s *Service) disableAutomatedBackups(ctx context.Context, kv jetstream.KeyValue, accountID, id string) {
+	if err := s.purgeAutomatedBackups(ctx, kv, accountID, id); err != nil {
+		slog.WarnContext(ctx, "rds: sweeping the automated backups of a disabled instance failed; the retention reaper will finish it",
+			"dbInstance", id, "accountId", accountID, "err", err)
+		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id,
+			"Automated backups are disabled; the existing automated backups are still being removed.",
+			EventCategoryBackup, EventCategoryNotification)
+		return
+	}
+	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id,
+		"Automated backups are disabled and the existing automated backups have been removed.",
+		EventCategoryBackup, EventCategoryConfigurationChange)
 }
 
 // Changing a database's ingress is routine day-two work, and the ENI already

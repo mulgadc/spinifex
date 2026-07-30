@@ -54,6 +54,9 @@ type Deps struct {
 	// Overrides how long an instance may be observed dark before the classifier
 	// calls it failed. Zero takes defaultFailureGrace.
 	FailureGrace time.Duration
+	// Bounds and defaults for automated backups and the two scheduled windows.
+	// Every zero field takes the built-in default.
+	Backup BackupPolicy
 }
 
 // The RDS control plane's KV-backed handler set. One per daemon.

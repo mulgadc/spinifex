@@ -1,0 +1,26 @@
+[Unit]
+Description=EKS Token Review webhook (Mulga)
+# Before k3s.service so the apiserver kubeconfig this binary writes at startup
+# exists before --authentication-token-webhook-config-file is read.
+After=network-online.target cloud-config.service
+Wants=network-online.target
+Before=k3s.service
+
+[Service]
+Type=simple
+# No "-" prefix: cloud-init write_files seeds this file during the
+# cloud-config stage, and the legacy initd hard-fails start on its absence
+# (eks-token-webhook.initd:36-41) rather than run with no gateway creds.
+# systemd's own EnvironmentFile= (missing -> unit fails to start) reproduces
+# that guard without a separate ExecStartPre check.
+EnvironmentFile=/etc/spinifex-eks/first-boot.env
+ExecStart=/usr/local/bin/eks-token-webhook --addr=127.0.0.1:8443
+# Headless appliance: no SSH. Route to the serial console, same as the OpenRC
+# runscript's output_log/error_log.
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,110 @@
+#!/bin/bash
+set -euo pipefail
+
+# gpu-amd postinst — adds the ROCm apt repository and installs the ROCm
+# userland (rocminfo, rocm-smi-lib, amd-smi-lib), then wires up the
+# /opt/rocm symlink and the render/video groups the amdgpu device nodes
+# need.
+#
+# Unlike gpu-nvidia there is no DKMS build here: amdgpu is upstreamed in the
+# mainline kernel and ships inside linux-image-generic (base), so nothing
+# needs compiling against this image's kernel — only the ROCm userland
+# tools are third-party.
+#
+# No initramfs rebuild here either, unlike the legacy script's
+# `update-initramfs -u -k ${KVER}`. mkosi builds its own kernel-modules
+# initrd for the UKI after every profile's postinst has run (see the base
+# mkosi.conf's KernelModulesInitrdInclude/Exclude), so an initramfs-tools
+# run in this chroot would write a /boot/initrd.img mkosi never boots —
+# dead weight, not a guarantee. gpu-nvidia carries no such call either for
+# the same reason.
+#
+# Static, content-free configuration (the unattended-upgrades package
+# blacklist, the amdgpu modules-load entry, the render/video group unit)
+# lives in mkosi.extra/ instead of here — this script is only for the parts
+# that depend on values not known until the image is built (the ROCm repo
+# key, the resolved /opt/rocm-<version> path, apt pinning).
+
+APT_OPTS=(-o APT::Sandbox::User=root)
+
+# AMD ROCm 7.2 repo — pinned to "noble" (24.04), NOT the base image's own
+# "resolute" (26.04). This looks like a copy-paste bug but is deliberate and
+# matches the legacy script exactly: AMD has not published a resolute dist
+# for ROCm, noble is the newest one that exists, and its packages are
+# ABI-compatible with 26.04. Do not "fix" this to ${RELEASE} — that dist
+# does not exist on repo.radeon.com and the apt update below will 404.
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.3 noble main" \
+    > /etc/apt/sources.list.d/rocm.list
+
+# Ubuntu 26.04's own archive (universe) carries an out-of-band "rocminfo"
+# package (a leftover from an earlier ROCm snapshot Ubuntu vendored). Without
+# a pin, apt resolves each package name independently to whichever source has
+# the highest version, so a same-named package can silently come from a
+# different release train than the rest of the ROCm stack, and which one
+# "wins" is not guaranteed to stay the same across rebuilds. Pin-Priority 600
+# beats the archive's default (500) unconditionally, so every ROCm-repo
+# package resolves from repo.radeon.com regardless of version-number compare.
+cat > /etc/apt/preferences.d/rocm <<'EOF'
+Package: *
+Pin: origin repo.radeon.com
+Pin-Priority: 600
+EOF
+
+apt-get "${APT_OPTS[@]}" update -qq
+
+echo "ROCm package candidates after pinning (evidence: origin + priority per source):"
+apt-cache policy rocminfo rocm-core rocm-smi-lib amd-smi-lib
+
+apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+    rocminfo rocm-smi-lib amd-smi-lib
+
+echo "ROCm package versions installed (evidence: candidate vs. installed, per source):"
+apt-cache policy rocminfo rocm-core rocm-smi-lib amd-smi-lib
+
+# The pin above is scoped to "Package: *" from this one origin, which is
+# broader than the four packages installed above by name — deliberately, so
+# any ROCm-repo dependency apt pulls in on its own (rocm-core, below) is
+# equally pinned rather than only the packages this script names explicitly.
+
+# Point /opt/rocm at the installed tree and add it to PATH for interactive
+# shells. rocm-core (pulled in as a dependency above) already creates this
+# link through update-alternatives, so this is a deliberate override: the
+# link target is then a property of what is actually installed rather than of
+# alternatives priority, which matters because the legacy AMD image shipped a
+# plain symlink and anything reading /opt/rocm must not start resolving
+# differently under mkosi. With a single ROCm version installed both
+# mechanisms select the same tree, so they agree today — if a second version
+# is ever installed alongside, this line decides and update-alternatives does
+# not.
+ROCM_DIR=$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1)
+if [[ -z "${ROCM_DIR}" ]]; then
+    # The legacy script skips the symlink silently when this is empty. That
+    # is not trusted here: an image that installed "ROCm" but has no
+    # /opt/rocm-* is a build failure, not a degraded-but-shippable image.
+    echo "ERROR: no /opt/rocm-* directory found after ROCm install" >&2
+    exit 1
+fi
+ln -sfn "${ROCM_DIR}" /opt/rocm
+echo "export PATH=\"/opt/rocm/bin:\$PATH\"" > /etc/profile.d/rocm.sh
+chmod 644 /etc/profile.d/rocm.sh
+
+# render + video groups give a non-root user access to /dev/kfd and
+# /dev/dri; the systemd unit shipped in mkosi.extra/ adds the default user
+# to both at first boot, after cloud-init's config stage has created that
+# user. Enabled here, not via a cloud-init runcmd: this image's docker
+# profile already ships its own cloud.cfg.d fragment with a top-level
+# runcmd key, and cloud-init's default config merge does not append two
+# fragments' runcmd lists together — whichever fragment sorts first wins
+# the key outright and the other's command is silently dropped (verified
+# against cloudinit.util.mergemanydict/read_conf_d in this image: the
+# default dict merger is no_replace with recurse_array off, so a list-typed
+# key present in two sources is taken wholesale from one and the other is
+# discarded, never merged). A systemd unit sidesteps that merge entirely.
+groupadd -f render
+groupadd -f video
+systemctl enable mulga-gpu-amd-groups.service
+
+echo "gpu-amd postinst complete: ROCm userland installed, /opt/rocm -> ${ROCM_DIR}"

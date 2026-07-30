@@ -1,0 +1,57 @@
+[Unit]
+Description=Konnectivity server (Mulga EKS apiserver egress proxy)
+# The kube-apiserver's `cluster` egress selector routes pod/kubelet/webhook
+# traffic to this server's UDS; konnectivity-agents on the workers dial in
+# over :8132 and the egress rides back down the agent-initiated reverse
+# tunnel. Server-role only; started by eks-node-role. Runs as root (systemd
+# default) to bind the UDS the apiserver reads.
+After=network-online.target k3s.service
+Wants=network-online.target
+# Unlimited restarts on any exit (S3 / konnectivity-server.initd:21-25): a
+# transient exit must self-heal or apiserver egress (webhooks, exec, logs)
+# stays broken until the next boot and the cluster wedges. See k3s.service for
+# why StartLimitIntervalSec=0 is required to make Restart=always unbounded.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# konnectivity-server-prestart reproduces the start_pre steps this used to run
+# inline: waits (bounded) for the k3s server CA + admin kubeconfig, mints the
+# serving cert, and writes the resolved apiserver replica count to
+# /run/konnectivity-server-args.env for the ExecStart line below to source. No
+# "-" prefix: a nonzero exit here must stop the server from ever starting,
+# same as the OpenRC start_pre returning 1.
+ExecStartPre=/usr/local/sbin/konnectivity-server-prestart
+# $$ is load-bearing. systemd expands $VAR/${VAR} in Exec*= from the unit's own
+# environment before /bin/sh is executed, and it substitutes an empty string for
+# names it does not know. KONN_SERVER_COUNT is not a unit variable — it only
+# exists in the file ExecStartPre writes, which the shell sources at runtime —
+# so a single $ silently yields `--server-count=` and konnectivity-server dies
+# on flag parsing before it can log or bind the UDS. $$ passes a literal $
+# through so the expansion happens in the shell, after the source.
+ExecStart=/bin/sh -c '. /run/konnectivity-server-args.env; exec /usr/local/bin/konnectivity-server \
+    --logtostderr=true \
+    --uds-name=/run/konnectivity/konnectivity-server.socket \
+    --delete-existing-uds-file \
+    --cluster-cert=/var/lib/spinifex-eks/konnectivity/tls.crt \
+    --cluster-key=/var/lib/spinifex-eks/konnectivity/tls.key \
+    --server-count=$${KONN_SERVER_COUNT} \
+    --mode=grpc \
+    --server-port=0 \
+    --agent-port=8132 \
+    --admin-port=8093 \
+    --health-port=8092 \
+    --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+    --authentication-audience=system:konnectivity-server \
+    --agent-namespace=kube-system \
+    --agent-service-account=konnectivity-agent \
+    --proxy-strategies=destHost,default'
+# Tee to the serial console as well as journald, same reasoning as k3s.service.
+# Replaces the OpenRC runscript's dedicated /var/log/konnectivity-server.log.
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

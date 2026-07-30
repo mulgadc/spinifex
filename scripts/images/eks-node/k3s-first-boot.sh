@@ -21,8 +21,8 @@ set -eu
 #   EKS_NLB_ENDPOINT           https://{cluster}.{accountID}.eks.{region}.{suffix}
 #
 # Idempotent: a sentinel file at /var/lib/spinifex-eks/first-boot.pending gates
-# execution. On success the sentinel is removed and the OpenRC service is
-# pulled from the default runlevel so it does not retry on subsequent boots.
+# execution. On success the sentinel is removed and the service is disabled
+# under whichever init the image ships so it does not retry on subsequent boots.
 
 SENTINEL=/var/lib/spinifex-eks/first-boot.pending
 ENVFILE=/etc/spinifex-eks/first-boot.env
@@ -30,6 +30,33 @@ LOGTAG="k3s-first-boot"
 
 log() { echo "[${LOGTAG}] $*"; }
 die() { log "ERROR: $*"; exit 1; }
+
+# This script is delivered unmodified to both the legacy Alpine/OpenRC image
+# and the mkosi Ubuntu/systemd image, so the self-disable below must dispatch
+# on whichever init actually owns the box. EKS_NODE_INIT lets the env knob
+# win outright (unit-testable without root or a real init); detection then
+# prefers rc-update so an Alpine host with a stray systemctl shim still
+# resolves to openrc. Duplicated from eks-node-role.sh rather than shared:
+# both are single-file deliverables installed straight to /usr/local/sbin
+# with no shared library-path convention, and scripts/images/ is deleted at
+# image-build cutover, so a shared file would outlive its usefulness.
+INIT_SYSTEM="${EKS_NODE_INIT:-}"
+if [ -z "${INIT_SYSTEM}" ]; then
+    if command -v rc-update >/dev/null 2>&1; then
+        INIT_SYSTEM=openrc
+    elif command -v systemctl >/dev/null 2>&1; then
+        INIT_SYSTEM=systemd
+    else
+        die "no supported init system found (need rc-update or systemctl)"
+    fi
+fi
+
+svc_disable() {
+    case "${INIT_SYSTEM}" in
+        openrc) rc-update del "$1" default 2>/dev/null || true ;;
+        systemd) systemctl disable "$1.service" 2>/dev/null || true ;;
+    esac
+}
 
 if [ ! -f "${SENTINEL}" ]; then
     log "sentinel missing — first boot already complete"
@@ -158,7 +185,7 @@ if [ -n "${EKS_ETCD_PRUNE_PEER_IP:-}" ]; then
     fi
 fi
 
-# 4. Self-disable. Remove sentinel, pull from runlevel.
+# 4. Self-disable. Remove sentinel, disable the unit so it does not re-run.
 rm -f "${SENTINEL}"
-rc-update del k3s-first-boot default 2>/dev/null || true
+svc_disable k3s-first-boot
 log "first boot complete"

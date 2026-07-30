@@ -39,9 +39,9 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
 ln -sf /usr/local/bin/k3s /usr/local/bin/crictl
 ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 
-# Reused shell helpers + the new prestart wrapper land 0644 via INSTALL_FILES;
-# make them executable. The systemd unit files and the udev rules file do not
-# need an exec bit (unlike OpenRC's /etc/init.d/*).
+# Reused shell helpers (including k3s-agent-prestart) land 0644 via
+# INSTALL_FILES; make them executable. The systemd unit files and the udev
+# rules file do not need an exec bit (unlike OpenRC's /etc/init.d/*).
 chmod 0755 /usr/local/sbin/mulga-ebs-byid /usr/local/sbin/mulga-eks-provider-id \
     /usr/local/sbin/mulga-vpc-mtu /usr/local/sbin/k3s-agent-prestart
 

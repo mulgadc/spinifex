@@ -1,0 +1,80 @@
+#!/bin/bash
+set -euo pipefail
+
+# eks-server postinst — sets the exec bits ExtraTrees= could not, enables the
+# role-agnostic units (the role selector + the etcd-snapshot timers), and
+# asserts the cloud-init IMDS datasource pin actually took effect.
+
+# 0644 in git, and ExtraTrees= preserves source mode: without this every unit
+# that runs one of these helpers dies with EACCES on a booted guest and
+# nowhere earlier.
+chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-prestart \
+    /usr/local/sbin/k3s-first-boot /usr/local/sbin/konnectivity-server-prestart \
+    /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync \
+    /usr/local/sbin/mulga-eks-k3s-recovery /usr/local/sbin/mulga-eks-etcd-snapshot
+
+# Built on the host via stage_profile_binaries() and delivered through
+# staging/, same reasoning as eks-agent's ecr-credential-provider check: a
+# build that silently produced nothing would otherwise ship an image whose
+# control plane cannot start, and it would fail only once someone tried.
+for bin in eks-token-webhook eks-gateway-publish eks-gateway-fetch \
+    eks-webhook-cert eks-konnectivity-cert konnectivity-server; do
+    if [[ ! -x "/usr/local/bin/${bin}" ]]; then
+        echo "ERROR: ${bin} missing or not executable — staging tree was not populated" >&2
+        exit 1
+    fi
+done
+
+# Which of this profile's units start at boot is declared in the preset file
+# shipped alongside these units, not here. mkosi runs preset-all after every
+# postinst, resetting each unit to policy, so a `systemctl enable` at this point
+# is overwritten before the image is finished — and with no policy file at all
+# the fallthrough is "enable", which would boot a control plane and a worker on
+# the same node.
+#
+# eks-node-role picks server vs server-join vs agent at first boot and enables
+# the rest of this profile's units itself (rc-update/rc-service calls in the
+# still-Alpine-shared helper — a known gap until the init-command abstraction
+# lands; the units exist so that work has something to enable). The
+# etcd-snapshot timers are the exception: like crond before them, they run
+# unconditionally and the script self-guards on the agent role.
+
+# C1: the cloud-init drop-in ships as 99-spinifex-ec2-imds.cfg (not the
+# legacy 90- prefix) because cloud-init-base's own 90_dpkg.cfg also declares
+# datasource_list, read_conf_d() sorts the conf.d directory in REVERSE, and
+# mergemanydict() is no_replace (first source wins) — so a 90-prefixed file
+# loses to 90_dpkg.cfg (ASCII '_' 0x5F sorts above '-' 0x2D) and the pin is
+# silently discarded. Checking that the file merely exists at some path
+# proves nothing: it existed at 90- too, and did nothing there.
+#
+# Assert on the *merged* result instead, using cloud-init's own
+# read_conf_with_confd() — the exact function cloud-init itself calls at boot
+# to combine /etc/cloud/cloud.cfg with every *.cfg in cloud.cfg.d — rather
+# than reimplementing the reverse-sort/no-replace merge rules by hand and
+# risking the two drifting apart on a future cloud-init upgrade.
+command -v python3 >/dev/null || {
+    echo "ERROR: python3 missing — cannot verify the merged cloud-init datasource_list" >&2
+    exit 1
+}
+python3 - <<'PY'
+import sys
+
+try:
+    from cloudinit import util
+except ImportError as e:
+    sys.exit(f"ERROR: cloudinit python module unavailable ({e}) — cloud-init is expected to be installed by now")
+
+cfg = util.read_conf_with_confd("/etc/cloud/cloud.cfg")
+got = cfg.get("datasource_list")
+want = ["Ec2", "None"]
+if got != want:
+    sys.exit(
+        "ERROR: merged cloud-init datasource_list is "
+        f"{got!r}, expected {want!r} — the 99-spinifex-ec2-imds.cfg pin is "
+        "being shadowed by another cloud.cfg.d drop-in (check sort order: "
+        "read_conf_d() applies the directory in REVERSE, first source wins)"
+    )
+print(f"[eks-server] cloud-init datasource_list assertion passed: {got!r}")
+PY
+
+echo "[eks-server] postinst complete: eks-node-role enabled, etcd-snapshot timers enabled, datasource pin verified"

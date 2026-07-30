@@ -1,0 +1,23 @@
+[Unit]
+Description=Add the cloud-init default user to render/video groups (AMD GPU device access)
+# cloud-config.service is cloud-init's "config" stage, and users_groups (the
+# module that creates the default user and its base groups) runs in the
+# earlier "init" stage, so by the time cloud-config.service has finished the
+# user this appends to is guaranteed to already exist. This mirrors the
+# ordering cloud-final.service itself uses against cloud-config.service.
+#
+# Deliberately a systemd unit, not a cloud-init runcmd: the docker profile's
+# own cloud.cfg.d fragment already defines a top-level runcmd key, and
+# cloud-init's default config merge does not append two fragments' runcmd
+# lists — one wins the key outright and the other is silently dropped. A
+# systemd unit has no such collision; multiple units simply both run.
+After=cloud-config.service
+Wants=cloud-config.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'usermod -aG render,video $(id -un 1000) || true'
+
+[Install]
+WantedBy=multi-user.target

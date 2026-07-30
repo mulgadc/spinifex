@@ -5,10 +5,11 @@ set -eu
 #
 # The same image boots either as a K3s control-plane server or a worker agent;
 # the role is chosen per-instance at first boot from SPINIFEX_K3S_ROLE in the
-# cloud-init env file. This script enables + starts the matching OpenRC services
-# (none are in the default runlevel at bake time), records the resolved role to
-# ROLE_FILE so later boots and the etcd-snapshot cron can branch without
-# re-parsing, then removes itself from the runlevel so it runs exactly once.
+# cloud-init env file. This script enables + starts the matching services
+# under whichever init the image ships (none are enabled at bake time),
+# records the resolved role to ROLE_FILE so later boots and the etcd-snapshot
+# cron can branch without re-parsing, then disables itself so it runs exactly
+# once.
 #
 #   server      → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap
 #                 publish), mulga-eks-state-report
@@ -28,6 +29,63 @@ LOGTAG="eks-node-role"
 
 log() { echo "[${LOGTAG}] $*"; }
 die() { log "ERROR: $*"; exit 1; }
+
+# This script is delivered unmodified to both the legacy Alpine/OpenRC image
+# and the mkosi Ubuntu/systemd image, so the enable/start/disable calls below
+# must dispatch on whichever init actually owns the box. EKS_NODE_INIT lets
+# the env knob win outright (same override idiom as the paths above, and the
+# only way to exercise both branches from one test run); detection then
+# prefers rc-update so an Alpine host with a stray systemctl shim still
+# resolves to openrc.
+INIT_SYSTEM="${EKS_NODE_INIT:-}"
+if [ -z "${INIT_SYSTEM}" ]; then
+    if command -v rc-update >/dev/null 2>&1; then
+        INIT_SYSTEM=openrc
+    elif command -v systemctl >/dev/null 2>&1; then
+        INIT_SYSTEM=systemd
+    else
+        die "no supported init system found (need rc-update or systemctl)"
+    fi
+fi
+
+# svc_enable/svc_start/svc_disable: thin wrappers so every call site below
+# reads the same regardless of init. k3s-first-boot.sh duplicates this same
+# dispatch rather than sourcing it from here — both are single-file
+# deliverables installed straight to /usr/local/sbin with no shared
+# library-path convention, and scripts/images/ is deleted at image-build
+# cutover, so a shared file would outlive its usefulness.
+svc_enable() {
+    case "${INIT_SYSTEM}" in
+        openrc) rc-update add "$1" default ;;
+        systemd) systemctl enable "$1.service" ;;
+    esac
+}
+
+# --no-block is load-bearing on systemd, not a tuning knob. This unit declares
+# Before=k3s.service, and mulga-eks-k3s-recovery declares After=eks-node-role,
+# so a blocking `systemctl start` deadlocks: systemd will not run the queued job
+# until this unit finishes, and this unit cannot finish until the job it is
+# waiting on runs. Type=oneshot defaults TimeoutStartSec=infinity, so nothing
+# ever breaks the tie and the node wedges mid-boot with the role chosen but no
+# control plane. Enqueue instead and let systemd sequence the units by the
+# After=/Before= they already declare between themselves.
+#
+# OpenRC has no such constraint — rc-service runs the script directly rather
+# than asking a supervisor to schedule it — so that branch still blocks and
+# still surfaces a start failure via set -e.
+svc_start() {
+    case "${INIT_SYSTEM}" in
+        openrc) rc-service "$1" start ;;
+        systemd) systemctl start --no-block "$1.service" ;;
+    esac
+}
+
+svc_disable() {
+    case "${INIT_SYSTEM}" in
+        openrc) rc-update del "$1" default 2>/dev/null || true ;;
+        systemd) systemctl disable "$1.service" 2>/dev/null || true ;;
+    esac
+}
 
 # Already resolved on a prior boot — the role services are in the runlevel and
 # this service should have been pulled, but guard anyway so a stray re-run is a
@@ -64,55 +122,55 @@ printf '%s\n' "${ROLE}" > "${ROLE_FILE}"
 case "${ROLE}" in
     server)
         log "configuring server role"
-        rc-update add eks-token-webhook default
+        svc_enable eks-token-webhook
         # Pre-k3s etcd recovery: enabled for later boots and started inline
         # now too, so a restore-snapshot DR seed's directive applies before
         # k3s starts on this first boot. A plain create has no directive, so it's a no-op.
-        rc-update add mulga-eks-k3s-recovery default
-        rc-update add k3s default
+        svc_enable mulga-eks-k3s-recovery
+        svc_enable k3s
         # konnectivity-server fronts apiserver egress; every server replica runs
         # one so the agent's per-replica tunnel always lands a live server.
-        rc-update add konnectivity-server default
-        rc-update add k3s-first-boot default
-        rc-update add mulga-eks-state-report default
+        svc_enable konnectivity-server
+        svc_enable k3s-first-boot
+        svc_enable mulga-eks-state-report
         # Managed-addon delivery runs only on the primary server: it renders
         # staged addon bundles into the K3s auto-deploy dir, which a single
         # writer owns. HA multi-server addon delivery is tracked separately
         # (mulga-siv-231.7); server-join nodes do not run it.
-        rc-update add mulga-eks-addon-sync default
-        rc-service eks-token-webhook start
-        rc-service mulga-eks-k3s-recovery start
-        rc-service k3s start
-        rc-service konnectivity-server start
-        rc-service k3s-first-boot start
-        rc-service mulga-eks-state-report start
-        rc-service mulga-eks-addon-sync start
+        svc_enable mulga-eks-addon-sync
+        svc_start eks-token-webhook
+        svc_start mulga-eks-k3s-recovery
+        svc_start k3s
+        svc_start konnectivity-server
+        svc_start k3s-first-boot
+        svc_start mulga-eks-state-report
+        svc_start mulga-eks-addon-sync
         ;;
     server-join)
         log "configuring server-join role"
-        rc-update add eks-token-webhook default
+        svc_enable eks-token-webhook
         # Pre-k3s etcd recovery (see server role): server-join members are the
         # wipe-rejoin followers of a cluster-reset, so they need it too, and for
         # the same first-boot reason must be started here, not deferred.
-        rc-update add mulga-eks-k3s-recovery default
-        rc-update add k3s default
-        rc-update add konnectivity-server default
-        rc-update add mulga-eks-state-report default
-        rc-service eks-token-webhook start
-        rc-service mulga-eks-k3s-recovery start
-        rc-service k3s start
-        rc-service konnectivity-server start
-        rc-service mulga-eks-state-report start
+        svc_enable mulga-eks-k3s-recovery
+        svc_enable k3s
+        svc_enable konnectivity-server
+        svc_enable mulga-eks-state-report
+        svc_start eks-token-webhook
+        svc_start mulga-eks-k3s-recovery
+        svc_start k3s
+        svc_start konnectivity-server
+        svc_start mulga-eks-state-report
         ;;
     agent)
         log "configuring agent role"
-        rc-update add k3s-agent default
-        rc-service k3s-agent start
+        svc_enable k3s-agent
+        svc_start k3s-agent
         ;;
     *)
         die "SPINIFEX_K3S_ROLE missing or invalid: '${ROLE}'"
         ;;
 esac
 
-rc-update del eks-node-role default 2>/dev/null || true
+svc_disable eks-node-role
 log "role '${ROLE}' configured"

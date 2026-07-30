@@ -7,6 +7,11 @@ Before=k3s-agent.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# A silent MTU regression here reappears as image pulls blackholing 30 minutes
+# into a node's life, with no node-side symptom until then. The console (serial,
+# captured per-VM) is the only place an operator sees the assertion fail.
+StandardOutput=journal+console
+StandardError=journal+console
 ExecStart=/usr/local/sbin/mulga-vpc-mtu
 
 [Install]

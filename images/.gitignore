@@ -1,0 +1,9 @@
+# Build artefacts: mkosi writes disk images here (hundreds of MB).
+# The glob covers ad-hoc output dirs (MKOSI_OUTPUT_DIR) as well as the default,
+# so a scratch build cannot leave multi-GB images stageable.
+output/
+output-*/
+
+# Go binaries compiled on the host by mkosi-build.sh and picked up by the
+# profiles via ExtraTrees=. Build outputs, never sources.
+staging/

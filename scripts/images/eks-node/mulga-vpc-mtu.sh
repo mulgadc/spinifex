@@ -29,9 +29,18 @@
 # eth0 is always the primary data ENI (cloud-init set-name; mgmt0, when present,
 # is a separate NIC and is left at its default). The default-route interface is
 # pinned too in case it differs.
+#
+# On the systemd (mkosi) image, netplan renders UseMTU=true (it does not inherit
+# networkd's own false default), so a lease renewal re-inflates the link at
+# T1 — the pin above only wins the boot race by ordering. usemtu_off() removes
+# that exposure. Shared verbatim with the Alpine/dhcpcd image, where it is a
+# no-op: no systemd-networkd there.
 set -u
 
 MTU="${MULGA_VPC_NIC_MTU:-1320}"
+NETSYSFS="${MULGA_NET_SYSFS:-/sys/class/net}"
+NETPLAN_DIR="${MULGA_NETPLAN_DIR:-/run/systemd/network}"
+FAILED=0
 
 pin() {
     iface="$1"
@@ -76,6 +85,73 @@ restamp() {
     done
 }
 
+# Force UseMTU=false on every netplan-rendered unit, so a renewal can never
+# re-inflate the link. The rendered filename embeds the interface name and is
+# unpredictable at build time, so this enumerates /run at boot instead.
+#
+# [DHCPv4] is the section systemd documents for UseMTU=; the netplan render
+# itself still uses the legacy [DHCP] alias, but a drop-in written here should
+# target the current name. No /run/systemd/network means no systemd-networkd.
+usemtu_off() {
+    [ -d "$NETPLAN_DIR" ] || return 0
+    changed=0
+    for unit in "$NETPLAN_DIR"/*.network; do
+        [ -e "$unit" ] || continue
+        dropdir="${unit}.d"
+        if ! mkdir -p "$dropdir"; then
+            echo "[mulga-vpc-mtu] WARNING: failed to create $dropdir" >&2
+            continue
+        fi
+        conf="$dropdir/10-mulga-usemtu.conf"
+        # [DHCPv4] is current; [DHCP] is the legacy alias netplan still renders.
+        # Whichever the running systemd parses, the other is inert, so stating
+        # both costs nothing and removes a silent no-op if they ever diverge.
+        if printf '[DHCPv4]\nUseMTU=false\n\n[DHCP]\nUseMTU=false\n' > "$conf"; then
+            echo "[mulga-vpc-mtu] forced UseMTU=false for $unit via $conf"
+            changed=1
+        else
+            echo "[mulga-vpc-mtu] WARNING: failed to write $conf" >&2
+        fi
+    done
+    [ "$changed" -eq 1 ] || return 0
+    if networkctl reload; then
+        echo "[mulga-vpc-mtu] reloaded networkd to apply UseMTU=false"
+    else
+        echo "[mulga-vpc-mtu] WARNING: networkctl reload failed" >&2
+    fi
+}
+
+# Both failure modes here are silent otherwise: a link that drifted back up, or
+# a route the restamp pass missed. Route parsing avoids a `| while` pipeline so
+# a failure recorded in FAILED survives outside the loop's subshell.
+assert_pinned() {
+    iface="$1"
+    [ -n "$iface" ] || return 0
+    [ -d "$NETSYSFS/$iface" ] || return 0
+    cur=$(cat "$NETSYSFS/$iface/mtu" 2>/dev/null)
+    if [ "$cur" != "$MTU" ]; then
+        echo "[mulga-vpc-mtu] ERROR: $iface link MTU is ${cur:-unknown}, expected $MTU" >&2
+        FAILED=1
+    fi
+    routes=$(ip -4 route show dev "$iface" 2>/dev/null)
+    [ -n "$routes" ] || return 0
+    oldifs=$IFS
+    IFS='
+'
+    for line in $routes; do
+        case "$line" in
+            *" mtu "*) ;;
+            *) continue ;;
+        esac
+        rmtu=$(echo "$line" | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
+        if [ -n "$rmtu" ] && [ "$rmtu" != "$MTU" ]; then
+            echo "[mulga-vpc-mtu] ERROR: $iface route carries conflicting mtu $rmtu (expected $MTU): $line" >&2
+            FAILED=1
+        fi
+    done
+    IFS="$oldifs"
+}
+
 pin eth0
 
 route_iface=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
@@ -86,5 +162,17 @@ route_iface=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
 # (an already-running dhcpcd, or an image built before the fix).
 restamp eth0
 [ "$route_iface" = "eth0" ] || restamp "$route_iface"
+
+# Runs after restamp: the drop-in stops future renewals from re-inflating the
+# link, restamp above already cleaned up anything a past renewal left behind.
+usemtu_off
+
+assert_pinned eth0
+[ "$route_iface" = "eth0" ] || assert_pinned "$route_iface"
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "[mulga-vpc-mtu] ERROR: MTU assertion failed, see above" >&2
+    exit 1
+fi
 
 exit 0

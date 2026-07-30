@@ -33,7 +33,7 @@ func TestNewModelPrefillsRolesByNICCount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newModel([]diskInfo{{Path: "/dev/sda"}}, nics(tt.count))
+			m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(tt.count))
 
 			if got := m.roles[0].nic; got != 0 {
 				t.Errorf("wan nic = %d, want 0", got)
@@ -106,7 +106,7 @@ func TestVisibleFields(t *testing.T) {
 
 // A non-wan role must be able to reach the folded state, and wan must not.
 func TestCycleNICFoldReachableOnlyOffWAN(t *testing.T) {
-	m := newModel([]diskInfo{{Path: "/dev/sda"}}, nics(2))
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(2))
 
 	// lan: 1 -> 0 -> folded -> wraps to the last NIC.
 	m.roles[1].nic = 1
@@ -195,7 +195,7 @@ func TestValidateRole(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newModel([]diskInfo{{Path: "/dev/sda"}}, nics(3))
+			m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(3))
 			m.roles[0] = newRoleForm(tt.plane, 0)
 			tt.mutate(&m.roles[0])
 
@@ -216,7 +216,7 @@ func TestValidateRole(t *testing.T) {
 // Continue must refuse a layout install.Config.Validate would reject, rather
 // than failing later during the install itself.
 func TestContinueBlocksOnSharedNICWithoutVLANs(t *testing.T) {
-	m := newModel([]diskInfo{{Path: "/dev/sda"}}, nics(2))
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(2))
 	m.screen = screenNetworkRoles
 	m.roleCursor = continueRow
 	m.roles[1].nic = 0 // lan onto the wan NIC, both untagged
@@ -241,7 +241,7 @@ func TestContinueBlocksOnSharedNICWithoutVLANs(t *testing.T) {
 }
 
 func TestAdvancedToggle(t *testing.T) {
-	m := newModel([]diskInfo{{Path: "/dev/sda"}}, nics(3))
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(3))
 	m.screen = screenNetworkRoles
 
 	next, _ := m.handleRolesKey("a")

@@ -83,8 +83,9 @@ func (r NetworkRole) Link() string {
 
 // Config holds all values collected by the installer UI.
 type Config struct {
-	// Disk is the block device path to install onto (e.g. /dev/sda).
-	Disk string
+	// Storage is the filesystem choice and the ordered set of disks it is
+	// built from. In ext4 mode it holds exactly one disk.
+	Storage DiskConfig
 
 	// WAN is always present and can never be folded — a node needs an uplink.
 	// The address lives on br-wan (a Linux bridge over the NIC), not on the

@@ -7,6 +7,10 @@ Wants=openvswitch-ipsec.service
 
 [Service]
 EnvironmentFile=-/etc/spinifex/telemetry.env
+# Written by the installer on a ZFS root. It raises SPINIFEX_RESERVED_MEM_GB by
+# the ARC ceiling, which the admission gate cannot see and would otherwise hand
+# out to instances.
+EnvironmentFile=-/etc/spinifex/host.env
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-daemon

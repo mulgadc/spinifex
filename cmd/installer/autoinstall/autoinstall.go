@@ -4,12 +4,14 @@
 package autoinstall
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
-	"sort"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -65,9 +67,9 @@ func buildConfig() (*install.Config, error) {
 		hostname = "spinifex-node"
 	}
 
-	disk, err := resolveDisk(os.Getenv("SPINIFEX_DISK"))
+	storage, err := resolveStorage()
 	if err != nil {
-		return nil, fmt.Errorf("disk: %w", err)
+		return nil, fmt.Errorf("storage: %w", err)
 	}
 
 	wanIface, err := resolveNIC(os.Getenv("SPINIFEX_WAN_IFACE"), "")
@@ -76,7 +78,7 @@ func buildConfig() (*install.Config, error) {
 	}
 
 	cfg := &install.Config{
-		Disk:         disk,
+		Storage:      storage,
 		Hostname:     hostname,
 		RootPassword: password,
 		// Optional on the headless path — empty means no --email passed to
@@ -144,7 +146,113 @@ func buildConfig() (*install.Config, error) {
 	return cfg, nil
 }
 
-// resolveDisk maps the spx_disk value from grub.cfg to a block device path.
+// resolveStorage builds the disk configuration from the kernel cmdline.
+//
+//	SPINIFEX_FS     ext4 (default) or one of the zfs-* topologies
+//	SPINIFEX_DISKS  explicit ordered member list, required for multi-disk pools
+//	SPINIFEX_DISK   single-disk selector, as before
+func resolveStorage() (install.DiskConfig, error) {
+	cfg := install.DiskConfig{FS: install.FSExt4}
+	if v := strings.TrimSpace(os.Getenv("SPINIFEX_FS")); v != "" {
+		fs, err := install.ParseFSType(v)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.FS = fs
+	}
+
+	var err error
+	switch list := strings.TrimSpace(os.Getenv("SPINIFEX_DISKS")); {
+	case list != "":
+		if cfg.Disks, err = disksByName(strings.Split(list, ",")); err != nil {
+			return cfg, err
+		}
+	case cfg.FS.MinDisks() > 1:
+		// No auto-selection for a multi-disk pool. Choosing which disks to
+		// erase is not a decision an unattended install gets to make, and the
+		// member order determines the RAID10 pairing.
+		return cfg, fmt.Errorf("%s needs at least %d disks — set SPINIFEX_DISKS to an explicit comma-separated list",
+			cfg.FS.Label(), cfg.FS.MinDisks())
+	default:
+		d, derr := resolveDisk(os.Getenv("SPINIFEX_DISK"))
+		if derr != nil {
+			return cfg, derr
+		}
+		cfg.Disks = []install.Disk{d}
+	}
+
+	if cfg.ZFS, err = parseZFSOpts(); err != nil {
+		return cfg, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	slog.Info("autoinstall: storage selected", "fs", cfg.FS, "disks", cfg.Paths())
+	return cfg, nil
+}
+
+// parseZFSOpts reads the advanced pool tunables. Every one is optional; unset
+// values are computed from the hardware at install time.
+func parseZFSOpts() (install.ZFSOpts, error) {
+	var o install.ZFSOpts
+	ints := []struct {
+		env string
+		dst *int
+	}{
+		{"SPINIFEX_ZFS_ASHIFT", &o.Ashift},
+		{"SPINIFEX_ZFS_COPIES", &o.Copies},
+		{"SPINIFEX_ZFS_ARC_MAX_MIB", &o.ARCMaxMiB},
+	}
+	for _, f := range ints {
+		v := strings.TrimSpace(os.Getenv(f.env))
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return o, fmt.Errorf("%s: %w", f.env, err)
+		}
+		*f.dst = n
+	}
+	o.Compress = strings.TrimSpace(os.Getenv("SPINIFEX_ZFS_COMPRESS"))
+	o.Checksum = strings.TrimSpace(os.Getenv("SPINIFEX_ZFS_CHECKSUM"))
+	return o, nil
+}
+
+// disksByName resolves an explicit member list. Names may be kernel names
+// ("sdb"), device paths or by-id paths; the order given is preserved because
+// RAID10 pairs members in it.
+func disksByName(names []string) ([]install.Disk, error) {
+	available, err := install.ListDisks()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]install.Disk, 0, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		// A by-id path or a symlink resolves to the kernel device the scan
+		// reported, so both spellings name the same disk.
+		resolved := name
+		if !strings.HasPrefix(resolved, "/dev/") {
+			resolved = "/dev/" + resolved
+		}
+		if target, err := filepath.EvalSymlinks(resolved); err == nil {
+			resolved = target
+		}
+
+		idx := slices.IndexFunc(available, func(d install.Disk) bool { return d.Path == resolved })
+		if idx < 0 {
+			return nil, fmt.Errorf("%q is not an available disk — found:\n%s", name, diskList(available))
+		}
+		out = append(out, available[idx])
+	}
+	return out, nil
+}
+
+// resolveDisk maps the SPINIFEX_DISK value from grub.cfg to a disk.
 //
 // Supported values:
 //
@@ -153,139 +261,76 @@ func buildConfig() (*install.Config, error) {
 //	smallest        — smallest non-removable disk (typical OS-on-SSD pattern)
 //	nvme            — the only NVMe disk; fail if multiple found
 //	/dev/sda (etc.) — exact device path; fail if not present
-func resolveDisk(target string) (string, error) {
-	switch strings.ToLower(target) {
+func resolveDisk(target string) (install.Disk, error) {
+	disks, err := candidateDisks()
+	if err != nil {
+		return install.Disk{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(target)) {
 	case "", "auto":
-		return singleDisk()
-	case "largest":
-		return diskBySize(true)
-	case "smallest":
-		return diskBySize(false)
-	case "nvme":
-		return nvmeDisk()
-	default:
-		if _, err := os.Stat(target); err != nil {
-			return "", fmt.Errorf("%q not found", target)
+		if len(disks) != 1 {
+			return install.Disk{}, fmt.Errorf(
+				"expected exactly one disk, found %d — set SPINIFEX_DISK to one of:\n%s\n"+
+					"  largest   (largest disk)\n"+
+					"  smallest  (smallest disk)\n"+
+					"  nvme      (NVMe only)\n"+
+					"  /dev/sdX  (exact path)",
+				len(disks), diskList(disks))
 		}
-		return target, nil
+		return disks[0], nil
+	case "largest":
+		return pickBySize(disks, true)
+	case "smallest":
+		return pickBySize(disks, false)
+	case "nvme":
+		nvmes := slices.DeleteFunc(slices.Clone(disks), func(d install.Disk) bool {
+			return !strings.HasPrefix(filepath.Base(d.Path), "nvme")
+		})
+		if len(nvmes) != 1 {
+			return install.Disk{}, fmt.Errorf("expected exactly one NVMe disk, found %d:\n%s",
+				len(nvmes), diskList(nvmes))
+		}
+		return nvmes[0], nil
+	default:
+		found, err := disksByName([]string{target})
+		if err != nil {
+			return install.Disk{}, err
+		}
+		return found[0], nil
 	}
 }
 
-type diskCandidate struct {
-	dev   string
-	bytes int64
-}
-
-// nonRemovableDisks returns all non-removable, non-virtual block devices.
-func nonRemovableDisks() ([]diskCandidate, error) {
-	entries, err := os.ReadDir("/sys/block")
+// candidateDisks lists the disks an unattended install may erase: fixed, and
+// not the installer's own media.
+func candidateDisks() ([]install.Disk, error) {
+	all, err := install.ListDisks()
 	if err != nil {
 		return nil, err
 	}
-	var out []diskCandidate
-	for _, e := range entries {
-		dev := e.Name()
-		switch {
-		case strings.HasPrefix(dev, "loop"),
-			strings.HasPrefix(dev, "ram"),
-			strings.HasPrefix(dev, "dm-"),
-			strings.HasPrefix(dev, "sr"):
-			continue
-		}
-		removable, _ := os.ReadFile("/sys/block/" + dev + "/removable")
-		if strings.TrimSpace(string(removable)) == "1" {
-			continue
-		}
-		sizeRaw, _ := os.ReadFile("/sys/block/" + dev + "/size")
-		sectors, parseErr := strconv.ParseInt(strings.TrimSpace(string(sizeRaw)), 10, 64)
-		if parseErr != nil || sectors == 0 {
-			continue
-		}
-		out = append(out, diskCandidate{dev: dev, bytes: sectors * 512})
-	}
-	return out, nil
+	return slices.DeleteFunc(all, func(d install.Disk) bool {
+		return d.Removable || d.LiveMedia
+	}), nil
 }
 
-// diskList returns a human-readable list of candidates for error messages.
-func diskList(disks []diskCandidate) string {
+func pickBySize(disks []install.Disk, largest bool) (install.Disk, error) {
+	if len(disks) == 0 {
+		return install.Disk{}, fmt.Errorf("no non-removable disks found")
+	}
+	sorted := slices.Clone(disks)
+	slices.SortFunc(sorted, func(a, b install.Disk) int { return cmp.Compare(a.Bytes, b.Bytes) })
+	if largest {
+		return sorted[len(sorted)-1], nil
+	}
+	return sorted[0], nil
+}
+
+// diskList renders candidates for an error message.
+func diskList(disks []install.Disk) string {
 	lines := make([]string, len(disks))
 	for i, d := range disks {
-		lines[i] = fmt.Sprintf("  /dev/%s (%dG)", d.dev, d.bytes>>30)
+		lines[i] = fmt.Sprintf("  %s (%s, %s)", d.Path, d.SizeHuman(), d.Content)
 	}
 	return strings.Join(lines, "\n")
-}
-
-// singleDisk selects the only non-removable disk, or fails listing all found.
-func singleDisk() (string, error) {
-	disks, err := nonRemovableDisks()
-	if err != nil {
-		return "", err
-	}
-	switch len(disks) {
-	case 0:
-		return "", fmt.Errorf("no non-removable disks found")
-	case 1:
-		slog.Info("autoinstall: single disk selected", "disk", disks[0].dev, "size_gb", disks[0].bytes>>30)
-		return "/dev/" + disks[0].dev, nil
-	default:
-		return "", fmt.Errorf(
-			"multiple disks found — set SPINIFEX_DISK to one of:\n%s\n"+
-				"  largest   (largest disk)\n"+
-				"  smallest  (smallest disk)\n"+
-				"  nvme      (NVMe only)\n"+
-				"  /dev/sdX  (exact path)",
-			diskList(disks),
-		)
-	}
-}
-
-// diskBySize selects the largest (largest=true) or smallest non-removable disk.
-func diskBySize(largest bool) (string, error) {
-	disks, err := nonRemovableDisks()
-	if err != nil {
-		return "", err
-	}
-	if len(disks) == 0 {
-		return "", fmt.Errorf("no non-removable disks found")
-	}
-	sort.Slice(disks, func(i, j int) bool {
-		if largest {
-			return disks[i].bytes > disks[j].bytes
-		}
-		return disks[i].bytes < disks[j].bytes
-	})
-	label := "smallest"
-	if largest {
-		label = "largest"
-	}
-	slog.Info("autoinstall: disk selected by size", "mode", label, "disk", disks[0].dev, "size_gb", disks[0].bytes>>30)
-	return "/dev/" + disks[0].dev, nil
-}
-
-// nvmeDisk selects the only NVMe disk, or fails listing all NVMe disks found.
-func nvmeDisk() (string, error) {
-	disks, err := nonRemovableDisks()
-	if err != nil {
-		return "", err
-	}
-	var nvmes []diskCandidate
-	for _, d := range disks {
-		if strings.HasPrefix(d.dev, "nvme") {
-			nvmes = append(nvmes, d)
-		}
-	}
-	switch len(nvmes) {
-	case 0:
-		return "", fmt.Errorf("no NVMe disks found")
-	case 1:
-		slog.Info("autoinstall: NVMe disk selected", "disk", nvmes[0].dev, "size_gb", nvmes[0].bytes>>30)
-		return "/dev/" + nvmes[0].dev, nil
-	default:
-		return "", fmt.Errorf(
-			"multiple NVMe disks found — set SPINIFEX_DISK to one of:\n%s",
-			diskList(nvmes),
-		)
-	}
 }
 
 // virtualNICPrefixes lists interface name prefixes that identify non-physical

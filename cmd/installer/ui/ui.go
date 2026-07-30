@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -24,6 +26,7 @@ type screen int
 const (
 	screenWelcome screen = iota
 	screenDisk
+	screenZFSOptions
 	screenDiskConfirm
 	screenNetworkRoles
 	screenNetworkRole
@@ -40,10 +43,18 @@ type model struct {
 	width  int
 	height int
 
-	// Disk selection
-	disks      []diskInfo
-	diskCursor int
-	eraseInput textinput.Model
+	// Storage. The filesystem selector and the disk list share one screen, so
+	// storageCursor indexes rows: fsRow, then one row per disk.
+	//
+	// selected holds indexes into disks in the order they were picked, which is
+	// what pairs members for RAID10 — so it is a slice, not a set.
+	disks         []install.Disk
+	storageCursor int
+	selected      []int
+	fsCursor      int
+	zfsCursor     int
+	zfs           install.ZFSOpts
+	eraseInput    textinput.Model
 
 	// Detected interfaces, shared by every role screen.
 	nics []netprobe.NIC
@@ -79,7 +90,7 @@ type model struct {
 // Run launches the bubbletea program connected to ttyPath and returns the
 // completed Config when the user finishes the wizard.
 func Run(ttyPath string) (*install.Config, error) {
-	disks, err := availableDisks()
+	disks, err := install.ListDisks()
 	if err != nil {
 		return nil, fmt.Errorf("listing disks: %w", err)
 	}
@@ -127,7 +138,7 @@ func Run(ttyPath string) (*install.Config, error) {
 	return fm.result, nil
 }
 
-func newModel(disks []diskInfo, nics []netprobe.NIC) model {
+func newModel(disks []install.Disk, nics []netprobe.NIC) model {
 	eraseIn := textinput.New()
 	eraseIn.Placeholder = "yes"
 	eraseIn.CharLimit = 3
@@ -174,9 +185,20 @@ func newModel(disks []diskInfo, nics []netprobe.NIC) model {
 		newRoleForm(install.PlaneVPC, vpcNIC),
 	}
 
+	// The first non-live, non-removable disk is preselected so a single-disk
+	// machine needs no storage input at all.
+	var preselected []int
+	for i, d := range disks {
+		if !d.LiveMedia && !d.Removable {
+			preselected = []int{i}
+			break
+		}
+	}
+
 	return model{
 		screen:               screenWelcome,
 		disks:                disks,
+		selected:             preselected,
 		nics:                 nics,
 		eraseInput:           eraseIn,
 		roles:                roles,
@@ -272,20 +294,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case screenDisk:
-		switch key {
-		case "up", "k":
-			if m.diskCursor > 0 {
-				m.diskCursor--
-			}
-		case "down", "j":
-			if m.diskCursor < len(m.disks)-1 {
-				m.diskCursor++
-			}
-		case "enter":
-			m.screen = screenDiskConfirm
-			m.eraseInput.Focus()
-			m.eraseInput.SetValue("")
-		}
+		return m.handleDiskKey(key)
+
+	case screenZFSOptions:
+		return m.handleZFSOptionsKey(key)
 
 	case screenDiskConfirm:
 		switch key {
@@ -507,6 +519,161 @@ func (m model) setCredsFocus(i int) model {
 	return m
 }
 
+// ── Storage ───────────────────────────────────────────────────────────────────
+
+// fsType is the currently highlighted filesystem.
+func (m model) fsType() install.FSType { return install.AllFSTypes[m.fsCursor] }
+
+// storage assembles the disk configuration from the current selection.
+func (m model) storage() install.DiskConfig {
+	cfg := install.DiskConfig{FS: m.fsType(), ZFS: m.zfs}
+	for _, i := range m.selected {
+		if i < len(m.disks) {
+			cfg.Disks = append(cfg.Disks, m.disks[i])
+		}
+	}
+	return cfg
+}
+
+// fsRow is the filesystem selector, which sits above the disk list on the same
+// screen: the choice and the disks it constrains have to be visible together,
+// or the operator picks RAIDZ-1 and only then learns three disks are needed.
+const fsRow = 0
+
+// handleDiskKey drives the storage screen. Space toggles a disk and the order
+// they are picked in is kept, because that is what pairs mirrors under RAID10.
+func (m model) handleDiskKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		m.storageCursor = max(m.storageCursor-1, fsRow)
+	case "down", "j":
+		m.storageCursor = min(m.storageCursor+1, len(m.disks))
+	case "left", "h":
+		if m.storageCursor == fsRow {
+			m.fsCursor = wrap(m.fsCursor-1, len(install.AllFSTypes))
+			m.validationErr = ""
+		}
+	case "right", "l":
+		if m.storageCursor == fsRow {
+			m.fsCursor = wrap(m.fsCursor+1, len(install.AllFSTypes))
+			m.validationErr = ""
+		}
+	case " ", "x":
+		if m.storageCursor != fsRow {
+			m = m.toggleDisk(m.storageCursor - 1)
+		}
+	case "a":
+		if m.fsType().IsZFS() {
+			m.zfsCursor = 0
+			m.screen = screenZFSOptions
+		}
+	case "esc":
+		m.validationErr = ""
+		m.screen = screenWelcome
+	case "enter":
+		// Validated before the confirmation prompt so a bad selection is a
+		// message on this screen, not a failure part-way through the install.
+		if err := m.storage().Validate(); err != nil {
+			m.validationErr = err.Error()
+			return m, nil
+		}
+		m.validationErr = ""
+		m.screen = screenDiskConfirm
+		m.eraseInput.Focus()
+		m.eraseInput.SetValue("")
+	}
+	return m, nil
+}
+
+// toggleDisk adds or removes a disk from the selection. The slice is cloned
+// because the model is copied by value and would otherwise share its backing
+// array with the version bubbletea still holds.
+func (m model) toggleDisk(i int) model {
+	sel := slices.Clone(m.selected)
+	if at := slices.Index(sel, i); at >= 0 {
+		sel = slices.Delete(sel, at, at+1)
+	} else {
+		sel = append(sel, i)
+	}
+	m.selected = sel
+	m.validationErr = ""
+	return m
+}
+
+// zfsOption is one row on the advanced screen. Each holds an ordered choice
+// list whose first entry is the computed default, shown as "auto".
+type zfsOption struct {
+	label string
+	get   func(*install.ZFSOpts) *int
+	text  func(*install.ZFSOpts) *string
+	ints  []int
+	strs  []string
+	note  string
+}
+
+var zfsOptions = []zfsOption{
+	{label: "ashift", get: func(o *install.ZFSOpts) *int { return &o.Ashift },
+		ints: []int{0, 9, 12, 13}, note: "sector size exponent; cannot be changed after the pool is created"},
+	{label: "compression", text: func(o *install.ZFSOpts) *string { return &o.Compress },
+		strs: []string{"", "lz4", "zstd", "gzip", "off"}, note: "lz4 is faster than the disks it is feeding"},
+	{label: "checksum", text: func(o *install.ZFSOpts) *string { return &o.Checksum },
+		strs: []string{"", "on", "fletcher4", "sha256", "blake3"}, note: "on selects the pool's default algorithm"},
+	{label: "copies", get: func(o *install.ZFSOpts) *int { return &o.Copies },
+		ints: []int{0, 1, 2, 3}, note: "extra copies of every block, on top of any RAID redundancy"},
+	{label: "ARC max", get: func(o *install.ZFSOpts) *int { return &o.ARCMaxMiB },
+		ints: []int{0, 1024, 2048, 4096, 8192, 16384},
+		note: "memory the cache may hold; it is subtracted from what instances can be given"},
+}
+
+// value renders the current setting, or "auto" for the computed default.
+func (z zfsOption) value(o *install.ZFSOpts) string {
+	if z.get != nil {
+		n := *z.get(o)
+		if n == 0 {
+			return "auto"
+		}
+		if z.label == "ARC max" {
+			return fmt.Sprintf("%d MiB", n)
+		}
+		return strconv.Itoa(n)
+	}
+	if s := *z.text(o); s != "" {
+		return s
+	}
+	return "auto"
+}
+
+// cycle steps the option forwards or backwards through its choices.
+func (z zfsOption) cycle(o *install.ZFSOpts, delta int) {
+	if z.get != nil {
+		dst := z.get(o)
+		i := slices.Index(z.ints, *dst)
+		*dst = z.ints[wrap(i+delta, len(z.ints))]
+		return
+	}
+	dst := z.text(o)
+	i := slices.Index(z.strs, *dst)
+	*dst = z.strs[wrap(i+delta, len(z.strs))]
+}
+
+func wrap(i, n int) int { return ((i % n) + n) % n }
+
+func (m model) handleZFSOptionsKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		m.zfsCursor = max(m.zfsCursor-1, 0)
+	case "down", "j":
+		m.zfsCursor = min(m.zfsCursor+1, len(zfsOptions)-1)
+	case "left", "h":
+		zfsOptions[m.zfsCursor].cycle(&m.zfs, -1)
+	case "right", "l":
+		zfsOptions[m.zfsCursor].cycle(&m.zfs, 1)
+	case "enter", "esc":
+		m.screen = screenDisk
+	}
+	return m, nil
+}
+
 func (m model) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenDiskConfirm:
@@ -535,6 +702,8 @@ func (m model) View() string {
 		content = m.viewWelcome(w)
 	case screenDisk:
 		content = m.viewDisk(w)
+	case screenZFSOptions:
+		content = m.viewZFSOptions(w)
 	case screenDiskConfirm:
 		content = m.viewDiskConfirm(w)
 	case screenNetworkRoles:
@@ -579,32 +748,143 @@ func (m model) viewWelcome(w int) string {
 	)
 }
 
+// matchedDiskCount is the size of the largest group of usable disks within the
+// same-size tolerance, which is the number a redundant pool could be built from.
+func (m model) matchedDiskCount() int {
+	best := 0
+	for _, ref := range m.disks {
+		if ref.LiveMedia || ref.Removable {
+			continue
+		}
+		n := 0
+		for _, d := range m.disks {
+			if d.LiveMedia || d.Removable {
+				continue
+			}
+			if install.SizesWithinTolerance(ref, d) {
+				n++
+			}
+		}
+		best = max(best, n)
+	}
+	return best
+}
+
 func (m model) viewDisk(w int) string {
 	title := styleTitle.Render("Select Installation Disk")
-	subtitle := styleMuted.Render("All data on the selected disk will be permanently erased.")
+	subtitle := styleMuted.Render("All data on the selected disks will be permanently erased.")
 
-	var rows []string
+	fs := m.fsType()
+	req := "single disk"
+	if n := fs.MinDisks(); n > 1 {
+		req = fmt.Sprintf("%d+ disks, same size", n)
+	} else if fs.IsZFS() {
+		req = "1+ disks"
+	}
+	fsLine := fmt.Sprintf("  Filesystem   ‹ %-14s ›   %s", fs.Label(), req)
+	if m.storageCursor == fsRow {
+		fsLine = styleSelected.Render("> " + strings.TrimPrefix(fsLine, "  "))
+	} else {
+		fsLine = styleMuted.Render(fsLine)
+	}
+	rows := []string{fsLine, ""}
+
 	for i, d := range m.disks {
-		line := fmt.Sprintf("  %-20s  %-8s  %s", d.Path, d.Size, d.Model)
-		if i == m.diskCursor {
-			line = styleSelected.Render("> " + line[2:])
+		marker := "[ ]"
+		if at := slices.Index(m.selected, i); at >= 0 {
+			// Numbered, not ticked: the order is what pairs mirrors.
+			marker = fmt.Sprintf("[%d]", at+1)
+		}
+		note := d.Content
+		switch {
+		case d.LiveMedia:
+			note = "installer boot media"
+		case d.Removable:
+			note += ", removable"
+		}
+		line := fmt.Sprintf("  %s %-16s %-8s %-20s %s", marker, d.Path, d.SizeHuman(), truncate(d.Model, 20), note)
+		if m.storageCursor == i+1 {
+			line = styleSelected.Render("> " + strings.TrimPrefix(line, "  "))
 		} else {
 			line = styleMuted.Render(line)
 		}
 		rows = append(rows, line)
 	}
 
-	help := styleHelp.Render("↑/↓ to select • Enter to confirm")
+	rows = append(rows, "", m.geometryPreview())
+
+	// Only suggested, never applied: which disks may be erased is the operator's
+	// call, and a machine with matched spares is not necessarily offering them.
+	if n := m.matchedDiskCount(); n >= 2 && !fs.IsZFS() {
+		rows = append(rows, styleMuted.Render(fmt.Sprintf(
+			"  %d disks of matching size are present — a ZFS pool would survive a disk failure.", n)))
+	}
+	for _, warn := range m.storage().Warnings() {
+		rows = append(rows, styleWarning.Render("  "+warn))
+	}
+	if m.validationErr != "" {
+		rows = append(rows, styleError.Render("  "+m.validationErr))
+	}
+
+	keys := "↑/↓ to move • ←/→ filesystem • Space to select disk • Enter to continue"
+	if fs.IsZFS() {
+		keys = "↑/↓ to move • ←/→ filesystem • Space to select disk • A for ZFS options • Enter to continue"
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		append([]string{title, subtitle, ""}, append(rows, "", styleHelp.Render(keys))...)...)
+
+	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
+		styleBox.Width(min(w-4, 96)).Render(body),
+	)
+}
+
+// geometryPreview states what the current selection actually builds, so the
+// cost of the redundancy choice is visible before it is committed to.
+func (m model) geometryPreview() string {
+	cfg := m.storage()
+	if len(cfg.Disks) == 0 {
+		return styleMuted.Render("  No disks selected.")
+	}
+	// Until the topology can be built there is no capacity to quote, so state
+	// what is missing instead of a figure derived from too few members.
+	if !cfg.Buildable() {
+		return styleMuted.Render(fmt.Sprintf("  %s %s — %d selected.",
+			cfg.FS.Label(), cfg.Requirement(), len(cfg.Disks)))
+	}
+	line := fmt.Sprintf("  %s across %d disk(s) — %s usable",
+		cfg.FS.Label(), len(cfg.Disks), humanBytes(cfg.UsableBytes()))
+	if n := cfg.Tolerated(); n > 0 {
+		line += fmt.Sprintf(", survives %d disk failure(s)", n)
+	}
+	return styleLabel.Render(line)
+}
+
+func (m model) viewZFSOptions(w int) string {
+	title := styleTitle.Render("ZFS Options")
+	subtitle := styleMuted.Render("Defaults are computed from the selected disks and this machine's memory.")
+
+	var rows []string
+	for i, opt := range zfsOptions {
+		line := fmt.Sprintf("  %-14s %-12s", opt.label, opt.value(&m.zfs))
+		if i == m.zfsCursor {
+			rows = append(rows, styleSelected.Render("> "+strings.TrimPrefix(line, "  ")))
+			rows = append(rows, styleMuted.Render("    "+opt.note))
+			continue
+		}
+		rows = append(rows, styleMuted.Render(line))
+	}
+
+	help := styleHelp.Render("↑/↓ to move • ←/→ to change • Enter to go back")
 	body := lipgloss.JoinVertical(lipgloss.Left, append([]string{title, subtitle, ""}, append(rows, "", help)...)...)
 
 	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
-		styleBox.Width(min(w-4, 72)).Render(body),
+		styleBox.Width(min(w-4, 78)).Render(body),
 	)
 }
 
 func (m model) viewDiskConfirm(w int) string {
 	title := styleTitle.Render("Confirm Disk Erasure")
-	disk := styleLabel.Render(m.disks[m.diskCursor].Path)
+	disk := styleLabel.Render(strings.Join(m.storage().Paths(), ", "))
 	msg := fmt.Sprintf("All data on %s will be permanently erased.\nType 'yes' to confirm:", disk)
 
 	var lines []string
@@ -703,7 +983,10 @@ func (m model) viewConfirm(w int) string {
 		role = fmt.Sprintf("Join cluster at %s", cfg.JoinAddr)
 	}
 
-	summary := []struct{ k, v string }{{"Disk", cfg.Disk}}
+	summary := []struct{ k, v string }{
+		{"Filesystem", cfg.Storage.FS.Label()},
+		{"Disks", strings.Join(cfg.Storage.Paths(), ", ")},
+	}
 	// Folded roles are shown explicitly rather than omitted, so the operator
 	// sees which plane a collapsed role landed on before committing.
 	for _, p := range []install.Plane{install.PlaneWAN, install.PlaneLAN, install.PlaneVPC} {
@@ -748,7 +1031,7 @@ func (m model) viewConfirm(w int) string {
 			styleLabel.Render(""), styleLabel.Render(s.k), "", s.v))
 	}
 
-	warning := styleWarning.Render("This will erase " + cfg.Disk + " and begin installation.")
+	warning := styleWarning.Render("This will erase " + strings.Join(cfg.Storage.Paths(), ", ") + " and begin installation.")
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		title, "",
@@ -775,10 +1058,7 @@ func (m model) viewDone(w int) string {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (m model) buildConfig() *install.Config {
-	cfg := &install.Config{}
-	if len(m.disks) > m.diskCursor {
-		cfg.Disk = m.disks[m.diskCursor].Path
-	}
+	cfg := &install.Config{Storage: m.storage()}
 
 	cfg.WAN = m.roles[0].toRole(m.nics)
 	cfg.LAN = m.roles[1].toRole(m.nics)
@@ -812,59 +1092,26 @@ func parseDNS(raw string) []string {
 	return out
 }
 
-// diskInfo holds display info for a block device.
-type diskInfo struct {
-	Path  string
-	Size  string
-	Model string
-}
-
-func availableDisks() ([]diskInfo, error) {
-	entries, err := os.ReadDir("/sys/block")
-	if err != nil {
-		return nil, err
-	}
-	var disks []diskInfo
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") {
-			continue
-		}
-		d := diskInfo{Path: "/dev/" + name}
-		d.Size = readSysBlockFile(name, "size")
-		if d.Size != "" {
-			d.Size = formatSectors(d.Size)
-		}
-		d.Model = strings.TrimSpace(readSysBlockFile(name, "device/model"))
-		disks = append(disks, d)
-	}
-	return disks, nil
-}
-
-func readSysBlockFile(dev, file string) string {
-	data, err := os.ReadFile("/sys/block/" + dev + "/" + file)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
-func formatSectors(sectors string) string {
-	var n int64
-	if _, err := fmt.Sscan(sectors, &n); err != nil {
-		return ""
-	}
-	bytes := n * 512
+// humanBytes renders a capacity for the geometry preview.
+func humanBytes(b int64) string {
 	switch {
-	case bytes >= 1<<40:
-		return fmt.Sprintf("%.1fT", float64(bytes)/(1<<40))
-	case bytes >= 1<<30:
-		return fmt.Sprintf("%.1fG", float64(bytes)/(1<<30))
-	case bytes >= 1<<20:
-		return fmt.Sprintf("%.1fM", float64(bytes)/(1<<20))
+	case b >= 1<<40:
+		return fmt.Sprintf("%.1fT", float64(b)/(1<<40))
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(b)/(1<<20))
 	default:
-		return fmt.Sprintf("%dB", bytes)
+		return fmt.Sprintf("%dB", b)
 	}
+}
+
+// truncate shortens a field so a long drive model does not wrap the disk table.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // validSubnetMask accepts dotted-decimal only (255.255.255.0). Prefix length is

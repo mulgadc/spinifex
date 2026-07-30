@@ -25,36 +25,47 @@ const (
 	efiPart   = mountRoot + "/boot/efi"
 )
 
+// step is one named unit of work in the install sequence.
+type step struct {
+	name string
+	fn   func() error
+}
+
 // Run executes all installation steps in order. It is intentionally sequential
 // and explicit — each step is visible in logs so failures are easy to diagnose.
 func Run(cfg *Config) error {
+	// Re-checked here even though the UI and the headless path both validate:
+	// this is the last point before anything is erased, and it is the only one
+	// every caller must pass through.
+	if err := cfg.Storage.Validate(); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+
 	// The live environment may not have /sbin or /usr/sbin in PATH. Set it
 	// explicitly so exec.Command's LookPath finds system binaries like grub-install.
 	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
-	// Unmount unconditionally on exit so a failed step never leaves partitions
-	// mounted in the live environment, which would cause a retry to double-mount.
-	defer func() {
-		_ = run("umount", efiPart)
-		_ = run("umount", mountRoot)
-	}()
+	// Unmount unconditionally on exit so a failed step never leaves the target
+	// mounted in the live environment, which would make a retry double-mount or,
+	// on ZFS, fail with "pool is busy".
+	defer cleanupTarget(cfg.Storage)
 
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"partition disk", func() error { return partitionDisk(cfg.Disk) }},
-		{"format partitions", func() error { return formatPartitions(cfg.Disk) }},
-		{"mount partitions", func() error { return mountPartitions(cfg.Disk) }},
-		{"copy rootfs", copyRootfs},
-		{"create swap file", createSwapFile},
-		{"write fstab", func() error { return writeFstab(cfg.Disk) }},
-		{"install spinifex", func() error { return installSpinifex(cfg) }},
-		{"write network config", func() error { return writeNetworkConfig(cfg) }},
-		{"write firstboot service", func() error { return firstboot.Write(mountRoot, cfg.toFirstbootConfig()) }},
-		{"install bootloader", func() error { return installBootloader(cfg.Disk) }},
-		{"install CA cert", func() error { return installCACert(cfg) }},
+	steps := []step{{"partition disks", func() error { return partitionDisks(cfg.Storage) }}}
+	if cfg.Storage.FS.IsZFS() {
+		steps = append(steps, zfsRootSteps(cfg)...)
+	} else {
+		steps = append(steps, ext4RootSteps(cfg)...)
 	}
+	steps = append(steps,
+		step{"copy rootfs", func() error { return copyRootfs(cfg.Storage) }},
+		step{"create swap", func() error { return createSwap(cfg.Storage) }},
+		step{"write fstab", func() error { return writeFstab(cfg.Storage) }},
+		step{"install spinifex", func() error { return installSpinifex(cfg) }},
+		step{"write network config", func() error { return writeNetworkConfig(cfg) }},
+		step{"write firstboot service", func() error { return firstboot.Write(mountRoot, cfg.toFirstbootConfig()) }},
+		step{"install bootloader", func() error { return installBootloader(cfg.Storage) }},
+		step{"install CA cert", func() error { return installCACert(cfg) }},
+	)
 
 	for _, s := range steps {
 		slog.Info("installer", "step", s.name)
@@ -64,90 +75,83 @@ func Run(cfg *Config) error {
 	}
 
 	slog.Info("installation complete")
+	refreshBootToolNote(cfg.Storage)
 	fireInstallCallback()
 	promptRemoveUSB()
 	return reboot()
 }
 
-func partitionDisk(disk string) error {
-	// GPT table with three partitions:
-	//   p1: 1MiB BIOS Boot Partition — required for grub-install i386-pc on GPT
-	//   p2: 512MiB EFI System Partition
-	//   p3: remainder as root (ext4)
-	if err := run("parted", "--script", disk,
-		"mklabel", "gpt",
-		"mkpart", "bios_boot", "1MiB", "2MiB",
-		"set", "1", "bios_grub", "on",
-		"mkpart", "ESP", "fat32", "2MiB", "514MiB",
-		"set", "2", "esp", "on",
-		"mkpart", "root", "ext4", "514MiB", "100%",
-	); err != nil {
+// ext4RootSteps formats and mounts a single-disk ext4 root.
+func ext4RootSteps(cfg *Config) []step {
+	return []step{
+		{"format partitions", func() error { return formatPartitions(cfg.Storage) }},
+		{"mount partitions", func() error { return mountPartitions(cfg.Storage) }},
+	}
+}
+
+// zfsRootSteps builds the root pool. The ESPs are formatted here rather than
+// with the bootloader so that a failure to make a filesystem on one of them is
+// reported before the rootfs has been copied.
+func zfsRootSteps(cfg *Config) []step {
+	// Resolved once, before any step runs, so the values written to the pool,
+	// to modprobe.d and to the daemon's reserve are all the same numbers.
+	var opts ZFSOpts
+	return []step{
+		{"format ESPs", func() error { return formatESPs(cfg.Storage) }},
+		{"load zfs module", loadZFSModule},
+		{"create zfs pool", func() error {
+			opts = resolveZFSOpts(cfg.Storage)
+			slog.Info("zfs pool", "topology", cfg.Storage.FS, "disks", len(cfg.Storage.Disks),
+				"ashift", opts.Ashift, "compress", opts.Compress, "arc_max_mib", opts.ARCMaxMiB)
+			return createPool(cfg.Storage, opts)
+		}},
+		{"create zfs datasets", createDatasets},
+		{"configure zfs", func() error { return writeZFSSystemConfig(opts) }},
+	}
+}
+
+// cleanupTarget releases everything the install mounted, in the right order for
+// the filesystem in use.
+func cleanupTarget(cfg DiskConfig) {
+	unbindChrootMounts()
+	if cfg.FS.IsZFS() {
+		// Recursive: the layout is a dozen nested datasets, and leaving one
+		// mounted is enough to block the export.
+		_ = runQuiet("umount", "-R", mountRoot)
+		exportPool()
+		return
+	}
+	_ = runQuiet("umount", efiPart)
+	_ = runQuiet("umount", mountRoot)
+}
+
+func formatPartitions(cfg DiskConfig) error {
+	if err := formatESPs(cfg); err != nil {
 		return err
 	}
-	// Force the kernel to re-read the partition table and wait for udev to
-	// create the partition device nodes. Without this, mkfs.fat in the next
-	// step may race and fail with "No such file or directory" on /dev/sda2 —
-	// the kernel has accepted the new layout but /dev hasn't been populated
-	// yet. Trixie's udev seems slower at this than Bookworm's was.
-	return waitForPartitions(disk)
+	return run("mkfs.ext4", "-F", cfg.Primary().PartitionPath(rootPartNum))
 }
 
-// waitForPartitions ensures the EFI and root partition device nodes exist
-// after parted creates them. It runs partprobe (kernel re-read) and
-// udevadm settle (wait for queued events), then polls /dev for the files.
-func waitForPartitions(disk string) error {
-	// Best-effort: partprobe failure isn't fatal — udev may still pick up
-	// the change from the BLKRRPART ioctl that parted itself issued.
-	if err := run("partprobe", disk); err != nil {
-		slog.Warn("partprobe failed, continuing", "disk", disk, "err", err)
-	}
-	if err := run("udevadm", "settle", "--timeout=10"); err != nil {
-		slog.Warn("udevadm settle failed, continuing", "err", err)
-	}
-	efi, root := partitionPaths(disk)
-	deadline := time.Now().Add(15 * time.Second)
-	for _, part := range []string{efi, root} {
-		for {
-			if _, err := os.Stat(part); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("partition device %s did not appear within timeout — kernel/udev did not pick up new partition table", part)
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
-	return nil
-}
-
-func formatPartitions(disk string) error {
-	efi, root := partitionPaths(disk)
-	if err := run("mkfs.fat", "-F32", efi); err != nil {
-		return err
-	}
-	return run("mkfs.ext4", "-F", root)
-}
-
-func mountPartitions(disk string) error {
-	_, root := partitionPaths(disk)
+func mountPartitions(cfg DiskConfig) error {
+	d := cfg.Primary()
 	if err := os.MkdirAll(mountRoot, 0o755); err != nil {
 		return err
 	}
-	if err := run("mount", root, mountRoot); err != nil {
+	if err := run("mount", d.PartitionPath(rootPartNum), mountRoot); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(efiPart, 0o755); err != nil {
 		return err
 	}
-	efi, _ := partitionPaths(disk)
-	return run("mount", efi, efiPart)
+	return run("mount", d.PartitionPath(espPartNum), efiPart)
 }
 
 // copyRootfs copies the live squashfs environment onto the target disk using
 // rsync. This is the air-gapped alternative to debootstrap — all packages are
 // already embedded in the ISO so no network access is required.
-func copyRootfs() error {
-	if err := run("rsync", "-aHAX", "--delete", "--info=progress2",
+func copyRootfs(cfg DiskConfig) error {
+	args := []string{
+		"-aHAX", "--delete", "--info=progress2",
 		"--exclude=/proc",
 		"--exclude=/sys",
 		"--exclude=/dev",
@@ -163,8 +167,10 @@ func copyRootfs() error {
 		"--exclude=/etc/ssh/ssh_host_*",
 		"--exclude=/lost+found",
 		"--exclude=/boot/efi",
-		"/", mountRoot+"/",
-	); err != nil {
+	}
+	args = append(args, datasetProtectFilters(cfg)...)
+	args = append(args, "/", mountRoot+"/")
+	if err := run("rsync", args...); err != nil {
 		return err
 	}
 
@@ -605,7 +611,59 @@ func writeWPASupplicant(nicIface, ssid, psk string) error {
 	return os.Symlink("/lib/systemd/system/wpa_supplicant@.service", link)
 }
 
-func installBootloader(disk string) error {
+func installBootloader(cfg DiskConfig) error {
+	// Branding assets have to be in place before either path regenerates
+	// grub.cfg — the ZFS path copies them out of /boot onto each ESP.
+	copySplashImage(mountRoot)
+	copyGrubFont(mountRoot)
+
+	if cfg.FS.IsZFS() {
+		// The initramfs must be able to import the pool before the ESPs are
+		// synced, since refresh copies whatever initrd exists at that moment.
+		if err := buildZFSInitramfs(); err != nil {
+			return err
+		}
+		return installBootToolZFS(cfg)
+	}
+	return installBootloaderExt4(cfg.Primary())
+}
+
+// buildZFSInitramfs regenerates the target's initramfs so it carries the ZFS
+// module, the pool cache and the hostid. The image copied from the live ISO was
+// built for a machine with an ext4 root and cannot import a pool.
+func buildZFSInitramfs() error {
+	// ZFS refuses to import a pool last touched by a different host without
+	// -f, and the hostid the initramfs sees must match the one recorded on the
+	// pool — otherwise every boot stops in the initramfs shell.
+	if err := run("cp", "-f", "/etc/hostid", filepath.Join(mountRoot, "etc/hostid")); err != nil {
+		slog.Warn("could not copy /etc/hostid, generating one in the target", "err", err)
+		if err := run("zgenhostid", "-f", "-o", filepath.Join(mountRoot, "etc/hostid")); err != nil {
+			return fmt.Errorf("zgenhostid: %w", err)
+		}
+	}
+
+	// The pool was created with cachefile=none so the live environment would
+	// not claim it. The installed system needs the cache to import at boot
+	// without scanning every block device.
+	cacheDir := filepath.Join(mountRoot, "etc/zfs")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	if err := run("zpool", "set", "cachefile="+filepath.Join(cacheDir, "zpool.cache"), ZFSPoolName); err != nil {
+		return fmt.Errorf("set zpool cachefile: %w", err)
+	}
+
+	if err := bindChrootMounts(); err != nil {
+		return err
+	}
+	defer unbindChrootMounts()
+	if err := run("chroot", mountRoot, "update-initramfs", "-u", "-k", "all"); err != nil {
+		return fmt.Errorf("update-initramfs: %w", err)
+	}
+	return nil
+}
+
+func installBootloaderExt4(disk Disk) error {
 	// grub-install runs in the live environment (not chroot) using the
 	// grub-pc-bin and grub-efi-amd64-bin packages already present on the ISO.
 	// --boot-directory points at the installed system's /boot.
@@ -627,7 +685,7 @@ func installBootloader(disk string) error {
 		"--target=i386-pc",
 		"--boot-directory="+bootDir,
 		"--recheck",
-		disk,
+		disk.Path,
 	); biosErr != nil {
 		if efiErr != nil {
 			// Both targets failed — the system will not boot.
@@ -635,56 +693,9 @@ func installBootloader(disk string) error {
 		}
 		return biosErr
 	}
-	// Copy splash image and unicode font from the ISO (mounted at /cdrom) so the
-	// installed GRUB shows the same branded background as the installer GRUB.
-	// The font must be at /boot/grub/fonts/unicode.pf2 so update-grub finds it
-	// there and emits the same loadfont path as the ISO's grub.cfg — GRUB 2.12
-	// (trixie) needs the font in the boot partition, not just /usr/share/grub/.
-	copySplashImage(mountRoot)
-	copyGrubFont(mountRoot)
 
-	// Both consoles listed: tty0 stays primary for local install, ttyS0 mirrors
-	// kernel output to serial so headless installs (CI, racks with serial-only
-	// IPMI, remote-dev SSH-to-QEMU) see boot messages. The last `console=` on
-	// the cmdline becomes the system console, so ttyS0 wins on serial-only
-	// hardware while tty0 still receives output for local display.
-	grubDefault := `GRUB_DEFAULT=0
-GRUB_TIMEOUT=5
-GRUB_DISTRIBUTOR=Spinifex
-GRUB_CMDLINE_LINUX_DEFAULT=""
-GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 systemd.show_status=1"
-`
-
-	if err := os.WriteFile(filepath.Join(mountRoot, "etc/default/grub"), []byte(grubDefault), 0o644); err != nil {
-		return fmt.Errorf("write /etc/default/grub: %w", err)
-	}
-
-	// Mirror the ISO grub.cfg graphical block exactly so the installed GRUB menu
-	// looks identical to the installer menu. gfxterm MUST be activated before
-	// serial is appended — background_image silently does nothing in text mode.
-	// Using exec tail so update-grub includes everything from line 3 as raw GRUB config.
-	grubTheme := `#!/bin/sh
-exec tail -n +3 $0
-insmod all_video
-insmod font
-if loadfont /boot/grub/fonts/unicode.pf2; then
-  set gfxmode=auto
-  insmod gfxterm
-  terminal_output gfxterm
-fi
-insmod serial
-if serial --unit=0 --speed=115200 --timeout=1; then
-  terminal_input  --append serial
-  terminal_output --append serial
-fi
-
-# --- Branding ---
-insmod png
-set theme=/boot/grub/theme.txt
-export theme
-`
-	if err := os.WriteFile(filepath.Join(mountRoot, "etc/grub.d/06_spinifex"), []byte(grubTheme), 0o755); err != nil {
-		return fmt.Errorf("write /etc/grub.d/06_spinifex: %w", err)
+	if err := writeGrubDefaults(DiskConfig{FS: FSExt4}); err != nil {
+		return err
 	}
 
 	if err := bindChrootMounts(); err != nil {
@@ -776,25 +787,39 @@ func (c *Config) toFirstbootConfig() firstboot.Config {
 	}
 }
 
-// writeFstab writes /etc/fstab on the installed system using partition UUIDs so
-// the root filesystem is mounted read-write at boot and the EFI partition is
-// mounted at /boot/efi.
-func writeFstab(disk string) error {
-	efi, root := partitionPaths(disk)
-	rootUUID, err := partUUID(root)
-	if err != nil {
-		return fmt.Errorf("get root UUID: %w", err)
+// writeFstab writes /etc/fstab on the installed system.
+//
+// On ZFS the root and every dataset are mounted by ZFS itself from properties
+// stored on the pool, and the ESPs are mounted on demand by spinifex-boot-tool,
+// so the file holds nothing but swap.
+func writeFstab(cfg DiskConfig) error {
+	fstab := "# /etc/fstab — generated by Spinifex installer\n"
+
+	if !cfg.FS.IsZFS() {
+		d := cfg.Primary()
+		rootUUID, err := partUUID(d.PartitionPath(rootPartNum))
+		if err != nil {
+			return fmt.Errorf("get root UUID: %w", err)
+		}
+		efiUUID, err := partUUID(d.PartitionPath(espPartNum))
+		if err != nil {
+			return fmt.Errorf("get EFI UUID: %w", err)
+		}
+		fstab += fmt.Sprintf("UUID=%s / ext4 errors=remount-ro 0 1\nUUID=%s /boot/efi vfat umask=0077 0 1\n",
+			rootUUID, efiUUID)
 	}
-	efiUUID, err := partUUID(efi)
-	if err != nil {
-		return fmt.Errorf("get EFI UUID: %w", err)
-	}
-	fstab := fmt.Sprintf("# /etc/fstab — generated by Spinifex installer\nUUID=%s / ext4 errors=remount-ro 0 1\nUUID=%s /boot/efi vfat umask=0077 0 1\n",
-		rootUUID, efiUUID)
+
 	// Only claim the swap the previous step actually produced; systemd fails the
-	// boot's swap unit on a missing file rather than ignoring the line.
-	if _, err := os.Stat(filepath.Join(mountRoot, swapFileName)); err == nil {
-		fstab += fmt.Sprintf("/%s none swap sw 0 0\n", swapFileName)
+	// boot on a missing swap unit rather than ignoring the line.
+	switch {
+	case cfg.FS.IsZFS():
+		if _, err := os.Stat("/dev/zvol/" + swapZvolName); err == nil {
+			fstab += fmt.Sprintf("/dev/zvol/%s none swap discard 0 0\n", swapZvolName)
+		}
+	default:
+		if _, err := os.Stat(filepath.Join(mountRoot, swapFileName)); err == nil {
+			fstab += fmt.Sprintf("/%s none swap sw 0 0\n", swapFileName)
+		}
 	}
 	return os.WriteFile(filepath.Join(mountRoot, "etc/fstab"), []byte(fstab), 0o644)
 }
@@ -823,6 +848,64 @@ const (
 // Failure is logged and not fatal: a node that boots without swap is worse at
 // large imports but is otherwise fine, and losing a whole install over it would
 // be the greater harm.
+// swapZvolName is the swap volume on a ZFS root. ZFS cannot host a swap *file*
+// at all, so a zvol is the only option — the same one Proxmox uses.
+const swapZvolName = ZFSPoolName + "/swap"
+
+// createSwap lays down swap in whichever form the root filesystem supports.
+func createSwap(cfg DiskConfig) error {
+	if cfg.FS.IsZFS() {
+		return createSwapZvol()
+	}
+	return createSwapFile()
+}
+
+// createSwapZvol creates the swap volume on a ZFS root.
+//
+// The properties are not tuning preferences. A zvol swapping under memory
+// pressure can deadlock against the ARC, and these are the settings that make
+// it survivable: page-sized blocks so a swap-out is one record, no data
+// caching so swap pages are never copied into the ARC, and sync writes so a
+// page is on disk before the kernel frees it.
+func createSwapZvol() error {
+	size, err := swapSize(mountRoot)
+	if err != nil {
+		slog.Warn("swap: cannot size swap volume, continuing without one", "err", err)
+		return nil
+	}
+	if size == 0 {
+		slog.Warn("swap: pool too small for a useful swap volume, continuing without one")
+		return nil
+	}
+
+	if err := run("zfs", "create",
+		"-V", strconv.FormatInt(size, 10),
+		"-b", strconv.Itoa(os.Getpagesize()),
+		"-o", "logbias=throughput",
+		"-o", "sync=always",
+		"-o", "primarycache=metadata",
+		"-o", "secondarycache=none",
+		"-o", "compression=zle",
+		"-o", "com.sun:auto-snapshot=false",
+		swapZvolName,
+	); err != nil {
+		slog.Warn("swap: could not create swap volume, continuing without swap", "err", err)
+		return nil
+	}
+
+	dev := "/dev/zvol/" + swapZvolName
+	if err := waitForPath(dev, time.Now().Add(10*time.Second)); err != nil {
+		slog.Warn("swap: zvol device node never appeared, continuing without swap", "err", err)
+		return nil
+	}
+	if err := run("mkswap", "-f", dev); err != nil {
+		slog.Warn("swap: mkswap failed, continuing without swap", "err", err)
+		return nil
+	}
+	slog.Info("swap: created", "zvol", swapZvolName, "bytes", size)
+	return nil
+}
+
 func createSwapFile() error {
 	size, err := swapSize(mountRoot)
 	if err != nil {
@@ -942,18 +1025,6 @@ func partUUID(dev string) (string, error) {
 	return uuid, nil
 }
 
-// partitionPaths returns the EFI and root partition device paths for a given
-// disk. p1 is the BIOS Boot Partition (no filesystem), p2 is EFI, p3 is root.
-// Handles both /dev/sdX (→ /dev/sdX2, /dev/sdX3) and /dev/nvmeXnY
-// (→ /dev/nvmeXnYp2, /dev/nvmeXnYp3).
-func partitionPaths(disk string) (efi, root string) {
-	// NVMe devices use a 'p' separator before the partition number.
-	if len(disk) > 0 && disk[len(disk)-1] >= '0' && disk[len(disk)-1] <= '9' {
-		return disk + "p2", disk + "p3"
-	}
-	return disk + "2", disk + "3"
-}
-
 // copyGrubFont copies the unicode.pf2 GRUB font into the installed system's
 // /boot/grub/fonts/ directory. This ensures update-grub finds the font at
 // /boot/grub/fonts/unicode.pf2 — the same path the ISO's grub.cfg uses —
@@ -1063,13 +1134,31 @@ func bindChrootMounts() error {
 // Errors are logged but not returned — this is best-effort cleanup.
 func unbindChrootMounts() {
 	for _, v := range slices.Backward(chrootMountPaths) {
-		_ = run("umount", filepath.Join(mountRoot, v))
+		// Quiet: this also runs from the deferred cleanup, where nothing is
+		// mounted and three "no mount point specified" lines above a real error
+		// message are pure distraction.
+		_ = runQuiet("umount", filepath.Join(mountRoot, v))
 	}
 }
 
 func run(name string, args ...string) error {
+	return runEnv(nil, name, args...)
+}
+
+// runQuiet is run with output discarded, for best-effort probes whose failure
+// is expected and whose stderr would otherwise look like an install fault.
+func runQuiet(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	return cmd.Run()
+}
+
+// runEnv is run with extra environment variables appended to the installer's own.
+func runEnv(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	return cmd.Run()
 }

@@ -1,0 +1,412 @@
+#!/bin/bash
+# spinifex-boot-tool — keep a bootloader on every disk of a ZFS root pool.
+#
+# GRUB cannot be trusted to read a ZFS pool: its ZFS reader lags OpenZFS by
+# years, and enabling a new feature flag on the pool can make the machine
+# unbootable with no warning. So /boot on the pool is never read by firmware.
+# Instead each pool member carries a small FAT32 ESP holding its own copy of
+# GRUB, the kernels and the initramfs images, and this tool keeps them in step.
+#
+# Modelled directly on Proxmox's proxmox-boot-tool, which has run this design
+# across their entire installed base for years.
+
+set -u
+set -o pipefail
+
+ESP_LIST="/etc/kernel/spinifex-boot-uuids"
+ESPMOUNTS="/var/tmp/espmounts"
+MARKER="spinifex-boot-uuids"
+
+# Kernels are only ever copied out of the real /boot, which lives on the pool.
+# Once an ESP is bind-mounted over /boot this variable is how we still find it.
+BOOTROOT="/boot"
+
+warn() { echo "W: $*" >&2; }
+die() { echo "E: $*" >&2; exit 1; }
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") <command>
+
+  format <partition> [--force]  make <partition> a Spinifex ESP
+  init <partition>              register <partition> and install a bootloader on it
+  clean [--dry-run]             drop ESPs that are no longer present
+  refresh [--hook <name>]       re-sync kernels and grub.cfg to every ESP
+  reinit                        re-run refresh, reinstalling GRUB on every ESP
+  kernel <add|remove> <ver>     pin or unpin a kernel version
+  status [--quiet]              list registered ESPs
+EOF
+}
+
+# reexec_in_mountns re-runs this script inside a private mount namespace. Every
+# code path here bind-mounts an ESP over /boot; if the script is killed at the
+# wrong moment outside a namespace, the running system is left with its real
+# /boot masked and the next kernel upgrade writes into a FAT partition.
+reexec_in_mountns() {
+	if [ "${SPINIFEX_BOOT_TOOL_NS:-0}" = "1" ]; then
+		return 0
+	fi
+	export SPINIFEX_BOOT_TOOL_NS=1
+	# --propagation private stops the bind mounts leaking back to the host.
+	exec unshare --mount --propagation private -- "$0" "$@"
+}
+
+# --- ESP registry -----------------------------------------------------------
+
+# esp_list prints the registered ESP filesystem UUIDs.
+esp_list() {
+	[ -f "$ESP_LIST" ] || return 0
+	grep -v '^[[:space:]]*\(#\|$\)' "$ESP_LIST" || true
+}
+
+# uuid_of prints the FAT filesystem UUID of a partition.
+uuid_of() {
+	blkid "$1" -o value -s UUID 2>/dev/null
+}
+
+# path_for_uuid resolves a registered UUID back to a device, or nothing if the
+# disk has been pulled.
+path_for_uuid() {
+	local dev
+	dev="/dev/disk/by-uuid/$1"
+	[ -e "$dev" ] || return 1
+	readlink -f "$dev"
+}
+
+# mount_esp mounts the ESP for a UUID and echoes its mountpoint.
+mount_esp() {
+	local uuid="$1" dev mp
+	dev=$(path_for_uuid "$uuid") || return 1
+	mp="$ESPMOUNTS/$uuid"
+	mkdir -p "$mp"
+	mountpoint -q "$mp" || mount "$dev" "$mp" || return 1
+	echo "$mp"
+}
+
+umount_esp() {
+	local mp="$ESPMOUNTS/$1"
+	mountpoint -q "$mp" && umount "$mp"
+	rmdir "$mp" 2>/dev/null || true
+}
+
+# --- format / init ----------------------------------------------------------
+
+do_format() {
+	local part="$1" force="${2:-}"
+	[ -b "$part" ] || die "$part is not a block device"
+
+	if [ "$force" != "--force" ]; then
+		local existing
+		existing=$(blkid -o value -s TYPE "$part" 2>/dev/null || true)
+		[ -z "$existing" ] || die "$part already contains a $existing filesystem; pass --force to overwrite"
+	fi
+	mkfs.vfat -F 32 "$part" || die "mkfs.vfat failed on $part"
+}
+
+do_init() {
+	local part="$1"
+	[ -b "$part" ] || die "$part is not a block device"
+
+	local uuid
+	uuid=$(uuid_of "$part") || true
+	[ -n "$uuid" ] || die "$part has no filesystem UUID — run '$(basename "$0") format $part' first"
+
+	mkdir -p "$(dirname "$ESP_LIST")"
+	touch "$ESP_LIST"
+	if ! grep -qx "$uuid" "$ESP_LIST"; then
+		echo "$uuid" >>"$ESP_LIST"
+	fi
+	echo "Registered $part ($uuid)"
+
+	install_hooks
+	# Only the ESP just registered: the others are already current, and
+	# refreshing all of them here makes registering N disks an N-squared
+	# sequence of grub-installs.
+	refresh_one "$uuid" || die "could not make $part bootable"
+}
+
+do_clean() {
+	local dry="${1:-}" uuid keep=()
+	for uuid in $(esp_list); do
+		if path_for_uuid "$uuid" >/dev/null 2>&1; then
+			keep+=("$uuid")
+		else
+			echo "Removing stale ESP $uuid"
+		fi
+	done
+	if [ "$dry" = "--dry-run" ]; then
+		return 0
+	fi
+	printf '%s\n' "${keep[@]+"${keep[@]}"}" >"$ESP_LIST"
+}
+
+# --- refresh ----------------------------------------------------------------
+
+# kernel_versions lists the kernels present in the real /boot, newest first, so
+# the default menu entry is the newest kernel.
+kernel_versions() {
+	local img
+	for img in "$BOOTROOT"/vmlinuz-*; do
+		[ -e "$img" ] || continue
+		basename "$img" | sed 's/^vmlinuz-//'
+	done | sort -Vr
+}
+
+# sync_esp copies the current kernels and initramfs images onto one ESP and
+# removes anything left from a kernel that is no longer installed — an ESP is
+# small and a stale 100MB initramfs is what makes the next upgrade fail.
+sync_esp() {
+	local mp="$1" kver f base
+
+	local -A wanted=()
+	for kver in $(kernel_versions); do
+		wanted["vmlinuz-$kver"]=1
+		wanted["initrd.img-$kver"]=1
+	done
+
+	for f in "$mp"/vmlinuz-* "$mp"/initrd.img-*; do
+		[ -e "$f" ] || continue
+		base=$(basename "$f")
+		[ -n "${wanted[$base]:-}" ] || rm -f "$f"
+	done
+
+	for kver in $(kernel_versions); do
+		for base in "vmlinuz-$kver" "initrd.img-$kver"; do
+			[ -e "$BOOTROOT/$base" ] || continue
+			# Copy to a temp name and rename: a half-written kernel on the ESP
+			# is a machine that does not come back from a reboot.
+			cp -f "$BOOTROOT/$base" "$mp/$base.tmp" || return 1
+			mv -f "$mp/$base.tmp" "$mp/$base" || return 1
+		done
+	done
+
+	# GRUB reads its theme from $prefix, which is the ESP's own grub directory,
+	# so the branding has to be copied out of /boot alongside the kernels.
+	mkdir -p "$mp/grub/fonts"
+	for f in grub/theme.txt grub/splash.png grub/fonts/unicode.pf2; do
+		[ -e "$BOOTROOT/$f" ] && cp -f "$BOOTROOT/$f" "$mp/$f"
+	done
+
+	# Marks the partition as ours, so a later `format` on the wrong disk is
+	# obviously a mistake rather than a silent overwrite.
+	echo "$MARKER" >"$mp/$MARKER"
+	return 0
+}
+
+# grub_install_bin echoes the real grub-install. On a managed system the normal
+# name is a wrapper that refuses to run, and it must not intercept this tool's
+# own calls — that would make the refusal a self-deadlock.
+grub_install_bin() {
+	if [ -x /usr/sbin/grub-install.real ]; then
+		echo /usr/sbin/grub-install.real
+	else
+		echo grub-install
+	fi
+}
+
+# install_grub puts GRUB itself on one ESP, for both firmware types.
+#
+# --boot-directory points at the ESP, not at /boot, so the GRUB core image
+# embeds a FAT reader and a search for the ESP's own UUID. It never needs to
+# read the pool, which is the entire point of this tool.
+install_grub() {
+	local mp="$1" dev="$2" rc=0 grub
+	grub="$(grub_install_bin)"
+
+	if [ ! -d /sys/firmware/efi ]; then
+		"$grub" --target=i386-pc --boot-directory="$mp" --recheck "$dev" || rc=1
+		return $rc
+	fi
+
+	# NVRAM is written at install time only. A refresh runs on every kernel
+	# upgrade, and rewriting boot variables that often has bricked firmware on
+	# more than one vendor's boards.
+	local nvram="--no-nvram"
+	[ "${SPINIFEX_BOOT_TOOL_NVRAM:-0}" = "1" ] && nvram=""
+
+	# Twice: once as a named entry, and once at the removable path, which is all
+	# some firmware will ever look at and is what keeps the disk bootable after
+	# its NVRAM entry is lost or the drive is moved to another machine.
+	# shellcheck disable=SC2086 # $nvram is a single optional flag, not a path
+	"$grub" --target=x86_64-efi \
+		--efi-directory="$mp" --boot-directory="$mp" \
+		--bootloader-id=spinifex $nvram --recheck "$dev" || rc=1
+	"$grub" --target=x86_64-efi \
+		--efi-directory="$mp" --boot-directory="$mp" \
+		--bootloader-id=spinifex --removable --no-nvram --recheck "$dev" || rc=1
+	return $rc
+}
+
+# update_grub_on regenerates grub.cfg for one ESP.
+#
+# The bind mount is the trick that makes this work: grub-mkconfig probes the
+# device behind /boot to decide how to find the kernel at boot. With the ESP
+# mounted there it emits a FAT UUID search and paths relative to the ESP root,
+# so the generated config matches what the embedded core image can actually do.
+update_grub_on() {
+	local mp="$1" rc=0
+	mount --bind "$mp" "$BOOTROOT" || return 1
+	grub-mkconfig -o "$BOOTROOT/grub/grub.cfg" || rc=1
+	umount "$BOOTROOT" || warn "could not unmount the bind mount over $BOOTROOT"
+	return $rc
+}
+
+# refresh_one makes a single registered ESP independently bootable: kernels,
+# bootloader, and a grub.cfg generated against that ESP's own UUID.
+refresh_one() {
+	local uuid="$1" mp dev disk rc=0
+
+	if ! dev=$(path_for_uuid "$uuid"); then
+		warn "ESP $uuid is not present, skipping"
+		return 1
+	fi
+	if ! mp=$(mount_esp "$uuid"); then
+		warn "could not mount ESP $uuid"
+		return 1
+	fi
+
+	# The whole disk, not the partition: BIOS GRUB embeds into the boot
+	# sector and the BIOS boot partition, both of which live on the disk.
+	disk=$(lsblk -no pkname "$dev")
+	disk="/dev/$disk"
+
+	if sync_esp "$mp" && install_grub "$mp" "$disk" && update_grub_on "$mp"; then
+		echo "Synced $dev ($uuid)"
+	else
+		warn "failed to update ESP $uuid on $dev"
+		rc=1
+	fi
+	umount_esp "$uuid"
+	return $rc
+}
+
+do_refresh() {
+	local uuid failed=0 ok=0 total=0
+
+	local uuids
+	uuids=$(esp_list)
+	if [ -z "$uuids" ]; then
+		echo "No ESPs registered, nothing to do."
+		return 0
+	fi
+
+	for uuid in $uuids; do
+		total=$((total + 1))
+		if refresh_one "$uuid"; then
+			ok=$((ok + 1))
+		else
+			failed=$((failed + 1))
+		fi
+	done
+
+	if [ "$ok" -eq 0 ]; then
+		die "no ESP could be updated ($failed of $total failed) — this system may not boot"
+	fi
+	if [ "$failed" -gt 0 ]; then
+		# Strict mode is used by the installer, where a partly-updated set of
+		# ESPs means the install is broken and should fail loudly now rather
+		# than at the first reboot.
+		if [ "${SPINIFEX_BOOT_TOOL_STRICT:-0}" = "1" ]; then
+			die "$failed of $total ESPs failed to update"
+		fi
+		warn "$failed of $total ESPs failed to update; $ok succeeded, so the system will still boot"
+	fi
+	return 0
+}
+
+do_status() {
+	local quiet="${1:-}" uuid dev
+	if [ ! -s "$ESP_LIST" ]; then
+		[ "$quiet" = "--quiet" ] || echo "No ESPs registered — this system does not use spinifex-boot-tool."
+		return 1
+	fi
+	[ "$quiet" = "--quiet" ] && return 0
+	for uuid in $(esp_list); do
+		if dev=$(path_for_uuid "$uuid"); then
+			echo "$uuid  $dev"
+		else
+			echo "$uuid  MISSING"
+		fi
+	done
+}
+
+do_kernel() {
+	local action="$1" kver="${2:-}"
+	local pinfile="/etc/kernel/spinifex-boot-pin"
+	case "$action" in
+	add)
+		[ -n "$kver" ] || die "kernel add needs a version"
+		touch "$pinfile"
+		grep -qx "$kver" "$pinfile" || echo "$kver" >>"$pinfile"
+		;;
+	remove)
+		[ -n "$kver" ] || die "kernel remove needs a version"
+		[ -f "$pinfile" ] && sed -i "\|^$kver\$|d" "$pinfile"
+		;;
+	*) die "unknown kernel action: $action" ;;
+	esac
+	do_refresh
+}
+
+# --- hooks ------------------------------------------------------------------
+
+# install_hooks wires this tool into every package operation that would
+# otherwise write a bootloader to the wrong place.
+install_hooks() {
+	mkdir -p /etc/kernel/postinst.d /etc/kernel/postrm.d /etc/initramfs/post-update.d
+
+	# Debian's own hook runs update-grub against the real /boot, which is on the
+	# pool. Firmware never reads that, so it would produce a config nothing uses
+	# while the ESPs silently kept an old kernel.
+	if [ -e /etc/kernel/postinst.d/zz-update-grub ]; then
+		dpkg-divert --divert /etc/kernel/postinst.d/zz-update-grub.distrib \
+			--rename --add /etc/kernel/postinst.d/zz-update-grub >/dev/null 2>&1 || true
+	fi
+
+	for hook in /etc/kernel/postinst.d/zz-spinifex-boot-tool \
+		/etc/kernel/postrm.d/zz-spinifex-boot-tool \
+		/etc/initramfs/post-update.d/spinifex-boot-tool; do
+		cat >"$hook" <<'HOOK'
+#!/bin/sh
+# Re-sync the ESPs after a kernel or initramfs change.
+set -e
+exec /usr/sbin/spinifex-boot-tool refresh --hook "$(basename "$0")"
+HOOK
+		chmod 0755 "$hook"
+	done
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+format) do_format "$@" ;;
+init)
+	reexec_in_mountns init "$@"
+	do_init "$@"
+	;;
+refresh)
+	# --hook <name> is passed by the kernel hooks purely so the reason for a
+	# refresh is visible in the log.
+	if [ "${1:-}" = "--hook" ]; then shift 2 || shift; fi
+	reexec_in_mountns refresh
+	do_refresh
+	;;
+reinit)
+	reexec_in_mountns reinit
+	do_refresh
+	;;
+clean) do_clean "$@" ;;
+kernel)
+	reexec_in_mountns kernel "$@"
+	do_kernel "$@"
+	;;
+status) do_status "$@" ;;
+help | --help | -h | "") usage ;;
+*)
+	usage
+	exit 1
+	;;
+esac

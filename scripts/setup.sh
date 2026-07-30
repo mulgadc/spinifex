@@ -235,6 +235,14 @@ install_apt_deps() {
             > /dev/null
 
         info "System dependencies installed"
+
+        # Only on a machine that already boots from ZFS. Pulling zfsutils-linux
+        # in unconditionally would drag zfs-dkms onto every dev box and rebuild
+        # the module on each kernel upgrade for no benefit.
+        if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
+            info "ZFS root detected, installing zfsutils-linux..."
+            DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
+        fi
     fi
 
     # Mask the standalone dhcpcd.service auto-enabled on Debian Trixie when

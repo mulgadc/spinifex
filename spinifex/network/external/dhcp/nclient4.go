@@ -118,6 +118,20 @@ func resolveHWAddr(bridge, clientID string, hwAddr net.HardwareAddr, useIfaceMAC
 	return hw, nil
 }
 
+// releaseHWAddr picks the chaddr for a RELEASE. A server matches a RELEASE to a
+// binding on chaddr, so the only address that can work is the one the lease was
+// taken with, which the record already carries.
+//
+// This differs from resolveHWAddr only for a UseIfaceMAC lease whose interface
+// MAC has changed since: re-resolving live would send an address the binding
+// never had, and the address would stay held with the server saying nothing.
+func releaseHWAddr(lease *Lease) (net.HardwareAddr, error) {
+	if len(lease.HWAddr) == 6 && !isZeroMAC(lease.HWAddr) {
+		return lease.HWAddr, nil
+	}
+	return resolveHWAddr(lease.Bridge, lease.ClientID, lease.HWAddr, lease.UseIfaceMAC)
+}
+
 // isZeroMAC reports whether hw is all zeros, the placeholder a lease carries
 // when no hardware address was ever recorded for it.
 func isZeroMAC(hw net.HardwareAddr) bool {
@@ -229,8 +243,8 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	if err != nil {
 		return fmt.Errorf("dhcp release: %w", err)
 	}
-	// Must match what took the lease out, so it resolves the same way Acquire did.
-	hwAddr, err := resolveHWAddr(lease.Bridge, lease.ClientID, lease.HWAddr, lease.UseIfaceMAC)
+	// Must match what took the lease out, so it comes from the lease itself.
+	hwAddr, err := releaseHWAddr(lease)
 	if err != nil {
 		return fmt.Errorf("dhcp release: %w", err)
 	}

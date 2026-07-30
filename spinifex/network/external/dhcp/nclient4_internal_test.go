@@ -156,6 +156,57 @@ func TestResolveHWAddrUsesTheInterfaceMACWhenConfigured(t *testing.T) {
 	})
 }
 
+// A server matches a RELEASE on chaddr, so it has to be the address the lease
+// was taken with. Re-resolving a UseIfaceMAC lease against an interface whose
+// MAC has since changed would send one the binding never had, and the server
+// drops such a RELEASE without a word.
+func TestReleaseHWAddrComesFromTheLease(t *testing.T) {
+	stored, err := net.ParseMAC("02:6e:c3:e4:67:f3")
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+
+	t.Run("a stored chaddr wins over the live interface MAC", func(t *testing.T) {
+		got, err := releaseHWAddr(&Lease{
+			Bridge: "mulga-no-such-iface0", ClientID: "dhcp-gw-lrp-vpc-1",
+			HWAddr: stored, UseIfaceMAC: true,
+		})
+		if err != nil {
+			t.Fatalf("releaseHWAddr: %v", err)
+		}
+		if !bytes.Equal(got, stored) {
+			t.Fatalf("hw addr = %s, want the lease's own %s", got, stored)
+		}
+	})
+
+	t.Run("a lease with no chaddr falls back to the derived one", func(t *testing.T) {
+		got, err := releaseHWAddr(&Lease{Bridge: "br-wan", ClientID: "dhcp-gw-lrp-vpc-1"})
+		if err != nil {
+			t.Fatalf("releaseHWAddr: %v", err)
+		}
+		want, err := DeriveMAC("dhcp-gw-lrp-vpc-1")
+		if err != nil {
+			t.Fatalf("derive mac: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("hw addr = %s, want the derived %s", got, want)
+		}
+	})
+
+	t.Run("an all-zero chaddr is not passed through", func(t *testing.T) {
+		got, err := releaseHWAddr(&Lease{
+			Bridge: "br-wan", ClientID: "dhcp-gw-lrp-vpc-1",
+			HWAddr: net.HardwareAddr{0, 0, 0, 0, 0, 0},
+		})
+		if err != nil {
+			t.Fatalf("releaseHWAddr: %v", err)
+		}
+		if isZeroMAC(got) {
+			t.Fatal("want a repaired chaddr rather than all zeros")
+		}
+	})
+}
+
 // rawDHCPv4Message returns a syntactically valid, arbitrary DHCPv4 wire
 // message for use as a Lease's RawOffer/RawACK. Renew and Release only need
 // something reconstructNClient4Lease can parse before chaddr resolution runs.

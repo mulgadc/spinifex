@@ -174,7 +174,8 @@ services:
       - "vpc.dhcp.release"
     publishes:
       - "vpc.port-status"
-      - "vpc.dhcp.lease-expired"
+      - "vpc.dhcp.lease-changed"
+      - "vpc.dhcp.owner-check"
     depends_on: []
 
   viperblockd:

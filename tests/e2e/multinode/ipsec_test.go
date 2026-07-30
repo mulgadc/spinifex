@@ -119,7 +119,16 @@ func ipsecRequested(t *testing.T, ssh *harness.PeerSSH, n harness.Node) bool {
 		return true
 	}
 
-	line := strings.TrimSpace(string(raw))
-	harness.Detail(t, "node", n.Name, "ipsec_enabled", line)
-	return !strings.Contains(line, "false")
+	// Keep the first token after "=" so a trailing comment cannot be mistaken
+	// for the value. An absent key leaves this empty, which reads as requested.
+	value := strings.TrimSpace(string(raw))
+	if _, after, ok := strings.Cut(value, "="); ok {
+		value = strings.TrimSpace(after)
+	}
+	if fields := strings.Fields(value); len(fields) > 0 {
+		value = fields[0]
+	}
+
+	harness.Detail(t, "node", n.Name, "ipsec_enabled", value)
+	return value != "false"
 }

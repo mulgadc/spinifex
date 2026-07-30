@@ -328,6 +328,16 @@ func (a *Agent) fetchAndApplyConfig() error {
 		return fmt.Errorf("reload %s: %w", engine, err)
 	}
 
+	// Only after a successful reload: until then the engine is still serving the
+	// previous config, which references the files being removed. A delivered PEM
+	// carries a private key, so undelivered ones left in place strand key
+	// material on disk for every certificate ever detached from a listener.
+	if err := a.pruneCertFiles(certDir, resp.CertFiles); err != nil {
+		// Not fatal — the config is live and correct, and a failed prune leaves a
+		// stale file rather than breaking traffic.
+		slog.Error("Failed to prune stale TLS certs", "certDir", certDir, "err", err)
+	}
+
 	a.engine = engine
 	a.healthTargets = resp.HealthTargets
 	a.localConfigHash = resp.ConfigHash
@@ -389,6 +399,37 @@ func (a *Agent) writeCertFiles(certDir string, certs []certFile) error {
 			return fmt.Errorf("write cert %q: %w", clean, err)
 		}
 		slog.Info("Wrote TLS cert", "path", clean, "bytes", len(c.PEM))
+	}
+	return nil
+}
+
+// pruneCertFiles removes .pem files under certDir that are not in the delivered
+// set. An LB VM hosts exactly one load balancer, so every PEM there belongs to
+// this agent and anything undelivered is stale. Scoped to .pem so it cannot
+// touch an engine's own files, and to certDir's immediate entries so it cannot
+// follow a path out.
+func (a *Agent) pruneCertFiles(certDir string, certs []certFile) error {
+	entries, err := os.ReadDir(certDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read cert dir: %w", err)
+	}
+
+	keep := make(map[string]bool, len(certs))
+	for _, c := range certs {
+		keep[filepath.Base(filepath.Clean(c.Path))] = true
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".pem" || keep[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(certDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale cert %q: %w", e.Name(), err)
+		}
+		slog.Info("Removed stale TLS cert", "path", filepath.Join(certDir, e.Name()))
 	}
 	return nil
 }

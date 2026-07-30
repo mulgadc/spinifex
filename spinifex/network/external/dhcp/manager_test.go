@@ -1,11 +1,14 @@
 package dhcp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +120,90 @@ func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 	entry, err := store.Get(t.Context(), "eipalloc-stale")
 	require.NoError(t, err)
 	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String())
+}
+
+// captureLogs redirects the default logger for the test and returns an accessor
+// for what has been written so far.
+func captureLogs(t *testing.T) func() string {
+	t.Helper()
+	var mu sync.Mutex
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&lockedWriter{mu: &mu, w: buf}, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+// lockedWriter serialises writes from the lease loops, which log concurrently.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// A stale lease with no raw packets cannot be released, and the address then
+// stays bound upstream with nothing renewing it. Silence there is what made a
+// live leak untraceable, so the skip must be logged.
+func TestManagerStaleReleaseWithoutRawPacketsIsLogged(t *testing.T) {
+	fake := dhcp.NewFake()
+	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
+
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: "eipalloc-nopackets", HWAddr: hw,
+	})
+	require.NoError(t, err)
+	lease.IP = net.IPv4(192, 0, 2, 50)
+	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
+	lease.LeaseDuration = time.Hour
+	lease.RawOffer, lease.RawACK = nil, nil
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
+
+	logs := captureLogs(t)
+	require.NoError(t, mgr.Start(context.Background()))
+
+	require.Eventually(t, func() bool { return fake.AcquireCount() == 2 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs(), "cannot release, address stays bound upstream")
+	}, time.Second, 10*time.Millisecond)
+	assert.Zero(t, fake.ReleaseCount(), "a lease with no raw packets cannot be released")
+	assert.Contains(t, logs(), "192.0.2.50")
+}
+
+// A release that reached the server records the chaddr it used, so an address
+// still bound afterwards can be traced to a chaddr the server did not match.
+func TestManagerStaleReleaseLogsChaddr(t *testing.T) {
+	fake := dhcp.NewFake()
+	fixed := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	mgr, store, _ := newTestManager(t, "az1", fake, func() time.Time { return fixed })
+
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := fake.Acquire(context.Background(), dhcp.AcquireRequest{
+		Bridge: "br-wan", ClientID: "eipalloc-chaddr", HWAddr: hw,
+	})
+	require.NoError(t, err)
+	lease.IP = net.IPv4(192, 0, 2, 50)
+	lease.AcquiredAt = fixed.Add(-2 * time.Hour)
+	lease.LeaseDuration = time.Hour
+	require.NoError(t, store.Put(t.Context(), dhcp.Entry{Purpose: "eip", PoolName: "wan", Lease: lease}))
+
+	logs := captureLogs(t)
+	require.NoError(t, mgr.Start(context.Background()))
+
+	require.Eventually(t, func() bool { return fake.ReleaseCount() == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return strings.Contains(logs(), "released stale lease upstream") },
+		time.Second, 10*time.Millisecond)
+	assert.Contains(t, logs(), "02:00:00:aa:bb:cc")
 }
 
 // An expired lease that comes back on the same address needs no release and no

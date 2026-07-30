@@ -235,7 +235,12 @@ const staleReleaseTimeout = 5 * time.Second
 // The server may already have rebound the address to someone else, in which case
 // a conformant one drops a RELEASE whose chaddr does not match the binding.
 func (m *Manager) releaseStaleUpstream(ctx context.Context, l *Lease) {
-	if l == nil || len(l.RawOffer) == 0 || len(l.RawACK) == 0 {
+	if l == nil {
+		return
+	}
+	if len(l.RawOffer) == 0 || len(l.RawACK) == 0 {
+		slog.Warn("dhcp manager: stale lease has no raw offer/ack; cannot release, address stays bound upstream",
+			"client_id", l.ClientID, "ip", l.IP)
 		return
 	}
 	relCtx, cancel := context.WithTimeout(ctx, staleReleaseTimeout)
@@ -243,7 +248,13 @@ func (m *Manager) releaseStaleUpstream(ctx context.Context, l *Lease) {
 	if err := m.client.Release(relCtx, l); err != nil {
 		slog.Warn("dhcp manager: release of stale lease failed; address may be stranded upstream",
 			"client_id", l.ClientID, "ip", l.IP, "err", err)
+		return
 	}
+	// A server drops a RELEASE whose chaddr does not match its binding, and says
+	// nothing. The chaddr is logged so a still-bound address can be traced to a
+	// mismatch rather than to a RELEASE that was never sent.
+	slog.Info("dhcp manager: released stale lease upstream",
+		"client_id", l.ClientID, "ip", l.IP, "chaddr", l.HWAddr.String())
 }
 
 // Stop cancels every renewal goroutine and waits for them to exit.
@@ -760,6 +771,9 @@ func (m *Manager) handleRelease(ctx context.Context, clientID string) error {
 
 	if err := m.client.Release(ctx, entry.Lease); err != nil {
 		slog.Warn("dhcp manager: client release failed; deleting KV entry anyway", "client_id", clientID, "err", err)
+	} else if entry.Lease != nil {
+		slog.Info("dhcp manager: released lease upstream",
+			"client_id", clientID, "ip", entry.Lease.IP, "chaddr", entry.Lease.HWAddr.String())
 	}
 	return m.store.Delete(ctx, clientID)
 }

@@ -68,6 +68,11 @@ type DomainValidationEntry struct {
 	// ValidationStatus is one of the ACM DomainStatus values (PENDING_VALIDATION,
 	// SUCCESS, FAILED).
 	ValidationStatus string `json:"validation_status"`
+	// ValidationMethod is DNS for the DNS-based modes and empty for PRIVATE_CA,
+	// which validates nothing. Real ACM omits it on a private certificate too,
+	// and the AWS provider reads it to decide whether the configured
+	// validation_method still matches.
+	ValidationMethod string `json:"validation_method,omitempty"`
 }
 
 // RenewalSummaryRecord is the stored form of acm.RenewalSummary, populated by

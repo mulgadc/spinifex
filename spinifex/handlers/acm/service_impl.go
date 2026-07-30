@@ -397,6 +397,12 @@ func buildDomainValidationOptions(mode string, domains []string) []DomainValidat
 	entries := make([]DomainValidationEntry, 0, len(domains))
 	for _, d := range domains {
 		e := DomainValidationEntry{DomainName: d, ValidationStatus: acm.DomainStatusPendingValidation}
+		// PRIVATE_CA validates nothing, so it carries no method — matching real
+		// ACM on a private certificate, where the AWS provider reads the method
+		// back as NONE whatever the request asked for.
+		if mode != ValidationModePrivateCA {
+			e.ValidationMethod = acm.ValidationMethodDns
+		}
 		if mode == ValidationModeManualTXT {
 			e.RecordType = "TXT"
 			e.RecordName = "_acme-challenge." + d + "."
@@ -433,6 +439,9 @@ func domainValidationOptionsToAWS(entries []DomainValidationEntry) []*acm.Domain
 		dv := &acm.DomainValidation{
 			DomainName:       aws.String(e.DomainName),
 			ValidationStatus: aws.String(e.ValidationStatus),
+		}
+		if e.ValidationMethod != "" {
+			dv.ValidationMethod = aws.String(e.ValidationMethod)
 		}
 		if e.RecordType != "" {
 			dv.ResourceRecord = &acm.ResourceRecord{

@@ -385,6 +385,10 @@ func TestRequestCertificate_ProviderAPI_PendingValidationNoResourceRecord(t *tes
 	require.Len(t, d.DomainValidationOptions, 1)
 	assert.Equal(t, "api.example.com", aws.StringValue(d.DomainValidationOptions[0].DomainName))
 	assert.Nil(t, d.DomainValidationOptions[0].ResourceRecord, "PROVIDER_API: Spinifex owns the record write, nothing for the caller to publish")
+	// The AWS provider reads this back to decide whether the configured
+	// aws_acm_certificate.validation_method still matches; omitting it makes
+	// every plan see drift and replace the certificate.
+	assert.Equal(t, acm.ValidationMethodDns, aws.StringValue(d.DomainValidationOptions[0].ValidationMethod))
 	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility))
 }
 
@@ -406,6 +410,7 @@ func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *tes
 	require.NotNil(t, rr, "MANUAL_TXT: the operator must publish the challenge record by hand")
 	assert.Equal(t, "TXT", aws.StringValue(rr.Type))
 	assert.Equal(t, "_acme-challenge.manual.example.com.", aws.StringValue(rr.Name))
+	assert.Equal(t, acm.ValidationMethodDns, aws.StringValue(d.DomainValidationOptions[0].ValidationMethod))
 	assert.Equal(t, acm.RenewalEligibilityIneligible, aws.StringValue(d.RenewalEligibility),
 		"MANUAL_TXT's challenge token rotates per order, so unattended renewal is impossible")
 }
@@ -451,6 +456,8 @@ func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
 	assert.NotEmpty(t, aws.StringValue(d.Serial), "the leaf from the injected CA must be parsed and stored")
 	require.Len(t, d.DomainValidationOptions, 1)
 	assert.Nil(t, d.DomainValidationOptions[0].ResourceRecord, "PRIVATE_CA: no validation, nothing to publish")
+	assert.Nil(t, d.DomainValidationOptions[0].ValidationMethod,
+		"PRIVATE_CA validates nothing, and real ACM omits the method on a private certificate")
 	assert.Equal(t, acm.DomainStatusSuccess, aws.StringValue(d.DomainValidationOptions[0].ValidationStatus))
 	assert.Equal(t, acm.RenewalEligibilityEligible, aws.StringValue(d.RenewalEligibility))
 }

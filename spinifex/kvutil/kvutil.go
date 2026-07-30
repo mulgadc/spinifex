@@ -26,16 +26,34 @@ func GetOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, bucket
 	return GetOrCreateBucketWithReplicas(ctx, js, bucket, history, utils.DefaultKVReplicas())
 }
 
+// GetOrCreateBucketWithTTL is GetOrCreateBucket for buckets whose entries
+// should age out on their own — request-dedupe records and other short-lived
+// state that would otherwise accumulate without a sweeper. TTL applies at
+// creation only, like Replicas.
+func GetOrCreateBucketWithTTL(ctx context.Context, js jetstream.KeyValueManager, bucket string, history int, ttl time.Duration) (jetstream.KeyValue, error) {
+	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
+		Bucket:   bucket,
+		History:  utils.SafeIntToUint8(history),
+		Replicas: max(utils.DefaultKVReplicas(), 1),
+		TTL:      ttl,
+	})
+}
+
 // GetOrCreateBucketWithReplicas creates or opens a KV bucket at the given
 // replica count (clamped to a minimum of 1). The replica count applies to
 // creation only: an existing bucket is opened with the config it already has,
 // so one created before the cluster grew is upgraded on rebalance, not here.
 func GetOrCreateBucketWithReplicas(ctx context.Context, js jetstream.KeyValueManager, bucket string, history, replicas int) (jetstream.KeyValue, error) {
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
 		Bucket:   bucket,
 		History:  utils.SafeIntToUint8(history),
 		Replicas: max(replicas, 1),
 	})
+}
+
+func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	bucket := cfg.Bucket
+	kv, err := js.CreateKeyValue(ctx, cfg)
 	if err == nil {
 		return kv, nil
 	}

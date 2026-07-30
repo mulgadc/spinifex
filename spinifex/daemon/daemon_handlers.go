@@ -76,6 +76,9 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 		defer span.End()
 
 		accountID := utils.AccountIDFromMsg(msg)
+		// Carried in ctx rather than the service signature so only the handlers
+		// that must deduplicate a retry have to look for it.
+		ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
 		input := new(I)
 		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))

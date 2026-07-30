@@ -201,18 +201,22 @@ const LogDriverJSONFile = "json-file"
 
 // TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
 type TaskDefRecord struct {
-	Family           string            `json:"family"`
-	Revision         int               `json:"revision"`
-	ARN              string            `json:"arn"`
-	NetworkMode      string            `json:"networkMode,omitempty"`
-	CPU              string            `json:"cpu,omitempty"`
-	Memory           string            `json:"memory,omitempty"`
-	TaskRoleArn      string            `json:"taskRoleArn,omitempty"`
-	ExecutionRoleArn string            `json:"executionRoleArn,omitempty"`
-	Containers       []ContainerDef    `json:"containers"`
-	Status           string            `json:"status"`
-	Tags             map[string]string `json:"tags,omitempty"`
-	RegisteredAt     time.Time         `json:"registeredAt"`
+	Family           string `json:"family"`
+	Revision         int    `json:"revision"`
+	ARN              string `json:"arn"`
+	NetworkMode      string `json:"networkMode,omitempty"`
+	CPU              string `json:"cpu,omitempty"`
+	Memory           string `json:"memory,omitempty"`
+	TaskRoleArn      string `json:"taskRoleArn,omitempty"`
+	ExecutionRoleArn string `json:"executionRoleArn,omitempty"`
+	// Persisted purely so Describe echoes back what Register was given. Only
+	// the EC2 launch type is implemented, but a client that sets this and
+	// reads back an empty list sees permanent drift.
+	RequiresCompatibilities []string          `json:"requiresCompatibilities,omitempty"`
+	Containers              []ContainerDef    `json:"containers"`
+	Status                  string            `json:"status"`
+	Tags                    map[string]string `json:"tags,omitempty"`
+	RegisteredAt            time.Time         `json:"registeredAt"`
 }
 
 // reservedCPU/reservedMemory sum the task definition's per-container reservations

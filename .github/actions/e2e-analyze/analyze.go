@@ -467,9 +467,19 @@ func Render(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n\n", r.Title)
 
-	totalFail := 0
+	totalFail, totalTests := 0, 0
 	for _, s := range r.Suites {
 		totalFail += s.FailCount
+		totalTests += s.Total
+	}
+
+	// A cell that dies before the suites run emits junit with no testcases at
+	// all. Reporting that as clean turns "nothing ran" into "nothing wrong", so
+	// name it and point above the suites.
+	if totalTests == 0 {
+		b.WriteString("⚠️ No tests ran — no testcases in any junit file. " +
+			"The failure is upstream of the suites (provisioning, bootstrap, or reimage); check the job log.\n")
+		return b.String()
 	}
 	if totalFail == 0 {
 		b.WriteString("✅ No failures across any suite.\n")

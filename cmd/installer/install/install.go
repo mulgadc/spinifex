@@ -20,10 +20,13 @@ import (
 	"github.com/mulgadc/spinifex/cmd/installer/systemd"
 )
 
-const (
-	mountRoot = "/mnt/spinifex-install"
-	efiPart   = mountRoot + "/boot/efi"
-)
+// mountRoot is the install target. A variable, not a constant, so tests can
+// drive the file-writing steps against a temp tree rather than a real mount.
+var mountRoot = "/mnt/spinifex-install"
+
+// efiPart is the ESP mount point inside the target. Derived on each call so it
+// cannot go stale against mountRoot.
+func efiPart() string { return filepath.Join(mountRoot, "boot/efi") }
 
 // step is one named unit of work in the install sequence.
 type step struct {
@@ -121,7 +124,7 @@ func cleanupTarget(cfg DiskConfig) {
 		exportPool()
 		return
 	}
-	_ = runQuiet("umount", efiPart)
+	_ = runQuiet("umount", efiPart())
 	_ = runQuiet("umount", mountRoot)
 }
 
@@ -140,10 +143,10 @@ func mountPartitions(cfg DiskConfig) error {
 	if err := run("mount", d.PartitionPath(rootPartNum), mountRoot); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(efiPart, 0o755); err != nil {
+	if err := os.MkdirAll(efiPart(), 0o755); err != nil {
 		return err
 	}
-	return run("mount", d.PartitionPath(espPartNum), efiPart)
+	return run("mount", d.PartitionPath(espPartNum), efiPart())
 }
 
 // copyRootfs copies the live squashfs environment onto the target disk using
@@ -1141,19 +1144,19 @@ func unbindChrootMounts() {
 	}
 }
 
-func run(name string, args ...string) error {
+var run = func(name string, args ...string) error {
 	return runEnv(nil, name, args...)
 }
 
 // runQuiet is run with output discarded, for best-effort probes whose failure
 // is expected and whose stderr would otherwise look like an install fault.
-func runQuiet(name string, args ...string) error {
+var runQuiet = func(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	return cmd.Run()
 }
 
 // runEnv is run with extra environment variables appended to the installer's own.
-func runEnv(env []string, name string, args ...string) error {
+var runEnv = func(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

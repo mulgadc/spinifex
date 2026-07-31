@@ -38,11 +38,20 @@ type Disk struct {
 // virtual, mapped, or removable media. Mirrors Proxmox's hd_list filter.
 var skipPrefixes = []string{"ram", "loop", "md", "dm-", "fd", "sr", "zram", "nbd"}
 
+// The kernel-owned trees the scan reads, indirected so tests can point it at a
+// fixture instead of the running machine's hardware.
+var (
+	sysBlockDir      = "/sys/block"
+	sysClassBlockDir = "/sys/class/block"
+	devByIDDir       = "/dev/disk/by-id"
+	procMountsPath   = "/proc/mounts"
+)
+
 // ListDisks enumerates install-candidate disks from /sys/block. It reads sysfs
 // and blkid only — pool detection is separate (ImportablePools) because it is
 // far slower and not every caller needs it.
 func ListDisks() ([]Disk, error) {
-	entries, err := os.ReadDir("/sys/block")
+	entries, err := os.ReadDir(sysBlockDir)
 	if err != nil {
 		return nil, fmt.Errorf("read /sys/block: %w", err)
 	}
@@ -130,8 +139,7 @@ var byIDPreference = []string{"nvme-", "ata-", "scsi-", "virtio-", "usb-", "wwn-
 
 // buildByIDIndex maps kernel device name to its preferred by-id path.
 func buildByIDIndex() map[string]string {
-	const dir = "/dev/disk/by-id"
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(devByIDDir)
 	if err != nil {
 		return map[string]string{}
 	}
@@ -145,7 +153,7 @@ func buildByIDIndex() map[string]string {
 		if strings.Contains(id, "-part") {
 			continue
 		}
-		target, err := filepath.EvalSymlinks(filepath.Join(dir, id))
+		target, err := filepath.EvalSymlinks(filepath.Join(devByIDDir, id))
 		if err != nil {
 			continue
 		}
@@ -155,7 +163,7 @@ func buildByIDIndex() map[string]string {
 			continue
 		}
 		rank[dev] = r
-		out[dev] = filepath.Join(dir, id)
+		out[dev] = filepath.Join(devByIDDir, id)
 	}
 	return out
 }
@@ -173,7 +181,7 @@ func prefixRank(id string) int {
 // installer's own media, so they can never be selected as install targets.
 func liveMediaDevices() map[string]bool {
 	out := map[string]bool{}
-	data, err := os.ReadFile("/proc/mounts")
+	data, err := os.ReadFile(procMountsPath)
 	if err != nil {
 		return out
 	}
@@ -197,7 +205,7 @@ func liveMediaDevices() map[string]bool {
 // walking /sys/class/block/<part>/.. — the sysfs parent of a partition is its
 // disk. Returns the input unchanged when it is already a whole disk.
 func parentDisk(dev string) string {
-	link, err := filepath.EvalSymlinks("/sys/class/block/" + dev)
+	link, err := filepath.EvalSymlinks(filepath.Join(sysClassBlockDir, dev))
 	if err != nil {
 		return dev
 	}
@@ -232,7 +240,7 @@ func describeContent(dev string) string {
 }
 
 func sysfsString(dev, file string) string {
-	data, err := os.ReadFile(filepath.Join("/sys/block", dev, file))
+	data, err := os.ReadFile(filepath.Join(sysBlockDir, dev, file))
 	if err != nil {
 		return ""
 	}

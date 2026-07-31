@@ -20,6 +20,10 @@ import (
 	"github.com/mulgadc/spinifex/cmd/installer/install"
 )
 
+// listDisks is the block-device scan, indirected so tests can drive selection
+// without real hardware.
+var listDisks = install.ListDisks
+
 // Load returns an install.Config built from SPINIFEX_* environment variables,
 // or nil if SPINIFEX_AUTO is not set to "1" (interactive mode).
 func Load() (*install.Config, error) {
@@ -223,7 +227,7 @@ func parseZFSOpts() (install.ZFSOpts, error) {
 // ("sdb"), device paths or by-id paths; the order given is preserved because
 // RAID10 pairs members in it.
 func disksByName(names []string) ([]install.Disk, error) {
-	available, err := install.ListDisks()
+	available, err := listDisks()
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +307,7 @@ func resolveDisk(target string) (install.Disk, error) {
 // candidateDisks lists the disks an unattended install may erase: fixed, and
 // not the installer's own media.
 func candidateDisks() ([]install.Disk, error) {
-	all, err := install.ListDisks()
+	all, err := listDisks()
 	if err != nil {
 		return nil, err
 	}

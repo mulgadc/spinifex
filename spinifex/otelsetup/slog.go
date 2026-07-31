@@ -9,12 +9,26 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// defaultLevel backs the stdout handler's level. Held in a LevelVar so verbosity can
+// change without reinstalling the handler, which would discard the OTLP bridge Init
+// fans onto whatever default is installed at the time.
+var defaultLevel = new(slog.LevelVar)
+
 // SetDefaultJSONLogger installs the process-wide slog default: JSON to
 // stdout (journald) at the given level, with trace_id/span_id stamping.
+// Call once, before Init; use SetLevel to change verbosity afterwards.
 func SetDefaultJSONLogger(level slog.Level) {
+	defaultLevel.Set(level)
 	slog.SetDefault(slog.New(NewSlogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
+		Level: defaultLevel,
 	}))))
+}
+
+// SetLevel changes the stdout handler's level in place, leaving the handler chain
+// intact. Callers that only need to adjust verbosity must use this: calling
+// SetDefaultJSONLogger again replaces the default and silently unbolts OTLP export.
+func SetLevel(level slog.Level) {
+	defaultLevel.Set(level)
 }
 
 var _ slog.Handler = (*traceHandler)(nil)

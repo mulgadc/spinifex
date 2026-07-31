@@ -171,7 +171,9 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		logLevel = slog.LevelInfo
 	}
 
-	otelsetup.SetDefaultJSONLogger(logLevel)
+	// Adjust the level only. Reinstalling the default logger here would drop the OTLP
+	// bridge Init fanned on at startup, blinding the sink to every line after this.
+	otelsetup.SetLevel(logLevel)
 
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()

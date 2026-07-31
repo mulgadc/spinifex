@@ -28,6 +28,7 @@ resources:
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Instructions](#instructions)
+- [Converting ISO-Installed Nodes](#converting-iso-installed-nodes)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -51,6 +52,7 @@ Servers beyond the third join as compute nodes and do not run a database, which 
 - Minimum 1 NIC per server (2 recommended for production)
 - UDP port 6081 open between hosts (Geneve tunnels)
 - TCP ports 4222, 4248, 6641, 6642 open between hosts (NATS, OVN)
+- TCP ports 6643, 6644 open between database servers (OVN database clustering)
 
 ## Prerequisites
 
@@ -96,15 +98,38 @@ export AWS_REGION=us-east-1
 export AWS_AZ=us-east-1a
 ```
 
+## Converting ISO-Installed Nodes
+
+Skip this section if you installed with the binary installer (Option A).
+
+The ISO installs each server as a **running standalone single-node cluster** — it initializes Spinifex, starts a standalone OVN database, and brings up `spinifex.target` at first boot. That is the right behaviour for a single server, and it means forming a cluster is a conversion rather than a fresh setup. Two extra things are needed:
+
+**Before Step 3**, stop services on every server:
+
+```bash
+sudo systemctl stop spinifex.target
+```
+
+**In Step 4**, pass `--force` to `spx admin init` and `spx admin join`. Servers 2 and 3 each arrived with their own CA and master key from the single-node install, and joining replaces them with server 1's. `--force` is how you confirm that.
+
+That discard is safe here — nothing has been sealed under those keys on a freshly installed node — but it is unrecoverable on a server that has been in service. `spx admin join` refuses without `--force` for exactly this reason.
+
 ## Step 3. Setup OVN Networking
 
-Server 1 runs OVN central and must be set up first. If your WAN interface is already a bridge, setup-ovn.sh auto-detects it. Otherwise use `--wan-bridge=br-wan --wan-iface=eth1` (dedicated WAN NIC).
+All three servers run a clustered OVN database, so the control plane survives the loss of any one of them. Server 1 creates the cluster and must be set up first; servers 2 and 3 join it.
 
-**Server 1:**
+If your WAN interface is already a bridge, setup-ovn.sh auto-detects it. Otherwise use `--wan-bridge=br-wan --wan-iface=eth1` (dedicated WAN NIC).
+
+> [!IMPORTANT]
+> **`--recreate-db` destroys all logical network state** — every logical switch, router, port and ACL, and so every VPC on that node. It is required here because the `ovn-central` package starts a standalone database on install, and a clustered database can only be created from scratch. That is safe on a freshly installed server and is **not** safe on one already running workloads. If you are converting a server that has been in service, back up its NB database first.
+
+**Server 1 — create the cluster:**
 
 ```bash
 sudo /usr/local/share/spinifex/setup-ovn.sh \
   --management \
+  --db-cluster-local-addr=$SPINIFEX_NODE1 \
+  --recreate-db \
   --encap-ip=$SPINIFEX_NODE1
 ```
 
@@ -112,7 +137,10 @@ sudo /usr/local/share/spinifex/setup-ovn.sh \
 
 ```bash
 sudo /usr/local/share/spinifex/setup-ovn.sh \
-  --ovn-remote=tcp:$SPINIFEX_NODE1:6642 \
+  --management \
+  --db-cluster-local-addr=$SPINIFEX_NODE2 \
+  --db-cluster-remote-addr=$SPINIFEX_NODE1 \
+  --recreate-db \
   --encap-ip=$SPINIFEX_NODE2
 ```
 
@@ -120,19 +148,35 @@ sudo /usr/local/share/spinifex/setup-ovn.sh \
 
 ```bash
 sudo /usr/local/share/spinifex/setup-ovn.sh \
-  --ovn-remote=tcp:$SPINIFEX_NODE1:6642 \
+  --management \
+  --db-cluster-local-addr=$SPINIFEX_NODE3 \
+  --db-cluster-remote-addr=$SPINIFEX_NODE1 \
+  --recreate-db \
   --encap-ip=$SPINIFEX_NODE3
 ```
 
-Verify all 3 chassis registered:
+**Servers 4 and beyond** are compute nodes and run no database. Point them at all three database servers so they survive any one of them failing:
 
 ```bash
+sudo /usr/local/share/spinifex/setup-ovn.sh \
+  --ovn-remote=tcp:$SPINIFEX_NODE1:6642,tcp:$SPINIFEX_NODE2:6642,tcp:$SPINIFEX_NODE3:6642 \
+  --encap-ip=$SPINIFEX_NODE4
+```
+
+Verify the database cluster formed, then that all chassis registered:
+
+```bash
+sudo ovn-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound
 sudo ovn-sbctl show
 ```
+
+`cluster/status` should list three servers with one leader. If it reports a standalone database, the cluster did not form — re-check that `--db-cluster-local-addr` was passed on every database server.
 
 ## Step 4. Form the Cluster
 
 Run init and join concurrently — init blocks until all nodes join.
+
+If you installed from the ISO, add `--force` to every command below (see [Converting ISO-Installed Nodes](#converting-iso-installed-nodes)).
 
 **Server 1 — Initialize:**
 
@@ -206,6 +250,20 @@ The init command must still be running when join executes. If init exited, re-ru
 ```bash
 curl -sk https://$SPINIFEX_NODE1:4432/health
 ```
+
+### Join Refuses: "this node is already initialized"
+
+The node has its own cluster configuration — normal for anything installed from the ISO, which initializes a single-node cluster at first boot. Joining replaces that node's CA and master key with the primary's, so it must be confirmed with `--force`.
+
+Safe on a freshly installed node. On one that has been in service it orphans every volume and fragment sealed under the old key, so check before forcing.
+
+### OVN Database Cluster Not Forming
+
+```bash
+sudo ovn-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound
+```
+
+If this reports a standalone database rather than three servers, the database was created before the cluster flags were supplied. A clustered database can only be created from scratch — re-run Step 3 with `--recreate-db`, remembering that it discards all logical network state.
 
 ### OVN Chassis Not Registering
 

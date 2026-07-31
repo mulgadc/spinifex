@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
 
 // fakeClaimVerifier scripts a sequence of GatewayPortClaimed results and counts
@@ -566,5 +568,27 @@ func TestEnsureGuestPortDatapath_ConnectedSBNeverResets(t *testing.T) {
 
 	if f.sbResets != 0 {
 		t.Errorf("sbResets = %d, want 0 (connected SB must never be reset)", f.sbResets)
+	}
+}
+
+// A distributed-NAT gateway LRP is link-local, so the host cannot route to it.
+// Probing it would fail forever and report external connectivity as degraded.
+func TestGatewayLRPIP_LinkLocalIsNotAProbeTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		lrp  *nbdb.LogicalRouterPort
+		want string
+	}{
+		{"nil", nil, ""},
+		{"no networks", &nbdb.LogicalRouterPort{}, ""},
+		{"routable", &nbdb.LogicalRouterPort{Networks: []string{"216.218.163.111/27"}}, "216.218.163.111"},
+		{"link-local", &nbdb.LogicalRouterPort{Networks: []string{"169.254.0.1/30"}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gatewayLRPIP(tc.lrp); got != tc.want {
+				t.Errorf("gatewayLRPIP() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

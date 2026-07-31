@@ -336,6 +336,11 @@ func gatewayLRPIP(lrp *nbdb.LogicalRouterPort) string {
 	if !ok {
 		return ""
 	}
+	// A distributed-NAT gateway LRP is link-local and sits on no host-reachable
+	// segment, so it is not a probe target — reporting none gates the check off.
+	if addr, err := netip.ParseAddr(ip); err == nil && addr.IsLinkLocalUnicast() {
+		return ""
+	}
 	return ip
 }
 

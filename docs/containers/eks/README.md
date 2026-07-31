@@ -265,3 +265,11 @@ The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-
 **`create-cluster` rejected with an authentication-mode error.** `authentication_mode` must be `API`. Remove any `CONFIG_MAP` / `API_AND_CONFIG_MAP` setting and grant access with access entries instead.
 
 **Addon install fails.** Only addons bundled into the registered `eks-node` image install successfully. If you pin an addon version in Terraform, leave `addon_version` unset so Spinifex selects the catalog default.
+
+## Reference Architectures
+
+### EKS AI Platform on Bare Metal: llama.cpp + YOLO on RTX Pro 6000
+
+A complete end-to-end example of Spinifex EKS in production: a GPU-accelerated AI inference platform running on a Supermicro X14 2U with two NVIDIA RTX Pro 6000 Blackwell GPUs. The guide provisions an EKS cluster with two GPU worker nodes via VFIO PCIe passthrough, deploys an OpenAI-compatible LLM API (llama.cpp / Llama 3.2 3B) and a real-time YOLO object-detection stream on separate GPU nodes, and wires them together behind an ALB using IAM, ECR, ACM, and EBS — all with standard AWS tooling and a single `AWS_PROFILE` swap.
+
+→ [EKS AI Platform Reference Architecture](/docs/reference-architectures/rtx-pro-6000-eks)

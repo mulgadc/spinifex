@@ -1,5 +1,5 @@
 ---
-title: "EKS AI Platform on Bare Metal: llama.cpp + YOLO on Spinifex"
+title: "Spinifex EKS AI Platform on Dual RTX Pro 6000 Baremetal"
 description: "Deploy a GPU-accelerated AI inference platform — an OpenAI-compatible LLM API and a real-time CV stream — in Kubernetes on bare-metal hardware, managed entirely with standard AWS tooling."
 category: "Reference Architectures"
 tags:
@@ -38,11 +38,14 @@ This guide walks through the use of Spinifex to deploy a self-contained AI infer
 
 Specifically, we create an EKS cluster with two worker nodes, each consisting of a g7e.2xlarge EC2 instance with an attached GPU via VFIO passthrough, an ALB to route traffic to each node, ECR for storing and managing our workload images, and all of the associated security and certificate management requirements (IAM, ACM) you would expect from real AWS.
 
+<p align="center"><img src="../../../.github/assets/images/rtx6000/platform.png" alt="AI Platform request flow: HTTPS ingress → ALB routing → EKS ai-platform GPU workers"></p>
+
 ### Platform
 
 | Component | Specification |
 |---|---|
-| **Chassis** | Supermicro X14 2U CloudDC with Intel Xeon 6730P |
+| **Chassis** | Supermicro X14 2U CloudDC with 2× Intel Xeon 6730P |
+| **Memory** | 8 × 64 GB DDR5 6400 MHz ECC RDIMM (512 GB total) |
 | **GPUs** | 2× NVIDIA RTX Pro 6000 Blackwell Server Edition (96 GiB GDDR7 each, 192 GiB total) |
 | **Storage** | 4× NVMe SSD: 2× 1.5 TB, 2× 880 GB — one 1.5 TB drive carries the OS; the remaining three back Predastore |
 | **Spinifex instance family** | `g7e` — one RTX Pro 6000 per instance via VFIO PCIe passthrough |
@@ -62,9 +65,7 @@ Both GPU workloads bake their model weights into the Docker image at build time 
 
 `yolo-stream` renders a 1280×720 sample video through YOLO11x once on startup (~25 s), caches the annotated frames in memory, then serves `/stream` from that cache — smooth MJPEG playback decoupled from per-frame inference cost after the initial warm-up.
 
-The two GPU nodes are split one-per-workload. With one RTX Pro 6000 per node and both pods requesting `nvidia.com/gpu: "1"`, the scheduler cannot fit both on the same node, so the split happens naturally without explicit affinity rules.
-
-
+In this case, the two workloads demonstrated could both run comfortably on a single RTX Pro 6000 with ample headroom. However, this reference architecture primarily seeks to show how Spinifex can use EKS to provision infrastructure with resources in mind - With one RTX Pro 6000 per node and both pods requesting `nvidia.com/gpu: "1"`, the scheduler assigns one GPU and one workload per node. Thus if larger models were used (such as Llama 3.3 70B, Q4_K_M, ~40 GiB for the LLM workload), Spinifex's EKS implementation would ensure the worker nodes do not compete for resources.
 
 ## Architecture
 
@@ -88,38 +89,13 @@ All permissions for the LBC and EBS-CSI addons are attached directly to the node
 
 ### On the Spinifex host
 
-**1. Configure host-local VPC networking**
+**1. Install Spinifex**
 
-Spinifex uses bridged networking via OVN. The X14 exposes a single public IP on one physical NIC — before installing Spinifex, ensure `br-wan` exists with the physical NIC enslaved to it, and attach a host-local address range for EC2 instance communication:
+Follow the [Single Node Install](/docs/install) guide. This installs Spinifex and starts all services.
 
-```yaml
-# /etc/netplan/…
-bridges:
-  br-wan:
-    addresses:
-      - 192.168.10.1/24             # VM pool gateway — host-local
-      - <existing-wan-ip>/<prefix>  # existing WAN IP — unchanged
-    routes:
-      - to: default
-        via: <upstream-gateway>
-```
+**2. Configure spinifex.toml and restart services**
 
-Apply with `sudo netplan apply`. For outbound connectivity from instances through the host's WAN interface:
-
-```bash
-sysctl -w net.ipv4.ip_forward=1
-iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o br-wan -j MASQUERADE
-```
-
-The full process is described in the [VPC Networking](/docs/vpc-networking#host-local-subnet-no-upstream-router) guide.
-
-**2. Install Spinifex**
-
-Follow the [Single Node Install](/docs/install) guide. This installs Spinifex and starts all services, however `spinifex.toml` needs to be edited to wire up the bridge created in the previous step, as described in the following section.
-
-**3. Configure spinifex.toml and restart services**
-
-Edit `/etc/spinifex/spinifex.toml` to point the external pool at the bridge address range created in step 1:
+Spinifex uses OVN for bridged networking. EC2 instances receive IP addresses from a pool configured in `spinifex.toml`. For a standard install, reserve a range of addresses from your local network — either a static block or let Spinifex request addresses from an upstream DHCP server:
 
 ```toml
 [network]
@@ -127,11 +103,11 @@ external_mode = "pool"
 
 [[network.external_pools]]
 name        = "wan"
-source      = "static"
-range_start = "192.168.10.2"
-range_end   = "192.168.10.100"
-gateway     = "192.168.10.1"
-prefix_len  = 24
+source      = "static"          # or "dhcp" to use an upstream DHCP server
+range_start = "<pool-start>"
+range_end   = "<pool-end>"
+gateway     = "<upstream-gateway>"
+prefix_len  = <prefix>
 dns_servers = ["8.8.8.8"]
 ```
 
@@ -142,7 +118,9 @@ sudo systemctl restart spinifex.target
 sudo systemctl status spinifex.target
 ```
 
-**4. Bind the GPUs to VFIO**
+See the [VPC Networking](/docs/vpc-networking) guide for full configuration options.
+
+**3. Bind the GPUs to VFIO**
 
 ```bash
 sudo spx admin gpu setup
@@ -157,60 +135,22 @@ lspci -d 10de: -nn
 # Expect: NVIDIA Corporation Device [10de:2bb5] appearing twice
 ```
 
-**5. Attach Predastore storage**
+**4. Attach Predastore storage**
 
-The X14 has four NVMe drives: two 1.5 TB SSDs (one carries the OS) and two ~880 GB SSDs. Predastore is distributed across the three non-OS drives — one storage node per physical drive, with Reed–Solomon redundancy so a single drive failure is recoverable.
+The X14 has four NVMe drives: two 1.5 TB SSDs (one carries the OS) and two ~880 GB SSDs. The OS occupies its own dedicated NVMe; the remaining three drives are pre-formatted and already mounted at `/mnt/nvme-1`, `/mnt/nvme-2`, and `/mnt/nvme-3`. Predastore is distributed across these three drives — one storage node per physical drive, with Reed–Solomon redundancy so a single drive failure is recoverable.
 
-Confirm drive assignments with `lsblk` before proceeding, as device names vary between systems.
+Relocate the Predastore data directories onto the mounted drives:
 
 ```bash
-lsblk   # identify the OS drive and the three data drives
-
-# Stop services so Predastore isn't writing while we relocate its data directories
 sudo systemctl stop spinifex.target
 
-# --- Repeat the block below for each data drive (node-1/nvme-1, node-2/nvme-2, node-3/nvme-3) ---
-
-# Drive 1: non-OS 1.5 TB (e.g. /dev/nvme1n1)
-sudo mkdir -p /mnt/nvme-1
-sudo mount /dev/nvme1n1 /mnt/nvme-1
-sudo mkdir -p /mnt/nvme-1/nodes /mnt/nvme-1/db
-
-sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
-sudo mv /var/lib/spinifex/predastore/distributed/db/node-1    /mnt/nvme-1/db/node-1
-
-sudo ln -s /mnt/nvme-1/nodes/node-1 /var/lib/spinifex/predastore/distributed/nodes/node-1
-sudo ln -s /mnt/nvme-1/db/node-1    /var/lib/spinifex/predastore/distributed/db/node-1
-
-echo "/dev/nvme1n1  /mnt/nvme-1  auto  defaults  0  2" | sudo tee -a /etc/fstab
-
-# Drive 2: first ~880 GB drive (e.g. /dev/nvme2n1)
-sudo mkdir -p /mnt/nvme-2
-sudo mount /dev/nvme2n1 /mnt/nvme-2
-sudo mkdir -p /mnt/nvme-2/nodes /mnt/nvme-2/db
-
-sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-2 /mnt/nvme-2/nodes/node-2
-sudo mv /var/lib/spinifex/predastore/distributed/db/node-2    /mnt/nvme-2/db/node-2
-
-sudo ln -s /mnt/nvme-2/nodes/node-2 /var/lib/spinifex/predastore/distributed/nodes/node-2
-sudo ln -s /mnt/nvme-2/db/node-2    /var/lib/spinifex/predastore/distributed/db/node-2
-
-echo "/dev/nvme2n1  /mnt/nvme-2  auto  defaults  0  2" | sudo tee -a /etc/fstab
-
-# Drive 3: second ~880 GB drive (e.g. /dev/nvme3n1)
-sudo mkdir -p /mnt/nvme-3
-sudo mount /dev/nvme3n1 /mnt/nvme-3
-sudo mkdir -p /mnt/nvme-3/nodes /mnt/nvme-3/db
-
-sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-3 /mnt/nvme-3/nodes/node-3
-sudo mv /var/lib/spinifex/predastore/distributed/db/node-3    /mnt/nvme-3/db/node-3
-
-sudo ln -s /mnt/nvme-3/nodes/node-3 /var/lib/spinifex/predastore/distributed/nodes/node-3
-sudo ln -s /mnt/nvme-3/db/node-3    /var/lib/spinifex/predastore/distributed/db/node-3
-
-echo "/dev/nvme3n1  /mnt/nvme-3  auto  defaults  0  2" | sudo tee -a /etc/fstab
-
-# --- End of per-drive block ---
+for i in 1 2 3; do
+  sudo mkdir -p /mnt/nvme-$i/nodes /mnt/nvme-$i/db
+  sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-$i /mnt/nvme-$i/nodes/node-$i
+  sudo mv /var/lib/spinifex/predastore/distributed/db/node-$i    /mnt/nvme-$i/db/node-$i
+  sudo ln -s /mnt/nvme-$i/nodes/node-$i /var/lib/spinifex/predastore/distributed/nodes/node-$i
+  sudo ln -s /mnt/nvme-$i/db/node-$i    /var/lib/spinifex/predastore/distributed/db/node-$i
+done
 
 sudo systemctl start spinifex.target
 ```
@@ -223,7 +163,9 @@ aws s3 ls
 # Should return without error (empty bucket list is fine)
 ```
 
-**6. Verify the GPU instance type**
+> **Future direction:** Predastore will support ZFS for cross-disk redundancy on a single node, eliminating the need for Step 4 and reserving Predastore's Reed–Solomon for the multi-node level.
+
+**5. Verify the GPU instance type**
 
 ```bash
 sudo spx admin gpu status
@@ -282,6 +224,46 @@ kubectl get nodes
 
 The Makefile wraps `tofu -chdir=workbook apply -var spinifex_endpoint=... -var gpu_instance_type=...` — running Tofu directly is equivalent and lets you pass any additional variables. The workbook provisions `aws_vpc`, `aws_subnet` (two public, two private), `aws_eks_cluster`, `aws_eks_node_group` (two `g7e.2xlarge` nodes, each with a 200 GB Viperblock root volume via `disk_size = 200`), `aws_eks_addon` for LBC and EBS-CSI, three `aws_ecr_repository` resources, three IAM roles, and a self-signed `aws_acm_certificate` — all via Spinifex's AWS-compatible endpoint at `:9999`.
 
+The full workbook is at [`workbook/main.tf`](https://github.com/mulgadc/eks-ai-platform/blob/main/workbook/main.tf). The AWS provider points all standard API calls at Spinifex's endpoint — the same Terraform resources that work on AWS work here unchanged:
+
+```hcl
+provider "aws" {
+  endpoints {
+    ec2 = var.spinifex_endpoint
+    iam = var.spinifex_endpoint
+    sts = var.spinifex_endpoint
+    eks = var.spinifex_endpoint
+    ecr = var.spinifex_endpoint
+    acm = var.spinifex_endpoint
+  }
+}
+
+resource "aws_eks_cluster" "this" {
+  name     = var.cluster_name
+  role_arn = aws_iam_role.cluster.arn
+  version  = var.k8s_version
+
+  access_config {
+    authentication_mode = "API"
+  }
+}
+
+resource "aws_eks_node_group" "gpu_workers" {
+  cluster_name   = aws_eks_cluster.this.name
+  instance_types = [var.gpu_instance_type]  # g7e.2xlarge — one RTX Pro 6000 per node
+  disk_size      = 200
+
+  scaling_config {
+    desired_size = 2
+    min_size     = 2
+    max_size     = 2
+  }
+}
+```
+
+<!-- INCLUDE: workbook/main.tf lang:hcl -->
+
+
 ### 3. Build and push container images
 
 ```bash
@@ -297,6 +279,20 @@ This authenticates to ECR, then builds and pushes all three images:
 The ECR registry URI always includes `:9999` — for example, `<account>.dkr.ecr.ap-southeast-2.<suffix>:9999`. Use the `ecr_registry` Tofu output directly in `docker login` and image references; do not construct the hostname manually.
 
 Image URIs come from `tofu -chdir=workbook output -raw ecr_registry`. ECR authentication uses the same API as AWS: `aws ecr get-login-password` calls `GetAuthorizationToken` against the Spinifex ECR endpoint and returns a short-lived JWT that Docker accepts as a registry password. The `make images` target is equivalent to running those `docker build` and `docker push` commands directly against `$REGISTRY` from that Tofu output.
+
+The three ECR repositories are provisioned by the infra workbook:
+
+```hcl
+locals {
+  ecr_repos = toset(["llm-server", "yolo-stream", "ai-dashboard"])
+}
+
+resource "aws_ecr_repository" "app" {
+  for_each     = local.ecr_repos
+  name         = each.key
+  force_delete = true
+}
+```
 
 ### 4. Sideload images onto GPU worker nodes
 
@@ -367,6 +363,34 @@ ssh -L 8443:$ALB_IP:443 <spinifex-host>
 ```
 
 The workloads module reads cluster coordinates, ECR image URIs, NodePort values, and the ACM cert ARN from the parent module's Tofu state, then creates the NVIDIA GPU Operator `helm_release`, three `kubernetes_deployment_v1` resources, six `kubernetes_service_v1` resources (ClusterIP + NodePort per workload), and three `kubernetes_ingress_v1` resources — all through the Terraform Kubernetes and Helm providers, which authenticate to the cluster via `aws eks get-token`.
+
+The full workloads module is at [`workbook/workloads/main.tf`](https://github.com/mulgadc/eks-ai-platform/blob/main/workbook/workloads/main.tf). Each GPU pod requests one `nvidia.com/gpu` resource — the scheduler enforces the one-per-node split automatically — and all three services share a single ALB provisioned by the Load Balancer Controller via standard Kubernetes ingress annotations:
+
+```hcl
+container {
+  image = local.images.llm_server  # ECR URI from parent module state
+  resources {
+    limits   = { "nvidia.com/gpu" = "1", memory = "8Gi" }
+    requests = { "nvidia.com/gpu" = "1", memory = "4Gi" }
+  }
+}
+
+resource "kubernetes_ingress_v1" "llm" {
+  metadata {
+    annotations = {
+      "alb.ingress.kubernetes.io/group.name"      = local.alb_group
+      "alb.ingress.kubernetes.io/group.order"     = "10"
+      "alb.ingress.kubernetes.io/certificate-arn" = local.cert_arn
+      "alb.ingress.kubernetes.io/listen-ports"    = "[{\"HTTPS\":443}]"
+    }
+  }
+  spec {
+    rule { http { path { path = "/v1"; path_type = "Prefix" } } }
+  }
+}
+```
+
+<!-- INCLUDE: workbook/workloads/main.tf lang:hcl -->
 
 ### Dashboard
 
@@ -441,6 +465,7 @@ Both `llm-server` and `yolo-stream` require a few seconds after container start 
 kubectl -n inference get pods -w
 kubectl -n inference logs -f deploy/llm-server
 ```
+
 
 ## Conclusion
 

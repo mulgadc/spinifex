@@ -1,0 +1,18 @@
+[Unit]
+Description=Mulga EKS control-plane state reporter
+# Publishes K3s health + node_count to the management NATS bus every
+# STATE_REPORT_INTERVAL seconds; the spinifex cluster reconciler consumes this
+# to gate CREATING -> ACTIVE, since the apiserver (bound to the VPC node-ip)
+# is unreachable from the host.
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 30s is well under the reconciler's 90s stale window, so a missed tick does
+# not flap health.
+Environment=STATE_REPORT_INTERVAL=30
+ExecStart=/usr/local/sbin/mulga-eks-state-report
+
+[Install]
+WantedBy=multi-user.target

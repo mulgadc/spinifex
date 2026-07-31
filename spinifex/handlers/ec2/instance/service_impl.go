@@ -696,7 +696,13 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 							slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI after public-IP allocation failure",
 								"eniId", *eni.NetworkInterfaceId, "err", delErr)
 						}
-						lastRunErr = errors.New(awserrors.ErrorInsufficientAddressCapacity)
+						// Carry the allocator's own error rather than a flat
+						// capacity code: the gateway resolves the AWS code out
+						// of the wrap chain, so a genuinely exhausted pool still
+						// surfaces InsufficientAddressCapacity while an upstream
+						// DHCP or IPAM fault reports as itself instead of
+						// wearing a capacity code it did not earn.
+						lastRunErr = fmt.Errorf("allocate public IP for %s: %w", instance.ID, allocErr)
 						if reservationID == "" {
 							s.resourceMgr.Deallocate(instanceType)
 						} else {
@@ -750,7 +756,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			}
 		}
 		errCode := awserrors.ValidErrorCodeFromError(lastRunErr)
-		slog.ErrorContext(ctx, "PrepareRunInstances: failed to create minimum instances", "created", len(instances), "minCount", minCount, "err", errCode)
+		// Log the cause next to the code: collapsing to the code alone is how
+		// an upstream DHCP fault came to be recorded fleet-wide as an exhausted
+		// address pool, with nothing left in the record to contradict it.
+		slog.ErrorContext(ctx, "PrepareRunInstances: failed to create minimum instances",
+			"created", len(instances), "minCount", minCount, "code", errCode, "err", lastRunErr)
 		return nil, nil, nil, errors.New(errCode)
 	}
 

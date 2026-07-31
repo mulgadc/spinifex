@@ -72,6 +72,63 @@ func TestReconcile_AdoptsRunningLabeledContainer(t *testing.T) {
 	waitedFor(t, rt, containerID("t-001", "web"))
 }
 
+// A task whose container died while the agent was down must be reported STOPPED,
+// not silently skipped. The exit-wait is cancelled on agent shutdown, so nothing
+// else ever reports that exit: skipping it leaves the gateway holding the task
+// RUNNING forever, its service never places a replacement, and the load
+// balancer target stays unhealthy with no path back.
+func TestReconcile_ReportsTaskWhoseContainerDied(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{
+		Containers: []ctrruntime.Container{
+			adoptedContainer("t-dead", "web", "default", "t-dead", testTaskRole, "52:54:00:de:ad:02", false),
+		},
+	}
+	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
+
+	adopted := a.reconcile(context.Background())
+
+	if n := countStatus(cp.taskStates(), "t-dead", bus.TaskStatusStopped); n != 1 {
+		t.Errorf("STOPPED reports for t-dead = %d, want 1", n)
+	}
+	if n := countStatus(cp.taskStates(), "t-dead", bus.TaskStatusRunning); n != 0 {
+		t.Errorf("t-dead must not be reported RUNNING, got %d such reports", n)
+	}
+	// Seeded so a re-delivered assignment for the dead task is acked, not re-run.
+	if !adopted["t-dead"] {
+		t.Errorf("t-dead not seeded into the adopted set; got %v", adopted)
+	}
+	if want := containerID("t-dead", "web"); !slices.Contains(rt.Removed, want) {
+		t.Errorf("leftover container %s not removed; removed=%v", want, rt.Removed)
+	}
+}
+
+// A task with one live and one dead container is still running: the live half is
+// re-adopted and the re-attached exit-wait reports the dead one when it is
+// reaped, so reconcile must not declare the whole task STOPPED.
+func TestReconcile_PartiallyDeadTaskStaysRunning(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{
+		WaitErr: errors.New("blocked"),
+		Containers: []ctrruntime.Container{
+			adoptedContainer("t-mixed", "web", "default", "t-mixed", testTaskRole, "52:54:00:de:ad:03", true),
+			adoptedContainer("t-mixed", "sidecar", "default", "t-mixed", testTaskRole, "52:54:00:de:ad:03", false),
+		},
+	}
+	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
+
+	a.reconcile(context.Background())
+
+	if n := countStatus(cp.taskStates(), "t-mixed", bus.TaskStatusRunning); n != 1 {
+		t.Errorf("RUNNING reports for t-mixed = %d, want 1", n)
+	}
+	if n := countStatus(cp.taskStates(), "t-mixed", bus.TaskStatusStopped); n != 0 {
+		t.Errorf("t-mixed must not be reported STOPPED while a container still runs, got %d", n)
+	}
+}
+
 // pollAssignments seeded with an adopted task acks its re-delivered assignment
 // but does not re-run it, while a genuinely new task still dispatches.
 func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
@@ -123,22 +180,34 @@ func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
 	}
 }
 
-// Containers for another cluster or with a stopped task are not adopted.
-func TestReconcile_FiltersOtherClusterAndStopped(t *testing.T) {
+// Containers belonging to another cluster are ignored entirely: this agent
+// speaks for its own cluster only, and must neither adopt nor report them.
+//
+// A stopped container of this cluster IS handled — see
+// TestReconcile_ReportsTaskWhoseContainerDied. It lands in the adopted set so
+// its re-delivered assignment is acked rather than re-run, after reconcile has
+// reported the task STOPPED.
+func TestReconcile_IgnoresOtherClusterContainers(t *testing.T) {
+	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{
 		WaitErr: errors.New("blocked"),
 		Containers: []ctrruntime.Container{
 			adoptedContainer("t-other", "web", "other", "", "", "", true),
-			adoptedContainer("t-stop", "web", "default", "", "", "", false),
+			adoptedContainer("t-other-dead", "web", "other", "", "", "", false),
 			adoptedContainer("t-ok", "web", "default", "", "", "", true),
 		},
 	}
-	a := newAgent(config{}, testIdentity(), &fakeCP{}, rt, rt, nil)
+	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
 
 	adopted := a.reconcile(context.Background())
 
 	if len(adopted) != 1 || !adopted["t-ok"] {
 		t.Fatalf("adopted = %v, want only t-ok", adopted)
+	}
+	for _, id := range []string{"t-other", "t-other-dead"} {
+		if n := countStatus(cp.taskStates(), id, bus.TaskStatusStopped); n != 0 {
+			t.Errorf("reported %d STOPPED states for another cluster's task %s, want 0", n, id)
+		}
 	}
 }
 

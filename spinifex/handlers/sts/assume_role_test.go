@@ -540,23 +540,144 @@ func TestAssumeRole_PrincipalArray_AnyEntryMatches(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestAssumeRole_ServicePrincipal_NeverMatchesInV1(t *testing.T) {
+func TestAssumeRole_ServicePrincipal_NotMatchedByUserCaller(t *testing.T) {
 	svc, _ := newTestSetup(t)
-	// AWS-only Principal alongside Service entry — the Service entry skips at
-	// the entry level (no service principals in v1), the AWS entry decides.
+	// AWS-only Principal alongside Service entry — an IAM user is attributed no
+	// service principal, so the Service entry skips and the AWS entry decides.
 	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com","AWS":%q},"Action":"sts:AssumeRole"}]}`, testCallerARN())
 	role := createRoleInAccount(t, svc, testCallerAccountID, "mixed-allow", policy)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
 	require.NoError(t, err)
 
-	// Service-only policy → never matches a non-service caller in v1.
+	// Service-only policy → never matches a caller with no attributed service.
 	svcOnly := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	role2 := createRoleInAccount(t, svc, testCallerAccountID, "svc-only", svcOnly)
 	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role2.Arn, "sess"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// ----- ECS task-role attribution (HTTPS AssumeRole path) -----------------
+
+// trustPolicyAllowingECSTasks is the trust policy AWS documents for an ECS task
+// or execution role — a Service principal and nothing else.
+func trustPolicyAllowingECSTasks() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+}
+
+// instanceRoleCallerARN is the caller ARN the gateway resolves for the in-guest
+// ECS agent: an assumed-role session of the container-instance role.
+func instanceRoleCallerARN(accountID, instanceID string) string {
+	return fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s/%s", accountID, ecsInstanceRoleName, instanceID)
+}
+
+func TestAssumeRole_ECSTasks_ContainerInstanceCaller_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role", trustPolicyAllowingECSTasks())
+
+	caller := instanceRoleCallerARN(testCallerAccountID, testInstanceID)
+	out, err := svc.AssumeRole(testCallerAccountID, caller, ecsInstanceRoleName,
+		basicAssumeRoleInput(*role.Arn, "ecs-task-1"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/task-role/ecs-task-1", testCallerAccountID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+}
+
+func TestAssumeRole_ECSTasks_ServiceArrayForm_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ecs-tasks.amazonaws.com"]},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-arr", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-1"))
+	require.NoError(t, err)
+}
+
+// The escalation this guards: a task holds a session of its own task role, not of
+// the container-instance role, so it cannot claim ecs-tasks.amazonaws.com and
+// reach a sibling task's role.
+func TestAssumeRole_ECSTasks_TaskRoleCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	victim := createRoleInAccount(t, svc, testCallerAccountID, "victim-task-role", trustPolicyAllowingECSTasks())
+
+	taskCaller := fmt.Sprintf("arn:aws:sts::%s:assumed-role/attacker-task-role/ecs-abc123", testCallerAccountID)
+	_, err := svc.AssumeRole(testCallerAccountID, taskCaller, "attacker-task-role",
+		basicAssumeRoleInput(*victim.Arn, "ecs-task-2"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-user", trustPolicyAllowingECSTasks())
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// A container instance is attributed the service principal only for roles in its
+// own account, so one account's agent cannot reach another's task roles.
+func TestAssumeRole_ECSTasks_CrossAccountInstanceCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCrossAccountID, "task-role-x", trustPolicyAllowingECSTasks())
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-3"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// Attribution is per-principal, not blanket: a container instance is ecs-tasks
+// only, so an EC2-trusting role stays reachable from IMDS alone.
+func TestAssumeRole_ECSTasks_InstanceCallerCannotClaimEC2(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-trust", trustPolicyAllowingEC2Service())
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-4"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[` +
+		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},` +
+		`{"Effect":"Deny","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-denied", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-5"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+func TestServiceSourcesForCaller(t *testing.T) {
+	const acct = testCallerAccountID
+	cases := []struct {
+		name      string
+		callerARN string
+		want      []string
+	}{
+		{"container_instance", instanceRoleCallerARN(acct, testInstanceID), []string{ecsTasksServicePrincipal}},
+		{"empty_caller", "", nil},
+		{"iam_user", testCallerARN(), nil},
+		{"iam_role_arn", fmt.Sprintf("arn:aws:iam::%s:role/%s", acct, ecsInstanceRoleName), nil},
+		{"other_role_session", fmt.Sprintf("arn:aws:sts::%s:assumed-role/other/%s", acct, testInstanceID), nil},
+		{"role_name_prefix_only", fmt.Sprintf("arn:aws:sts::%s:assumed-role/%sX/%s", acct, ecsInstanceRoleName, testInstanceID), nil},
+		{"cross_account", instanceRoleCallerARN(testCrossAccountID, testInstanceID), nil},
+		{"no_session_segment", fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s", acct, ecsInstanceRoleName), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, serviceSourcesForCaller(tc.callerARN, acct))
+		})
+	}
 }
 
 // ----- AssumeRoleForInstance (IMDS in-process path) ----------------------
@@ -598,6 +719,17 @@ func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	role := createRoleInAccount(t, svc, testCallerAccountID, "lambda-role", policy)
+
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// Attribution does not leak between entry points: IMDS is ec2.amazonaws.com only,
+// so an ECS task role is not assumable as an instance role.
+func TestAssumeRoleForInstance_ECSTasksService_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "imds-task-role", trustPolicyAllowingECSTasks())
 
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
 	require.Error(t, err)
@@ -720,7 +852,7 @@ func TestEvalTrustPolicy_CorruptDocReturnsError(t *testing.T) {
 	// Stored docs are validated upstream; reaching evalTrustPolicy with a
 	// malformed doc indicates corruption — must fail closed and NOT collapse
 	// to AccessDenied (which would hide the corruption from operators).
-	err := evalTrustPolicy(`{not json`, testCallerARN(), "")
+	err := evalTrustPolicy(`{not json`, testCallerARN(), nil)
 	require.Error(t, err)
 	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error(),
 		"corrupt doc must not be reported as AccessDenied — operators need to see the corruption signal")

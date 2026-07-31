@@ -61,3 +61,45 @@ func TestWriteCertFiles_RejectsEmptyPEM(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty PEM")
 }
+
+func TestPruneCertFiles_RemovesUndeliveredPEM(t *testing.T) {
+	a := newCertTestAgent(t)
+	kept := filepath.Join(a.certDir, "lb-1-lst-1.pem")
+	stale := filepath.Join(a.certDir, "lb-1-lst-1-cert_bbbb.pem")
+	require.NoError(t, a.writeCertFiles(a.certDir, []certFile{
+		{Path: kept, PEM: "LEAF\nKEY\n"},
+		{Path: stale, PEM: "OTHER\nKEY\n"},
+	}))
+
+	// The next poll delivers only the default cert, as after a detach.
+	require.NoError(t, a.pruneCertFiles(a.certDir, []certFile{{Path: kept, PEM: "LEAF\nKEY\n"}}))
+
+	assert.FileExists(t, kept)
+	_, err := os.Stat(stale)
+	assert.True(t, os.IsNotExist(err), "a detached certificate's private key must not be left on disk")
+}
+
+// A listener switched from HTTPS to HTTP delivers no certs at all, which is the
+// case writeCertFiles short-circuits — pruning still has to run.
+func TestPruneCertFiles_EmptyDeliverySetClearsDir(t *testing.T) {
+	a := newCertTestAgent(t)
+	stale := filepath.Join(a.certDir, "lb-1-lst-1.pem")
+	require.NoError(t, a.writeCertFiles(a.certDir, []certFile{{Path: stale, PEM: "LEAF\nKEY\n"}}))
+
+	require.NoError(t, a.pruneCertFiles(a.certDir, nil))
+
+	_, err := os.Stat(stale)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestPruneCertFiles_LeavesNonPEMAndMissingDirAlone(t *testing.T) {
+	a := newCertTestAgent(t)
+	other := filepath.Join(a.certDir, "haproxy.cfg")
+	require.NoError(t, os.WriteFile(other, []byte("x"), 0o600))
+
+	require.NoError(t, a.pruneCertFiles(a.certDir, nil))
+	assert.FileExists(t, other, "pruning must not touch an engine's own files")
+
+	a.certDir = filepath.Join(t.TempDir(), "does-not-exist")
+	assert.NoError(t, a.pruneCertFiles(a.certDir, nil), "a dir that was never created is not an error")
+}

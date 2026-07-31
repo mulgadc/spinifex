@@ -1,0 +1,19 @@
+# mulga-ebs-byid and mulga-mgmt-net ship on every image regardless of profile
+# composition (see mkosi.conf and mkosi.postinst.chroot in this directory) —
+# udev-driven and fw_cfg-gated respectively, so both are inert until a real
+# launch-time signal appears, and enabling them unconditionally costs nothing
+# on a guest that never sees one.
+#
+# This has to be a preset file rather than the postinst's `systemctl enable`:
+# mkosi runs preset-all after every profile's postinst, resetting every unit to
+# policy and discarding whatever the postinst asked for. With no policy file at
+# all the fallthrough is "enable" anyway, so this changes nothing about the
+# image shipped today — but that "today" only holds because nothing
+# contradicts the default, and stating it here means an upstream package
+# change can't silently flip it.
+#
+# Numbered ahead of eks-common's 30-, eks-server's 40- and eks-agent's 50-:
+# none of those name these units, so there is no first-match-wins interaction,
+# but the ordering documents that this is the base layer every profile builds on.
+enable mulga-ebs-byid.service
+enable mulga-mgmt-net.service

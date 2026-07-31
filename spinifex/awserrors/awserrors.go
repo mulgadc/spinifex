@@ -1,6 +1,10 @@
 package awserrors
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 type ErrorMessage struct {
 	HTTPCode int
@@ -374,6 +378,20 @@ var (
 	ErrorResourceNotFound    = "ResourceNotFound"
 	ErrorEKSResourceInUse    = "ResourceInUseException"
 	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
+	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
+	// wire code "ResourceInUseException", so this is a distinct, self-documenting
+	// name for ACM call sites rather than a second ErrorLookup entry — ErrorLookup
+	// is keyed by wire code across every service, so it can only hold one message
+	// per code. Naming it ErrorACMResourceInUse stops an ACM call site reading
+	// "EKS" while making no claim that the returned message text is ACM-flavored;
+	// it is still EKS's "cluster already exists" wording until ErrorLookup (or its
+	// caller in gateway.ErrorHandler) is keyed per-service instead of globally.
+	ErrorACMResourceInUse = ErrorEKSResourceInUse
+	// ErrorACMRequestInProgress is what GetCertificate returns for a certificate
+	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
+	// client polling for the body can tell "not ready" apart from "not mine".
+	ErrorACMRequestInProgress = "RequestInProgressException"
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
@@ -457,6 +475,25 @@ var (
 	ErrorIAMInvalidInput            = ErrorInvalidInput // alias for IAM usage
 	ErrorIAMMalformedPolicyDocument = "MalformedPolicyDocument"
 	ErrorAccessDenied               = "AccessDenied"
+
+	// RDS-specific error codes. The "Fault" suffix is AWS's own for the group
+	// lookups, so the SDK's typed error matching round-trips.
+	ErrorDBInstanceNotFound       = "DBInstanceNotFound"
+	ErrorDBInstanceAlreadyExists  = "DBInstanceAlreadyExists"
+	ErrorDBInstanceInvalidState   = "InvalidDBInstanceState"
+	ErrorDBSnapshotAlreadyExists  = "DBSnapshotAlreadyExists"
+	ErrorDBSnapshotNotFound       = "DBSnapshotNotFound"
+	ErrorDBSnapshotInvalidState   = "InvalidDBSnapshotState"
+	ErrorDBSubnetGroupNotFound    = "DBSubnetGroupNotFoundFault"
+	ErrorDBParameterGroupNotFound = "DBParameterGroupNotFound"
+	ErrorDBInvalidVPCNetworkState = "InvalidVPCNetworkStateFault"
+
+	ErrorDBSubnetGroupAlreadyExists    = "DBSubnetGroupAlreadyExists"
+	ErrorDBSubnetGroupInvalidState     = "InvalidDBSubnetGroupStateFault"
+	ErrorDBSubnetGroupDoesNotCoverAZs  = "DBSubnetGroupDoesNotCoverEnoughAZs"
+	ErrorDBSubnetInvalid               = "InvalidSubnet"
+	ErrorDBParameterGroupAlreadyExists = "DBParameterGroupAlreadyExists"
+	ErrorDBParameterGroupInvalidState  = "InvalidDBParameterGroupState"
 
 	// ECR-specific error codes.
 	ErrorRepositoryNotFound       = "RepositoryNotFoundException"
@@ -544,6 +581,14 @@ func ResolveErrorCode(err error) (string, bool) {
 		return ResolveErrorCode(wrapped.Unwrap())
 	}
 	return "", false
+}
+
+// Errorf returns an error carrying an AWS error code where ResolveErrorCode can
+// find it, alongside a message for the logs and the traces. Formatting the code
+// into the message with %s instead leaves it unresolvable, so a handler's 400
+// reaches the client as a 500 with its own code stripped.
+func Errorf(code, format string, args ...any) error {
+	return fmt.Errorf(format+": %w", append(args, errors.New(code))...)
 }
 
 // ValidErrorCodeFromError resolves err or returns ErrorServerInternal.
@@ -779,6 +824,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidNatGatewayIDNotFound:                           {HTTPCode: 404, Message: "The specified NAT gateway ID does not exist. Ensure that you specify the AWS Region in which the NAT gateway is located, if it's not in the default Region."},
 	ErrorInvalidNetworkAclEntryNotFound:                        {HTTPCode: 404, Message: "The specified network ACL entry does not exist."},
 	ErrorACMInvalidArn:                                         {HTTPCode: 400, Message: "The requested Amazon Resource Name (ARN) does not refer to an existing resource."},
+	ErrorACMRequestInProgress:                                  {HTTPCode: 400, Message: "The certificate request is in process and the certificate in your account is not yet available."},
 	ErrorInvalidNetworkAclIDNotFound:                           {HTTPCode: 404, Message: "The specified network ACL does not exist. Ensure that you specify the AWS Region in which the network ACL is located, if it's not in the default Region."},
 	ErrorInvalidNetworkAclIdMalformed:                          {HTTPCode: 400, Message: "The specified network ACL ID is malformed. Ensure that you provide the ID in the form acl-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidNetworkInterfaceInUse:                          {HTTPCode: 409, Message: "The specified interface is currently in use and cannot be deleted or attached to another instance. Ensure that you have detached the network interface first. If a network interface is in use, you may also receive the InvalidParameterValue error."},
@@ -1022,6 +1068,24 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorIAMLimitExceeded:           {HTTPCode: 409, Message: "The request was rejected because it attempted to create resources beyond the current AWS account limits."},
 	ErrorIAMMalformedPolicyDocument: {HTTPCode: 400, Message: "The policy document is malformed."},
 	ErrorAccessDenied:               {HTTPCode: 403, Message: "User is not authorized to perform this action."},
+
+	// RDS error codes
+	ErrorDBInstanceNotFound:       {HTTPCode: 404, Message: "DBInstanceIdentifier does not refer to an existing DB instance."},
+	ErrorDBInstanceAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB instance with the given identifier."},
+	ErrorDBInstanceInvalidState:   {HTTPCode: 400, Message: "The DB instance is not in a state that allows the requested operation."},
+	ErrorDBSnapshotAlreadyExists:  {HTTPCode: 400, Message: "The user already has a DB snapshot with the given identifier."},
+	ErrorDBSnapshotNotFound:       {HTTPCode: 404, Message: "DBSnapshotIdentifier does not refer to an existing DB snapshot."},
+	ErrorDBSnapshotInvalidState:   {HTTPCode: 400, Message: "The DB snapshot is not in a state that allows the requested operation."},
+	ErrorDBSubnetGroupNotFound:    {HTTPCode: 404, Message: "DBSubnetGroupName does not refer to an existing DB subnet group."},
+	ErrorDBParameterGroupNotFound: {HTTPCode: 404, Message: "DBParameterGroupName does not refer to an existing DB parameter group."},
+	ErrorDBInvalidVPCNetworkState: {HTTPCode: 400, Message: "The DB subnet group does not cover all Availability Zones after it is created because of changes that were made."},
+
+	ErrorDBSubnetGroupAlreadyExists:    {HTTPCode: 400, Message: "The user already has a DB subnet group with the given name."},
+	ErrorDBSubnetGroupInvalidState:     {HTTPCode: 400, Message: "The DB subnet group is not in a state that allows the requested operation."},
+	ErrorDBSubnetGroupDoesNotCoverAZs:  {HTTPCode: 400, Message: "The DB subnet group does not cover enough Availability Zones."},
+	ErrorDBSubnetInvalid:               {HTTPCode: 400, Message: "The requested subnet is not valid, or multiple subnets were requested that are not all in a common VPC."},
+	ErrorDBParameterGroupAlreadyExists: {HTTPCode: 400, Message: "The user already has a DB parameter group with the given name."},
+	ErrorDBParameterGroupInvalidState:  {HTTPCode: 400, Message: "The DB parameter group is in use or is in an invalid state. It cannot be deleted."},
 
 	// ECR error codes
 	ErrorRepositoryNotFound:       {HTTPCode: 400, Message: "The repository could not be found. Check the spelling of the specified repository and ensure that you are performing operations on the correct registry."},

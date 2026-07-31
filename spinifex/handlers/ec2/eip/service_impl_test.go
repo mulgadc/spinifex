@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -68,6 +69,34 @@ func TestEIP_AllocateFromSpecificPool(t *testing.T) {
 	assert.NotEmpty(t, *out.AllocationId)
 	assert.Equal(t, "vpc", *out.Domain)
 	assert.NotEmpty(t, *out.PublicIp)
+}
+
+// A named pool that does not exist must surface the allocator's own error
+// rather than a flat capacity code, so an upstream fault is not misreported
+// as a genuinely exhausted pool.
+func TestEIP_AllocateFromNamedPoolThatDoesNotExist(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
+		PublicIpv4Pool: aws.String("no-such-pool"),
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+// Once the default pool's ten allocable addresses are exhausted, the eleventh
+// allocation must still resolve to InsufficientAddressCapacity — the wrap
+// added around the allocator's error must not swallow the AWS error code.
+func TestEIP_AllocateFromExhaustedDefaultPool(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	for range 10 {
+		_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+		require.NoError(t, err)
+	}
+
+	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestEIP_Release(t *testing.T) {

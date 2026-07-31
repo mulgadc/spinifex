@@ -1,0 +1,27 @@
+# Role-selected EKS services start disabled; the first-boot selector enables
+# whichever set the launch asked for.
+#
+# This has to be a preset file rather than a `systemctl disable` in a postinst.
+# mkosi applies presets AFTER every profile's postinst has run, and preset-all
+# resets every unit to policy — so any enable or disable a postinst performs is
+# discarded moments later. With no policy file the fallthrough is "enable", which
+# is why an unconfigured image boots a control plane and a worker at once.
+#
+# Numbered 40 so it sorts ahead of eks-agent's 50-, which enables k3s-agent for
+# agent-only images. First match wins, so on the unified image this file decides
+# and k3s-agent stays off until the selector turns it on.
+# The selector itself, and the snapshot timers, are unconditional — the timers
+# because the snapshot script self-guards on the agent role, exactly as the crond
+# entries they replace did.
+enable eks-node-role.service
+enable mulga-eks-etcd-snapshot-daily.timer
+enable mulga-eks-etcd-snapshot-15min.timer
+
+disable k3s.service
+disable k3s-agent.service
+disable eks-token-webhook.service
+disable konnectivity-server.service
+disable k3s-first-boot.service
+disable mulga-eks-addon-sync.service
+disable mulga-eks-state-report.service
+disable mulga-eks-k3s-recovery.service

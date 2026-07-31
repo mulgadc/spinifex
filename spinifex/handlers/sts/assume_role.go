@@ -41,8 +41,18 @@ const (
 	principalTypeUser = "user"
 
 	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance.
-	// The HTTPS AssumeRole path supplies an empty principalSource, so service principals never match there.
+	// It is attributed only on the in-process IMDS path, never over HTTPS.
 	ec2ServicePrincipal = "ec2.amazonaws.com"
+
+	// ecsTasksServicePrincipal is the trust-policy principal AWS documents for ECS
+	// task and execution roles. It is attributed to a container-instance caller,
+	// the only identity the in-guest ECS agent can sign an AssumeRole with.
+	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
+
+	// ecsInstanceRoleName is the fixed role the ECS control plane attaches to every
+	// container instance. Duplicated from handlers_ecs, which cannot be imported
+	// here: it lives on the daemon side of the awsgw trust boundary.
+	ecsInstanceRoleName = "ecsInstanceRole"
 
 	minDurationSeconds     int64 = 900
 	maxDurationSeconds     int64 = 43200
@@ -140,7 +150,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 
 // assumeRoleForCaller is the shared core of AssumeRole and AssumeRoleForInstance:
 // resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
-// principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
+// principalSource is "" for HTTPS (derived from callerARN), ec2.amazonaws.com for IMDS.
 func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
@@ -170,7 +180,14 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, principalSource); err != nil {
+	// IMDS supplies its own synthesised principal; HTTPS derives one from the
+	// authenticated SigV4 caller, never from the request body.
+	sources := []string{principalSource}
+	if principalSource == "" {
+		sources = serviceSourcesForCaller(callerARN, roleAccountID)
+	}
+
+	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, sources); err != nil {
 		return nil, err
 	}
 
@@ -198,7 +215,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 // evalTrustPolicy implements AWS's explicit-deny-wins semantics: first pass scans all
 // Deny statements, second pass scans all Allows. A single-pass loop would skip a later
 // Deny and silently grant access.
-func evalTrustPolicy(docJSON, callerARN, principalSource string) error {
+func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
 		// Docs are validated at write time; reaching here implies on-disk corruption.
@@ -212,7 +229,7 @@ func evalTrustPolicy(docJSON, callerARN, principalSource string) error {
 		if !matchTrustAction(stmt.Action) {
 			continue
 		}
-		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSource)
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSources)
 		if err != nil {
 			return err
 		}
@@ -228,7 +245,7 @@ func evalTrustPolicy(docJSON, callerARN, principalSource string) error {
 		if !matchTrustAction(stmt.Action) {
 			continue
 		}
-		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSource)
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSources)
 		if err != nil {
 			return err
 		}
@@ -249,9 +266,30 @@ func matchTrustAction(actions []string) bool {
 	return false
 }
 
+// serviceSourcesForCaller returns the service principals an authenticated HTTPS
+// caller may be attributed to. Attribution comes from the SigV4 identity alone, so
+// a caller cannot name its own service; an unrecognised caller gets none.
+func serviceSourcesForCaller(callerARN, roleAccountID string) []string {
+	caller, ok := parsePrincipalARN(callerARN)
+	if !ok || caller.service != "sts" || caller.account != roleAccountID {
+		return nil
+	}
+	tail, ok := strings.CutPrefix(caller.resource, "assumed-role/")
+	if !ok {
+		return nil
+	}
+	roleName, _, ok := strings.Cut(tail, "/")
+	if !ok || roleName != ecsInstanceRoleName {
+		return nil
+	}
+	// The ECS agent holds only its container-instance role, and the roles it asks
+	// for are the task/execution roles the control plane placed on that instance.
+	return []string{ecsTasksServicePrincipal}
+}
+
 // matchTrustPrincipal evaluates each Principal key as an OR. AWS matches callerARN;
-// Service matches principalSource (IMDS path only); unsupported keys (Federated) skip.
-func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string) (bool, error) {
+// Service matches the caller's attributed principals; unsupported keys (Federated) skip.
+func matchTrustPrincipal(raw json.RawMessage, callerARN string, principalSources []string) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
 	}
@@ -275,7 +313,7 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string)
 		}
 	}
 	if svcRaw, ok := m["Service"]; ok {
-		match, err := matchServicePrincipal(svcRaw, principalSource)
+		match, err := matchServicePrincipal(svcRaw, principalSources)
 		if err != nil {
 			return false, err
 		}
@@ -286,21 +324,27 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string)
 	return false, nil
 }
 
-// matchServicePrincipal matches a Service principal against the synthesised caller.
-// Only the EC2 service principal is trusted; any other principalSource is denied.
-func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, error) {
-	if principalSource != ec2ServicePrincipal {
+// matchServicePrincipal matches a Service clause against the principals the caller
+// was attributed. A caller with no attributed principals never matches, so naming a
+// service in the policy is not on its own enough to be assumable.
+func matchServicePrincipal(raw json.RawMessage, principalSources []string) (bool, error) {
+	if len(principalSources) == 0 {
 		return false, nil
 	}
 	var single string
 	if err := json.Unmarshal(raw, &single); err == nil {
-		return single == principalSource, nil
+		return slices.Contains(principalSources, single), nil
 	}
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
 	}
-	return slices.Contains(arr, principalSource), nil
+	for _, svc := range arr {
+		if slices.Contains(principalSources, svc) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {

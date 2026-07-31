@@ -48,6 +48,10 @@ type IGWManager interface {
 	// SNATs the instance, so the reroute alone lets the inbound connection's reply
 	// (and instance-initiated egress) bypass the subnet drop gate. Idempotent.
 	EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
+	// RebindGatewayIP moves the VPC gateway LRP onto a new external address
+	// after its DHCP lease came back on a different IP. Idempotent; a no-op
+	// when no gateway port is attached.
+	RebindGatewayIP(ctx context.Context, vpcID, newIP string, prefixLen int) error
 }
 
 // RoutedIngressHooks deliver host-side ingress plumbing in routed-NAT mode:
@@ -286,6 +290,60 @@ func (m *igwManager) ensureRoutedLeg(ctx context.Context, vpcID, gwLrpIP string)
 			return fmt.Errorf("install routed ingress route %s via %s: %w", vpcCIDR, gwLrpIP, err)
 		}
 	}
+	return nil
+}
+
+// RebindGatewayIP repoints the VPC gateway LRP at newIP. The LRP address is
+// otherwise written once at attach and never revisited, so a lease re-issued on
+// a different IP would leave the port answering ARP for an address nothing
+// renews — burning it upstream and losing egress once the server reassigns it.
+func (m *igwManager) RebindGatewayIP(ctx context.Context, vpcID, newIP string, prefixLen int) error {
+	switch {
+	case vpcID == "":
+		return errors.New("RebindGatewayIP: vpcID required")
+	case newIP == "":
+		return errors.New("RebindGatewayIP: newIP required")
+	case prefixLen <= 0:
+		return fmt.Errorf("RebindGatewayIP: vpc %s: prefixLen must be positive, got %d", vpcID, prefixLen)
+	}
+
+	// A gw-lrp lease only exists because AttachIGW allocated one, so a missing
+	// port means either an unreachable OVSDB or a detach that kept the lease —
+	// both leave an address held with no owner, so neither is swallowed here.
+	gwPortName := topology.GatewayRouterPort(vpcID)
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, gwPortName)
+	if err != nil {
+		return fmt.Errorf("get gateway port %s to rebind onto %s: %w", gwPortName, newIP, err)
+	}
+	if lrp == nil {
+		return fmt.Errorf("gateway port %s absent; cannot rebind vpc %s onto %s", gwPortName, vpcID, newIP)
+	}
+
+	network := fmt.Sprintf("%s/%d", newIP, prefixLen)
+	if len(lrp.Networks) == 1 && lrp.Networks[0] == network && lrp.ExternalIDs[gatewayIPExtIDKey] == newIP {
+		return nil
+	}
+	oldNetworks := lrp.Networks
+	lrp.Networks = []string{network}
+	if lrp.ExternalIDs == nil {
+		lrp.ExternalIDs = map[string]string{}
+	}
+	lrp.ExternalIDs[gatewayIPExtIDKey] = newIP
+	if err := m.ovn.UpdateLogicalRouterPort(ctx, lrp); err != nil {
+		return fmt.Errorf("rebind gateway port %s to %s: %w", gwPortName, network, err)
+	}
+
+	// Routed mode pins the VPC SNAT and the host ingress route to the transit
+	// IP. AddSNAT scrubs a stale row whose external IP changed, and the ingress
+	// hook rewrites its route, so re-running the leg is enough.
+	if err := m.ensureRoutedLeg(ctx, vpcID, newIP); err != nil {
+		return err
+	}
+	if err := m.barrier(); err != nil {
+		return fmt.Errorf("flows barrier after rebinding %s: %w", gwPortName, err)
+	}
+	slog.Warn("external: gateway LRP rebound after DHCP lease moved",
+		"vpc_id", vpcID, "gw_port", gwPortName, "old_networks", oldNetworks, "new_network", network)
 	return nil
 }
 

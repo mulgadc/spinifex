@@ -40,12 +40,15 @@ import (
 type EC2Handler func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error)
 
 // requestContext returns r's context, or Background for a nil request
-// (some callers and tests dispatch without an *http.Request).
+// (some callers and tests dispatch without an *http.Request). The SDK's
+// invocation id rides along: it is repeated across retries of one call, so it
+// is what lets a mutation recognise its own resend instead of doing the work
+// twice.
 func requestContext(r *http.Request) context.Context {
 	if r == nil {
 		return context.Background()
 	}
-	return r.Context()
+	return utils.WithIdempotencyKey(r.Context(), r.Header.Get(utils.SDKInvocationIDHeader))
 }
 
 // ec2Handler creates a type-safe EC2Handler: allocates the input struct,

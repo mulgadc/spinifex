@@ -28,6 +28,15 @@ func DescribeCertificate(ctx context.Context, natsConn *nats.Conn, accountID str
 	return handlers_acm.NewNATSACMService(natsConn).DescribeCertificate(ctx, input, accountID)
 }
 
+// GetCertificate — CertificateManager.GetCertificate.
+func GetCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.GetCertificateOutput, error) {
+	input := new(acm.GetCertificateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameter)
+	}
+	return handlers_acm.NewNATSACMService(natsConn).GetCertificate(ctx, input, accountID)
+}
+
 // ListCertificates — CertificateManager.ListCertificates.
 func ListCertificates(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ListCertificatesOutput, error) {
 	input := new(acm.ListCertificatesInput)

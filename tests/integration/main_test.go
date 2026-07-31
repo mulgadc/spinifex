@@ -44,5 +44,9 @@ func TestMain(m *testing.M) {
 	h.closeAll()
 	h.srv.Shutdown()
 	h.srv.WaitForShutdown()
+
+	// Only reached on a clean exit; a killed run leaves the store for the
+	// sweep in startSharedNATS to reclaim.
+	h.removeStore()
 	os.Exit(code)
 }

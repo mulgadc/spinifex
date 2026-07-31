@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -21,7 +22,9 @@ func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	backend, err := NewELBv2ServiceImplWithNATS(nil, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	backend, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 
 	// Wire backend as NATS subscriber (simulates daemon subscriptions)

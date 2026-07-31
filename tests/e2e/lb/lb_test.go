@@ -95,23 +95,26 @@ func TestLoadBalancer(t *testing.T) {
 	// above). Single-node dev boxes (peer == "") fall through to the serial path below.
 	parallelizeLBs := peer != ""
 
-	// Internet-facing subtests are intentionally NOT run with t.Parallel(), even when the
-	// internal group below is: each one registers a public-LB DNS record and then polls for
-	// it to resolve, and two of these register+resolve windows overlapping at once corrupts
-	// the record (the second registration clobbers the first, so neither ever resolves).
-	// Running them serially here means each one's record is fully registered and resolved
-	// before the next is created, so they never share an overlapping window with each other.
-	// They may still run concurrently with the internal group, which uses internal (not
-	// public) DNS and doesn't hit this.
+	// Internal and internet-facing LB records share one zone object: ELBChanges
+	// sets Zone to the base domain for both, and the names differ only by an
+	// "internal-" prefix. Concurrent registrations used to clobber each other
+	// there, which is why these ran serially; the writer now takes a per-zone lock,
+	// so all of them register in parallel.
 	t.Run("InternetFacing_ALB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
+		}
+		if parallelizeLBs {
+			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindALB, "internet-facing", ssh, peer)
 	})
 	t.Run("InternetFacing_NLB", func(t *testing.T) {
 		if peer == "" {
 			t.Skip("no peer node available")
+		}
+		if parallelizeLBs {
+			t.Parallel()
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
 	})
@@ -122,12 +125,16 @@ func TestLoadBalancer(t *testing.T) {
 			// internet-facing subtests use, where driver→LB reachability holds.
 			t.Skip("no peer node available")
 		}
+		if parallelizeLBs {
+			t.Parallel()
+		}
 		runHTTPSCertSuite(t, client, fixture)
 	})
 
 	if parallelizeLBs {
-		// Multinode: each internal subtest stands up its own independent LB and all five
-		// start together, so there is no serial queue for one stuck LB to back up behind.
+		// Multinode: each internal subtest stands up its own independent LB and they start
+		// together with the internet-facing group above, so there is no serial queue for one
+		// stuck LB to back up behind.
 		// A single LB never reaching active only fails that one subtest — it can no longer
 		// cascade into 5x sequential 5-minute timeouts, so the serial path's fail-fast gate
 		// (below) is unnecessary here: concurrency itself bounds the worst-case wall time to

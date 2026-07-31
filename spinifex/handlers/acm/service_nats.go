@@ -31,6 +31,10 @@ func (s *NATSACMService) DescribeCertificate(ctx context.Context, input *acm.Des
 	return utils.NATSRequest[acm.DescribeCertificateOutput](ctx, s.natsConn, "acm.DescribeCertificate", input, defaultTimeout, accountID)
 }
 
+func (s *NATSACMService) GetCertificate(ctx context.Context, input *acm.GetCertificateInput, accountID string) (*acm.GetCertificateOutput, error) {
+	return utils.NATSRequest[acm.GetCertificateOutput](ctx, s.natsConn, "acm.GetCertificate", input, defaultTimeout, accountID)
+}
+
 func (s *NATSACMService) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
 	return utils.NATSRequest[acm.ListCertificatesOutput](ctx, s.natsConn, "acm.ListCertificates", input, defaultTimeout, accountID)
 }

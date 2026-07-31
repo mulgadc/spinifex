@@ -1677,3 +1677,13 @@ func TestAvailableImages_ECSNodeEntry(t *testing.T) {
 	assert.Equal(t, "ecs", img.Tags["spinifex:managed-by"],
 		"ECS node image must carry the managed-by=ecs tag the UI guard resolves on")
 }
+
+func TestAvailableImages_RDSPostgresEntry(t *testing.T) {
+	img, ok := AvailableImages["spinifex-rds-postgres"]
+	require.True(t, ok, "spinifex-rds-postgres must be in the system image catalog")
+	assert.Equal(t, "rds", img.Tags["spinifex:managed-by"],
+		"RDS image must carry the managed-by=rds tag instance launches resolve on")
+	assert.Equal(t, "postgres", img.Tags["engine"])
+	assert.Equal(t, "18", img.Tags["engine-version"],
+		"the pinned PostgreSQL major version is what EngineVersion resolves against")
+}

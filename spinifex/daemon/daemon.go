@@ -56,6 +56,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
@@ -148,7 +149,10 @@ type Daemon struct {
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
+	rdsService            *handlers_rds.Service
+	rdsReconciler         *handlers_rds.Reconciler
 	acmService            *handlers_acm.ACMServiceImpl
+	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -760,6 +764,17 @@ func natsMetricAction(topic, node string) string {
 	return strings.TrimSuffix(action, "."+node)
 }
 
+// clusterCAKeyPath derives the CA private key path from the configured CA
+// certificate path — they are written as a pair into the same config directory.
+// Returns "" when no CA cert is configured, which disables cert minting rather
+// than guessing at a path.
+func clusterCAKeyPath(caCertPath string) string {
+	if caCertPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(caCertPath), "ca.key")
+}
+
 // natsSub defines a single NATS subscription entry for the table-driven setup.
 type natsSub struct {
 	topic      string
@@ -1035,16 +1050,58 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// ACM gateway → daemon subscriptions (minimal certificate store).
+	// RDS agent protocol. The register/health subjects are Layer-2 bus wildcards
+	// the gateway relays onto, addressing only — the payload is authoritative.
+	if d.rdsService != nil {
+		subs = append(subs,
+			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.rdsService.SubmitDBStateChange), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.rdsService.CreateDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.rdsService.DescribeDBInstances), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectRebootDBInstance, handleNATSRequest(d.rdsService.RebootDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectStartDBInstance, handleNATSRequest(d.rdsService.StartDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectStopDBInstance, handleNATSRequest(d.rdsService.StopDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectModifyDBInstance, handleNATSRequest(d.rdsService.ModifyDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBInstance, handleNATSRequest(d.rdsService.DeleteDBInstance), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBSnapshot, handleNATSRequest(d.rdsService.CreateDBSnapshot), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBSnapshots, handleNATSRequest(d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBSnapshot, handleNATSRequest(d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeEvents, handleNATSRequest(d.rdsService.DescribeEvents), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectAddTagsToResource, handleNATSRequest(d.rdsService.AddTagsToResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectRemoveTagsFromResource, handleNATSRequest(d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectListTagsForResource, handleNATSRequest(d.rdsService.ListTagsForResource), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBSubnetGroup, handleNATSRequest(d.rdsService.CreateDBSubnetGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBSubnetGroups, handleNATSRequest(d.rdsService.DescribeDBSubnetGroups), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBSubnetGroup, handleNATSRequest(d.rdsService.DeleteDBSubnetGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectCreateDBParameterGroup, handleNATSRequest(d.rdsService.CreateDBParameterGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBParameterGroups, handleNATSRequest(d.rdsService.DescribeDBParameterGroups), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectModifyDBParameterGroup, handleNATSRequest(d.rdsService.ModifyDBParameterGroup), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDescribeDBParameters, handleNATSRequest(d.rdsService.DescribeDBParameters), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectDeleteDBParameterGroup, handleNATSRequest(d.rdsService.DeleteDBParameterGroup), "spinifex-workers"},
+		)
+	}
+
+	// ACM gateway → daemon subscriptions (certificate import and managed issuance).
 	if d.acmService != nil {
 		subs = append(subs,
 			natsSub{"acm.ImportCertificate", handleNATSRequest(d.acmService.ImportCertificate), "spinifex-workers"},
+			natsSub{"acm.RequestCertificate", handleNATSRequest(d.acmService.RequestCertificate), "spinifex-workers"},
 			natsSub{"acm.DescribeCertificate", handleNATSRequest(d.acmService.DescribeCertificate), "spinifex-workers"},
+			natsSub{"acm.GetCertificate", handleNATSRequest(d.acmService.GetCertificate), "spinifex-workers"},
 			natsSub{"acm.ListCertificates", handleNATSRequest(d.acmService.ListCertificates), "spinifex-workers"},
 			natsSub{"acm.DeleteCertificate", handleNATSRequest(d.acmService.DeleteCertificate), "spinifex-workers"},
 			natsSub{"acm.ListTagsForCertificate", handleNATSRequest(d.acmService.ListTagsForCertificate), "spinifex-workers"},
 			natsSub{"acm.AddTagsToCertificate", handleNATSRequest(d.acmService.AddTagsToCertificate), "spinifex-workers"},
 			natsSub{"acm.RemoveTagsFromCertificate", handleNATSRequest(d.acmService.RemoveTagsFromCertificate), "spinifex-workers"},
+			// ForceRenewCertificate is not an AWS API — it is the operator-
+			// triggered path `spx admin cert force-renew` uses to reissue a
+			// PRIVATE_CA certificate immediately, bypassing the renewal worker's
+			// window and failure backoff, primarily to verify the ELBv2 fan-out
+			// without waiting out the proportional window.
+			natsSub{"acm.ForceRenewCertificate", handleNATSRequest(d.acmRenewalWorker.ForceRenewCertificate), "spinifex-workers"},
 		)
 	}
 
@@ -1087,6 +1144,10 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DisassociateAddress", handleNATSRequest(d.eipService.DisassociateAddress), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddresses", handleNATSRequest(d.eipService.DescribeAddresses), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
+		// vpcd holds the leases, but the records naming those addresses live
+		// here, so the reconcile request flows daemon-ward.
+		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
+		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
 	)
 
 	for _, s := range subs {
@@ -1503,12 +1564,31 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
 	}
 
+	// ELBv2 resolves listener certificate private keys through its own ACM
+	// Store over the same JetStream bucket the ACM service writes, so it needs
+	// the identical master key: unlike EKS/ECS's IAM dependency, there is no
+	// safe degraded mode for certificate private keys, so a missing key must
+	// fail daemon startup rather than leave HTTPS listeners uncreatable.
 	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*handlers_elbv2.ELBv2ServiceImpl, error) {
-		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
+		}
+		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)
 	}
+
+	// The InUseBy index is otherwise only written by listener mutations, so
+	// listeners created before it existed would never fan out a renewed
+	// certificate. Not fatal: a stale index degrades renewal, which beats
+	// refusing to start. Every node reconciles the shared bucket at its own
+	// startup; the index writes are CAS-guarded, so concurrent runs converge.
+	if err := d.elbv2Service.ReconcileCertInUseIndex(d.ctx); err != nil {
+		slog.Error("failed to reconcile the ACM InUseBy index", "err", err)
+	}
+
 	if d.vpcService != nil {
 		d.elbv2Service.VPCService = d.vpcService
 	}
@@ -1565,12 +1645,90 @@ func (d *Daemon) startCluster() error {
 		})
 	}
 
+	// RDS control plane: KV-backed agent-protocol handlers plus the customer
+	// actions. The cluster CA signs the per-instance serving certs, minted per
+	// bootstrap fetch and never persisted; ca.key sits beside the configured ca.pem.
+	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(d.buildRDSDeps())
+
+	// One leader across the cluster derives DB instance status from the agent
+	// heartbeat; every node keeps serving the API.
+	d.rdsReconciler = handlers_rds.NewReconciler(d.rdsService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("RDS reconciler goroutine panicked", "recover", r)
+			}
+		}()
+		d.rdsReconciler.Run(d.ctx)
+	})
+
+	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
+	// (which degrades to "feature disabled" without a master key) there is no
+	// safe degraded mode here: a missing key must fail daemon startup, not
+	// silently persist keys unencrypted. initServiceWithRetry still retries with
+	// backoff — the key file can legitimately not be written yet during a
+	// concurrent boot — but a master key that never arrives fails startCluster
+	// after the retry window instead of leaving acmService permanently nil.
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
-		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
+		}
+		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
 	}
+	// Re-importing to an existing ARN must fan out to every load balancer that
+	// references it; otherwise HAProxy keeps serving the old leaf until it
+	// expires while the API reports success. ELBv2 is already up (above).
+	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
+
+	// deriveValidationMode needs to know whether northstar hosts a zone for a
+	// requested domain. handlers/acm deliberately does not import handlers/dns
+	// (which would pull its S3/northstar-config dependencies into every acm
+	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
+	// uses above to keep acm decoupled from elbv2.
+	d.acmService.NorthstarHostsZone = func(domain string) bool {
+		return handlers_dns.HostsZone(d.config, domain)
+	}
+
+	// The tenant private CA is optional, unlike the master key above: a
+	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
+	// no reason to have one, so its absence must not block daemon startup.
+	// LoadTenantCA (load-only — see privateca.go) leaves TenantCA nil rather
+	// than creating a root here, because creation needs an explicit permitted-
+	// domains list that has no safe default; a PRIVATE_CA RequestCertificate
+	// against a nil TenantCA already fails loudly with an actionable error
+	// (see ACMServiceImpl.RequestCertificate). Both states are logged here so an
+	// operator can tell at a glance, from daemon startup logs alone, which one
+	// they are in.
+	configDir := filepath.Dir(d.configPath)
+	tenantCA, tenantCAErr := handlers_acm.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	if tenantCAErr != nil {
+		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
+			"err", tenantCAErr)
+	} else {
+		d.acmService.TenantCA = tenantCA
+		slog.Info("ACM: tenant private CA wired", "permitted_domains", tenantCA.PermittedDomains())
+	}
+
+	// The renewal worker scans for PRIVATE_CA certificates past their
+	// proportional renewal window and reissues them under their existing ARN.
+	// It reads d.acmService.TenantCA/CertMaterialUpdated live on every scan
+	// rather than a snapshot taken here, so it starts unconditionally: a
+	// tenant CA loaded later (or never, on a public-certificates-only
+	// deployment) is not a startup dependency — the worker just finds
+	// nothing to renew until one is wired.
+	d.acmRenewalWorker = handlers_acm.NewWorker(d.acmService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ACM renewal worker goroutine panicked", "recover", r)
+			}
+		}()
+		d.acmRenewalWorker.Run(d.ctx)
+	})
 
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS
@@ -1632,8 +1790,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
 
-	// DNS record writer: the single queue-group consumer of
-	// dns.recordset.change. No-op when northstar S3 is not configured.
+	// DNS record writer: a queue-group consumer of dns.recordset.change. Every
+	// node subscribes, so the writer locks each zone before its
+	// read-modify-write. No-op when northstar S3 is not configured.
 	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
 		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
 	} else if sub != nil {
@@ -1641,10 +1800,10 @@ func (d *Daemon) startCluster() error {
 		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
 	}
 
-	// DNS drift backstop: periodically rebuild managed records
-	// from the live cross-tenant inventory and converge the zone. It publishes
-	// through the same queue-group writer, so every node running it serialises on
-	// one writer and never races the zone. No-op when northstar is not configured.
+	// DNS drift backstop: periodically rebuild managed records from the live
+	// cross-tenant inventory and converge the zone. Started on every node but
+	// gated on a per-cycle leader election, so one node publishes per interval.
+	// No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
 		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)
@@ -1679,7 +1838,15 @@ func (d *Daemon) startCluster() error {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
 			reapers = append(reapers, d.eksService.NewDeletingReaper())
 		}
-		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
+		// The RDS automated-backup retention sweep is the one reaper here that
+		// deletes customer data, which is why it rides this backstop rather than the
+		// RDS reconciler: the KV-health gate above is what stops it reaping against a
+		// desired state it cannot read.
+		if d.rdsService != nil {
+			reapers = append(reapers, d.rdsService.NewBackupRetentionReaper())
+		}
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...).
+			WithLeaderElection(d.clusterSweepLease)
 		gc.Start(d.ctx)
 	}
 
@@ -1691,6 +1858,17 @@ func (d *Daemon) startCluster() error {
 	d.awaitShutdown()
 
 	return nil
+}
+
+// clusterSweepLease gates the GC's cluster-wide reapers so exactly one node runs
+// them. The RDS reconciler's lease is that election — cluster-singular, held
+// continuously, and re-evaluated on its own ticker — so being its holder is the
+// whole answer. Without it every ClusterWide reaper is skipped outright.
+func (d *Daemon) clusterSweepLease() (func(), bool) {
+	if d.rdsReconciler == nil {
+		return func() {}, false
+	}
+	return d.rdsReconciler.AcquireClusterLease()
 }
 
 // leakedVolumeInstances returns the set of instance IDs this node owns whose

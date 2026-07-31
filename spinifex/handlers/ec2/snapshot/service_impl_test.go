@@ -264,6 +264,27 @@ func TestDescribeSnapshots(t *testing.T) {
 	assert.True(t, snapshotIDs[*snap2.SnapshotId])
 }
 
+func TestDescribeSnapshotsStrict_RejectsPartialMetadataResults(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(GetSnapshotKey("snap-corrupt")),
+		Body:   strings.NewReader("not-json"),
+	})
+	require.NoError(t, err)
+
+	// The customer-facing list retains its historical best-effort behavior.
+	out, err := svc.DescribeSnapshots(t.Context(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Snapshots)
+
+	// Reconciliation cannot interpret that partial result as authoritative
+	// absence, so its internal lookup surfaces the metadata failure.
+	_, err = svc.DescribeSnapshotsStrict(t.Context(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCorruptSnapshotMetadata)
+}
+
 // TestDescribeSnapshots_ByID tests listing specific snapshots by ID.
 func TestDescribeSnapshots_ByID(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)

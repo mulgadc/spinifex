@@ -2,14 +2,22 @@ package handlers_elbv2
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"encoding/xml"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,6 +127,51 @@ func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
 	// Unknown ARN → not found.
 	_, err = svc.resolveCertPEM(t.Context(), "arn:aws:acm:ap-southeast-2:123456789012:certificate/missing", testAccountID)
 	require.Error(t, err)
+}
+
+// TestResolveCertPEM_CrossesACMServiceKeyBoundary writes a certificate through
+// a Store constructed the way the ACM service constructs its own — NewStore
+// wired with the shared deployment master key — then resolves it through
+// ELBv2's independently-constructed Store via resolveCertPEM. Every other
+// cert test in this file goes through putTestCert, which writes and reads
+// via svc.acmStore itself, so it never crosses from one Store instance to
+// another; this test exercises the real daemon topology, where
+// ACMServiceImpl and ELBv2ServiceImpl each open their own Store over the
+// same JetStream bucket and must agree on the same key.
+func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+
+	svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	require.NoError(t, err)
+
+	// ACM-service-style writer: its own Store over the same bucket, wired with
+	// the same deployment key rather than svc's own acmStore.
+	acmStore, err := handlers_acm.NewStore(t.Context(), nc, masterKey)
+	require.NoError(t, err)
+
+	// A realistic EC private key PEM, not a placeholder — a non-PEM value
+	// would take the legacy-plaintext guard's rejection path instead of the
+	// real decrypt path this test exercises.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+
+	arn := "arn:aws:acm:ap-southeast-2:123456789012:certificate/cross-boundary"
+	require.NoError(t, acmStore.PutCert(t.Context(), &handlers_acm.CertRecord{
+		CertificateArn: arn,
+		AccountID:      testAccountID,
+		Certificate:    "LEAF",
+		PrivateKey:     keyPEM,
+	}))
+
+	got, err := svc.resolveCertPEM(t.Context(), arn, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "LEAF\n"+strings.TrimRight(keyPEM, "\n")+"\n", got)
 }
 
 func TestValidateListenerCerts_RejectsUnknownAndWrongAccount(t *testing.T) {

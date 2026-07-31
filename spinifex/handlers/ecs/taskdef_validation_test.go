@@ -55,6 +55,28 @@ func TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver(t *testing.T) {
 	assert.Equal(t, "/ecs/app", aws.StringValue(lc.Options["awslogs-group"]))
 }
 
+// TestRegisterTaskDefinition_EchoesRequiresCompatibilities: only the EC2 launch
+// type is implemented, but the field still has to round-trip. Returning an empty
+// list to a client that sent ["EC2"] reads as drift, and Terraform treats it as
+// a forced replacement on every plan.
+func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:                  aws.String("app"),
+		RequiresCompatibilities: aws.StringSlice([]string{"EC2"}),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"EC2"}, aws.StringValueSlice(d.TaskDefinition.RequiresCompatibilities))
+}
+
 // TestRunTask_AssignCarriesExecutionRoleAndLogDriver covers siv-459 (execution
 // role plumbed to the agent) and siv-455 (log driver reaches the assign).
 func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {

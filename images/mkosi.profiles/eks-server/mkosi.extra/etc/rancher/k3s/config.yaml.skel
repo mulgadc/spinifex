@@ -1,0 +1,12 @@
+# Populated at first boot by cloud-init user-data via k3s-first-boot.sh.
+# Fields documented at https://docs.k3s.io/installation/configuration.
+# cluster-init selects the embedded etcd datastore. cloud-init write_files
+# normally overrides this skeleton; kept consistent as the boot fallback.
+cluster-init: true
+disable:
+  - traefik
+  - servicelb
+  - local-storage
+kube-apiserver-arg:
+  - "authentication-token-webhook-config-file=/etc/spinifex-eks/token-webhook.kubeconfig"
+  - "authentication-token-webhook-cache-ttl=5m"

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -27,17 +28,26 @@ var sharedNATSHarness *sharedNATS
 // connection into it — is shared across the whole package rather than
 // booted fresh per test.
 type sharedNATS struct {
-	srv  *server.Server
-	auth *accountAuthenticator
+	srv      *server.Server
+	auth     *accountAuthenticator
+	storeDir string
 
 	connsMu sync.Mutex
 	conns   []*nats.Conn
 }
 
+// natsStorePrefix names each run's JetStream store directory. It is a constant
+// because the sweep below matches on it.
+const natsStorePrefix = "spinifex-integration-nats-"
+
 // startSharedNATS boots the one embedded, JetStream-enabled NATS server the
 // whole package's tests connect into.
 func startSharedNATS() (*sharedNATS, error) {
-	storeDir, err := os.MkdirTemp("", "spinifex-integration-nats-")
+	// The store cannot be a t.TempDir(): the server outlives every individual
+	// test, so the first test to finish would delete it out from under it.
+	scratch.SweepAbandoned(os.TempDir(), natsStorePrefix, scratch.DefaultMaxAge)
+
+	storeDir, err := os.MkdirTemp("", natsStorePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("nats store tempdir: %w", err)
 	}
@@ -63,7 +73,18 @@ func startSharedNATS() (*sharedNATS, error) {
 		return nil, fmt.Errorf("nats server not ready for connections")
 	}
 
-	return &sharedNATS{srv: ns, auth: auth}, nil
+	return &sharedNATS{srv: ns, auth: auth, storeDir: storeDir}, nil
+}
+
+// removeStore reclaims the JetStream store once the server is fully down.
+// Called after WaitForShutdown so nothing is still writing into it.
+func (h *sharedNATS) removeStore() {
+	if h.storeDir == "" {
+		return
+	}
+	if err := os.RemoveAll(h.storeDir); err != nil {
+		fmt.Fprintf(os.Stderr, "tests/integration: remove nats store %s: %v\n", h.storeDir, err)
+	}
 }
 
 // connectIsolated opens a fresh connection scoped to its own dynamically

@@ -1,0 +1,17 @@
+[Unit]
+Description=Mulga EKS managed-addon delivery agent
+# Renders Spinifex managed-addon bundles into the K3s auto-deploy dir and
+# reports per-addon delivery status every ADDON_SYNC_INTERVAL seconds.
+# Primary-server role only: it owns the single auto-deploy dir (HA multi-server
+# addon delivery is tracked separately).
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 30s keeps CreateAddon->ACTIVE latency low without hammering the gateway.
+Environment=ADDON_SYNC_INTERVAL=30
+ExecStart=/usr/local/sbin/mulga-eks-addon-sync
+
+[Install]
+WantedBy=multi-user.target

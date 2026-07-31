@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"hash/crc32"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,12 @@ const (
 	credTaskVeth     = "ecsc0"
 	credEndpointCIDR = defaultCredEndpointIP + "/32"
 )
+
+// udhcpcScript is the config script busybox udhcpc execs to apply a lease. It
+// is the reason presence of the udhcpc binary is not enough to use it: Debian
+// and Ubuntu's busybox ship the applet without this script, and udhcpc then
+// takes the lease and exits nonzero having configured nothing.
+const udhcpcScript = "/usr/share/udhcpc/default.script"
 
 // netCmdRunner executes a host networking command. Abstracted so unit tests can
 // assert the ip/netns sequence without touching the kernel.
@@ -43,10 +50,47 @@ type taskNetns struct {
 	run     netCmdRunner
 	nicWait time.Duration
 	poll    time.Duration
+	// Injected so the DHCP-client choice below is unit-testable on a host that
+	// has neither client installed.
+	lookPath   func(string) (string, error)
+	fileIsExec func(string) bool
 }
 
 func newTaskNetns(run netCmdRunner) *taskNetns {
-	return &taskNetns{run: run, nicWait: 30 * time.Second, poll: time.Second}
+	return &taskNetns{
+		run:        run,
+		nicWait:    30 * time.Second,
+		poll:       time.Second,
+		lookPath:   exec.LookPath,
+		fileIsExec: func(p string) bool { fi, err := os.Stat(p); return err == nil && fi.Mode()&0o111 != 0 },
+	}
+}
+
+// dhcpStep returns the in-netns DHCP command that leases the task ENI's
+// OVN-assigned address.
+//
+// This image ships on two distributions and they do not agree on a DHCP client.
+// Alpine has busybox udhcpc; Ubuntu has no udhcpc at all, and `ip netns exec`
+// exits 1 — not 127 — when it cannot exec the binary, so a hardcoded udhcpc
+// fails as an opaque "network setup failed" with the task stuck in STOPPED.
+// Resolve the client at setup time instead, preferring udhcpc so Alpine keeps
+// its existing behaviour exactly, then falling back to dhcpcd. Same order and
+// same reasoning as dhcp_oneshot() in mulga-mgmt-net.sh.
+//
+// Both invocations are one-shot: udhcpc -q exits once it has the lease and -n
+// gives up rather than backgrounding, and dhcpcd -1 exits after configuring the
+// interface. Neither leaves a daemon behind in the netns.
+func (n *taskNetns) dhcpStep(name, iface string) ([]string, error) {
+	if _, err := n.lookPath("udhcpc"); err == nil && n.fileIsExec(udhcpcScript) {
+		return []string{"ip", "netns", "exec", name, "udhcpc", "-i", iface, "-q", "-n"}, nil
+	}
+	// Lease state is keyed by interface name, which is unique per task here:
+	// each task ENI is a separate hot-plug, so it lands on its own PCI slot and
+	// gets its own predictable name before being moved into the netns.
+	if _, err := n.lookPath("dhcpcd"); err == nil {
+		return []string{"ip", "netns", "exec", name, "dhcpcd", "-q", "-1", "-t", "20", iface}, nil
+	}
+	return nil, fmt.Errorf("no DHCP client for %s: need udhcpc (with %s) or dhcpcd", iface, udhcpcScript)
 }
 
 func netnsName(taskID string) string { return "ecs-" + taskID }
@@ -68,11 +112,16 @@ func (n *taskNetns) Setup(taskID, mac string) (string, error) {
 	}
 	hostVeth := credVethName(taskID)
 	hostIP, taskIP := credSubnet(taskID)
+	dhcp, err := n.dhcpStep(name, iface)
+	if err != nil {
+		_ = n.Teardown(taskID)
+		return "", err
+	}
 	steps := [][]string{
 		{"ip", "link", "set", iface, "netns", name},
 		{"ip", "-n", name, "link", "set", "lo", "up"},
 		{"ip", "-n", name, "link", "set", iface, "up"},
-		{"ip", "netns", "exec", name, "udhcpc", "-i", iface, "-q", "-n"},
+		dhcp,
 		// Credentials path: a veth into the host netns plus a host-routed /32 to the
 		// credential endpoint, so the container reaches 169.254.170.2 without it
 		// leaking onto the task ENI's VPC route.

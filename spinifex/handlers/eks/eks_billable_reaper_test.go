@@ -55,7 +55,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 	}
 	f.ngw.gws = []*fakeCPNatGateway{{
 		id:    "nat-orphan",
-		tags:  map[string]string{clusterEKSClusterTagKey: "gone-cluster", clusterEKSRoleTagKey: clusterEKSRoleCPNatGW},
+		tags:  map[string]string{clusterEKSClusterTagKey: "gone-cluster", clusterEKSRoleTagKey: cpVPCRoles.NatGW},
 		state: "available",
 		addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-orphan")}},
 	}}

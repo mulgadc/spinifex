@@ -52,6 +52,19 @@ func respondWithError(msg *nats.Msg, errCode string) {
 	}
 }
 
+// respondWithServiceError sends the sanitized error code AND the handler's
+// message, so a caller sees the actionable reason rather than a bare code. Use
+// it for any error originating in a service call: the code alone collapses a
+// specific refusal ("only PRIVATE_CA certificates can be force-renewed") into
+// an opaque ServerInternal, leaving the reason visible only in the daemon log.
+// Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
+func respondWithServiceError(msg *nats.Msg, err error) {
+	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error())
+	if respErr := msg.Respond(payload); respErr != nil {
+		slog.Error("Failed to respond to NATS request", "err", respErr)
+	}
+}
+
 // respondWithJSON marshals data to JSON and sends it as a NATS response.
 // On marshal failure it responds with an internal server error.
 func respondWithJSON(msg *nats.Msg, data any) {
@@ -76,6 +89,9 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 		defer span.End()
 
 		accountID := utils.AccountIDFromMsg(msg)
+		// Carried in ctx rather than the service signature so only the handlers
+		// that must deduplicate a retry have to look for it.
+		ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
 		input := new(I)
 		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
@@ -91,7 +107,7 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 			// in the journal too.
 			slog.ErrorContext(ctx, "handleNATSRequest: service call failed", "subject", msg.Subject, "err", err)
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+			respondWithServiceError(msg, err)
 			return
 		}
 		respondWithJSON(msg, output)
@@ -120,7 +136,7 @@ func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+			respondWithServiceError(msg, err)
 			return
 		}
 		respondWithJSON(msg, output)
@@ -183,7 +199,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+			respondWithServiceError(msg, err)
 			return
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
@@ -195,7 +211,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+			respondWithServiceError(msg, err)
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -211,7 +227,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+			respondWithServiceError(msg, err)
 			return
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {

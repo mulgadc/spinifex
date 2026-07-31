@@ -379,6 +379,28 @@ EOF
         sleep 1
     done
 
+    # Wait for the Southbound DB to be serving before ovn-controller (Step 5)
+    # dials it. On a single node ovn-controller races a fresh SB RAFT election
+    # with no join step to absorb the window — attaching before the leader is
+    # elected (and before northd writes the gateway logical flows) leaves it with
+    # a partial datapath that never reconverges. Gate on SB reachable and, when
+    # clustered, an elected leader.
+    for i in $(seq 1 30); do
+        if sudo ovn-sbctl --timeout=2 show >/dev/null 2>&1; then
+            if [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
+                break
+            fi
+            SB_LEADER=$(sudo ovs-appctl -t /var/run/ovn/ovnsb_db.ctl \
+                cluster/status OVN_Southbound 2>/dev/null \
+                | awk '/^Leader:/{print $2; exit}')
+            if [ -n "$SB_LEADER" ] && [ "$SB_LEADER" != "unknown" ]; then
+                break
+            fi
+        fi
+        echo "  Waiting for OVN SB DB leader... ($i/30)"
+        sleep 1
+    done
+
     # Set the NB/SB client listen addresses. set-connection writes through RAFT
     # (replicated cluster-wide), so it only runs on the create node — a joining
     # node would redirect to the leader, which the init node already configured.
@@ -854,6 +876,25 @@ echo "  ovn-controller log level: file:warn (via systemd drop-in)"
 sudo systemctl restart ovn-controller
 echo "  ovn-controller: started"
 
+# Force a full datapath recompute once ovn-controller has connected to the SB.
+# On a fresh single-node RAFT the controller can attach mid-election and program
+# a partial datapath (SNAT ct-commit without output/delivery), then never
+# reconverge. Recomputing after the SB connection is up rebuilds all OpenFlow
+# from the converged Southbound. Compute nodes race a remote SB too, so this
+# runs on every node.
+for i in $(seq 1 30); do
+    CTRL_STATUS=$(sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller \
+        connection-status 2>/dev/null)
+    if [ "$CTRL_STATUS" = "connected" ]; then
+        break
+    fi
+    echo "  Waiting for ovn-controller SB connection... ($i/30)"
+    sleep 1
+done
+sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller inc-engine/recompute \
+    2>/dev/null || true
+echo "  ovn-controller: forced datapath recompute"
+
 # --- Step 6: Sysctl tuning ---
 echo ""
 echo "Step 6: Applying sysctl for overlay networking..."
@@ -900,40 +941,109 @@ else
     echo "  WARNING: geneve module not available (tunnels may not work)"
 fi
 
-# --- Step 8: Grant non-root access to OVS/OVN ---
+# --- Step 8: Grant the spinifex service users access to OVS/OVN ---
 echo ""
-echo "Step 8: Configuring non-root access..."
+echo "Step 8: Configuring service-user access..."
 
-# Open OVS DB socket so non-root processes can use ovs-vsctl
-OVS_SOCK="/var/run/openvswitch/db.sock"
-if [ -S "$OVS_SOCK" ]; then
-    sudo chmod 0666 "$OVS_SOCK"
-    echo "  OVS DB socket: opened ($OVS_SOCK)"
+# Group-scoped, never world. spinifex-daemon and spinifex-vpcd both run with
+# Group=spinifex, so 0660 root:spinifex is exactly the reach they need. A
+# world-writable db.sock hands the local datapath — bridges, ports, ovn-remote —
+# to any account on the box, and a world-writable ctl socket lets any account
+# run `ovn-appctl exit`.
+PERMS_HELPER="/usr/local/lib/spinifex/ovs-socket-perms.sh"
+sudo mkdir -p "$(dirname "$PERMS_HELPER")"
+sudo tee "$PERMS_HELPER" >/dev/null <<'HELPER'
+#!/bin/sh
+# Group-own the OVS/OVN control sockets to `spinifex` so the service users reach
+# them without sudo. Driven from ExecStartPost on both openvswitch-switch and
+# ovn-controller: each recreates its own sockets on start, and the ovn-controller
+# ctl socket name embeds the pid, so it is a new file every time.
+#
+# $1 is an optional glob for the caller's own socket, waited on before the sweep.
+set -eu
+GROUP=spinifex
+WAIT_FOR="${1:-}"
+
+if ! getent group "$GROUP" >/dev/null 2>&1; then
+    exit 0
 fi
 
-# Open OVN runtime directory and ctl sockets for ovs-appctl access
-if [ -d "/var/run/ovn" ]; then
-    sudo chmod 0755 /var/run/ovn
-    sudo chmod 0666 /var/run/ovn/*.ctl 2>/dev/null || true
-    echo "  OVN ctl sockets: opened (/var/run/ovn/)"
-fi
-if [ -d "/var/run/openvswitch" ]; then
-    sudo chmod 0666 /var/run/openvswitch/*.ctl 2>/dev/null || true
+# Unquoted so the caller's pattern globs. A caller passing nothing sweeps at once.
+wait_target_present() {
+    if [ -z "$WAIT_FOR" ]; then
+        return 0
+    fi
+    for s in $WAIT_FOR; do
+        if [ -S "$s" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ExecStartPost can outrun socket creation, so poll briefly rather than miss the
+# socket and leave the health probe unable to read connection-status.
+i=0
+while [ "$i" -lt 25 ]; do
+    if wait_target_present; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.2
+done
+
+# The dir must be traversable by the group before the sockets inside it matter.
+# Only the group changes; the owner keeps full access whoever it is.
+if [ -d /var/run/ovn ]; then
+    chgrp "$GROUP" /var/run/ovn 2>/dev/null || true
+    chmod 0750 /var/run/ovn 2>/dev/null || true
 fi
 
-# Create persistent systemd override so permissions survive OVS restarts
-OVERRIDE_DIR="/etc/systemd/system/openvswitch-switch.service.d"
-if [ ! -f "$OVERRIDE_DIR/spinifex-perms.conf" ]; then
+# ovn??_db.sock are the NB/SB databases themselves, which ovn-nbctl and
+# ovn-sbctl connect to. Bridge <name>.mgmt sockets are deliberately NOT here:
+# ovs-vswitchd creates one whenever a bridge appears, including bridges spinifex
+# creates at runtime, so ovs-ofctl keeps its sudo grant.
+for s in /var/run/openvswitch/db.sock /var/run/openvswitch/*.ctl \
+    /var/run/ovn/*.ctl /var/run/ovn/ovnnb_db.sock /var/run/ovn/ovnsb_db.sock; do
+    if [ -S "$s" ]; then
+        chgrp "$GROUP" "$s" 2>/dev/null || true
+        chmod 0660 "$s" 2>/dev/null || true
+    fi
+done
+
+# Group-WRITE on the pidfiles, not just read: `ovn-appctl -t <daemon>` resolves
+# the pid-named ctl socket through the pidfile, and OVS opens it O_RDWR to test
+# the fcntl liveness lock. Read-only fails the probe with EACCES. This also
+# tightens them from the 0644 they ship with.
+for p in /var/run/openvswitch/*.pid /var/run/ovn/*.pid; do
+    if [ -f "$p" ]; then
+        chgrp "$GROUP" "$p" 2>/dev/null || true
+        chmod 0660 "$p" 2>/dev/null || true
+    fi
+done
+HELPER
+sudo chmod 0755 "$PERMS_HELPER"
+sudo "$PERMS_HELPER"
+echo "  OVS/OVN sockets: 0660 root:spinifex (group-scoped, no world access)"
+
+# Persist across restarts of both daemons. Rewritten unconditionally: an existing
+# file is the old 0666 override, and skipping would leave that exposure in place.
+# openvswitch-ipsec is included because Step 10 restarts it after this sweep,
+# so its ctl socket would otherwise be the one file left at the shipped mode.
+for unit in openvswitch-switch:/var/run/openvswitch/db.sock \
+    "ovn-controller:/var/run/ovn/*.ctl" \
+    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"; do
+    UNIT="${unit%%:*}"
+    WAIT_GLOB="${unit#*:}"
+    OVERRIDE_DIR="/etc/systemd/system/${UNIT}.service.d"
     sudo mkdir -p "$OVERRIDE_DIR"
-    sudo tee "$OVERRIDE_DIR/spinifex-perms.conf" >/dev/null <<'OVERRIDE'
+    sudo tee "$OVERRIDE_DIR/spinifex-perms.conf" >/dev/null <<OVERRIDE
 [Service]
-ExecStartPost=/bin/chmod 0666 /var/run/openvswitch/db.sock
+ExecStartPost=$PERMS_HELPER "$WAIT_GLOB"
 OVERRIDE
-    sudo systemctl daemon-reload
-    echo "  systemd override: created (db.sock permissions persist across restarts)"
-else
-    echo "  systemd override: already exists"
-fi
+    echo "  systemd override: ${UNIT}.service.d/spinifex-perms.conf"
+done
+sudo systemctl daemon-reload
 
 # Sudoers rules for spinifex-daemon and spinifex-vpcd are managed by setup.sh
 # (install_sudoers). Skip writing here to avoid conflicts.

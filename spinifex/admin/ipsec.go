@@ -55,7 +55,7 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return fmt.Errorf("ipsec peer cert: invalid nodeIP %q", nodeIP)
 	}
 
-	caCert, caKey, err := loadCAKeyPair(caCertPath, caKeyPath)
+	caCert, caKey, err := LoadCAKeyPair(caCertPath, caKeyPath)
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,9 @@ var charonRereadCAs = func() error {
 	return nil
 }
 
-func loadCAKeyPair(caCertPath, caKeyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
+// Exported so runtime services that mint from the cluster CA share one loader
+// rather than each re-implementing the PEM/PKCS8 handling.
+func LoadCAKeyPair(caCertPath, caKeyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	certPEM, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read CA cert %s: %w", caCertPath, err)

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -31,7 +32,9 @@ func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	// Create ELBv2 service with VPC wired in.
 	// Use DevNetworking=true so single-subnet tests aren't blocked by multi-AZ validation.
 	cfg := &config.Config{Daemon: config.DaemonConfig{DevNetworking: true}}
-	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err)
 	elbv2Svc.VPCService = vpcSvc
 

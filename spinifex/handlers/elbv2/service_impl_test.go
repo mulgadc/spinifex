@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +23,9 @@ func setupTestService(t *testing.T) *ELBv2ServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	// Seed the certificate ARNs the listener tests attach so the fail-closed
 	// cert validation in Create/Modify/AddListenerCertificates resolves them.

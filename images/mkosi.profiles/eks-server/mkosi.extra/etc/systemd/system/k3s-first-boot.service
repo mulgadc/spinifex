@@ -1,0 +1,23 @@
+[Unit]
+Description=K3s first-boot publisher (node-token + admin kubeconfig)
+Requires=k3s.service
+After=k3s.service
+# Self-disabling one-shot: the sentinel is removed by the publisher on
+# success, so a later boot (sentinel gone) is a clean no-op rather than a
+# re-publish. ConditionPathExists reproduces the OpenRC start_pre's
+# "already complete; nothing to do" check without treating that case as a
+# unit failure.
+ConditionPathExists=/var/lib/spinifex-eks/first-boot.pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/k3s-first-boot
+# Headless appliance: no SSH. Route to the serial console so the bootstrap
+# publisher's progress (healthz wait, token/kubeconfig publish, errors) is
+# visible in the orchestrator's host-side console capture, same as the OpenRC
+# runscript's output_log/error_log.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

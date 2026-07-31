@@ -20,7 +20,11 @@ Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/vpcd/
 
 # RG-9: network tier. Per-tap IMDS removed the in-process setns, so vpcd no
 # longer enters a per-VPC netns: CAP_SYS_ADMIN is dropped and the filesystem
-# sandbox is restored. NoNewPrivileges stays off (RG-10: sudo ip/ovs-vsctl/dhcpcd).
+# sandbox is restored.
+#
+# RG-10: these are ambient so ip/iptables/sysctl/arping inherit them on exec and
+# vpcd holds no sudoers rules at all. NoNewPrivileges stays off pending the ADR
+# update that retires the last escalation path.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 NoNewPrivileges=no

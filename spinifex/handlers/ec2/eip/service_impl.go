@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/singleflight"
 )
 
 // Ensure EIPServiceImpl implements EIPService.
@@ -31,6 +32,12 @@ type EIPServiceImpl struct {
 	externalIPAM *handlers_ec2_vpc.ExternalIPAM
 	vpcService   handlers_ec2_vpc.VPCService
 	natsConn     *nats.Conn
+
+	// idemKV records AllocateAddress outcomes by retry token and allocSF joins
+	// a retry to the call still in flight. Together they stop one SDK-level
+	// retry from becoming a second allocation and a second DHCP lease.
+	idemKV  jetstream.KeyValue
+	allocSF singleflight.Group
 }
 
 // natEvent is the payload published to vpc.add-nat / vpc.delete-nat topics.
@@ -57,6 +64,14 @@ func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *h
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketEIPs, err)
 	}
 
+	// TTL'd, so a failure to create it is not worth refusing to serve EIPs over:
+	// a nil bucket only costs post-completion dedupe.
+	idemKV, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, KVBucketEIPIdempotency, 1, eipIdempotencyTTL)
+	if err != nil {
+		slog.Warn("EIP service: idempotency bucket unavailable; a retried AllocateAddress may allocate twice",
+			"bucket", KVBucketEIPIdempotency, "err", err)
+	}
+
 	slog.Info("EIP service initialized with JetStream KV", "bucket", KVBucketEIPs)
 
 	return &EIPServiceImpl{
@@ -64,11 +79,20 @@ func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *h
 		externalIPAM: externalIPAM,
 		vpcService:   vpcService,
 		natsConn:     natsConn,
+		idemKV:       idemKV,
 	}, nil
 }
 
-// AllocateAddress allocates a new Elastic IP from the external IPAM pool.
+// AllocateAddress allocates a new Elastic IP from the external IPAM pool. A
+// resend of the same call returns the first allocation rather than making
+// another, so a slow DORA cannot multiply EIPs via SDK retries.
 func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error) {
+	return s.allocateOnce(ctx, accountID, func() (*ec2.AllocateAddressOutput, error) {
+		return s.allocateAddress(ctx, input, accountID)
+	})
+}
+
+func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error) {
 	allocID := utils.GenerateResourceID("eipalloc")
 
 	var publicIP, poolName string
@@ -80,7 +104,13 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 		publicIP, err = s.externalIPAM.AllocateFromPool(ctx, poolName, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.ErrorContext(ctx, "AllocateAddress: IPAM pool allocation failed", "pool", poolName, "err", err)
-			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
+			// Carry the allocator's own error rather than a flat capacity code:
+			// the gateway resolves the AWS code out of the wrap chain, so a
+			// genuinely exhausted pool still surfaces
+			// InsufficientAddressCapacity while an upstream DHCP or IPAM fault
+			// reports as itself instead of wearing a capacity code it did not
+			// earn.
+			return nil, fmt.Errorf("allocate from pool %s: %w", poolName, err)
 		}
 	} else {
 		// Allocate from the best pool matching region/AZ (empty strings = global fallback).
@@ -89,7 +119,7 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 		publicIP, poolName, err = s.externalIPAM.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.ErrorContext(ctx, "AllocateAddress: IPAM allocation failed", "err", err)
-			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
+			return nil, fmt.Errorf("allocate external IP: %w", err)
 		}
 	}
 

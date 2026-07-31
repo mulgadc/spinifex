@@ -1,0 +1,13 @@
+// Keep unattended-upgrades from replacing linux-firmware, the kernel, or
+// the ROCm userland mid-lifecycle — a firmware/kernel change without a
+// matching reboot can make the GPU invisible, and ROCm's CLI tools are
+// pinned to whatever ABI ships in the 7.2.3 repo snapshot this image was
+// built against. Docker is not listed: that blacklist lives in the docker
+// profile, alongside the packages it installs — each profile blacklists
+// only what it installs, so neither has to know whether the other is in
+// the image.
+Unattended-Upgrade::Package-Blacklist {
+    "linux-";
+    "rocm";
+    "amd-smi-lib";
+};

@@ -11,6 +11,7 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -52,14 +53,18 @@ type DesiredSet struct {
 type PruneScope struct {
 	ELB bool
 	EKS bool
+	RDS bool
 }
 
 // Reconciler is the drift backstop. On a ticker it rebuilds the desired
 // managed record set from the live inventory and converges the zone toward it:
 // every desired record is re-UPSERTed (idempotent — the writer skips unchanged
-// zones) and stale *prunable* records are DELETEd. It applies changes through the
-// same queue-group writer as the lifecycle hooks, so multiple nodes running it
-// serialise on one writer and never race the zone object.
+// zones) and stale *prunable* records are DELETEd.
+//
+// Each cycle is gated on a CAS-elected leader so one node per interval publishes
+// the converging batch. Without it every node published its own batch on the same
+// interval, and since the queue group load-balances rather than serialises, an
+// idle cluster raced its own zone object once per tick.
 //
 // Only cluster-wide-enumerable records (load balancers, EKS clusters) are
 // pruned: any node sees the full ELB/EKS set from KV. EC2 records are never
@@ -74,6 +79,7 @@ type Reconciler struct {
 	desired    DesiredFunc
 	interval   time.Duration
 	accountID  string
+	holder     string
 }
 
 // NewReconciler builds the drift backstop. It is disabled (a no-op) when
@@ -84,6 +90,9 @@ func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc) *Reco
 		desired:   desired,
 		interval:  DefaultReconcileInterval,
 		accountID: utils.GlobalAccountID,
+	}
+	if cfg != nil {
+		r.holder = cfg.Node
 	}
 	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok || desired == nil {
@@ -104,7 +113,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 	if !r.enabled {
 		return
 	}
-	r.reconcileOnce()
+	r.reconcileOnce(ctx)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
@@ -112,19 +121,29 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.reconcileOnce()
+			r.reconcileOnce(ctx)
 		}
 	}
 }
 
-// reconcileOnce computes the converging batch and publishes it best-effort.
-func (r *Reconciler) reconcileOnce() {
+// reconcileOnce computes the converging batch and publishes it best-effort, on
+// whichever node wins this cycle's election.
+func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	if !r.enabled {
 		return
 	}
+	if r.nc != nil {
+		release, elected := reconcilelock.AcquireLeader(ctx, r.nc, KVBucketDNSReconcile, r.holder)
+		if !elected {
+			return
+		}
+		defer release()
+	}
 	batch, err := r.computeBatch()
 	if err != nil {
-		slog.Warn("dns reconcile: compute batch failed, retrying next cycle", "error", err)
+		// A corrupt zone is handled in readZone; anything reaching here left the
+		// desired state unapplied, so surface it rather than burying it in WARN.
+		slog.Error("dns reconcile: compute batch failed, retrying next cycle", "error", err)
 		return
 	}
 	if len(batch) == 0 {
@@ -264,8 +283,8 @@ func (r *Reconciler) computeBatch() ([]Change, error) {
 }
 
 // prunable returns the predicate deciding whether a (zone, label) record may be
-// deleted when absent from the desired set: load-balancer and EKS records in the
-// base domain, but only for the classes this cycle enumerated authoritatively
+// deleted when absent from the desired set: load-balancer, EKS and RDS records
+// in the base domain, but only for the classes this cycle enumerated authoritatively
 // across all tenants. EC2 (`.compute.`) records are never pruned (a node sees
 // only its own instances); structural (apex/NS/glue) records never match.
 func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
@@ -277,6 +296,9 @@ func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
 			return true
 		}
 		if scope.EKS && strings.Contains(label, ".eks.") {
+			return true
+		}
+		if scope.RDS && strings.Contains(label, ".rds.") {
 			return true
 		}
 		return false
@@ -294,7 +316,15 @@ type zoneRecord struct {
 // object does not exist yet (nothing to prune against).
 func (r *Reconciler) readZone(zone string) ([]zoneRecord, bool, error) {
 	cfg, exists, err := nsconfig.ReadZoneRaw(r.s3cfg, zone)
-	if err != nil {
+	switch {
+	case isCorruptZone(err):
+		// Report the zone as absent so this cycle still publishes the full desired
+		// set and the writer rebuilds the object. Pruning is suppressed for free:
+		// no existing records were read, so nothing can look stale.
+		slog.Error("dns reconcile: zone object corrupt, rebuilding from desired state",
+			"zone", zone, "error", err)
+		return nil, false, nil
+	case err != nil:
 		return nil, false, err
 	}
 	if !exists {

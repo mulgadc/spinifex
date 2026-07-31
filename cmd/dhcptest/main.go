@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 )
@@ -36,6 +37,7 @@ func main() {
 	timeout := flag.Duration("timeout", 10*time.Second, "Per-attempt DHCP timeout")
 	retries := flag.Int("retries", 3, "Number of DORA attempts before giving up")
 	verbose := flag.Bool("verbose", false, "Print full DHCP packet contents")
+	broadcast := flag.Bool("broadcast", false, "Set the BOOTP broadcast flag, as vpcd's Acquire path does, so replies come back to ff:ff:ff:ff:ff:ff rather than unicast to the bridge MAC")
 	flag.Parse()
 
 	// Resolve the hardware address to use.
@@ -114,6 +116,9 @@ func main() {
 	// Identity modifiers — client-id / hostname / vendor-class for upstream lease
 	// tagging. Built by the vpcd code path so the probe cannot drift from it.
 	mods := dhcp.IdentityModifiers(cid, *hostname, *vendorClass, hwAddr)
+	if *broadcast {
+		mods = append(mods, dhcpv4.WithBroadcast(true))
+	}
 
 	fmt.Println("Sending DHCP Discover...")
 	start := time.Now()

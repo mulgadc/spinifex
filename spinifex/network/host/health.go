@@ -1,9 +1,8 @@
 package host
 
 import (
+	"context"
 	"strings"
-
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // OVNHealth reports the readiness of OVN networking on this compute node.
@@ -17,9 +16,18 @@ type OVNHealth struct {
 
 // HealthStatus probes local OVS/OVN state to determine network readiness.
 func HealthStatus() OVNHealth {
+	return healthStatus(context.Background(), NewExecRunner())
+}
+
+// healthStatus is HealthStatus over an injected Runner. Every probe here is
+// read-only and runs unprivileged: ovs-vsctl and ovn-appctl are socket clients
+// (utils.NeedsPrivilege), and db.sock plus the ovn-controller ctl socket are
+// group-owned by `spinifex`. Escalating instead would mean granting the daemon a
+// root-equivalent ovn-appctl rule to read a status.
+func healthStatus(ctx context.Context, r Runner) OVNHealth {
 	status := OVNHealth{}
 
-	if err := utils.SudoCommand("ovs-vsctl", "br-exists", "br-int").Run(); err == nil {
+	if _, err := r.Run(ctx, "ovs-vsctl", "br-exists", "br-int"); err == nil {
 		status.BrIntExists = true
 	}
 
@@ -33,19 +41,24 @@ func HealthStatus() OVNHealth {
 	// true only when the process is up AND synced with the SB RAFT cluster, so a
 	// stale-SB wedge correctly surfaces as not_running instead of hiding behind a
 	// process-alive check.
-	if out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "connection-status").Output(); err == nil {
+	if out, err := r.Run(ctx, "ovn-appctl", "-t", "ovn-controller", "connection-status"); err == nil {
 		status.OVNControllerUp = strings.TrimSpace(string(out)) == "connected"
 	}
 
-	if out, err := utils.SudoCommand("ovs-vsctl", "get", "Open_vSwitch", ".", "external_ids:system-id").CombinedOutput(); err == nil {
-		status.ChassisID = strings.Trim(strings.TrimSpace(string(out)), "\"")
-	}
-	if out, err := utils.SudoCommand("ovs-vsctl", "get", "Open_vSwitch", ".", "external_ids:ovn-encap-ip").CombinedOutput(); err == nil {
-		status.EncapIP = strings.Trim(strings.TrimSpace(string(out)), "\"")
-	}
-	if out, err := utils.SudoCommand("ovs-vsctl", "get", "Open_vSwitch", ".", "external_ids:ovn-remote").CombinedOutput(); err == nil {
-		status.OVNRemote = strings.Trim(strings.TrimSpace(string(out)), "\"")
-	}
+	status.ChassisID = ovsGlobalExternalID(ctx, r, "system-id")
+	status.EncapIP = ovsGlobalExternalID(ctx, r, "ovn-encap-ip")
+	status.OVNRemote = ovsGlobalExternalID(ctx, r, "ovn-remote")
 
 	return status
+}
+
+// ovsGlobalExternalID reads one Open_vSwitch external_ids key, returning "" when
+// it is unset or unreadable — the field is omitted from the report rather than
+// carrying an error string into it.
+func ovsGlobalExternalID(ctx context.Context, r Runner, key string) string {
+	out, err := r.Run(ctx, "ovs-vsctl", "get", "Open_vSwitch", ".", "external_ids:"+key)
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(string(out)), "\"")
 }

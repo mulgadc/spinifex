@@ -190,14 +190,14 @@ func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
 	f.ngw.routeGuard = f.rt
 	f.ngw.gws = []*fakeCPNatGateway{{
 		id:    "nat-cp",
-		tags:  map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPNatGW},
+		tags:  map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: cpVPCRoles.NatGW},
 		state: "available",
 		addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-cp")}},
 	}}
 	f.rt.tables = []*fakeCPRouteTable{{
 		id:   "rtb-cp",
 		vpc:  "vpc-cp",
-		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRolePrivateRT},
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: cpVPCRoles.PrivateRT},
 	}}
 
 	require.NoError(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil))
@@ -218,7 +218,7 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 	cpVPC := []*fakeCPVPC{{
 		id:   "vpc-cp",
 		cidr: "10.0.0.0/16",
-		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPVPC},
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: cpVPCRoles.VPC},
 	}}
 
 	t.Run("absent VPC (NotFound) converges to success", func(t *testing.T) {
@@ -503,7 +503,7 @@ func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
 		f.vpcMgr.vpcs = []*fakeCPVPC{{
 			id:   "vpc-cp-live",
 			cidr: "10.0.0.0/16",
-			tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPVPC},
+			tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: cpVPCRoles.VPC},
 		}}
 		nextVPCID := subscribeVPCDelete(t, f.svc.deps.NATSConn)
 

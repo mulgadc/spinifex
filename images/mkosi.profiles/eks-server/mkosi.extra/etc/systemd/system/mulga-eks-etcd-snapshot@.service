@@ -1,0 +1,13 @@
+[Unit]
+Description=Mulga EKS etcd snapshot (%i)
+# K3s embedded-etcd snapshot to predastore. The same script backs both
+# cadences; TIER=%i takes the place of the OpenRC-era "which crond dir
+# was I invoked from" sniff (mulga-eks-etcd-snapshot.sh:20-26). Self-guards to
+# a no-op on the agent role (:28-33) — worker nodes share this image but have
+# no etcd datastore.
+After=k3s.service
+
+[Service]
+Type=oneshot
+Environment=TIER=%i
+ExecStart=/usr/local/sbin/mulga-eks-etcd-snapshot

@@ -27,7 +27,7 @@ func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, comman
 		return true
 	})
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+		respondWithServiceError(msg, err)
 		return
 	}
 	if !found {

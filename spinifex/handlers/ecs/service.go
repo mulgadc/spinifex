@@ -408,6 +408,8 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		Tags:             tagsToMap(input.Tags),
 		RegisteredAt:     time.Now().UTC(),
 		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
+
+		RequiresCompatibilities: aws.StringValueSlice(input.RequiresCompatibilities),
 	}
 	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
 		return nil, err
@@ -605,6 +607,9 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 	}
 	if r.ExecutionRoleArn != "" {
 		td.ExecutionRoleArn = aws.String(r.ExecutionRoleArn)
+	}
+	if len(r.RequiresCompatibilities) > 0 {
+		td.RequiresCompatibilities = aws.StringSlice(r.RequiresCompatibilities)
 	}
 	for _, c := range r.Containers {
 		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())

@@ -1,7 +1,9 @@
 package dns
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // Writer is the control-plane DNS record writer. It owns the read-modify-write
@@ -24,6 +27,7 @@ type Writer struct {
 	nc           *nats.Conn
 	quotaEnabled bool
 	quotas       Quotas
+	locker       *zoneLocker
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
@@ -34,6 +38,9 @@ type Writer struct {
 // events.
 func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn) *Writer {
 	w := &Writer{ttl: DefaultTTL, nc: nc, quotas: DefaultQuotas()}
+	if cfg != nil {
+		w.locker = newZoneLocker(nc, cfg.Node)
+	}
 	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok {
 		slog.Info("dns writer: northstar S3 not configured, record registration disabled")
@@ -57,11 +64,13 @@ func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn)
 func (w *Writer) Enabled() bool { return w.enabled }
 
 // Subscribe registers the queue-group request-reply consumer. It is a no-op when
-// the writer is disabled.
+// the writer is disabled. Joining the queue group is what exposes this writer to
+// its peers, so the zone locker adopts the connection here if it has none yet.
 func (w *Writer) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 	if !w.enabled {
 		return nil, nil
 	}
+	w.locker.bindConn(nc)
 	return nc.QueueSubscribe(SubjectRecordsetChange, QueueGroup, func(msg *nats.Msg) {
 		utils.ServeNATSRequest(msg, w.ApplyBatch)
 	})
@@ -117,10 +126,33 @@ func (w *Writer) publishReload(zone string) {
 }
 
 // applyZone read-modify-writes a single zone TOML for its changes. It returns
-// whether the zone object was rewritten.
+// whether the zone object was rewritten. The read-modify-write holds the
+// cluster-wide per-zone lock: a NATS queue group load-balances messages rather
+// than serialising them, so without it concurrent daemons lose each other's
+// records and can leave the object unparseable.
 func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
-	cfg, exists, err := nsconfig.ReadZoneRaw(w.s3cfg, zone)
+	// Bounded by the producer's ack budget: a lock wait outliving the request
+	// would apply a change nobody is listening for any more.
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	lock, err := w.locker.lockZone(ctx, zone)
 	if err != nil {
+		return false, err
+	}
+	defer lock.Release(ctx)
+
+	cfg, exists, err := nsconfig.ReadZoneRaw(w.s3cfg, zone)
+	switch {
+	case isCorruptZone(err):
+		// The stored bytes are unrecoverable, and every repair path has to parse
+		// them first, so a corrupt zone would otherwise wedge DNS permanently.
+		// Treat it as absent and rebuild; the reconciler re-UPSERTs the rest of
+		// the desired set on its next cycle.
+		slog.Error("dns writer: zone object corrupt, rebuilding from desired state",
+			"zone", zone, "error", err)
+		exists = false
+	case err != nil:
 		return false, err
 	}
 	if !exists {
@@ -173,11 +205,30 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// The lease may have been reaped while the read ran, in which case a peer can
+	// already hold the zone. Abort rather than complete the write unserialised.
+	if lock.Expired() {
+		return false, fmt.Errorf("apply zone %s: lock lease expired before write, retry", zone)
+	}
 	if err := nsconfig.WriteZoneFile(w.s3cfg, zone, body); err != nil {
 		return false, err
 	}
 	slog.Info("dns writer: zone updated", "zone", zone, "changes", len(changes))
 	return true, nil
+}
+
+// isCorruptZone reports whether a zone read failed because the stored bytes do
+// not parse, as opposed to the backend being unreachable. Only the former makes
+// a rebuild safe: rebuilding on a transient S3 error would discard a live zone.
+//
+// Matches on the decoder's error type rather than a northstar sentinel so this
+// works against the pinned northstar release.
+func isCorruptZone(err error) bool {
+	if err == nil {
+		return false
+	}
+	var decErr *toml.DecodeError
+	return errors.As(err, &decErr)
 }
 
 // recordType maps a supported textual record type to its DNS numeric type.

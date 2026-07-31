@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -185,4 +186,111 @@ func TestBuildNLBHealthTargets_ExplicitHCPortAndHTTP(t *testing.T) {
 	assert.Equal(t, "10.0.0.9:9000", got[0].Address) // explicit numeric HC port wins
 	assert.Equal(t, ProtocolHTTP, got[0].Protocol)
 	assert.Equal(t, "/healthz", got[0].Path)
+}
+
+// tlsListenerWithCerts is a TLS NLB listener whose first certificate is the
+// default and the rest are SNI extras, matching AddListenerCertificates.
+func tlsListenerWithCerts(listenerID, tgArn string, certArns ...string) *ListenerRecord {
+	lst := tcpListener("arn:"+listenerID, listenerID, ProtocolTLS, 443, tgArn)
+	for i, arn := range certArns {
+		lst.Certificates = append(lst.Certificates, ListenerCertificate{CertificateArn: arn, IsDefault: i == 0})
+	}
+	return lst
+}
+
+// nlbTLSFixture is an NLB with one healthy target behind a TLS listener.
+func nlbTLSFixture(listenerID string, certArns ...string) (*LoadBalancerRecord, *ListenerRecord, map[string]*TargetGroupRecord) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-sni", Type: LoadBalancerTypeNetwork}
+	tgArn := "arn:tg-sni"
+	return lb, tlsListenerWithCerts(listenerID, tgArn, certArns...), map[string]*TargetGroupRecord{
+		tgArn: nlbTG(tgArn, Target{Id: "i-1", Port: 8443, PrivateIP: "10.0.4.10", HealthState: TargetHealthHealthy}),
+	}
+}
+
+// combinedPEM mirrors resolveCertPEM's output: leaf, then key.
+func combinedPEM(t *testing.T, cn string, dnsNames ...string) string {
+	t.Helper()
+	leaf, key := genLeafCertPEM(t, cn, dnsNames...)
+	return string(leaf) + string(key)
+}
+
+func TestGenerateNLBStream_SNICertGetsItsOwnMapEntry(t *testing.T) {
+	lb, lst, tgByArn := nlbTLSFixture("lst-sni", "arn:cert-1", "arn:cert-2")
+	certPEM := map[string]string{
+		"arn:cert-1": combinedPEM(t, "default.example.com", "default.example.com"),
+		"arn:cert-2": combinedPEM(t, "shop.example.com", "shop.example.com", "www.shop.example.com"),
+	}
+
+	config, certs, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{lst}, tgByArn, nil, "10.0.4.1", certPEM)
+	require.NoError(t, err)
+
+	defaultPath := frontendCertPath(lbagent.NginxCertDir, lb, lst)
+	sniPath := sniCertPath(lbagent.NginxCertDir, lb, lst, "arn:cert-2")
+
+	// The map is what makes nginx serve more than one cert on a listener; the
+	// directive must reference the variable, not a fixed path.
+	assert.Contains(t, config, "map $ssl_server_name $sslcert_lst_sni {")
+	assert.Contains(t, config, "hostnames;")
+	assert.Contains(t, config, "default "+defaultPath+";")
+	assert.Contains(t, config, `"shop.example.com" `+sniPath+";")
+	assert.Contains(t, config, `"www.shop.example.com" `+sniPath+";")
+	assert.Contains(t, config, "ssl_certificate $sslcert_lst_sni;")
+	assert.Contains(t, config, "ssl_certificate_key $sslcert_lst_sni;")
+
+	// Both PEMs must be staged, or the map points at a file that never arrives.
+	require.Contains(t, certs, defaultPath)
+	require.Contains(t, certs, sniPath)
+	assert.Equal(t, certPEM["arn:cert-2"], certs[sniPath])
+}
+
+func TestGenerateNLBStream_WildcardSANBecomesMapKey(t *testing.T) {
+	lb, lst, tgByArn := nlbTLSFixture("lst-wild", "arn:cert-1", "arn:cert-2")
+	certPEM := map[string]string{
+		"arn:cert-1": combinedPEM(t, "example.com", "example.com"),
+		"arn:cert-2": combinedPEM(t, "*.apps.example.com", "*.apps.example.com"),
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{lst}, tgByArn, nil, "10.0.4.1", certPEM)
+	require.NoError(t, err)
+
+	assert.Contains(t, config, `"*.apps.example.com" `+sniCertPath(lbagent.NginxCertDir, lb, lst, "arn:cert-2")+";")
+}
+
+// A single certificate must keep rendering a literal path: a variable makes nginx
+// re-read the PEM on every handshake.
+func TestGenerateNLBStream_SingleCertRendersLiteralPath(t *testing.T) {
+	lb, lst, tgByArn := nlbTLSFixture("lst-one", "arn:cert-1")
+	certPEM := map[string]string{"arn:cert-1": combinedPEM(t, "example.com", "example.com")}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{lst}, tgByArn, nil, "10.0.4.1", certPEM)
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "ssl_certificate "+frontendCertPath(lbagent.NginxCertDir, lb, lst)+";")
+	assert.NotContains(t, config, "map $ssl_server_name")
+}
+
+// The default certificate already answers unmatched names, so a second cert that
+// only repeats them cannot be selected — and its key must not be shipped.
+func TestGenerateNLBStream_UnselectableSNICertNotDelivered(t *testing.T) {
+	lb, lst, tgByArn := nlbTLSFixture("lst-dup", "arn:cert-1", "arn:cert-2")
+	certPEM := map[string]string{
+		"arn:cert-1": combinedPEM(t, "example.com", "example.com"),
+		"arn:cert-2": combinedPEM(t, "example.com", "example.com"),
+	}
+
+	config, certs, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{lst}, tgByArn, nil, "10.0.4.1", certPEM)
+	require.NoError(t, err)
+
+	assert.NotContains(t, config, "map $ssl_server_name")
+	assert.Contains(t, config, "ssl_certificate "+frontendCertPath(lbagent.NginxCertDir, lb, lst)+";")
+	assert.NotContains(t, certs, sniCertPath(lbagent.NginxCertDir, lb, lst, "arn:cert-2"))
+}
+
+// A subject is caller-supplied on import, so a name that could break the config
+// must never reach a map key.
+func TestCertDNSNames_DropsNamesThatAreNotHostnames(t *testing.T) {
+	pemText := combinedPEM(t, "ok.example.com", "ok.example.com", "bad name; }", "-leading-hyphen.com", "UPPER.example.com")
+
+	assert.Equal(t, []string{"ok.example.com", "upper.example.com"}, certDNSNames(pemText))
+	assert.Nil(t, certDNSNames("not a pem"), "unparseable material yields no names")
 }

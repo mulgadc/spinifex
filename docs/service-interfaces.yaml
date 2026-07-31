@@ -174,7 +174,8 @@ services:
       - "vpc.dhcp.release"
     publishes:
       - "vpc.port-status"
-      - "vpc.dhcp.lease-expired"
+      - "vpc.dhcp.lease-changed"
+      - "vpc.dhcp.owner-check"
     depends_on: []
 
   viperblockd:
@@ -317,6 +318,16 @@ suites:
     # and an awsvpc service fronted by an ELBv2 target group. Boots a guest VM,
     # so vpcd (OVN + awsvpc ENI), viperblockd (root volume), predastore (AMI)
     # are all in the path.
+
+  e2e-rds:
+    path: tests/e2e/rds
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # RDS create/describe/connect: CreateDBInstance boots a dual-NIC DB VM from
+    # the engine AMI (predastore) with a Viperblock data volume (viperblockd) and
+    # a customer ENI (vpcd), and the reconciler flips it to available on the
+    # in-guest agent's first healthy heartbeat over awsgw. Opt-in beyond
+    # SPINIFEX_E2E: DeleteDBInstance is not implemented, so a run leaves the
+    # instance behind.
 
   e2e-ddil:
     path: tests/e2e/ddil

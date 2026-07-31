@@ -1,0 +1,10 @@
+# An agent-only image has no role selector, so its agent starts at boot.
+#
+# Stated explicitly rather than left to the distribution's default-enable
+# fallthrough: this is the behaviour the image depends on, and a policy that
+# holds only because nothing contradicts it is one upstream package change away
+# from silently reversing.
+#
+# On the unified CPU image eks-server's 40- file sorts first and disables this
+# unit instead, leaving the choice to the first-boot selector.
+enable k3s-agent.service

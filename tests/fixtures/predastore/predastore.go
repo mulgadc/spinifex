@@ -35,6 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/predastore/quic/quicclient"
 	predastoreserver "github.com/mulgadc/predastore/s3"
+	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 )
 
 // Fixed connection details for the shared predastore fixture daemon started
@@ -84,6 +85,10 @@ var (
 	fixture *Fixture
 )
 
+// fixtureDirPrefix names each run's fixture directory. It is a constant
+// because the sweep in Start matches on it.
+const fixtureDirPrefix = "predastore-fixture-"
+
 // Start starts a real predastore daemon the first time it's called within a
 // test binary and returns connection details for it; every later call in
 // the same process returns the already-running fixture. The daemon
@@ -100,7 +105,12 @@ func Start(t *testing.T) *Fixture {
 		return fixture
 	}
 
-	testDir, err := os.MkdirTemp("", "predastore-fixture-*") //nolint:usetesting // shared daemon outlives individual tests
+	// The daemon runs until the process exits, so there is no point at which
+	// this run can remove its own directory. Reclaiming it is left to a later
+	// run's sweep, which is also what recovers a run killed mid-flight.
+	scratch.SweepAbandoned(os.TempDir(), fixtureDirPrefix, scratch.DefaultMaxAge)
+
+	testDir, err := os.MkdirTemp("", fixtureDirPrefix+"*") //nolint:usetesting // shared daemon outlives individual tests
 	if err != nil {
 		t.Fatalf("predastore fixture: create temp dir: %v", err)
 	}

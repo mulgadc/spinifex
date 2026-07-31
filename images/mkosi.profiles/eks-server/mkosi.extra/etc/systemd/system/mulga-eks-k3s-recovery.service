@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply Mulga EKS control-plane etcd recovery directive (pre-k3s)
+# Ordered after the role selector + mgmt-net so /etc/spinifex-eks/role exists
+# and IMDS + the AWS gateway are reachable for the directive fetch, and before
+# k3s so a cluster-reset/wipe-rejoin directive applies while the etcd
+# datastore is still down. Enabled by eks-node-role on server roles; a no-op
+# on every boot the reconciler has issued no directive (and self-guards to a
+# no-op on the agent role — see mulga-eks-k3s-recovery.sh:46-55).
+After=network-online.target eks-node-role.service mulga-mgmt-net.service
+Wants=network-online.target
+Before=k3s.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mulga-eks-k3s-recovery
+
+[Install]
+WantedBy=multi-user.target

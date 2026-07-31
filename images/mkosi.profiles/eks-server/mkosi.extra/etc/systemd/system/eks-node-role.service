@@ -1,0 +1,26 @@
+[Unit]
+Description=EKS node role selector (server vs agent)
+# eks-node-role enables + starts the role-specific K3s units, so it must run
+# (and write /etc/spinifex-eks/role) before either of them can start.
+#
+# After=cloud-config.service, not cloud-final.service: cloud-final.service is
+# After=multi-user.target while this unit — like every unit it starts — is
+# WantedBy=multi-user.target, so ordering on cloud-final forms a cycle systemd
+# breaks by silently dropping both units. See mulga-eks-provider-id.service
+# for the full derivation.
+After=network-online.target cloud-config.service
+Wants=network-online.target
+Before=k3s.service k3s-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/eks-node-role
+# Headless appliance: no SSH. Route to the serial console so the role
+# decision + any failure is visible in the orchestrator's host-side console
+# capture, same as the OpenRC runscript's output_log/error_log did.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

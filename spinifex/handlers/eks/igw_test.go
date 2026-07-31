@@ -114,7 +114,10 @@ func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {
 
 	igw := f.gateways["igw-fake0001"]
 	require.NotNil(t, igw)
-	assert.True(t, ownedByCluster(igw, "demo"), "created IGW must carry cluster ownership tags")
+	assert.ElementsMatch(t, []*ec2.Tag{
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+		{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String("demo")},
+	}, igw.Tags, "created IGW must carry cluster ownership tags, so teardown can tell it from a customer's")
 }
 
 func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
@@ -171,5 +174,5 @@ func TestEnsureClusterIGW_CreateErrorPropagates(t *testing.T) {
 	f.createErr = errors.New("boom")
 	err := EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "create cluster IGW")
+	assert.Contains(t, err.Error(), "create IGW")
 }

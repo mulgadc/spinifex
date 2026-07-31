@@ -7,9 +7,8 @@ Wants=openvswitch-ipsec.service
 
 [Service]
 EnvironmentFile=-/etc/spinifex/telemetry.env
-# Written by the installer on a ZFS root. It raises SPINIFEX_RESERVED_MEM_GB by
-# the ARC ceiling, which the admission gate cannot see and would otherwise hand
-# out to instances.
+# Written by the installer on a ZFS root: raises SPINIFEX_RESERVED_MEM_GB by the
+# ARC ceiling, which the admission gate cannot see and would else hand to guests.
 EnvironmentFile=-/etc/spinifex/host.env
 Type=simple
 Slice=spinifex-system.slice
@@ -29,7 +28,8 @@ Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
 # Pin to host tmpfs: QEMU pidfiles/QMP sockets must survive PrivateTmp namespace churn (DDIL)
 Environment=XDG_RUNTIME_DIR=/run/spinifex
 
-# RG-9: daemon tier — privileged by necessity (GPU vfio). NoNewPrivileges omitted (RG-10: sudo ip/ovs-vsctl/dhcpcd)
+# RG-9: daemon tier — privileged by necessity (GPU vfio). No CAP_NET_ADMIN here,
+# so unlike vpcd it still escalates ip/sysctl and NoNewPrivileges stays omitted.
 AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 ProtectSystem=full
 PrivateDevices=no

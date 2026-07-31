@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -473,6 +474,43 @@ func TestQueryParamsToStruct_LocationNameDryRun(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, aws.BoolValue(input.DryRun))
+}
+
+// RDS declares locationNameList:"Tag" on its tag lists, so the wrapper segment
+// is "Tag" rather than the default "member". Parsing it as either of the other
+// two shapes would drop every tag silently.
+func TestQueryParamsToStruct_LocationNameListWrapper(t *testing.T) {
+	args := map[string]string{
+		"ResourceName":     "arn:aws:rds:ap-southeast-2:123456789012:db:orders-db",
+		"Tags.Tag.1.Key":   "env",
+		"Tags.Tag.1.Value": "prod",
+		"Tags.Tag.2.Key":   "team",
+		"Tags.Tag.2.Value": "platform",
+	}
+
+	input := &rds.AddTagsToResourceInput{}
+	require.NoError(t, QueryParamsToStruct(args, input))
+
+	require.Len(t, input.Tags, 2)
+	assert.Equal(t, "env", aws.StringValue(input.Tags[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(input.Tags[0].Value))
+	assert.Equal(t, "team", aws.StringValue(input.Tags[1].Key))
+	assert.Equal(t, "platform", aws.StringValue(input.Tags[1].Value))
+}
+
+// A shape that declares a locationNameList still accepts the default wrapper,
+// so an SDK that serializes the list either way is understood.
+func TestQueryParamsToStruct_LocationNameListFallsBackToMember(t *testing.T) {
+	args := map[string]string{
+		"Tags.member.1.Key":   "env",
+		"Tags.member.1.Value": "prod",
+	}
+
+	input := &rds.AddTagsToResourceInput{}
+	require.NoError(t, QueryParamsToStruct(args, input))
+
+	require.Len(t, input.Tags, 1)
+	assert.Equal(t, "env", aws.StringValue(input.Tags[0].Key))
 }
 
 func TestQueryParamsToStruct_NonStructPointer(t *testing.T) {

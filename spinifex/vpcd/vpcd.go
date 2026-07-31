@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,13 +65,11 @@ var waitForFlowsHV = func() error {
 	return nil
 }
 
-// sudoCommand wraps exec.Command with sudo when not root; OVS/OVN commands require elevated privileges.
-func sudoCommand(name string, args ...string) *exec.Cmd {
-	if os.Getuid() == 0 {
-		return exec.Command(name, args...)
-	}
-	return exec.Command("sudo", append([]string{name}, args...)...)
-}
+// sudoCommand is utils.SudoCommand, which escalates only what genuinely needs
+// it. Every caller here is an OVS/OVN socket client, so none of them escalate;
+// a local copy that always sudoed silently bypassed that policy and broke the
+// flows-ready barrier once the grants were removed.
+var sudoCommand = utils.SudoCommand
 
 var serviceName = "vpcd"
 
@@ -202,9 +201,11 @@ var checkBrInt = func() error {
 	return nil
 }
 
-// checkOVNController verifies ovn-controller is running. Tries legacy socket path, then OVN 22.03+ path, then systemctl.
+// checkOVNController verifies ovn-controller is running. ovn-appctl resolves a
+// bare target against /var/run/ovn where the socket and pidfile live; ovs-appctl
+// looks in /var/run/openvswitch and only ever logged a missing pidfile.
 var checkOVNController = func() error {
-	if sudoCommand("ovs-appctl", "-t", "ovn-controller", "version").Run() == nil {
+	if sudoCommand("ovn-appctl", "-t", "ovn-controller", "version").Run() == nil {
 		return nil
 	}
 	if matches, _ := filepath.Glob("/var/run/ovn/ovn-controller.*.ctl"); len(matches) > 0 {
@@ -602,6 +603,19 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
 	}
+	// The lease loop can land on a different address after a NAK or an expiry.
+	// Registered here rather than at manager construction because the IGW
+	// manager that owns the gateway datapath does not exist until now.
+	if dhcpMgr != nil {
+		dhcpMgr.SetIPChangeHook(leaseIPChangeHook(igwMgr, nc))
+		// Nothing else returns an address whose resource was deleted out from
+		// under its lease, so the sweep runs for the life of the daemon.
+		dhcpMgr.SetLeaseOwner(&leaseOwnerResolver{nc: nc, igwMgr: igwMgr})
+		go runLeaseReaper(ctx, dhcpMgr, leaseReapInterval, leaseReapStartDelay)
+		// Leases and gateway ports can already disagree by the time this vpcd
+		// starts, and no lease event will ever fire to correct them.
+		reconcileGatewayLeases(ctx, dhcpMgr, igwMgr)
+	}
 	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
 	if err != nil {
 		return fmt.Errorf("construct EIP manager: %w", err)
@@ -744,9 +758,13 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp lease store: %w", err)
 	}
+	// Labels option 12 with this host so the upstream lease table groups by the
+	// node that took each lease.
+	nodeName, _ := os.Hostname()
 	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{
-		Client: dhcp.NewNClient4(0),
-		Store:  store,
+		Client:   dhcp.NewNClient4(0),
+		Store:    store,
+		NodeName: nodeName,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dhcp manager: %w", err)
@@ -761,6 +779,76 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	}
 	slog.Info("vpcd: dhcp manager started", "az", cfg.AZ, "subscriptions", len(subs))
 	return mgr, subs, nil
+}
+
+// leaseRecordRebindTimeout bounds the daemon-side record reconcile. Larger than
+// the daemon's own budget so its error text wins over a deadline from here.
+const leaseRecordRebindTimeout = 75 * time.Second
+
+// leaseIPChangeHook rebinds whatever was bound to a lease's old address after it
+// moved. Gateway-LRP leases are internal transit plumbing vpcd owns outright, so
+// they are rebound in-process. EIP and ENI-public addresses are API-visible and
+// their records live daemon-side, so those go over TopicLeaseChanged.
+func leaseIPChangeHook(igwMgr external.IGWManager, nc *nats.Conn) dhcp.IPChangeHook {
+	return func(ctx context.Context, e dhcp.Entry, oldIP net.IP) error {
+		if e.Lease == nil {
+			return errors.New("lease ip change: nil lease")
+		}
+		if e.Purpose == dhcp.PurposeGatewayLRP {
+			if e.VPCID == "" {
+				return fmt.Errorf("gw-lrp lease %s carries no vpc_id; cannot rebind", e.Lease.ClientID)
+			}
+			prefixLen, _ := e.Lease.SubnetMask.Size()
+			return igwMgr.RebindGatewayIP(ctx, e.VPCID, e.Lease.IP.String(), prefixLen)
+		}
+		return requestLeaseRecordRebind(ctx, nc, e, oldIP)
+	}
+}
+
+// requestLeaseRecordRebind asks the daemon to move the resource record naming
+// the old address. The old address is already released, so a failed or
+// unanswered request means an API-visible record advertises an address nothing
+// holds — it is returned so the manager logs it against the lease.
+func requestLeaseRecordRebind(ctx context.Context, nc *nats.Conn, e dhcp.Entry, oldIP net.IP) error {
+	if nc == nil {
+		return fmt.Errorf("no NATS connection to rebind %q lease %s (%s -> %s)",
+			e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP)
+	}
+	payload, err := json.Marshal(dhcp.LeaseChangedRequest{
+		ClientID: e.Lease.ClientID,
+		Purpose:  e.Purpose,
+		PoolName: e.PoolName,
+		VPCID:    e.VPCID,
+		OldIP:    ipString(oldIP),
+		NewIP:    ipString(e.Lease.IP),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal lease-changed request for %s: %w", e.Lease.ClientID, err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, leaseRecordRebindTimeout)
+	defer cancel()
+	msg, err := nc.RequestWithContext(reqCtx, dhcp.TopicLeaseChanged, payload)
+	if err != nil {
+		return fmt.Errorf("request rebind of %q lease %s (%s -> %s): %w",
+			e.Purpose, e.Lease.ClientID, oldIP, e.Lease.IP, err)
+	}
+	var reply dhcp.LeaseChangedReply
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		return fmt.Errorf("decode rebind reply for %s: %w", e.Lease.ClientID, err)
+	}
+	if reply.Error != "" {
+		return fmt.Errorf("rebind of %q lease %s rejected: %s", e.Purpose, e.Lease.ClientID, reply.Error)
+	}
+	return nil
+}
+
+// ipString renders an IP for the wire, tolerating nil.
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // pickGatewayAllocator returns a DHCPGatewayLRPAllocator for DHCP-sourced pools; otherwise StaticRangeAllocator.

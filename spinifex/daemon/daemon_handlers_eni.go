@@ -39,7 +39,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+		respondWithServiceError(msg, err)
 		return
 	}
 	if record.Status == "in-use" && record.InstanceId != instance.ID {
@@ -49,7 +49,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	attachmentID, err := d.vpcService.AttachENI(accountID, eniID, instance.ID, deviceIndex)
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+		respondWithServiceError(msg, err)
 		return
 	}
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -117,7 +117,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.FindENIByAttachment(accountID, attachmentID)
 	if err != nil {
-		respondWithError(msg, awserrors.ValidErrorCodeFromError(err))
+		respondWithServiceError(msg, err)
 		return
 	}
 	if record.InstanceId != instance.ID {

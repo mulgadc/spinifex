@@ -255,6 +255,11 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(AccountIDHeader, accountID)
+	// Forwarded here so every NATS-backed service inherits the caller's retry
+	// token without widening its signature.
+	if key := IdempotencyKeyFromContext(ctx); key != "" {
+		reqMsg.Header.Set(IdempotencyKeyHeader, key)
+	}
 	InjectTraceContext(ctx, reqMsg.Header)
 	for _, h := range headers {
 		if h.Key != "" {

@@ -98,6 +98,33 @@ func TestComputeConvergeNoPruneWhenNoAuthority(t *testing.T) {
 	assert.Empty(t, deletesOf(batch), "no authority means no deletions")
 }
 
+func TestComputeConvergePrunesRDSOnlyWhenEnumerated(t *testing.T) {
+	desired := []Change{upsert("orders-db.111122223333.ap-southeast-2.rds.spx3.net", "10.0.5.20")}
+	existing := map[string][]zoneRecord{testBase: {
+		existingA("orders-db.111122223333.ap-southeast-2.rds.", "10.0.5.20"),
+		existingA("dropped-db.111122223333.ap-southeast-2.rds.", "10.0.5.21"),
+		existingA("app-web-abc.ap-southeast-2.elb.", "1.1.1.1"),
+		existingA("ec2-4-4-4-4.ap-southeast-2.compute.", "4.4.4.4"),
+	}}
+
+	// Without RDS authority the deleted instance's record survives, and so does
+	// every other class this cycle could not enumerate.
+	batch, err := computeConverge(desired, existing, prunableFor(PruneScope{}))
+	require.NoError(t, err)
+	assert.Empty(t, deletesOf(batch), "RDS pruning is suppressed when the account buckets were not fully read")
+
+	batch, err = computeConverge(desired, existing, prunableFor(PruneScope{RDS: true}))
+	require.NoError(t, err)
+	deletes := deletesOf(batch)
+
+	require.Len(t, deletes, 1, "only the DB instance absent from the desired set is pruned")
+	assert.Equal(t, "dropped-db.111122223333.ap-southeast-2.rds.spx3.net", deletes[0].Name)
+	for _, d := range deletes {
+		assert.NotContains(t, d.Name, ".elb.", "RDS authority does not grant ELB pruning")
+		assert.NotContains(t, d.Name, ".compute.", "EC2 records are never pruned")
+	}
+}
+
 func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
 	desired := []Change{{
 		Action: ActionUpsert,
@@ -344,7 +371,7 @@ func TestPublishReconcileBatchesStopsAfterFailedAcknowledgement(t *testing.T) {
 func TestReconcilerDisabledIsNoop(t *testing.T) {
 	r := &Reconciler{} // enabled=false
 	assert.False(t, r.Enabled())
-	r.reconcileOnce() // must not panic with a nil desired/S3
+	r.reconcileOnce(t.Context()) // must not panic with a nil desired/S3
 }
 
 func deletesOf(batch []Change) []Change {
@@ -355,4 +382,47 @@ func deletesOf(batch []Change) []Change {
 		}
 	}
 	return out
+}
+
+// TestReconcilerCorruptZoneRebuildsWithoutPruning covers the recovery half of the
+// zone-write race. A corrupt zone must not wedge the backstop: it reports the zone
+// as absent so the desired set is still published and the writer rebuilds, and
+// because nothing was read, no record can look stale and be pruned away.
+func TestReconcilerCorruptZoneRebuildsWithoutPruning(t *testing.T) {
+	endpoint, objects := fakeS3(t, "northstar")
+	objects[testBase+".toml"] = "version = 1.0\n[domain]\ndomain = \"spx3.ne"
+
+	r := &Reconciler{
+		enabled:    true,
+		baseDomain: testBase,
+		s3cfg: &nsconfig.S3Config{
+			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
+			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
+		},
+		desired: func() DesiredSet {
+			return DesiredSet{
+				Changes:  []Change{upsert("lb-1.elb."+testBase, "10.200.1.9")},
+				Prunable: PruneScope{ELB: true, EKS: true, RDS: true},
+			}
+		},
+	}
+
+	recs, ok, err := r.readZone(testBase)
+	require.NoError(t, err, "a corrupt zone must not abort the cycle")
+	assert.False(t, ok, "a corrupt zone reports as absent so nothing is pruned against it")
+	assert.Empty(t, recs)
+
+	batch, err := r.computeBatch()
+	require.NoError(t, err)
+	assert.Equal(t, []Change{upsert("lb-1.elb."+testBase, "10.200.1.9")}, batch,
+		"the full desired set must still be published so the writer rebuilds the zone")
+	assert.Empty(t, deletesOf(batch), "a corrupt zone must never produce deletes")
+}
+
+// TestReconcilerBackendErrorStillAborts guards the other side: an unreachable
+// backend must not be mistaken for corrupt bytes and trigger a rebuild.
+func TestReconcilerBackendErrorStillAborts(t *testing.T) {
+	r := &Reconciler{enabled: true, baseDomain: testBase, s3cfg: &nsconfig.S3Config{}}
+	_, _, err := r.readZone(testBase)
+	require.Error(t, err, "a backend failure must propagate, not look like a rebuildable zone")
 }

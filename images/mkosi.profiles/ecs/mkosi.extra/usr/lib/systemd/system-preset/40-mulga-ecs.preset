@@ -1,0 +1,21 @@
+# containerd, ecs-ca-install and ecs-agent are the ECS container-instance's
+# whole runtime stack — all three start unconditionally, mirroring the legacy
+# Alpine image's ENABLE_SERVICES.
+#
+# cni-dhcp.service/.socket ship enabled by Ubuntu's containernetworking-plugins
+# package (dated Nov 2022) but have nothing to serve: the baked 10-bridge.conflist
+# uses host-local IPAM, not dhcp. Harmless but pure fallthrough with no policy
+# saying it should run, so it is disabled explicitly here rather than left to
+# the package default.
+#
+# This has to be a preset file rather than the postinst's `systemctl enable`:
+# mkosi runs preset-all after every profile's postinst, resetting every unit to
+# policy and discarding whatever the postinst asked for. With no policy file at
+# all containerd/ecs-ca-install/ecs-agent would still come up enabled by
+# fallthrough, but cni-dhcp would too — this is the only way to turn it off.
+enable containerd.service
+enable ecs-ca-install.service
+enable ecs-agent.service
+
+disable cni-dhcp.service
+disable cni-dhcp.socket

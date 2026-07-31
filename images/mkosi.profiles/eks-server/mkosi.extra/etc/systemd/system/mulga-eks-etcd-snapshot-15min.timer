@@ -1,0 +1,10 @@
+[Unit]
+Description=Frequent Mulga EKS etcd snapshot (15-minute RPO window)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=mulga-eks-etcd-snapshot@frequent.service
+
+[Install]
+WantedBy=timers.target

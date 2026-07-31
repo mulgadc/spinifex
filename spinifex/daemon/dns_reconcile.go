@@ -7,8 +7,8 @@ import (
 )
 
 // dnsDesiredSet builds the full desired managed-record set for the reconcile
-// backstop. It spans all tenants: every running instance on this
-// node plus every active load balancer and EKS cluster across all accounts.
+// backstop. It spans all tenants: every running instance on this node plus
+// every active load balancer, EKS cluster and DB instance across all accounts.
 // Prune authority is granted per record class only when that class enumerated
 // completely, so a transient store error can never delete another tenant's live
 // records — the reconcile only ever repairs, never over-prunes, on a partial view.
@@ -26,6 +26,12 @@ func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 		if ch, ok := d.eksService.DesiredDNSChanges(); ok {
 			ds.Changes = append(ds.Changes, ch...)
 			ds.Prunable.EKS = true
+		}
+	}
+	if d.rdsService != nil {
+		if ch, ok := d.rdsService.DesiredDNSChanges(); ok {
+			ds.Changes = append(ds.Changes, ch...)
+			ds.Prunable.RDS = true
 		}
 	}
 	return ds

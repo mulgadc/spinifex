@@ -1,0 +1,42 @@
+[Unit]
+Description=Configure system-VM NICs from fw_cfg netcfg (data DHCP + mgmt static)
+# Dual-NIC system VMs (the EKS control plane) need their data ENI leased and
+# their mgmt address applied before anything crawls IMDS, because cloud-init
+# cannot reliably pick the right NIC out of two. A single-NIC guest has no
+# fw_cfg blob and the helper exits 0 without touching anything, so this unit is
+# harmless on every other image.
+#
+# DefaultDependencies=no and the ordering below mirror cloud-init-local.service
+# itself, which is also DefaultDependencies=no and Before=sysinit.target. The
+# OpenRC original achieved the same by living in the boot runlevel, which has no
+# systemd analogue — ordering against cloud-init-local directly is the
+# equivalent, and getting it wrong costs the control plane its whole IMDS probe
+# window with no route to 169.254.169.254.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target
+Before=cloud-init-local.service
+Before=shutdown.target
+Conflicts=shutdown.target
+# Deliberately NO ConditionPathExists on the fw_cfg blob. The path only appears
+# once the helper has modprobe'd qemu_fw_cfg, so a condition here would skip the
+# unit on precisely the machines it exists for. The helper's own no-op guard is
+# the correct one.
+
+# The OpenRC original also declared "before k3s k3s-agent". That is satisfied
+# transitively — those units reach multi-user.target, long after sysinit — so it
+# is not repeated here, where this profile has no business naming EKS units.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mulga-mgmt-net
+# Headless VM: a failure here strands the node before cloud-init, so the console
+# is the only place an operator will ever see why.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+# Pulled in by the same target as cloud-init-local, so both land in one
+# transaction and the Before= above actually orders something.
+WantedBy=cloud-init.target

@@ -195,6 +195,82 @@ func TestAttachIGW_ClearsStaleLocalnetNATAddresses(t *testing.T) {
 	assert.Equal(t, "external", localnet.Options["network_name"], "converge must not drop network_name")
 }
 
+// The LRP address is written once at attach, so a lease re-issued on a new IP
+// leaves the port answering ARP for an address nothing renews.
+func TestRebindGatewayIP_MovesLRPAndStamp(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 23}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool,
+		fixedNexthopAllocator{ip: "192.168.1.115", prefix: 23, nexthop: "192.168.1.1"}, []string{"chassis-a"})
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	require.NoError(t, mgr.RebindGatewayIP(ctx, "vpc-1", "192.168.1.146", 23))
+
+	lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"192.168.1.146/23"}, lrp.Networks, "the old address must not linger on the port")
+	assert.Equal(t, "192.168.1.146", lrp.ExternalIDs[gatewayIPExtIDKey])
+}
+
+func TestRebindGatewayIP_IsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 23}
+	mgr, barrierCalls := newTestIGWManager(t, m, policy.NATModeCentralized, pool,
+		fixedNexthopAllocator{ip: "192.168.1.115", prefix: 23, nexthop: "192.168.1.1"}, []string{"chassis-a"})
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	before := *barrierCalls
+
+	// Rebinding to the address already on the port must not touch OVN at all.
+	require.NoError(t, mgr.RebindGatewayIP(ctx, "vpc-1", "192.168.1.115", 23))
+	assert.Equal(t, before, *barrierCalls, "a no-op rebind must not wait on the flows barrier")
+}
+
+// Routed mode pins the VPC SNAT to the transit IP, so a rebind must move it or
+// egress keeps leaving via the released address.
+func TestRebindGatewayIP_RoutedMovesSNAT(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 23}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeRouted, pool,
+		fixedNexthopAllocator{ip: "10.99.0.10", prefix: 24, nexthop: "10.99.0.1"}, []string{"chassis-a"})
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	require.NoError(t, mgr.RebindGatewayIP(ctx, "vpc-1", "10.99.0.20", 24))
+
+	snat, err := m.FindNATByLogicalIP(ctx, topology.VPCRouter("vpc-1"), "snat", "10.0.0.0/16")
+	require.NoError(t, err)
+	require.NotNil(t, snat)
+	assert.Equal(t, "10.99.0.20", snat.ExternalIP)
+}
+
+// A gw-lrp lease only exists because a port was attached, so a missing port is
+// an unreachable OVSDB or a detach that kept the lease. Both mean an address is
+// held with no owner and must surface rather than read as "nothing to do".
+func TestRebindGatewayIP_MissingLRPErrors(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, nil, LinkLocalAllocator{}, nil)
+
+	err := mgr.RebindGatewayIP(context.Background(), "vpc-1", "192.168.1.146", 23)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), topology.GatewayRouterPort("vpc-1"))
+}
+
+func TestRebindGatewayIP_RejectsBadArgs(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, nil, LinkLocalAllocator{}, nil)
+
+	assert.Error(t, mgr.RebindGatewayIP(ctx, "", "192.168.1.146", 23))
+	assert.Error(t, mgr.RebindGatewayIP(ctx, "vpc-1", "", 23))
+	assert.Error(t, mgr.RebindGatewayIP(ctx, "vpc-1", "192.168.1.146", 0))
+}
+
 func TestAttachIGW_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

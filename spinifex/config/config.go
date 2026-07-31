@@ -103,6 +103,8 @@ type Config struct {
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
+	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
+	ACM        ACMConfig        `json:"ACM" mapstructure:"acm"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -150,6 +152,73 @@ type NorthstarConfig struct {
 	// without reading the credential-bearing northstar.toml.
 	DefaultDomain  string `json:"DefaultDomain" mapstructure:"default_domain"`
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
+}
+
+// Every DB VM's primary NIC lives in the shared system VPC, which gives the
+// in-guest agent management egress while the customer ENI stays ingress-only.
+type RDSConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// EKS control-plane supernet or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+
+	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
+	// can place across.
+	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
+
+	// How long a creating DB instance may go without a healthy agent heartbeat
+	// before the reconciler marks it failed. Zero takes the built-in default,
+	// which covers a cold boot plus initdb on the smallest instance class.
+	BootstrapTimeoutSeconds int `json:"BootstrapTimeoutSeconds" mapstructure:"bootstrap_timeout_seconds"`
+
+	// How long an available DB instance may be observed with its VM down and its
+	// agent silent before the reconciler reports it failed. Zero takes the
+	// built-in default of one heartbeat interval, which requires two reconciler
+	// passes to agree; raise it to give EC2's own VM auto-restart more room
+	// before a customer sees the instance reported as failed.
+	FailureGraceSeconds int `json:"FailureGraceSeconds" mapstructure:"failure_grace_seconds"`
+
+	// The upper bound on a DB instance's BackupRetentionPeriod, and what a create
+	// that names none gets. Zero takes the built-in 7 for both. Retention length
+	// does not change the physical footprint of a backed-up volume — any snapshot
+	// latches viperblock chunk GC off for the life of the volume — so a short
+	// retention buys nothing but a smaller restore surface.
+	BackupRetentionCapDays int `json:"BackupRetentionCapDays" mapstructure:"backup_retention_cap_days"`
+	BackupRetentionDays    int `json:"BackupRetentionDays" mapstructure:"backup_retention_days"`
+
+	// The daily UTC blocks an unnamed backup or maintenance window is assigned
+	// inside, as hh24:mi-hh24:mi. They must not overlap: the windows derived from
+	// them must not either. Empty takes the built-in 03:00-11:00 and 11:00-19:00.
+	BackupWindowBlock      string `json:"BackupWindowBlock" mapstructure:"backup_window_block"`
+	MaintenanceWindowBlock string `json:"MaintenanceWindowBlock" mapstructure:"maintenance_window_block"`
+
+	// How many automated snapshots one retention pass may delete. Zero takes the
+	// built-in bound; a pass that under-collects is corrected two minutes later.
+	BackupSweepDeleteLimit int `json:"BackupSweepDeleteLimit" mapstructure:"backup_sweep_delete_limit"`
+}
+
+// RDSDefaultSystemVPCSupernet anchors the RDS system VPC address space at
+// 10.248.0.0/14, immediately below and disjoint from the EKS control-plane
+// supernet, so a name-hash collision can never place an RDS subnet in EKS space.
+const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
+
+// ACMConfig holds the operator-level ACM certificate-issuance configuration.
+// Deliberately small: four keys, nothing deployment-specific and nothing
+// derivable. In particular there is no allowed-domains list (public modes are
+// authorized by the ACME CA's own validation, PRIVATE_CA by the CA's own name
+// constraints), no default validation mode (derived from DNSProvider and
+// whether northstar hosts the zone, never configured), no renewal thresholds
+// (proportional, hence constants) and no private CA paths (folded into the
+// existing CA path handling in admin.ConfigSettings).
+type ACMConfig struct {
+	Enabled      bool   `json:"Enabled" mapstructure:"enabled"`
+	DirectoryURL string `json:"DirectoryURL" mapstructure:"directory_url"`
+	ContactEmail string `json:"ContactEmail" mapstructure:"contact_email"`
+	// DNSProvider is the lego DNS provider id used for PROVIDER_API DNS-01
+	// challenges. Its credentials come from environment variables per lego's
+	// own convention, never from this file — a provider token in a
+	// configuration file is a token in every backup. A non-empty value here is
+	// what selects PROVIDER_API at RequestCertificate time.
+	DNSProvider string `json:"DNSProvider" mapstructure:"dns_provider"`
 }
 
 // ParseEndpoints splits a comma-separated OVSDB endpoint list (NB/SB RAFT

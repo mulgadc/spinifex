@@ -15,6 +15,7 @@ import (
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -597,7 +598,9 @@ func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
 	return &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}, nc, tmpDir

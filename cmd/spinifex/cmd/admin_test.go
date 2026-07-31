@@ -1334,3 +1334,34 @@ func TestCheckJoinPreconditions(t *testing.T) {
 		}
 	})
 }
+
+func TestJoinRetryable(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		want   bool
+	}{
+		// The primary may still be booting — bare-metal nodes cannot be
+		// sequenced, so a joiner that arrives first has to wait.
+		{"connection refused", errors.New("connection refused"), 0, true},
+		{"tls handshake failure", errors.New("tls: handshake failure"), 0, true},
+		{"timeout", errors.New("context deadline exceeded"), 0, true},
+		{"server error", nil, 500, true},
+		{"bad gateway", nil, 502, true},
+
+		// Answered and said no: retrying changes nothing, and a mistyped token
+		// must not hang a console for the whole timeout.
+		{"bad token", nil, 401, false},
+		{"duplicate node name", nil, 409, false},
+		{"bad request", nil, 400, false},
+		{"success", nil, 200, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := joinRetryable(tt.err, tt.status); got != tt.want {
+				t.Errorf("joinRetryable(%v, %d) = %v, want %v", tt.err, tt.status, got, tt.want)
+			}
+		})
+	}
+}

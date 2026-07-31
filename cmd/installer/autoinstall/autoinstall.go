@@ -129,22 +129,8 @@ func buildConfig() (*install.Config, error) {
 		cfg.GPUPassthrough = true
 	}
 
-	role := strings.ToLower(os.Getenv("SPINIFEX_ROLE"))
-	if role == "" {
-		role = "init"
-	}
-	cfg.ClusterRole = role
-	skipFormation := os.Getenv("SPINIFEX_SKIP_FORMATION") == "1"
-	if skipFormation {
+	if os.Getenv("SPINIFEX_SKIP_FORMATION") == "1" {
 		cfg.SkipFormation = true
-	}
-
-	if role == "join" && !skipFormation {
-		joinAddr := os.Getenv("SPINIFEX_JOIN_ADDR")
-		if joinAddr == "" {
-			return nil, fmt.Errorf("SPINIFEX_JOIN_ADDR required when SPINIFEX_ROLE=join")
-		}
-		cfg.JoinAddr = joinAddr
 	}
 
 	return cfg, nil

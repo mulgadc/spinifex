@@ -31,10 +31,6 @@ type Config struct {
 	// which would move all three onto the internal plane. Empty when wan uses
 	// DHCP, leaving spx to auto-detect from the default route.
 	WANIP string
-	// ClusterRole is "init" or "join".
-	ClusterRole string
-	// JoinAddr is host:port of the primary node, only used when ClusterRole is "join".
-	JoinAddr string
 	// Email is the operator email collected by the TUI or SPINIFEX_EMAIL on
 	// the headless path. Passed to `spx admin init --email=<value>` when set;
 	// omitted entirely when empty.
@@ -283,13 +279,12 @@ func buildClusterCmd(cfg Config) string {
 		bindFlags += ` $SPX_ADVERTISE`
 	}
 
-	var cmd string
-	switch cfg.ClusterRole {
-	case "join":
-		cmd = fmt.Sprintf("spx admin join --node %s --host %s%s%s", cfg.Hostname, cfg.JoinAddr, bindFlags, emailFlag)
-	default:
-		cmd = fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
-	}
+	// Always a single-node cluster. The installer cannot form a multi-node one:
+	// cluster membership decides the OVN database topology and the join token
+	// only exists once the primary has booted, so neither is knowable while the
+	// nodes are still being installed. Multi-node is a post-install conversion,
+	// documented in the multi-node install guide.
+	cmd := fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
 	return preamble + cmd
 }
 

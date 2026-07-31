@@ -108,9 +108,6 @@ func TestLoadBuildsConfigFromEnv(t *testing.T) {
 	if !cfg.GPUPassthrough {
 		t.Error("GPUPassthrough not enabled")
 	}
-	if cfg.ClusterRole != "init" {
-		t.Errorf("ClusterRole = %q, want init by default", cfg.ClusterRole)
-	}
 }
 
 func TestLoadDefaultsHostname(t *testing.T) {
@@ -206,33 +203,28 @@ func TestBuildConfigStaticWAN(t *testing.T) {
 	}
 }
 
-func TestBuildConfigClusterRole(t *testing.T) {
+// SPINIFEX_ROLE and SPINIFEX_JOIN_ADDR no longer exist: the installer cannot
+// form a multi-node cluster, so a stale cmdline from an older ISO has to be
+// inert rather than producing a half-configured node.
+func TestBuildConfigSkipFormation(t *testing.T) {
 	tests := []struct {
 		name         string
 		env          map[string]string
-		wantErr      string
-		wantRole     string
-		wantJoin     string
 		wantSkipForm bool
 	}{
 		{
-			name:     "join with address",
-			env:      map[string]string{"SPINIFEX_ROLE": "JOIN", "SPINIFEX_JOIN_ADDR": "10.0.0.1:9999"},
-			wantRole: "join",
-			wantJoin: "10.0.0.1:9999",
+			name:         "default initializes a single-node cluster",
+			wantSkipForm: false,
 		},
 		{
-			name:    "join without address",
-			env:     map[string]string{"SPINIFEX_ROLE": "join"},
-			wantErr: "SPINIFEX_JOIN_ADDR required",
-		},
-		{
-			// Formation is the provisioning controller's job here, so the join
-			// address is not the installer's to demand.
-			name:         "join deferred to the provisioner",
-			env:          map[string]string{"SPINIFEX_ROLE": "join", "SPINIFEX_SKIP_FORMATION": "1"},
-			wantRole:     "join",
+			name:         "formation deferred to the provisioner",
+			env:          map[string]string{"SPINIFEX_SKIP_FORMATION": "1"},
 			wantSkipForm: true,
+		},
+		{
+			name:         "stale join cmdline is ignored",
+			env:          map[string]string{"SPINIFEX_ROLE": "join", "SPINIFEX_JOIN_ADDR": "10.0.0.1:9999"},
+			wantSkipForm: false,
 		},
 	}
 
@@ -247,20 +239,8 @@ func TestBuildConfigClusterRole(t *testing.T) {
 			setEnv(t, env)
 
 			cfg, err := buildConfig()
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("err = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("buildConfig: %v", err)
-			}
-			if cfg.ClusterRole != tt.wantRole {
-				t.Errorf("ClusterRole = %q, want %q", cfg.ClusterRole, tt.wantRole)
-			}
-			if cfg.JoinAddr != tt.wantJoin {
-				t.Errorf("JoinAddr = %q, want %q", cfg.JoinAddr, tt.wantJoin)
 			}
 			if cfg.SkipFormation != tt.wantSkipForm {
 				t.Errorf("SkipFormation = %v, want %v", cfg.SkipFormation, tt.wantSkipForm)

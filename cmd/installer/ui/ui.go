@@ -32,7 +32,6 @@ const (
 	screenNetworkRole
 	screenIdentity
 	screenPassword
-	screenJoinConfig
 	screenConfirm
 	screenDone // signals completion; program exits
 )
@@ -67,11 +66,6 @@ type model struct {
 
 	// Identity
 	hostnameInput textinput.Model
-	clusterRole   int // 0 = init, 1 = join
-
-	// Join config
-	joinIPInput   textinput.Model
-	joinPortInput textinput.Model
 
 	// Credentials (email + password)
 	emailInput           textinput.Model
@@ -147,13 +141,6 @@ func newModel(disks []install.Disk, nics []netprobe.NIC) model {
 	hostnameIn.Placeholder = "node1"
 	hostnameIn.CharLimit = 64
 
-	joinIPIn := textinput.New()
-	joinIPIn.Placeholder = "192.168.1.10"
-
-	joinPortIn := textinput.New()
-	joinPortIn.Placeholder = "4432"
-	joinPortIn.CharLimit = 5
-
 	emailIn := textinput.New()
 	emailIn.Placeholder = "admin@mydomain.com"
 	emailIn.CharLimit = 254 // RFC 5321 upper bound
@@ -206,8 +193,6 @@ func newModel(disks []install.Disk, nics []netprobe.NIC) model {
 		emailInput:           emailIn,
 		passwordInput:        passIn,
 		passwordConfirmInput: passConfirmIn,
-		joinIPInput:          joinIPIn,
-		joinPortInput:        joinPortIn,
 	}
 }
 
@@ -328,32 +313,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.hostnameInput.Blur()
 			m.screen = screenNetworkRoles
-		case "tab", "down":
-			if m.hostnameInput.Focused() {
-				m.hostnameInput.Blur()
-			} else {
-				m.hostnameInput.Focus()
-			}
-		case "left", "right":
-			if m.hostnameInput.Focused() {
-				var cmd tea.Cmd
-				m.hostnameInput, cmd = m.hostnameInput.Update(msg)
-				return m, cmd
-			}
-			if key == "left" {
-				m.clusterRole = 0
-			} else {
-				m.clusterRole = 1
-			}
 		case "enter":
-			if m.hostnameInput.Focused() {
-				if strings.TrimSpace(m.hostnameInput.Value()) == "" {
-					m.validationErr = "Hostname is required"
-					return m, nil
-				}
-				m.hostnameInput.Blur()
-				return m, nil
-			}
 			if strings.TrimSpace(m.hostnameInput.Value()) == "" {
 				m.validationErr = "Hostname is required"
 				m.hostnameInput.Focus()
@@ -411,12 +371,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.validationErr = ""
-			if m.clusterRole == 1 {
-				m.screen = screenJoinConfig
-				m.joinIPInput.Focus()
-			} else {
-				m.screen = screenConfirm
-			}
+			m.screen = screenConfirm
 		case "esc":
 			m.emailInput.Blur()
 			m.passwordInput.Blur()
@@ -436,43 +391,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-	case screenJoinConfig:
-		switch key {
-		case "tab", "down":
-			if m.joinIPInput.Focused() {
-				m.joinIPInput.Blur()
-				m.joinPortInput.Focus()
-			} else {
-				m.joinPortInput.Blur()
-				m.joinIPInput.Focus()
-			}
-		case "enter":
-			if m.joinIPInput.Focused() {
-				m.joinIPInput.Blur()
-				m.joinPortInput.Focus()
-				return m, nil
-			}
-			joinIP := strings.TrimSpace(m.joinIPInput.Value())
-			if net.ParseIP(joinIP) == nil {
-				m.validationErr = "Invalid primary node IP"
-				return m, nil
-			}
-			m.screen = screenConfirm
-		case "esc":
-			m.joinIPInput.Blur()
-			m.joinPortInput.Blur()
-			m.screen = screenPassword
-			m = m.setCredsFocus(2)
-		default:
-			var cmd tea.Cmd
-			if m.joinIPInput.Focused() {
-				m.joinIPInput, cmd = m.joinIPInput.Update(msg)
-			} else {
-				m.joinPortInput, cmd = m.joinPortInput.Update(msg)
-			}
-			return m, cmd
-		}
-
 	case screenConfirm:
 		switch key {
 		case "enter", "y", "Y":
@@ -483,14 +401,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = errors.New("installation cancelled")
 			return m, tea.Quit
 		case "esc":
-			if m.clusterRole == 1 {
-				m.screen = screenJoinConfig
-				m.joinIPInput.Focus()
-				m.joinPortInput.Blur()
-			} else {
-				m.screen = screenPassword
-				m = m.setCredsFocus(0)
-			}
+			m.screen = screenPassword
+			m = m.setCredsFocus(0)
 		}
 	}
 
@@ -714,8 +626,6 @@ func (m model) View() string {
 		content = m.viewIdentity(w)
 	case screenPassword:
 		content = m.viewPassword(w)
-	case screenJoinConfig:
-		content = m.viewJoinConfig(w)
 	case screenConfirm:
 		content = m.viewConfirm(w)
 	case screenDone:
@@ -905,25 +815,12 @@ func (m model) viewIdentity(w int) string {
 
 	hostnameLabel := styleLabel.Render("Hostname")
 
-	roleLabel := styleLabel.Render("Cluster role")
-	roles := []string{"Initialize new cluster", "Join existing cluster"}
-	var roleParts []string
-	for i, r := range roles {
-		if i == m.clusterRole && !m.hostnameInput.Focused() {
-			roleParts = append(roleParts, styleSelected.Render(" "+r+" "))
-		} else if i == m.clusterRole {
-			roleParts = append(roleParts, styleLabel.Render("["+r+"]"))
-		} else {
-			roleParts = append(roleParts, styleMuted.Render(r))
-		}
-	}
-
 	var lines []string
-	lines = append(lines, title, "", hostnameLabel, m.hostnameInput.View(), "", roleLabel, strings.Join(roleParts, "  "))
+	lines = append(lines, title, "", hostnameLabel, m.hostnameInput.View())
 	if m.validationErr != "" {
 		lines = append(lines, "", styleError.Render(m.validationErr))
 	}
-	lines = append(lines, styleHelp.Render("Tab to toggle focus • ←/→ to select role • Enter to proceed"))
+	lines = append(lines, styleHelp.Render("Enter to proceed • Esc to go back"))
 
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
@@ -956,32 +853,10 @@ func (m model) viewPassword(w int) string {
 	)
 }
 
-func (m model) viewJoinConfig(w int) string {
-	title := styleTitle.Render("Join Existing Cluster")
-	ipLabel := styleLabel.Render("Primary node IP")
-	portLabel := styleLabel.Render("Formation port")
-
-	var lines []string
-	lines = append(lines, title, "", ipLabel, m.joinIPInput.View(), "", portLabel, m.joinPortInput.View())
-	if m.validationErr != "" {
-		lines = append(lines, "", styleError.Render(m.validationErr))
-	}
-	lines = append(lines, styleHelp.Render("Tab to move • Enter to proceed • Esc to go back"))
-
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.Place(w, m.height, lipgloss.Center, lipgloss.Center,
-		styleBox.Width(min(w-4, 64)).Render(body),
-	)
-}
-
 func (m model) viewConfirm(w int) string {
 	title := styleTitle.Render("Confirm Installation")
 
 	cfg := m.buildConfig()
-	role := "Initialize new cluster"
-	if cfg.ClusterRole == "join" {
-		role = fmt.Sprintf("Join cluster at %s", cfg.JoinAddr)
-	}
 
 	summary := []struct{ k, v string }{
 		{"Filesystem", cfg.Storage.FS.Label()},
@@ -1019,7 +894,6 @@ func (m model) viewConfirm(w int) string {
 	}
 	summary = append(summary,
 		struct{ k, v string }{"Hostname", cfg.Hostname},
-		struct{ k, v string }{"Cluster role", role},
 	)
 	if cfg.HasCACert {
 		summary = append(summary, struct{ k, v string }{"CA certificate", "provided"})
@@ -1065,16 +939,6 @@ func (m model) buildConfig() *install.Config {
 	cfg.VPC = m.roles[2].toRole(m.nics)
 
 	cfg.Hostname = strings.TrimSpace(m.hostnameInput.Value())
-	if m.clusterRole == 0 {
-		cfg.ClusterRole = "init"
-	} else {
-		cfg.ClusterRole = "join"
-		port := strings.TrimSpace(m.joinPortInput.Value())
-		if port == "" {
-			port = "4432"
-		}
-		cfg.JoinAddr = net.JoinHostPort(strings.TrimSpace(m.joinIPInput.Value()), port)
-	}
 	cfg.RootPassword = m.passwordInput.Value()
 	cfg.Email = strings.TrimSpace(m.emailInput.Value())
 	return cfg

@@ -25,7 +25,7 @@ func TestWriteScriptNoCallbackWhenEmpty(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)
 
-	cfg := Config{Hostname: "test-node", ClusterRole: "init"}
+	cfg := Config{Hostname: "test-node"}
 	if err := Write(root, cfg); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -46,7 +46,6 @@ func TestWriteScriptEmbedsCurlWhenCallbackSet(t *testing.T) {
 	const callbackURL = "http://192.168.1.12/boot/done?mac=aa:bb:cc:dd:ee:ff"
 	cfg := Config{
 		Hostname:        "test-node",
-		ClusterRole:     "init",
 		InstallCallback: callbackURL,
 	}
 	if err := Write(root, cfg); err != nil {
@@ -71,7 +70,7 @@ func TestWriteScriptRunsOVNWhenFormationOwned(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)
 
-	cfg := Config{Hostname: "test-node", ClusterRole: "init"}
+	cfg := Config{Hostname: "test-node"}
 	if err := Write(root, cfg); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -89,7 +88,7 @@ func TestWriteScriptDefersOVNWhenSkipFormation(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)
 
-	cfg := Config{Hostname: "test-node", ClusterRole: "init", SkipFormation: true}
+	cfg := Config{Hostname: "test-node", SkipFormation: true}
 	if err := Write(root, cfg); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -122,7 +121,6 @@ func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 	const callbackURL = "http://192.168.1.12/boot/done?mac=aa:bb:cc:dd:ee:ff"
 	cfg := Config{
 		Hostname:        "node1",
-		ClusterRole:     "init",
 		InstallCallback: callbackURL,
 	}
 	if err := Write(root, cfg); err != nil {
@@ -155,10 +153,9 @@ func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 // off-host dial target onto the internal plane.
 func TestBuildClusterCmdSeparatesBindFromAdvertise(t *testing.T) {
 	cmd := buildClusterCmd(Config{
-		Hostname:    "hydrogen",
-		ClusterRole: "init",
-		LANIP:       "10.0.0.3",
-		WANIP:       "216.218.163.99",
+		Hostname: "hydrogen",
+		LANIP:    "10.0.0.3",
+		WANIP:    "216.218.163.99",
 	})
 	for _, want := range []string{
 		"--bind 10.0.0.3",
@@ -169,18 +166,6 @@ func TestBuildClusterCmdSeparatesBindFromAdvertise(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, cmd)
 		}
 	}
-
-	// Joining nodes carry the same split — peers record the public address.
-	cmd = buildClusterCmd(Config{
-		Hostname:    "radon",
-		ClusterRole: "join",
-		JoinAddr:    "10.0.0.2:4432",
-		LANIP:       "10.0.0.4",
-		WANIP:       "216.218.163.100",
-	})
-	if !strings.Contains(cmd, "--advertise 216.218.163.100") {
-		t.Errorf("join must advertise the public plane:\n%s", cmd)
-	}
 }
 
 // Without a bind address there is nothing to correct: spx auto-detects both,
@@ -189,9 +174,8 @@ func TestBuildClusterCmdSeparatesBindFromAdvertise(t *testing.T) {
 // where the split is meaningless.
 func TestBuildClusterCmdOmitsAdvertiseWithoutBind(t *testing.T) {
 	cmd := buildClusterCmd(Config{
-		Hostname:    "node1",
-		ClusterRole: "init",
-		WANIP:       "216.218.163.99",
+		Hostname: "node1",
+		WANIP:    "216.218.163.99",
 	})
 	if strings.Contains(cmd, "--advertise") {
 		t.Errorf("advertise must not be passed without a bind address:\n%s", cmd)
@@ -204,9 +188,8 @@ func TestBuildClusterCmdOmitsAdvertiseWithoutBind(t *testing.T) {
 // already guards against.
 func TestBuildClusterCmdResolvesDHCPWanAtBoot(t *testing.T) {
 	cmd := buildClusterCmd(Config{
-		Hostname:    "hydrogen",
-		ClusterRole: "init",
-		LANIP:       "10.0.0.3",
+		Hostname: "hydrogen",
+		LANIP:    "10.0.0.3",
 		// WANIP empty — the wan plane is on DHCP.
 	})
 	if !strings.Contains(cmd, "ip -4 -o addr show br-wan") {
@@ -227,7 +210,7 @@ func TestBuildClusterCmdResolvesDHCPWanAtBoot(t *testing.T) {
 // With no bind address there is nothing to correct, so neither the literal flag
 // nor the boot-time lookup should appear — spx auto-detects both ends.
 func TestBuildClusterCmdSkipsWanLookupWithoutBind(t *testing.T) {
-	cmd := buildClusterCmd(Config{Hostname: "node1", ClusterRole: "init"})
+	cmd := buildClusterCmd(Config{Hostname: "node1"})
 	if strings.Contains(cmd, "SPX_ADVERTISE") || strings.Contains(cmd, "--advertise") {
 		t.Errorf("no bind means no advertise handling at all:\n%s", cmd)
 	}
@@ -241,10 +224,9 @@ func TestGeneratedScriptIsValidShell(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"dhcp wan resolves at boot", Config{Hostname: "hydrogen", ClusterRole: "init", LANIP: "10.0.0.3"}},
-		{"static wan is inlined", Config{Hostname: "hydrogen", ClusterRole: "init", LANIP: "10.0.0.3", WANIP: "216.218.163.99"}},
-		{"join with dhcp wan", Config{Hostname: "radon", ClusterRole: "join", JoinAddr: "10.0.0.2:4432", LANIP: "10.0.0.4"}},
-		{"single nic, nothing pinned", Config{Hostname: "node1", ClusterRole: "init"}},
+		{"dhcp wan resolves at boot", Config{Hostname: "hydrogen", LANIP: "10.0.0.3"}},
+		{"static wan is inlined", Config{Hostname: "hydrogen", LANIP: "10.0.0.3", WANIP: "216.218.163.99"}},
+		{"single nic, nothing pinned", Config{Hostname: "node1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -258,5 +240,26 @@ func TestGeneratedScriptIsValidShell(t *testing.T) {
 				t.Fatalf("generated script is not valid shell: %v\n%s\n---\n%s", err, out, script)
 			}
 		})
+	}
+}
+
+// The installer cannot form a multi-node cluster: membership decides the OVN
+// database topology, and the join token only exists once the primary has
+// booted. Neither is knowable at install time, so firstboot must only ever
+// initialize a single-node cluster and leave multi-node to a post-install
+// conversion.
+func TestBuildClusterCmdNeverJoins(t *testing.T) {
+	for _, cfg := range []Config{
+		{Hostname: "node1"},
+		{Hostname: "node1", LANIP: "10.0.0.3", WANIP: "216.218.163.99"},
+		{Hostname: "node1", LANIP: "10.0.0.3"},
+	} {
+		cmd := buildClusterCmd(cfg)
+		if strings.Contains(cmd, "spx admin join") {
+			t.Errorf("firstboot must never join a cluster:\n%s", cmd)
+		}
+		if !strings.Contains(cmd, "--nodes 1") {
+			t.Errorf("want a single-node init, got:\n%s", cmd)
+		}
 	}
 }

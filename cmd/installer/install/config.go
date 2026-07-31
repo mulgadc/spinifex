@@ -103,12 +103,6 @@ type Config struct {
 	// Node identity
 	Hostname string
 
-	// ClusterRole is "init" or "join".
-	ClusterRole string
-
-	// JoinAddr is the primary node address (host:port) when ClusterRole is "join".
-	JoinAddr string
-
 	// SkipFormation skips spx admin init/join in firstboot; the provisioning
 	// controller (e.g. bm-bootstrap.sh) owns cluster formation instead.
 	SkipFormation bool

@@ -782,8 +782,6 @@ func (c *Config) toFirstbootConfig() firstboot.Config {
 		EncapIP:         c.PlaneAddress(PlaneVPC),
 		LANIP:           c.PlaneAddress(PlaneLAN),
 		WANIP:           c.PlaneAddress(PlaneWAN),
-		ClusterRole:     c.ClusterRole,
-		JoinAddr:        c.JoinAddr,
 		Email:           c.Email,
 		InstallCallback: strings.TrimSpace(os.Getenv("SPINIFEX_INSTALL_CALLBACK")),
 		SkipFormation:   c.SkipFormation,

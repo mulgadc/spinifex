@@ -354,6 +354,7 @@ func init() {
 	adminJoinCmd.Flags().String("cluster-bind", "", "IP address to bind NATS cluster services to (e.g., 10.11.12.1 for multi-node)")
 	adminJoinCmd.Flags().String("cluster-routes", "", "NATS cluster hosts for routing specify multiple with comma (e.g., 10.11.12.1:4248,10.11.12.2:4248 for multi-node)")
 	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
+	adminJoinCmd.Flags().Bool("force", false, "Join even though this node is already initialized, discarding its own CA and master key")
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
@@ -1935,6 +1936,35 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	fmt.Println()
 }
 
+// checkJoinPreconditions rejects a join that would silently destroy this node's
+// existing cluster identity. Joining adopts the primary's CA and master key,
+// overwriting whatever is here: correct on a freshly installed node, and on one
+// that has been in service it orphans every fragment and volume sealed under the
+// old key. runAdminInit guards the same way before re-initializing.
+func checkJoinPreconditions(configDir string, force bool) error {
+	if force {
+		return nil
+	}
+	tomlPath := filepath.Join(configDir, "spinifex.toml")
+	if !admin.FileExists(tomlPath) {
+		return nil
+	}
+	return fmt.Errorf("this node is already initialized: %s", tomlPath)
+}
+
+// joinDiscardsIdentityMsg spells out what a forced join throws away. Kept out of
+// the error string so that stays short enough to wrap in another.
+const joinDiscardsIdentityMsg = `Joining will discard this node's own cluster identity:
+  - CA certificate and key
+  - master key, and any data sealed under it
+  - viperblock key, and any volumes encrypted under it
+
+That is safe on a freshly installed node — an ISO install initializes a
+single-node cluster at first boot, and nothing has been sealed under these keys
+yet. On a node that has been in service it is unrecoverable data loss.
+
+To proceed: spx admin join --force ...`
+
 func runAdminJoin(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin join' is not running as root.")
@@ -1955,6 +1985,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
+	force, _ := cmd.Flags().GetBool("force")
 
 	email, _ := cmd.Flags().GetString("email")
 	email = strings.TrimSpace(email)
@@ -2000,6 +2031,14 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	// Validate port range
 	if port < 1 || port > 65535 {
 		fmt.Fprintf(os.Stderr, "❌ Error: Port must be between 1 and 65535, got: %d\n", port)
+		os.Exit(1)
+	}
+
+	// Checked before any network call so a node that will not join says so
+	// immediately. Unlike init this exits non-zero: a node that did not join
+	// must not look like success to a provisioning script.
+	if err := checkJoinPreconditions(configDir, force); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  %v\n\n%s\n", err, joinDiscardsIdentityMsg)
 		os.Exit(1)
 	}
 

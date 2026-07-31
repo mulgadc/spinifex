@@ -1291,3 +1291,46 @@ func TestAMIVolumeSizeGiB(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckJoinPreconditions(t *testing.T) {
+	writeToml := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "spinifex.toml"), []byte("# cluster\n"), 0o644); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return dir
+	}
+
+	t.Run("uninitialized node joins", func(t *testing.T) {
+		if err := checkJoinPreconditions(t.TempDir(), false); err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+
+	t.Run("initialized node is refused", func(t *testing.T) {
+		err := checkJoinPreconditions(writeToml(t), false)
+		if err == nil {
+			t.Fatal("want refusal, got nil")
+		}
+		if !strings.Contains(err.Error(), "already initialized") {
+			t.Errorf("unexpected message: %v", err)
+		}
+	})
+
+	// The guidance is the whole point of the guard: an operator must be able to
+	// tell what a forced join would destroy without reading the source.
+	t.Run("guidance names what is discarded", func(t *testing.T) {
+		for _, want := range []string{"CA certificate", "master key", "viperblock key", "--force"} {
+			if !strings.Contains(joinDiscardsIdentityMsg, want) {
+				t.Errorf("guidance missing %q", want)
+			}
+		}
+	})
+
+	t.Run("force overrides", func(t *testing.T) {
+		if err := checkJoinPreconditions(writeToml(t), true); err != nil {
+			t.Fatalf("want nil with force, got %v", err)
+		}
+	})
+}

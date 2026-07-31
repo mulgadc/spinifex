@@ -6,7 +6,11 @@ tags:
   - install
   - multi node
   - cluster
+  - iso
+  - bare-metal
 resources:
+  - title: "Bootable USB Install"
+    url: "/docs/install-usb"
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
   - title: "Predastore (S3)"
@@ -31,6 +35,16 @@ resources:
 ## Overview
 
 A Spinifex cluster distributes services across multiple servers for high availability, data durability, and fault tolerance. Cluster formation is automatic — the init node waits for peers to join, then distributes credentials, CA certificates, and configuration.
+
+**Installing on bare metal?** Step 1 below can be done either with the binary installer or by booting each server from the Spinifex ISO — see [Bootable USB Install](/docs/install-usb). The ISO installs the operating system, disks and network configuration as well as Spinifex itself, which makes it the better option for servers with no existing OS. Either way, install every server first, then return here and continue from Step 2.
+
+**Cluster Sizing:**
+
+**Three servers is the minimum recommended for a multi-server deployment.** At three or more, the OVN control-plane databases run clustered across three nodes and the cluster tolerates the loss of any one of them. Below three, OVN runs standalone on the first node, which becomes a single point of failure for control-plane operations.
+
+A standalone OVN outage is less severe than it sounds. `ovn-controller` has already programmed the forwarding rules into each host, so **running instances keep full networking** — east-west, north-south, NAT and security groups all continue. What stops is change: creating VPCs, launching instances, and updating security groups all require the control plane.
+
+Servers beyond the third join as compute nodes and do not run a database, which keeps write latency stable as the cluster grows.
 
 **Network Requirements:**
 
@@ -58,9 +72,17 @@ A Spinifex cluster distributes services across multiple servers for high availab
 
 ## Step 1. Install Spinifex on Each Server
 
+Choose one of the two methods below and apply it to **every** server in the cluster.
+
+**Option A — existing OS.** On a server already running Ubuntu 26.04 or Debian 13:
+
 ```bash
 curl -fsSL https://install.mulgadc.com | bash
 ```
+
+**Option B — bare metal, from the ISO.** Boot each server from the Spinifex ISO and follow [Bootable USB Install](/docs/install-usb). This installs the operating system, partitions the disks, and configures the hostname and network interfaces alongside Spinifex. The ISO installer does not form a cluster — that is what the remaining steps do.
+
+Complete this step on all servers before continuing. The nodes must be installed and reachable from one another before the cluster is formed, because Step 4 requires every node to be available at the same time.
 
 ## Step 2. Set Node IP Variables
 

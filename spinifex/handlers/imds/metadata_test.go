@@ -132,6 +132,7 @@ func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*I
 	return &IMDSServiceImpl{
 		resolver:   res,
 		tokens:     newTokenStore(),
+		v1Allow:    newV1AllowCache(),
 		creds:      newCredCache(assumer),
 		iam:        fIAM,
 		pubKeys:    &fakePublicKeys{},

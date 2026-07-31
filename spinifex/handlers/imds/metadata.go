@@ -124,8 +124,10 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// IMDSv2: valid ENI-bound token required; any failure is 401 to prevent probing.
-	if !s.tokens.validate(r.Header.Get(hdrToken), eni.eniID, s.now()) {
+	// IMDSv2 by default: a valid ENI-bound token is required. Without one the
+	// request is served only if the instance opted into IMDSv1 via
+	// HttpTokens=optional; otherwise 401, to prevent probing.
+	if !s.tokens.validate(r.Header.Get(hdrToken), eni.eniID, s.now()) && !s.imdsV1Allowed(r.Context(), eni) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

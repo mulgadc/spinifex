@@ -293,3 +293,65 @@ func TestValidSubnetMaskRejectsPrefixLength(t *testing.T) {
 		}
 	}
 }
+
+// The hardware detail is the point of the NIC table: an operator has to be able
+// to tell which physical port each plane landed on. It gets a line of its own,
+// under the interface column, rather than being squeezed into the row.
+func TestRoleHardwareRendersOnItsOwnLine(t *testing.T) {
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, []netprobe.NIC{{
+		Name: "ens1f0np0", Vendor: "Mellanox Technologies", Model: "MT27710",
+		AltName: "enp132s0f0np0", Speed: "25 Gbps", Carrier: true, State: "online",
+	}})
+
+	view := m.viewNetworkRoles(100)
+	if !strings.Contains(view, "ens1f0np0  25 Gbps  online") {
+		t.Errorf("expected the identity line in:\n%s", view)
+	}
+	detail := m.roleHardware(0, bodyWidth(100))
+	if !strings.Contains(detail, "Mellanox Technologies MT27710") {
+		t.Errorf("roleHardware = %q, want the vendor and model", detail)
+	}
+	if !strings.Contains(detail, "enp132s0f0np0") {
+		t.Errorf("roleHardware = %q, want the alternative name", detail)
+	}
+	// Every line has to fit the box, or lipgloss wraps it and the columns shear.
+	for line := range strings.SplitSeq(view, "\n") {
+		if len([]rune(line)) > 100 {
+			t.Errorf("line exceeds the terminal width: %q", line)
+		}
+	}
+}
+
+// A narrow box drops the alternative name before it truncates the model, since
+// half a model name identifies nothing.
+func TestNICHardwareDropsAltNameBeforeTruncating(t *testing.T) {
+	n := netprobe.NIC{Vendor: "Broadcom Inc. and subsidiaries", Model: "NetXtreme BCM5720", AltName: "enp1s0f1"}
+
+	if got := nicHardware(n, 60); got != "Broadcom Inc. and subsidiaries NetXtreme BCM5720" {
+		t.Errorf("nicHardware(60) = %q, want the name without the alt name", got)
+	}
+	if got := nicHardware(n, 20); got != "Broadcom Inc. and s…" {
+		t.Errorf("nicHardware(20) = %q, want a marked truncation", got)
+	}
+}
+
+// A role bound to a port with no hardware database entry still gets something
+// to identify the card by, never the bare word "unknown".
+func TestRoleHardwareFallsBackToDriver(t *testing.T) {
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, []netprobe.NIC{{
+		Name: "eno1", Driver: "bnxt_en", DeviceID: "14e4:165f", State: "no cable",
+	}})
+
+	if got := m.roleHardware(0, bodyWidth(100)); !strings.Contains(got, "bnxt_en [14e4:165f]") {
+		t.Errorf("roleHardware = %q, want the driver and device id", got)
+	}
+}
+
+// A folded role has no interface, so it must not render an orphan detail line
+// under the plane it collapsed onto.
+func TestRoleHardwareEmptyWhenFolded(t *testing.T) {
+	m := newModel([]install.Disk{{Path: "/dev/sda"}}, nics(1))
+	if got := m.roleHardware(1, bodyWidth(100)); got != "" {
+		t.Errorf("roleHardware for a folded role = %q, want empty", got)
+	}
+}

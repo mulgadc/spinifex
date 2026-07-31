@@ -268,9 +268,12 @@ func (m model) viewNetworkRoles(w int) string {
 		row := m.renderRoleRow(i)
 		if i == m.roleCursor {
 			lines = append(lines, styleSelected.Render("> "+row))
-			continue
+		} else {
+			lines = append(lines, "  "+row)
 		}
-		lines = append(lines, "  "+row)
+		if detail := m.roleHardware(i, bodyWidth(w)); detail != "" {
+			lines = append(lines, detail)
+		}
 	}
 
 	lines = append(lines, "")
@@ -303,13 +306,9 @@ func (m model) renderRoleRow(i int) string {
 		return fmt.Sprintf("%-*s%s", colRole, name, styleMuted.Render("folds onto "+string(landed)))
 	}
 
-	iface := "—"
+	iface := styleMuted.Render("—")
 	if f.nic < len(m.nics) {
-		n := m.nics[f.nic]
-		iface = n.Name
-		if n.Speed != "" {
-			iface += "  " + n.Speed
-		}
+		iface = nicSummary(m.nics[f.nic])
 	}
 
 	addr := "DHCP"
@@ -320,17 +319,67 @@ func (m model) renderRoleRow(i int) string {
 		}
 	}
 
+	row := padCell(name, colRole) + padCell(iface, colIface)
 	if m.advanced {
-		return fmt.Sprintf("%-*s%-*s%-*s%-*s%s", colRole, name, colIface, iface,
-			colVLAN, valueOr(f.vlan.Value(), "—"), colMTU, valueOr(f.mtu.Value(), "—"), addr)
+		row += padCell(valueOr(f.vlan.Value(), "—"), colVLAN) + padCell(valueOr(f.mtu.Value(), "—"), colMTU)
 	}
-	return fmt.Sprintf("%-*s%-*s%s", colRole, name, colIface, iface, addr)
+	return row + addr
+}
+
+// roleHardware is the vendor/model line beneath a role row, indented under the
+// interface column. It is what tells an operator that wan really is the 25gbe
+// Mellanox and not the onboard 1gbe.
+func (m model) roleHardware(i, width int) string {
+	f := &m.roles[i]
+	if f.folded() || f.nic >= len(m.nics) {
+		return ""
+	}
+	indent := 2 + colRole
+	return strings.Repeat(" ", indent) + styleMuted.Render(nicHardware(m.nics[f.nic], width-indent))
+}
+
+// nicSummary renders name, speed and link state, colouring the state so a port
+// with no cable stands out rather than having to be read for.
+func nicSummary(n netprobe.NIC) string {
+	state := styleWarning.Render(n.State)
+	if n.Carrier {
+		state = styleSuccess.Render(n.State)
+	}
+	speed := n.Speed
+	if speed == "" {
+		speed = "—"
+	}
+	return fmt.Sprintf("%s  %s  %s", n.Name, speed, state)
+}
+
+// nicHardware is the detail line: what the card is, plus the predictable name
+// it also answers to, which is the one written on cabling notes. The alt name
+// is dropped rather than truncated when the two will not fit together.
+func nicHardware(n netprobe.NIC, width int) string {
+	hw := n.Hardware()
+	const separator = "  ·  "
+	if n.AltName != "" && len([]rune(hw))+len(separator)+len([]rune(n.AltName)) <= width {
+		return hw + separator + n.AltName
+	}
+	return truncate(hw, width)
+}
+
+// bodyWidth is the text width inside the framed body. Detail lines are trimmed
+// to it rather than left to wrap, which would push the table out of alignment.
+func bodyWidth(w int) int {
+	return min(w-4, 78) - 4
+}
+
+// padCell pads a cell to width by display width, which the %-*s verb cannot do
+// once a cell carries the ANSI escapes of a style.
+func padCell(s string, width int) string {
+	return lipgloss.PlaceHorizontal(width, lipgloss.Left, s)
 }
 
 // Column widths for the overview table, shared by the header and the rows.
 const (
 	colRole  = 6
-	colIface = 30
+	colIface = 32
 	colVLAN  = 7
 	colMTU   = 7
 )
@@ -464,7 +513,7 @@ func (m model) viewNetworkRole(w int) string {
 
 	lines := []string{title, subtitle, ""}
 	for _, field := range f.visibleFields(m.nicIsWiFi(f.nic), m.advanced) {
-		lines = append(lines, m.renderRoleField(f, field), "")
+		lines = append(lines, m.renderRoleField(f, field, bodyWidth(w)), "")
 	}
 
 	if m.validationErr != "" {
@@ -491,13 +540,17 @@ func planeDescription(p install.Plane) string {
 	}
 }
 
-func (m model) renderRoleField(f *roleForm, field roleField) string {
+// roleLabelWidth is the field-label column on the editor screen, shared so a
+// wrapped value can indent to line up underneath it.
+const roleLabelWidth = 14
+
+func (m model) renderRoleField(f *roleForm, field roleField, width int) string {
 	focused := f.focus == field
-	label := styleLabel.Render(fmt.Sprintf("%-14s", roleFieldLabel(field)))
+	label := styleLabel.Render(fmt.Sprintf("%-*s", roleLabelWidth, roleFieldLabel(field)))
 
 	switch field {
 	case roleFieldNIC:
-		return label + m.renderNICChoice(f, focused)
+		return label + m.renderNICChoice(f, focused, width)
 
 	case roleFieldMethod:
 		return label + renderToggle([]string{"DHCP (automatic)", "Static"}, boolToIdx(!f.dhcp), focused)
@@ -535,23 +588,31 @@ func roleFieldLabel(field roleField) string {
 	}
 }
 
-// renderNICChoice shows the selected interface with the hardware detail that
-// makes it identifiable — vendor, model and speed, not just the kernel name.
-func (m model) renderNICChoice(f *roleForm, focused bool) string {
-	var text string
+// renderNICChoice shows the selected interface on the field line and its
+// hardware identity on a line of its own beneath. Vendor and model are what
+// make a port identifiable, and they do not fit alongside the selector.
+func (m model) renderNICChoice(f *roleForm, focused bool, width int) string {
+	var text, detail string
 	switch {
 	case f.folded():
 		_, landed := m.buildConfig().Resolve(f.plane)
 		text = fmt.Sprintf("(fold onto %s)", landed)
 	case f.nic < len(m.nics):
-		text = m.nics[f.nic].Label()
+		text = nicSummary(m.nics[f.nic])
+		detail = nicHardware(m.nics[f.nic], width-roleLabelWidth-2)
 	default:
 		text = "(none detected)"
 	}
+
 	if focused {
-		return styleSelected.Render(" ← " + text + " → ")
+		text = styleSelected.Render(" ← " + text + " → ")
+	} else {
+		text = styleLabel.Render("[ " + text + " ]")
 	}
-	return styleLabel.Render("[ " + text + " ]")
+	if detail == "" {
+		return text
+	}
+	return text + "\n" + strings.Repeat(" ", roleLabelWidth+2) + styleMuted.Render(detail)
 }
 
 func renderToggle(options []string, selected int, focused bool) string {

@@ -1106,12 +1106,14 @@ func humanBytes(b int64) string {
 	}
 }
 
-// truncate shortens a field so a long drive model does not wrap the disk table.
+// truncate shortens a field so a long drive or NIC model does not wrap the
+// table it sits in. It counts runes, since vendor strings are not all ASCII.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if n <= 1 || len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
 
 // validSubnetMask accepts dotted-decimal only (255.255.255.0). Prefix length is

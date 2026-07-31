@@ -15,6 +15,11 @@ ExecStart=/usr/local/bin/spx service viperblock start
 Restart=on-failure
 RestartSec=5
 OOMScoreAdjust=-500
+# Backstop for the in-use nbdkit children SIGTERMed with this cgroup. Their
+# plugin bounds its own shutdown drain at 20s, so 30s lets that fire first and
+# keeps SIGKILL exceptional; the 90s default let a slow backend stall the whole
+# target-stop transaction.
+TimeoutStopSec=30
 EnvironmentFile=/etc/spinifex/systemd.env
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/viperblock/

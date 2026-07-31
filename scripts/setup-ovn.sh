@@ -44,6 +44,29 @@
 #                        one on install). DISCARDS ALL LOGICAL NETWORK STATE:
 #                        safe on a fresh node, destroys every VPC on a live one.
 #
+# Cluster Sizing — which DB topology to run:
+#
+#   Nodes  DB topology                              Tolerates
+#   1-2    standalone ovn-central on node 1         nothing
+#   3      RAFT across all 3                        1 node
+#   4+     RAFT across 3, remainder compute-only    1 node
+#
+#   Three nodes is the minimum recommended multi-server deployment.
+#
+#   NEVER run RAFT with 2 members. Quorum is a majority, so 2-of-2 tolerates
+#   zero failures — and it is strictly worse than standalone, because either
+#   node failing loses quorum rather than only node 1. Two-node deployments
+#   run standalone and accept the single point of failure.
+#
+#   Do not scale DB members past 3. RAFT write latency is bounded by the
+#   slowest member of the majority, and a 4th member buys no extra fault
+#   tolerance. Nodes beyond the third are compute-only, pointing at all three
+#   SB endpoints via the comma-separated --ovn-remote form.
+#
+#   Losing ovn-central does not stop the data plane: ovn-controller has already
+#   programmed flows into br-int, so running instances keep networking. Only
+#   control-plane change stops — new VPCs, instance launches, port bindings.
+#
 # WAN Bridge Auto-Detection:
 #   When no --wan-bridge is given, the script checks the default route interface:
 #   - If it's an OVS bridge → use it directly for bridge-mappings

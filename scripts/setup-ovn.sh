@@ -764,6 +764,22 @@ if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
     echo ""
     echo "Step 3d: Configuring management bridge ($MGMT_BRIDGE)..."
 
+    # --may-exist is idempotent against OVS, not against the kernel. When a
+    # Linux bridge already holds the name, OVS creates the bridge record but
+    # cannot create the internal netdev, leaving a half-built bridge whose
+    # only symptom is an error buried in `ovs-vsctl show`.
+    if ip link show "$MGMT_BRIDGE" >/dev/null 2>&1 && \
+       ! sudo ovs-vsctl br-exists "$MGMT_BRIDGE" 2>/dev/null; then
+        echo "  ERROR: '$MGMT_BRIDGE' already exists as a non-OVS link"
+        ip -d link show "$MGMT_BRIDGE" | head -2
+        echo ""
+        echo "  The management bridge must be an OVS bridge. Either:"
+        echo "    1. Point this script elsewhere:  --mgmt-bridge=<name>"
+        echo "    2. Rename the existing link (a plane bridge belongs on br-wan/br-lan/br-vpc)"
+        echo "    3. Skip mgmt provisioning entirely:  --no-mgmt-bridge"
+        exit 1
+    fi
+
     sudo ovs-vsctl --may-exist add-br "$MGMT_BRIDGE"
     sudo ovs-vsctl set Bridge "$MGMT_BRIDGE" \
         fail-mode=standalone \

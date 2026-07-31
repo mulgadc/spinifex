@@ -272,4 +272,4 @@ The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-
 
 A complete end-to-end example of Spinifex EKS in production: a GPU-accelerated AI inference platform running on a Supermicro X14 2U with two NVIDIA RTX Pro 6000 Blackwell GPUs. The guide provisions an EKS cluster with two GPU worker nodes via VFIO PCIe passthrough, deploys an OpenAI-compatible LLM API (llama.cpp / Llama 3.2 3B) and a real-time YOLO object-detection stream on separate GPU nodes, and wires them together behind an ALB using IAM, ECR, ACM, and EBS — all with standard AWS tooling and a single `AWS_PROFILE` swap.
 
-→ [EKS AI Platform Reference Architecture](/docs/reference-architectures/rtx-pro-6000-eks)
+→ [EKS AI Platform Reference Architecture](/docs/RTX-Pro-6000-EKS)

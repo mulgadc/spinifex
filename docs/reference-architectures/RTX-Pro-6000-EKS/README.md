@@ -261,7 +261,6 @@ resource "aws_eks_node_group" "gpu_workers" {
 }
 ```
 
-<!-- INCLUDE: workbook/main.tf lang:hcl -->
 
 
 ### 3. Build and push container images
@@ -390,13 +389,12 @@ resource "kubernetes_ingress_v1" "llm" {
 }
 ```
 
-<!-- INCLUDE: workbook/workloads/main.tf lang:hcl -->
 
 ### Dashboard
 
 After the successful completion of the `make workloads` step, the dashboard should be available and displaying the outputs of the two worker nodes; YOLO computer vision in the left pane, and a LLM chat in the right pane, as shown in the images below.
 
-<video src="https://iso.mulgadc.com/full-dashboard.mp4" controls width="100%" style="border-radius:6px"></video>
+<p><video src="https://iso.mulgadc.com/full-dashboard.mp4" controls width="100%" style="border-radius:6px"></video></p>
 
 ### 6. Teardown
 

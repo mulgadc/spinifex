@@ -1853,9 +1853,10 @@ func (d *Daemon) startCluster() error {
 	d.ready.Store(true)
 	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
 
+	// Return once bootstrap is done. Start already installed the signal handler
+	// and owns the single awaitShutdown; waiting here would block on the wait
+	// group this goroutine is itself a member of, which never resolves.
 	d.setupReload()
-	d.setupShutdown()
-	d.awaitShutdown()
 
 	return nil
 }

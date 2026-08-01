@@ -2,15 +2,22 @@ package spinifexui
 
 import (
 	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/stretchr/testify/assert"
@@ -423,4 +430,89 @@ func TestShutdown_WithServer(t *testing.T) {
 
 	err = svc.Shutdown()
 	assert.NoError(t, err)
+}
+
+// writeTestTLSFiles generates a self-signed cert/key pair on disk for a
+// launchService test, which needs real file paths (tls.LoadX509KeyPair),
+// unlike loadTLSCert's in-memory tls.Certificate used by the split-listener tests.
+func writeTestTLSFiles(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "spinifexui-test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "server.pem")
+	keyPath = filepath.Join(dir, "server.key")
+	require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath,
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
+	// newProxyTransport reads <TLSCert dir>/ca.pem; the self-signed leaf
+	// itself is a valid enough PEM cert to satisfy that read in a test.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), certPEM, 0o600))
+	return certPath, keyPath
+}
+
+// freePort binds an ephemeral port, closes it immediately, and returns the
+// number so Start can bind the same port without hardcoding 3000 (which may
+// already be in use by a real spinifex-ui on a shared box).
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+	return port
+}
+
+// TestStart_GracefulShutdownIsNotAnError guards against Start propagating
+// http.ErrServerClosed -- Serve's documented return value after a deliberate
+// Shutdown -- as a failure. Before the fix this made a clean stop look like
+// a crash (exit code 1) to systemd.
+func TestStart_GracefulShutdownIsNotAnError(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	certPath, keyPath := writeTestTLSFiles(t)
+
+	svc, err := New(&Config{
+		Port:    freePort(t),
+		Host:    "127.0.0.1",
+		TLSCert: certPath,
+		TLSKey:  keyPath,
+	})
+	require.NoError(t, err)
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		_, startErr := svc.Start()
+		startErrCh <- startErr
+	}()
+
+	require.Eventually(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		return svc.server != nil
+	}, 2*time.Second, 10*time.Millisecond, "server never registered before shutdown")
+
+	require.NoError(t, svc.Shutdown())
+
+	select {
+	case startErr := <-startErrCh:
+		assert.NoError(t, startErr, "Start must treat a deliberate Shutdown's ErrServerClosed as success")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after Shutdown")
+	}
 }

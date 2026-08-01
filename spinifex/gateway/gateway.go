@@ -555,13 +555,20 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
 	var requestId = uuid.NewString()
-	code, exists := awserrors.ResolveErrorCode(err)
+	code, message, exists := awserrors.ResolveErrorDetail(err)
 	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())
 		code = awserrors.ErrorInternalError
+		message = ""
 	}
 
-	errorMsg := awserrors.ErrorLookup[code]
+	// LookupErrorMessage resolves per-service wording first (e.g. ACM vs EKS
+	// both using "ResourceInUseException"); a message the producing call site
+	// supplied via awserrors.Errorf then takes priority over either default.
+	errorMsg := awserrors.LookupErrorMessage(svc, code)
+	if message != "" {
+		errorMsg.Message = message
+	}
 	if errorMsg.HTTPCode == 0 {
 		errorMsg.HTTPCode = 500
 	}

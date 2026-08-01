@@ -98,6 +98,67 @@ func TestResolveErrorCode(t *testing.T) {
 	}
 }
 
+// TestResolveErrorDetail_ErrorfMessageWins covers the message half of the
+// gateway fidelity fix: a call site that used Errorf gets its own formatted
+// wording back, not just the resolved code.
+func TestResolveErrorDetail_ErrorfMessageWins(t *testing.T) {
+	err := Errorf(ErrorDependencyViolation, "the VPC has a dependent subnet %s", "subnet-1")
+	code, message, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorDependencyViolation {
+		t.Fatalf("ResolveErrorDetail() code = (%q, %v), want (%q, true)", code, ok, ErrorDependencyViolation)
+	}
+	want := "the VPC has a dependent subnet subnet-1"
+	if message != want {
+		t.Errorf("ResolveErrorDetail() message = %q, want %q", message, want)
+	}
+}
+
+// TestResolveErrorDetail_PlainWrapCarriesNoMessage is the compatibility case:
+// a generic %w wrapper not produced by Errorf must not be mistaken for a
+// client-facing message, even though it sits right next to the bare code.
+func TestResolveErrorDetail_PlainWrapCarriesNoMessage(t *testing.T) {
+	err := fmt.Errorf("launch on node-1: %w", errors.New(ErrorInsufficientAddressCapacity))
+	code, message, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorInsufficientAddressCapacity {
+		t.Fatalf("ResolveErrorDetail() code = (%q, %v), want (%q, true)", code, ok, ErrorInsufficientAddressCapacity)
+	}
+	if message != "" {
+		t.Errorf("ResolveErrorDetail() message = %q, want empty (not Errorf-produced)", message)
+	}
+}
+
+// TestResolveErrorDetail_BareCodeCarriesNoMessage is the compatibility case for
+// the overwhelming majority of call sites: a bare errors.New(code) resolves the
+// code with no message, exactly as ResolveErrorCode always has.
+func TestResolveErrorDetail_BareCodeCarriesNoMessage(t *testing.T) {
+	code, message, ok := ResolveErrorDetail(errors.New(ErrorInvalidParameterValue))
+	if !ok || code != ErrorInvalidParameterValue || message != "" {
+		t.Errorf("ResolveErrorDetail() = (%q, %q, %v), want (%q, \"\", true)", code, message, ok, ErrorInvalidParameterValue)
+	}
+}
+
+// TestLookupErrorMessage covers per-service scoping: ACM must not inherit
+// EKS's wording for the shared ResourceInUseException code, and an unscoped
+// pair must fall back to ErrorLookup's existing global default unchanged.
+func TestLookupErrorMessage(t *testing.T) {
+	acm := LookupErrorMessage("acm", ErrorACMResourceInUse)
+	eks := LookupErrorMessage("eks", ErrorEKSResourceInUse)
+	global := ErrorLookup[ErrorEKSResourceInUse]
+
+	if acm.Message == global.Message {
+		t.Errorf("LookupErrorMessage(acm, ResourceInUseException) = %q, want distinct ACM wording", acm.Message)
+	}
+	if eks.Message != global.Message || eks.HTTPCode != global.HTTPCode {
+		t.Errorf("LookupErrorMessage(eks, ResourceInUseException) = %+v, want unchanged global %+v", eks, global)
+	}
+
+	// A service/code pair with no override falls back to the global default.
+	unscoped := LookupErrorMessage("ec2", ErrorInvalidParameterValue)
+	if unscoped != ErrorLookup[ErrorInvalidParameterValue] {
+		t.Errorf("LookupErrorMessage(ec2, InvalidParameterValue) = %+v, want unchanged global %+v", unscoped, ErrorLookup[ErrorInvalidParameterValue])
+	}
+}
+
 func TestValidErrorCodeFromError(t *testing.T) {
 	wrapped := fmt.Errorf("launch: %w", errors.New(ErrorInsufficientInstanceCapacity))
 	if got := ValidErrorCodeFromError(wrapped); got != ErrorInsufficientInstanceCapacity {

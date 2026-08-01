@@ -261,7 +261,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
 			OwnerId:            aws.String(ownerID),
 			Public:             aws.Bool(false),
-			State:              aws.String("available"),
+			State:              aws.String(amiImageState(amiMeta.State)),
 			ImageType:          aws.String("machine"),
 			Hypervisor:         aws.String("xen"), // Default hypervisor
 			BootMode:           aws.String(amiMeta.BootMode),
@@ -302,6 +302,17 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 	return &ec2.DescribeImagesOutput{
 		Images: images,
 	}, nil
+}
+
+// amiImageState maps AMIMetadata.State to the ec2.Image state string. An
+// empty State means the AMI was registered before the field existed, and
+// MUST report as "available" — those images are already complete and
+// launchable, so treating empty as anything else would hide them.
+func amiImageState(state string) string {
+	if state == "" {
+		return "available"
+	}
+	return state
 }
 
 // imageMatchesFilters checks whether an ec2.Image satisfies all parsed filters.
@@ -451,6 +462,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		BootMode:        sourceAMI.BootMode,
 		Distro:          sourceAMI.Distro,
 		DistroFamily:    sourceAMI.DistroFamily,
+		// Snapshot succeeded before this point, so the image is complete.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(context.Background(), amiID, meta); err != nil {
@@ -967,6 +980,9 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		CreationDate:    time.Now(),
 		BootMode:        srcMeta.BootMode,
 		Tags:            tags,
+		// Zero-copy: the new config shares the source's already-durable
+		// snapshot, so the image is complete as soon as this is written.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(ctx, newImageID, meta); err != nil {
@@ -1170,6 +1186,9 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		CreationDate:    time.Now(),
 		Tags:            tags,
 		BootMode:        aws.StringValue(input.BootMode),
+		// The referenced snapshot already exists (checked above), so the
+		// image is complete as soon as this config is written.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(ctx, amiID, meta); err != nil {

@@ -166,6 +166,43 @@ func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
 	assert.Len(t, f.inst.terminateCalls, terminateCallsAtExhaustion, "an exhausted cluster must never be re-driven again")
 }
 
+// TestDeletingReaper_PersistsLastErrorOnFailure guards mulga-djaep criterion 2:
+// a terminal give-up must carry the last error, not just a bare boolean flag.
+// The error must be visible on the very first failed attempt (so an operator
+// checking a still-retrying cluster already sees why), and the same error must
+// still be there once the reaper exhausts its attempts and gives up.
+func TestDeletingReaper_PersistsLastErrorOnFailure(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	f.inst.terminateErr = errors.New("dependency violation: eni still attached")
+	markDeleting(t, f, "alpha", 10*time.Minute)
+
+	reaper := f.svc.NewDeletingReaper()
+
+	n, err := reaper.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Contains(t, meta.LastDeleteReapError, "dependency violation",
+		"the failure reason must be persisted after the very first failed attempt")
+
+	for i := 2; i <= maxDeleteReapAttempts; i++ {
+		meta.LastDeleteReapAttempt = time.Now().UTC().Add(-2 * deleteReapBackoff(deletingReapMinAge, meta.DeleteReapAttempts))
+		require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
+
+		_, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+
+		meta, getErr = GetClusterMeta(t.Context(), f.kv, "alpha")
+		require.NoError(t, getErr)
+	}
+
+	assert.True(t, meta.DeleteReapExhausted, "the backstop must have given up by now")
+	assert.Contains(t, meta.LastDeleteReapError, "dependency violation",
+		"the last error must still be carried once the cluster reaches its terminal give-up")
+}
+
 // TestDeletingReaperSkipsNonDeleting: a CREATING/ACTIVE cluster is never touched.
 func TestDeletingReaperSkipsNonDeleting(t *testing.T) {
 	f := newDeleteClusterFixture(t, "gamma") // stays CREATING

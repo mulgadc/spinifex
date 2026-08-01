@@ -139,9 +139,15 @@ func (r *EKSDeletingReaper) reapCluster(ctx context.Context, accountID string, a
 	slog.Warn("eks-deleting: re-driving wedged DELETING teardown",
 		"cluster", cluster, "account", accountID, "deletingSince", meta.DeletingSince, "attempt", attempts)
 	if purgeErr := r.svc.purgeClusterInfra(context.Background(), accountID, cluster, meta, acctKV, true); purgeErr != nil {
+		// Persisted on every failed attempt, not only once the reaper gives
+		// up, so an operator inspecting a still-retrying cluster already sees
+		// why it is stuck.
+		if recErr := RecordDeleteReapFailure(context.Background(), acctKV, cluster, purgeErr); recErr != nil {
+			return 0, fmt.Errorf("record delete reap failure: %w", recErr)
+		}
 		if attempts >= maxDeleteReapAttempts {
 			slog.Error("eks-deleting: giving up on wedged DELETING teardown after repeated failures",
-				"cluster", cluster, "account", accountID, "attempts", attempts, "err", purgeErr)
+				"cluster", cluster, "account", accountID, "attempts", attempts, "err", purgeErr.Error())
 			if markErr := MarkDeleteReapExhausted(context.Background(), acctKV, cluster); markErr != nil {
 				return 0, fmt.Errorf("mark delete reap exhausted: %w", markErr)
 			}

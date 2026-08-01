@@ -111,6 +111,11 @@ type ClusterMeta struct {
 	// tracked and billable pending operator intervention — only the automatic
 	// re-drive stops.
 	DeleteReapExhausted bool `json:"deleteReapExhausted,omitempty"`
+	// LastDeleteReapError is the error string from the most recent failed
+	// backstop-reaper re-drive, so an operator sees why teardown is stuck
+	// instead of just that it is. Set on every failed attempt, not only on
+	// exhaustion, and cleared once a re-drive succeeds.
+	LastDeleteReapError string `json:"lastDeleteReapError,omitempty"`
 	// HealthIssue is the last health failure reason ("" = healthy).
 	// DescribeCluster surfaces it as a ClusterHealth issue.
 	HealthIssue string `json:"healthIssue,omitempty"`
@@ -295,6 +300,20 @@ func RecordDeleteReapAttempt(ctx context.Context, kv jetstream.KeyValue, name st
 		return true
 	})
 	return attempts, err
+}
+
+// RecordDeleteReapFailure persists the error from a failed backstop re-drive
+// onto ClusterMeta, so an operator inspecting a wedged DELETING cluster sees
+// why teardown keeps failing instead of just that it is. Called on every
+// failed attempt, not only on eventual exhaustion.
+func RecordDeleteReapFailure(ctx context.Context, kv jetstream.KeyValue, name string, purgeErr error) error {
+	if name == "" {
+		return errors.New("eks: RecordDeleteReapFailure empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		m.LastDeleteReapError = purgeErr.Error()
+		return true
+	})
 }
 
 // MarkDeleteReapExhausted flags a DELETING cluster whose backstop reaper has

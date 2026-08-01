@@ -621,20 +621,11 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 			continue
 		}
 
-		// User-visible volumes: DeleteOnTermination=false survives terminate,
-		// but terminate still implies detach (AWS semantics). Only the Boot
-		// volume can still be attached here — shutdownAndUnmount's Unmount
-		// clears every non-Boot volume's attachment already, so a non-Boot
-		// DoT=false volume is genuinely a no-op skip. A DoT=false Boot volume
-		// is never touched by Unmount, so without this it would strand
-		// attached to the now-terminated instance forever.
+		// User-visible volumes: DeleteOnTermination=false survives terminate, but
+		// terminate still implies detach (AWS semantics) for every volume, Boot or
+		// not. Unmount's own clear is best-effort and skipped entirely on the force-complete path, so this call is the explicit guarantee.
 		if !ebsRequest.DeleteOnTermination {
-			if !ebsRequest.Boot {
-				slog.Info("Volume has DeleteOnTermination=false, skipping deletion",
-					"name", ebsRequest.Name, "id", instance.ID)
-				continue
-			}
-			slog.Info("Boot volume has DeleteOnTermination=false, detaching without deleting",
+			slog.Info("Volume has DeleteOnTermination=false, detaching without deleting",
 				"name", ebsRequest.Name, "id", instance.ID)
 			if a.d.volumeService == nil {
 				slog.Warn("Volume service not configured, cannot detach volume",

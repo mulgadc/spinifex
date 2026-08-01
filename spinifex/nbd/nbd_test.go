@@ -3,6 +3,7 @@ package nbd
 import (
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -38,8 +39,6 @@ func TestBuildArgs_TCPTransport(t *testing.T) {
 		"volume=vol-abc123",
 		"bucket=my-bucket",
 		"region=us-east-1",
-		"access_key=AKIA123",
-		"secret_key=secret",
 		"base_dir=/data",
 		"host=localhost:9000",
 		"cache_size=256",
@@ -83,8 +82,6 @@ func TestBuildArgs_UnixSocketTransport(t *testing.T) {
 		"volume=vol-def456",
 		"bucket=bucket-2",
 		"region=eu-west-1",
-		"access_key=AKIA456",
-		"secret_key=topsecret",
 		"base_dir=/mnt/data",
 		"host=10.0.0.1:9000",
 		"cache_size=128",
@@ -234,6 +231,66 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 	if verboseIdx >= volumeIdx {
 		t.Error("-v should come before plugin args")
+	}
+}
+
+// TestBuildArgs_NoCredentialsInArgv pins the credential-exposure fix: argv
+// must carry neither an access_key=/secret_key= flag nor the raw credential
+// values anywhere, since argv is world-readable via /proc/<pid>/cmdline.
+func TestBuildArgs_NoCredentialsInArgv(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		AccessKey:  "AKIASECRETVALUE",
+		SecretKey:  "topsecretvalue",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "access_key=") || strings.HasPrefix(arg, "secret_key=") {
+			t.Errorf("argv must not contain a credential flag, got: %q in %v", arg, args)
+		}
+		if strings.Contains(arg, cfg.AccessKey) || strings.Contains(arg, cfg.SecretKey) {
+			t.Errorf("argv must not contain a credential value, got: %q in %v", arg, args)
+		}
+	}
+}
+
+// TestBuildCmd_CredentialsInEnv pins that credentials reach the nbdkit child
+// via cmd.Env instead of argv, and that cmd.Args stays free of them.
+func TestBuildCmd_CredentialsInEnv(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		AccessKey:  "AKIAENVTEST",
+		SecretKey:  "supersecretenv",
+	}
+
+	cmd, err := cfg.buildCmd()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantAccess := accessKeyEnv + "=" + cfg.AccessKey
+	wantSecret := secretKeyEnv + "=" + cfg.SecretKey
+
+	if !slices.Contains(cmd.Env, wantAccess) {
+		t.Errorf("cmd.Env missing %q, got: %v", wantAccess, cmd.Env)
+	}
+	if !slices.Contains(cmd.Env, wantSecret) {
+		t.Errorf("cmd.Env missing %q, got: %v", wantSecret, cmd.Env)
+	}
+
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, cfg.AccessKey) || strings.Contains(arg, cfg.SecretKey) {
+			t.Errorf("cmd.Args must not contain a credential value, got: %q", arg)
+		}
 	}
 }
 

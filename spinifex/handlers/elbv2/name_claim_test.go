@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -50,18 +51,40 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 	require.NotNil(t, rec)
 }
 
-// A name claim whose owner lbID resolves to no live record is a crashed prior
-// create. A fresh CreateLoadBalancer with that name must reclaim the orphan and
-// succeed, not wedge on DuplicateLoadBalancerName forever.
+// TestClaimLBName_PendingClaimBlocksSecondClaimer isolates the orphan-reclaim
+// window: a claim with no persisted LB record yet — the gap a real create
+// leaves open — must not be stealable by a second claimer within the TTL.
+func TestClaimLBName_PendingClaimBlocksSecondClaimer(t *testing.T) {
+	svc := setupTestService(t)
+
+	ok1, dup1, err := svc.store.ClaimLBName(t.Context(), "pending-lb", testAccountID, "lb-first")
+	require.NoError(t, err)
+	require.True(t, ok1)
+	require.False(t, dup1)
+
+	// lb-first has not persisted a record yet — the second claimer must not
+	// mistake that for a crash orphan.
+	ok2, dup2, err := svc.store.ClaimLBName(t.Context(), "pending-lb", testAccountID, "lb-second")
+	require.NoError(t, err)
+	assert.False(t, ok2, "a pending claim within its TTL must not be stealable")
+	assert.True(t, dup2, "the second claimer must see the name as unavailable")
+}
+
+// A name claim whose owner resolves to no live record, past its TTL, is a
+// crashed prior create. A fresh CreateLoadBalancer must reclaim it and succeed.
+// The injectable clock ages the claim so the test never sleeps.
 func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
 	svc := setupTestService(t)
 
 	// Seed a name claim pointing at a non-existent LB (crashed create left no
-	// record). ClaimLBName writes the key with this bogus owner.
+	// record), stamped as claimed well before the TTL via a fake clock.
+	realNow := svc.store.now
+	svc.store.now = func() time.Time { return realNow().Add(-2 * lbNameClaimTTL) }
 	ok, dup, err := svc.store.ClaimLBName(t.Context(), "orphan-lb", testAccountID, "lb-doesnotexist")
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.False(t, dup)
+	svc.store.now = realNow
 
 	// A fresh create for the same name reclaims the orphan and succeeds.
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -92,4 +115,25 @@ func TestDeleteLoadBalancer_ReleasesNameForReuse(t *testing.T) {
 		Name: aws.String("reuse-lb"),
 	}, testAccountID)
 	require.NoError(t, err)
+}
+
+// A create that claims the name but then fails before PutLoadBalancer (here, ENI
+// provisioning on a nonexistent subnet) must release the claim on its way out, so
+// a retry with the same name is not permanently locked out by the failed attempt.
+func TestCreateLoadBalancer_FailureAfterClaimReleasesNameForRetry(t *testing.T) {
+	svc, _ := setupTestServiceWithVPC(t)
+
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("retry-lb"),
+		Subnets: []*string{aws.String("subnet-doesnotexist")},
+	}, testAccountID)
+	require.Error(t, err, "ENI creation on a nonexistent subnet must fail")
+
+	// The failed attempt released the claim: a retry with no subnets (nothing
+	// left to fail) succeeds under the same name.
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("retry-lb"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.LoadBalancers, 1)
 }

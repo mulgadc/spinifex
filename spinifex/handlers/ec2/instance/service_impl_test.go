@@ -2110,6 +2110,125 @@ func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
 	assert.Equal(t, []string{"eni-gone"}, ed.calls)
 }
 
+// TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete proves a
+// failed detach on the primary ENI does not skip the delete: best-effort
+// cleanup must still attempt to reclaim the ENI record.
+func TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete(t *testing.T) {
+	id := "i-eni-detach-fail"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-stuck"}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	ec := &fakeENICreator{detachErr: errors.New("detach unavailable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, 1, ec.detachCalls)
+	assert.Equal(t, []string{"eni-stuck"}, ed.calls, "delete must still run after a failed detach")
+}
+
+// TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError proves an
+// unrecognized delete failure (not NotFound) is logged rather than aborting
+// the terminate — the switch's default branch.
+func TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError(t *testing.T) {
+	id := "i-eni-delete-fail"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-broken"}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{err: errors.New("server unavailable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "an unexpected ENI delete failure must not abort the stopped-instance terminate")
+	assert.Equal(t, "terminated", out.Status)
+}
+
+// --- TerminateStoppedInstance: releaseAttachedENIs (post-launch attach sweep) ---
+
+// TestTerminateStoppedInstance_ReleaseAttachedENIs_ListErrorLogsAndReturns covers
+// the enumeration failure branch: ListInstanceENIs erroring must not abort
+// terminate, and no detach/delete calls follow since nothing was enumerated.
+func TestTerminateStoppedInstance_ReleaseAttachedENIs_ListErrorLogsAndReturns(t *testing.T) {
+	id := "i-list-err"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	ec := &fakeENICreator{listENIsErr: errors.New("kv unreachable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Empty(t, ed.calls)
+}
+
+// TestTerminateStoppedInstance_ReleaseAttachedENIs covers the post-launch
+// attachment sweep: multiple ENIs, a detach failure that must not block the
+// rest of the sweep, a DeleteOnTermination=false skip, and a delete failure
+// that must not block the remaining ENIs.
+func TestTerminateStoppedInstance_ReleaseAttachedENIs(t *testing.T) {
+	tests := []struct {
+		name       string
+		records    []ENIInfo
+		detachErr  error
+		deleteErr  error
+		wantDelete []string
+	}{
+		{
+			name: "MultipleENIsHappyPath",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-a", DeleteOnTermination: true},
+				{NetworkInterfaceID: "eni-b", DeleteOnTermination: true},
+			},
+			wantDelete: []string{"eni-a", "eni-b"},
+		},
+		{
+			name: "DeleteOnTerminationFalseSkipsDelete",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-keep", DeleteOnTermination: false},
+			},
+			wantDelete: nil,
+		},
+		{
+			name: "DetachFailureStillDeletes",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-c", DeleteOnTermination: true},
+			},
+			detachErr:  errors.New("detach unavailable"),
+			wantDelete: []string{"eni-c"},
+		},
+		{
+			name: "DeleteFailureContinuesToNextENI",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-d", DeleteOnTermination: true},
+				{NetworkInterfaceID: "eni-e", DeleteOnTermination: true},
+			},
+			deleteErr:  errors.New("delete unavailable"),
+			wantDelete: []string{"eni-d", "eni-e"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := "i-sweep-" + tt.name
+			v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+			store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+			ed := &fakeENIDeleter{err: tt.deleteErr}
+			ec := &fakeENICreator{
+				detachErr:    tt.detachErr,
+				instanceENIs: map[string][]ENIInfo{id: tt.records},
+			}
+			svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+			out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+			require.NoError(t, err)
+			assert.Equal(t, "terminated", out.Status)
+			assert.Equal(t, len(tt.records), ec.detachCalls, "every enumerated ENI must be detached regardless of outcome")
+			assert.Equal(t, tt.wantDelete, ed.calls)
+		})
+	}
+}
+
 // --- StartStoppedInstance tests ---
 
 type fakeGPUClaimer struct {
@@ -2976,6 +3095,9 @@ type fakeENICreator struct {
 	updateCalls     int
 	clearCalls      int // updateCalls where publicIP is ""
 	detachCalls     int
+	detachErr       error                // returned by every DetachENI call when set
+	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
+	listENIsErr     error
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {
@@ -3024,7 +3146,7 @@ func (f *fakeENICreator) AttachENI(_ context.Context, _, _, _ string, _ int64) (
 
 func (f *fakeENICreator) DetachENI(_ context.Context, _, _ string) error {
 	f.detachCalls++
-	return nil
+	return f.detachErr
 }
 
 func (f *fakeENICreator) UpdateENIPublicIP(_ context.Context, _, _, publicIP, _ string) error {
@@ -3033,6 +3155,13 @@ func (f *fakeENICreator) UpdateENIPublicIP(_ context.Context, _, _, publicIP, _ 
 		f.clearCalls++
 	}
 	return nil
+}
+
+func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID string) ([]ENIInfo, error) {
+	if f.listENIsErr != nil {
+		return nil, f.listENIsErr
+	}
+	return f.instanceENIs[instanceID], nil
 }
 
 type fakeIPAllocator struct {

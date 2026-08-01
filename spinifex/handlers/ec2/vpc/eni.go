@@ -70,6 +70,13 @@ type ENIRecord struct {
 	// transition. The reconciler ages transitions against this so it never
 	// rolls back a record a live attach/detach handler is mid-pipeline on.
 	AttachmentStateAt time.Time `json:"attachment_state_at,omitzero"`
+	// DeleteOnTermination mirrors AWS's Attachment.DeleteOnTermination: true
+	// deletes the ENI when its instance terminates, false only detaches it.
+	// A pointer so a nil value (unset, including every record written before
+	// this field existed) reads as true — the default for a system-attached
+	// interface and the value DescribeNetworkInterfaces already advertised
+	// before this field backed it.
+	DeleteOnTermination *bool `json:"delete_on_termination,omitempty"`
 }
 
 // eniIsLiveAttachment reports whether the ENI record is a live attachment to
@@ -528,6 +535,12 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 	record.AttachmentId = attachmentId
 	record.InstanceId = instanceId
 	record.DeviceIndex = deviceIndex
+	// Default DeleteOnTermination to true on first attach, matching what
+	// DescribeNetworkInterfaces already advertises; a record carrying an
+	// explicit value from an earlier attach keeps it across re-attach.
+	if record.DeleteOnTermination == nil {
+		record.DeleteOnTermination = aws.Bool(true)
+	}
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -768,7 +781,7 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec
 			InstanceId:          aws.String(record.InstanceId),
 			DeviceIndex:         aws.Int64(record.DeviceIndex),
 			Status:              aws.String("attached"),
-			DeleteOnTermination: aws.Bool(true),
+			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),
 		}
 	}
 

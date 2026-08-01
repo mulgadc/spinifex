@@ -132,6 +132,52 @@ func TestECS(t *testing.T) {
 	t.Run("ServiceWithELB", func(t *testing.T) {
 		runServiceWithELB(t, c, env, fx)
 	})
+
+	// Runs last: terminates the container instance ahead of the fixture's own
+	// teardown so the assertion below observes a clean sweep. By this point the
+	// instance carries its own primary ENI plus a post-launch-attached one per
+	// awsvpc task/service subtest above (TaskAwsvpc, TaskRoleCredentials,
+	// ServiceWithELB) — none of those ever touch vm.VM.ENIId, so this is the
+	// regression proof for mulga-73xte: relying on the launch-time scalar alone
+	// would leave every one of them attached, blocking SG/subnet/VPC teardown
+	// behind DependencyViolation.
+	t.Run("TerminateReleasesAttachedENIs", func(t *testing.T) {
+		terminateContainerInstanceAndAssertENIsReleased(t, c, fx)
+	})
+}
+
+// terminateContainerInstanceAndAssertENIsReleased terminates the fixture's
+// container instance and polls describe-network-interfaces on its subnet
+// until the count returns to zero, following the WaitForENICleanup pattern
+// (tests/e2e/harness/lb.go) but scoped by subnet-id rather than description
+// since every ENI the instance and its tasks accumulated shares this subnet.
+func terminateContainerInstanceAndAssertENIsReleased(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
+	t.Helper()
+
+	_, err := c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
+		InstanceIds: aws.StringSlice([]string{fx.InstanceID}),
+	})
+	require.NoError(t, err, "terminate-instances")
+	harness.WaitForInstanceTerminated(t, c, []string{fx.InstanceID}, 3*time.Minute)
+
+	label := fmt.Sprintf("container instance %s", fx.InstanceID)
+	harness.Step(t, "%s: waiting for ENIs in %s to drain", label, fx.SubnetAID)
+	harness.EventuallyErr(t, func() error {
+		out, derr := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+			Filters: []*ec2.Filter{{
+				Name:   aws.String("subnet-id"),
+				Values: []*string{aws.String(fx.SubnetAID)},
+			}},
+		})
+		if derr != nil {
+			return fmt.Errorf("describe ENIs in %s: %w", fx.SubnetAID, derr)
+		}
+		if len(out.NetworkInterfaces) == 0 {
+			return nil
+		}
+		return fmt.Errorf("%s: %d ENIs still present in %s", label, len(out.NetworkInterfaces), fx.SubnetAID)
+	}, 90*time.Second, 3*time.Second)
+	harness.Step(t, "%s ENIs cleaned up", label)
 }
 
 // --- Fixture --------------------------------------------------------------

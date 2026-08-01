@@ -656,6 +656,41 @@ func TestDeleteReclaimsTheBillableAddress(t *testing.T) {
 	assert.Empty(t, f.vpcs)
 }
 
+// TestDeleteSweepsResidualSecurityGroups locks in the residual-SG sweep in
+// Delete (systemvpc.go): DeleteVpc rejects a VPC that still owns a non-default
+// SG, and a partial create can leave one untagged so the role-tagged teardown
+// never sees it. The sweep instead lists by vpc-id and removes everything
+// except "default", which cannot be deleted on its own and goes with the VPC
+// cascade.
+func TestDeleteSweepsResidualSecurityGroups(t *testing.T) {
+	f := newFakeEC2()
+	spec := testSpec("cp-demo")
+
+	refs, err := Ensure(t.Context(), f.deps(), spec, "000000000000")
+	require.NoError(t, err)
+
+	defaultSG := &ec2.SecurityGroup{
+		GroupId:   aws.String("sg-default-0001"),
+		GroupName: aws.String("default"),
+		VpcId:     aws.String(refs.VpcID),
+	}
+	f.sgs[aws.StringValue(defaultSG.GroupId)] = defaultSG
+
+	residualSG := &ec2.SecurityGroup{
+		GroupId:   aws.String("sg-residual-0001"),
+		GroupName: aws.String("web"),
+		VpcId:     aws.String(refs.VpcID),
+	}
+	f.sgs[aws.StringValue(residualSG.GroupId)] = residualSG
+
+	require.NoError(t, Delete(t.Context(), f.deps(), spec, "000000000000", refs.VpcID))
+
+	assert.NotContains(t, f.sgs, aws.StringValue(residualSG.GroupId),
+		"a non-default SG the tagged sweep missed must still be reclaimed")
+	assert.Contains(t, f.sgs, aws.StringValue(defaultSG.GroupId),
+		"the default SG is not deletable on its own; it goes with the VPC cascade")
+}
+
 func TestDeleteOnNothingProvisionedSucceeds(t *testing.T) {
 	f := newFakeEC2()
 	// Teardown is re-driven on a timer, so a delete after a successful delete —

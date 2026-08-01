@@ -695,14 +695,17 @@ func TestHeartbeat_StartupFailureLogsBelowError(t *testing.T) {
 }
 
 func TestHeartbeat_FailureAfterGraceLogsError(t *testing.T) {
-	gw := notFoundGateway(t)
+	// An ambiguous/generic failure (not a positive not-found signal) that
+	// persists past the grace window is the blackhole fingerprint — it must
+	// escalate to ERROR so the console telemetry catches it.
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
 	defer gw.Close()
 
 	agent := newTestAgent(t, gw.URL)
 	logs := captureSlog(t)
 
-	// Past the grace window with no prior success — the blackhole fingerprint —
-	// must escalate so the console telemetry catches it.
 	agent.startedAt = time.Now().Add(-2 * registrationGrace)
 	agent.tick()
 
@@ -710,19 +713,71 @@ func TestHeartbeat_FailureAfterGraceLogsError(t *testing.T) {
 	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "Heartbeat failed") {
 		t.Errorf("post-grace heartbeat failure did not escalate to ERROR:\n%s", out)
 	}
+	if isStopped(agent) {
+		t.Error("an ambiguous/generic failure must not stop the agent")
+	}
+}
+
+// TestHeartbeat_NotFoundWithinGraceDoesNotStop pins the startup-race carve-out:
+// a LoadBalancerNotFound seen before any successful heartbeat and inside the
+// grace window is still ambiguous (the record may not have replicated to this
+// gateway node yet), so the agent must keep retrying rather than stop.
+func TestHeartbeat_NotFoundWithinGraceDoesNotStop(t *testing.T) {
+	gw := notFoundGateway(t)
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	agent.tick()
+
+	if isStopped(agent) {
+		t.Error("a LoadBalancerNotFound within the startup grace window must not stop the agent")
+	}
+}
+
+// TestHeartbeat_NotFoundAfterGraceStopsAgent pins the fix: once the startup
+// grace window has passed with no prior success, a LoadBalancerNotFound is no
+// longer a replication race — the gateway has given a positive signal that no
+// such LB exists — so the agent must stop rather than heartbeat it forever.
+func TestHeartbeat_NotFoundAfterGraceStopsAgent(t *testing.T) {
+	gw := notFoundGateway(t)
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	logs := captureSlog(t)
+
+	agent.startedAt = time.Now().Add(-2 * registrationGrace)
+	agent.tick()
+
+	if !isStopped(agent) {
+		t.Error("a LoadBalancerNotFound past the grace window must stop the agent")
+	}
+	out := logs()
+	if strings.Contains(out, "level=ERROR") {
+		t.Errorf("a confirmed LB deletion is expected teardown, not an error:\n%s", out)
+	}
+}
+
+// isStopped reports whether agent's poll loop has been signalled to stop.
+func isStopped(agent *Agent) bool {
+	select {
+	case <-agent.stopCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func TestHeartbeat_FailureAfterFirstSuccessLogsError(t *testing.T) {
-	// A gateway that answers healthily once, then only ever 400s.
+	// A gateway that answers healthily once, then fails ambiguously (a
+	// transient/unreachable-flavoured error, not a positive not-found).
 	var beats atomic.Int32
-	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/xml")
 		if beats.Add(1) == 1 {
 			fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash></ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
 			return
 		}
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `<ErrorResponse><Error><Code>LoadBalancerNotFound</Code></Error></ErrorResponse>`)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	}))
 	defer gw.Close()
 
@@ -741,5 +796,81 @@ func TestHeartbeat_FailureAfterFirstSuccessLogsError(t *testing.T) {
 	}
 	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "Heartbeat failed") {
 		t.Errorf("post-success heartbeat failure did not log ERROR:\n%s", out)
+	}
+	if isStopped(agent) {
+		t.Error("an ambiguous/transient failure must not stop the agent, even after a prior success")
+	}
+}
+
+// TestHeartbeat_NotFoundAfterSuccessStopsAgent is the primary bug scenario:
+// an LB that heartbeated successfully (proving it once existed and the
+// gateway was reachable) is then deleted. The gateway's LoadBalancerNotFound
+// is a positive, unambiguous signal — not a connectivity failure — so the
+// agent must stop rather than retry indefinitely and fill the log with
+// heartbeat noise after teardown.
+func TestHeartbeat_NotFoundAfterSuccessStopsAgent(t *testing.T) {
+	var beats atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		if beats.Add(1) == 1 {
+			fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash></ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `<ErrorResponse><Error><Code>LoadBalancerNotFound</Code></Error></ErrorResponse>`)
+	}))
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	logs := captureSlog(t)
+
+	agent.tick() // succeeds
+	agent.tick() // LB now deleted
+
+	if !isStopped(agent) {
+		t.Fatal("agent must stop once the gateway confirms the LB is gone")
+	}
+
+	out := logs()
+	if strings.Contains(out, "level=ERROR") {
+		t.Errorf("a confirmed LB deletion is expected teardown, not an error:\n%s", out)
+	}
+
+	// A further tick (as if the poll loop raced one more cycle before
+	// noticing stopCh) must not re-log a "not found" transition or panic —
+	// idempotent stop, no additional noise.
+	preLen := len(logs())
+	agent.tick()
+	if len(logs()) != preLen {
+		t.Errorf("ticking a stopped agent logged additional heartbeat noise: %q", logs()[preLen:])
+	}
+}
+
+// TestHeartbeat_TransientErrorDuringOperationDoesNotStop is the negative
+// control the fix depends on: a NATS blip or control-plane restart surfaces
+// as a dial failure or 5xx, never as LoadBalancerNotFound, and must never be
+// treated as "deleted" — a healthy agent must keep retrying through it.
+func TestHeartbeat_TransientErrorDuringOperationDoesNotStop(t *testing.T) {
+	var beats atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		if beats.Add(1) == 1 {
+			fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash></ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
+			return
+		}
+		// Simulates a control-plane restart / NATS blip: unavailable, not deleted.
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+
+	agent.tick() // succeeds
+	for range 5 {
+		agent.tick() // repeated transient failures
+	}
+
+	if isStopped(agent) {
+		t.Fatal("repeated transient/unreachable errors must never stop the agent")
 	}
 }

@@ -360,7 +360,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if subnet.VpcId == vpcID {
-			return nil, errors.New(awserrors.ErrorDependencyViolation)
+			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+				"the VPC has a dependent subnet %s that must be deleted first", subnet.SubnetId)
 		}
 	}
 
@@ -396,7 +397,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			continue
 		}
 		if !sg.IsDefault {
-			return nil, errors.New(awserrors.ErrorDependencyViolation)
+			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+				"the VPC has a dependent security group %s that must be deleted first", sg.GroupId)
 		}
 		defaultSGId = sg.GroupId
 	}

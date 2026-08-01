@@ -1228,11 +1228,14 @@ func TestDeleteSecurityGroup_RejectsReferencedFromOtherSG(t *testing.T) {
 func TestDeleteVpc_BlocksOnNonDefaultSG(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSG(t, svc, vpcID, "user-sg")
+	sgID := createTestSG(t, svc, vpcID, "user-sg")
 
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DependencyViolation")
+	// The message must name the blocking security group so the caller knows
+	// what to delete first, not just that something is blocking.
+	assert.Contains(t, err.Error(), sgID)
 }
 
 func TestDeleteVpc_CascadesDefaultSG(t *testing.T) {

@@ -199,13 +199,16 @@ func TestDeleteVpc_MissingID(t *testing.T) {
 func TestDeleteVpc_WithSubnets(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 
 	// Should fail because VPC has subnets
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{
 		VpcId: aws.String(vpcID),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "DependencyViolation")
+	// The message must name the blocking subnet so the caller knows what to
+	// delete first, not just that something is blocking.
+	assert.ErrorContains(t, err, subnetID)
 }
 
 func TestDescribeVpcs_All(t *testing.T) {

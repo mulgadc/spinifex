@@ -376,7 +376,12 @@ ensure_clustered_db_storage() {
     fi
 
     echo "  --recreate-db: removing standalone DBs so ovn-ctl can create clustered ones"
-    sudo systemctl stop ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-central 2>/dev/null || true
+
+    # ovn-controller must go down with them. Left running, it reconnects to the
+    # fresh SB and re-registers under whatever system-id it started with — which
+    # on a renamed node is the old one, and that row then holds this node's encap
+    # IP so the correctly-named chassis can never commit. Step 5 restarts it.
+    sudo systemctl stop ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-central ovn-controller 2>/dev/null || true
     sudo rm -f "${standalone[@]}"
 }
 

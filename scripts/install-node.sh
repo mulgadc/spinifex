@@ -32,6 +32,8 @@
 #   --identity FILE          SSH private key
 #   --hosts-file FILE        One host per line; blank lines and # comments ignored
 #   --token-ttl D            Join token validity (default: 30m)
+#   --wipe                   Reset every host to its pre-install state first.
+#                            Destroys all data on ALL hosts, including the first.
 #   --smoke                  Run smoke-test.sh --create-vpc on the first host
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
@@ -65,6 +67,7 @@ EMAIL=""
 PORT=4432
 TOKEN_TTL="30m"
 RUN_SMOKE=false
+WIPE=false
 ASSUME_YES=false
 DRY_RUN=false
 
@@ -97,9 +100,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --smoke)    RUN_SMOKE=true; shift ;;
+        --wipe)     WIPE=true; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -232,14 +236,15 @@ for i in $(seq 0 $((N - 1))); do
     versions+="${version}"$'\n'
 
     # A node that is already in a multi-node cluster is one whose keys and
-    # logical network state are load-bearing. Refusing outright, with no
-    # override flag, is deliberate: there should be no single command that
-    # destroys a live cluster's CA.
+    # logical network state are load-bearing. Refusing here is deliberate:
+    # forming a cluster must never be the command that destroys a live one.
+    # --wipe is the deliberate teardown this asks for, and carries its own
+    # typed confirmation, so it is the one way past.
     node_count=$(out "$host" \
         "sudo grep -oP '^\[nodes\.\K[^.\]]+' /etc/spinifex/spinifex.toml 2>/dev/null | sort -u | wc -l")
     node_count="${node_count//[$'\r\n']/}"
     [[ "$node_count" =~ ^[0-9]+$ ]] || node_count=0
-    if [ "$node_count" -gt 1 ]; then
+    if [ "$node_count" -gt 1 ] && ! $WIPE; then
         fail "$host is already part of a $node_count-node cluster.
        Re-forming it would discard its CA and master key, and any data sealed
        under them. Tear it down deliberately before re-running."
@@ -293,15 +298,32 @@ done
 echo ""
 echo "  Instance pool: $EXT_POOL via $EXT_GATEWAY/$EXT_PREFIX"
 echo ""
-echo "  This DESTROYS, on every host except ${HOSTS[0]}:"
-echo "    - all OVN logical network state: every VPC, subnet, router and port"
-echo "    - every instance depending on it"
-echo "    - the node's own CA and master key, replaced by ${HOSTS[0]}'s"
+if $WIPE; then
+    echo "  --wipe: this DESTROYS, on ALL $N hosts INCLUDING ${HOSTS[0]}:"
+    echo "    - every instance and every volume backing them"
+    echo "    - every S3 object held on these nodes"
+    echo "    - each node's CA and master key — data sealed under them is unreadable"
+    echo "      afterwards even if the bytes are restored from elsewhere"
+    echo "    - all OVN logical network state"
+else
+    echo "  This DESTROYS, on every host except ${HOSTS[0]}:"
+    echo "    - all OVN logical network state: every VPC, subnet, router and port"
+    echo "    - every instance depending on it"
+    echo "    - the node's own CA and master key, replaced by ${HOSTS[0]}'s"
+fi
 echo ""
 
 if ! $ASSUME_YES && ! $DRY_RUN; then
     read -r -p "  Type 'yes' to continue: " reply
     [ "$reply" = "yes" ] || fail "aborted"
+fi
+
+# --yes deliberately does not cover --wipe. Unattended reruns are the whole
+# point of --yes, and a flag that silently also means "destroy every node's
+# data" is one stray shell-history recall away from an incident.
+if $WIPE && ! $DRY_RUN; then
+    read -r -p "  --wipe destroys all data on $N hosts. Type 'wipe' to confirm: " reply </dev/tty
+    [ "$reply" = "wipe" ] || fail "aborted"
 fi
 
 # --- Stop ------------------------------------------------------------------
@@ -314,6 +336,26 @@ log "stopping spinifex.target on every host"
 for host in "${HOSTS[@]}"; do
     on "$host" "sudo systemctl stop spinifex.target" || fail "$host: could not stop spinifex.target"
 done
+
+# --- Wipe ------------------------------------------------------------------
+#
+# node-reset.sh is not part of the release tarball, so it is pushed from this
+# checkout the same way smoke-test.sh is. After this a node has no CA, master
+# key, OVN database or chassis identity left for the formation phase to collide
+# with — which is the whole reason --wipe exists.
+if $WIPE; then
+    log "wiping every host back to its pre-install state"
+    for host in "${HOSTS[@]}"; do
+        if ! $DRY_RUN; then
+            scp "${SSH_OPTS[@]}" -q "$SCRIPT_DIR/node-reset.sh" "$SSH_USER@$host:/tmp/spx-node-reset.sh" ||
+                fail "$host: could not copy node-reset.sh"
+        fi
+        on "$host" "chmod 0755 /tmp/spx-node-reset.sh && sudo /tmp/spx-node-reset.sh --yes" ||
+            fail "$host: node-reset.sh failed"
+        on "$host" "rm -f /tmp/spx-node-reset.sh"
+        log "  $host wiped"
+    done
+fi
 
 # --- OVN database cluster --------------------------------------------------
 #

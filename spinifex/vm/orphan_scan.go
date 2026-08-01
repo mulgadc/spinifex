@@ -44,34 +44,45 @@ func scanLiveQEMUPIDs(procRoot string) ([]int, error) {
 	return pids, nil
 }
 
-// claimedQEMUPids reads every "<instance-id>.pid" file in runtimeDir whose
-// instance ID is in known, returning the PIDs those records claim. QEMU
-// itself writes these via -pidfile, so a claimed PID is one this manager
-// launched and is actively tracking.
-func claimedQEMUPids(runtimeDir string, known map[string]bool) map[int]bool {
-	claimed := make(map[int]bool)
+// pidFileOwners reads every "<instance-id>.pid" file in runtimeDir and
+// returns the PID -> instance ID it names, regardless of whether that
+// instance still exists in Snapshot(). QEMU itself writes these via
+// -pidfile, so an entry here is a claim this daemon made at some point --
+// not necessarily one it still stands behind.
+func pidFileOwners(runtimeDir string) map[int]string {
+	owners := make(map[int]string)
 	entries, err := os.ReadDir(runtimeDir)
 	if err != nil {
-		return claimed
+		return owners
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".pid") {
 			continue
 		}
-		if id := strings.TrimSuffix(name, ".pid"); known[id] {
-			if pid, err := utils.ReadPidFileFrom(runtimeDir, id); err == nil {
-				claimed[pid] = true
-			}
+		id := strings.TrimSuffix(name, ".pid")
+		if pid, err := utils.ReadPidFileFrom(runtimeDir, id); err == nil {
+			owners[pid] = id
 		}
 	}
-	return claimed
+	return owners
 }
 
-// findRecordlessQEMUOrphans returns live qemu-system PIDs that no pidfile in
-// runtimeDir ties to an instance in known. This is the gap
-// classifyRestoredInstances cannot see, since it only walks Snapshot().
-func findRecordlessQEMUOrphans(procRoot, runtimeDir string, known map[string]bool) ([]int, error) {
+// qemuOrphan is a live qemu-system PID with no matching instance in
+// Snapshot(). hasPidFile distinguishes two very different situations: a
+// pidfile this daemon itself wrote (instanceID is that pidfile's claim,
+// positively this daemon's process) versus no pidfile at all (could be
+// another tenant's process on a shared host).
+type qemuOrphan struct {
+	pid        int
+	instanceID string
+	hasPidFile bool
+}
+
+// classifyQEMUOrphans returns every live qemu-system PID not vouched for by
+// a pidfile naming a known instance. This is the gap classifyRestoredInstances
+// cannot see, since it only walks Snapshot().
+func classifyQEMUOrphans(procRoot, runtimeDir string, known map[string]bool) ([]qemuOrphan, error) {
 	live, err := scanLiveQEMUPIDs(procRoot)
 	if err != nil {
 		return nil, err
@@ -80,34 +91,44 @@ func findRecordlessQEMUOrphans(procRoot, runtimeDir string, known map[string]boo
 		return nil, nil
 	}
 
-	claimed := claimedQEMUPids(runtimeDir, known)
-	var orphans []int
+	owners := pidFileOwners(runtimeDir)
+	var orphans []qemuOrphan
 	for _, pid := range live {
-		if !claimed[pid] {
-			orphans = append(orphans, pid)
+		id, hasPidFile := owners[pid]
+		if hasPidFile && known[id] {
+			continue // legitimate, tracked instance
 		}
+		orphans = append(orphans, qemuOrphan{pid: pid, instanceID: id, hasPidFile: hasPidFile})
 	}
 	return orphans, nil
 }
 
 // reportRecordlessQEMUOrphans logs, but never kills, a qemu-system process
-// with no instance record: a false positive here (state not settled yet, or
-// a process belonging to another daemon/tenant on a shared host) would
-// destroy a running customer VM. Call only after Restore has finished
-// loading and relaunching every known instance.
+// with no instance record. A pidfile in runtimeDir naming an unknown
+// instance positively identifies the process as this daemon's own stale
+// orphan (logged distinctly, safe for an operator to reap by hand); no
+// pidfile at all could belong to another tenant/daemon on a shared host, so
+// it is logged as unowned. Neither case signals the process automatically:
+// a false positive here would destroy a running customer VM. Call only
+// after Restore has finished loading and relaunching every known instance.
 func (m *Manager) reportRecordlessQEMUOrphans() {
 	known := make(map[string]bool)
 	for _, instance := range m.Snapshot() {
 		known[instance.ID] = true
 	}
 
-	orphans, err := findRecordlessQEMUOrphans(qemuProcRoot, utils.RuntimeDir(), known)
+	orphans, err := classifyQEMUOrphans(qemuProcRoot, utils.RuntimeDir(), known)
 	if err != nil {
 		slog.Warn("recordless QEMU orphan scan failed", "error", err)
 		return
 	}
-	for _, pid := range orphans {
-		slog.Warn("qemu-system process has no instance record on this daemon; not killing, verify manually",
-			"pid", pid)
+	for _, o := range orphans {
+		if o.hasPidFile {
+			slog.Warn("qemu-system process has a stale spinifex pidfile with no matching instance record; not killing, safe to reap manually",
+				"pid", o.pid, "instanceId", o.instanceID)
+			continue
+		}
+		slog.Warn("qemu-system process has no spinifex pidfile at all; not killing, ownership unconfirmed",
+			"pid", o.pid)
 	}
 }

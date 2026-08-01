@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -32,6 +33,11 @@ const (
 
 	// maxLBNameClaimRetries bounds the crash-orphan CAS-reclaim loop in ClaimLBName.
 	maxLBNameClaimRetries = 5
+
+	// lbNameClaimTTL bounds how long an unresolved claim blocks other creators
+	// before ClaimLBName treats it as a crash orphan. A legitimate create finishes
+	// well under this window; it only exists to reclaim an abandoned name.
+	lbNameClaimTTL = 5 * time.Minute
 )
 
 // Store provides CRUD operations for ELBv2 resources backed by JetStream KV.
@@ -40,6 +46,31 @@ const (
 // internal wait the legacy KV API applied.
 type Store struct {
 	kv jetstream.KeyValue
+
+	// now and claimTTL back ClaimLBName's pending-vs-orphan check. Both are
+	// overridden in tests (same package) so the crash-orphan reclaim path never
+	// needs a real sleep past the TTL.
+	now      func() time.Time
+	claimTTL time.Duration
+}
+
+// lbNameClaim is the value stored at a name-claim key. ClaimedAt lets a second
+// claimer distinguish a legitimate in-flight creator (no LB record yet, but the
+// claim is fresh) from a crash orphan (no record, and the claim is stale).
+type lbNameClaim struct {
+	OwnerID   string    `json:"ownerId"`
+	ClaimedAt time.Time `json:"claimedAt"`
+}
+
+// decodeLBNameClaim parses a name-claim value. A value that isn't valid JSON
+// predates ClaimedAt tracking (the bare owner lbID); treat it as maximally
+// stale so it stays immediately reclaimable, matching the old behaviour.
+func decodeLBNameClaim(raw []byte) lbNameClaim {
+	var claim lbNameClaim
+	if err := json.Unmarshal(raw, &claim); err != nil || claim.OwnerID == "" {
+		return lbNameClaim{OwnerID: string(raw)}
+	}
+	return claim
 }
 
 // NewStore creates a new ELBv2 store using the provided NATS connection. The
@@ -61,7 +92,7 @@ func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
 	}
 
 	slog.Info("ELBv2 store initialized", "bucket", KVBucketELBv2)
-	return &Store{kv: kv}, nil
+	return &Store{kv: kv, now: time.Now, claimTTL: lbNameClaimTTL}, nil
 }
 
 // --- Load Balancer CRUD ---
@@ -72,12 +103,17 @@ func LBNameKey(name, accountID string) string {
 }
 
 // ClaimLBName atomically claims the LB name; ok=true means this caller owns it,
-// dup=true means a live LB already holds it. An orphaned claim (owner resolves to
-// no record) is reclaimed via CAS. Idempotency barrier for CreateLoadBalancer.
+// dup=true means it's unavailable (a live LB, or another claim within its TTL).
+// A claim past its TTL with no LB record is a crash orphan, reclaimed via CAS.
 func (s *Store) ClaimLBName(ctx context.Context, name, accountID, lbID string) (ok bool, dup bool, err error) {
 	key := LBNameKey(name, accountID)
+	now := s.now()
+	claimBytes, merr := json.Marshal(lbNameClaim{OwnerID: lbID, ClaimedAt: now})
+	if merr != nil {
+		return false, false, fmt.Errorf("marshal LB name claim %s: %w", key, merr)
+	}
 	for range maxLBNameClaimRetries {
-		if _, cerr := s.kv.Create(ctx, key, []byte(lbID)); cerr == nil {
+		if _, cerr := s.kv.Create(ctx, key, claimBytes); cerr == nil {
 			return true, false, nil
 		} else if !errors.Is(cerr, jetstream.ErrKeyExists) {
 			return false, false, fmt.Errorf("kv create %s: %w", key, cerr)
@@ -89,18 +125,24 @@ func (s *Store) ClaimLBName(ctx context.Context, name, accountID, lbID string) (
 			}
 			return false, false, fmt.Errorf("kv get %s: %w", key, gerr)
 		}
-		ownerID := string(entry.Value())
-		if ownerID != "" && ownerID != lbID {
-			rec, rerr := s.GetLoadBalancer(ctx, ownerID)
+		claim := decodeLBNameClaim(entry.Value())
+		if claim.OwnerID != "" && claim.OwnerID != lbID {
+			rec, rerr := s.GetLoadBalancer(ctx, claim.OwnerID)
 			if rerr != nil {
-				return false, false, fmt.Errorf("resolve LB name owner %s: %w", ownerID, rerr)
+				return false, false, fmt.Errorf("resolve LB name owner %s: %w", claim.OwnerID, rerr)
 			}
 			if rec != nil {
 				return false, true, nil // live LB holds the name
 			}
+			// No record yet: either a legitimate create still mid-flight, or a
+			// crashed one. Only a claim older than the TTL is an abandoned
+			// orphan; a fresh one blocks a second claimer like a live LB would.
+			if now.Sub(claim.ClaimedAt) < s.claimTTL {
+				return false, true, nil
+			}
 		}
-		// Orphaned (crashed prior create) or already ours: CAS-take the claim.
-		if _, uerr := s.kv.Update(ctx, key, []byte(lbID), entry.Revision()); uerr != nil {
+		// Orphaned (crashed prior create, past its TTL) or already ours: CAS-take.
+		if _, uerr := s.kv.Update(ctx, key, claimBytes, entry.Revision()); uerr != nil {
 			if errors.Is(uerr, jetstream.ErrKeyExists) {
 				continue // lost the CAS race; re-read
 			}

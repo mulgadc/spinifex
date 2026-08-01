@@ -86,6 +86,21 @@ curl -fsSL https://install.mulgadc.com | bash
 
 Complete this step on all servers before continuing. The nodes must be installed and reachable from one another before the cluster is formed, because Step 4 requires every node to be available at the same time.
 
+### Shortcut: form the cluster with one command
+
+Steps 2 to 6 are a fixed sequence, and `scripts/install-node.sh` in the Spinifex repository runs it for you over SSH — from a workstation that can reach every server, not from the servers themselves:
+
+```bash
+scripts/install-node.sh \
+  --external-pool 10.0.1.100-10.0.1.150 \
+  --external-gateway 10.0.1.1 --external-prefix-len 24 \
+  server1 server2 server3
+```
+
+The first host initializes and the rest join. It resolves each node's plane addresses, rebuilds the OVN databases in clustered form, forms the cluster, restarts services and verifies the result — and `--dry-run` prints every command it would run without touching anything. It needs passwordless `sudo` on each host and requires all of them to be on the same Spinifex version.
+
+The remaining steps document what it does, and are the path to follow when installing by hand or when something needs to be adjusted mid-way.
+
 ## Step 2. Set Node IP Variables
 
 On **each server**, export the management IPs for all nodes:

@@ -1567,7 +1567,7 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId stri
 		slog.ErrorContext(ctx, "VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "code", codePath, "varsTemplate", varsTemplate, "size", varsSize)
+	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
 	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig

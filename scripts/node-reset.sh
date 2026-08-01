@@ -1,5 +1,5 @@
 #!/bin/bash
-# node-reset.sh — return one Spinifex node to its pre-install state.
+# node-reset.sh — return one Spinifex node to a freshly-installed state.
 #
 # Teardown only: it stops services, removes state, and exits. It installs
 # nothing, starts nothing and decides nothing. Callers do the rebuilding —
@@ -59,6 +59,21 @@ run() {
 
 WIPE_DIRS=("$ETC_DIR" "$LOG_DIR" "$RUN_DIR")
 $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
+
+# Directories and symlinks are structure, not state: setup.sh builds both and
+# nothing in a cluster is stored as either. Two of those symlinks are load
+# bearing and easy to miss — /var/lib/spinifex/config and awsgw/config both
+# point at /etc/spinifex, the second nested a level down, and awsgw reads its
+# IAM master key through it. Keeping every symlink covers them without this
+# script having to know where setup.sh put them.
+#
+# keep_args adds the regular files worth keeping: the service helper scripts
+# and the env files the units load, at the top level of $1 only. A *.sh deeper
+# in the tree is cluster state, not an installed helper.
+KEEP_TOP=()
+keep_args() {
+    KEEP_TOP=(-path "$1/*" ! -path "$1/*/*" '(' -name '*.sh' -o -name '*.env' ')')
+}
 
 # Report what is at stake in figures rather than adjectives. An operator who
 # reads "3 instances, 12 volumes, 840G" makes a better decision than one who
@@ -145,8 +160,61 @@ if [ -e /etc/systemd/network/15-spinifex-veth-wan.netdev ] ||
     run sudo networkctl reload 2>/dev/null || true
 fi
 
+# `rm -rf` is wrong here on two counts. On an ISO-installed node several of
+# these are separate ZFS datasets — rpool/log and rpool/data/{nats,viperblock,
+# predastore,predastore-db,predastore-nodes} — and a mountpoint cannot be
+# removed at all. And the directory tree is itself install state worth keeping:
+# it carries the ownership setup.sh assigned per service.
 log "wiping ${WIPE_DIRS[*]}"
-run sudo rm -rf "${WIPE_DIRS[@]}"
+for dir in "${WIPE_DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    if $DRY_RUN; then
+        echo "  would empty: $dir"
+        continue
+    fi
+    keep_args "$dir"
+    # Regular files only, so directories and symlinks survive along with the
+    # per-service ownership setup.sh assigned. Nothing then has to be
+    # reinstalled afterwards, which is what lets this script install nothing
+    # and leave a node on the exact build it was already running.
+    sudo find "$dir" -mindepth 1 \( -type f -o -type s -o -type p \) \
+        ! \( "${KEEP_TOP[@]}" \) -delete 2>/dev/null || true
+done
+
+# Directories may survive — a mountpoint cannot be removed, and neither can the
+# path leading down to one. Files may not: a surviving file is state that would
+# carry into the new cluster, which is the exact failure this script exists to
+# prevent, so refuse rather than hand back a node that looks clean.
+if ! $DRY_RUN; then
+    for dir in "${WIPE_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        keep_args "$dir"
+        left=$(sudo find "$dir" -mindepth 1 ! -type d ! -type l \
+            ! \( "${KEEP_TOP[@]}" \) 2>/dev/null | head -5)
+        if [ -n "$left" ]; then
+            echo "ERROR: $dir still holds files after the wipe:" >&2
+            echo "$left" | sed 's/^/  /' >&2
+            exit 1
+        fi
+    done
+fi
+
+if [ ! -d /etc/spinifex ]; then
+    echo "ERROR: /etc/spinifex is missing and could not be restored." >&2
+    echo "  spx would treat this node as a dev install and build it under ~/spinifex," >&2
+    echo "  forming a cluster whose services can never start. Re-run the installer." >&2
+    $DRY_RUN || exit 1
+fi
+
+# A node that has already been through that fallback carries a stray dev-layout
+# tree holding its own keys and configs. It is not user data — it is wreckage
+# from a misdetected layout — and leaving it invites a later dev-mode run to
+# adopt it.
+DEV_ROOT="$(getent passwd spinifex | cut -d: -f6)/spinifex"
+if [ -n "${DEV_ROOT#/spinifex}" ] && [ -d "$DEV_ROOT" ]; then
+    log "removing the dev-layout fallback tree at $DEV_ROOT"
+    run sudo rm -rf "$DEV_ROOT"
+fi
 
 # The next init writes a fresh CA. Leaving the old one trusted means the host
 # trusts a CA nobody holds the key for.
@@ -156,4 +224,4 @@ if [ -f /usr/local/share/ca-certificates/spinifex-ca.crt ]; then
     run sudo update-ca-certificates
 fi
 
-log "done — node is at its pre-install state"
+log "done — node is installed but uninitialized, ready to init or join"

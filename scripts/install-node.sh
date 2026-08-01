@@ -34,6 +34,8 @@
 #   --token-ttl D            Join token validity (default: 30m)
 #   --wipe                   Reset every host to its pre-install state first.
 #                            Destroys all data on ALL hosts, including the first.
+#                            Confirmed separately from --yes; unattended runs
+#                            must set SPX_WIPE_CONFIRM=wipe.
 #   --smoke                  Run smoke-test.sh --create-vpc on the first host
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
@@ -103,7 +105,7 @@ while [[ $# -gt 0 ]]; do
         --wipe)     WIPE=true; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -320,10 +322,17 @@ fi
 
 # --yes deliberately does not cover --wipe. Unattended reruns are the whole
 # point of --yes, and a flag that silently also means "destroy every node's
-# data" is one stray shell-history recall away from an incident.
+# data" is one stray shell-history recall away from an incident. Automation
+# opts in separately through the environment, so a lab rerun stays possible
+# without making the destructive path reachable by one extra flag.
 if $WIPE && ! $DRY_RUN; then
-    read -r -p "  --wipe destroys all data on $N hosts. Type 'wipe' to confirm: " reply </dev/tty
-    [ "$reply" = "wipe" ] || fail "aborted"
+    if [ -t 0 ]; then
+        read -r -p "  --wipe destroys all data on $N hosts. Type 'wipe' to confirm: " reply
+        [ "$reply" = "wipe" ] || fail "aborted"
+    elif [ "${SPX_WIPE_CONFIRM:-}" != "wipe" ]; then
+        fail "--wipe needs confirmation, and there is no terminal to ask on.
+       Re-run with SPX_WIPE_CONFIRM=wipe to confirm destroying all data on $N hosts."
+    fi
 fi
 
 # --- Stop ------------------------------------------------------------------
@@ -503,7 +512,10 @@ done
 if ! $DRY_RUN; then
     elapsed=0
     while [ "$elapsed" -lt "$FORMATION_TIMEOUT" ]; do
-        ssh "${SSH_OPTS[@]}" "$SSH_USER@${HOSTS[0]}" "pgrep -f 'spx admin init' >/dev/null" >/dev/null 2>&1 || break
+        # [s]px, not spx: pgrep -f scans full command lines, and the shell ssh
+        # spawns to run it carries the pattern itself. Unbracketed, this always
+        # matches and formation never looks finished.
+        ssh "${SSH_OPTS[@]}" "$SSH_USER@${HOSTS[0]}" "pgrep -f '[s]px admin init' >/dev/null" >/dev/null 2>&1 || break
         sleep 5
         elapsed=$((elapsed + 5))
     done

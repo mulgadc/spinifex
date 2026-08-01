@@ -1,18 +1,23 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -434,4 +439,109 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 	require.NoError(t, err, "DeleteOnTermination=false must detach, not delete")
 	assert.Equal(t, "available", rec.Status)
 	assert.Empty(t, rec.InstanceId)
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_PrimaryENIReleased covers the
+// launch-time instance.ENIId path (as opposed to the KV enumeration sweep):
+// a still-attached primary ENI must be detached and force-deleted so it
+// converges to NotFound.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_PrimaryENIReleased(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+	f.vmInst.ENIId = f.eniID
+
+	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 0)
+	require.NoError(t, err)
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	_, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.Error(t, err, "the primary ENI must be deleted")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound))
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_PrimaryENIDetachFailureContinues
+// proves a failed detach on the primary ENI does not abort the delete: DetachENI
+// on an ENI ID absent from the KV (e.g. already reaped) fails, but
+// ForceDeleteInstanceENI tolerates NotFound, so terminate still converges.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_PrimaryENIDetachFailureContinues(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+	f.vmInst.ENIId = "eni-never-existed"
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst),
+		"a failed detach on a missing primary ENI must not fail terminate")
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_MultipleAttachedENIsReleased locks
+// in the fix's core scenario: several post-launch-attached ENIs on one instance
+// are all swept, each honouring its own DeleteOnTermination value.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_MultipleAttachedENIsReleased(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+
+	eniOut2, err := f.daemon.vpcService.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(f.subnetID),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniID2 := *eniOut2.NetworkInterface.NetworkInterfaceId
+
+	// eniID keeps the fixture's default DeleteOnTermination=true (deleted);
+	// eniID2 is explicitly false (detached only).
+	_, err = f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
+	require.NoError(t, err)
+	_, err = f.daemon.vpcService.AttachENI(testAccountID, eniID2, f.vmInst.ID, 2)
+	require.NoError(t, err)
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, eniID2, func(r *handlers_ec2_vpc.ENIRecord) {
+		r.DeleteOnTermination = aws.Bool(false)
+	}))
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	_, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.Error(t, err, "DeleteOnTermination=true ENI must be deleted")
+
+	rec2, err := f.daemon.vpcService.GetENIRecord(testAccountID, eniID2)
+	require.NoError(t, err, "DeleteOnTermination=false ENI must survive, detached")
+	assert.Equal(t, "available", rec2.Status)
+}
+
+// TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerated
+// exercises the enumeration error branch: the connection backing vpcService's
+// KV is closed before terminate runs, so ListInstanceENIs fails with a real
+// connection error. The sweep must log and return rather than panic or
+// propagate the error as the primary terminate failure.
+func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerated(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	ns, err := server.NewServer(&server.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	require.NoError(t, err)
+	go ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { ns.Shutdown() })
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	require.NoError(t, err)
+	daemon.vpcService = vpcSvc
+	nc.Close()
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	instance := &vm.VM{ID: "i-kv-down", AccountID: testAccountID}
+
+	require.NoError(t, cleaner.DetachAndDeleteENI(instance),
+		"an enumeration failure must not surface as a terminate error")
 }

@@ -83,6 +83,11 @@ type EKSServiceDeps struct {
 	IGW       igwProvisioner
 	Worker    WorkerLauncher
 
+	// Volume lets purgeClusterInfra find EBS volumes the in-cluster CSI driver
+	// provisioned for this cluster's PVCs, which the CP/nodegroup teardown never
+	// touches. Nil disables the reclaim step.
+	Volume csiVolumeReclaimer
+
 	// IAM backs a nodegroup's node role with an instance profile so workers expose
 	// the role over IMDS for the ECR credential provider. Nil disables the wiring
 	// (workers launch without a profile and cannot pull from the internal ECR).
@@ -224,6 +229,14 @@ type instanceProfileEnsurer interface {
 type eipProvisioner interface {
 	AllocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error)
 	ReleaseAddress(ctx context.Context, input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error)
+}
+
+// csiVolumeReclaimer is the narrow EC2 volume surface purgeClusterInfra needs
+// to find EBS volumes the in-cluster CSI driver provisioned for this cluster's
+// PVCs. Nil disables the reclaim step (CSI-provisioned volumes go unreported,
+// matching today's behavior).
+type csiVolumeReclaimer interface {
+	DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error)
 }
 
 // EKSServiceImpl is the daemon-side EKSService implementation.
@@ -1316,6 +1329,15 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// clusters). Best-effort: the VMs are already gone, so a leaked internal
 	// group strands nothing.
 	s.teardownSpreadGroup(ctx, meta)
+
+	// Surface (never delete) any CSI-provisioned EBS volume this teardown left
+	// behind. Read-only and non-blocking: a scan failure must not wedge an
+	// otherwise-complete deletion in DELETING.
+	if reclaimed, rerr := s.reclaimCSIVolumes(ctx, accountID, name); rerr != nil {
+		slog.WarnContext(ctx, "purgeClusterInfra: CSI volume reclaim scan failed", "cluster", name, "err", rerr)
+	} else if reclaimed > 0 {
+		slog.WarnContext(ctx, "purgeClusterInfra: CSI-provisioned volumes require operator reclaim", "cluster", name, "count", reclaimed)
+	}
 
 	// Any blocking-teardown failure (billable infra or a VPC-pinning SG) keeps the
 	// meta — and the IDs that own the stranded resources — alive for a delete retry

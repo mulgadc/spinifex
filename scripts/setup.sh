@@ -667,6 +667,10 @@ EOF
     fi
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable spinifex.target
+    # The unit file alone does not self-activate (WantedBy=timers.target only
+    # takes effect once enabled) — without this the JetStream ENOSPC-latch
+    # watchdog is inert and a full disk requires a manual restart forever.
+    $SUDO systemctl enable --now spinifex-nats-watchdog.timer
     info "Systemd units installed and enabled (per-service users)"
 }
 

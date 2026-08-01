@@ -651,6 +651,7 @@ var spinifexUIStartCmd = &cobra.Command{
 		host := viper.GetString("spinifex-ui-host")
 		tlsCert := viper.GetString("spinifex-ui-tls-cert")
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
+		baseDir := viper.GetString("spinifex-ui-base-dir")
 
 		defer initTelemetry("spinifex-ui", false)()
 
@@ -659,6 +660,7 @@ var spinifexUIStartCmd = &cobra.Command{
 			Host:    host,
 			TLSCert: tlsCert,
 			TLSKey:  tlsKey,
+			BaseDir: baseDir,
 		})
 
 		if err != nil {
@@ -1268,6 +1270,10 @@ func init() {
 	spinifexUICmd.PersistentFlags().String("tls-key", "", "TLS key path")
 	viper.BindEnv("spinifex-ui-tls-key", "SPINIFEX_UI_TLS_KEY")
 	viper.BindPFlag("spinifex-ui-tls-key", spinifexUICmd.PersistentFlags().Lookup("tls-key"))
+
+	spinifexUICmd.PersistentFlags().String("base-dir", "", "spinifex-ui base directory for PID files and state")
+	viper.BindEnv("spinifex-ui-base-dir", "SPINIFEX_UI_BASE_DIR")
+	viper.BindPFlag("spinifex-ui-base-dir", spinifexUICmd.PersistentFlags().Lookup("base-dir"))
 
 	spinifexUICmd.AddCommand(spinifexUIStartCmd)
 	spinifexUICmd.AddCommand(spinifexUIStopCmd)

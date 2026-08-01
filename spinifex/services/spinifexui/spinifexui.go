@@ -34,6 +34,8 @@ type Config struct {
 	Host    string `json:"host"`
 	TLSCert string `json:"tls_cert"`
 	TLSKey  string `json:"tls_key"`
+	// BaseDir is the base directory for PID files and state.
+	BaseDir string `json:"base_dir"`
 }
 
 // Service represents the spinifex-ui service.
@@ -85,7 +87,7 @@ func New(config any) (*Service, error) {
 
 // Start starts the spinifex-ui service.
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFile(serviceName, os.Getpid()); err != nil {
+	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		slog.Error("Failed to write pid file", "err", err)
 	}
 
@@ -99,12 +101,12 @@ func (svc *Service) Start() (int, error) {
 
 // Stop stops the spinifex-ui service.
 func (svc *Service) Stop() error {
-	return utils.StopProcess(serviceName)
+	return utils.StopProcessAt(svc.Config.BaseDir, serviceName)
 }
 
 // Status returns the status of the spinifex-ui service.
 func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus("", serviceName)
+	return utils.ServiceStatus(svc.Config.BaseDir, serviceName)
 }
 
 // Shutdown gracefully shuts down the spinifex-ui service.

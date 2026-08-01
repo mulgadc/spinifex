@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -401,6 +402,29 @@ func TestNewProxyTransport_InvalidPEM(t *testing.T) {
 	_, err := newProxyTransport(caPath)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse CA cert")
+}
+
+func TestStart_WritesPidFileToNestedBaseDir(t *testing.T) {
+	// BaseDir points at a directory that does not exist yet, mirroring a
+	// freshly provisioned host where the service's data directory hasn't
+	// been created. WritePidFileTo must MkdirAll it.
+	baseDir := filepath.Join(t.TempDir(), "nested", "state")
+
+	svc := &Service{
+		Config: &Config{
+			BaseDir: baseDir,
+			// launchService will fail past the pid-file step since these
+			// certs don't exist; the pid file must be written regardless.
+			TLSCert: "/nonexistent/cert.pem",
+			TLSKey:  "/nonexistent/key.pem",
+		},
+	}
+
+	_, _ = svc.Start()
+
+	data, err := os.ReadFile(filepath.Join(baseDir, "spinifex-ui.pid"))
+	require.NoError(t, err, "pid file should exist under the nested BaseDir")
+	assert.Equal(t, strconv.Itoa(os.Getpid()), string(data))
 }
 
 func TestShutdown_WithServer(t *testing.T) {

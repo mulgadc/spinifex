@@ -1,6 +1,11 @@
 GO_PROJECT_NAME := spx
 SHELL := /bin/bash
 
+# golangci-lint's default cache (~/.cache/golangci-lint) is keyed by module
+# path, not worktree path, so parallel worktrees of this module collide and
+# surface each other's issues. Scope it per worktree.
+export GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
+
 # Detect architecture for cross-platform support
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)

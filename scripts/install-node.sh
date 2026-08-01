@@ -145,6 +145,13 @@ elif [ ${#NODE_NAMES[@]} -ne "$N" ]; then
     fail "--node-names has ${#NODE_NAMES[@]} entries for $N hosts"
 fi
 
+# The node name is the cluster's identity for a host: it keys the [nodes.X]
+# config block, the NATS server name and the IPsec peer certificate. Two nodes
+# sharing one is not a cosmetic clash.
+if [ "$(printf '%s\n' "${NODE_NAMES[@]}" | sort -u | wc -l)" -ne "$N" ]; then
+    fail "--node-names contains duplicates: ${NODE_NAMES[*]}"
+fi
+
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes)
 [ -n "$IDENTITY" ] && SSH_OPTS+=(-i "$IDENTITY")
 
@@ -253,6 +260,14 @@ for i in $(seq 0 $((N - 1))); do
     LAN_IPS[i]="$lan_ip"
     VPC_IPS[i]="$vpc_ip"
 
+    # Node names do not have to match hostnames, but when they disagree it is
+    # almost always because the operator meant a different host. Cheap to say.
+    hostname=$(out "$host" "hostname")
+    hostname="${hostname//[$'\r\n']/}"
+    if [ "$hostname" != "${NODE_NAMES[$i]}" ]; then
+        log "  NOTE: $host is '$hostname' but will be named '${NODE_NAMES[$i]}' in the cluster"
+    fi
+
     log "  $host — ${version:-unknown} wan=$wan_ip lan=$lan_ip vpc=$vpc_ip"
 done
 
@@ -310,10 +325,18 @@ done
 
 DB_NODES=$((N >= 3 ? 3 : 1))
 
+# --node-name pins the OVS system-id, which is the OVN chassis-id, which
+# ovs-monitor-ipsec uses as the IKEv2 `@<name>` peer identity. `spx admin init`
+# enables IPsec by default and bakes the cluster node name into each peer
+# certificate as CN and dnsName, so a chassis left on its package-generated
+# UUID authenticates as @<uuid> against a cert naming the node and every
+# Geneve tunnel fails with AUTHENTICATION_FAILED. Safe to pin here because
+# --recreate-db means no stale chassis row survives to be orphaned by it.
 log "building the OVN database ($([ "$DB_NODES" -eq 3 ] && echo "RAFT across 3" || echo standalone))"
 
 if [ "$DB_NODES" -eq 3 ]; then
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
+        --node-name=${NODE_NAMES[0]} \
         --db-cluster-local-addr=${LAN_IPS[0]} \
         --recreate-db \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: could not create the OVN database cluster"
@@ -321,6 +344,7 @@ if [ "$DB_NODES" -eq 3 ]; then
 
     for i in 1 2; do
         on "${HOSTS[$i]}" "sudo $SETUP_OVN --management \
+            --node-name=${NODE_NAMES[$i]} \
             --db-cluster-local-addr=${LAN_IPS[$i]} \
             --db-cluster-remote-addr=${LAN_IPS[0]} \
             --recreate-db \
@@ -331,6 +355,7 @@ if [ "$DB_NODES" -eq 3 ]; then
     OVN_REMOTE="tcp:${LAN_IPS[0]}:6642,tcp:${LAN_IPS[1]}:6642,tcp:${LAN_IPS[2]}:6642"
 else
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
+        --node-name=${NODE_NAMES[0]} \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: setup-ovn.sh failed"
     log "  ${HOSTS[0]} is running a standalone database"
 
@@ -340,6 +365,7 @@ fi
 # Compute nodes: no database of their own, pointed at every database node.
 for i in $(seq "$DB_NODES" $((N - 1))); do
     on "${HOSTS[$i]}" "sudo $SETUP_OVN \
+        --node-name=${NODE_NAMES[$i]} \
         --ovn-remote=$OVN_REMOTE \
         --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: setup-ovn.sh failed"
     log "  ${HOSTS[$i]} attached as a compute node"
@@ -471,13 +497,19 @@ if [ "$DB_NODES" -eq 3 ]; then
     log "  OVN Northbound: 3 members, $(grep -oiE '^Role: .*' <<<"$status" | head -1)"
 fi
 
-chassis=$(out "${HOSTS[0]}" "sudo ovn-sbctl show 2>/dev/null | grep -c '^Chassis' || true")
-chassis="${chassis//[$'\r\n']/}"
-[[ "$chassis" =~ ^[0-9]+$ ]] || chassis=0
+sb=$(out "${HOSTS[0]}" "sudo ovn-sbctl show 2>/dev/null")
+chassis=$(grep -c '^Chassis' <<<"$sb" || true)
 log "  OVN Southbound: $chassis chassis registered (expected $N)"
-[ "$chassis" -eq "$N" ] ||
-    log "  WARNING: chassis count does not match the node count. ovn-controller may still
-       be registering; re-check with 'sudo ovn-sbctl show' in a minute."
+
+# Each chassis must be named for its node, not left on a UUID: that name is the
+# IPsec peer identity, so a mismatch here is a cluster whose Geneve tunnels will
+# not authenticate.
+for name in "${NODE_NAMES[@]}"; do
+    grep -q "^Chassis \"\?$name\"\?" <<<"$sb" ||
+        log "  WARNING: no chassis named '$name' in the Southbound DB. ovn-controller may
+       still be registering — if it persists, IPsec will fail to authenticate.
+       Check 'sudo ovs-vsctl get Open_vSwitch . external_ids:system-id' on that host."
+done
 
 # The pool is the one thing the operator supplied by hand and the one thing
 # nothing else validates, so print what actually landed. dns_servers in

@@ -84,11 +84,14 @@ func TestManagerStartReacquiresExpiredLeases(t *testing.T) {
 
 	require.NoError(t, mgr.Start(context.Background()))
 
-	require.Eventually(t, func() bool { return fake.AcquireCount() == 1 }, time.Second, 10*time.Millisecond,
+	// The KV write trails the DORA, so waiting on the acquire count would race
+	// the assertion against it. The persisted address is the barrier.
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "eipalloc-old")
+		return getErr == nil && entry.Lease.IP.String() == "192.0.2.100"
+	}, time.Second, 10*time.Millisecond, "the KV record must name the new address")
+	assert.Equal(t, 1, fake.AcquireCount(),
 		"an expired lease whose resource still exists must be re-DORA'd, not dropped")
-	entry, err := store.Get(t.Context(), "eipalloc-old")
-	require.NoError(t, err)
-	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String(), "the KV record must name the new address")
 	assert.Equal(t, 1, mgr.LoopCount())
 	// A reaffirm RENEW on a lease the server has already aged out only delays
 	// the re-DORA behind its timeout.
@@ -115,11 +118,12 @@ func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 
 	require.NoError(t, mgr.Start(context.Background()))
 
-	require.Eventually(t, func() bool { return fake.ReleaseCount() == 1 }, time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "eipalloc-stale")
+		return getErr == nil && entry.Lease.IP.String() == "192.0.2.100"
+	}, time.Second, 10*time.Millisecond, "the re-acquired address must be persisted")
+	assert.Equal(t, 1, fake.ReleaseCount(),
 		"the superseded address must be returned upstream once the re-DORA lands elsewhere")
-	entry, err := store.Get(t.Context(), "eipalloc-stale")
-	require.NoError(t, err)
-	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String())
 }
 
 // captureLogs redirects the default logger for the test and returns an accessor
@@ -293,9 +297,10 @@ func TestManagerRenewOntoNewIPReleasesOldAndFiresHook(t *testing.T) {
 	mu.Unlock()
 	assert.Equal(t, 1, fake.ReleaseCount(), "the superseded address must be released upstream")
 
-	entry, err := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
-	require.NoError(t, err)
-	assert.Equal(t, newIP.String(), entry.Lease.IP.String(), "KV must hold the new address")
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
+		return getErr == nil && entry.Lease.IP.String() == newIP.String()
+	}, time.Second, 10*time.Millisecond, "KV must hold the new address")
 }
 
 // The common case: a renewal that keeps its address must not release anything
@@ -335,9 +340,10 @@ func TestManagerRenewOntoNewIPKeepsLeaseWhenHookFails(t *testing.T) {
 	require.NoError(t, mgr.Start(context.Background()))
 	require.Eventually(t, func() bool { return called.Load() }, 5*time.Second, 10*time.Millisecond)
 
-	entry, err := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
-	require.NoError(t, err)
-	assert.Equal(t, newIP.String(), entry.Lease.IP.String())
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "dhcp-gw-lrp-vpc-1")
+		return getErr == nil && entry.Lease.IP.String() == newIP.String()
+	}, time.Second, 10*time.Millisecond)
 	assert.Equal(t, 1, mgr.LoopCount(), "the lease loop must survive a failed rebind")
 }
 
@@ -353,9 +359,10 @@ func TestManagerRenewOntoNewIPReleasesOldWithoutHook(t *testing.T) {
 	require.Eventually(t, func() bool { return fake.ReleaseCount() == 1 }, 5*time.Second, 10*time.Millisecond,
 		"superseded address must be released even with no hook registered")
 
-	entry, err := store.Get(t.Context(), "eipalloc-1")
-	require.NoError(t, err)
-	assert.Equal(t, "192.0.2.201", entry.Lease.IP.String())
+	require.Eventually(t, func() bool {
+		entry, getErr := store.Get(t.Context(), "eipalloc-1")
+		return getErr == nil && entry.Lease.IP.String() == "192.0.2.201"
+	}, time.Second, 10*time.Millisecond)
 }
 
 // The release of the superseded address is best-effort: failing it must not cost

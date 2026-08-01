@@ -12,6 +12,9 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex-ui start
 Restart=on-failure
 RestartSec=5
+# server.Shutdown() uses an internal 30s context (WriteTimeout=120s covers
+# long streaming proxy responses, e.g. console passthrough); add margin above it.
+TimeoutStopSec=40
 OOMScoreAdjust=-500
 Environment=SPINIFEX_UI_TLS_CERT=/etc/spinifex/server.pem
 Environment=SPINIFEX_UI_TLS_KEY=/etc/spinifex/server.key

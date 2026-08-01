@@ -26,6 +26,9 @@ func createDaemonWithJetStream(t *testing.T) *Daemon {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	tmpDir := t.TempDir()
+	// Restore's orphan reconciliation reads pidfiles from the runtime dir;
+	// sandbox it so tests never touch this box's real /run/spinifex.
+	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",

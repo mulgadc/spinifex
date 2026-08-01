@@ -14,6 +14,9 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service awsgw start
 Restart=on-failure
 RestartSec=5
+# No SIGTERM handler in this process: it exits immediately on signal, so this
+# only bounds an unexpectedly wedged process before SIGKILL.
+TimeoutStopSec=10
 
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml

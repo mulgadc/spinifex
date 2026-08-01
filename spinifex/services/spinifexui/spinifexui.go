@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -279,7 +280,13 @@ func (svc *Service) launchService() error {
 	}
 
 	slog.Info("Starting spinifex-ui service with HTTPS (auto-redirect HTTP)", "addr", addr)
-	return server.Serve(splitLn)
+	// ErrServerClosed is Serve's documented return value after Shutdown was
+	// called deliberately (see the SIGTERM handler above) -- success, not a
+	// failure to report or exit non-zero for.
+	if err := server.Serve(splitLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // Content-Security-Policy header. All API requests are proxied through the

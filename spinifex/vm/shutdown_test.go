@@ -765,6 +765,59 @@ func TestTransitionWithPrecheck_PersistenceFailure_PassesThroughError(t *testing
 		"persistence-failure branch implies status reached target before error returned")
 }
 
+// TestTransitionWithPrecheck_PersistenceFailure_StampsShuttingDownAt covers
+// the specific target that matters for the stuck-terminate backstop: when
+// TransitionState fails but the in-memory status still reached
+// StateShuttingDown, ShuttingDownAt must be stamped anyway so
+// StuckTerminateReaper.Sweep can eventually see and bound this instance.
+// Before the fix this never ran because the function returned before
+// reaching the stamp call.
+func TestTransitionWithPrecheck_PersistenceFailure_StampsShuttingDownAt(t *testing.T) {
+	persistErr := errors.New("no space left on device")
+	var m *Manager
+	m = NewManagerWithDeps(Deps{
+		TransitionState: func(v *VM, target InstanceState) error {
+			// Memory mutation succeeded; only persistence (e.g. a full disk
+			// writing local state) failed.
+			m.Inspect(v, func(vv *VM) { vv.Status = target })
+			return persistErr
+		},
+	})
+
+	instance := &VM{ID: "i-persist-fail-shutdown", Status: StateRunning}
+	m.Insert(instance)
+
+	err := m.transitionWithPrecheck(instance, StateShuttingDown)
+
+	require.ErrorIs(t, err, persistErr, "the persistence error must still reach the caller")
+	assert.False(t, instance.ShuttingDownAt.IsZero(),
+		"ShuttingDownAt must be stamped even though the state write failed, so the reaper can see this instance")
+}
+
+// TestTransitionWithPrecheck_Raced_DoesNotStampShuttingDownAt is the
+// contrast: when TransitionState fails AND the in-memory status did not
+// reach StateShuttingDown (a concurrent transition beat this call), the
+// target state was never actually entered, so stamping would be a lie.
+func TestTransitionWithPrecheck_Raced_DoesNotStampShuttingDownAt(t *testing.T) {
+	persistErr := errors.New("kv put failed")
+	m := NewManagerWithDeps(Deps{
+		TransitionState: func(_ *VM, _ InstanceState) error {
+			// Return error without mutating status, matching a concurrent
+			// transition that beat this call.
+			return persistErr
+		},
+	})
+
+	instance := &VM{ID: "i-raced-shutdown", Status: StateRunning}
+	m.Insert(instance)
+
+	err := m.transitionWithPrecheck(instance, StateShuttingDown)
+
+	require.ErrorIs(t, err, ErrInvalidTransition)
+	assert.True(t, instance.ShuttingDownAt.IsZero(),
+		"the raced branch never actually entered StateShuttingDown, so it must not stamp")
+}
+
 // TestTransitionWithPrecheck_InvalidInitialTransition_WrapsErrInvalidTransition
 // covers the static precheck rejecting an illegal transition before
 // TransitionState is ever called. The error must wrap

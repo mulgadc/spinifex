@@ -7,11 +7,14 @@
 # the K3s auto-deploy dir by k3s.initd, which fills the __KONN_HOST__ /
 # __KONN_AGENT_IMAGE__ tokens at boot.
 #
-# Runs on workers only: it carries no toleration for the control-plane
-# CriticalAddonsOnly=true:NoExecute taint, so it is never scheduled onto the CP
-# nodes (which run the server, not an agent). It DOES tolerate the GPU
-# nvidia.com/gpu=present:NoSchedule taint — a GPU-only worker still needs
-# kubectl logs/exec against pods there, which routes through this agent.
+# Also tolerates the control-plane CriticalAddonsOnly=true:NoExecute taint and
+# the GPU nvidia.com/gpu=present:NoSchedule taint, matching every other
+# CP-critical addon in this repo (aws-load-balancer-controller, ebs-csi-driver,
+# argocd): a zero-worker or GPU-only cluster has no untainted node, and other
+# addons already schedule onto the CP, so it needs its own tunnel too — without
+# an agent there, kubectl logs/exec against CP-hosted pods and apiserver
+# aggregated-API egress (metrics-server discovery) both fail. Real EKS never
+# needs this: its control plane isn't a schedulable node.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -41,10 +44,14 @@ spec:
     spec:
       serviceAccountName: konnectivity-agent
       priorityClassName: system-node-critical
-      # Without this, a GPU-only worker (tainted nvidia.com/gpu=present:NoSchedule)
-      # shows DESIRED=0 for this DaemonSet and kubectl logs/exec against pods
-      # scheduled there fails "No agent available".
+      # Without these, a zero-worker or GPU-only cluster (CP tainted
+      # CriticalAddonsOnly, workers tainted nvidia.com/gpu) shows DESIRED=0 for
+      # this DaemonSet: no tunnel exists, so kubectl logs/exec against any pod
+      # fails "No agent available" and apiserver aggregated-API egress
+      # (e.g. metrics-server discovery) fails, which stalls namespace GC.
       tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule

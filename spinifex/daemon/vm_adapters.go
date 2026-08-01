@@ -722,28 +722,74 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 }
 
 // DetachAndDeleteENI detaches the auto-created ENI from the instance and
-// deletes it via the VPC service. NotFound is tolerated. Extra ENIs are
-// cleaned up by the load-balancer service via its own teardown loop and
-// are not touched here.
+// deletes it via the VPC service. NotFound is tolerated. It then sweeps every
+// other ENI the KV records against this instance — post-launch attaches
+// (e.g. ECS awsvpc, direct AttachNetworkInterface) never update instance.ENIId,
+// so relying on the scalar alone leaves them attached forever, pinning their
+// SG/subnet/VPC behind DependencyViolation.
 func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
-	if instance.ENIId == "" || a.d.vpcService == nil {
+	if a.d.vpcService == nil {
 		return nil
 	}
-	// Best-effort detach; a failure here must not block deletion — the force
-	// delete below bypasses the in-use guard for the owning instance, breaking
-	// the un-terminable-ENI deadlock (ADR-0003 §2).
-	if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
-		slog.Warn("Failed to detach ENI on termination",
-			"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
+
+	var primaryErr error
+	if instance.ENIId != "" {
+		// Best-effort detach; a failure here must not block deletion — the force
+		// delete below bypasses the in-use guard for the owning instance, breaking
+		// the un-terminable-ENI deadlock (ADR-0003 §2).
+		if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
+			slog.Warn("Failed to detach ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
+		}
+		if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
+			slog.Error("Failed to delete ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
+			primaryErr = err
+		} else {
+			slog.Info("Deleted ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		}
 	}
-	if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
-		slog.Error("Failed to delete ENI on termination",
-			"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
-		return err
+
+	a.releaseAttachedENIs(instance)
+
+	return primaryErr
+}
+
+// releaseAttachedENIs enumerates the spinifex-vpc-enis KV for every record
+// still carrying this instance's ID and releases each one, independent of
+// instance.ENIId. Best-effort and idempotent per ENI: one failure is logged
+// and the sweep continues, so a partial failure never blocks the rest and a
+// re-run of terminate converges. DeleteOnTermination=false detaches only.
+func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
+	records, err := a.d.vpcService.ListInstanceENIs(instance.AccountID, instance.ID)
+	if err != nil {
+		slog.Warn("Failed to enumerate attached ENIs on termination",
+			"instanceId", instance.ID, "err", err)
+		return
 	}
-	slog.Info("Deleted ENI on termination",
-		"eni", instance.ENIId, "instanceId", instance.ID)
-	return nil
+
+	for _, record := range records {
+		eniId := record.NetworkInterfaceId
+		if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, eniId); detachErr != nil {
+			slog.Warn("Failed to detach attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID, "err", detachErr)
+		}
+
+		if record.DeleteOnTermination != nil && !*record.DeleteOnTermination {
+			slog.Info("Detached attached ENI on termination, DeleteOnTermination=false",
+				"eni", eniId, "instanceId", instance.ID)
+			continue
+		}
+
+		if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, eniId); err != nil {
+			slog.Error("Failed to delete attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID, "err", err)
+			continue
+		}
+		slog.Info("Deleted attached ENI on termination",
+			"eni", eniId, "instanceId", instance.ID)
+	}
 }
 
 // RemoveFromPlacementGroup unbinds the instance from its placement group

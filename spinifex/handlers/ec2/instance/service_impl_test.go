@@ -2976,6 +2976,8 @@ type fakeENICreator struct {
 	updateCalls     int
 	clearCalls      int // updateCalls where publicIP is ""
 	detachCalls     int
+	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
+	listENIsErr     error
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {
@@ -3033,6 +3035,13 @@ func (f *fakeENICreator) UpdateENIPublicIP(_ context.Context, _, _, publicIP, _ 
 		f.clearCalls++
 	}
 	return nil
+}
+
+func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID string) ([]ENIInfo, error) {
+	if f.listENIsErr != nil {
+		return nil, f.listENIsErr
+	}
+	return f.instanceENIs[instanceID], nil
 }
 
 type fakeIPAllocator struct {

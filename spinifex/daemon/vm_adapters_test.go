@@ -5,8 +5,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -381,4 +384,54 @@ func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
 	require.NoError(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-noop", ManagedBy: ""}))
 	require.Error(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-svc", ManagedBy: tags.ManagedByELBv2}),
 		"ELBv2 VM with nil elbv2Service must error rather than silently no-op")
+}
+
+// --- DetachAndDeleteENI: post-launch attach enumeration ---
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesPostLaunchAttach locks
+// in the terminate-time read path: DetachAndDeleteENI must enumerate the
+// spinifex-vpc-enis KV by InstanceId rather than trusting the launch-time
+// instance.ENIId scalar alone. handleAttachNetworkInterface (the real
+// post-launch/hot-plug attach path) only ever mutates the KV record, never
+// vm.VM — so without the enumeration this ENI would survive terminate and
+// pin its SG/subnet/VPC behind DependencyViolation, exactly as observed on
+// env19.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesPostLaunchAttach(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+
+	// Attach via the KV only — instance.ENIId is deliberately left unset,
+	// mirroring a hot-plug attach that never touches vm.VM.
+	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
+	require.NoError(t, err)
+	require.Empty(t, f.vmInst.ENIId, "precondition: launch-time scalar must stay unset")
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	_, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.Error(t, err, "the ENI record must be released even though instance.ENIId was never set")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound))
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetachesOnly
+// proves the sweep honours DeleteOnTermination=false: the ENI is detached
+// (freed for reattachment) but not deleted, matching AWS semantics.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetachesOnly(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+
+	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
+	require.NoError(t, err)
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+		r.DeleteOnTermination = aws.Bool(false)
+	}))
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.NoError(t, err, "DeleteOnTermination=false must detach, not delete")
+	assert.Equal(t, "available", rec.Status)
+	assert.Empty(t, rec.InstanceId)
 }

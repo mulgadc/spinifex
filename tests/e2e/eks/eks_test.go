@@ -18,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -835,6 +836,15 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 	}, 5*time.Minute, 5*time.Second)
 	t.Logf("PVC %s Bound", pvcName)
 
+	// Resolved once, while the PVC is still bound, so the final cleanup can
+	// confirm the CSI driver actually deleted this exact volume rather than
+	// just that the Kubernetes objects are gone. Unlike production teardown
+	// (which cannot infer a PV's reclaim policy from EC2 tags alone), this
+	// suite owns the volume it provisioned and can safely wait for its
+	// ebs-gp3 StorageClass's Delete policy to reclaim it.
+	volID := csiVolumeID(t, kc, pvcName)
+	t.Logf("CSI volume for PVC %s: %s", pvcName, volID)
+
 	waitPodReady(t, kc, "ebs-csi-e2e-writer")
 
 	// The marker must have landed on the mounted volume.
@@ -851,8 +861,26 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 	readerPath := filepath.Join(artifacts, "ebs-csi-reader.yaml")
 	require.NoError(t, os.WriteFile(readerPath, []byte(csiPVCPodManifest(pvcName, "ebs-csi-e2e-reader",
 		"cat /data/marker && sleep 3600")), 0o600))
+	// This runs before the addon/nodegroup cleanups registered earlier in this
+	// subtest, so the CSI controller that performs the actual DeleteVolume is
+	// still running when it does. It must not just fire the delete and move
+	// on: the suite provisioned this volume, so it must confirm EC2 shows it
+	// gone before continuing, not merely that the Kubernetes objects are.
 	t.Cleanup(func() {
-		_, _ = kc.Run(60*time.Second, "delete", "-f", readerPath, "--ignore-not-found", "--wait=false")
+		out, err := kc.Run(60*time.Second, "delete", "-f", readerPath, "--ignore-not-found", "--wait=false")
+		if err != nil {
+			t.Errorf("delete reader manifest:\n%s", out)
+		}
+		harness.EventuallyErr(t, func() error {
+			_, derr := c.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{VolumeIds: aws.StringSlice([]string{volID})})
+			if derr != nil {
+				if harness.ErrorCodeIs(derr, "InvalidVolume.NotFound") {
+					return nil
+				}
+				return derr
+			}
+			return fmt.Errorf("CSI-provisioned volume %s still present after PVC deletion", volID)
+		}, 3*time.Minute, 5*time.Second)
 	})
 	out, err = kc.Run(60*time.Second, "apply", "-f", readerPath)
 	require.NoErrorf(t, err, "apply reader:\n%s", out)
@@ -862,6 +890,23 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 	require.NoErrorf(t, err, "exec cat marker (reader):\n%s", got)
 	assert.Equal(t, marker, strings.TrimSpace(got), "marker must survive pod reschedule")
 	t.Logf("marker survived reschedule: %s", strings.TrimSpace(got))
+}
+
+// csiVolumeID resolves the EC2 volume ID backing a Bound PVC by following its
+// PersistentVolume's CSI volumeHandle, so teardown can confirm against EC2
+// that the specific volume this test provisioned is actually gone.
+func csiVolumeID(t *testing.T, kc *harness.Kubectl, pvc string) string {
+	t.Helper()
+	pvName, err := kc.Run(30*time.Second, "get", "pvc", pvc, "-o", `jsonpath={.spec.volumeName}`)
+	require.NoErrorf(t, err, "get pvc volumeName:\n%s", pvName)
+	pvName = strings.TrimSpace(pvName)
+	require.NotEmpty(t, pvName, "a Bound PVC must reference a PersistentVolume")
+
+	volID, err := kc.Run(30*time.Second, "get", "pv", pvName, "-o", `jsonpath={.spec.csi.volumeHandle}`)
+	require.NoErrorf(t, err, "get pv volumeHandle:\n%s", volID)
+	volID = strings.TrimSpace(volID)
+	require.NotEmpty(t, volID, "a CSI-provisioned PV must carry a volumeHandle")
+	return volID
 }
 
 // csiPVCPodManifest renders a gp3 PVC plus a single pod that mounts it at /data

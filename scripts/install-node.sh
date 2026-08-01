@@ -429,14 +429,32 @@ fi
 # --force: each joining node arrived from the ISO already initialized, with its
 # own CA and master key. Joining replaces them with the init node's, and
 # `spx admin join` refuses to do that silently.
+#
+# Every join must run concurrently. `spx admin join` registers and then blocks
+# until the formation server has all N nodes, so joining one at a time deadlocks
+# the moment there is more than one joiner: node 2 waits for node 3, which is
+# waiting on a shell that node 2 is still holding.
+JOIN_PIDS=()
 for i in $(seq 1 $((N - 1))); do
     on "${HOSTS[$i]}" "sudo spx admin join --force \
         --node ${NODE_NAMES[$i]} \
         --bind ${LAN_IPS[$i]} --cluster-bind ${LAN_IPS[$i]} --advertise ${WAN_IPS[$i]} \
         --host ${LAN_IPS[0]}:$PORT --token $TOKEN \
-        --region $REGION --az $AZ" || fail "${HOSTS[$i]}: spx admin join failed"
-    log "  ${NODE_NAMES[$i]} joined"
+        --region $REGION --az $AZ" &
+    JOIN_PIDS+=("$!")
 done
+
+# Collect every join before failing on any of them, so a partial formation
+# reports which node broke it rather than whichever was reaped first.
+JOIN_FAILED=()
+for i in $(seq 1 $((N - 1))); do
+    if wait "${JOIN_PIDS[$((i - 1))]}"; then
+        log "  ${NODE_NAMES[$i]} joined"
+    else
+        JOIN_FAILED+=("${HOSTS[$i]}")
+    fi
+done
+[ ${#JOIN_FAILED[@]} -eq 0 ] || fail "spx admin join failed on: ${JOIN_FAILED[*]}"
 
 # init exits once the last node registers. A formation server still running
 # means a node registered but formation never completed.

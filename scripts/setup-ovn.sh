@@ -951,9 +951,21 @@ fi
 # refused to start. Preserving the on-disk value is always safe — any
 # caller that needs IPsec cert identity matching pins it themselves.
 if [ -n "$NODE_NAME" ]; then
+    OLD_ID=$(sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>/dev/null | tr -d '"')
     echo "$NODE_NAME" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
     sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_NAME"
     echo "  system-id:      $NODE_NAME (pinned via --node-name)"
+
+    # A renamed chassis cannot register while the row it left behind still
+    # holds this node's encap IP: ovn-controller loops on "OVNSB commit
+    # failed" and never appears in `ovn-sbctl show`. The stale row owns no
+    # state worth keeping — ovn-controller rebuilds everything on register —
+    # but it must go before Step 5 restarts the controller under the new name.
+    if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "$NODE_NAME" ]; then
+        if sudo ovn-sbctl --db="$OVN_REMOTE" --timeout=10 chassis-del "$OLD_ID" 2>/dev/null; then
+            echo "  stale chassis:  removed '$OLD_ID' (renamed to $NODE_NAME)"
+        fi
+    fi
 else
     CURRENT_ID=$(sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>/dev/null | tr -d '"')
     echo "  system-id:      ${CURRENT_ID:-<unset>} (preserved; no --node-name given)"

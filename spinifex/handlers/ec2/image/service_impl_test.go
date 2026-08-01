@@ -248,6 +248,47 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 		"legacy AMIs (empty BootMode) must pass through as empty, not be backfilled")
 }
 
+// TestDescribeImages_StateProjection asserts that AMIMetadata.State drives the
+// reported ec2.Image state. An AMI with no State at all (registered before the
+// field existed) is the legacy-compatibility case and MUST report "available",
+// or every pre-existing AMI on every deployment would vanish from normal use.
+func TestDescribeImages_StateProjection(t *testing.T) {
+	tests := []struct {
+		name      string
+		amiState  string
+		wantState string
+	}{
+		{name: "pending state reports pending", amiState: "pending", wantState: "pending"},
+		{name: "available state reports available", amiState: "available", wantState: "available"},
+		{name: "no state reports available (legacy compatibility)", amiState: "", wantState: "available"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, store := setupTestImageService(t)
+
+			createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+				ImageID:         "ami-state001",
+				Name:            "state-image",
+				Architecture:    "x86_64",
+				PlatformDetails: "Linux/UNIX",
+				Virtualization:  "hvm",
+				RootDeviceType:  "ebs",
+				VolumeSizeGiB:   8,
+				ImageOwnerAlias: testAccountID,
+				State:           tt.amiState,
+			})
+
+			result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+				ImageIds: []*string{aws.String("ami-state001")},
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, result.Images, 1)
+			assert.Equal(t, tt.wantState, aws.StringValue(result.Images[0].State))
+		})
+	}
+}
+
 func TestGetVolumeConfig(t *testing.T) {
 	svc, store := setupTestImageService(t)
 

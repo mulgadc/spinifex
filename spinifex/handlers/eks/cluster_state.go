@@ -98,6 +98,19 @@ type ClusterMeta struct {
 	// teardown, never one still in progress. No omitempty: encoding/json never
 	// treats a time.Time as empty.
 	DeletingSince time.Time `json:"deletingSince"`
+	// DeleteReapAttempts counts backstop-reaper re-drive attempts against this
+	// DELETING cluster since DeletingSince. Drives the reaper's exponential
+	// backoff and the terminal give-up after maxDeleteReapAttempts.
+	DeleteReapAttempts int `json:"deleteReapAttempts,omitempty"`
+	// LastDeleteReapAttempt stamps the most recent backstop-reaper re-drive, so
+	// backoff grows from the last attempt rather than from DeletingSince.
+	// No omitempty: encoding/json never treats a time.Time as empty.
+	LastDeleteReapAttempt time.Time `json:"lastDeleteReapAttempt"`
+	// DeleteReapExhausted marks a DELETING cluster whose backstop reaper gave up
+	// after maxDeleteReapAttempts. Status stays DELETING — its infra remains
+	// tracked and billable pending operator intervention — only the automatic
+	// re-drive stops.
+	DeleteReapExhausted bool `json:"deleteReapExhausted,omitempty"`
 	// HealthIssue is the last health failure reason ("" = healthy).
 	// DescribeCluster surfaces it as a ClusterHealth issue.
 	HealthIssue string `json:"healthIssue,omitempty"`
@@ -257,6 +270,46 @@ func MarkClusterFailed(ctx context.Context, kv jetstream.KeyValue, name, reason 
 		}
 		m.Status = ClusterStatusFailed
 		m.StatusReason = reason
+		return true
+	})
+}
+
+// maxDeleteReapAttempts caps automatic backstop re-drives of a wedged DELETING
+// cluster. A teardown that still fails after this many attempts is failing for
+// a reason retries will not fix (e.g. an unretriable DependencyViolation), so
+// further re-drives would only keep hammering AWS/OVN forever.
+const maxDeleteReapAttempts = 6
+
+// RecordDeleteReapAttempt increments the backstop reaper's attempt counter and
+// stamps LastDeleteReapAttempt, returning the updated count. Called immediately
+// before each re-drive so a crash mid-purge still counts the attempt on restart.
+func RecordDeleteReapAttempt(ctx context.Context, kv jetstream.KeyValue, name string) (int, error) {
+	if name == "" {
+		return 0, errors.New("eks: RecordDeleteReapAttempt empty name")
+	}
+	var attempts int
+	err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		m.DeleteReapAttempts++
+		m.LastDeleteReapAttempt = time.Now().UTC()
+		attempts = m.DeleteReapAttempts
+		return true
+	})
+	return attempts, err
+}
+
+// MarkDeleteReapExhausted flags a DELETING cluster whose backstop reaper has
+// given up after maxDeleteReapAttempts. Status stays DELETING — a cluster with
+// un-torn-down infra must stay DELETING so its resources remain tracked and
+// billable — only the automatic re-drive stops; an operator must intervene.
+func MarkDeleteReapExhausted(ctx context.Context, kv jetstream.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: MarkDeleteReapExhausted empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.Status != ClusterStatusDeleting || m.DeleteReapExhausted {
+			return false
+		}
+		m.DeleteReapExhausted = true
 		return true
 	})
 }

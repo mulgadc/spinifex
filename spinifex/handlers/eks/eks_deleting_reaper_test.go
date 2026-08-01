@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -72,6 +73,97 @@ func TestDeletingReaper_EnumerationFailureIsReported(t *testing.T) {
 	n, err := reaper.Sweep(context.Background())
 	require.Error(t, err, "a failed bucket enumeration must not report a completed sweep")
 	assert.Zero(t, n)
+}
+
+// TestDeletingReaper_BacksOffAfterFailedAttempt guards against the re-drive
+// re-running on every 2-minute GC tick with no backoff: a permanently-failing
+// purge must not be retried again until the exponential backoff window (2×
+// minAge after 1 prior attempt) has elapsed, and the attempt is persisted so
+// the window survives a restart. No sleeping — the clock is advanced by
+// backdating LastDeleteReapAttempt directly.
+func TestDeletingReaper_BacksOffAfterFailedAttempt(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	f.inst.terminateErr = errors.New("hypervisor unreachable")
+	markDeleting(t, f, "alpha", 10*time.Minute)
+
+	reaper := f.svc.NewDeletingReaper()
+
+	n, err := reaper.Sweep(context.Background())
+	require.NoError(t, err, "Sweep logs and continues past a single cluster's re-drive failure")
+	assert.Equal(t, 0, n)
+	assert.Len(t, f.inst.terminateCalls, 1, "the first re-drive attempt must run")
+
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, 1, meta.DeleteReapAttempts, "the attempt must be counted")
+	assert.False(t, meta.LastDeleteReapAttempt.IsZero(), "the attempt time must be stamped")
+
+	// Immediately re-sweeping must be a no-op: still inside the backoff window.
+	n, err = reaper.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Len(t, f.inst.terminateCalls, 1, "must not re-drive again inside the backoff window")
+
+	// Advance past the backoff window without sleeping, by backdating the
+	// last-attempt timestamp; the reaper must then re-drive again.
+	meta.LastDeleteReapAttempt = time.Now().UTC().Add(-2 * deleteReapBackoff(deletingReapMinAge, meta.DeleteReapAttempts))
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
+
+	n, err = reaper.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Len(t, f.inst.terminateCalls, 2, "must re-drive again once the backoff window elapses")
+
+	meta, getErr = GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, 2, meta.DeleteReapAttempts)
+}
+
+// TestDeletingReaper_ExhaustsAfterMaxAttempts guards the terminal give-up: a
+// purge that keeps failing the same way forever (e.g. an unretriable
+// DependencyViolation) must stop being re-driven after maxDeleteReapAttempts,
+// not loop forever on every GC tick. It also locks the ADR-0006 §6 billing
+// invariant: an exhausted cluster must stay DELETING — its infra stays tracked
+// and billable — not silently vanish or move to some other status.
+func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	f.inst.terminateErr = errors.New("permanent hypervisor failure")
+	markDeleting(t, f, "alpha", 10*time.Minute)
+
+	reaper := f.svc.NewDeletingReaper()
+
+	for i := 1; i <= maxDeleteReapAttempts; i++ {
+		n, err := reaper.Sweep(context.Background())
+		require.NoError(t, err, "Sweep logs and continues past a single cluster's re-drive failure")
+		assert.Equal(t, 0, n)
+
+		meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+		require.NoError(t, getErr)
+		assert.Equal(t, i, meta.DeleteReapAttempts, "attempt count after sweep %d", i)
+
+		if i < maxDeleteReapAttempts {
+			assert.False(t, meta.DeleteReapExhausted, "must not exhaust before maxDeleteReapAttempts")
+			// Fast-forward past the next backoff window without sleeping.
+			meta.LastDeleteReapAttempt = time.Now().UTC().Add(-2 * deleteReapBackoff(deletingReapMinAge, meta.DeleteReapAttempts))
+			require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
+		}
+	}
+
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.True(t, meta.DeleteReapExhausted, "the backstop must give up after maxDeleteReapAttempts")
+	assert.Equal(t, ClusterStatusDeleting, meta.Status,
+		"ADR-0006 §6 billing invariant: an exhausted cluster must stay DELETING")
+
+	terminateCallsAtExhaustion := len(f.inst.terminateCalls)
+
+	// Even long after exhaustion, further sweeps must never re-drive it again.
+	meta.LastDeleteReapAttempt = time.Now().UTC().Add(-24 * time.Hour)
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
+	n, err := reaper.Sweep(context.Background())
+	require.NoError(t, err, "a skipped exhausted cluster must not surface a sweep error")
+	assert.Equal(t, 0, n)
+	assert.Len(t, f.inst.terminateCalls, terminateCallsAtExhaustion, "an exhausted cluster must never be re-driven again")
 }
 
 // TestDeletingReaperSkipsNonDeleting: a CREATING/ACTIVE cluster is never touched.

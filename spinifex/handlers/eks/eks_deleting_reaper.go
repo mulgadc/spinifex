@@ -85,9 +85,21 @@ func (r *EKSDeletingReaper) Sweep(ctx context.Context) (int, error) {
 	return reaped, nil
 }
 
+// deleteReapBackoff returns how long the reaper must wait since the last
+// re-drive attempt before trying again: minAge on the first attempt, doubling
+// after each subsequent failure. priorAttempts is the re-drive count already
+// made (meta.DeleteReapAttempts), so the 2nd attempt waits 2×minAge, the 3rd
+// waits 4×minAge, and so on — a permanently-failing purge backs off instead of
+// re-driving on every GC tick.
+func deleteReapBackoff(minAge time.Duration, priorAttempts int) time.Duration {
+	return minAge * time.Duration(1<<uint(priorAttempts))
+}
+
 // reapCluster re-drives one cluster's teardown if it is wedged in DELETING past
-// minAge and its leader lease can be acquired. Returns 1 when it completed a
-// teardown, 0 otherwise.
+// minAge (and any subsequent backoff) and its leader lease can be acquired.
+// Returns 1 when it completed a teardown, 0 otherwise. After maxDeleteReapAttempts
+// consecutive failures it gives up permanently (DeleteReapExhausted) rather than
+// re-driving a purge that keeps failing the same way forever.
 func (r *EKSDeletingReaper) reapCluster(ctx context.Context, accountID string, acctKV jetstream.KeyValue, cluster string) (int, error) {
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
@@ -96,8 +108,21 @@ func (r *EKSDeletingReaper) reapCluster(ctx context.Context, accountID string, a
 	if meta.Status != ClusterStatusDeleting {
 		return 0, nil
 	}
+	if meta.DeleteReapExhausted {
+		return 0, nil // backstop already gave up; needs operator intervention
+	}
 	if !meta.DeletingSince.IsZero() && time.Since(meta.DeletingSince) < r.minAge {
 		return 0, nil // still within the in-flight synchronous-delete window
+	}
+	// backoffRef is the last re-drive attempt once one has happened, so the
+	// wait grows attempt-over-attempt instead of always measuring from
+	// DeletingSince (which would let backoff collapse back to minAge forever).
+	backoffRef := meta.DeletingSince
+	if !meta.LastDeleteReapAttempt.IsZero() {
+		backoffRef = meta.LastDeleteReapAttempt
+	}
+	if time.Since(backoffRef) < deleteReapBackoff(r.minAge, meta.DeleteReapAttempts) {
+		return 0, nil // backing off after a recent failed re-drive
 	}
 
 	release, ok := r.svc.acquireTeardownLease(ctx, accountID, cluster)
@@ -106,10 +131,22 @@ func (r *EKSDeletingReaper) reapCluster(ctx context.Context, accountID string, a
 	}
 	defer release()
 
+	attempts, err := RecordDeleteReapAttempt(ctx, acctKV, cluster)
+	if err != nil {
+		return 0, fmt.Errorf("record delete reap attempt: %w", err)
+	}
+
 	slog.Warn("eks-deleting: re-driving wedged DELETING teardown",
-		"cluster", cluster, "account", accountID, "deletingSince", meta.DeletingSince)
-	if err := r.svc.purgeClusterInfra(context.Background(), accountID, cluster, meta, acctKV, true); err != nil {
-		return 0, err
+		"cluster", cluster, "account", accountID, "deletingSince", meta.DeletingSince, "attempt", attempts)
+	if purgeErr := r.svc.purgeClusterInfra(context.Background(), accountID, cluster, meta, acctKV, true); purgeErr != nil {
+		if attempts >= maxDeleteReapAttempts {
+			slog.Error("eks-deleting: giving up on wedged DELETING teardown after repeated failures",
+				"cluster", cluster, "account", accountID, "attempts", attempts, "err", purgeErr)
+			if markErr := MarkDeleteReapExhausted(context.Background(), acctKV, cluster); markErr != nil {
+				return 0, fmt.Errorf("mark delete reap exhausted: %w", markErr)
+			}
+		}
+		return 0, purgeErr
 	}
 	slog.Info("eks-deleting: teardown completed, meta swept", "cluster", cluster, "account", accountID)
 	return 1, nil

@@ -259,7 +259,7 @@ quickinstall: install-system install-go install-aws
 
 lint:
 	@echo "Running golangci-lint..."
-	$(_Q)golangci-lint run ./...
+	$(_Q)scripts/run-gate.sh golangci-lint golangci-lint run ./...
 	@echo "  golangci-lint ok"
 
 fix:
@@ -267,13 +267,13 @@ fix:
 
 govulncheck:
 	@echo "Running govulncheck..."
-	$(_Q)go tool govulncheck ./...
+	$(_Q)scripts/run-gate.sh govulncheck go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
 # NilAway — advisory nil-panic analysis. Not in preflight due to false positives
 nilaway:
 	@echo "Running nilaway..."
-	$(_Q)go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
+	$(_Q)scripts/run-gate.sh nilaway go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
 	@echo "  nilaway ok"
 
 # Build release tarballs — use distro-ARCH for single arch, distro for both

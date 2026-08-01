@@ -624,6 +624,22 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
 	}
 
+	// Naming a specific, nonexistent snapshot ID is an error, unlike an
+	// unfiltered list or a --filters query that simply matches nothing.
+	if len(snapshotIDFilter) > 0 {
+		found := make(map[string]bool, len(snapshots))
+		for _, snap := range snapshots {
+			if snap.SnapshotId != nil {
+				found[*snap.SnapshotId] = true
+			}
+		}
+		for id := range snapshotIDFilter {
+			if !found[id] {
+				return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			}
+		}
+	}
+
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
 
 	return &ec2.DescribeSnapshotsOutput{

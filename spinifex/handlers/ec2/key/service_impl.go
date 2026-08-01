@@ -709,6 +709,31 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 		keyPairs = append(keyPairs, keyPairInfo)
 	}
 
+	// Naming a specific key name/ID that doesn't exist is an error, unlike an
+	// unfiltered list or a --filters query that simply matches nothing.
+	if len(input.KeyNames) > 0 || len(input.KeyPairIds) > 0 {
+		foundNames := make(map[string]bool, len(keyPairs))
+		foundIDs := make(map[string]bool, len(keyPairs))
+		for _, kp := range keyPairs {
+			if kp.KeyName != nil {
+				foundNames[*kp.KeyName] = true
+			}
+			if kp.KeyPairId != nil {
+				foundIDs[*kp.KeyPairId] = true
+			}
+		}
+		for _, name := range input.KeyNames {
+			if name != nil && !foundNames[*name] {
+				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+			}
+		}
+		for _, id := range input.KeyPairIds {
+			if id != nil && !foundIDs[*id] {
+				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+			}
+		}
+	}
+
 	slog.InfoContext(ctx, "DescribeKeyPairs completed", "count", len(keyPairs))
 
 	return &ec2.DescribeKeyPairsOutput{

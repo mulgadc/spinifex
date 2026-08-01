@@ -313,6 +313,26 @@ func TestDescribeSnapshots_ByID(t *testing.T) {
 	assert.Equal(t, *snap1.SnapshotId, *result.Snapshots[0].SnapshotId)
 }
 
+// TestDescribeSnapshots_NotFound asserts that naming a specific, nonexistent
+// snapshot ID errors, matching real AWS: naming a missing resource is a
+// failure, unlike a --filters query that simply matches nothing (see
+// TestDescribeSnapshots_FilterNoResults).
+func TestDescribeSnapshots_NotFound(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, store, "vol-1", 50)
+
+	snap1, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{snap1.SnapshotId, aws.String("snap-0000000000000000")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidSnapshot.NotFound")
+}
+
 // TestDescribeSnapshots_Empty tests listing snapshots when none exist.
 func TestDescribeSnapshots_Empty(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)
@@ -378,10 +398,16 @@ func TestDeleteSnapshot(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Verify snapshot is gone
-	result, err = svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+	// Verify snapshot is gone: describing it by its now-deleted ID errors,
+	// matching real AWS (naming a specific missing resource is a failure).
+	_, err = svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
 		SnapshotIds: []*string{snap.SnapshotId},
 	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidSnapshot.NotFound")
+
+	// An unfiltered list, unlike naming the deleted ID, is still empty with no error.
+	result, err = svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Snapshots)
 }

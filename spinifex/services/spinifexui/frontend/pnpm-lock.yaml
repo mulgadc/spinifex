@@ -103,7 +103,7 @@ importers:
         specifier: ^1.162.0
         version: 1.162.0(eslint@9.39.4(jiti@2.7.0))(typescript@7.0.2)
       '@tanstack/router-plugin':
-        specifier: ^1.168.23
+        specifier: 1.168.23
         version: 1.168.23(@tanstack/react-router@1.170.18(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(rolldown@1.1.5)(vite@8.1.5(@types/node@24.13.3)(jiti@2.7.0)(yaml@2.9.0))
       '@testing-library/jest-dom':
         specifier: ^7.0.0

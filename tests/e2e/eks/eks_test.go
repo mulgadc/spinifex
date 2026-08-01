@@ -193,6 +193,17 @@ func TestEKS(t *testing.T) {
 		require.NoError(t, err, "addon ConfigMap must exist: %s", out)
 		assert.Contains(t, out, "delivered", "addon ConfigMap must carry the marker")
 
+		// The aggregated metrics API must be Available: apiserver discovery
+		// dials it through the konnectivity tunnel, and on a zero-worker or
+		// GPU-only cluster a konnectivity-agent gap makes it perpetually
+		// Unavailable — which is exactly what wedges namespace GC below, on
+		// every namespace, not just this one.
+		apiSvcOut, err := kc.Run(30*time.Second, "get", "apiservice", "v1beta1.metrics.k8s.io",
+			"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`)
+		require.NoError(t, err, "get apiservice v1beta1.metrics.k8s.io: %s", apiSvcOut)
+		assert.Equal(t, "True", strings.TrimSpace(apiSvcOut),
+			"v1beta1.metrics.k8s.io must be Available or namespace GC (below) will never clear the kubernetes finalizer")
+
 		// DeleteAddon unstages the manifest; the agent GCs the rendered file and
 		// k3s' auto-deploy controller removes the objects.
 		_, err = c.EKS.DeleteAddon(&eks.DeleteAddonInput{
@@ -201,6 +212,11 @@ func TestEKS(t *testing.T) {
 		})
 		require.NoError(t, err, "delete-addon")
 
+		// Namespace GC enumerates every API group before it can clear the
+		// `kubernetes` finalizer, so a stuck aggregated API (checked above)
+		// leaves this stuck in Terminating forever rather than retrying it
+		// down — proving deletion actually completes, not just that it was
+		// attempted.
 		harness.EventuallyErr(t, func() error {
 			out, runErr := kc.Run(30*time.Second, "get", "namespace", "spinifex-noop",
 				"--ignore-not-found", "-o", `jsonpath={.metadata.name}`)

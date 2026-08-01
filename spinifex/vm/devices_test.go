@@ -84,3 +84,20 @@ func TestRngDevice_MMIO_WithOptions(t *testing.T) {
 	d := RngDevice("microvm,x-option-roms=off,pic=off")
 	assert.Equal(t, "virtio-rng-device", d.Value)
 }
+
+// TestVolumeBlkDevice_OnErrorReport pins the cold-boot data-volume device
+// string to werror=report,rerror=report, mirroring the boot drive's existing
+// on-error policy so a full backend reports ENOSPC to the guest instead of
+// pausing the VM.
+func TestVolumeBlkDevice_OnErrorReport(t *testing.T) {
+	d := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report", d.Value)
+}
+
+// TestVolumeBlkDeviceQMPArgs_OnErrorReport is the hotplug counterpart: the
+// QMP device_add argument map AttachVolume sends must carry the same policy.
+func TestVolumeBlkDeviceQMPArgs_OnErrorReport(t *testing.T) {
+	args := VolumeBlkDeviceQMPArgs("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	assert.Equal(t, "report", args["werror"])
+	assert.Equal(t, "report", args["rerror"])
+}

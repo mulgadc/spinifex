@@ -14,9 +14,10 @@
 #                  end. Without this the test launches into whatever public
 #                  subnet already exists, which only works where a usable
 #                  default VPC is present.
-#   --nodes N      Cluster size. Above 1, launch N instances and assert they did
-#                  not all land on the same node.
-#   --keep         Leave the resources --create-vpc created in place.
+#   --nodes N      Cluster size. Above 1, launch N instances into a spread
+#                  placement group so each one lands on a different physical
+#                  server, and verify that it did.
+#   --keep         Leave the created VPC, placement group and instances in place.
 #
 # GPU passthrough test (opt-in):
 #   TEST_GPU=1 scripts/smoke-test.sh
@@ -171,13 +172,14 @@ CREATED_IGW_ID=""
 CREATED_SUBNET_ID=""
 CREATED_RTB_ID=""
 CREATED_SG_ID=""
+CREATED_PG_NAME=""
 LAUNCHED_IDS=""
 
-# Torn down in reverse creation order, on failure as well as success: a VPC left
-# behind by a failed run is one the next run trips over.
-cleanup_vpc() {
-    [ "$CREATE_VPC" = "1" ] || return 0
-    [ "$KEEP" = "1" ] && { echo "==> --keep: leaving $CREATED_VPC_ID in place"; return 0; }
+# Torn down in reverse creation order, on failure as well as success: resources
+# left behind by a failed run are ones the next run trips over. The placement
+# group only deletes once its instances are gone, hence the wait.
+cleanup_resources() {
+    [ "$KEEP" = "1" ] && { echo "==> --keep: leaving the created resources in place"; return 0; }
     echo "==> Cleaning up"
     if [ -n "$LAUNCHED_IDS" ]; then
         # shellcheck disable=SC2086  # deliberate word-splitting of the id list
@@ -191,6 +193,7 @@ cleanup_vpc() {
             sleep 2
         done
     fi
+    [ -n "$CREATED_PG_NAME" ] && aws_as_user ec2 delete-placement-group --group-name "$CREATED_PG_NAME" >/dev/null 2>&1 || true
     [ -n "$CREATED_RTB_ID" ] && aws_as_user ec2 delete-route-table --route-table-id "$CREATED_RTB_ID" >/dev/null 2>&1 || true
     [ -n "$CREATED_SUBNET_ID" ] && aws_as_user ec2 delete-subnet --subnet-id "$CREATED_SUBNET_ID" >/dev/null 2>&1 || true
     if [ -n "$CREATED_IGW_ID" ]; then
@@ -201,9 +204,11 @@ cleanup_vpc() {
     echo "  Removed"
 }
 
-if [ "$CREATE_VPC" = "1" ]; then
-    trap cleanup_vpc EXIT
+if [ "$CREATE_VPC" = "1" ] || [ "$NODES" -gt 1 ]; then
+    trap cleanup_resources EXIT
+fi
 
+if [ "$CREATE_VPC" = "1" ]; then
     echo "==> Creating VPC $VPC_CIDR"
     CREATED_VPC_ID=$(aws_as_user ec2 create-vpc --cidr-block "$VPC_CIDR" \
         --query 'Vpc.VpcId' --output text)
@@ -275,18 +280,37 @@ if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
     exit 1
 fi
 
-# On a cluster, launch one instance per node so placement can be asserted. The
-# first is the one the SSH checks below use; the rest exist only to show the
-# scheduler spread them.
+# On a cluster, launch through a spread placement group. Spread is strict
+# 1-per-node, so the API itself refuses the launch with
+# InsufficientInstanceCapacity unless it can put every instance on a different
+# physical server — which makes the launch succeeding the assertion, rather
+# than something to be checked afterwards and hoped for.
+PLACEMENT_ARGS=()
+if [ "$NODES" -gt 1 ]; then
+    CREATED_PG_NAME="spinifex-smoke-spread-$$"
+    echo "==> Creating spread placement group $CREATED_PG_NAME"
+    aws_as_user ec2 create-placement-group \
+        --group-name "$CREATED_PG_NAME" --strategy spread >/dev/null
+    PLACEMENT_ARGS=(--placement "GroupName=$CREATED_PG_NAME")
+fi
+
 echo "  AMI: $AMI_ID  type: $INSTANCE_TYPE  subnet: $SUBNET_ID  count: $NODES"
 
-ALL_IDS=$(aws_as_user ec2 run-instances \
+if ! ALL_IDS=$(aws_as_user ec2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name spinifex-key \
     --subnet-id "$SUBNET_ID" \
     --count "$NODES" \
-    --query 'Instances[].InstanceId' --output text)
+    "${PLACEMENT_ARGS[@]}" \
+    --query 'Instances[].InstanceId' --output text); then
+    if [ "$NODES" -gt 1 ]; then
+        echo "❌ run-instances failed. On a spread placement group this usually means"
+        echo "   fewer than $NODES nodes had capacity, so the cluster could not place one"
+        echo "   instance per physical server. Check 'sudo spx get nodes'."
+    fi
+    exit 1
+fi
 LAUNCHED_IDS="$ALL_IDS"
 
 INSTANCE_ID=$(awk '{print $1}' <<<"$ALL_IDS")
@@ -401,26 +425,32 @@ else
 fi
 
 # --- Multi-node placement ---
-# A cluster that puts every instance on node 1 passes every check above and is
-# still broken, so placement is asserted rather than assumed.
+# The spread group already refused to launch unless one instance could go on
+# each node, so this confirms the reservation actually became distinct physical
+# placement rather than re-testing the scheduler.
 if [ "$NODES" -gt 1 ]; then
-    echo "==> Checking instance placement across $NODES nodes"
+    echo "==> Confirming placement across $NODES nodes"
+    # spx colourises unconditionally, including down a pipe. Field 1 is the
+    # instance id and field 8 the node, in the ' | ' separated table.
+    PLACED=""
     for _i in $(seq 1 30); do
         PLACEMENT=$(sudo /usr/local/bin/spx get vms 2>/dev/null |
             sed 's/\x1b\[[0-9;]*m//g' |
             awk -F'|' 'NR > 1 {gsub(/ /, "", $1); gsub(/ /, "", $8); if ($1 != "") print $1, $8}')
-        PLACED=$(echo "$ALL_IDS" | tr '\t' '\n' | while read -r id; do
+        PLACED=$(tr '\t' '\n' <<<"$ALL_IDS" | while read -r id; do
             [ -n "$id" ] && grep "^$id " <<<"$PLACEMENT" | awk '{print $2}'
         done)
         [ "$(grep -c . <<<"$PLACED")" -eq "$NODES" ] && break
         sleep 2
     done
 
-    echo "$PLACED" | sort | uniq -c | awk '{printf "  %s: %s instance(s)\n", $2, $1}'
-    DISTINCT=$(sort -u <<<"$PLACED" | grep -c .)
-    if [ "$DISTINCT" -lt 2 ]; then
-        echo "❌ All $NODES instances landed on the same node — the scheduler is not spreading work"
+    sort <<<"$PLACED" | uniq -c | awk '{printf "  %s: %s instance(s)\n", $2, $1}'
+    DISTINCT=$(sort -u <<<"$PLACED" | grep -c . || true)
+    if [ "$DISTINCT" -ne "$NODES" ]; then
+        echo "❌ $NODES instances landed on $DISTINCT node(s), expected one each."
+        echo "   The spread placement group reserved distinct nodes, so the instances"
+        echo "   did not end up where the reservation said they would."
         exit 1
     fi
-    echo "✅ Placement spread across $DISTINCT node(s)"
+    echo "✅ Placement confirmed — one instance on each of $DISTINCT physical nodes"
 fi

@@ -551,6 +551,10 @@ func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) err
 			return fmt.Errorf("%w: %s -> %s for instance %s (raced)",
 				ErrInvalidTransition, current, target, instance.ID)
 		}
+		// The in-memory status reached target even though persistence
+		// failed, so the stamp must still land: it is what lets the
+		// stuck-terminate backstop see and eventually bound this instance.
+		m.Inspect(instance, func(v *VM) { stampShuttingDownAt(v, target) })
 		return err
 	}
 	m.Inspect(instance, func(v *VM) { stampShuttingDownAt(v, target) })

@@ -101,6 +101,58 @@ func TestStuckTerminateReaper(t *testing.T) {
 		assert.True(t, ok, "the instance must stay in the running map")
 	})
 
+	t.Run("force-completes a VM whose ShuttingDownAt was only stamped by the persistence-failure path", func(t *testing.T) {
+		// This is the case the backstop existed to cover: on a full disk the
+		// state write fails, but transitionWithPrecheck must still stamp
+		// ShuttingDownAt so this VM is not skipped forever.
+		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+		cleaner := &recordingInstanceCleaner{}
+		store := newFakeStateStore()
+		persistErr := errors.New("no space left on device")
+		var callCount int
+		var m *Manager
+		m = NewManagerWithDeps(Deps{
+			NodeID:          "test-node",
+			StateStore:      store,
+			InstanceCleaner: cleaner,
+			// Only the first call (the shutting-down transition below) fails,
+			// modelling the disk being full at that moment; the reaper's own
+			// later transition to terminated succeeds normally.
+			TransitionState: func(v *VM, target InstanceState) error {
+				m.Inspect(v, func(vv *VM) { vv.Status = target })
+				callCount++
+				if callCount == 1 {
+					return persistErr
+				}
+				return nil
+			},
+		})
+
+		const id = "i-wedged-persist-fail"
+		instance := &VM{ID: id, Status: StateRunning}
+		m.Insert(instance)
+
+		err := m.transitionWithPrecheck(instance, StateShuttingDown)
+		require.ErrorIs(t, err, persistErr, "the persistence error must still reach the caller")
+		require.False(t, instance.ShuttingDownAt.IsZero(),
+			"the failure path must stamp ShuttingDownAt for the reaper to ever see this instance")
+
+		// Back-date the stamp instead of sleeping so the reaper sees a
+		// timed-out VM without a real wait.
+		m.Inspect(instance, func(v *VM) {
+			v.ShuttingDownAt = time.Now().Add(-(stuckTerminateTimeout + time.Minute))
+		})
+
+		reaper := m.NewStuckTerminateReaper()
+		reaped, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, 1, reaped,
+			"a VM stamped only via the persistence-failure path must still be force-completed once past the timeout")
+
+		_, ok := m.Get(id)
+		assert.False(t, ok, "the finalized instance must leave the local running map")
+	})
+
 	t.Run("a shutting-down instance with no timestamp is never force-completed", func(t *testing.T) {
 		cleaner := &recordingInstanceCleaner{}
 		reaper, _ := newStuckTerminateReaper(t, cleaner)

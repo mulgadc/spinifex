@@ -52,7 +52,14 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), gw.NATSConn, accountID, body)
+	// Mirrors gateway/ec2.go's RunInstances/AssociateIamInstanceProfile closures:
+	// enforce iam:PassRole against the caller's identity on this request, for
+	// whichever role ARN the action later resolves.
+	passRoleCheck := func(roleARN string) error {
+		return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+	}
+
+	output, err := handler(r.Context(), gw.NATSConn, accountID, body, passRoleCheck)
 	if err != nil {
 		return err
 	}

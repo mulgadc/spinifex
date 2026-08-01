@@ -1641,6 +1641,46 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
 }
 
+// TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDeleted
+// mirrors the Boot-volume case above for a non-Boot, DeleteOnTermination=false
+// data volume: terminate must still detach it (AWS semantics: it survives as
+// available, it just isn't deleted). Unlike a Boot volume, a non-Boot volume
+// was previously assumed to already be detached by shutdownAndUnmount's
+// Unmount, but Unmount only clears the attachment when its unmount seal
+// succeeds and is skipped entirely on the stuck-terminate force-complete
+// path, so that assumption left it stranded attached.
+func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDeleted(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	volumeID := "vol-data-nondot-attached"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "in-use",
+		AttachedInstance: "i-test-data-detach", // stale: Unmount's seal failed or never ran
+	})
+
+	instance := &vm.VM{
+		ID:        "i-test-data-detach",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: false, DeleteOnTermination: false},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	err := cleaner.DeleteVolumes(instance)
+	require.NoError(t, err)
+
+	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
+	assert.Equal(t, "available", cfg.VolumeMetadata.State)
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
+}
+
 // TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
 // go-forward self-heal: a stopped-terminate that stamped
 // Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
@@ -1713,6 +1753,121 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	require.Len(t, remaining, 1, "still within the visibility window: not purged yet")
 	assert.Equal(t, string(vm.TeardownDone), remaining[0].Teardown[vm.TeardownVolumes],
 		"a retry that now succeeds must flip the mark from failed to done")
+}
+
+// TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach mirrors the
+// self-heal test above for a non-Boot, DeleteOnTermination=false volume: a
+// terminate that stamped Teardown[volumes]=failed on a transient detach
+// error is retried by TerminatedTeardownReaper.Sweep through the real
+// instanceCleanerAdapter. The retry must clear the stale attachment so the
+// volume converges to available/detached instead of staying stranded
+// in-use with no automatic path back — the "no both-calls-fail" recovery
+// requirement.
+func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	fakeStore := newFakeStateStore()
+	daemon.stateStore = fakeStore
+
+	volumeID := "vol-data-self-heal"
+	instanceID := "i-self-heal-detach"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "in-use",
+		AttachedInstance: instanceID, // stale, left by the earlier failed terminate
+	})
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		AccountID:    testAccountID,
+		Status:       vm.StateTerminated,
+		LastNode:     daemon.node,
+		TerminatedAt: time.Now(), // inside the visibility window: Sweep must not purge yet
+		Teardown: map[string]string{
+			vm.TeardownVolumes: string(vm.TeardownFailed),
+		},
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: false, DeleteOnTermination: false},
+			},
+		},
+	}
+	require.NoError(t, fakeStore.WriteTerminatedInstance(instance.ID, instance))
+
+	reaper := vm.NewManagerWithDeps(vm.Deps{
+		NodeID:          daemon.node,
+		StateStore:      fakeStore,
+		InstanceCleaner: newInstanceCleanerAdapter(daemon),
+	}).NewTerminatedTeardownReaper()
+
+	_, err := reaper.Sweep(context.Background())
+	require.NoError(t, err)
+
+	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	require.NoError(t, err, "the volume must survive: DeleteOnTermination=false")
+	assert.Equal(t, "available", cfg.VolumeMetadata.State)
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "the retry must clear the stale attachment")
+
+	remaining, err := fakeStore.ListTerminatedInstances()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "still within the visibility window: not purged yet")
+	assert.Equal(t, string(vm.TeardownDone), remaining[0].Teardown[vm.TeardownVolumes],
+		"a retry that now succeeds must flip the mark from failed to done")
+}
+
+// TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount proves the
+// stuck-terminate force-complete path (the second live-reproduced case)
+// detaches a non-Boot, DeleteOnTermination=false volume even though
+// shutdownAndUnmount's Unmount never ran: forceFinalizeStuckTerminate kills
+// the wedged QEMU and calls the cleaner directly, skipping Unmount entirely.
+// Before the fix, DeleteVolumes relied on Unmount to have already cleared a
+// non-Boot volume's attachment, so this path left it attached and, once the
+// instance record was gone, unrecoverable via either detach-volume or
+// delete-volume.
+func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	const instanceID = "i-wedged-terminate"
+	volumeID := "vol-data-wedged"
+	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:         volumeID,
+		TenantID:         testAccountID,
+		SizeGiB:          10,
+		State:            "in-use",
+		AttachedInstance: instanceID, // never cleared: Unmount never ran on this path
+	})
+
+	fakeStore := newFakeStateStore()
+	mgr := vm.NewManagerWithDeps(vm.Deps{
+		NodeID:          daemon.node,
+		StateStore:      fakeStore,
+		InstanceCleaner: newInstanceCleanerAdapter(daemon),
+	})
+
+	mgr.InsertIfAbsent(&vm.VM{
+		ID:             instanceID,
+		AccountID:      testAccountID,
+		Status:         vm.StateShuttingDown,
+		ShuttingDownAt: time.Now().Add(-15 * time.Minute), // past the stuck-terminate backstop timeout
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: volumeID, Boot: false, DeleteOnTermination: false},
+			},
+		},
+	})
+
+	reaped, err := mgr.NewStuckTerminateReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped, "the wedged terminate must be force-completed")
+
+	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "available", cfg.VolumeMetadata.State,
+		"the force-complete path must still detach a non-Boot DeleteOnTermination=false volume")
+	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance)
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.

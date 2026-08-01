@@ -7,6 +7,9 @@ Before=ssh.service
 Type=oneshot
 ExecStart=/usr/bin/ssh-keygen -A
 RemainAfterExit=yes
+# No ExecStop: the keygen process has already exited by the time this unit
+# is stopped, so there is nothing to signal.
+TimeoutStopSec=5
 
 [Install]
 WantedBy=multi-user.target

@@ -12,6 +12,10 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service nats start
 Restart=on-failure
 RestartSec=5
+# nats-server installs its own SIGTERM handler (JetStream store shutdown, raft
+# stepdown, client drain) with no internal deadline; every dependent service
+# stops before nats does, so size this for nats's own graceful-stop needs.
+TimeoutStopSec=20
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/nats/nats.conf
 

@@ -16,6 +16,9 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service qmp-collector start
 Restart=on-failure
 RestartSec=5
+# Poll loop selects on ctx.Done() directly and closes NATS locally; shutdown
+# is near-instant, so this only bounds an unexpectedly wedged process.
+TimeoutStopSec=10
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 # Same runtime dir as the daemon: telemetry sockets + metadata live there

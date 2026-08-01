@@ -262,6 +262,30 @@ func TestRG11_LeanUnits(t *testing.T) {
 	}
 }
 
+// TestAllServiceUnitsDeclareTimeoutStopSec asserts every .service unit pins an
+// explicit TimeoutStopSec, so a newly added unit that forgets one falls back to
+// systemd's blanket 90s default instead of a value chosen for that service's
+// own SIGTERM handling.
+func TestAllServiceUnitsDeclareTimeoutStopSec(t *testing.T) {
+	dir := unitsDir(t)
+	for _, name := range unitFiles(t, dir) {
+		if !strings.HasSuffix(name, ".service") {
+			continue
+		}
+		u := readUnit(t, dir, name)
+		found := false
+		for l := range strings.SplitSeq(u, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(l), "TimeoutStopSec=") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s must declare an explicit TimeoutStopSec=", name)
+		}
+	}
+}
+
 // TestApplicationUnitsExportTelemetry asserts every unit that runs an spx
 // application service sources the telemetry drop-in. That file carries
 // OTEL_EXPORTER_OTLP_ENDPOINT, MULGA_ENV and MULGA_SOURCE, so a unit missing it

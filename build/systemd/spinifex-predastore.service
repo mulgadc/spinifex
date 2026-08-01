@@ -17,6 +17,10 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/var/lib/spinifex/predastore-start.sh
 Restart=on-failure
 RestartSec=5
+# Matches viperblock's drain budget: viperblock's WAL flush writes into
+# predastore, and After= already stops viperblock first, but this is the
+# backstop if that ordering is ever bypassed (direct stop, future edit).
+TimeoutStopSec=30
 OOMScoreAdjust=-500
 Environment=SPINIFEX_PREDASTORE_CONFIG_PATH=/etc/spinifex/predastore/predastore.toml
 Environment=SPINIFEX_PREDASTORE_BASE_PATH=/var/lib/spinifex/predastore/

@@ -9,6 +9,9 @@ Type=oneshot
 # remedy is `systemctl try-restart spinifex-nats` when JetStream is disabled while
 # the process stays alive (which Restart=on-failure cannot catch).
 ExecStart=/var/lib/spinifex/nats-js-watchdog.sh
+# Sized for the probe loop's own worst case (3 samples x 5s curl + 2 gaps x 2s
+# ~= 19s): a stop mid-cycle lets the script finish rather than cutting it off.
+TimeoutStopSec=20
 
 # Hardening (kept compatible with talking to PID1 over /run/systemd).
 NoNewPrivileges=yes

@@ -347,6 +347,42 @@ func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, ro
 	return providerArn, roleArn, roleName
 }
 
+// ensureNodeRole creates the cluster's worker-node IAM role (standard
+// EC2-service trust policy — real EKS has the same prerequisite: the customer
+// creates the node instance role before CreateNodegroup). Both runIRSAPod and
+// runEBSCSIVolume call this independently rather than one leaking the role for
+// the other to pick up by naming convention: CreateNodegroup's worker launch
+// attaches the role to a same-named instance profile (ensureNodeInstanceProfile
+// in nodegroup.go), so DeleteRole fails while that attachment stands. The
+// cleanup here detaches it first and asserts the delete instead of discarding
+// its error, so a real leak fails the test instead of leaving the role behind
+// for the next subtest to silently depend on.
+func ensureNodeRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture) (roleArn, roleName string) {
+	t.Helper()
+	roleName = fx.ClusterName + "-node"
+	const ec2TrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	out, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(ec2TrustPolicy),
+		Description:              aws.String("E2E node instance role"),
+	})
+	require.NoError(t, err, "create-node-role")
+	roleArn = aws.StringValue(out.Role.Arn)
+	t.Cleanup(func() {
+		_, err := c.IAM.RemoveRoleFromInstanceProfile(&iam.RemoveRoleFromInstanceProfileInput{
+			InstanceProfileName: aws.String(roleName),
+			RoleName:            aws.String(roleName),
+		})
+		if err != nil && !harness.ErrorCodeIs(err, iam.ErrCodeNoSuchEntityException) {
+			t.Errorf("remove-role-from-instance-profile %s: %v", roleName, err)
+		}
+		if _, err := c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)}); err != nil {
+			t.Errorf("delete-node-role %s: %v", roleName, err)
+		}
+	})
+	return roleArn, roleName
+}
+
 // runIRSAPod exercises the in-cluster IRSA path a real workload depends on:
 // spinifex ships no pod-identity webhook, so a pod must wire the projected SA
 // token + AWS_* env explicitly (mirroring
@@ -416,21 +452,10 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	// declared NodeRole (ensureNodeInstanceProfile in nodegroup.go), which
 	// requires the role to actually exist in IAM — real EKS has the same
 	// prerequisite (the customer creates the node instance role before
-	// CreateNodegroup). Standard EC2-service trust policy, no permission
-	// policy needed: the pod pulls from public.ecr.aws directly, never
-	// touching the node's own instance-profile credentials.
-	nodeRoleName := fx.ClusterName + "-node"
-	const ec2TrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
-	nodeRoleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
-		RoleName:                 aws.String(nodeRoleName),
-		AssumeRolePolicyDocument: aws.String(ec2TrustPolicy),
-		Description:              aws.String("E2E IRSA pod nodegroup worker role"),
-	})
-	require.NoError(t, err, "create-node-role")
-	nodeRoleArn := aws.StringValue(nodeRoleOut.Role.Arn)
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(nodeRoleName)})
-	})
+	// CreateNodegroup). No permission policy needed: the pod pulls from
+	// public.ecr.aws directly, never touching the node's own instance-profile
+	// credentials.
+	nodeRoleArn, _ := ensureNodeRole(t, c, fx)
 
 	const nodegroup = "irsa-pod-e2e-ng"
 	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
@@ -675,7 +700,10 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 	// workloads need a customer worker node. Create a 1-node nodegroup; its
 	// worker is a customer-space instance, so the customer-owned volume can
 	// attach to it. DescribeNodegroup reports ACTIVE only once the worker has
-	// registered Ready.
+	// registered Ready. The node role is created here rather than assumed from
+	// another subtest — CreateNodegroup requires it to already exist in IAM.
+	nodeRoleArn, _ := ensureNodeRole(t, c, fx)
+
 	const nodegroup = "ebs-csi-e2e-ng"
 	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
 	// e2e:allow-create — the worker nodegroup is the subject under test (customer-space node for cross-space attach).
@@ -683,7 +711,7 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 		ClusterName:   aws.String(fx.ClusterName),
 		NodegroupName: aws.String(nodegroup),
 		Subnets:       aws.StringSlice([]string{fx.SubnetID}),
-		NodeRole:      aws.String(fmt.Sprintf("arn:aws:iam::%s:role/%s-node", fx.AccountID, fx.ClusterName)),
+		NodeRole:      aws.String(nodeRoleArn),
 		ScalingConfig: &eks.NodegroupScalingConfig{
 			MinSize:     aws.Int64(1),
 			MaxSize:     aws.Int64(1),

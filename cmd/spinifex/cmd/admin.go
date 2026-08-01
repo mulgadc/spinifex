@@ -903,8 +903,10 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Removed AMI %s (freed %s across %d objects).\n",
-		imageID, utils.HumanBytes(utils.SafeInt64ToUint64(res.BytesFreed)), res.ObjectsDeleted)
+	// BytesDeleted is logical: predastore reclaims the underlying disk space
+	// asynchronously via background compaction, not at delete time.
+	fmt.Printf("✅ Removed AMI %s (%d objects, %s marked for deletion; disk space is reclaimed by background compaction).\n",
+		imageID, res.ObjectsDeleted, utils.HumanBytes(utils.SafeInt64ToUint64(res.BytesDeleted)))
 }
 
 func printDependents(w io.Writer, d admin.Dependents) {

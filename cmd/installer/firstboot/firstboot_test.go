@@ -114,6 +114,25 @@ func readScript(t *testing.T, root string) string {
 	return string(b)
 }
 
+// TestWriteScriptEnablesNatsWatchdogTimer pins that firstboot activates the
+// JetStream ENOSPC-latch watchdog timer. The unit file's WantedBy=timers.target
+// only takes effect once enabled — without this line the watchdog is dropped
+// onto disk but never runs, and a full disk needs a manual nats restart forever.
+func TestWriteScriptEnablesNatsWatchdogTimer(t *testing.T) {
+	root := t.TempDir()
+	makeRootDirs(t, root)
+
+	cfg := Config{Hostname: "test-node", ClusterRole: "init"}
+	if err := Write(root, cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	content := readScript(t, root)
+
+	if !strings.Contains(content, "systemctl enable --now spinifex-nats-watchdog.timer") {
+		t.Error("firstboot script must enable --now spinifex-nats-watchdog.timer")
+	}
+}
+
 func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)

@@ -100,6 +100,8 @@ fi
 # (K3S_URL/K3S_TOKEN live there).
 ROLE=""
 if [ -f "${ENVFILE}" ]; then
+    # ENVFILE is a runtime-resolved, test-overridable path.
+    # shellcheck disable=SC1090
     ROLE=$(. "${ENVFILE}"; printf '%s' "${SPINIFEX_K3S_ROLE:-}")
 fi
 if [ -z "${ROLE}" ] && [ -f "${AGENT_ENVFILE}" ]; then

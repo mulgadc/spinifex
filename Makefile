@@ -190,6 +190,20 @@ test-actions:
 	@echo -e "\n....Running action tests...."
 	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
 
+# Shell suites + shellcheck for scripts/images/ helpers baked into system
+# images. Kept out of `preflight` (a dedicated CI job gates it on
+# scripts/images/** changes instead) so image-asset churn doesn't run on
+# every Go contributor's commit.
+test-images:
+	@echo -e "\n....Running scripts/images/**/*_test.sh...."
+	@for t in $$(find scripts/images -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		bash "$$t" || exit 1; \
+	done
+	@echo -e "\n....Running shellcheck over scripts/images/**/*.sh...."
+	shellcheck -S warning $$(find scripts/images -name '*.sh' | sort)
+	@echo "  test-images ok"
+
 # Check that new/changed code meets coverage threshold (runs tests first)
 diff-coverage: test-cover
 	@QUIET=$(QUIET) scripts/diff-coverage.sh $(COVERPROFILE)
@@ -319,7 +333,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

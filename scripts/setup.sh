@@ -398,14 +398,16 @@ create_directories() {
     $SUDO chmod 0750 /var/lib/spinifex
     $SUDO chown "root:$SPINIFEX_GROUP" /var/lib/spinifex
 
-    # Symlink so services that expect BaseDir/config/ can find /etc/spinifex/
-    if [ ! -e /var/lib/spinifex/config ]; then
-        $SUDO ln -s /etc/spinifex /var/lib/spinifex/config
+    # Symlink so services that expect BaseDir/config/ can find /etc/spinifex/.
+    # -n so a re-run replaces the link rather than creating one inside the
+    # directory it already points at.
+    if $SUDO test ! -e /var/lib/spinifex/config; then
+        $SUDO ln -sfn /etc/spinifex /var/lib/spinifex/config
     fi
 
     # Symlink so services that write logs to BaseDir/logs/ use /var/log/spinifex/
-    if [ ! -e /var/lib/spinifex/logs ]; then
-        $SUDO ln -s /var/log/spinifex /var/lib/spinifex/logs
+    if $SUDO test ! -e /var/lib/spinifex/logs; then
+        $SUDO ln -sfn /var/log/spinifex /var/lib/spinifex/logs
     fi
 
     $SUDO mkdir -p /var/log/spinifex
@@ -486,9 +488,14 @@ TMPEOF
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /var/lib/spinifex/awsgw
     $SUDO chmod 0700 /var/lib/spinifex/awsgw
 
-    # Symlink so awsgw's {BaseDir}/config/ paths resolve to /etc/spinifex/
-    if [ ! -e /var/lib/spinifex/awsgw/config ]; then
-        $SUDO ln -s /etc/spinifex /var/lib/spinifex/awsgw/config
+    # Symlink so awsgw's {BaseDir}/config/ paths resolve to /etc/spinifex/.
+    # The test runs under $SUDO because the parent is 0700 spinifex-gw: an
+    # unprivileged -e cannot stat through it and always reports "missing", so
+    # every re-run reached the ln below. That ln then resolved through the
+    # existing link and tried to create /etc/spinifex/spinifex, which
+    # CreateServiceDirectories already owns — failing the whole install.
+    if $SUDO test ! -e /var/lib/spinifex/awsgw/config; then
+        $SUDO ln -sfn /etc/spinifex /var/lib/spinifex/awsgw/config
     fi
 
     # Service helper scripts (root-owned, group-executable by all service users)

@@ -15,13 +15,14 @@ RestartSec=5
 OOMScoreAdjust=-500
 Environment=SPINIFEX_UI_TLS_CERT=/etc/spinifex/server.pem
 Environment=SPINIFEX_UI_TLS_KEY=/etc/spinifex/server.key
+Environment=SPINIFEX_UI_BASE_DIR=/var/lib/spinifex/spinifex-ui/
 
 # Filesystem access
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateDevices=yes
 ReadOnlyPaths=/etc/spinifex/server.pem /etc/spinifex/server.key
-ReadWritePaths=/var/log/spinifex
+ReadWritePaths=/var/lib/spinifex/spinifex-ui /var/log/spinifex
 
 # Hardening
 ProtectHome=yes

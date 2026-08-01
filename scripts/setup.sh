@@ -478,6 +478,10 @@ TMPEOF
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /var/lib/spinifex/awsgw
     $SUDO chmod 0700 /var/lib/spinifex/awsgw
 
+    $SUDO mkdir -p /var/lib/spinifex/spinifex-ui
+    $SUDO chown "spinifex-ui:$SPINIFEX_GROUP" /var/lib/spinifex/spinifex-ui
+    $SUDO chmod 0700 /var/lib/spinifex/spinifex-ui
+
     # Symlink so awsgw's {BaseDir}/config/ paths resolve to /etc/spinifex/
     if [ ! -e /var/lib/spinifex/awsgw/config ]; then
         $SUDO ln -s /etc/spinifex /var/lib/spinifex/awsgw/config

@@ -238,29 +238,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
-	// Release the private IP back to the IPAM pool
-	if err := s.ipam.ReleaseIP(ctx, record.SubnetId, record.PrivateIpAddress); err != nil {
-		slog.WarnContext(ctx, "Failed to release IP during ENI delete", "eni", eniId, "ip", record.PrivateIpAddress, "err", err)
-	}
-
-	// Release auto-assigned public IP (if any) and remove NAT rule.
-	// Skip if the public IP belongs to an EIP — those are managed independently.
-	if record.PublicIpAddress != "" && s.externalIPAM != nil {
-		owned, err := s.isEIPOwned(ctx, eniId, accountID)
-		if err != nil {
-			slog.ErrorContext(ctx, "DeleteNetworkInterface: failed to check EIP ownership, skipping public IP release to avoid data loss", "eniId", eniId, "err", err)
-		} else if owned {
-			slog.InfoContext(ctx, "DeleteNetworkInterface: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
-		} else {
-			portName := topology.Port(eniId)
-			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
-			if err := s.externalIPAM.ReleaseIP(ctx, record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
-				slog.WarnContext(ctx, "Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
-			} else {
-				slog.InfoContext(ctx, "Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)
-			}
-		}
-	}
+	s.releaseENISideEffects(ctx, eniId, accountID, &record)
 
 	if err := s.eniKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -274,6 +252,119 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	s.publishPortEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds)
 
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+// releaseENISideEffects releases the IPAM allocation and any auto-assigned
+// public IP that belonged to record, ahead of the KV delete that finalizes
+// it. Best-effort: a release failure is logged, not returned — a stuck IP
+// release must never block the ENI delete it precedes.
+func (s *VPCServiceImpl) releaseENISideEffects(ctx context.Context, eniId, accountID string, record *ENIRecord) {
+	if err := s.ipam.ReleaseIP(ctx, record.SubnetId, record.PrivateIpAddress); err != nil {
+		slog.WarnContext(ctx, "Failed to release IP during ENI delete", "eni", eniId, "ip", record.PrivateIpAddress, "err", err)
+	}
+
+	// Release auto-assigned public IP (if any) and remove NAT rule.
+	// Skip if the public IP belongs to an EIP — those are managed independently.
+	if record.PublicIpAddress != "" && s.externalIPAM != nil {
+		owned, err := s.isEIPOwned(ctx, eniId, accountID)
+		if err != nil {
+			slog.ErrorContext(ctx, "releaseENISideEffects: failed to check EIP ownership, skipping public IP release to avoid data loss", "eniId", eniId, "err", err)
+		} else if owned {
+			slog.InfoContext(ctx, "releaseENISideEffects: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
+		} else {
+			portName := topology.Port(eniId)
+			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
+			if err := s.externalIPAM.ReleaseIP(ctx, record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
+				slog.WarnContext(ctx, "Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
+			} else {
+				slog.InfoContext(ctx, "Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)
+			}
+		}
+	}
+}
+
+// DetachAndDeleteENI detaches eniID and deletes it under a single KV read,
+// carrying the revision from the detach into the delete via
+// jetstream.LastRevision so a lagging replica's re-read can never decide the
+// outcome. eniKV direct-gets may be served by any replica at R3 (nats.go
+// hardcodes AllowDirect on KV buckets); reading twice — once for detach, once
+// for delete, as the previous detach-then-delete call sequence did — left a
+// window where the second read raced the first write. force skips the
+// in-use guard for owner-driven teardown (an LB or instance deleting its own
+// ENI). A revision conflict on either write means the local view was stale,
+// so the whole flow (read, detach, delete) retries from a fresh read, bounded
+// at 3 attempts.
+//
+// deleted reports whether this call actually removed the ENI, so callers can
+// distinguish a real delete from an already-absent one instead of logging a
+// deletion that did not happen.
+func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniID string, force bool) (deleted bool, err error) {
+	const maxAttempts = 3
+	key := utils.AccountKey(accountID, eniID)
+	var lastErr error
+
+	for range maxAttempts {
+		entry, getErr := s.eniKV.Get(ctx, key)
+		if getErr != nil {
+			if errors.Is(getErr, jetstream.ErrKeyNotFound) {
+				// Force (owner-driven) teardown tolerates an already-gone ENI,
+				// matching ForceDeleteInstanceENI's convergence contract.
+				if force {
+					return false, nil
+				}
+				return false, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+			}
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+
+		if !force && eniIsLiveAttachment(&record) {
+			return false, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		}
+
+		record.Status = "available"
+		record.AttachmentId = ""
+		record.InstanceId = ""
+		record.DeviceIndex = 0
+
+		data, marshalErr := json.Marshal(record)
+		if marshalErr != nil {
+			return false, fmt.Errorf("marshal ENI record: %w", marshalErr)
+		}
+		revision, updateErr := s.eniKV.Update(ctx, key, data, entry.Revision())
+		if updateErr != nil {
+			// Stale read: the key moved under us between Get and Update.
+			// Retry the whole flow from a fresh read rather than trusting
+			// anything else about this attempt.
+			lastErr = updateErr
+			continue
+		}
+
+		if delErr := s.eniKV.Delete(ctx, key, jetstream.LastRevision(revision)); delErr != nil {
+			if errors.Is(delErr, jetstream.ErrKeyNotFound) {
+				return false, nil // a concurrent delete already won
+			}
+			lastErr = delErr
+			continue // revision moved again — retry the whole flow
+		}
+
+		// After the delete, never before it: a failed delete retries the whole
+		// flow, and releasing twice can hand back an IP already reallocated to
+		// another ENI.
+		s.releaseENISideEffects(ctx, eniID, accountID, &record)
+
+		slog.InfoContext(ctx, "DetachAndDeleteENI completed", "eniId", eniID, "accountID", accountID, "force", force)
+		s.publishPortEvent("vpc.delete-port", eniID, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds)
+		return true, nil
+	}
+
+	// Carry the last write error: exhaustion from a genuine NATS fault must not
+	// read as ordinary contention.
+	return false, fmt.Errorf("DetachAndDeleteENI: exhausted %d CAS attempts for %s: %w", maxAttempts, eniID, lastErr)
 }
 
 // ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups,

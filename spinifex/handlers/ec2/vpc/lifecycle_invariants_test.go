@@ -11,6 +11,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestRLC5_NoOrphanedRouteTableAfterSubnetThenVpcTeardown enforces Common
+// Resource Lifecycle Contract rule #5 (no-orphan completeness) for the one
+// teardown ordering that used to defeat it: delete the subnet, then the VPC.
+// Deleting the route table before the subnet never exercises the leak, which
+// is why unit tests on each operation individually all passed while it
+// existed — this asserts the end state across the ordering that matters.
+func TestRLC5_NoOrphanedRouteTableAfterSubnetThenVpcTeardown(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.70.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.70.1.0/24")
+	rtbID, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcID, subnetID)
+
+	_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.NoError(t, err, "DeleteSubnet must succeed and clear the association naming it")
+
+	// The non-main route table still exists, so DeleteVpc must reject rather
+	// than deleting the VPC out from under it.
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Errorf(t, err, "rule #5: DeleteVpc must not remove the VPC while a non-main route table survives")
+	assert.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
+
+	// Deleting the now-unassociated route table, then the VPC, must leave
+	// nothing referencing a nonexistent VPC — the invariant this whole
+	// regression exists to protect.
+	require.NoError(t, svc.rtbKV.Delete(t.Context(), testAccountID+"."+rtbID))
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.rtbKV.Get(t.Context(), testAccountID+"."+rtbID)
+	assert.Error(t, err, "rule #5: no route table may survive referencing a VPC that no longer exists")
+}
+
 // TestRLC1_VPCDeleteNotFoundOnAbsent enforces the Common Resource Lifecycle
 // Contract rule #1 (AWS-faithful delete, per-service): the EC2/VPC delete API
 // returns the service's canonical InvalidX.NotFound for an absent resource —

@@ -403,6 +403,46 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		defaultSGId = sg.GroupId
 	}
 
+	// Reject if any non-main route table remains in this VPC; DeleteVpc only
+	// auto-reaps the main route table (matches AWS DeleteVpc semantics).
+	rtbKeys, err := s.rtbKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range rtbKeys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.rtbKV.Get(ctx, k)
+		if err != nil {
+			// ErrKeyNotFound means the route table was deleted between Keys()
+			// and Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc orphan a
+			// non-main route table it can't see.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.WarnContext(ctx, "DeleteVpc: route table read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		var rtb struct {
+			RouteTableId string `json:"route_table_id"`
+			VpcId        string `json:"vpc_id"`
+			IsMain       bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rtb); err != nil {
+			slog.WarnContext(ctx, "DeleteVpc: route table unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if rtb.VpcId != vpcID {
+			continue
+		}
+		if !rtb.IsMain {
+			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+				"the VPC has a dependent route table %s that must be deleted first", rtb.RouteTableId)
+		}
+	}
+
 	// Cascade-delete the default SG before removing the VPC record so a vpcd
 	// failure surfaces to the caller and leaves both records intact for retry.
 	if defaultSGId != "" {
@@ -675,6 +715,15 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 		return nil, err
 	}
 
+	// Clear route table associations naming this subnet before the subnet
+	// record is gone, so DeleteRouteTable's association check can never be
+	// pinned on a subnet nothing can ever delete again. Runs before the
+	// subnet delete so a mid-way failure leaves the subnet present and the
+	// whole operation retryable.
+	if err := s.clearRouteTableAssociationsForSubnet(ctx, accountID, subnetID); err != nil {
+		return nil, err
+	}
+
 	if err := s.subnetKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -718,6 +767,93 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
 			return errors.New(awserrors.ErrorDependencyViolation)
 		}
+	}
+	return nil
+}
+
+// clearRouteTableAssociationsForSubnet removes every route table association
+// naming subnetID. Without this, DeleteRouteTable's association check blocks
+// on a subnet ID that can never be deleted again once the subnet itself is
+// gone, permanently pinning the route table. Fail-closed on a KV read error,
+// matching checkSubnetResidents.
+func (s *VPCServiceImpl) clearRouteTableAssociationsForSubnet(ctx context.Context, accountID, subnetID string) error {
+	// routetable imports vpc, so routetable.RouteTableRecord cannot be named
+	// here. Rather than mirror the whole record and silently drop any field the
+	// mirror lacks on write-back, decode to raw fields and rewrite only
+	// "associations".
+	type associationRecord struct {
+		AssociationId string `json:"association_id"`
+		SubnetId      string `json:"subnet_id,omitempty"`
+		Main          bool   `json:"main"`
+	}
+
+	keys, err := s.rtbKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		slog.ErrorContext(ctx, "DeleteSubnet: route table scan failed, blocking delete to avoid stranding an association", "subnetId", subnetID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	prefix := accountID + "."
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.rtbKV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.ErrorContext(ctx, "DeleteSubnet: route table read failed, blocking delete to avoid stranding an association", "key", key, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+
+		var record map[string]json.RawMessage
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.ErrorContext(ctx, "DeleteSubnet: route table unmarshal failed", "key", key, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		var associations []associationRecord
+		if raw, ok := record["associations"]; ok {
+			if err := json.Unmarshal(raw, &associations); err != nil {
+				slog.ErrorContext(ctx, "DeleteSubnet: route table associations unmarshal failed", "key", key, "err", err)
+				return errors.New(awserrors.ErrorServerInternal)
+			}
+		}
+
+		kept := associations[:0]
+		changed := false
+		for _, assoc := range associations {
+			if assoc.SubnetId == subnetID {
+				changed = true
+				continue
+			}
+			kept = append(kept, assoc)
+		}
+		if !changed {
+			continue
+		}
+
+		// Route table ID is for logging only, so a missing one must not fail the clear.
+		var routeTableID string
+		_ = json.Unmarshal(record["route_table_id"], &routeTableID)
+
+		updated, err := json.Marshal(kept)
+		if err != nil {
+			return fmt.Errorf("marshal associations for route table %s: %w", routeTableID, err)
+		}
+		record["associations"] = updated
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal route table %s: %w", routeTableID, err)
+		}
+		if _, err := s.rtbKV.Update(ctx, key, data, entry.Revision()); err != nil {
+			slog.ErrorContext(ctx, "DeleteSubnet: route table association clear failed", "routeTableId", routeTableID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.InfoContext(ctx, "DeleteSubnet: cleared route table association", "routeTableId", routeTableID, "subnetId", subnetID)
 	}
 	return nil
 }

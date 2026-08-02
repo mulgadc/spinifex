@@ -1797,17 +1797,28 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 		}()
 	}
 
-	// Delete system-managed ENIs. Detach first to clear in-use status.
+	// Delete system-managed ENIs under one detach+delete flow — the LB is the
+	// ENI's owner tearing it down, so force=true is correct (same reason it's
+	// correct for instance terminate).
 	if s.VPCService != nil {
+		var survivingENIs []string
 		for _, eniID := range lb.ENIs {
-			if detachErr := s.VPCService.DetachENI(ctx, accountID, eniID); detachErr != nil {
-				slog.WarnContext(ctx, "Failed to detach ALB ENI during cleanup", "eniId", eniID, "err", detachErr)
+			if _, eniErr := s.VPCService.DetachAndDeleteENI(ctx, accountID, eniID, true); eniErr != nil {
+				slog.ErrorContext(ctx, "Failed to detach+delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
+				survivingENIs = append(survivingENIs, eniID)
 			}
-			if _, eniErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-				NetworkInterfaceId: aws.String(eniID),
-			}, accountID); eniErr != nil {
-				slog.WarnContext(ctx, "Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
+		}
+		if len(survivingENIs) > 0 {
+			// Do not drop the LB record while its ENIs survive: it is the only
+			// thing that still names them, and losing it makes the leak
+			// unrecoverable. Keep it with the surviving set so a retried
+			// delete (or the orphan reaper) can still find and finish them.
+			lb.ENIs = survivingENIs
+			if putErr := s.store.PutLoadBalancer(ctx, lb); putErr != nil {
+				slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to persist surviving ENIs", "lbId", lb.LoadBalancerID, "err", putErr)
 			}
+			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+				"load balancer ENIs could not be deleted: %v", survivingENIs)
 		}
 		// The managed NLB SG can only be removed once its ENIs are gone.
 		s.deleteNLBManagedSG(ctx, lb.NLBManagedSGID, accountID)

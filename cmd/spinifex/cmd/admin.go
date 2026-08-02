@@ -1314,7 +1314,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Create config directory
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+	if err := EnsureConfigDir(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
 		os.Exit(1)
 	}
@@ -2174,7 +2174,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		configDir = DefaultConfigDir()
 	}
 
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+	if err := EnsureConfigDir(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
 		os.Exit(1)
 	}

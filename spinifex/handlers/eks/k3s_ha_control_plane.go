@@ -38,7 +38,10 @@ var _ controlPlanePlacer = (handlers_ec2_placementgroup.PlacementGroupService)(n
 
 // HostScheduler answers capacity + placement fan-out questions for HA CP placement.
 type HostScheduler interface {
-	// SchedulableHosts returns node IDs that can fit at least one VM of instanceType.
+	// SchedulableHosts returns node IDs that can fit at least one VM of instanceType,
+	// ordered so a prefix spans distinct AZs first (round-robin), then packs
+	// remaining hosts within each AZ. Taking the first N off this list therefore
+	// spreads an N-way reservation across N distinct AZs whenever that many exist.
 	SchedulableHosts(ctx context.Context, instanceType string) []string
 	// InstanceHosts maps each instance ID to its hosting node; absent entries are not yet visible.
 	InstanceHosts(ctx context.Context, instanceIDs []string) map[string]string
@@ -482,7 +485,7 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 		}
 	}
 
-	var hosts []string
+	var hosts []azHost
 	seen := make(map[string]bool)
 	h.fanout(ctx, "spinifex.node.status", func(data []byte) {
 		var st types.NodeStatusResponse
@@ -495,10 +498,48 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 		}
 		if fits {
 			seen[st.Node] = true
-			hosts = append(hosts, st.Node)
+			hosts = append(hosts, azHost{node: st.Node, az: st.AZ})
 		}
 	})
-	return hosts
+	return spreadHostsByAZ(hosts)
+}
+
+// azHost pairs a schedulable node with the AZ its node status reported.
+type azHost struct {
+	node string
+	az   string
+}
+
+// spreadHostsByAZ reorders schedulable hosts so a prefix of the result spans as
+// many distinct AZs as possible: round-robin one host per AZ (in first-seen
+// order), then a second host per AZ, and so on. A spread reservation that takes
+// the first N hosts off this list lands on N distinct AZs whenever N AZs exist;
+// with fewer AZs than requested members, later picks repeat an AZ rather than
+// leaving capacity unused — every eligible host is still returned exactly once.
+func spreadHostsByAZ(hosts []azHost) []string {
+	var azOrder []string
+	byAZ := make(map[string][]string, len(hosts))
+	for _, h := range hosts {
+		if _, ok := byAZ[h.az]; !ok {
+			azOrder = append(azOrder, h.az)
+		}
+		byAZ[h.az] = append(byAZ[h.az], h.node)
+	}
+
+	out := make([]string, 0, len(hosts))
+	for round := 0; len(out) < len(hosts); round++ {
+		added := false
+		for _, az := range azOrder {
+			if round < len(byAZ[az]) {
+				out = append(out, byAZ[az][round])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return out
 }
 
 // nodeFitsCustomerInstance reports whether a node advertises at least one free

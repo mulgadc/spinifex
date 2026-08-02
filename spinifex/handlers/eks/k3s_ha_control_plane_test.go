@@ -65,6 +65,84 @@ func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
 	require.Empty(t, sched.SchedulableHosts(context.Background(), "sys.bogus"))
 }
 
+// TestSpreadHostsByAZ_DistinctAZs covers the common case: with at least as many
+// AZs as hosts, round-robin visits every AZ once before repeating any of them,
+// so a prefix of the result spans distinct AZs.
+func TestSpreadHostsByAZ_DistinctAZs(t *testing.T) {
+	hosts := []azHost{
+		{node: "node-1", az: "az-a"},
+		{node: "node-2", az: "az-b"},
+		{node: "node-3", az: "az-a"},
+		{node: "node-4", az: "az-c"},
+	}
+	out := spreadHostsByAZ(hosts)
+	require.Len(t, out, 4)
+
+	// First 3 picks (one per AZ) must land on 3 distinct AZs.
+	azOf := map[string]string{"node-1": "az-a", "node-2": "az-b", "node-3": "az-a", "node-4": "az-c"}
+	seen := make(map[string]bool)
+	for _, n := range out[:3] {
+		seen[azOf[n]] = true
+	}
+	assert.Len(t, seen, 3, "first 3 hosts should span 3 distinct AZs, got %v", out[:3])
+	// Every host still appears exactly once; nothing is dropped.
+	assert.ElementsMatch(t, []string{"node-1", "node-2", "node-3", "node-4"}, out)
+}
+
+// TestSpreadHostsByAZ_FewerAZsThanHosts documents the degradation behaviour:
+// with only 2 AZs available for a 3-way spread, placement still returns every
+// host (nothing dropped) and the first 2 picks land in distinct AZs — the third
+// necessarily repeats one of them.
+func TestSpreadHostsByAZ_FewerAZsThanHosts(t *testing.T) {
+	hosts := []azHost{
+		{node: "node-1", az: "az-a"},
+		{node: "node-2", az: "az-a"},
+		{node: "node-3", az: "az-b"},
+	}
+	out := spreadHostsByAZ(hosts)
+	require.Len(t, out, 3, "degraded spread must still place every host")
+	assert.ElementsMatch(t, []string{"node-1", "node-2", "node-3"}, out)
+
+	azOf := map[string]string{"node-1": "az-a", "node-2": "az-a", "node-3": "az-b"}
+	assert.NotEqual(t, azOf[out[0]], azOf[out[1]], "first 2 picks should still land in distinct AZs")
+}
+
+// TestSpreadHostsByAZ_UniformAZDegradesToNodeOrder covers real deployments where
+// every node reports the same AZ (or none at all): interleaving collapses to a
+// single bucket, so the original arrival order is preserved and nothing breaks.
+func TestSpreadHostsByAZ_UniformAZDegradesToNodeOrder(t *testing.T) {
+	hosts := []azHost{
+		{node: "node-1", az: "ap-southeast-2a"},
+		{node: "node-2", az: "ap-southeast-2a"},
+		{node: "node-3", az: "ap-southeast-2a"},
+	}
+	assert.Equal(t, []string{"node-1", "node-2", "node-3"}, spreadHostsByAZ(hosts))
+}
+
+// TestNATSHostScheduler_SchedulableHosts_SpreadsByAZ exercises the fan-out path
+// end-to-end: node.status responses carrying distinct AZs must come back
+// ordered so the first haControlPlaneCount hosts span distinct AZs.
+func TestNATSHostScheduler_SchedulableHosts_SpreadsByAZ(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	serveNodeStatus(t, nc, []types.NodeStatusResponse{
+		{Node: "node-1", AZ: "az-a", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
+		{Node: "node-2", AZ: "az-a", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
+		{Node: "node-3", AZ: "az-b", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
+		{Node: "node-4", AZ: "az-c", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
+	})
+	sched := NewNATSHostScheduler(nc)
+
+	hosts := sched.SchedulableHosts(context.Background(), "t3.medium")
+	require.Len(t, hosts, 4)
+
+	azOf := map[string]string{"node-1": "az-a", "node-2": "az-a", "node-3": "az-b", "node-4": "az-c"}
+	seen := make(map[string]bool)
+	for _, n := range hosts[:3] {
+		seen[azOf[n]] = true
+	}
+	assert.Len(t, seen, 3, "first 3 schedulable hosts should span 3 distinct AZs, got %v", hosts[:3])
+}
+
 // --- HA control-plane orchestrator test doubles ---
 
 // fakeHostScheduler fakes the capacity + placement fan-out. SchedulableHosts
@@ -314,6 +392,38 @@ func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"node-a", "node-b", "node-c"}, inst.nodes)
 	assert.Empty(t, inst.terminated)
+}
+
+// TestPlaceControlPlane_SpreadPrefersDistinctAZs runs placeControlPlane against
+// the real NATS-backed HostScheduler (not the fake) with 4 nodes across 3 AZs,
+// and a placer that reserves whatever it's offered first (mirroring
+// ReserveSpreadNodes' order-preserving selection). It demonstrates bead
+// 231.7.4's acceptance criteria: the 3 launched control-plane members land on
+// 3 distinct AZs.
+func TestPlaceControlPlane_SpreadPrefersDistinctAZs(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	serveNodeStatus(t, nc, []types.NodeStatusResponse{
+		{Node: "node-a", AZ: "az-1", TotalVCPU: 32, TotalMemGB: 128},
+		{Node: "node-b", AZ: "az-1", TotalVCPU: 32, TotalMemGB: 128},
+		{Node: "node-c", AZ: "az-2", TotalVCPU: 32, TotalMemGB: 128},
+		{Node: "node-d", AZ: "az-3", TotalVCPU: 32, TotalMemGB: 128},
+	})
+	sched := NewNATSHostScheduler(nc)
+	placer := &fakePlacer{} // reserved unset: defaults to the first MaxCount EligibleNodes, like the real service.
+	vpc := &seqK3sVPC{}
+	inst := &seqK3sInst{}
+	svc := newPlacerService(sched, placer, vpc, inst)
+
+	nodes, _, err := svc.placeControlPlane(context.Background(), testHAAccountID, "alpha", validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, nodes, 3)
+
+	azOf := map[string]string{"node-a": "az-1", "node-b": "az-1", "node-c": "az-2", "node-d": "az-3"}
+	seen := make(map[string]bool)
+	for _, n := range nodeIDs(nodes) {
+		seen[azOf[n]] = true
+	}
+	assert.Len(t, seen, 3, "the 3 control-plane members should land on 3 distinct AZs, got %v", nodeIDs(nodes))
 }
 
 func TestPlaceControlPlane_SpreadFirstInitsRestJoin(t *testing.T) {

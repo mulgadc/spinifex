@@ -83,6 +83,14 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	})
 	require.NoError(t, err, "modify-db-parameter-group")
 
+	// Registered before the create, so LIFO runs it last: the create registers its
+	// own instance teardown and, after it, the failure-only diagnostics. A group
+	// teardown registered later would run first and delete the DB VM out from
+	// under the console capture, which is the only window into the guest.
+	t.Cleanup(func() {
+		teardownGroups(t, f, subnetGroup, paramGroup)
+	})
+
 	// D20: the size-derived defaults are formulas internally, but a customer only
 	// ever sees the literal they resolved to.
 	t.Run("DescribeDBParametersReportsLiterals", func(t *testing.T) {
@@ -120,12 +128,6 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
 		in.DBSubnetGroupName = aws.String(subnetGroup)
 		in.DBParameterGroupName = aws.String(paramGroup)
-	})
-
-	// Registered after the create's own teardown so it runs first: the groups can
-	// only go once the instance has, and a failure part-way still frees them.
-	t.Cleanup(func() {
-		teardownGroups(t, f, id, subnetGroup, paramGroup)
 	})
 
 	assert.Equal(t, subnetGroup, dbSubnetGroupName(created))
@@ -216,17 +218,11 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 // Best-effort teardown: the groups can only go once the instance does, and every
 // step is already the assertion of some subtest, so a failure here is logged
 // rather than failing a test that otherwise passed.
-func teardownGroups(t *testing.T, f *Fixture, id, subnetGroup, paramGroup string) {
+// Frees the two groups only. The instance that referenced them is torn down by
+// the create's own cleanup, which is registered later and so runs first — a
+// group delete issued while the instance still holds it is refused.
+func teardownGroups(t *testing.T, f *Fixture, subnetGroup, paramGroup string) {
 	t.Helper()
-	if _, err := harness.DescribeDBInstance(f.AWS, id); err == nil {
-		if _, err := f.AWS.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
-			DBInstanceIdentifier: aws.String(id),
-			SkipFinalSnapshot:    aws.Bool(true),
-		}); err != nil && !harness.ErrorCodeIs(err, "DBInstanceNotFound") {
-			t.Logf("cleanup: delete DB instance %s: %v", id, err)
-		}
-		harness.WaitForDBInstanceGone(t, f.AWS, id)
-	}
 	if _, err := f.AWS.RDS.DeleteDBSubnetGroup(&rds.DeleteDBSubnetGroupInput{
 		DBSubnetGroupName: aws.String(subnetGroup),
 	}); err != nil && !harness.ErrorCodeIs(err, "DBSubnetGroupNotFoundFault") {

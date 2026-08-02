@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -41,6 +42,10 @@ type fakeNetwork struct {
 	// accts records which account each describe was issued against, which is how
 	// the cross-account read becomes observable.
 	accts []string
+
+	// vpcFilters records the filters DescribeVpcs was called with, so a test can
+	// assert the names the resolver sends are ones the real surface accepts.
+	vpcFilters []*ec2.Filter
 }
 
 var _ networkResolver = (*fakeNetwork)(nil)
@@ -61,8 +66,19 @@ func newFakeNetwork() *fakeNetwork {
 	}
 }
 
-func (f *fakeNetwork) DescribeVpcs(_ context.Context, _ *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
+// Rejects a filter name the real DescribeVpcs would reject, rather than ignoring
+// input filters: a permissive fake here let the camelCase 'isDefault' spelling
+// reach production, where the EC2 surface answered InvalidParameterValue.
+func (f *fakeNetwork) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	f.accts = append(f.accts, accountID)
+	if input != nil {
+		f.vpcFilters = append(f.vpcFilters, input.Filters...)
+		for _, filter := range input.Filters {
+			if name := aws.StringValue(filter.Name); !handlers_ec2_vpc.SupportsDescribeVpcsFilter(name) {
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+	}
 	if f.vpcErr != nil {
 		return nil, f.vpcErr
 	}

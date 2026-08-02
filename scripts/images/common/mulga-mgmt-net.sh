@@ -1,9 +1,10 @@
 #!/bin/sh
 # mulga-mgmt-net — boot oneshot that brings a multi-NIC BootAMI system VM's NICs
 # up from the QEMU fw_cfg netcfg blob (opt/spinifex/netcfg) the host writes per
-# launch. The EKS control plane is the case: cloud-init on a stock Alpine guest
-# cannot reliably pick the right NIC out of two, so the host enumerates them and
-# this oneshot configures each by MAC, before cloud-init's network stage:
+# launch. Shared by every system image the host attaches a mgmt NIC to (eks-node,
+# rds-postgres): cloud-init on a stock Alpine guest cannot reliably pick the right
+# NIC out of two, so the host enumerates them and this oneshot configures each by
+# MAC, before cloud-init's network stage:
 #   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (retrying
 #     one-shots on a budget until the cross-host datapath is up) so the Ec2 IMDS
 #     datasource can reach 169.254.169.254, and pin a /32 to it so a link-local

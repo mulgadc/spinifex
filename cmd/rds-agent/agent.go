@@ -189,6 +189,14 @@ func New(cfg config) (*Agent, error) {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	// Named before the first dial. When register cannot reach the gateway the
+	// retry loop is all that survives, and the address it is dialing is what
+	// separates a mgmt NIC that came up without an address from a control plane
+	// that is genuinely down.
+	slog.Info("rds-agent: starting",
+		"gatewayURL", a.cfg.GatewayURL, "dbInstanceIdentifier", a.id.DBInstanceIdentifier,
+		"agentVersion", a.id.AgentVersion)
+
 	// Registration comes first: its response is the agent's identity.
 	if err := a.register(ctx); err != nil {
 		return err

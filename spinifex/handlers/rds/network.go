@@ -84,7 +84,7 @@ func subnetFromGroup(group *DBSubnetGroupRecord) (string, error) {
 
 func (s *Service) defaultVPCID(ctx context.Context, accountID string) (string, error) {
 	out, err := s.deps.Network.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
-		Filters: []*ec2.Filter{{Name: aws.String("isDefault"), Values: aws.StringSlice([]string{"true"})}},
+		Filters: []*ec2.Filter{{Name: aws.String("is-default"), Values: aws.StringSlice([]string{"true"})}},
 	}, accountID)
 	if err != nil {
 		return "", fmt.Errorf("rds: describe default VPC: %w", err)

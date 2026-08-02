@@ -2399,7 +2399,7 @@ func TestSnapshotRunningVolume_VolumeConfigMissing(t *testing.T) {
 		store:      store,
 		bucketName: testBucket,
 	}
-	err := svc.snapshotRunningVolume("vol-missing", "snap-r1")
+	err := svc.snapshotRunningVolume("vol-missing", "snap-r1", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2424,7 +2424,7 @@ func TestSnapshotRunningVolume_BackendInitFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-running1", 10)
 
-	err := svc.snapshotRunningVolume("vol-running1", "snap-r2")
+	err := svc.snapshotRunningVolume("vol-running1", "snap-r2", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2510,7 +2510,7 @@ func TestSnapshotRunningVolume_EncryptionKeyLoadError(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-running-enckey", 10)
 
-	err := svc.snapshotRunningVolume("vol-running-enckey", "snap-run-enckey")
+	err := svc.snapshotRunningVolume("vol-running-enckey", "snap-run-enckey", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2535,7 +2535,7 @@ func TestSnapshotRunningVolume_LoadStateFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-running-lsf", 10)
 
-	err := svc.snapshotRunningVolume("vol-running-lsf", "snap-run-lsf")
+	err := svc.snapshotRunningVolume("vol-running-lsf", "snap-run-lsf", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

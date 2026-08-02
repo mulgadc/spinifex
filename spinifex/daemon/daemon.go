@@ -1392,7 +1392,7 @@ func (d *Daemon) startCluster() error {
 	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
+	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl

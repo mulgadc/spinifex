@@ -53,19 +53,25 @@ const buildDirPrefix = "segscanoracle-bin-"
 // with workspace/mulga/scripts/segscan). Returns an error — never panics or
 // fails a test — so callers can decide to skip.
 func Locate() (string, error) {
-	if dir := os.Getenv(segscanEnvVar); dir != "" {
-		if hasGoMod(dir) {
-			return dir, nil
-		}
-		return "", fmt.Errorf("%s=%s has no go.mod", segscanEnvVar, dir)
-	}
-
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", errors.New("segscanoracle: could not resolve source location for module-relative lookup")
 	}
 	// thisFile is <spinifex-root>/spinifex/testutil/segscanoracle/segscanoracle.go.
 	root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))))
+	return resolveSegscanDir(os.Getenv(segscanEnvVar), root)
+}
+
+// resolveSegscanDir is Locate's resolution order as a pure function of its
+// inputs, so it can be unit-tested against fake roots/env values without
+// touching this package's own on-disk location.
+func resolveSegscanDir(envOverride, root string) (string, error) {
+	if envOverride != "" {
+		if hasGoMod(envOverride) {
+			return envOverride, nil
+		}
+		return "", fmt.Errorf("%s=%s has no go.mod", segscanEnvVar, envOverride)
+	}
 
 	candidates := []string{
 		filepath.Join(root, "..", "scripts", "segscan"),          // monorepo: mulga/spinifex + mulga/scripts/segscan
@@ -246,9 +252,20 @@ func Run(t *testing.T, copiedDataDir string) *Report {
 		t.Fatalf("segscanoracle: %s --dir %s --json: %v\nstderr:\n%s", bin, copiedDataDir, err, stderr.String())
 	}
 
-	var rep Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+	rep, err := decodeReport(stdout.Bytes())
+	if err != nil {
 		t.Fatalf("segscanoracle: decode segscan JSON: %v\noutput:\n%s", err, stdout.String())
 	}
-	return &rep
+	return rep
+}
+
+// decodeReport parses segscan --json's output. Pulled out of Run so the
+// decode step — including the malformed-payload error path — is unit
+// testable without execing the real binary.
+func decodeReport(data []byte) (*Report, error) {
+	var rep Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
 }

@@ -1,0 +1,48 @@
+name: Apt Packages
+
+# Path-filtered like image-scripts.yml: this resolves setup.sh's runtime package
+# list against each supported suite's real indices, so a renamed, dropped, or
+# ambiguously virtual package fails here rather than on a user's machine.
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - scripts/setup.sh
+      - scripts/lint-apt-packages.sh
+      - .github/workflows/apt-packages.yml
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - scripts/setup.sh
+      - scripts/lint-apt-packages.sh
+      - .github/workflows/apt-packages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apt_packages:
+    name: Resolve apt list (${{ matrix.image }})
+    runs-on: ubuntu-26.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The suites the nightly E2E matrix actually installs on. Ubuntu 22.04 is
+        # accepted by detect_os but has never been exercised and does not resolve.
+        image:
+          - ubuntu:24.04
+          - ubuntu:26.04
+          - debian:13
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Resolve runtime package list
+        run: ./scripts/lint-apt-packages.sh ${{ matrix.image }}

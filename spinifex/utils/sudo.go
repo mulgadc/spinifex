@@ -33,6 +33,11 @@ var socketClients = map[string]bool{
 	"systemctl": true,
 }
 
+// EndpointSysctlHelper is the fixed-verb wrapper setup.sh installs. sudo-rs
+// (Ubuntu's default sudo since 25.10) forbids a wildcard inside a command
+// argument, so the daemon's per-endpoint sysctl grant names this instead.
+const EndpointSysctlHelper = "/usr/local/lib/spinifex/spinifex-set-endpoint-sysctl"
+
 // Capability bit numbers from linux/capability.h.
 const (
 	capNetAdmin = 12
@@ -48,6 +53,10 @@ func capForTool(name string, args []string) (uint, bool) {
 		return capNetAdmin, true
 	case "arping":
 		return capNetRaw, true
+	case EndpointSysctlHelper:
+		// The helper only ever writes net.ipv4.conf.<iface>.<key>, so a holder of
+		// CAP_NET_ADMIN runs it directly and never reaches the sudoers grant.
+		return capNetAdmin, true
 	case "sysctl":
 		// Only the net.* trees are governed by CAP_NET_ADMIN in the caller's
 		// network namespace; every other key is a root-only write.

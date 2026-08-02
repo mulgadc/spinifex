@@ -124,6 +124,35 @@ func TestRG10_VPCDHoldsNoSudoersGrant(t *testing.T) {
 	}
 }
 
+// TestSudoersGrantsCarryNoArgumentWildcard pins the sudo-rs constraint. Ubuntu
+// has shipped sudo-rs as the default sudo since 25.10, and it rejects a `*`
+// inside a command argument outright — visudo fails and setup.sh aborts.
+func TestSudoersGrantsCarryNoArgumentWildcard(t *testing.T) {
+	root := repoRoot(t)
+	setup, err := os.ReadFile(filepath.Join(root, "scripts", "setup.sh"))
+	if err != nil {
+		t.Fatalf("read setup.sh: %v", err)
+	}
+	for i, line := range strings.Split(string(setup), "\n") {
+		if !strings.HasPrefix(line, "spinifex-daemon ALL=") {
+			continue
+		}
+		_, cmds, _ := strings.Cut(line, "NOPASSWD:")
+		for spec := range strings.SplitSeq(cmds, ",") {
+			fields := strings.Fields(spec)
+			// A standalone final `*` is the one form sudo-rs accepts, so drop it
+			// and treat any wildcard left inside an argument as the failure.
+			if n := len(fields); n > 0 && fields[n-1] == "*" {
+				fields = fields[:n-1]
+			}
+			if strings.Contains(strings.Join(fields, " "), "*") {
+				t.Fatalf("scripts/setup.sh:%d grants a wildcard inside a command argument:\n  %s\n"+
+					"sudo-rs rejects this; name a fixed-verb helper instead (see EndpointSysctlHelper).", i+1, line)
+			}
+		}
+	}
+}
+
 // ambientLine returns the unit's AmbientCapabilities= value, or "".
 func ambientLine(unit string) string {
 	for line := range strings.SplitSeq(unit, "\n") {

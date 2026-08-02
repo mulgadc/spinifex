@@ -1182,9 +1182,8 @@ func bindPredastoreNamespacedEnv() {
 }
 
 // bindPredastoreCollisionEnv namespaces predastore's port, debug, tls-cert,
-// tls-key, encryption-key-file and node-id viper keys, which nats and awsgw
-// also bind bare. Each AutomaticEnv-derived name now matches its own
-// explicit BindEnv target instead of a key shared with another subcommand.
+// tls-key, encryption-key-file and node-id keys, which nats and awsgw also
+// bind bare. Each derived env name now matches its own BindEnv target.
 func bindPredastoreCollisionEnv() {
 	viper.BindEnv("predastore-port", "SPINIFEX_PREDASTORE_PORT")
 	viper.BindPFlag("predastore-port", predastoreCmd.PersistentFlags().Lookup("port"))
@@ -1205,11 +1204,9 @@ func bindPredastoreCollisionEnv() {
 	viper.BindPFlag("predastore-node-id", predastoreCmd.PersistentFlags().Lookup("node-id"))
 }
 
-// bindNatsCollisionEnv namespaces nats's port, host and debug viper keys,
-// which awsgw (and formerly predastore) also bind bare. "nats-host" is
-// deliberately not reused: rootCmd already binds that key to its own
-// cluster-wide --nats-host override, so nats's own bind-host flag uses
-// "nats-service-host" instead to avoid clobbering it.
+// bindNatsCollisionEnv namespaces nats's port, host and debug keys, which
+// awsgw also binds bare. The host key is "nats-service-host": rootCmd already
+// owns "nats-host" for its cluster-wide override, so reusing it would clobber.
 func bindNatsCollisionEnv() {
 	viper.BindEnv("nats-port", "SPINIFEX_NATS_PORT")
 	viper.BindPFlag("nats-port", natsCmd.PersistentFlags().Lookup("port"))
@@ -1236,6 +1233,23 @@ func bindAwsgwCollisionEnv() {
 
 	viper.BindEnv("awsgw-debug", "SPINIFEX_AWSGW_DEBUG")
 	viper.BindPFlag("awsgw-debug", awsgwCmd.PersistentFlags().Lookup("debug"))
+}
+
+// bindViperblockEnv binds viperblock's S3 and plugin flags. The lookups must
+// target viperblockCmd, which declares them; a predastoreCmd lookup yields nil
+// and BindPFlag drops it silently, hiding both the flag and its default.
+func bindViperblockEnv() {
+	viper.BindEnv("s3-host", "SPINIFEX_VIPERBLOCK_S3_HOST")
+	viper.BindPFlag("s3-host", viperblockCmd.PersistentFlags().Lookup("s3-host"))
+
+	viper.BindEnv("s3-bucket", "SPINIFEX_VIPERBLOCK_S3_BUCKET")
+	viper.BindPFlag("s3-bucket", viperblockCmd.PersistentFlags().Lookup("s3-bucket"))
+
+	viper.BindEnv("s3-region", "SPINIFEX_VIPERBLOCK_S3_REGION")
+	viper.BindPFlag("s3-region", viperblockCmd.PersistentFlags().Lookup("s3-region"))
+
+	viper.BindEnv("plugin-path", "SPINIFEX_VIPERBLOCK_PLUGIN_PATH")
+	viper.BindPFlag("plugin-path", viperblockCmd.PersistentFlags().Lookup("plugin-path"))
 }
 
 func init() {
@@ -1293,20 +1307,10 @@ func init() {
 	serviceCmd.AddCommand(viperblockCmd)
 
 	viperblockCmd.PersistentFlags().String("s3-host", "", "Predastore (S3) host URI")
-	viper.BindEnv("s3-host", "SPINIFEX_VIPERBLOCK_S3_HOST")
-	viper.BindPFlag("s3-host", predastoreCmd.PersistentFlags().Lookup("s3-host"))
-
 	viperblockCmd.PersistentFlags().String("s3-bucket", "predastore", "Predastore (S3) bucket")
-	viper.BindEnv("s3-bucket", "SPINIFEX_VIPERBLOCK_S3_BUCKET")
-	viper.BindPFlag("s3-bucket", predastoreCmd.PersistentFlags().Lookup("s3-bucket"))
-
 	viperblockCmd.PersistentFlags().String("s3-region", "ap-southeast-2", "Predastore (S3) region")
-	viper.BindEnv("s3-region", "SPINIFEX_VIPERBLOCK_S3_REGION")
-	viper.BindPFlag("s3-region", predastoreCmd.PersistentFlags().Lookup("s3-region"))
-
 	viperblockCmd.PersistentFlags().String("plugin-path", "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", "Pathname to the nbdkit viperblockplugin")
-	viper.BindEnv("plugin-path", "SPINIFEX_VIPERBLOCK_PLUGIN_PATH")
-	viper.BindPFlag("plugin-path", predastoreCmd.PersistentFlags().Lookup("plugin-path"))
+	bindViperblockEnv()
 
 	// Viperblock at-rest encryption master key (shared with other on-node
 	// services via group ownership; mode 0640 or stricter). Distinct viper

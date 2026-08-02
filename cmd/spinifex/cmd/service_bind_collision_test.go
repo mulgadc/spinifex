@@ -8,10 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// bindAllServiceCollisionEnv mirrors service.go's init() registration for
-// the predastore/nats/awsgw keys that used to collide, against a freshly
-// Reset viper instance. pflags survive Reset: they live on predastoreCmd,
-// natsCmd and awsgwCmd, package-level command singletons.
+// bindAllServiceCollisionEnv mirrors init()'s registration of the
+// predastore/nats/awsgw keys against a freshly Reset viper. pflags survive
+// Reset: they live on the package-level command singletons.
 func bindAllServiceCollisionEnv(t *testing.T) {
 	t.Helper()
 	viper.SetEnvPrefix("SPINIFEX")
@@ -89,10 +88,8 @@ func TestSubcommandTLSKeysResolveIndependently(t *testing.T) {
 }
 
 // TestGenericSpinifexEnvDoesNotShadowNamespacedKeys proves a generic
-// SPINIFEX_DEBUG/SPINIFEX_HOST/SPINIFEX_PORT env var — the exact shape of
-// the P0 shadow mechanism fixed for predastore in #659 — cannot silently
-// override any per-subcommand value, because AutomaticEnv's derived name for
-// each namespaced key no longer matches a generic bare name.
+// SPINIFEX_DEBUG/SPINIFEX_HOST/SPINIFEX_PORT cannot override a per-subcommand
+// value, since no namespaced key derives a generic bare name.
 func TestGenericSpinifexEnvDoesNotShadowNamespacedKeys(t *testing.T) {
 	t.Cleanup(func() { viper.Reset() })
 	viper.Reset()
@@ -117,4 +114,43 @@ func TestGenericSpinifexEnvDoesNotShadowNamespacedKeys(t *testing.T) {
 	assert.Equal(t, "10.0.0.10", viper.GetString("awsgw-host"), "generic SPINIFEX_HOST must not shadow awsgw-host")
 	assert.Equal(t, 8443, viper.GetInt("predastore-port"), "generic SPINIFEX_PORT must not shadow predastore-port")
 	assert.Equal(t, 4222, viper.GetInt("nats-port"), "generic SPINIFEX_PORT must not shadow nats-port")
+}
+
+// TestViperblockFlagsLookUpTheirOwnCommand guards the receiver on the
+// viperblock flag bindings. These are declared on viperblockCmd, so a
+// predastoreCmd lookup returns nil and BindPFlag rejects it silently.
+func TestViperblockFlagsLookUpTheirOwnCommand(t *testing.T) {
+	for _, name := range []string{"s3-host", "s3-bucket", "s3-region", "plugin-path"} {
+		assert.NotNil(t, viperblockCmd.PersistentFlags().Lookup(name),
+			"%s must be declared on viperblockCmd", name)
+		assert.Nil(t, predastoreCmd.PersistentFlags().Lookup(name),
+			"%s is not declared on predastoreCmd, so that lookup yields nil", name)
+	}
+}
+
+// TestViperblockFlagDefaultsReachViper drives the real bindViperblockEnv, so
+// a lookup pointed at the wrong command fails here: an unbound flag leaves
+// its default invisible and s3-bucket resolves "" rather than "predastore".
+func TestViperblockFlagDefaultsReachViper(t *testing.T) {
+	t.Cleanup(func() { viper.Reset() })
+	viper.Reset()
+	bindViperblockEnv()
+
+	assert.Equal(t, "predastore", viper.GetString("s3-bucket"))
+	assert.Equal(t, "ap-southeast-2", viper.GetString("s3-region"))
+	assert.Equal(t, "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", viper.GetString("plugin-path"))
+}
+
+// TestViperblockEnvBeatsUnchangedFlagDefault pins viper's precedence: wiring
+// the defaults correctly must not override a deployment that already sets
+// SPINIFEX_VIPERBLOCK_*.
+func TestViperblockEnvBeatsUnchangedFlagDefault(t *testing.T) {
+	t.Cleanup(func() { viper.Reset() })
+	viper.Reset()
+	bindViperblockEnv()
+
+	t.Setenv("SPINIFEX_VIPERBLOCK_S3_BUCKET", "deployed-bucket")
+
+	assert.Equal(t, "deployed-bucket", viper.GetString("s3-bucket"),
+		"env must win over an unchanged flag default")
 }

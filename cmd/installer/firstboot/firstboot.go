@@ -206,6 +206,9 @@ fi
 
 # Enable services to start, on reboot
 systemctl enable spinifex.target spinifex-banner.service
+# WantedBy=timers.target only self-activates once enabled — without this the
+# JetStream ENOSPC-latch watchdog never runs and a full disk needs a manual restart.
+systemctl enable --now spinifex-nats-watchdog.timer
 
 # Mark complete only after every step above has succeeded. Until this point,
 # any failure (set -e) leaves the marker absent and the next reboot retries

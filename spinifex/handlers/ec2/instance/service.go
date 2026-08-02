@@ -166,11 +166,15 @@ type ENIInfo struct {
 	MacAddress         string
 	Status             string
 	SecurityGroupIDs   []string
+	// DeleteOnTermination mirrors the stored ENIRecord field, defaulted true
+	// when unset. Read by the terminate sweep to decide detach-only vs delete.
+	DeleteOnTermination bool
 }
 
 // ENICreator covers the VPC/ENI operations RunInstances uses to auto-attach a
-// primary interface. DetachENI is here (not ENIDeleter) so the NAT-rollback
-// path can flip the ENI to "available" before deletion.
+// primary interface, plus the enumeration the terminate path uses to release
+// every ENI attached to an instance. DetachENI is here (not ENIDeleter) so the
+// NAT-rollback path can flip the ENI to "available" before deletion.
 type ENICreator interface {
 	GetDefaultSubnet(ctx context.Context, accountID string) (*SubnetInfo, error)
 	GetSubnet(ctx context.Context, accountID, subnetID string) (*SubnetInfo, error)
@@ -179,6 +183,10 @@ type ENICreator interface {
 	AttachENI(ctx context.Context, accountID, eniID, instanceID string, deviceIndex int64) (string, error)
 	DetachENI(ctx context.Context, accountID, eniID string) error
 	UpdateENIPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) error
+	// ListInstanceENIs returns every ENI currently attached to instanceID.
+	// Used by the terminate sweep for post-launch attachments the launch-time
+	// ENIId scalar on vm.VM never carries.
+	ListInstanceENIs(ctx context.Context, accountID, instanceID string) ([]ENIInfo, error)
 }
 
 // PublicIPAllocator allocates a public IP to an instance/ENI from a pool.

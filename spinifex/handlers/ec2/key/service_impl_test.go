@@ -683,13 +683,61 @@ func TestDescribeKeyPairs_FilterByKeyPairId(t *testing.T) {
 	assert.Equal(t, "find-by-id", *out.KeyPairs[0].KeyName)
 }
 
-func TestDescribeKeyPairs_FilterNoMatch(t *testing.T) {
+// TestDescribeKeyPairs_NotFound_ByKeyName asserts that naming a specific,
+// nonexistent key via KeyNames errors, matching real AWS: naming a missing
+// resource is a failure, unlike a --filters query that simply matches nothing.
+func TestDescribeKeyPairs_NotFound_ByKeyName(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	importTestKey(t, svc, "exists")
+
+	_, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		KeyNames: []*string{aws.String("does-not-exist")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+}
+
+// TestDescribeKeyPairs_NotFound_ByKeyPairId is the KeyPairIds counterpart of
+// TestDescribeKeyPairs_NotFound_ByKeyName.
+func TestDescribeKeyPairs_NotFound_ByKeyPairId(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	importTestKey(t, svc, "exists")
+
+	_, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		KeyPairIds: []*string{aws.String("key-doesnotexist")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+}
+
+// TestDescribeKeyPairs_NotFound_PartialMatch asserts that naming one existing
+// and one nonexistent key still errors: AWS requires every named key to exist.
+func TestDescribeKeyPairs_NotFound_PartialMatch(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	importTestKey(t, svc, "exists")
+
+	_, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		KeyNames: []*string{aws.String("exists"), aws.String("does-not-exist")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+}
+
+// TestDescribeKeyPairs_AWSFilterNoMatch_EmptyNotError is the other half of the
+// filter-vs-explicit-id split: a --filters query that matches nothing is not
+// an error in AWS, unlike naming a specific missing KeyName/KeyPairId.
+func TestDescribeKeyPairs_AWSFilterNoMatch_EmptyNotError(t *testing.T) {
 	svc, _ := newTestKeyService()
 
 	importTestKey(t, svc, "exists")
 
 	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
-		KeyNames: []*string{aws.String("does-not-exist")},
+		Filters: []*ec2.Filter{
+			{Name: aws.String("key-name"), Values: []*string{aws.String("does-not-exist")}},
+		},
 	}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)

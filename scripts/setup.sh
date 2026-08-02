@@ -488,6 +488,10 @@ TMPEOF
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /var/lib/spinifex/awsgw
     $SUDO chmod 0700 /var/lib/spinifex/awsgw
 
+    $SUDO mkdir -p /var/lib/spinifex/spinifex-ui
+    $SUDO chown "spinifex-ui:$SPINIFEX_GROUP" /var/lib/spinifex/spinifex-ui
+    $SUDO chmod 0700 /var/lib/spinifex/spinifex-ui
+
     # Symlink so awsgw's {BaseDir}/config/ paths resolve to /etc/spinifex/.
     # The test runs under $SUDO because the parent is 0700 spinifex-gw: an
     # unprivileged -e cannot stat through it and always reports "missing", so
@@ -678,6 +682,10 @@ EOF
     fi
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable spinifex.target
+    # The unit file alone does not self-activate (WantedBy=timers.target only
+    # takes effect once enabled) — without this the JetStream ENOSPC-latch
+    # watchdog is inert and a full disk requires a manual restart forever.
+    $SUDO systemctl enable --now spinifex-nats-watchdog.timer
     info "Systemd units installed and enabled (per-service users)"
 }
 

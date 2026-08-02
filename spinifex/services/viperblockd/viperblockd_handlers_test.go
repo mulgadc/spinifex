@@ -125,6 +125,166 @@ func TestIntegration_EBSDeleteUnmountedVolume(t *testing.T) {
 	assert.True(t, resp.Success)
 }
 
+// TestIntegration_EBSDeleteRemovesLocalVolumeDirectory covers the residual
+// leak: terminateCleanup always unmounts before DeleteVolumes sends
+// ebs.delete, so the common case is an already-unmounted volume. Before the
+// fix, ebs.delete only cleaned up a still-mounted volume's nbdkit
+// process/socket and never touched cfg.BaseDir/<volume>, so the
+// WAL/checkpoint directory a prior mount (or a failed unmount seal) left
+// behind survived every DeleteVolume call — including for -efi companion
+// volumes, which never go through the unmount seal at all (isAuxVolume skips
+// it), so they leaked unconditionally rather than only on a failed seal.
+func TestIntegration_EBSDeleteRemovesLocalVolumeDirectory(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	// No mounted volumes: matches the terminate path where Unmount already
+	// ran and left local state behind (a failed seal for the main volume, or
+	// unconditionally for the -efi companion) before ebs.delete fires.
+	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test")
+	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test-efi")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	for _, volume := range []string{"vol-residual-test", "vol-residual-test-efi"} {
+		reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: volume})
+		msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
+		require.NoError(t, err)
+
+		var resp types.EBSDeleteResponse
+		require.NoError(t, json.Unmarshal(msg.Data, &resp))
+		assert.True(t, resp.Success)
+
+		assert.False(t, fileExistsCheck(filepath.Join(cfg.BaseDir, volume)),
+			"ebs.delete must remove the local volume directory for %s", volume)
+	}
+}
+
+// TestIntegration_EBSDeleteEmptyVolumeNameDoesNotWipeBaseDir is the
+// regression test for the data-destruction hazard: before validation,
+// filepath.Join(cfg.BaseDir, "") collapsed to cfg.BaseDir itself, so an empty
+// Volume made ebs.delete os.RemoveAll the node's entire local WAL/checkpoint
+// cache. This must be rejected, and BaseDir must survive.
+func TestIntegration_EBSDeleteEmptyVolumeNameDoesNotWipeBaseDir(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	createMockVolumeState(t, cfg.BaseDir, "vol-survivor")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: ""})
+	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSDeleteResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.False(t, resp.Success, "an empty volume name must not report success")
+	assert.NotEmpty(t, resp.Error)
+
+	assert.True(t, fileExistsCheck(cfg.BaseDir), "BaseDir itself must survive an empty volume name")
+	assert.True(t, fileExistsCheck(filepath.Join(cfg.BaseDir, "vol-survivor")),
+		"an unrelated volume directory must survive an empty volume name")
+}
+
+// TestIntegration_EBSDeleteRejectsPathTraversal covers names that would
+// otherwise let ebs.delete escape BaseDir via filepath.Join's ".." cleaning.
+// Both cases must be refused before any RemoveAll runs, and Success must not
+// come back true for a request that was refused.
+func TestIntegration_EBSDeleteRejectsPathTraversal(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	createMockVolumeState(t, cfg.BaseDir, "vol-survivor")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	for _, name := range []string{"../..", "a/b"} {
+		reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: name})
+		msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
+		require.NoError(t, err)
+
+		var resp types.EBSDeleteResponse
+		require.NoError(t, json.Unmarshal(msg.Data, &resp))
+		assert.False(t, resp.Success, "volume name %q must not report success", name)
+		assert.NotEmpty(t, resp.Error, "volume name %q must return an error", name)
+	}
+
+	assert.True(t, fileExistsCheck(filepath.Join(cfg.BaseDir, "vol-survivor")),
+		"an unrelated volume directory must survive a path-traversal attempt")
+}
+
+// TestIntegration_EBSDeleteValidNameLeavesSiblingsUntouched is the essential
+// non-regression check for the new validation: a legitimate delete must still
+// remove exactly its own directory, and nothing else under BaseDir.
+func TestIntegration_EBSDeleteValidNameLeavesSiblingsUntouched(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	createMockVolumeState(t, cfg.BaseDir, "vol-target")
+	createMockVolumeState(t, cfg.BaseDir, "vol-sibling")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-target"})
+	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSDeleteResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.True(t, resp.Success)
+	assert.Empty(t, resp.Error)
+
+	assert.False(t, fileExistsCheck(filepath.Join(cfg.BaseDir, "vol-target")),
+		"the targeted volume directory must be removed")
+	assert.True(t, fileExistsCheck(filepath.Join(cfg.BaseDir, "vol-sibling")),
+		"a sibling volume directory must survive deleting a different volume")
+}
+
 func TestIntegration_EBSDeleteInvalidJSON(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

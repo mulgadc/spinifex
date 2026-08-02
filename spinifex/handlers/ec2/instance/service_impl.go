@@ -1567,7 +1567,7 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId stri
 		slog.ErrorContext(ctx, "VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "code", codePath, "varsTemplate", varsTemplate, "size", varsSize)
+	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
 	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig
@@ -2556,31 +2556,77 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(ctx context.Context, insta
 }
 
 func (s *InstanceServiceImpl) deleteInstanceENI(ctx context.Context, instance *vm.VM, instanceID string) {
-	if instance.ENIId == "" || s.eniDeleter == nil {
-		return
-	}
-	// Detach first to clear the attachment record. A stopped instance's ENI may
-	// still show Status=in-use/AttachmentId set; without the detach the
-	// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
-	// stranding the ENI record after the instance is already gone from the store
-	// and blocking VPC/subnet delete. Best-effort: the delete is
-	// the authoritative gate.
-	if s.eniCreator != nil {
-		if err := s.eniCreator.DetachENI(ctx, instance.AccountID, instance.ENIId); err != nil {
-			slog.WarnContext(ctx, "TerminateStoppedInstance: failed to detach ENI before delete",
-				"eni", instance.ENIId, "instanceId", instanceID, "err", err)
+	if instance.ENIId != "" && s.eniDeleter != nil {
+		// Detach first to clear the attachment record. A stopped instance's ENI may
+		// still show Status=in-use/AttachmentId set; without the detach the
+		// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
+		// stranding the ENI record after the instance is already gone from the store
+		// and blocking VPC/subnet delete. Best-effort: the delete is
+		// the authoritative gate.
+		if s.eniCreator != nil {
+			if err := s.eniCreator.DetachENI(ctx, instance.AccountID, instance.ENIId); err != nil {
+				slog.WarnContext(ctx, "TerminateStoppedInstance: failed to detach ENI before delete",
+					"eni", instance.ENIId, "instanceId", instanceID, "err", err)
+			}
+		}
+		_, err := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &instance.ENIId,
+		}, instance.AccountID)
+		switch {
+		case err == nil,
+			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
+			slog.InfoContext(ctx, "TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
+		default:
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
 		}
 	}
-	_, err := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-		NetworkInterfaceId: &instance.ENIId,
-	}, instance.AccountID)
-	switch {
-	case err == nil,
-		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
-		awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
-		slog.InfoContext(ctx, "TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
-	default:
-		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
+
+	s.releaseAttachedENIs(ctx, instance, instanceID)
+}
+
+// releaseAttachedENIs enumerates every ENI the KV still records against
+// instanceID and releases each one, independent of instance.ENIId. Covers
+// post-launch attachments (e.g. ECS awsvpc, direct AttachNetworkInterface)
+// that never update the launch-time ENIId scalar. Best-effort and idempotent
+// per ENI: one failure is logged and the sweep continues, so a re-run of
+// terminate converges. DeleteOnTermination=false detaches only.
+func (s *InstanceServiceImpl) releaseAttachedENIs(ctx context.Context, instance *vm.VM, instanceID string) {
+	if s.eniCreator == nil || s.eniDeleter == nil {
+		return
+	}
+	records, err := s.eniCreator.ListInstanceENIs(ctx, instance.AccountID, instance.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to enumerate attached ENIs",
+			"instanceId", instanceID, "err", err)
+		return
+	}
+
+	for _, record := range records {
+		eniID := record.NetworkInterfaceID
+		if err := s.eniCreator.DetachENI(ctx, instance.AccountID, eniID); err != nil {
+			slog.WarnContext(ctx, "TerminateStoppedInstance: failed to detach attached ENI",
+				"eni", eniID, "instanceId", instanceID, "err", err)
+		}
+
+		if !record.DeleteOnTermination {
+			slog.InfoContext(ctx, "TerminateStoppedInstance: detached attached ENI, DeleteOnTermination=false",
+				"eni", eniID, "instanceId", instanceID)
+			continue
+		}
+
+		_, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		}, instance.AccountID)
+		switch {
+		case delErr == nil,
+			awserrors.IsErrorCode(delErr, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+			awserrors.IsErrorCode(delErr, awserrors.ErrorInvalidNetworkInterfaceNotFound):
+			slog.InfoContext(ctx, "TerminateStoppedInstance: deleted attached ENI", "eni", eniID, "instanceId", instanceID)
+		default:
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete attached ENI",
+				"eni", eniID, "instanceId", instanceID, "err", delErr)
+		}
 	}
 }
 

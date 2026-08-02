@@ -253,16 +253,114 @@ func isAuxVolume(volumeName string) bool {
 	return strings.HasSuffix(volumeName, "-efi")
 }
 
-// volumeNeedsSeal reports whether an unmounted volume must be sealed to
-// predastore on this node: it carries durable guest data (not an auxiliary
-// volume) and has local viperblock state under baseDir/<volume> to flush. A
-// node that never held the local WAL has nothing to seal.
+// validVolumeName reports whether volume is safe to use as a single path
+// component under BaseDir: non-empty, no separator, and not "." or "..".
+func validVolumeName(volume string) bool {
+	return volume != "" && volume != "." && volume != ".." && filepath.Base(volume) == volume
+}
+
+// localVolumeDir validates volume and baseDir, then returns baseDir/volume.
+// Every handler that turns a wire-supplied volume name into a filesystem path
+// (mount, unmount, delete, config) must go through this: the name arrives
+// unmarshalled straight from a NATS message, so an empty or ".."-laden value
+// must never reach a filesystem call. The character checks in validVolumeName
+// already rule out an escape, but the path is still resolved and checked
+// against baseDir as a second, independent guard.
+func localVolumeDir(baseDir, volume string) (string, error) {
+	if baseDir == "" {
+		return "", fmt.Errorf("empty base directory")
+	}
+	if !validVolumeName(volume) {
+		return "", fmt.Errorf("invalid volume name %q", volume)
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base directory: %w", err)
+	}
+	dir := filepath.Join(absBase, volume)
+
+	rel, err := filepath.Rel(absBase, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("volume name %q escapes base directory", volume)
+	}
+	return dir, nil
+}
+
+// volumeNeedsSeal reports whether an unmounted volume has local viperblock
+// state under baseDir/<volume> to flush. A node that never held the local
+// WAL has nothing to seal. Callers handle auxiliary volumes separately (see
+// isAuxVolume).
 func volumeNeedsSeal(volumeName, baseDir string) bool {
-	if isAuxVolume(volumeName) {
+	dir, err := localVolumeDir(baseDir, volumeName)
+	if err != nil {
+		slog.Warn("volumeNeedsSeal: rejecting invalid volume name", "volume", volumeName, "err", err)
 		return false
 	}
-	_, err := os.Stat(filepath.Join(baseDir, volumeName))
+	_, err = os.Stat(dir)
 	return err == nil
+}
+
+// sealReceiptSuffix names the file the nbdkit plugin leaves at
+// baseDir/<volume>.sealed after a successful seal.
+const sealReceiptSuffix = ".sealed"
+
+// sealReceipt is the fixed shape the nbdkit plugin writes after a successful
+// seal. PID is diagnostic only: it is never used to judge staleness, since a
+// receipt is cleared at mount instead (see clearStaleSealReceipt).
+type sealReceipt struct {
+	Volume   string    `json:"volume"`
+	PID      int       `json:"pid"`
+	SealedAt time.Time `json:"sealed_at"`
+}
+
+// sealReceiptPath returns the receipt path for a volume under baseDir.
+func sealReceiptPath(baseDir, volume string) string {
+	return filepath.Join(baseDir, volume+sealReceiptSuffix)
+}
+
+// consumeSealReceipt reads and deletes baseDir/<volume>.sealed, reporting
+// whether a valid receipt was there. It never fails the unmount: the seal it
+// attests to already happened, so a missing or unreadable receipt only costs
+// the caller a WARN.
+func consumeSealReceipt(baseDir, volume string) bool {
+	path := sealReceiptPath(baseDir, volume)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read seal receipt", "volume", volume, "path", path, "err", err)
+		}
+		return false
+	}
+
+	// Delete unconditionally, even if the contents below turn out to be
+	// invalid, so a malformed receipt cannot linger and be misread later.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to remove seal receipt", "volume", volume, "path", path, "err", err)
+	}
+
+	var receipt sealReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		slog.Warn("malformed seal receipt", "volume", volume, "path", path, "err", err)
+		return false
+	}
+	if receipt.Volume != volume || receipt.SealedAt.IsZero() {
+		slog.Warn("seal receipt missing required fields", "volume", volume, "path", path, "receipt", receipt)
+		return false
+	}
+	return true
+}
+
+// clearStaleSealReceipt removes any seal receipt left by a previous mount of
+// this volume. Staleness is handled here, at mount, rather than by matching
+// PIDs at unmount: once this runs, any receipt found at the next unmount can
+// only have come from the plugin instance this mount is about to start.
+func clearStaleSealReceipt(baseDir, volume string) {
+	path := sealReceiptPath(baseDir, volume)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to clear stale seal receipt", "volume", volume, "path", path, "err", err)
+	}
 }
 
 // openLoadedVolumeVB opens a detached volume and fully restores its state for a
@@ -410,6 +508,17 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// Reject before touching anything: an empty or path-traversing name
+		// must never reach the RemoveAll below, which is otherwise wide
+		// enough to wipe BaseDir itself or escape it entirely.
+		localPath, err := localVolumeDir(cfg.BaseDir, ebsRequest.Volume)
+		if err != nil {
+			slog.ErrorContext(ctx, "ebs.delete: refusing invalid volume name", "volume", ebsRequest.Volume, "err", err)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSDeleteResponse{Volume: ebsRequest.Volume, Error: fmt.Sprintf("invalid volume name: %v", err)})
+			return
+		}
+
 		response := types.EBSDeleteResponse{Volume: ebsRequest.Volume, Success: true}
 
 		// Find and clean up the mounted volume if it exists
@@ -454,6 +563,20 @@ func launchService(cfg *Config) (err error) {
 		} else {
 			// Volume not mounted is expected for "available" volumes
 			slog.InfoContext(ctx, "ebs.delete: volume not mounted (expected for available volumes)", "volume", ebsRequest.Volume)
+		}
+
+		// Delete is permanent: remove the on-disk WAL/checkpoint cache
+		// regardless of mount-tracking state. -efi volumes never go through
+		// the unmount seal (isAuxVolume skips it, they carry no durable
+		// data), and a main volume's seal can have been skipped after a
+		// failed flush (e.g. disk full), so this is the only guaranteed
+		// cleanup point for both. localPath was validated above.
+		if err := os.RemoveAll(localPath); err != nil {
+			slog.ErrorContext(ctx, "ebs.delete: failed to remove local volume directory",
+				"volume", ebsRequest.Volume, "path", localPath, "err", err)
+		} else {
+			slog.InfoContext(ctx, "ebs.delete: removed local volume directory",
+				"volume", ebsRequest.Volume, "path", localPath)
 		}
 
 		respondJSON(msg, response)
@@ -532,18 +655,27 @@ func launchService(cfg *Config) (err error) {
 			// nbdkit is now dead, so no process writes the shared BaseDir: seal
 			// the block map to predastore for volumes that hold local state to
 			// flush (see volumeNeedsSeal).
-			if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
+			if isAuxVolume(matched.Name) {
+				// Auxiliary volumes carry no durable guest data, so there is
+				// nothing to seal even when local state is present.
+			} else if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
+				// Local state survived: the plugin's seal either failed or was
+				// cut short, so this fallback is the real seal.
 				if err := cfg.seal(matched.Name); err != nil {
 					slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 					ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				} else {
 					slog.InfoContext(ctx, "ebs.unmount: volume sealed to predastore", "volume", matched.Name)
 				}
-			} else if !isAuxVolume(matched.Name) {
-				// A durable volume reached unmount with no local WAL under
-				// BaseDir: this node never held its state, so there is nothing to
-				// seal. WARN since a missing local WAL for a volume we expected to
-				// seal can mask the durability gap the seal closes.
+			} else if consumeSealReceipt(cfg.BaseDir, matched.Name) {
+				// Healthy path: the plugin sealed to predastore and removed
+				// its local state itself, leaving this receipt as proof.
+				slog.InfoContext(ctx, "ebs.unmount: volume already sealed by nbdkit plugin", "volume", matched.Name)
+			} else {
+				// A durable volume reached unmount with no local WAL and no
+				// seal receipt: this node never held its state, so there is
+				// nothing to seal. WARN since this can mask a durability gap
+				// the seal would otherwise close.
 				slog.WarnContext(ctx, "ebs.unmount: no local viperblock state for volume, skipping seal", "volume", matched.Name, "baseDir", cfg.BaseDir)
 			}
 
@@ -650,6 +782,16 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// Reject before the not-live branch below can hand this name to
+		// openLoadedVolumeVB, which derives a BaseDir/<volume> path.
+		if !validVolumeName(req.Volume) {
+			err := fmt.Errorf("invalid volume name %q", req.Volume)
+			slog.ErrorContext(ctx, "ebs.config: refusing invalid volume name", "volume", req.Volume)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
+			return
+		}
+
 		cfg.mu.Lock()
 		var live *viperblock.VB
 		for _, volume := range cfg.MountedVolumes {
@@ -724,6 +866,22 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		slog.InfoContext(ctx, "ebs.mount", "request", ebsRequest)
+
+		// Reject before any local path is derived from the name: this is the
+		// first point an unvalidated wire name would otherwise reach the
+		// filesystem (clearStaleSealReceipt) and, further down, viperblock's
+		// own BaseDir/<volume> layout.
+		if !validVolumeName(ebsRequest.Name) {
+			err := fmt.Errorf("invalid volume name %q", ebsRequest.Name)
+			slog.ErrorContext(ctx, "ebs.mount: refusing invalid volume name", "volume", ebsRequest.Name)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSMountResponse{Error: err.Error()})
+			return
+		}
+
+		// Clear any receipt left by a previous mount before anything else can
+		// return early, so a stale receipt can never survive into this mount.
+		clearStaleSealReceipt(cfg.BaseDir, ebsRequest.Name)
 
 		_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
 			trace.WithAttributes(attribute.String("volume.id", ebsRequest.Name)))

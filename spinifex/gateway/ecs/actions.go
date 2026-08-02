@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/nats-io/nats.go"
@@ -17,9 +18,43 @@ func unmarshalIfBody(body []byte, out any) error {
 	return json.Unmarshal(body, out)
 }
 
+// checkTaskDefinitionRoles enforces iam:PassRole on every role ARN a task
+// definition names. A nil/empty ARN is skipped — there is nothing to pass,
+// matching how the EC2 path treats a roleless instance profile.
+func checkTaskDefinitionRoles(passRoleCheck PassRoleChecker, roleARNs ...*string) error {
+	if passRoleCheck == nil {
+		return nil
+	}
+	for _, arn := range roleARNs {
+		if roleARN := aws.StringValue(arn); roleARN != "" {
+			if err := passRoleCheck(roleARN); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkTaskLaunchRoles resolves taskDefinition's role ARNs and enforces
+// iam:PassRole before a launch can start tasks under them, since RunTask,
+// StartTask, CreateService and UpdateService only reference a task definition.
+func checkTaskLaunchRoles(ctx context.Context, svc handlers_ecs.ECSService, accountID string, taskDefinition *string, passRoleCheck PassRoleChecker) error {
+	if passRoleCheck == nil || aws.StringValue(taskDefinition) == "" {
+		return nil
+	}
+	out, err := svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: taskDefinition}, accountID)
+	if err != nil {
+		return err
+	}
+	if out == nil || out.TaskDefinition == nil {
+		return nil
+	}
+	return checkTaskDefinitionRoles(passRoleCheck, out.TaskDefinition.TaskRoleArn, out.TaskDefinition.ExecutionRoleArn)
+}
+
 // --- Cluster ---
 
-func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -27,7 +62,7 @@ func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
 }
 
-func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -35,7 +70,7 @@ func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DeleteCluster(ctx, input, accountID)
 }
 
-func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -43,7 +78,7 @@ func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body
 	return handlers_ecs.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
 }
 
-func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -53,15 +88,18 @@ func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []b
 
 // --- Task definition ---
 
-func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkTaskDefinitionRoles(passRoleCheck, input.TaskRoleArn, input.ExecutionRoleArn); err != nil {
 		return nil, err
 	}
 	return handlers_ecs.NewNATSECSService(nc).RegisterTaskDefinition(ctx, input, accountID)
 }
 
-func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -69,7 +107,7 @@ func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID stri
 	return handlers_ecs.NewNATSECSService(nc).DeregisterTaskDefinition(ctx, input, accountID)
 }
 
-func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -77,7 +115,7 @@ func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 	return handlers_ecs.NewNATSECSService(nc).DescribeTaskDefinition(ctx, input, accountID)
 }
 
-func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTaskDefinitionsInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -87,7 +125,7 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 
 // --- Container instance ---
 
-func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterContainerInstanceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -97,7 +135,7 @@ func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID str
 
 // ProvisionCapacity launches container-instance EC2 capacity into a cluster.
 // Input/output are the custom handlers_ecs types, not aws-sdk-go ecs shapes.
-func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(handlers_ecs.ProvisionCapacityInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -105,7 +143,7 @@ func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, bod
 	return handlers_ecs.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
 }
 
-func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterContainerInstanceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -113,7 +151,7 @@ func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID s
 	return handlers_ecs.NewNATSECSService(nc).DeregisterContainerInstance(ctx, input, accountID)
 }
 
-func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateContainerInstancesStateInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -121,7 +159,7 @@ func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID
 	return handlers_ecs.NewNATSECSService(nc).UpdateContainerInstancesState(ctx, input, accountID)
 }
 
-func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeContainerInstancesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -129,7 +167,7 @@ func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID st
 	return handlers_ecs.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
 }
 
-func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListContainerInstancesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -139,23 +177,41 @@ func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string
 
 // --- Task ---
 
-func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RunTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).RunTask(ctx, input, accountID)
+	return runTask(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
-func StartTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+// runTask is RunTask's core, split out so tests can inject a fake ECSService
+// instead of a live NATS connection.
+func runTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.RunTaskInput, passRoleCheck PassRoleChecker) (any, error) {
+	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
+		return nil, err
+	}
+	return svc.RunTask(ctx, input, accountID)
+}
+
+func StartTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StartTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).StartTask(ctx, input, accountID)
+	return startTask(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
-func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+// startTask is StartTask's core, split out so tests can inject a fake
+// ECSService instead of a live NATS connection.
+func startTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.StartTaskInput, passRoleCheck PassRoleChecker) (any, error) {
+	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
+		return nil, err
+	}
+	return svc.StartTask(ctx, input, accountID)
+}
+
+func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StopTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -163,7 +219,7 @@ func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte)
 	return handlers_ecs.NewNATSECSService(nc).StopTask(ctx, input, accountID)
 }
 
-func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -171,7 +227,7 @@ func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
 }
 
-func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -181,23 +237,45 @@ func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte
 
 // --- Service ---
 
-func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+// CreateService and UpdateService select a task definition and reconcile
+// tasks under it entirely daemon-side, bypassing RunTask/StartTask, so
+// iam:PassRole must be enforced here instead.
+func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).CreateService(ctx, input, accountID)
+	return createService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
-func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+// createService is CreateService's core, split out so tests can inject a fake
+// ECSService instead of a live NATS connection.
+func createService(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.CreateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
+	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
+		return nil, err
+	}
+	return svc.CreateService(ctx, input, accountID)
+}
+
+func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).UpdateService(ctx, input, accountID)
+	return updateService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
-func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+// updateService is UpdateService's core, split out so tests can inject a fake
+// ECSService instead of a live NATS connection. A nil/empty TaskDefinition
+// (desiredCount-only update) skips the check — nothing new to pass.
+func updateService(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.UpdateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
+	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
+		return nil, err
+	}
+	return svc.UpdateService(ctx, input, accountID)
+}
+
+func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -205,7 +283,7 @@ func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DeleteService(ctx, input, accountID)
 }
 
-func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeServicesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -213,7 +291,7 @@ func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body
 	return handlers_ecs.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
 }
 
-func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListServicesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -224,7 +302,7 @@ func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []b
 // SubmitTaskStateChange is the agent's task-state report path over the gateway
 // (replaces the Layer-2 bus publish). The account is the SigV4 caller, so an
 // instance cannot report state for another account's task.
-func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.SubmitTaskStateChangeInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -236,7 +314,7 @@ func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string,
 // Layer-2 assign subscribe). Internal agent↔gateway action, not an AWS SDK
 // shape; the response carries bus.Assign with an RFC3339 time, so the gateway
 // encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
-func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(handlers_ecs.PollAssignmentsInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -247,7 +325,7 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 // ReportTaskGPU carries the agent's local ledger's per-task GPU device
 // assignment (agent → gateway). Internal action, not an AWS SDK shape: real
 // AWS's SubmitTaskStateChange has no gpuIds field.
-func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(handlers_ecs.ReportTaskGPUInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -257,7 +335,7 @@ func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []
 
 // --- Tags ---
 
-func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.TagResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -265,7 +343,7 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 	return handlers_ecs.NewNATSECSService(nc).TagResource(ctx, input, accountID)
 }
 
-func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UntagResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -273,7 +351,7 @@ func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
 }
 
-func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTagsForResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -283,7 +361,7 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 
 // --- Capacity providers ---
 
-func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.PutClusterCapacityProvidersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -291,7 +369,7 @@ func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID s
 	return handlers_ecs.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
 }
 
-func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateCapacityProviderInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -299,7 +377,7 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 	return handlers_ecs.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
 }
 
-func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeCapacityProvidersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
@@ -307,7 +385,7 @@ func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID str
 	return handlers_ecs.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
 }
 
-func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteCapacityProviderInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err

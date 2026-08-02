@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -159,12 +160,17 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 	return svc, nil
 }
 
-// httpHandler builds the shared mux for every per-tap responder.
+// httpHandler builds the shared mux for every per-tap responder. Tracing wraps
+// outermost (mirrors daemon.go/gateway.go/spinifexui.go: HTTPMiddleware
+// outside, security/routing logic inside) so a rejectForwarded 403 is still
+// captured as a root span for the fan-out it prevented, but the span itself
+// is passive instrumentation — it cannot alter or bypass rejectForwarded's
+// decision, which still runs first inside the traced handler chain.
 func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathToken, s.handleToken)
 	mux.HandleFunc("/", s.handleMetadata)
-	return rejectForwarded(normalizeVersion(mux))
+	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(mux)))
 }
 
 // Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks

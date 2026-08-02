@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -26,6 +27,9 @@ func createDaemonWithJetStream(t *testing.T) *Daemon {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	tmpDir := t.TempDir()
+	// Restore's orphan reconciliation reads pidfiles from the runtime dir;
+	// sandbox it so tests never touch this box's real /run/spinifex.
+	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
@@ -921,6 +925,35 @@ func TestStatePersistence_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.Status, loaded.Status)
 	assert.Equal(t, original.InstanceType, loaded.InstanceType)
 	assert.Equal(t, original.Attributes.StopInstance, loaded.Attributes.StopInstance)
+}
+
+// TestWriteState_LocalFailureStillWritesKV guards against a launch-window data
+// loss: before the fix, WriteState returned the instant the local file write
+// failed, so the independent JetStream KV write was never attempted. A crash
+// right after would leave a live VM with no durable record anywhere. The local
+// write is forced to fail deterministically (a regular file blocking the state
+// dir) rather than relying on a real disk fault, which is not reproducible here.
+func TestWriteState_LocalFailureStillWritesKV(t *testing.T) {
+	daemon := createDaemonWithJetStream(t)
+
+	obs := &fakeKVObserver{}
+	daemon.jsManager.SetSyncObserver(obs)
+
+	daemon.vmMgr.Insert(&vm.VM{ID: "i-localfault", Status: vm.StateRunning, InstanceType: "t3.micro"})
+
+	// Block the local state directory with a regular file so WriteLocalStateBytes's
+	// MkdirAll fails deterministically, without needing root or a real disk fault.
+	blocker := filepath.Join(daemon.config.DataDir, DefaultLocalStateDir)
+	require.NoError(t, os.WriteFile(blocker, []byte("not a directory"), 0o600))
+
+	err := daemon.WriteState()
+	require.Error(t, err, "WriteState must still surface the local write failure")
+
+	successes, failures := obs.snapshot()
+	assert.Empty(t, failures)
+	assert.Len(t, successes, 1, "KV write must be attempted even when the local write fails")
+	assert.Equal(t, uint64(0), daemon.Revision(),
+		"revision tracks local persistence and must not advance on a local failure")
 }
 
 // TestRestoreInstances_StoppedInstanceMigratedToSharedKV verifies that after

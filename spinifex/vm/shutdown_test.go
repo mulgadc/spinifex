@@ -765,6 +765,59 @@ func TestTransitionWithPrecheck_PersistenceFailure_PassesThroughError(t *testing
 		"persistence-failure branch implies status reached target before error returned")
 }
 
+// TestTransitionWithPrecheck_PersistenceFailure_StampsShuttingDownAt covers
+// the specific target that matters for the stuck-terminate backstop: when
+// TransitionState fails but the in-memory status still reached
+// StateShuttingDown, ShuttingDownAt must be stamped anyway so
+// StuckTerminateReaper.Sweep can eventually see and bound this instance.
+// Before the fix this never ran because the function returned before
+// reaching the stamp call.
+func TestTransitionWithPrecheck_PersistenceFailure_StampsShuttingDownAt(t *testing.T) {
+	persistErr := errors.New("no space left on device")
+	var m *Manager
+	m = NewManagerWithDeps(Deps{
+		TransitionState: func(v *VM, target InstanceState) error {
+			// Memory mutation succeeded; only persistence (e.g. a full disk
+			// writing local state) failed.
+			m.Inspect(v, func(vv *VM) { vv.Status = target })
+			return persistErr
+		},
+	})
+
+	instance := &VM{ID: "i-persist-fail-shutdown", Status: StateRunning}
+	m.Insert(instance)
+
+	err := m.transitionWithPrecheck(instance, StateShuttingDown)
+
+	require.ErrorIs(t, err, persistErr, "the persistence error must still reach the caller")
+	assert.False(t, instance.ShuttingDownAt.IsZero(),
+		"ShuttingDownAt must be stamped even though the state write failed, so the reaper can see this instance")
+}
+
+// TestTransitionWithPrecheck_Raced_DoesNotStampShuttingDownAt is the
+// contrast: when TransitionState fails AND the in-memory status did not
+// reach StateShuttingDown (a concurrent transition beat this call), the
+// target state was never actually entered, so stamping would be a lie.
+func TestTransitionWithPrecheck_Raced_DoesNotStampShuttingDownAt(t *testing.T) {
+	persistErr := errors.New("kv put failed")
+	m := NewManagerWithDeps(Deps{
+		TransitionState: func(_ *VM, _ InstanceState) error {
+			// Return error without mutating status, matching a concurrent
+			// transition that beat this call.
+			return persistErr
+		},
+	})
+
+	instance := &VM{ID: "i-raced-shutdown", Status: StateRunning}
+	m.Insert(instance)
+
+	err := m.transitionWithPrecheck(instance, StateShuttingDown)
+
+	require.ErrorIs(t, err, ErrInvalidTransition)
+	assert.True(t, instance.ShuttingDownAt.IsZero(),
+		"the raced branch never actually entered StateShuttingDown, so it must not stamp")
+}
+
 // TestTransitionWithPrecheck_InvalidInitialTransition_WrapsErrInvalidTransition
 // covers the static precheck rejecting an illegal transition before
 // TransitionState is ever called. The error must wrap
@@ -963,6 +1016,55 @@ func TestTerminate_WriteTerminatedFailure_PropagatesAndKeepsLocal(t *testing.T) 
 	assert.Zero(t, down.Load(), "OnInstanceDown must not fire when the terminated-bucket write fails")
 	_, stillInMap := m.Get(v.ID)
 	assert.True(t, stillInMap, "instance must remain in local map for retry on the next daemon restart")
+}
+
+// TestTerminate_LocalPersistenceFailure_StillDurablyRecordsTerminated covers
+// the ENOSPC scenario: TransitionState fails to persist locally (e.g. the
+// local state file write hits a full disk) but the in-memory status still
+// reaches StateTerminated. Before the fix, finalizeTerminated bailed out on
+// that error before ever calling WriteTerminatedInstance, so the durable
+// terminated record TerminatedTeardownReaper scans was never written and
+// nothing retried teardown without an operator restart. The durable KV write
+// (a JetStream call independent of local disk space) must still happen.
+func TestTerminate_LocalPersistenceFailure_StillDurablyRecordsTerminated(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	persistErr := errors.New("no space left on device")
+	store := newFakeStateStore()
+	cleaner := &recordingInstanceCleaner{}
+	down := &atomic.Int64{}
+	m := NewManager()
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: cleaner,
+		TransitionState: func(v *VM, target InstanceState) error {
+			// Mirrors daemon.TransitionState: memory mutation always
+			// succeeds; only the local file persistence fails, matching a
+			// full disk on the terminated transition specifically.
+			m.Inspect(v, func(vv *VM) { vv.Status = target })
+			if target == StateTerminated {
+				return persistErr
+			}
+			return nil
+		},
+		ShutdownSignal: func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(id string) { down.Add(1) },
+		},
+	})
+
+	v := &VM{ID: "i-local-persist-fail", Status: StateRunning, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	m.Insert(v)
+
+	err := m.Terminate(v.ID)
+
+	require.ErrorIs(t, err, persistErr, "the local persistence failure must still surface to the caller")
+	require.NotNil(t, store.terminated[v.ID],
+		"WriteTerminatedInstance must still run so TerminatedTeardownReaper can find and finish this instance")
+	assert.Equal(t, int64(1), down.Load(), "OnInstanceDown must still fire once the durable record lands")
+	_, stillInMap := m.Get(v.ID)
+	assert.False(t, stillInMap, "instance must leave the local running map once terminated is durable")
 }
 
 // TestTerminate_DeleteIfReclaimed_NoHook covers the slot-reclaim branch

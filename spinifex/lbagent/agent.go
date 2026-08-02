@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 const (
@@ -182,6 +184,15 @@ func (a *Agent) Stop() {
 
 // tick runs one heartbeat cycle: send health, check config hash, fetch if changed.
 func (a *Agent) tick() {
+	// A stopped agent must never heartbeat again, even if Start's select
+	// races a pending ticker tick against a just-closed stopCh — the whole
+	// point of stopping on a deleted LB is zero further noise.
+	select {
+	case <-a.stopCh:
+		return
+	default:
+	}
+
 	// nginx (NLB) has no per-server stats socket — the agent actively probes
 	// the delivered health targets instead of reading HAProxy stats.
 	var servers []ServerStatus
@@ -211,6 +222,21 @@ func (a *Agent) tick() {
 				"gateway", a.gatewayURL, "elapsed", time.Since(a.startedAt).Round(time.Second))
 			return
 		}
+
+		// LoadBalancerNotFound is a positive response from the gateway (the
+		// store round-tripped and confirmed no record), not a connectivity
+		// failure — distinct from a dial error, timeout, or 5xx, all of which
+		// leave the LB's existence unknown and must keep retrying. Past the
+		// startup grace window it can no longer be the record's own
+		// replication race, so it means the LB was deleted: stop heartbeating
+		// it rather than retrying forever.
+		var gwErr *gatewayError
+		if errors.As(err, &gwErr) && gwErr.code == awserrors.ErrorELBv2LoadBalancerNotFound {
+			slog.Info("Load balancer no longer exists, stopping agent", "lbId", a.lbID, "gateway", a.gatewayURL)
+			a.Stop()
+			return
+		}
+
 		slog.Error("Heartbeat failed", "err", err, "gateway", a.gatewayURL, "region", a.region)
 		return
 	}
@@ -372,10 +398,41 @@ func (a *Agent) signedPost(params url.Values) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gateway returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, &gatewayError{statusCode: resp.StatusCode, code: parseAWSErrorCode(respBody), body: string(respBody)}
 	}
 
 	return respBody, nil
+}
+
+// gatewayError wraps a non-200 gateway response, carrying the parsed AWS
+// error code (if any) alongside the raw status/body so callers can
+// distinguish a specific, unambiguous rejection (e.g. LoadBalancerNotFound)
+// from a generic or ambiguous one.
+type gatewayError struct {
+	statusCode int
+	code       string
+	body       string
+}
+
+func (e *gatewayError) Error() string {
+	return fmt.Sprintf("gateway returned %d: %s", e.statusCode, e.body)
+}
+
+// awsErrorEnvelope is the minimal shape of the query-protocol error response
+// needed to recover the AWS error <Code> (e.g. "LoadBalancerNotFound").
+type awsErrorEnvelope struct {
+	XMLName xml.Name `xml:"ErrorResponse"`
+	Code    string   `xml:"Error>Code"`
+}
+
+// parseAWSErrorCode extracts the AWS error <Code> from a gateway error body.
+// Returns "" if the body does not parse as the expected envelope.
+func parseAWSErrorCode(body []byte) string {
+	var env awsErrorEnvelope
+	if err := xml.Unmarshal(body, &env); err != nil {
+		return ""
+	}
+	return env.Code
 }
 
 // writeCertFiles writes each delivered TLS PEM to its path (0600) under certDir.

@@ -199,13 +199,16 @@ func TestDeleteVpc_MissingID(t *testing.T) {
 func TestDeleteVpc_WithSubnets(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 
 	// Should fail because VPC has subnets
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{
 		VpcId: aws.String(vpcID),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "DependencyViolation")
+	// The message must name the blocking subnet so the caller knows what to
+	// delete first, not just that something is blocking.
+	assert.ErrorContains(t, err, subnetID)
 }
 
 func TestDescribeVpcs_All(t *testing.T) {
@@ -648,6 +651,202 @@ func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string)
 		}
 	}
 	return n
+}
+
+// nonMainRTBRecord mirrors routetable.RouteTableRecord (see
+// clearRouteTableAssociationsForSubnet) so tests can seed a non-main route
+// table with an association directly in rtbKV, bypassing the routetable
+// package to avoid a circular import.
+type nonMainRTBRecord struct {
+	RouteTableId string `json:"route_table_id"`
+	VpcId        string `json:"vpc_id"`
+	AccountID    string `json:"account_id"`
+	IsMain       bool   `json:"is_main"`
+	Associations []struct {
+		AssociationId string `json:"association_id"`
+		SubnetId      string `json:"subnet_id,omitempty"`
+		Main          bool   `json:"main"`
+	} `json:"associations"`
+	Tags      map[string]string `json:"tags"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+// putTestNonMainRouteTable writes a non-main route table associated with
+// subnetID directly to rtbKV and returns its ID and association ID.
+func putTestNonMainRouteTable(t *testing.T, svc *VPCServiceImpl, accountID, vpcID, subnetID string) (rtbID, assocID string) {
+	t.Helper()
+	rtbID = "rtb-" + t.Name() + "-" + subnetID
+	assocID = "rtbassoc-" + t.Name() + "-" + subnetID
+	rec := nonMainRTBRecord{
+		RouteTableId: rtbID,
+		VpcId:        vpcID,
+		AccountID:    accountID,
+		IsMain:       false,
+		Associations: []struct {
+			AssociationId string `json:"association_id"`
+			SubnetId      string `json:"subnet_id,omitempty"`
+			Main          bool   `json:"main"`
+		}{
+			{AssociationId: assocID, SubnetId: subnetID, Main: false},
+		},
+		Tags:      make(map[string]string),
+		CreatedAt: time.Now(),
+	}
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = svc.rtbKV.Put(t.Context(), accountID+"."+rtbID, data)
+	require.NoError(t, err)
+	return rtbID, assocID
+}
+
+// getTestRouteTableAssociations reads back the associations of rtbID for
+// assertions.
+func getTestRouteTableAssociations(t *testing.T, svc *VPCServiceImpl, accountID, rtbID string) []string {
+	t.Helper()
+	entry, err := svc.rtbKV.Get(t.Context(), accountID+"."+rtbID)
+	require.NoError(t, err)
+	var rec nonMainRTBRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	subnetIDs := make([]string, 0, len(rec.Associations))
+	for _, a := range rec.Associations {
+		subnetIDs = append(subnetIDs, a.SubnetId)
+	}
+	return subnetIDs
+}
+
+// TestDeleteVpc_RejectsNonMainRouteTable asserts DeleteVpc rejects with
+// DependencyViolation while a non-main route table exists, matching AWS:
+// non-main route tables must be deleted first. Without this check the VPC
+// is removed out from under the route table, orphaning it permanently since
+// DeleteRouteTable can never resolve a VpcId that no longer exists.
+func TestDeleteVpc_RejectsNonMainRouteTable(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.60.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.60.1.0/24")
+	rtbID, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcID, subnetID)
+
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "DependencyViolation")
+
+	// Rejected call must mutate nothing: VPC and route table both persist.
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the route table and retry")
+
+	_, err = svc.rtbKV.Get(t.Context(), testAccountID+"."+rtbID)
+	require.NoError(t, err, "non-main route table must not be reaped by a rejected DeleteVpc")
+}
+
+// TestDeleteVpc_RouteTableCheckFailsClosedOnCorruptRTB asserts a corrupt
+// route table record blocks DeleteVpc rather than being silently skipped —
+// a transient/corrupt read must never let DeleteVpc orphan a route table it
+// could not evaluate.
+func TestDeleteVpc_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.61.0.0/16")
+
+	_, err := svc.rtbKV.Put(t.Context(), testAccountID+".rtb-corrupt", []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "ServerInternal")
+}
+
+// TestDeleteSubnet_ClearsRouteTableAssociations asserts DeleteSubnet removes
+// every association naming the deleted subnet, so the route table it leaves
+// behind never carries a reference to a subnet that no longer exists.
+func TestDeleteSubnet_ClearsRouteTableAssociations(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.62.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.62.1.0/24")
+	rtbID, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcID, subnetID)
+
+	_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.NoError(t, err)
+
+	assert.NotContains(t, getTestRouteTableAssociations(t, svc, testAccountID, rtbID), subnetID,
+		"DeleteSubnet must clear associations naming the deleted subnet")
+}
+
+// TestDeleteSubnet_PreservesUnknownRouteTableFields pins the write-back to
+// editing only "associations". routetable owns this record and imports vpc, so
+// it cannot be typed here; a mirror struct would silently erase every field
+// added to RouteTableRecord that the mirror had not caught up with.
+func TestDeleteSubnet_PreservesUnknownRouteTableFields(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.63.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.63.1.0/24")
+	rtbID, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcID, subnetID)
+
+	// Re-write the stored record with a field no struct in this package knows.
+	key := testAccountID + "." + rtbID
+	entry, err := svc.rtbKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	var stored map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(entry.Value(), &stored))
+	stored["propagating_vgws"] = json.RawMessage(`["vgw-deadbeef"]`)
+	data, err := json.Marshal(stored)
+	require.NoError(t, err)
+	_, err = svc.rtbKV.Put(t.Context(), key, data)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.rtbKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	var reread map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(after.Value(), &reread))
+
+	assert.NotContains(t, getTestRouteTableAssociations(t, svc, testAccountID, rtbID), subnetID,
+		"the association naming the subnet must still be cleared")
+	assert.JSONEq(t, `["vgw-deadbeef"]`, string(reread["propagating_vgws"]),
+		"a field this package does not model must survive the association clear")
+}
+
+// TestDeleteSubnet_LeavesOtherVPCsAssociationsAlone asserts clearing
+// associations for one subnet does not touch a route table association
+// belonging to a different subnet/VPC.
+func TestDeleteSubnet_LeavesOtherVPCsAssociationsAlone(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	vpcA := createTestVPC(t, svc, "10.63.0.0/16")
+	subnetA := createTestSubnet(t, svc, vpcA, "10.63.1.0/24")
+	rtbA, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcA, subnetA)
+
+	vpcB := createTestVPC(t, svc, "10.64.0.0/16")
+	subnetB := createTestSubnet(t, svc, vpcB, "10.64.1.0/24")
+	rtbB, _ := putTestNonMainRouteTable(t, svc, testAccountID, vpcB, subnetB)
+
+	_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetA)}, testAccountID)
+	require.NoError(t, err)
+
+	assert.NotContains(t, getTestRouteTableAssociations(t, svc, testAccountID, rtbA), subnetA)
+	assert.Contains(t, getTestRouteTableAssociations(t, svc, testAccountID, rtbB), subnetB,
+		"deleting a subnet in one VPC must not touch another VPC's route table associations")
+}
+
+// TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB asserts a corrupt
+// route table record blocks DeleteSubnet, leaving the subnet present and the
+// operation retryable, rather than deleting the subnet with a stale
+// association strand behind it unseen.
+func TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.65.1.0/24")
+
+	_, err := svc.rtbKV.Put(t.Context(), testAccountID+".rtb-corrupt", []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "ServerInternal")
+
+	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1, "subnet must persist so a KV read failure never strands an association unseen")
 }
 
 // TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where

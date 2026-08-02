@@ -17,6 +17,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // stateStoreAdapter satisfies vm.StateStore by delegating to JetStreamManager.
@@ -105,6 +109,35 @@ func (a *volumeMounterAdapter) topic(action string) string {
 	return fmt.Sprintf("ebs.%s.%s", a.node, action)
 }
 
+// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span and
+// injecting it into the message headers so viperblockd's consumer span
+// (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
+//
+// VolumeMounter carries no caller context, so each call opens its own trace
+// here rather than threading one through the interface.
+func ebsRequestWithTrace(nc *nats.Conn, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
+	ctx, span := otel.Tracer(daemonTracerName).Start(context.Background(), "NATS "+subject,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "nats"),
+			attribute.String("messaging.destination.name", subject),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	reqMsg := nats.NewMsg(subject)
+	reqMsg.Data = data
+	utils.InjectTraceContext(ctx, reqMsg.Header)
+
+	msg, err = nc.RequestMsg(reqMsg, timeout)
+	return msg, err
+}
+
 func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
@@ -133,7 +166,7 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 			return rollback(err)
 		}
 
-		reply, err := a.nc.Request(a.topic("mount"), ebsMountRequest, 30*time.Second)
+		reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), ebsMountRequest, 30*time.Second)
 
 		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
 
@@ -178,7 +211,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 		// local WAL would find no checkpoint (bad superblock). On terminate the
 		// volume is deleted regardless; on stop it stays attached/retryable.
 		sealed := true
-		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
+		msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -215,7 +248,7 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 		return fmt.Errorf("marshal ebs.mount request: %w", err)
 	}
 
-	reply, err := a.nc.Request(a.topic("mount"), payload, 30*time.Second)
+	reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), payload, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.mount NATS request: %w", err)
 	}
@@ -253,7 +286,7 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, unmountSealTimeout)
+	msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
@@ -609,7 +642,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				firstErr = cmp.Or(firstErr, err)
 				continue
 			}
-			deleteMsg, err := a.d.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
+			deleteMsg, err := ebsRequestWithTrace(a.d.natsConn, "ebs.delete", ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
@@ -621,20 +654,11 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 			continue
 		}
 
-		// User-visible volumes: DeleteOnTermination=false survives terminate,
-		// but terminate still implies detach (AWS semantics). Only the Boot
-		// volume can still be attached here — shutdownAndUnmount's Unmount
-		// clears every non-Boot volume's attachment already, so a non-Boot
-		// DoT=false volume is genuinely a no-op skip. A DoT=false Boot volume
-		// is never touched by Unmount, so without this it would strand
-		// attached to the now-terminated instance forever.
+		// User-visible volumes: DeleteOnTermination=false survives terminate, but
+		// terminate still implies detach (AWS semantics) for every volume, Boot or
+		// not. Unmount's own clear is best-effort and skipped entirely on the force-complete path, so this call is the explicit guarantee.
 		if !ebsRequest.DeleteOnTermination {
-			if !ebsRequest.Boot {
-				slog.Info("Volume has DeleteOnTermination=false, skipping deletion",
-					"name", ebsRequest.Name, "id", instance.ID)
-				continue
-			}
-			slog.Info("Boot volume has DeleteOnTermination=false, detaching without deleting",
+			slog.Info("Volume has DeleteOnTermination=false, detaching without deleting",
 				"name", ebsRequest.Name, "id", instance.ID)
 			if a.d.volumeService == nil {
 				slog.Warn("Volume service not configured, cannot detach volume",
@@ -722,28 +746,86 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 }
 
 // DetachAndDeleteENI detaches the auto-created ENI from the instance and
-// deletes it via the VPC service. NotFound is tolerated. Extra ENIs are
-// cleaned up by the load-balancer service via its own teardown loop and
-// are not touched here.
+// deletes it via the VPC service. NotFound is tolerated. It then sweeps every
+// other ENI the KV records against this instance — post-launch attaches
+// (e.g. ECS awsvpc, direct AttachNetworkInterface) never update instance.ENIId,
+// so relying on the scalar alone leaves them attached forever, pinning their
+// SG/subnet/VPC behind DependencyViolation.
 func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
-	if instance.ENIId == "" || a.d.vpcService == nil {
+	if a.d.vpcService == nil {
 		return nil
 	}
-	// Best-effort detach; a failure here must not block deletion — the force
-	// delete below bypasses the in-use guard for the owning instance, breaking
-	// the un-terminable-ENI deadlock (ADR-0003 §2).
-	if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
-		slog.Warn("Failed to detach ENI on termination",
-			"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
+
+	var primaryErr error
+	if instance.ENIId != "" {
+		// force=true bypasses the in-use guard for the owning instance,
+		// breaking the un-terminable-ENI deadlock (ADR-0003 §2). One call
+		// carries the detach's revision into the delete, so a lagging KV
+		// replica can never decide the outcome.
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, instance.ENIId, true)
+		if err != nil {
+			slog.Error("Failed to delete ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
+			primaryErr = err
+		} else if deleted {
+			slog.Info("Deleted ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		} else {
+			slog.Info("ENI already absent on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		}
 	}
-	if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
-		slog.Error("Failed to delete ENI on termination",
-			"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
-		return err
+
+	a.releaseAttachedENIs(instance)
+
+	return primaryErr
+}
+
+// releaseAttachedENIs enumerates the spinifex-vpc-enis KV for every record
+// still carrying this instance's ID and releases each one, independent of
+// instance.ENIId. Best-effort and idempotent per ENI: one failure is logged
+// and the sweep continues, so a partial failure never blocks the rest and a
+// re-run of terminate converges. DeleteOnTermination=false detaches only.
+func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
+	records, err := a.d.vpcService.ListInstanceENIs(instance.AccountID, instance.ID)
+	if err != nil {
+		slog.Warn("Failed to enumerate attached ENIs on termination",
+			"instanceId", instance.ID, "err", err)
+		return
 	}
-	slog.Info("Deleted ENI on termination",
-		"eni", instance.ENIId, "instanceId", instance.ID)
-	return nil
+
+	for _, record := range records {
+		eniId := record.NetworkInterfaceId
+
+		// DeleteOnTermination=false detaches only; there is no subsequent
+		// delete to race against, so a plain DetachENI is sufficient here.
+		if record.DeleteOnTermination != nil && !*record.DeleteOnTermination {
+			if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, eniId); detachErr != nil {
+				slog.Warn("Failed to detach attached ENI on termination",
+					"eni", eniId, "instanceId", instance.ID, "err", detachErr)
+			}
+			slog.Info("Detached attached ENI on termination, DeleteOnTermination=false",
+				"eni", eniId, "instanceId", instance.ID)
+			continue
+		}
+
+		// One call carries the detach's revision into the delete so a
+		// lagging KV replica can never decide the outcome (mirrors the
+		// primary ENI path above).
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, eniId, true)
+		if err != nil {
+			slog.Error("Failed to delete attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID, "err", err)
+			continue
+		}
+		if deleted {
+			slog.Info("Deleted attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		} else {
+			slog.Info("Attached ENI already absent on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		}
+	}
 }
 
 // RemoveFromPlacementGroup unbinds the instance from its placement group

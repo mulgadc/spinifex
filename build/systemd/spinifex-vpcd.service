@@ -14,7 +14,13 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service vpcd start
 Restart=on-failure
 RestartSec=5
+# Waits for an in-flight OVN drift-reconcile pass to return before exiting;
+# no sub-timeout bounds that call today, so this covers a normal pass.
+TimeoutStopSec=20
 OOMScoreAdjust=-500
+# Per-service ceiling: bounds a leak here instead of the slice-wide cap.
+MemoryHigh=10%
+MemoryMax=20%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/vpcd/
 

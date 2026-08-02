@@ -117,8 +117,10 @@ var nodeDrainCmd = &cobra.Command{
 	Long: `Run the GATE and DRAIN shutdown phases against the local node only: power down
 its guests via QMP and unmount their volumes (flushing the viperblock WAL) while
 every service is still running. STORAGE/PERSIST/INFRA are left to systemd's
-ordered unit teardown. This is the ExecStop of spinifex-shutdown.service, so a
-systemctl stop or host reboot drains guests before any storage service stops.`,
+ordered unit teardown. This is what spinifex-shutdown.service's ExecStop runs,
+with --only-if-host-stopping so it only drains on a genuine host
+shutdown/reboot -- not on a plain "systemctl restart/stop spinifex.target".
+Run by hand without that flag, it always drains unconditionally.`,
 	Run: runNodeDrainLocal,
 }
 
@@ -281,6 +283,9 @@ func init() {
 	nodeCmd.AddCommand(nodeDrainCmd)
 	nodeDrainCmd.Flags().Bool("local", false, "Drain the local node only (required)")
 	nodeDrainCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
+	nodeDrainCmd.Flags().Bool("only-if-host-stopping", false, "Skip the drain unless systemd is unwinding into shutdown.target (real reboot/poweroff); unset, always drains")
+	nodeCmd.AddCommand(nodeJSProbeCmd)
+	nodeJSProbeCmd.Flags().Duration("timeout", 10*time.Second, "Maximum time to wait for the canary round-trip")
 
 	adminCmd.AddCommand(imagesCmd)
 	imagesCmd.AddCommand(imagesImportCmd)
@@ -905,8 +910,10 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Removed AMI %s (freed %s across %d objects).\n",
-		imageID, utils.HumanBytes(utils.SafeInt64ToUint64(res.BytesFreed)), res.ObjectsDeleted)
+	// BytesDeleted is logical: predastore reclaims the underlying disk space
+	// asynchronously via background compaction, not at delete time.
+	fmt.Printf("✅ Removed AMI %s (%d objects, %s marked for deletion; disk space is reclaimed by background compaction).\n",
+		imageID, res.ObjectsDeleted, utils.HumanBytes(utils.SafeInt64ToUint64(res.BytesDeleted)))
 }
 
 func printDependents(w io.Writer, d admin.Dependents) {
@@ -1312,7 +1319,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Create config directory
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+	if err := EnsureConfigDir(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
 		os.Exit(1)
 	}
@@ -2258,7 +2265,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		configDir = DefaultConfigDir()
 	}
 
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+	if err := EnsureConfigDir(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
 		os.Exit(1)
 	}

@@ -383,10 +383,9 @@ var (
 	// wire code "ResourceInUseException", so this is a distinct, self-documenting
 	// name for ACM call sites rather than a second ErrorLookup entry — ErrorLookup
 	// is keyed by wire code across every service, so it can only hold one message
-	// per code. Naming it ErrorACMResourceInUse stops an ACM call site reading
-	// "EKS" while making no claim that the returned message text is ACM-flavored;
-	// it is still EKS's "cluster already exists" wording until ErrorLookup (or its
-	// caller in gateway.ErrorHandler) is keyed per-service instead of globally.
+	// per code. LookupErrorMessage resolves the ACM-flavored wording from
+	// errorLookupByService instead, so an ACM call site is not stuck with EKS's
+	// "cluster already exists" text.
 	ErrorACMResourceInUse = ErrorEKSResourceInUse
 	// ErrorACMRequestInProgress is what GetCertificate returns for a certificate
 	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
@@ -561,34 +560,89 @@ func ValidErrorCode(code string) string {
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
 func ResolveErrorCode(err error) (string, bool) {
+	code, _, ok := resolveErrorDetail(err)
+	return code, ok
+}
+
+// ResolveErrorDetail resolves the same registered code as ResolveErrorCode,
+// plus the message the producing call site attached via Errorf, if any. A
+// generic %w wrapper added purely for internal context carries no message.
+func ResolveErrorDetail(err error) (code, message string, ok bool) {
+	return resolveErrorDetail(err)
+}
+
+// resolveErrorDetail is the shared unwrap-tree walk behind ResolveErrorCode
+// and ResolveErrorDetail.
+func resolveErrorDetail(err error) (code, message string, ok bool) {
 	if err == nil {
-		return "", false
+		return "", "", false
 	}
-	code := err.Error()
-	if _, ok := ErrorLookup[code]; ok {
-		return code, true
+	text := err.Error()
+	if _, exists := ErrorLookup[text]; exists {
+		var cause *codedError
+		if errors.As(err, &cause) {
+			return text, cause.message, true
+		}
+		return text, "", true
 	}
 
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+	if joined, isJoined := err.(interface{ Unwrap() []error }); isJoined {
 		for _, inner := range joined.Unwrap() {
-			if code, found := ResolveErrorCode(inner); found {
-				return code, true
+			if c, m, found := resolveErrorDetail(inner); found {
+				return c, m, true
 			}
 		}
-		return "", false
+		return "", "", false
 	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return ResolveErrorCode(wrapped.Unwrap())
+	if wrapped, isWrapped := err.(interface{ Unwrap() error }); isWrapped {
+		return resolveErrorDetail(wrapped.Unwrap())
 	}
-	return "", false
+	return "", "", false
 }
+
+// codedError is the leaf Errorf wraps around a registered code, letting the
+// resolved layer distinguish a client-facing message from an unrelated %w
+// wrapper. Error() returns only the code, so code resolution is unaffected.
+type codedError struct {
+	code    string
+	message string
+}
+
+func (c *codedError) Error() string { return c.code }
 
 // Errorf returns an error carrying an AWS error code where ResolveErrorCode can
 // find it, alongside a message for the logs and the traces. Formatting the code
 // into the message with %s instead leaves it unresolvable, so a handler's 400
 // reaches the client as a 500 with its own code stripped.
 func Errorf(code, format string, args ...any) error {
-	return fmt.Errorf(format+": %w", append(args, errors.New(code))...)
+	cause := &codedError{code: code}
+	outer := fmt.Errorf(format+": %w", append(args, cause)...)
+	// Derived from the already-formatted outer text, not a second
+	// fmt.Sprintf(format, args...) call, so a caller's own %w renders via
+	// fmt.Errorf's %w support instead of failing under Sprintf, which has none.
+	cause.message = strings.TrimSuffix(outer.Error(), ": "+code)
+	return outer
+}
+
+// errorLookupByService overrides ErrorLookup's message and HTTP status for a
+// (service, code) pair whose wire code is shared by services with different
+// canonical wording — e.g. ACM and EKS both use "ResourceInUseException".
+var errorLookupByService = map[string]map[string]ErrorMessage{
+	"acm": {
+		ErrorACMResourceInUse: {HTTPCode: 400, Message: "The certificate is in use by another AWS resource in this account. Remove the reference to the certificate before deleting it."},
+	},
+}
+
+// LookupErrorMessage returns the ErrorMessage for code, scoped to service
+// where errorLookupByService has an override, otherwise ErrorLookup's global
+// default.
+func LookupErrorMessage(service, code string) ErrorMessage {
+	if svcMsgs, ok := errorLookupByService[service]; ok {
+		if msg, ok := svcMsgs[code]; ok {
+			return msg
+		}
+	}
+	return ErrorLookup[code]
 }
 
 // ValidErrorCodeFromError resolves err or returns ErrorServerInternal.

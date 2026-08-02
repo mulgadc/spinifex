@@ -7,8 +7,7 @@ Wants=openvswitch-ipsec.service
 
 [Service]
 EnvironmentFile=-/etc/spinifex/telemetry.env
-# Written by the installer on a ZFS root: raises SPINIFEX_RESERVED_MEM_GB by the
-# ARC ceiling, which the admission gate cannot see and would else hand to guests.
+# ZFS root: installer raises SPINIFEX_RESERVED_MEM_GB by the ARC ceiling the admission gate cannot see
 EnvironmentFile=-/etc/spinifex/host.env
 Type=simple
 Slice=spinifex-system.slice
@@ -22,6 +21,9 @@ KillMode=process
 TimeoutStopSec=15
 # RG-4: infra tier — reaped only after every guest
 OOMScoreAdjust=-500
+# Guest QEMU shares this cgroup: the ceiling tracks the slice budget, not daemon overhead
+MemoryHigh=75%
+MemoryMax=85%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/

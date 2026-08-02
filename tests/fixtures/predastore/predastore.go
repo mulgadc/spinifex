@@ -72,6 +72,12 @@ type Fixture struct {
 	Region    string
 	AccessKey string
 	SecretKey string
+	// DataDir is the daemon's base_path: it contains store/node-N/ for each
+	// configured node (db/, *.seg, *.idx, state.json), the exact layout a
+	// segment-inspection tool like segscan expects. The daemon keeps writing
+	// here for the life of the test binary, so callers that read it directly
+	// (rather than through the S3 API) must copy it first.
+	DataDir string
 }
 
 // Package-level singleton: one predastore daemon per test binary (per Go
@@ -245,6 +251,7 @@ account_id = "123456789012"
 		Region:    Region,
 		AccessKey: AccessKey,
 		SecretKey: SecretKey,
+		DataDir:   testDir,
 	}
 	started = true
 	t.Logf("predastore fixture started, test dir: %s", testDir)

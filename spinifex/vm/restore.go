@@ -49,6 +49,10 @@ func (m *Manager) Restore() {
 	if err := m.writeRunningState(); err != nil {
 		slog.Error("Failed to persist state after restore", "error", err)
 	}
+
+	// Every known instance is classified and relaunched by this point, so a
+	// live qemu-system process still unaccounted for genuinely has no record.
+	m.reportRecordlessQEMUOrphans()
 }
 
 // loadRunningState replaces the manager's running set from the persisted snapshot.

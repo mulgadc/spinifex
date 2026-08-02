@@ -204,19 +204,28 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		}
 	}
 
-	// Detach all ENIs explicitly: TerminateSystemInstance doesn't clear in-use status.
+	removed := make(map[string]bool, len(toRemove))
+	for _, sn := range toRemove {
+		removed[current[sn]] = true
+	}
+
+	// Detach the ENIs that survive the reshape: TerminateSystemInstance doesn't
+	// clear in-use status, and these are re-attached to the relaunched VM.
 	for _, eniID := range current {
+		if removed[eniID] {
+			continue
+		}
 		if detachErr := s.VPCService.DetachENI(ctx, accountID, eniID); detachErr != nil {
 			slog.WarnContext(ctx, "SetSubnets: failed to detach ENI before relaunch", "eni", eniID, "err", detachErr)
 		}
 	}
 
-	// Delete ENIs for removed subnets now that they are detached.
+	// ENIs for removed subnets go through the single detach+delete flow. Two
+	// separate calls let a lagging replica's re-read decide the outcome and
+	// leak the ENI; force is correct because the LB owns them.
 	for _, sn := range toRemove {
 		eniID := current[sn]
-		if _, delErr := s.VPCService.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: aws.String(eniID),
-		}, accountID); delErr != nil && !awserrors.IsNotFound(delErr) {
+		if _, delErr := s.VPCService.DetachAndDeleteENI(ctx, accountID, eniID, true); delErr != nil && !awserrors.IsNotFound(delErr) {
 			slog.ErrorContext(ctx, "SetSubnets: failed to delete removed ENI", "subnet", sn, "eni", eniID, "err", delErr)
 		}
 	}

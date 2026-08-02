@@ -114,6 +114,14 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	// daemon startup; absent (no master key) workers/CP fall back accordingly.
 	deps.IAMProvider = d.systemRoleEnsurer
 
+	// Guarded rather than assigned unconditionally in the struct literal: a nil
+	// *VolumeServiceImpl assigned into the csiVolumeReclaimer interface field
+	// would be a non-nil interface wrapping a nil pointer, defeating
+	// reclaimCSIVolumes' own nil check.
+	if d.volumeService != nil {
+		deps.Volume = d.volumeService
+	}
+
 	return deps
 }
 

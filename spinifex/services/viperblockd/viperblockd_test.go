@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -510,5 +511,64 @@ func TestRetryLoadState(t *testing.T) {
 		assert.Equal(t, 3, sleeps, "sleep happens between attempts, not after the final one")
 		// Backoff multiplier is 1.5: 100ms, 150ms, 225ms.
 		assert.Equal(t, 225*time.Millisecond, lastDelay)
+	})
+}
+
+// TestValidVolumeName covers the character-level gate every handler that
+// turns a wire volume name into a filesystem path must pass first.
+func TestValidVolumeName(t *testing.T) {
+	valid := []string{"vol-0123456789abcdef0", "vol-0123456789abcdef0-efi", "a"}
+	for _, name := range valid {
+		assert.True(t, validVolumeName(name), "expected %q to be valid", name)
+	}
+
+	invalid := []string{"", ".", "..", "../..", "a/b", "/etc/passwd", "vol/../.."}
+	for _, name := range invalid {
+		assert.False(t, validVolumeName(name), "expected %q to be rejected", name)
+	}
+}
+
+// TestLocalVolumeDir is the regression test for the ebs.delete data-destruction
+// hazard: an unvalidated volume name reaching os.RemoveAll could wipe BaseDir
+// itself (empty name) or escape it entirely ("../.."). Every case here must be
+// rejected before a caller ever gets a path back to remove.
+func TestLocalVolumeDir(t *testing.T) {
+	baseDir := t.TempDir()
+
+	t.Run("empty_volume_rejected", func(t *testing.T) {
+		_, err := localVolumeDir(baseDir, "")
+		require.Error(t, err, "an empty volume must never resolve to BaseDir itself")
+	})
+
+	t.Run("dot_rejected", func(t *testing.T) {
+		_, err := localVolumeDir(baseDir, ".")
+		require.Error(t, err)
+	})
+
+	t.Run("parent_traversal_rejected", func(t *testing.T) {
+		for _, name := range []string{"..", "../..", "../../etc"} {
+			_, err := localVolumeDir(baseDir, name)
+			require.Error(t, err, "volume %q must not escape BaseDir", name)
+		}
+	})
+
+	t.Run("embedded_separator_rejected", func(t *testing.T) {
+		for _, name := range []string{"a/b", "a/../../b", "/abs/path"} {
+			_, err := localVolumeDir(baseDir, name)
+			require.Error(t, err, "volume %q must not contain a path separator", name)
+		}
+	})
+
+	t.Run("empty_base_dir_rejected", func(t *testing.T) {
+		_, err := localVolumeDir("", "vol-abc123")
+		require.Error(t, err)
+	})
+
+	t.Run("valid_name_resolves_under_base_dir", func(t *testing.T) {
+		dir, err := localVolumeDir(baseDir, "vol-abc123")
+		require.NoError(t, err)
+		absBase, err := filepath.Abs(baseDir)
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(absBase, "vol-abc123"), dir)
 	})
 }

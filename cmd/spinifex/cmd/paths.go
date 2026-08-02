@@ -1,17 +1,22 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 )
 
+// productionConfigDir is the config directory of a production install, and the
+// path the systemd units read their configuration from. Overridable in tests.
+var productionConfigDir = "/etc/spinifex"
+
 // DefaultConfigDir returns the default configuration directory.
-// Production: /etc/spinifex (when /etc/spinifex exists)
+// Production: /etc/spinifex
 // Development: ~/spinifex/config.
 func DefaultConfigDir() string {
 	if isProductionLayout() {
-		return "/etc/spinifex"
+		return productionConfigDir
 	}
 	return filepath.Join(realUserHomeDir(), "spinifex", "config")
 }
@@ -54,16 +59,43 @@ func DefaultConfigFile() string {
 	return filepath.Join(DefaultConfigDir(), "spinifex.toml")
 }
 
-// productionMarkerPath identifies a production install by directory presence.
-// Created by setup.sh during binary install. Overridable in tests.
-var productionMarkerPath = "/etc/spinifex"
+// productionMarkerPaths identify a production install by presence. Overridable
+// in tests. The systemd target is the durable marker: setup.sh installs it and
+// only an uninstall removes it, whereas /etc/spinifex is state that a node reset
+// legitimately clears.
+var productionMarkerPaths = []string{
+	"/etc/systemd/system/spinifex.target",
+	productionConfigDir,
+}
 
 // isProductionLayout returns true when running in a production install.
 // No root check — allows non-root users (e.g. tf-user) to run CLI commands
 // like `spx get nodes` without sudo or --config flags.
 func isProductionLayout() bool {
-	if info, err := os.Stat(productionMarkerPath); err == nil && info.IsDir() {
-		return true
+	for _, marker := range productionMarkerPaths {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
 	}
 	return false
+}
+
+// EnsureConfigDir prepares the config directory, and refuses to proceed when a
+// production node has lost it.
+//
+// setup.sh owns that tree: the per-service subdirectories and their ownership
+// (spinifex-nats, spinifex-gw, ...) come from there, not from init. Recreating
+// just the top level would produce a node that inits cleanly and then fails at
+// service start on a missing nats.conf, so say so now instead.
+func EnsureConfigDir(dir string) error {
+	if _, err := os.Stat(dir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if dir == productionConfigDir && isProductionLayout() {
+		return fmt.Errorf("%s is missing on a production install: re-run setup.sh to rebuild the config tree, then init", dir)
+	}
+	return os.MkdirAll(dir, 0750)
 }

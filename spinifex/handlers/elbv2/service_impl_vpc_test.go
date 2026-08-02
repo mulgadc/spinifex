@@ -259,6 +259,66 @@ func TestDeleteLoadBalancer_CleansUpENIs(t *testing.T) {
 	assert.Empty(t, eniDesc.NetworkInterfaces)
 }
 
+// TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure
+// asserts DeleteLoadBalancer does not delete the LB record while an ENI
+// delete fails persistently — the ownership edge (lb.ENIs) is the only thing
+// that would ever let a retry (or the orphan reaper) find and finish it.
+func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+
+	cfg := &config.Config{Daemon: config.DaemonConfig{DevNetworking: true}}
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
+	require.NoError(t, err)
+	svc.VPCService = vpcSvc
+
+	vpcOut, err := vpcSvc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.0.0.0/16"),
+	}, testAccountID)
+	require.NoError(t, err)
+	subOut, err := vpcSvc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
+		VpcId:            vpcOut.Vpc.VpcId,
+		CidrBlock:        aws.String("10.0.1.0/24"),
+		AvailabilityZone: aws.String("us-east-1a"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("persist-alb"),
+		Subnets: []*string{subOut.Subnet.SubnetId},
+	}, testAccountID)
+	require.NoError(t, err)
+	lbArn := *lbOut.LoadBalancers[0].LoadBalancerArn
+
+	lb, err := svc.store.GetLoadBalancerByArn(context.Background(), lbArn)
+	require.NoError(t, err)
+	require.NotEmpty(t, lb.ENIs, "CreateLoadBalancer must have allocated a system-managed ENI")
+	eniID := lb.ENIs[0]
+
+	// Corrupt the ENI record so every DetachAndDeleteENI read fails closed —
+	// a persistent failure, not a one-shot race.
+	eniKV, err := js.KeyValue(context.Background(), handlers_ec2_vpc.KVBucketENIs)
+	require.NoError(t, err)
+	_, err = eniKV.Put(context.Background(), testAccountID+"."+eniID, []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(lbArn),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DependencyViolation")
+
+	persisted, err := svc.store.GetLoadBalancerByArn(context.Background(), lbArn)
+	require.NoError(t, err)
+	require.NotNil(t, persisted, "the LB record must survive while its ENI could not be deleted")
+	assert.Contains(t, persisted.ENIs, eniID, "the surviving ENI id must stay recorded for retry")
+}
+
 func TestCreateLoadBalancer_InvalidSubnet(t *testing.T) {
 	svc, _ := setupTestServiceWithVPC(t)
 

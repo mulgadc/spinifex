@@ -266,7 +266,7 @@ func TestExecute_Blockdev_UnixServer(t *testing.T) {
 	}
 	require.Greater(t, deviceIdx, -1)
 	assert.Greater(t, deviceIdx, blockdevIdx, "-blockdev must precede the -device referencing it")
-	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3", args[deviceIdx+1])
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report", args[deviceIdx+1])
 }
 
 // TestExecute_Blockdev_InetServer asserts the TCP NBD form renders

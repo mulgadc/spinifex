@@ -19,6 +19,10 @@ RestartSec=5
 TimeoutStopSec=10
 
 OOMScoreAdjust=-500
+# Per-service ceiling bounds a leak in this service alone rather than
+# tripping the slice-wide cap, which would pick an arbitrary victim.
+MemoryHigh=10%
+MemoryMax=20%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/awsgw/
 Environment=SPINIFEX_AWSGW_TLS_CERT=/etc/spinifex/server.pem

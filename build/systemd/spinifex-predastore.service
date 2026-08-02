@@ -22,6 +22,11 @@ RestartSec=5
 # backstop if that ordering is ever bypassed (direct stop, future edit).
 TimeoutStopSec=30
 OOMScoreAdjust=-500
+# Legitimately the most memory-hungry infra service (S3 buffering/caching);
+# High/Max stay well above idle so normal load isn't throttled, while still
+# bounding a leak short of the slice-wide cap.
+MemoryHigh=40%
+MemoryMax=55%
 Environment=SPINIFEX_PREDASTORE_CONFIG_PATH=/etc/spinifex/predastore/predastore.toml
 Environment=SPINIFEX_PREDASTORE_BASE_PATH=/var/lib/spinifex/predastore/
 Environment=SPINIFEX_PREDASTORE_TLS_CERT=/etc/spinifex/server.pem

@@ -18,6 +18,9 @@ RestartSec=5
 # no sub-timeout bounds that call today, so this covers a normal pass.
 TimeoutStopSec=20
 OOMScoreAdjust=-500
+# Per-service ceiling: bounds a leak here instead of the slice-wide cap.
+MemoryHigh=10%
+MemoryMax=20%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/vpcd/
 

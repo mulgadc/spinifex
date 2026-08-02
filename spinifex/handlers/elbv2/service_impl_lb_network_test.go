@@ -326,6 +326,49 @@ func TestSetSubnets_RemoveSubnet(t *testing.T) {
 	assert.Equal(t, []string{sub1}, subnetIDsOfLB(lb))
 }
 
+// TestSetSubnets_RemovedENIStillAttachedIsDeleted pins the removed-subnet
+// teardown to the single detach+delete flow. The old shape detached in one loop
+// and then deleted with force=false in another, so a delete whose read had not
+// yet caught up with the detach saw the ENI in use, logged, and left it behind.
+// An ENI still marked attached at delete time is that state, made deterministic.
+func TestSetSubnets_RemovedENIStillAttachedIsDeleted(t *testing.T) {
+	svc, vpcSvc, _ := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.30.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.31.0/24", "us-east-1b")
+
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("stale-rm-lb"),
+		Subnets: []*string{aws.String(sub1), aws.String(sub2)},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+	arn := *out.LoadBalancers[0].LoadBalancerArn
+	require.Equal(t, 2, countManagedENIs(t, vpcSvc))
+
+	enis, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	var removedENI string
+	for _, eni := range enis.NetworkInterfaces {
+		if eni.SubnetId != nil && *eni.SubnetId == sub2 {
+			removedENI = *eni.NetworkInterfaceId
+		}
+	}
+	require.NotEmpty(t, removedENI, "sub2 must have a managed ENI to remove")
+
+	_, err = vpcSvc.AttachENI(testAccountID, removedENI, "i-stale", 1)
+	require.NoError(t, err)
+
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
+		LoadBalancerArn: aws.String(arn),
+		Subnets:         []*string{aws.String(sub1)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, countManagedENIs(t, vpcSvc),
+		"the removed subnet's ENI must be deleted, not left behind as a leak")
+}
+
 func TestSetSubnets_Replace(t *testing.T) {
 	svc, vpcSvc, _ := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)

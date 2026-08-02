@@ -1,6 +1,6 @@
 # Predastore S3-compatible storage configuration file in TOML format.
 # Generated for multi-node cluster
-version = "4"
+version = "5"
 region = "{{.Region}}"
 
 # The gateway listen address comes from the daemon CLI options: a top-level

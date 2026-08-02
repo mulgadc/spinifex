@@ -19,10 +19,9 @@ const (
 	// ClientRequestToken idempotency records.
 	kvBucketClusterTokens = "spinifex-eks-clustertokens" //nolint:gosec // G101 false positive: KV bucket name, not a credential
 
-	// clusterTokenTTL only needs to outlast SDK retry windows around the fast
-	// (synchronous) phase of CreateCluster, not the whole async cluster launch:
-	// a duplicate replays the CREATING/ACTIVE/FAILED meta by name, which the
-	// cluster's own KV record — not this one — keeps current.
+	// clusterTokenTTL only needs to outlast SDK retry windows around the
+	// synchronous phase of CreateCluster, not the async launch: a duplicate
+	// replays the meta by name, kept current by the cluster's own KV record.
 	clusterTokenTTL = 15 * time.Minute
 
 	clusterTokenStatusInFlight = "in-flight"
@@ -52,18 +51,16 @@ type clusterTokenRecord struct {
 	ClusterName string    `json:"clusterName,omitempty"`
 }
 
-// ClusterTokenStore implements CreateCluster ClientRequestToken idempotency over
-// a TTL KV bucket, mirroring the EC2 RunInstances ClientToken pattern (see
-// gateway/ec2/instance/clienttoken.go): the first caller owns the create;
-// duplicates replay (done) or poll (in-flight).
+// ClusterTokenStore implements CreateCluster ClientRequestToken idempotency
+// over a TTL KV bucket, mirroring the EC2 RunInstances ClientToken pattern:
+// the first caller owns the create, duplicates replay or poll.
 type ClusterTokenStore struct {
 	kv jetstream.KeyValue
 }
 
 // getClusterTokenStore lazily initialises s's cluster-token store via sync.Once,
-// scoped to the service instance (not the process) so each EKSServiceImpl binds
-// its own NATSConn — tests constructing independent instances never bleed a
-// stale connection into one another.
+// scoped to the service instance rather than the process, so each EKSServiceImpl
+// binds its own NATSConn instead of bleeding a stale one between instances.
 func (s *EKSServiceImpl) getClusterTokenStore(ctx context.Context) (*ClusterTokenStore, error) {
 	s.clusterTokenOnce.Do(func() {
 		js, err := jetstream.New(s.deps.NATSConn)
@@ -71,10 +68,9 @@ func (s *EKSServiceImpl) getClusterTokenStore(ctx context.Context) (*ClusterToke
 			s.clusterTokenErr = fmt.Errorf("clustertoken jetstream: %w", err)
 			return
 		}
-		// The bind happens once per service instance, so it must not inherit the
-		// first caller's cancellation: a client that disconnects mid-open would
-		// poison the store for every later create. Deadline-free, so the open
-		// falls back to the JetStream API's own timeout.
+		// The bind happens once per instance, so it must not inherit the first
+		// caller's cancellation: a disconnect mid-open would poison the store for
+		// every later create. Deadline-free, so JetStream's own timeout applies.
 		s.clusterTokenStore, s.clusterTokenErr = newClusterTokenStore(context.WithoutCancel(ctx), js)
 	})
 	return s.clusterTokenStore, s.clusterTokenErr

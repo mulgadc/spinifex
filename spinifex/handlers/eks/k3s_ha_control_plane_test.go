@@ -89,10 +89,9 @@ func TestSpreadHostsByAZ_DistinctAZs(t *testing.T) {
 	assert.ElementsMatch(t, []string{"node-1", "node-2", "node-3", "node-4"}, out)
 }
 
-// TestSpreadHostsByAZ_FewerAZsThanHosts documents the degradation behaviour:
-// with only 2 AZs available for a 3-way spread, placement still returns every
-// host (nothing dropped) and the first 2 picks land in distinct AZs — the third
-// necessarily repeats one of them.
+// TestSpreadHostsByAZ_FewerAZsThanHosts documents the degradation: with 2 AZs
+// for a 3-way spread, every host is still returned and the first 2 picks land
+// in distinct AZs, the third necessarily repeating one.
 func TestSpreadHostsByAZ_FewerAZsThanHosts(t *testing.T) {
 	hosts := []azHost{
 		{node: "node-1", az: "az-a"},
@@ -395,11 +394,8 @@ func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
 }
 
 // TestPlaceControlPlane_SpreadPrefersDistinctAZs runs placeControlPlane against
-// the real NATS-backed HostScheduler (not the fake) with 4 nodes across 3 AZs,
-// and a placer that reserves whatever it's offered first (mirroring
-// ReserveSpreadNodes' order-preserving selection). It demonstrates bead
-// 231.7.4's acceptance criteria: the 3 launched control-plane members land on
-// 3 distinct AZs.
+// the real NATS-backed HostScheduler with 4 nodes across 3 AZs, and a placer
+// reserving what it is offered first, as ReserveSpreadNodes does.
 func TestPlaceControlPlane_SpreadPrefersDistinctAZs(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	serveNodeStatus(t, nc, []types.NodeStatusResponse{

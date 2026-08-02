@@ -725,19 +725,20 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 
 	var primaryErr error
 	if instance.ENIId != "" {
-		// Best-effort detach; a failure here must not block deletion — the force
-		// delete below bypasses the in-use guard for the owning instance, breaking
-		// the un-terminable-ENI deadlock (ADR-0003 §2).
-		if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, instance.ENIId); detachErr != nil {
-			slog.Warn("Failed to detach ENI on termination",
-				"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
-		}
-		if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, instance.ENIId); err != nil {
+		// force=true bypasses the in-use guard for the owning instance,
+		// breaking the un-terminable-ENI deadlock (ADR-0003 §2). One call
+		// carries the detach's revision into the delete, so a lagging KV
+		// replica can never decide the outcome.
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, instance.ENIId, true)
+		if err != nil {
 			slog.Error("Failed to delete ENI on termination",
 				"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
 			primaryErr = err
-		} else {
+		} else if deleted {
 			slog.Info("Deleted ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		} else {
+			slog.Info("ENI already absent on termination",
 				"eni", instance.ENIId, "instanceId", instance.ID)
 		}
 	}
@@ -762,24 +763,35 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 
 	for _, record := range records {
 		eniId := record.NetworkInterfaceId
-		if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, eniId); detachErr != nil {
-			slog.Warn("Failed to detach attached ENI on termination",
-				"eni", eniId, "instanceId", instance.ID, "err", detachErr)
-		}
 
+		// DeleteOnTermination=false detaches only; there is no subsequent
+		// delete to race against, so a plain DetachENI is sufficient here.
 		if record.DeleteOnTermination != nil && !*record.DeleteOnTermination {
+			if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, eniId); detachErr != nil {
+				slog.Warn("Failed to detach attached ENI on termination",
+					"eni", eniId, "instanceId", instance.ID, "err", detachErr)
+			}
 			slog.Info("Detached attached ENI on termination, DeleteOnTermination=false",
 				"eni", eniId, "instanceId", instance.ID)
 			continue
 		}
 
-		if err := a.d.vpcService.ForceDeleteInstanceENI(context.Background(), instance.AccountID, eniId); err != nil {
+		// One call carries the detach's revision into the delete so a
+		// lagging KV replica can never decide the outcome (mirrors the
+		// primary ENI path above).
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, eniId, true)
+		if err != nil {
 			slog.Error("Failed to delete attached ENI on termination",
 				"eni", eniId, "instanceId", instance.ID, "err", err)
 			continue
 		}
-		slog.Info("Deleted attached ENI on termination",
-			"eni", eniId, "instanceId", instance.ID)
+		if deleted {
+			slog.Info("Deleted attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		} else {
+			slog.Info("Attached ENI already absent on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		}
 	}
 }
 

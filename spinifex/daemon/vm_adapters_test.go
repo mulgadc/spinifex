@@ -509,6 +509,25 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_MultipleAttachedENIsReleased(
 	assert.Equal(t, "available", rec2.Status)
 }
 
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_AbsentPrimaryDoesNotLogFalseSuccess
+// proves the false-success log is gone: a primary ENI that DetachAndDeleteENI
+// finds already absent must be logged as absent, never as "Deleted ENI on
+// termination" — that log used to fire unconditionally on a nil error, even
+// when the force path's stale-NotFound tolerance meant nothing was deleted.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_AbsentPrimaryDoesNotLogFalseSuccess(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+	f.vmInst.ENIId = "eni-never-existed"
+
+	buf := captureSlogForTest(t)
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	assert.NotContains(t, buf.String(), "Deleted ENI on termination",
+		"an already-absent ENI must never be logged as deleted")
+	assert.Contains(t, buf.String(), "ENI already absent on termination")
+}
+
 // TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerated
 // exercises the enumeration error branch: the connection backing vpcService's
 // KV is closed before terminate runs, so ListInstanceENIs fails with a real

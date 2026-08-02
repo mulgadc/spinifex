@@ -276,6 +276,150 @@ func TestDetachENI(t *testing.T) {
 	assert.Nil(t, out.NetworkInterfaces[0].Attachment)
 }
 
+// failNTimesDeleteKV wraps a real KeyValue and fails the first n Delete calls
+// with a simulated CAS conflict, so DetachAndDeleteENI's bounded retry can be
+// exercised deterministically instead of racing a live writer.
+type failNTimesDeleteKV struct {
+	jetstream.KeyValue
+
+	failsLeft int
+}
+
+func (k *failNTimesDeleteKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	if k.failsLeft > 0 {
+		k.failsLeft--
+		return fmt.Errorf("simulated CAS conflict on delete")
+	}
+	return k.KeyValue.Delete(ctx, key, opts...)
+}
+
+// TestDetachAndDeleteENI_RetriesOnDeleteCASConflict proves the bounded retry
+// path: a Delete rejected once by a stale revision must retry the whole flow
+// from a fresh read rather than giving up, so a lagging replica never causes
+// a leaked ENI.
+func TestDetachAndDeleteENI_RetriesOnDeleteCASConflict(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	_, err := svc.AttachENI(testAccountID, eniId, "i-test123", 0)
+	require.NoError(t, err)
+
+	svc.eniKV = &failNTimesDeleteKV{KeyValue: svc.eniKV, failsLeft: 1}
+
+	deleted, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, eniId, true)
+	require.NoError(t, err)
+	assert.True(t, deleted)
+
+	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
+}
+
+// TestDetachAndDeleteENI_ExhaustsRetriesReturnsError proves the retry is
+// bounded: a Delete that never stops conflicting must surface an error
+// rather than retry forever or silently drop the ENI.
+func TestDetachAndDeleteENI_ExhaustsRetriesReturnsError(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	svc.eniKV = &failNTimesDeleteKV{KeyValue: svc.eniKV, failsLeft: 100}
+
+	_, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, eniId, true)
+	require.Error(t, err)
+}
+
+// TestDetachAndDeleteENI_HoldsIPUntilDeleteSucceeds pins the ordering of the
+// IPAM release against the KV delete. Releasing before the delete means every
+// CAS retry releases again, and an IP handed back twice can be reallocated to
+// another ENI in between — so a delete that never succeeds must leave the
+// allocation exactly as it found it.
+func TestDetachAndDeleteENI_HoldsIPUntilDeleteSucceeds(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	before, err := svc.ipam.AllocatedIPs(t.Context(), subnetId)
+	require.NoError(t, err)
+
+	svc.eniKV = &failNTimesDeleteKV{KeyValue: svc.eniKV, failsLeft: 100}
+	_, err = svc.DetachAndDeleteENI(context.Background(), testAccountID, eniId, true)
+	require.Error(t, err)
+
+	after, err := svc.ipam.AllocatedIPs(t.Context(), subnetId)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a failed delete must not hand the ENI's IP back to the pool")
+}
+
+// TestDetachAndDeleteENI_ForceFalseOnLiveAttachment_StaysAWSFaithful asserts
+// the public-facing guard is unchanged by the new atomic path: a genuinely
+// attached ENI without force must still return InvalidNetworkInterface.InUse.
+func TestDetachAndDeleteENI_ForceFalseOnLiveAttachment_StaysAWSFaithful(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	_, err := svc.AttachENI(testAccountID, eniId, "i-test123", 0)
+	require.NoError(t, err)
+
+	_, err = svc.DetachAndDeleteENI(context.Background(), testAccountID, eniId, false)
+	assert.ErrorContains(t, err, "InvalidNetworkInterface.InUse")
+
+	// Rejected call must not have mutated the record.
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", *out.NetworkInterfaces[0].Status)
+}
+
+// TestDetachAndDeleteENI_ForceTrueDeletesLiveAttachment asserts the owner
+// teardown path (force=true) detaches and deletes an in-use ENI in one call,
+// with no separate re-read between the two — the mechanism that closes the
+// stale-replica window DetachENI+DeleteNetworkInterface used to open.
+func TestDetachAndDeleteENI_ForceTrueDeletesLiveAttachment(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	_, err := svc.AttachENI(testAccountID, eniId, "i-test123", 0)
+	require.NoError(t, err)
+
+	deleted, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, eniId, true)
+	require.NoError(t, err)
+	assert.True(t, deleted)
+
+	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
+}
+
+// TestDetachAndDeleteENI_AbsentForceTrue_ReturnsNotDeletedNoError proves the
+// force path distinguishes "already absent" from "deleted" — this is what
+// stops the caller logging a false "Deleted ENI on termination" for an ENI
+// it never touched.
+func TestDetachAndDeleteENI_AbsentForceTrue_ReturnsNotDeletedNoError(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	deleted, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, "eni-never-existed", true)
+	require.NoError(t, err)
+	assert.False(t, deleted, "an already-absent ENI must report deleted=false so callers don't log a false success")
+}
+
+// TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound asserts the public
+// (non-force) path stays AWS-faithful on an absent ENI.
+func TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	_, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, "eni-never-existed", false)
+	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
+}
+
 func TestGenerateENIMac(t *testing.T) {
 	mac := generateENIMac("eni-test123")
 	hw, err := net.ParseMAC(mac)

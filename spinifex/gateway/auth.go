@@ -52,12 +52,22 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				case errors.Is(err, sigv4.ErrPayloadTooLarge):
 					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge)
 				case errors.Is(err, sigv4.ErrRequestTimeTooSkewed):
-					// Skew/replay: AWS returns this as SignatureDoesNotMatch.
+					// Skew/replay: AWS returns this as SignatureDoesNotMatch, which is
+					// indistinguishable on the wire from a canonicalisation mismatch.
+					// Log the timestamps so the two can be told apart after the fact.
+					slog.Warn("Auth failure: request time too skewed",
+						"sourceIP", clientIP,
+						"requestTime", signingTime(r),
+						"serverTime", time.Now().UTC().Format("20060102T150405Z"),
+						"maxSkew", sigv4.MaxClockSkew)
 					gw.RateLimiter.RecordFailure(clientIP)
 					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				default:
 					// Malformed Authorization, bad credential scope, unsupported
-					// algorithm, missing content hash: a failed auth attempt.
+					// algorithm, missing content hash: a failed auth attempt. The parse
+					// error names which, and is the only record of it.
+					slog.Warn("Auth failure: malformed signature envelope",
+						"sourceIP", clientIP, "err", err)
 					gw.RateLimiter.RecordFailure(clientIP)
 					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
 				}
@@ -67,6 +77,11 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope.
 			if !supportedServices[sig.Credential.Service] {
+				// Also surfaces as SignatureDoesNotMatch, so name the service that was
+				// rejected rather than leaving it to look like a signing bug.
+				slog.Warn("Auth failure: unsupported service in credential scope",
+					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
+					"service", sig.Credential.Service)
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
 			}
@@ -180,6 +195,19 @@ func redactedCanonicalRequest(sig *sigv4.SignedRequest) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// signingTime returns the timestamp the client signed with, read straight off the
+// request. Parse rejects a skewed request before returning a SignedRequest, so the
+// raw header (or the presigned query arg) is the only copy available to log.
+func signingTime(r *http.Request) string {
+	if ts := r.Header.Get("X-Amz-Date"); ts != "" {
+		return ts
+	}
+	if ts := r.URL.Query().Get("X-Amz-Date"); ts != "" {
+		return ts
+	}
+	return r.Header.Get("Date")
 }
 
 // mismatchAction recovers the Action for a rejected query-protocol request so the log names

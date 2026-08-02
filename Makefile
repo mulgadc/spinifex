@@ -250,7 +250,7 @@ install-system:
 	sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 		-o Dpkg::Options::="--force-confdef" \
 		-o Dpkg::Options::="--force-confold" \
-		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils qemu-kvm \
+		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils \
 		ovmf qemu-efi-aarch64 \
 		libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
 		iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \

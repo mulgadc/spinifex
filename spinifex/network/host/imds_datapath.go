@@ -204,9 +204,12 @@ func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	return setEndpointSysctl(ctx, r, d.Endpoint, "accept_local", "1")
 }
 
+// setEndpointSysctl goes through the helper rather than sysctl itself: the
+// daemon's grant has to name a fixed command, since sudo-rs rejects the
+// wildcard the old `sysctl -qw net.ipv4.conf.*` rule relied on.
 func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val string) error {
 	key := "net.ipv4.conf." + endpoint + "." + suffix
-	if _, err := r.Run(ctx, "sysctl", "-qw", key+"="+val); err != nil {
+	if _, err := r.Run(ctx, utils.EndpointSysctlHelper, endpoint, suffix, val); err != nil {
 		return fmt.Errorf("set %s=%s: %w", key, val, err)
 	}
 	return nil

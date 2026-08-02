@@ -9,9 +9,13 @@ After=spinifex-nats.service spinifex-predastore.service spinifex-viperblock.serv
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/true
-# ExecStop only runs when the target/host goes down, not on a single-service
-# restart — so a daemon restart still leaves guests running (DDIL).
-ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s
+# ExecStop fires on ANY target stop, including the stop half of `systemctl
+# restart spinifex.target` (a rolling deploy) -- PartOf propagates regardless
+# of whether the host is actually going down. The gate script only drains
+# when systemd itself is unwinding into shutdown.target; a plain restart or
+# `systemctl stop spinifex.target` falls through so QEMU/nbdkit survive
+# (KillMode=process) and the daemon reconnects to them on the way back up.
+ExecStop=/var/lib/spinifex/shutdown-drain-gate.sh
 TimeoutStopSec=180
 
 [Install]

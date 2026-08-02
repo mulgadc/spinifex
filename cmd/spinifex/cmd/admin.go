@@ -117,8 +117,9 @@ var nodeDrainCmd = &cobra.Command{
 	Long: `Run the GATE and DRAIN shutdown phases against the local node only: power down
 its guests via QMP and unmount their volumes (flushing the viperblock WAL) while
 every service is still running. STORAGE/PERSIST/INFRA are left to systemd's
-ordered unit teardown. This is the ExecStop of spinifex-shutdown.service, so a
-systemctl stop or host reboot drains guests before any storage service stops.`,
+ordered unit teardown. This is what spinifex-shutdown.service's ExecStop runs
+via shutdown-drain-gate.sh, which only invokes it on a genuine host
+shutdown/reboot -- not on a plain "systemctl restart/stop spinifex.target".`,
 	Run: runNodeDrainLocal,
 }
 

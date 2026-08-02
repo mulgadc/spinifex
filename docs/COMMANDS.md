@@ -254,7 +254,7 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-volumes` | `--volume-ids`, `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:*), persisted `DeleteOnTermination` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
-| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput` | **DONE** |
+| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications`, `--iops`, `--throughput` | `--encrypted` (hardcoded false) | **DONE** |
 | `delete-volume` | `--volume-id` | `--dry-run` | **DONE** |
 | `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | **DONE** |
 | `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |

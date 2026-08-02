@@ -39,6 +39,11 @@ const (
 	defaultGP3IOPS = 3000
 	maxGP3IOPS     = 16000
 	gp3IOPSPerGiB  = 500
+
+	// gp3 Throughput envelope (AWS): 125 MiB/s baseline, 1000 MiB/s ceiling,
+	// flat range independent of volume size.
+	defaultGP3Throughput = 125
+	maxGP3Throughput     = 1000
 )
 
 // Ensure VolumeServiceImpl implements VolumeService.
@@ -169,6 +174,16 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// Honor caller-supplied Throughput for gp3, else the 125 MiB/s baseline.
+	// Range is flat (125-1000), unlike Iops it does not scale with size.
+	throughput := defaultGP3Throughput
+	if input.Throughput != nil {
+		throughput = int(*input.Throughput)
+	}
+	if throughput < defaultGP3Throughput || throughput > maxGP3Throughput {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
 	slog.InfoContext(ctx, "CreateVolume", "volumeId", volumeID, "size", size, "type", volumeType,
 		"az", *input.AvailabilityZone, "snapshotId", snapshotID)
 
@@ -189,6 +204,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 			AvailabilityZone: *input.AvailabilityZone,
 			VolumeType:       volumeType,
 			IOPS:             iops,
+			Throughput:       throughput,
 			SnapshotID:       snapshotID,
 			Tags:             tags,
 		},
@@ -247,6 +263,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		AvailabilityZone: input.AvailabilityZone,
 		CreateTime:       aws.Time(now),
 		Iops:             aws.Int64(int64(iops)),
+		Throughput:       aws.Int64(int64(throughput)),
 		Encrypted:        aws.Bool(mkey != nil),
 		Tags:             utils.MapToEC2Tags(tags),
 	}
@@ -998,6 +1015,12 @@ func (s *VolumeServiceImpl) getVolumeByID(ctx context.Context, volumeID string) 
 
 	if volMeta.IOPS > 0 {
 		volume.Iops = aws.Int64(int64(volMeta.IOPS))
+	}
+
+	// Zero means unset (volume created before the Throughput field existed);
+	// omit rather than surface a misleading 0 MiB/s.
+	if volMeta.Throughput > 0 {
+		volume.Throughput = aws.Int64(int64(volMeta.Throughput))
 	}
 
 	if volMeta.SnapshotID != "" {

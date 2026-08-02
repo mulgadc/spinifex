@@ -148,6 +148,26 @@ func TestCreateVolume_Validation(t *testing.T) {
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
+			name: "Throughput_BelowBaseline",
+			az:   "ap-southeast-2a",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Throughput:       aws.Int64(124),
+			},
+			wantErr: awserrors.ErrorInvalidParameterValue,
+		},
+		{
+			name: "Throughput_AboveCeiling",
+			az:   "ap-southeast-2a",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Throughput:       aws.Int64(1001),
+			},
+			wantErr: awserrors.ErrorInvalidParameterValue,
+		},
+		{
 			name: "MismatchedAZ",
 			az:   "ap-southeast-2a",
 			input: &ec2.CreateVolumeInput{
@@ -187,6 +207,10 @@ func TestCreateVolume_Validation(t *testing.T) {
 
 // TestCreateVolume_PassesValidation verifies that valid inputs pass validation
 // and only fail at the viperblock/S3 layer (no S3 backend in unit tests).
+// ThroughputOmitted_DefaultsToBaseline doubles as a default-value regression
+// check: the zero value of the throughput int is 0, which fails the >=125
+// range check, so this case only passes if CreateVolume actually assigns the
+// 125 baseline when input.Throughput is nil.
 func TestCreateVolume_PassesValidation(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -219,6 +243,37 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 				Size:             aws.Int64(80),
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 				Iops:             aws.Int64(8000),
+			},
+		},
+		{
+			name: "ThroughputOmitted_DefaultsToBaseline",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+			},
+		},
+		{
+			name: "ExplicitThroughputAtBaseline",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Throughput:       aws.Int64(125),
+			},
+		},
+		{
+			name: "ExplicitThroughputAtCeiling",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Throughput:       aws.Int64(1000),
+			},
+		},
+		{
+			name: "ExplicitThroughputMidRange",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				Throughput:       aws.Int64(500),
 			},
 		},
 	}
@@ -659,6 +714,7 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 		AvailabilityZone:    "ap-southeast-2a",
 		VolumeType:          "gp3",
 		IOPS:                5000,
+		Throughput:          250,
 		SnapshotID:          "snap-abc",
 		AttachedInstance:    "i-12345",
 		DeviceName:          "/dev/nbd0",
@@ -693,6 +749,7 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 	assert.Equal(t, "in-use", *vol.State)
 	assert.Equal(t, "gp3", *vol.VolumeType)
 	assert.Equal(t, int64(5000), *vol.Iops)
+	assert.Equal(t, int64(250), *vol.Throughput)
 	assert.Equal(t, "snap-abc", *vol.SnapshotId)
 	assert.True(t, *vol.Encrypted)
 	assert.Equal(t, "ap-southeast-2a", *vol.AvailabilityZone)
@@ -745,6 +802,29 @@ func TestGetVolumeByID_DefaultStateAndType(t *testing.T) {
 
 	assert.Equal(t, "available", *result.volume.State)
 	assert.Equal(t, "gp3", *result.volume.VolumeType)
+}
+
+// TestGetVolumeByID_ThroughputOmitted_PreFieldVolume covers a volume written
+// before Throughput existed on VolumeMetadata: json.Unmarshal leaves the new
+// int field at its zero value, and getVolumeByID must omit Throughput from
+// the response rather than surface a misleading 0 MiB/s.
+func TestGetVolumeByID_ThroughputOmitted_PreFieldVolume(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	// Simulate a pre-field volume by writing raw JSON with no Throughput key.
+	rawConfig := `{"VolumeConfig":{"VolumeMetadata":{"VolumeID":"vol-prefield","SizeGiB":5,"State":"available","VolumeType":"gp3","IOPS":3000}}}`
+	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("vol-prefield/config.json"),
+		Body:   strings.NewReader(rawConfig),
+	})
+	require.NoError(t, err)
+
+	result, err := svc.getVolumeByID(context.Background(), "vol-prefield")
+	require.NoError(t, err)
+
+	assert.Nil(t, result.volume.Throughput)
 }
 
 func TestGetVolumeByID_EmptyVolumeID(t *testing.T) {

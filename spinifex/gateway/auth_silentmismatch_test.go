@@ -73,6 +73,24 @@ func TestSigV4Auth_UnsupportedServiceIsLogged(t *testing.T) {
 	require.Contains(t, out, "service=notaservice")
 }
 
+// The parse-error branch answers IncompleteSignature and was likewise silent,
+// so a malformed envelope left no record of which validation stage rejected it.
+func TestSigV4Auth_MalformedEnvelopeIsLogged(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+	logs := captureLogs(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=nonsense, Signature=deadbeef")
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	out := logs.String()
+	require.Contains(t, out, "malformed signature envelope")
+	require.Contains(t, out, "sourceIP=")
+}
+
 // signingTime must prefer the header, fall back to the presigned query arg, and
 // tolerate a request carrying neither rather than panicking on a nil URL query.
 func TestSigningTime_Sources(t *testing.T) {

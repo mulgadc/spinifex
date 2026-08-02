@@ -64,7 +64,10 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				default:
 					// Malformed Authorization, bad credential scope, unsupported
-					// algorithm, missing content hash: a failed auth attempt.
+					// algorithm, missing content hash: a failed auth attempt. The parse
+					// error names which, and is the only record of it.
+					slog.Warn("Auth failure: malformed signature envelope",
+						"sourceIP", clientIP, "err", err)
 					gw.RateLimiter.RecordFailure(clientIP)
 					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
 				}

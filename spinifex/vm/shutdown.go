@@ -240,8 +240,21 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 	// instance that was never inserted into the local map.
 	m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 
-	if err := m.transitionWithPrecheck(instance, StateTerminated); err != nil {
-		return fmt.Errorf("transition to terminated: %w", err)
+	transitionErr := m.transitionWithPrecheck(instance, StateTerminated)
+	if transitionErr != nil && errors.Is(transitionErr, ErrInvalidTransition) {
+		// A genuine invalid/raced transition: in-memory status never reached
+		// terminated, so there is nothing durable to record yet.
+		return fmt.Errorf("transition to terminated: %w", transitionErr)
+	}
+	if transitionErr != nil {
+		// In-memory status reached terminated even though local persistence
+		// failed (e.g. ENOSPC writing the local state file). Keep going:
+		// WriteTerminatedInstance below is a JetStream KV write independent
+		// of local disk space, so the durable record can still land and
+		// TerminatedTeardownReaper picks it up on its next sweep without
+		// requiring an operator restart.
+		slog.Warn("Local state persistence failed on terminate, continuing to durable KV write",
+			"instanceId", instance.ID, "err", transitionErr)
 	}
 
 	// Stamp the termination time so the GC backstop can preserve a
@@ -254,6 +267,9 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 		if err := m.deps.StateStore.WriteTerminatedInstance(instance.ID, instance); err != nil {
 			slog.Error("Failed to write terminated instance to KV, keeping in local state for retry",
 				"instanceId", instance.ID, "err", err)
+			if transitionErr != nil {
+				return transitionErr
+			}
 			return err
 		}
 	}
@@ -276,7 +292,7 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 	}
 	slog.Info("Released instance ownership to KV",
 		"instanceId", instance.ID, "state", string(StateTerminated), "lastNode", m.deps.NodeID)
-	return nil
+	return transitionErr
 }
 
 // reconcileVanishedQEMU finalizes a shutting-down instance whose QEMU process

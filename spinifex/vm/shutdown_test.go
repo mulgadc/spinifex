@@ -1018,6 +1018,55 @@ func TestTerminate_WriteTerminatedFailure_PropagatesAndKeepsLocal(t *testing.T) 
 	assert.True(t, stillInMap, "instance must remain in local map for retry on the next daemon restart")
 }
 
+// TestTerminate_LocalPersistenceFailure_StillDurablyRecordsTerminated covers
+// the ENOSPC scenario: TransitionState fails to persist locally (e.g. the
+// local state file write hits a full disk) but the in-memory status still
+// reaches StateTerminated. Before the fix, finalizeTerminated bailed out on
+// that error before ever calling WriteTerminatedInstance, so the durable
+// terminated record TerminatedTeardownReaper scans was never written and
+// nothing retried teardown without an operator restart. The durable KV write
+// (a JetStream call independent of local disk space) must still happen.
+func TestTerminate_LocalPersistenceFailure_StillDurablyRecordsTerminated(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	persistErr := errors.New("no space left on device")
+	store := newFakeStateStore()
+	cleaner := &recordingInstanceCleaner{}
+	down := &atomic.Int64{}
+	m := NewManager()
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: cleaner,
+		TransitionState: func(v *VM, target InstanceState) error {
+			// Mirrors daemon.TransitionState: memory mutation always
+			// succeeds; only the local file persistence fails, matching a
+			// full disk on the terminated transition specifically.
+			m.Inspect(v, func(vv *VM) { vv.Status = target })
+			if target == StateTerminated {
+				return persistErr
+			}
+			return nil
+		},
+		ShutdownSignal: func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(id string) { down.Add(1) },
+		},
+	})
+
+	v := &VM{ID: "i-local-persist-fail", Status: StateRunning, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	m.Insert(v)
+
+	err := m.Terminate(v.ID)
+
+	require.ErrorIs(t, err, persistErr, "the local persistence failure must still surface to the caller")
+	require.NotNil(t, store.terminated[v.ID],
+		"WriteTerminatedInstance must still run so TerminatedTeardownReaper can find and finish this instance")
+	assert.Equal(t, int64(1), down.Load(), "OnInstanceDown must still fire once the durable record lands")
+	_, stillInMap := m.Get(v.ID)
+	assert.False(t, stillInMap, "instance must leave the local running map once terminated is durable")
+}
+
 // TestTerminate_DeleteIfReclaimed_NoHook covers the slot-reclaim branch
 // in finalizeTerminated (shutdown.go:197-201): a concurrent handler
 // inserts a fresh VM under the same id between WriteTerminatedInstance

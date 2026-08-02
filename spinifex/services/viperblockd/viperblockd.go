@@ -515,6 +515,21 @@ func launchService(cfg *Config) (err error) {
 			slog.InfoContext(ctx, "ebs.delete: volume not mounted (expected for available volumes)", "volume", ebsRequest.Volume)
 		}
 
+		// Delete is permanent: remove the on-disk WAL/checkpoint cache
+		// regardless of mount-tracking state. -efi volumes never go through
+		// the unmount seal (isAuxVolume skips it, they carry no durable
+		// data), and a main volume's seal can have been skipped after a
+		// failed flush (e.g. disk full), so this is the only guaranteed
+		// cleanup point for both.
+		localPath := filepath.Join(cfg.BaseDir, ebsRequest.Volume)
+		if err := os.RemoveAll(localPath); err != nil {
+			slog.ErrorContext(ctx, "ebs.delete: failed to remove local volume directory",
+				"volume", ebsRequest.Volume, "path", localPath, "err", err)
+		} else {
+			slog.InfoContext(ctx, "ebs.delete: removed local volume directory",
+				"volume", ebsRequest.Volume, "path", localPath)
+		}
+
 		respondJSON(msg, response)
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to ebs.delete: %w", err)

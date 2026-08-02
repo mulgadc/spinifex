@@ -125,6 +125,52 @@ func TestIntegration_EBSDeleteUnmountedVolume(t *testing.T) {
 	assert.True(t, resp.Success)
 }
 
+// TestIntegration_EBSDeleteRemovesLocalVolumeDirectory covers the residual
+// leak: terminateCleanup always unmounts before DeleteVolumes sends
+// ebs.delete, so the common case is an already-unmounted volume. Before the
+// fix, ebs.delete only cleaned up a still-mounted volume's nbdkit
+// process/socket and never touched cfg.BaseDir/<volume>, so the
+// WAL/checkpoint directory a prior mount (or a failed unmount seal) left
+// behind survived every DeleteVolume call — including for -efi companion
+// volumes, which never go through the unmount seal at all (isAuxVolume skips
+// it), so they leaked unconditionally rather than only on a failed seal.
+func TestIntegration_EBSDeleteRemovesLocalVolumeDirectory(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	// No mounted volumes: matches the terminate path where Unmount already
+	// ran and left local state behind (a failed seal for the main volume, or
+	// unconditionally for the -efi companion) before ebs.delete fires.
+	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test")
+	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test-efi")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	for _, volume := range []string{"vol-residual-test", "vol-residual-test-efi"} {
+		reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: volume})
+		msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
+		require.NoError(t, err)
+
+		var resp types.EBSDeleteResponse
+		require.NoError(t, json.Unmarshal(msg.Data, &resp))
+		assert.True(t, resp.Success)
+
+		assert.False(t, fileExistsCheck(filepath.Join(cfg.BaseDir, volume)),
+			"ebs.delete must remove the local volume directory for %s", volume)
+	}
+}
+
 func TestIntegration_EBSDeleteInvalidJSON(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

@@ -19,6 +19,10 @@ KillMode=process
 TimeoutStopSec=15
 # RG-4: infra tier — reaped only after every guest
 OOMScoreAdjust=-500
+# Guest QEMU still runs inside this cgroup, so the ceiling tracks the slice
+# budget (just under 80%/90%), not just daemon overhead.
+MemoryHigh=75%
+MemoryMax=85%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/

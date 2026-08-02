@@ -17,6 +17,10 @@ RestartSec=5
 # stops before nats does, so size this for nats's own graceful-stop needs.
 TimeoutStopSec=20
 OOMScoreAdjust=-500
+# Per-service ceiling bounds a leak in this service alone rather than
+# tripping the slice-wide cap, which would pick an arbitrary victim.
+MemoryHigh=10%
+MemoryMax=20%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/nats/nats.conf
 
 # Filesystem access

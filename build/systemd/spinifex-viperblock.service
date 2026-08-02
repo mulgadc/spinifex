@@ -15,6 +15,10 @@ ExecStart=/usr/local/bin/spx service viperblock start
 Restart=on-failure
 RestartSec=5
 OOMScoreAdjust=-500
+# Per-service ceiling bounds a leak in this service alone rather than
+# tripping the slice-wide cap, which would pick an arbitrary victim.
+MemoryHigh=15%
+MemoryMax=25%
 # KillMode=process: nbdkit still serving a guest survives a restart here, the
 # way guest QEMU survives a daemon restart. Tearing one out mid-write corrupts
 # that guest's filesystem; idle nbdkit is reaped explicitly on shutdown.

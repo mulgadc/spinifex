@@ -281,6 +281,8 @@ func init() {
 	nodeCmd.AddCommand(nodeDrainCmd)
 	nodeDrainCmd.Flags().Bool("local", false, "Drain the local node only (required)")
 	nodeDrainCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
+	nodeCmd.AddCommand(nodeJSProbeCmd)
+	nodeJSProbeCmd.Flags().Duration("timeout", 10*time.Second, "Maximum time to wait for the canary round-trip")
 
 	adminCmd.AddCommand(imagesCmd)
 	imagesCmd.AddCommand(imagesImportCmd)

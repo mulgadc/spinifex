@@ -15,10 +15,11 @@ ExecStart=/usr/local/bin/spx service viperblock start
 Restart=on-failure
 RestartSec=5
 OOMScoreAdjust=-500
-# Backstop for the in-use nbdkit children SIGTERMed with this cgroup. Their
-# plugin bounds its own shutdown drain at 20s, so 30s lets that fire first and
-# keeps SIGKILL exceptional; the 90s default let a slow backend stall the whole
-# target-stop transaction.
+# KillMode=process: nbdkit still serving a guest survives a restart here, the
+# way guest QEMU survives a daemon restart. Tearing one out mid-write corrupts
+# that guest's filesystem; idle nbdkit is reaped explicitly on shutdown.
+KillMode=process
+# Bounds this process's own WAL drain, which the plugin caps at 20s.
 TimeoutStopSec=30
 EnvironmentFile=/etc/spinifex/systemd.env
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml

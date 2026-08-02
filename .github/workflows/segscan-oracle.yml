@@ -1,0 +1,91 @@
+# Segscan storage oracle — push-triggered (main/dev) + manual dispatch only,
+# deliberately NOT wired into spinifex.yml's pull_request path.
+#
+# tests/integration/segscan_oracle_test.go needs the mulga umbrella repo's
+# scripts/segscan checked out alongside spinifex (it is a separate Go module,
+# `package main`, and cannot be imported — see spinifex/testutil/segscanoracle).
+# spinifex.yml's jobs check out only spinifex/viperblock/predastore and run on
+# every PR; adding a second-repo checkout there would make every spinifex PR
+# depend on mulga main being healthy and pay that checkout cost on every run,
+# for one storage-accounting oracle test. Mirrors e2e.yml's push-only trigger
+# (mulga-siv-283 precedent): this never gates a PR before merge, matching how
+# e2e.yml's own "front gate" job already works.
+name: Segscan Storage Oracle
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+      - Makefile
+      - .github/workflows/segscan-oracle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  segscan_oracle:
+    name: Segscan Oracle
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+          fetch-depth: 2
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - name: Checkout Viperblock
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: viperblock
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - name: Checkout Mulga (scripts/segscan only)
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/segscan
+          path: mulga
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          cache-dependency-path: "spinifex/go.sum"
+          go-version-file: "spinifex/go.mod"
+
+      - name: Setup Go Workspace
+        run: go work init ./spinifex ./viperblock ./predastore
+
+      - name: Run Segscan Oracle Test
+        env:
+          SEGSCAN_DIR: ${{ github.workspace }}/mulga/scripts/segscan
+        run: make -C spinifex test-segscan-oracle

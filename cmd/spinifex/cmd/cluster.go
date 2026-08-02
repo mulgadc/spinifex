@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -12,6 +13,44 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 )
+
+// systemIsSystemRunning is overridable in tests so hostIsStopping does not
+// need a real systemd. Returns the trimmed stdout; systemctl exits non-zero
+// for every state other than "running", so a non-nil error alone does not
+// mean the state lookup failed -- callers must still inspect the output.
+var systemIsSystemRunning = func() (string, error) {
+	out, err := exec.Command("systemctl", "is-system-running").Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// knownSystemStates are the documented systemctl is-system-running values.
+// Output outside this set is untrusted, not a state to treat as "stopping".
+var knownSystemStates = map[string]bool{
+	"running": true, "degraded": true, "maintenance": true,
+	"stopping": true, "initializing": true, "starting": true, "offline": true,
+}
+
+// hostIsStopping reports whether systemd is genuinely unwinding into
+// shutdown.target (reboot/poweroff/halt/kexec), as opposed to a plain
+// `systemctl restart/stop spinifex.target` where the host stays up.
+//
+// A recognized non-"stopping" state (running/degraded/...) returns false.
+// Unrecognized output is treated the same as "not stopping" -- an unknown
+// state must never be mistaken for shutdown. If systemctl could not be run
+// at all (empty output, e.g. binary missing), the state is genuinely
+// unknown; this fails toward draining, since a skipped drain on a real
+// shutdown hard-kills guests and loses unflushed writes, while a spurious
+// drain on a restart only costs an extra graceful stop/relaunch cycle.
+func hostIsStopping() (bool, error) {
+	out, err := systemIsSystemRunning()
+	if out == "" {
+		return true, fmt.Errorf("systemctl is-system-running produced no output: %w", err)
+	}
+	if !knownSystemStates[out] {
+		return false, fmt.Errorf("systemctl is-system-running returned unrecognized state %q", out)
+	}
+	return out == "stopping", nil
+}
 
 // runClusterShutdown orchestrates a phased, coordinated shutdown of the cluster.
 func runClusterShutdown(cmd *cobra.Command, args []string) {
@@ -169,9 +208,27 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 	local, _ := cmd.Flags().GetBool("local")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
+	onlyIfHostStopping, _ := cmd.Flags().GetBool("only-if-host-stopping")
 	if !local {
 		fmt.Fprintln(os.Stderr, "Error: node drain currently supports only --local")
 		os.Exit(1)
+	}
+
+	// --only-if-host-stopping is a no-op safety net for the operator running
+	// this by hand: unset, the command drains unconditionally as it always
+	// has. Set (spinifex-shutdown.service's ExecStop), it skips on anything
+	// short of a genuine host shutdown/reboot -- PartOf=spinifex.target fires
+	// ExecStop on every target stop, restart included, even though the host
+	// stays up.
+	if onlyIfHostStopping {
+		stopping, err := hostIsStopping()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not determine host shutdown state: %v\n", err)
+		}
+		if !stopping {
+			fmt.Println("Host is not shutting down; skipping guest drain.")
+			return
+		}
 	}
 
 	cfg, nc, err := loadConfigAndConnect()

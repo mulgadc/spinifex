@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -55,4 +56,40 @@ func TestDrainDHCPLeasesNoResponders(t *testing.T) {
 	released, responders := drainDHCPLeases(nc, 200*time.Millisecond)
 	assert.Equal(t, 0, released)
 	assert.Equal(t, 0, responders)
+}
+
+// TestHostIsStopping covers every systemctl is-system-running outcome the
+// shutdown-drain gate must distinguish: a real shutdown/reboot ("stopping"),
+// ordinary steady states that must never trigger a drain, unrecognized
+// output, and a fully unreachable systemctl.
+func TestHostIsStopping(t *testing.T) {
+	orig := systemIsSystemRunning
+	t.Cleanup(func() { systemIsSystemRunning = orig })
+
+	cases := []struct {
+		name         string
+		out          string
+		err          error
+		wantStopping bool
+		wantErr      bool
+	}{
+		{"stopping", "stopping", errors.New("exit status 1"), true, false},
+		{"running", "running", nil, false, false},
+		{"degraded", "degraded", errors.New("exit status 1"), false, false},
+		{"maintenance", "maintenance", errors.New("exit status 1"), false, false},
+		{"unknown output", "banana", nil, false, true},
+		{"systemctl unreachable", "", errors.New("exec: \"systemctl\": executable file not found in $PATH"), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			systemIsSystemRunning = func() (string, error) { return tc.out, tc.err }
+			stopping, err := hostIsStopping()
+			assert.Equal(t, tc.wantStopping, stopping)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

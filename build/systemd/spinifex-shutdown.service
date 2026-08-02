@@ -11,11 +11,11 @@ RemainAfterExit=yes
 ExecStart=/bin/true
 # ExecStop fires on ANY target stop, including the stop half of `systemctl
 # restart spinifex.target` (a rolling deploy) -- PartOf propagates regardless
-# of whether the host is actually going down. The gate script only drains
-# when systemd itself is unwinding into shutdown.target; a plain restart or
-# `systemctl stop spinifex.target` falls through so QEMU/nbdkit survive
+# of whether the host is actually going down. --only-if-host-stopping drains
+# only when systemd itself is unwinding into shutdown.target; a plain restart
+# or `systemctl stop spinifex.target` falls through so QEMU/nbdkit survive
 # (KillMode=process) and the daemon reconnects to them on the way back up.
-ExecStop=/var/lib/spinifex/shutdown-drain-gate.sh
+ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --only-if-host-stopping
 TimeoutStopSec=180
 
 [Install]

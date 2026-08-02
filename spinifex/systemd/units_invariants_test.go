@@ -195,8 +195,8 @@ func TestOptionalNorthstarActivation(t *testing.T) {
 // oneshot orders After= the storage/daemon units (so a target/host stop runs its
 // ExecStop drain first, while those services are still up), the daemon keeps
 // KillMode=process (guests survive a daemon restart — DDIL reattach), and
-// ExecStop runs the gate script, which still drains on a genuine host
-// shutdown/reboot but not on a target restart or an explicit target stop.
+// ExecStop passes --only-if-host-stopping so PartOf=spinifex.target firing on
+// every target stop (restart included) does not drain guests that stay up.
 func TestGracefulDrainOrdering(t *testing.T) {
 	dir := unitsDir(t)
 
@@ -220,21 +220,8 @@ func TestGracefulDrainOrdering(t *testing.T) {
 			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
 		}
 	}
-	if !hasDirective(drain, "ExecStop=/var/lib/spinifex/shutdown-drain-gate.sh") {
-		t.Error("spinifex-shutdown.service must run the shutdown drain gate on stop via ExecStop")
-	}
-
-	// The gate itself, not the unit, must still contain the real drain
-	// invocation, guarded on a genuine host shutdown/reboot -- a target
-	// restart must fall through undrained (this is the wy9s2 fix: PartOf
-	// fires ExecStop on every target stop, restart included).
-	scriptsDir := filepath.Join(filepath.Dir(dir), "scripts")
-	gate := readUnit(t, scriptsDir, "shutdown-drain-gate.sh")
-	if !strings.Contains(gate, "spx admin node drain --local --timeout=120s") {
-		t.Error("shutdown-drain-gate.sh must still invoke spx admin node drain --local --timeout=120s")
-	}
-	if !strings.Contains(gate, "systemctl is-system-running") || !strings.Contains(gate, "stopping") {
-		t.Error("shutdown-drain-gate.sh must gate the drain on `systemctl is-system-running` reporting \"stopping\"")
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --only-if-host-stopping") {
+		t.Error("spinifex-shutdown.service must run spx admin node drain --local --only-if-host-stopping on stop via ExecStop")
 	}
 
 	daemon := readUnit(t, dir, "spinifex-daemon.service")

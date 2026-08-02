@@ -109,11 +109,12 @@ func (a *volumeMounterAdapter) topic(action string) string {
 	return fmt.Sprintf("ebs.%s.%s", a.node, action)
 }
 
-// ebsRequestWithTrace sends an ebs.mount/ebs.unmount NATS request, opening a
-// client span and injecting it into the message headers so viperblockd's
-// consumer span (utils.StartConsumerSpan) joins this trace instead of rooting
-// a new one. VolumeMounter carries no caller context, so each call opens its
-// own trace here rather than threading one through the interface.
+// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span and
+// injecting it into the message headers so viperblockd's consumer span
+// (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
+//
+// VolumeMounter carries no caller context, so each call opens its own trace
+// here rather than threading one through the interface.
 func ebsRequestWithTrace(nc *nats.Conn, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
 	ctx, span := otel.Tracer(daemonTracerName).Start(context.Background(), "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -641,7 +642,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				firstErr = cmp.Or(firstErr, err)
 				continue
 			}
-			deleteMsg, err := a.d.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
+			deleteMsg, err := ebsRequestWithTrace(a.d.natsConn, "ebs.delete", ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)

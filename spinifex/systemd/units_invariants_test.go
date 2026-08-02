@@ -228,6 +228,14 @@ func TestGracefulDrainOrdering(t *testing.T) {
 		t.Error("spinifex-daemon.service must keep KillMode=process — guests survive daemon restart (DDIL)")
 	}
 
+	// shutdownVolumes deliberately spares nbdkit that a guest is still writing
+	// through. Without KillMode=process the cgroup SIGTERMs then SIGKILLs it
+	// anyway at TimeoutStopSec, which is the corruption that skip exists to avoid.
+	viperblock := readUnit(t, dir, "spinifex-viperblock.service")
+	if !hasDirective(viperblock, "KillMode=process") {
+		t.Error("spinifex-viperblock.service must keep KillMode=process — in-use nbdkit survives a viperblock restart (DDIL)")
+	}
+
 	target := readUnit(t, dir, "spinifex.target")
 	if !strings.Contains(target, "spinifex-shutdown.service") {
 		t.Error("spinifex.target Wants= must include spinifex-shutdown.service")

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -87,6 +89,49 @@ var spinifexUICmd = &cobra.Command{
 	Short:   "Manage the spinifex-ui service",
 }
 
+// predastoreBind is the local predastore bind host, port and node_id derived
+// directly from spinifex.toml.
+type predastoreBind struct {
+	Host   string
+	Port   int
+	NodeID int
+}
+
+// derivePredastoreBind reads this node's [nodes.<node>.predastore] section
+// straight from viper's raw values (populated by the config.LoadConfig call
+// that must precede it), not from clusterConfig.Nodes[...].Predastore.Host —
+// LoadConfig rewrites 0.0.0.0 to 127.0.0.1 there for the local node, a
+// normalization for callers that DIAL predastore, not for the address
+// predastore itself binds to.
+//
+// node_id defaults to -1 (co-located: every configured DB peer runs in this
+// one process) when spinifex.toml omits the key. predastore rejects
+// node_id=0, so an absent key must never silently resolve to that.
+func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, error) {
+	node := clusterConfig.Node
+	bindKey := "nodes." + node + ".predastore.host"
+	raw := viper.GetString(bindKey)
+	if raw == "" {
+		return predastoreBind{}, fmt.Errorf("nodes.%s.predastore.host not set in cluster config", node)
+	}
+
+	host, portStr, err := net.SplitHostPort(raw)
+	if err != nil {
+		return predastoreBind{}, fmt.Errorf("parse nodes.%s.predastore.host %q: %w", node, raw, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return predastoreBind{}, fmt.Errorf("parse nodes.%s.predastore.host port %q: %w", node, portStr, err)
+	}
+
+	nodeID := -1
+	if viper.IsSet("nodes." + node + ".predastore.node_id") {
+		nodeID = clusterConfig.Nodes[node].Predastore.NodeID
+	}
+
+	return predastoreBind{Host: host, Port: port, NodeID: nodeID}, nil
+}
+
 var predastoreStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the predastore service",
@@ -99,6 +144,32 @@ var predastoreStartCmd = &cobra.Command{
 		host := viper.GetString("host")
 		basePath := viper.GetString("base-path")
 		debug := viper.GetBool("debug")
+		nodeID := viper.GetInt("node-id")
+
+		// Derive bind host/port/node-id from spinifex.toml when its path is
+		// known and the caller hasn't explicitly overridden them — replaces
+		// predastore-start.sh, which used to do this derivation and exec us.
+		if cfgFile := viper.GetString("config"); cfgFile != "" {
+			clusterConfig, err := config.LoadConfig(cfgFile)
+			if err != nil {
+				fmt.Println("Error loading cluster config file:", err)
+				return
+			}
+			bind, err := derivePredastoreBind(clusterConfig)
+			if err != nil {
+				fmt.Println("Error deriving predastore bind config:", err)
+				return
+			}
+			if !viper.IsSet("host") {
+				host = bind.Host
+			}
+			if !viper.IsSet("port") {
+				port = bind.Port
+			}
+			if !viper.IsSet("node-id") {
+				nodeID = bind.NodeID
+			}
+		}
 
 		// Required, no default
 		if basePath == "" {
@@ -134,7 +205,6 @@ var predastoreStartCmd = &cobra.Command{
 			return
 		}
 
-		nodeID := viper.GetInt("node-id")
 		pprofEnabled := viper.GetBool("pprof")
 		pprofOutput := viper.GetString("pprof-output")
 

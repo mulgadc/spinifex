@@ -14,7 +14,7 @@ Slice=spinifex-system.slice
 User=spinifex-storage
 Group=spinifex
 ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
-ExecStart=/var/lib/spinifex/predastore-start.sh
+ExecStart=/usr/local/bin/spx service predastore start
 Restart=on-failure
 RestartSec=5
 # Matches viperblock's drain budget: viperblock's WAL flush writes into
@@ -27,6 +27,7 @@ OOMScoreAdjust=-500
 # bounding a leak short of the slice-wide cap.
 MemoryHigh=40%
 MemoryMax=55%
+Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_PREDASTORE_CONFIG_PATH=/etc/spinifex/predastore/predastore.toml
 Environment=SPINIFEX_PREDASTORE_BASE_PATH=/var/lib/spinifex/predastore/
 Environment=SPINIFEX_PREDASTORE_TLS_CERT=/etc/spinifex/server.pem

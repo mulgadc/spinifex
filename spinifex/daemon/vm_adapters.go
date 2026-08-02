@@ -17,6 +17,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // stateStoreAdapter satisfies vm.StateStore by delegating to JetStreamManager.
@@ -105,6 +109,35 @@ func (a *volumeMounterAdapter) topic(action string) string {
 	return fmt.Sprintf("ebs.%s.%s", a.node, action)
 }
 
+// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span and
+// injecting it into the message headers so viperblockd's consumer span
+// (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
+//
+// VolumeMounter carries no caller context, so each call opens its own trace
+// here rather than threading one through the interface.
+func ebsRequestWithTrace(nc *nats.Conn, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
+	ctx, span := otel.Tracer(daemonTracerName).Start(context.Background(), "NATS "+subject,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "nats"),
+			attribute.String("messaging.destination.name", subject),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	reqMsg := nats.NewMsg(subject)
+	reqMsg.Data = data
+	utils.InjectTraceContext(ctx, reqMsg.Header)
+
+	msg, err = nc.RequestMsg(reqMsg, timeout)
+	return msg, err
+}
+
 func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
@@ -133,7 +166,7 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 			return rollback(err)
 		}
 
-		reply, err := a.nc.Request(a.topic("mount"), ebsMountRequest, 30*time.Second)
+		reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), ebsMountRequest, 30*time.Second)
 
 		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
 
@@ -178,7 +211,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 		// local WAL would find no checkpoint (bad superblock). On terminate the
 		// volume is deleted regardless; on stop it stays attached/retryable.
 		sealed := true
-		msg, err := a.nc.Request(a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
+		msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -215,7 +248,7 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 		return fmt.Errorf("marshal ebs.mount request: %w", err)
 	}
 
-	reply, err := a.nc.Request(a.topic("mount"), payload, 30*time.Second)
+	reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), payload, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.mount NATS request: %w", err)
 	}
@@ -253,7 +286,7 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, unmountSealTimeout)
+	msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
@@ -609,7 +642,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				firstErr = cmp.Or(firstErr, err)
 				continue
 			}
-			deleteMsg, err := a.d.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
+			deleteMsg, err := ebsRequestWithTrace(a.d.natsConn, "ebs.delete", ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)

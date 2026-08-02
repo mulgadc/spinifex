@@ -163,7 +163,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 |------|------|----------|
 | `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. |
 | `/etc/spinifex/nats.conf` | `listen`, `cluster.listen`, `cluster.routes`, `http`, `tls`, `cluster.authorization` | NATS client/cluster/monitoring listeners, peer routes, TLS, cluster token. |
-| `/etc/spinifex/predastore.toml` | `host`, `port`, `[[db]].port`, `[[nodes]].port`, `tls.*` | Predastore S3 listener, Raft ports, shard ports, TLS certs. |
+| `/etc/spinifex/predastore.toml` | `[[host]].bind_addr`, `[[host]].public_addr`, `[[node]].role`, `tls.*` | Predastore intra-cluster listener (one socket per host, carrying every node pinned to it), node placement, TLS certs. The S3 listener itself is set by the service's `--host`/`--port`. |
 | OVN packages (`ovn-central`, `ovn-host`) | `ovn-nb-db`, `ovn-sb-db` (via `ovs-vsctl set open_vswitch …`) | OVN DB bind addresses. |
 | Spinifex UI service | Built-in defaults: `host = "0.0.0.0"`, `port = 3000`. No `spinifex.toml` block today. | UI listener. |
 | `spx admin init` / `spx admin join` | `--port`, `--token-ttl`, `--no-telemetry` (or `SPX_NO_TELEMETRY=1`) | Formation port, token TTL, telemetry opt-out. |

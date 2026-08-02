@@ -219,7 +219,7 @@ region = "ap-southeast-2"
 accesskey = "AK"
 secretkey = "SK"
 base_dir = "/data"
-node_id = 1
+host_id = 1
 
 [nodes.n1.awsgw]
 host = "0.0.0.0:9999"
@@ -242,7 +242,7 @@ expected_nodes = 3
 	assert.Equal(t, "mybucket", n.Predastore.Bucket)
 	assert.Equal(t, "AK", n.Predastore.AccessKey)
 	assert.Equal(t, "/data", n.Predastore.BaseDir)
-	assert.Equal(t, 1, n.Predastore.NodeID)
+	assert.Equal(t, 1, n.Predastore.HostID)
 	assert.Equal(t, "0.0.0.0:9999", n.AWSGW.Host)
 	assert.True(t, n.AWSGW.Debug)
 	assert.Equal(t, 3, n.AWSGW.ExpectedNodes)

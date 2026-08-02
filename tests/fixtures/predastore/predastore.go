@@ -2,16 +2,17 @@
 // exercise an actual S3-compatible backend rather than a mock. It is
 // deliberately its own leaf package (not folded into spinifex/testutil,
 // which is imported by most of the module's test files for lightweight NATS
-// helpers): this package transitively imports predastore/quic/quicclient,
-// whose package-level DefaultPool starts a permanent cleanup goroutine at
-// init time. Folding this file into the shared testutil package would pull
-// that goroutine into every test binary that imports testutil, and trip up
-// any unrelated goroutine-leak check (go.uber.org/goleak) running in that
-// same binary. Only callers that actually need a real predastore should pay
-// for this import.
+// helpers): starting a daemon here builds a whole predastore cluster runtime
+// — shard stores, Raft replicas and their transports — whose goroutines run
+// for the life of the test binary. Folding this file into the shared testutil
+// package would pull all of that into every test binary that imports
+// testutil, and trip up any unrelated goroutine-leak check (go.uber.org/goleak)
+// running in that same binary. Only callers that actually need a real
+// predastore should pay for it.
 package predastore
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,6 +20,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -33,14 +35,15 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/predastore/quic/quicclient"
+	"github.com/mulgadc/predastore/clusterrun"
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	predastoreserver "github.com/mulgadc/predastore/s3"
 	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 )
 
 // Fixed connection details for the shared predastore fixture daemon started
-// by Start. NodeID -1 (dev mode) runs every QUIC shard node in-process, so
-// these values never need to vary per caller or per test run.
+// by Start. Every cluster node runs in-process, so these values never need to
+// vary per caller or per test run.
 const (
 	Host   = "127.0.0.1:18443"
 	Region = "us-east-1"
@@ -65,8 +68,8 @@ const (
 )
 
 // Fixture describes a running predastore daemon ready for real
-// S3/viperblock clients: a reachable endpoint, TLS material already trusted
-// process-wide, and its default buckets created.
+// S3/viperblock clients: a reachable endpoint and its default buckets
+// created. Its TLS cert is self-signed, so clients skip verification.
 type Fixture struct {
 	Host      string
 	Region    string
@@ -128,21 +131,22 @@ func Start(t *testing.T) *Fixture {
 	certPath := filepath.Join(certDir, "test.crt")
 	keyPath := filepath.Join(certDir, "test.key")
 
-	caPool, err := generateCertificate(certPath, keyPath)
-	if err != nil {
+	// The cert serves the S3 HTTPS frontend only. Intra-cluster traffic never
+	// leaves the process here, so it needs no TLS material of its own.
+	if err := generateCertificate(certPath, keyPath); err != nil {
 		t.Fatalf("predastore fixture: generate certificate: %v", err)
 	}
 
-	// Inject the ephemeral cert for the QUIC client (s3d -> shard nodes).
-	quicclient.SetDefaultRootCAs(caPool)
-
-	// SSL_CERT_FILE injects the cert for the s3db REST client's OS trust
-	// store (sync.Once-cached there, so it must be set before that client's
-	// first dial). Scoped to this call via t.Setenv, but since the daemon and
-	// its first client dial both happen inside this same call, the cache is
-	// warm before this function returns — later tests in the process don't
-	// need the env var set again.
+	// SSL_CERT_FILE injects the cert into the OS trust store for clients that
+	// verify it rather than skipping verification (objectstore's S3 client,
+	// for one). t.Setenv reverts when this test ends, while the daemon lives
+	// on for the whole binary, so the pool is loaded here and now: crypto/x509
+	// caches it behind a sync.Once, and this call is what fixes our cert in it
+	// for every later test in the process.
 	t.Setenv("SSL_CERT_FILE", certPath)
+	if _, err := x509.SystemCertPool(); err != nil {
+		t.Fatalf("predastore fixture: load system cert pool: %v", err)
+	}
 
 	// Predastore mandates a 32-byte master key at mode 0600 (rejected
 	// otherwise by internal/keyfile.Load).
@@ -155,12 +159,12 @@ func Start(t *testing.T) *Fixture {
 		t.Fatalf("predastore fixture: write encryption key: %v", err)
 	}
 
-	// Five nodes trigger dev-mode: all QUIC shards start as local goroutines.
+	// One host carrying every node, so the whole cluster runs in this process
+	// over the in-process pipe: no sockets to bind, no intra-cluster certs.
+	// RS(3,2) needs 5 shard-storage nodes; 3 state replicas form the quorum.
 	configPath := filepath.Join(testDir, "predastore_test.toml")
 	configContent := `version = "1.0"
 region = "us-east-1"
-host = "127.0.0.1"
-port = 18443
 debug = false
 disable_logging = false
 base_path = "` + testDir + `/"
@@ -169,35 +173,51 @@ base_path = "` + testDir + `/"
 data = 3
 parity = 2
 
-[[nodes]]
+[[host]]
 id = 1
-host = "127.0.0.1"
-port = 19991
-path = "store/node-1/"
+bind_addr = "127.0.0.1:16660"
+public_addr = "127.0.0.1:16660"
+data_dir = "` + filepath.Join(testDir, "cluster") + `"
 
-[[nodes]]
+[[node]]
+id = 1
+host_id = 1
+role = "shard-storage"
+
+[[node]]
 id = 2
-host = "127.0.0.1"
-port = 19992
-path = "store/node-2/"
+host_id = 1
+role = "shard-storage"
 
-[[nodes]]
+[[node]]
 id = 3
-host = "127.0.0.1"
-port = 19993
-path = "store/node-3/"
+host_id = 1
+role = "shard-storage"
 
-[[nodes]]
+[[node]]
 id = 4
-host = "127.0.0.1"
-port = 19994
-path = "store/node-4/"
+host_id = 1
+role = "shard-storage"
 
-[[nodes]]
+[[node]]
 id = 5
-host = "127.0.0.1"
-port = 19995
-path = "store/node-5/"
+host_id = 1
+role = "shard-storage"
+
+[[node]]
+id = 6
+host_id = 1
+role = "state-replica"
+
+[[node]]
+id = 7
+host_id = 1
+role = "state-replica"
+
+[[node]]
+id = 8
+host_id = 1
+role = "state-replica"
 
 [[auth]]
 access_key_id = "` + AccessKey + `"
@@ -207,6 +227,22 @@ account_id = "123456789012"
 
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil { //nolint:gosec // ephemeral test-only config, contains no real secrets
 		t.Fatalf("predastore fixture: write config: %v", err)
+	}
+
+	// The S3 gateway runs on top of a backend the caller wires: the cluster
+	// runtime owns the shard stores and the Raft replicas, and this process
+	// runs all of them.
+	cfg := &predastoreserver.Config{ConfigPath: configPath, BasePath: testDir}
+	if err := cfg.ReadConfig(); err != nil {
+		t.Fatalf("predastore fixture: read config: %v", err)
+	}
+	key, err := masterkey.Load(encryptionKeyPath)
+	if err != nil {
+		t.Fatalf("predastore fixture: load master key: %v", err)
+	}
+	rt, err := clusterrun.Build(cfg, clusterrun.AllNodeIDs(cfg), certPath, keyPath, key)
+	if err != nil {
+		t.Fatalf("predastore fixture: build cluster runtime: %v", err)
 	}
 
 	// Built directly against predastore/s3 rather than spinifex's own
@@ -222,13 +258,29 @@ account_id = "123456789012"
 		predastoreserver.WithTLS(certPath, keyPath),
 		predastoreserver.WithBasePath(testDir),
 		predastoreserver.WithDebug(false),
-		predastoreserver.WithNodeID(-1),
 		predastoreserver.WithPprof(false, ""),
 		predastoreserver.WithEncryptionKeyFile(encryptionKeyPath),
+		predastoreserver.WithPreparedBackend(rt.Backend),
 	)
 	if err != nil {
 		t.Fatalf("predastore fixture: create server: %v", err)
 	}
+
+	// The runtime is as permanent as the daemon it backs: an uncancellable
+	// context, left running until the test process exits. A t.Fatalf below
+	// takes the binary down with it, so nothing is left orphaned.
+	go func() {
+		if err := rt.Run(context.Background()); err != nil {
+			slog.Error("predastore fixture: cluster runtime exited", "error", err)
+		}
+	}()
+
+	// Writes need a committed leader; serving before one exists would fail
+	// the bucket creation below for no reason other than timing.
+	if err := rt.WaitReady(30 * time.Second); err != nil {
+		t.Fatalf("predastore fixture: no leader elected: %v", err)
+	}
+
 	if err := server.ListenAndServeAsync(); err != nil {
 		t.Fatalf("predastore fixture: start server: %v", err)
 	}
@@ -259,14 +311,13 @@ account_id = "123456789012"
 	return fixture
 }
 
-// generateCertificate generates a self-signed TLS certificate for the
-// fixture daemon and returns a CertPool containing it, for injection into
-// whichever client trust store a caller needs (see quicclient.SetDefaultRootCAs
-// and the SSL_CERT_FILE handling in Start).
-func generateCertificate(certPath, keyPath string) (*x509.CertPool, error) {
+// generateCertificate writes a self-signed TLS certificate and key for the
+// fixture daemon's S3 HTTPS frontend. Clients reach it with
+// InsecureSkipVerify, so nothing needs the cert in a trust store.
+func generateCertificate(certPath, keyPath string) error {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	notBefore := time.Now()
@@ -274,7 +325,7 @@ func generateCertificate(certPath, keyPath string) (*x509.CertPool, error) {
 
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	template := x509.Certificate{
@@ -294,40 +345,34 @@ func generateCertificate(certPath, keyPath string) (*x509.CertPool, error) {
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	certOut, err := os.Create(certPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer certOut.Close()
 
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return nil, err
+		return err
 	}
 
 	keyOut, err := os.Create(keyPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer keyOut.Close()
 
 	privBytes, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return nil, err
+		return err
 	}
 
-	parsed, err := x509.ParseCertificate(derBytes)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(parsed)
-	return pool, nil
+	return nil
 }
 
 // waitForReady polls the fixture daemon's HTTPS endpoint until it accepts

@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -135,4 +136,34 @@ func TestDerivePredastoreBind_MissingHostErrors(t *testing.T) {
 
 	_, err := derivePredastoreBind(clusterConfig)
 	require.Error(t, err)
+}
+
+// TestPredastoreConfigPathNotShadowedByClusterConfigPathEnv is the
+// regression test for the E2E bootstrap failure caused by viper's
+// AutomaticEnv resolving before explicit BindEnv: SPINIFEX_CONFIG_PATH
+// (the cluster config, bound to the unrelated "config" key) has the same
+// AutomaticEnv-derived name as the bare "config-path" key used to have
+// ("SPINIFEX_" + upper(key), "-"->"_"), so setting SPINIFEX_CONFIG_PATH
+// alongside SPINIFEX_PREDASTORE_CONFIG_PATH made predastore load the
+// cluster config as its own S3 config. This must resolve to the predastore
+// path regardless of what else is set.
+func TestPredastoreConfigPathNotShadowedByClusterConfigPathEnv(t *testing.T) {
+	t.Cleanup(func() { viper.Reset() })
+	viper.Reset()
+
+	// Mirrors service.go's init(): AutomaticEnv setup plus the real
+	// production binding under test, re-applied against the freshly-Reset
+	// instance (pflags survive Reset since they live on predastoreCmd, a
+	// package-level singleton already registered before any test runs).
+	viper.SetEnvPrefix("SPINIFEX")
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	viper.AutomaticEnv()
+	bindPredastoreNamespacedEnv()
+
+	t.Setenv("SPINIFEX_CONFIG_PATH", "/etc/spinifex/spinifex.toml")
+	t.Setenv("SPINIFEX_PREDASTORE_CONFIG_PATH", "/etc/spinifex/predastore/predastore.toml")
+
+	got := viper.GetString("predastore-config-path")
+	assert.Equal(t, "/etc/spinifex/predastore/predastore.toml", got,
+		"predastore-config-path must resolve to the predastore config even when SPINIFEX_CONFIG_PATH is also set")
 }

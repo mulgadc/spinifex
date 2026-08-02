@@ -141,8 +141,8 @@ var predastoreStartCmd = &cobra.Command{
 
 		// Get the port from the flags
 		port := viper.GetInt("port")
-		host := viper.GetString("host")
-		basePath := viper.GetString("base-path")
+		host := viper.GetString("predastore-host")
+		basePath := viper.GetString("predastore-base-path")
 		debug := viper.GetBool("debug")
 		nodeID := viper.GetInt("node-id")
 
@@ -160,7 +160,7 @@ var predastoreStartCmd = &cobra.Command{
 				fmt.Println("Error deriving predastore bind config:", err)
 				return
 			}
-			if !viper.IsSet("host") {
+			if !viper.IsSet("predastore-host") {
 				host = bind.Host
 			}
 			if !viper.IsSet("port") {
@@ -177,7 +177,7 @@ var predastoreStartCmd = &cobra.Command{
 			return
 		}
 
-		configPath := viper.GetString("config-path")
+		configPath := viper.GetString("predastore-config-path")
 
 		if configPath == "" {
 			fmt.Println("Config path is not set")
@@ -1157,6 +1157,31 @@ var qmpCollectorStatusCmd = &cobra.Command{
 	},
 }
 
+// registerPredastoreNamespacedFlags defines predastore's host, base-path and
+// config-path flags and binds them to viper. It must only run once (from
+// init()); pflag panics on a redefined flag.
+func registerPredastoreNamespacedFlags() {
+	predastoreCmd.PersistentFlags().String("host", "0.0.0.0", "Predastore (S3) host")
+	predastoreCmd.PersistentFlags().String("base-path", "", "Predastore (S3) base path")
+	predastoreCmd.PersistentFlags().String("config-path", "", "Predastore (S3) config path")
+	bindPredastoreNamespacedEnv()
+}
+
+// bindPredastoreNamespacedEnv uses "predastore-"-prefixed viper keys so
+// AutomaticEnv's derived env var always matches the explicit BindEnv target
+// below; a bare key would let AutomaticEnv resolve an unrelated SPINIFEX_HOST
+// / SPINIFEX_BASE_PATH / SPINIFEX_CONFIG_PATH first (viper checks it before BindEnv).
+func bindPredastoreNamespacedEnv() {
+	viper.BindEnv("predastore-host", "SPINIFEX_PREDASTORE_HOST")
+	viper.BindPFlag("predastore-host", predastoreCmd.PersistentFlags().Lookup("host"))
+
+	viper.BindEnv("predastore-base-path", "SPINIFEX_PREDASTORE_BASE_PATH")
+	viper.BindPFlag("predastore-base-path", predastoreCmd.PersistentFlags().Lookup("base-path"))
+
+	viper.BindEnv("predastore-config-path", "SPINIFEX_PREDASTORE_CONFIG_PATH")
+	viper.BindPFlag("predastore-config-path", predastoreCmd.PersistentFlags().Lookup("config-path"))
+}
+
 func init() {
 	viper.SetEnvPrefix("SPINIFEX") // Prefix for environment variables
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -1172,20 +1197,9 @@ func init() {
 	viper.BindEnv("port", "SPINIFEX_PREDASTORE_PORT")
 	viper.BindPFlag("port", predastoreCmd.PersistentFlags().Lookup("port"))
 
-	// Predastore Host
-	predastoreCmd.PersistentFlags().String("host", "0.0.0.0", "Predastore (S3) host")
-	viper.BindEnv("host", "SPINIFEX_PREDASTORE_HOST")
-	viper.BindPFlag("host", predastoreCmd.PersistentFlags().Lookup("host"))
-
-	// Base path
-	predastoreCmd.PersistentFlags().String("base-path", "", "Predastore (S3) base path")
-	viper.BindEnv("base-path", "SPINIFEX_PREDASTORE_BASE_PATH")
-	viper.BindPFlag("base-path", predastoreCmd.PersistentFlags().Lookup("base-path"))
-
-	// Predastore Config Path
-	predastoreCmd.PersistentFlags().String("config-path", "", "Predastore (S3) config path")
-	viper.BindEnv("config-path", "SPINIFEX_PREDASTORE_CONFIG_PATH")
-	viper.BindPFlag("config-path", predastoreCmd.PersistentFlags().Lookup("config-path"))
+	// Predastore host, base-path, config-path (namespaced viper keys —
+	// see registerPredastoreNamespacedFlags doc comment)
+	registerPredastoreNamespacedFlags()
 
 	// Predastore Debug
 	predastoreCmd.PersistentFlags().Bool("debug", false, "Predastore (S3) debug")

@@ -154,3 +154,44 @@ func assertStuckMarkedFailed(t *testing.T, m *Manager, rt *recordedTransitions, 
 	assert.Contains(t, targets, StateTerminated,
 		"terminal transition must land in Terminated")
 }
+
+// deepRecurse recurses past the 100 frames runtime.Stack keeps before it
+// collapses the rest into a literal "...N frames elided..." line. Kept
+// non-inlinable so the recursion reaches the goroutine's stack trace.
+//
+//go:noinline
+func deepRecurse(n int, ready chan<- struct{}, block <-chan struct{}) int {
+	if n <= 0 {
+		close(ready)
+		<-block
+		return 0
+	}
+	return deepRecurse(n-1, ready, block) + n
+}
+
+// TestGoleakParsesElidedFrameStacks guards against goleak's stack parser
+// panicking on the "...N frames elided..." line runtime.Stack emits for
+// goroutines parked past 100 frames deep. v1.3.0 reads it as a function name.
+func TestGoleakParsesElidedFrameStacks(t *testing.T) {
+	ready := make(chan struct{})
+	block := make(chan struct{})
+	done := make(chan struct{})
+
+	// 200 frames guarantees the elided-frames line regardless of the
+	// runtime's exact truncation threshold, while the goroutine stays
+	// parked on <-block so its stack is captured mid-recursion.
+	go func() {
+		defer close(done)
+		deepRecurse(200, ready, block)
+	}()
+	<-ready
+
+	assert.NotPanics(t, func() {
+		// Find legitimately reports the parked goroutine as a leak;
+		// only a panic escaping the call is a failure here.
+		_ = goleak.Find()
+	})
+
+	close(block)
+	<-done
+}

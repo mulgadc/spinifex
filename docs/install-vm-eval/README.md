@@ -173,7 +173,6 @@ curl -fsSL https://install.mulgadc.com | bash
 [INFO]   /usr/local/share/spinifex/setup-ovn.sh
 [INFO] Creating directories...
 [INFO] Generated /etc/spinifex/systemd.env
-[INFO]   /var/lib/spinifex/predastore-start.sh
 [INFO]   /var/lib/spinifex/wait-for-nats.sh
 [INFO] Fixing file ownership for privilege separation...
 [INFO] File ownership updated

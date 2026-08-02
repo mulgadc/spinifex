@@ -155,10 +155,9 @@ func assertStuckMarkedFailed(t *testing.T, m *Manager, rt *recordedTransitions, 
 		"terminal transition must land in Terminated")
 }
 
-// deepRecurse recurses to a depth well past the 100 frames runtime.Stack
-// keeps before it collapses the rest into a literal "...N frames
-// elided..." line. It is non-inlinable so the recursion actually shows up
-// in the goroutine's stack trace.
+// deepRecurse recurses past the 100 frames runtime.Stack keeps before it
+// collapses the rest into a literal "...N frames elided..." line. Kept
+// non-inlinable so the recursion reaches the goroutine's stack trace.
 //
 //go:noinline
 func deepRecurse(n int, ready chan<- struct{}, block <-chan struct{}) int {
@@ -171,10 +170,8 @@ func deepRecurse(n int, ready chan<- struct{}, block <-chan struct{}) int {
 }
 
 // TestGoleakParsesElidedFrameStacks guards against goleak's stack parser
-// panicking on the "...N frames elided..." line that runtime.Stack emits
-// for goroutines parked more than 100 frames deep. goleak v1.3.0 treats
-// that line as an unparseable function name and panics inside Find;
-// goleak >= v1.3.1-0.20260602155401-5f791e3ef83b special-cases it.
+// panicking on the "...N frames elided..." line runtime.Stack emits for
+// goroutines parked past 100 frames deep. v1.3.0 reads it as a function name.
 func TestGoleakParsesElidedFrameStacks(t *testing.T) {
 	ready := make(chan struct{})
 	block := make(chan struct{})

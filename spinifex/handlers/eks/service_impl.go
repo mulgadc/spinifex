@@ -272,6 +272,12 @@ type EKSServiceImpl struct {
 	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
 	// enumeration is still catching up. Tests inject a small value.
 	spawnScanRetryBackoff time.Duration
+
+	// clusterTokenOnce lazily binds clusterTokenStore to this instance's
+	// NATSConn on first CreateCluster ClientRequestToken use.
+	clusterTokenOnce  sync.Once
+	clusterTokenStore *ClusterTokenStore
+	clusterTokenErr   error
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -512,8 +518,42 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
 
+	// ClientRequestToken idempotency, mirroring the EC2 RunInstances ClientToken
+	// pattern: same token + identical params replays the in-progress/created
+	// cluster; same token + different params is IdempotentParameterMismatch. A
+	// distinct token reusing the same cluster name still hits claimClusterName's
+	// atomic claim below and gets ResourceInUse — this only short-circuits true
+	// duplicates, so it must resolve before that claim ever runs.
+	token := aws.StringValue(input.ClientRequestToken)
+	var tokenStore *ClusterTokenStore
+	var tokenHash string
+	if token != "" {
+		tokenStore, err = s.getClusterTokenStore(ctx)
+		if err != nil {
+			return nil, logCreateErr(name, accountID, "client token store", err)
+		}
+		tokenHash = clusterTokenParamHash(input)
+		replayName, owned, cerr := tokenStore.Claim(ctx, accountID, token, tokenHash)
+		if cerr != nil {
+			if errors.Is(cerr, errClusterTokenParamMismatch) {
+				return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+			}
+			return nil, logCreateErr(name, accountID, "client token claim", cerr)
+		}
+		if !owned {
+			replayMeta, gerr := GetClusterMeta(ctx, acctKV, replayName)
+			if gerr != nil {
+				return nil, logCreateErr(name, accountID, "client token replay", gerr)
+			}
+			return &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(replayMeta)}, nil
+		}
+	}
+
 	vpcID, err := s.deps.VPCSubnet.GetSubnetVPC(ctx, accountID, subnetIDs[0])
 	if err != nil {
+		if tokenStore != nil {
+			tokenStore.Abort(ctx, accountID, token)
+		}
 		// Subnet resolve failure is a client fault (bad/foreign subnet).
 		slog.ErrorContext(ctx, "CreateCluster: resolve subnet VPC failed",
 			"cluster", name, "accountID", accountID, "subnet", subnetIDs[0], "err", err)
@@ -544,12 +584,23 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(ctx, accountID, acctKV, meta); err != nil {
+		if tokenStore != nil {
+			tokenStore.Abort(ctx, accountID, token)
+		}
 		return nil, err
 	}
 
 	// Respond CREATING immediately; run the slow launch on a background goroutine.
 	// The goroutine owns meta from here on — do not touch it after this point.
 	out := &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}
+	if tokenStore != nil {
+		if ferr := tokenStore.Finalize(ctx, accountID, token, tokenHash, name); ferr != nil {
+			// The create itself succeeded; a finalize failure only weakens future
+			// dedup for this token, so it must not fail the request.
+			slog.WarnContext(ctx, "CreateCluster: failed to finalize client-request-token record",
+				"cluster", name, "err", ferr)
+		}
+	}
 	// The launch outlives the request, so it runs on its own background context
 	// rather than the caller's, which is cancelled once this reply is written.
 	launchCtx := context.Background()

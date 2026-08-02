@@ -231,13 +231,15 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ec2Instance.SetArchitecture(arch)
 	}
 
-	// Stamp the constant IMDSv2-only block so DescribeInstances reports the
-	// posture; only the hop limit is request-driven.
+	// Stamp the metadata-options block so DescribeInstances reports the posture;
+	// the hop limit and the IMDSv1 opt-in are request-driven.
 	var hopLimit *int64
+	var httpTokens string
 	if input.MetadataOptions != nil {
 		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
+		httpTokens = aws.StringValue(input.MetadataOptions.HttpTokens)
 	}
-	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit)
+	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit, httpTokens)
 
 	// IAM instance profile attached at launch: gateway has already resolved
 	// the reference to a canonical ARN and enforced iam:PassRole; here we
@@ -2143,7 +2145,7 @@ func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(ctx context.Context,
 			integrityErr = true
 			return false
 		}
-		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit)
+		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit, aws.StringValue(input.HttpTokens))
 		opt := *v.Instance.MetadataOptions
 		options = &opt
 		return true
@@ -2190,7 +2192,7 @@ func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit)
+	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit, aws.StringValue(input.HttpTokens))
 	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
 		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: failed to persist stopped instance", "instanceId", instanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

@@ -14,8 +14,8 @@ import (
 )
 
 // The shared validator passes the secure/default values (and AWS "leave
-// unchanged" empties) as no-ops, rejects any posture downgrade or unmodelled
-// feature with UnsupportedOperation, and bounds the hop limit to 1-64.
+// unchanged" empties) as no-ops, accepts either http-tokens state, rejects any
+// unmodelled feature with UnsupportedOperation, and bounds the hop limit to 1-64.
 func TestValidateMetadataOptions(t *testing.T) {
 	cases := map[string]struct {
 		httpTokens, httpEndpoint, ipv6, tags string
@@ -26,7 +26,8 @@ func TestValidateMetadataOptions(t *testing.T) {
 		"secure values":          {ec2.HttpTokensStateRequired, ec2.InstanceMetadataEndpointStateEnabled, ec2.InstanceMetadataProtocolStateDisabled, ec2.InstanceMetadataTagsStateDisabled, aws.Int64(1), ""},
 		"hop limit lower bound":  {hopLimit: aws.Int64(1)},
 		"hop limit upper bound":  {hopLimit: aws.Int64(64)},
-		"tokens optional":        {httpTokens: ec2.HttpTokensStateOptional, wantCode: awserrors.ErrorUnsupportedOperation},
+		"tokens optional":        {httpTokens: ec2.HttpTokensStateOptional},
+		"tokens unrecognised":    {httpTokens: "sometimes", wantCode: awserrors.ErrorUnsupportedOperation},
 		"endpoint disabled":      {httpEndpoint: ec2.InstanceMetadataEndpointStateDisabled, wantCode: awserrors.ErrorUnsupportedOperation},
 		"ipv6 enabled":           {ipv6: ec2.InstanceMetadataProtocolStateEnabled, wantCode: awserrors.ErrorUnsupportedOperation},
 		"tags enabled":           {tags: ec2.InstanceMetadataTagsStateEnabled, wantCode: awserrors.ErrorUnsupportedOperation},
@@ -46,25 +47,47 @@ func TestValidateMetadataOptions(t *testing.T) {
 	}
 }
 
-// Re-enabling IMDSv1 is refused with UnsupportedOperation and the instance is
-// left untouched — no partial application of a rejected request.
-func TestModifyInstanceMetadataOptions_RejectV1(t *testing.T) {
+// Enabling IMDSv1 on an existing instance is applied and echoed back; IMDSv1-only
+// guest agents can be switched on after launch without a relaunch.
+func TestModifyInstanceMetadataOptions_EnableV1(t *testing.T) {
 	owner := utils.GlobalAccountID
 	id := "i-imdsv1"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
-		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil, "")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	out, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId: aws.String(id),
+		HttpTokens: aws.String(ec2.HttpTokensStateOptional),
+	}, owner)
+	require.NoError(t, err)
+	require.NotNil(t, out.InstanceMetadataOptions)
+	assert.Equal(t, ec2.HttpTokensStateOptional, aws.StringValue(out.InstanceMetadataOptions.HttpTokens))
+	assert.Equal(t, ec2.HttpTokensStateOptional, aws.StringValue(v.Instance.MetadataOptions.HttpTokens))
+	// The hop limit was not in the request, so it must not move.
+	assert.Equal(t, int64(1), aws.Int64Value(v.Instance.MetadataOptions.HttpPutResponseHopLimit))
+}
+
+// An unrecognised http-tokens state is still refused, and the instance is left
+// untouched — no partial application of a rejected request.
+func TestModifyInstanceMetadataOptions_RejectUnknownTokensState(t *testing.T) {
+	owner := utils.GlobalAccountID
+	id := "i-imdsbad"
+	v := &vm.VM{
+		ID: id, AccountID: owner, Status: vm.StateRunning,
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil, "")},
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
 	_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId: aws.String(id),
-		HttpTokens: aws.String(ec2.HttpTokensStateOptional),
+		HttpTokens: aws.String("sometimes"),
 	}, owner)
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)
 	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(v.Instance.MetadataOptions.HttpTokens))
-	assert.Equal(t, int64(1), aws.Int64Value(v.Instance.MetadataOptions.HttpPutResponseHopLimit))
 }
 
 // A hop-limit change on a running instance persists and is echoed back — AWS
@@ -75,7 +98,7 @@ func TestModifyInstanceMetadataOptions_HopLimitRunning(t *testing.T) {
 	id := "i-hop-run"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
-		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil, "")},
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
@@ -97,7 +120,7 @@ func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
 	id := "i-hop-stop"
 	stored := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateStopped,
-		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil)},
+		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil, "")},
 	}
 	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
@@ -180,7 +203,7 @@ func TestModifyInstanceMetadataOptions_LegacyNilBlockStamped(t *testing.T) {
 // The constant block reports the IMDSv2-only posture: required tokens, endpoint
 // enabled, IPv6/tags metadata disabled, state applied. Only the hop limit moves.
 func TestBuildMetadataOptions_ConstantBlock(t *testing.T) {
-	opts := buildMetadataOptions(nil)
+	opts := buildMetadataOptions(nil, "")
 	require.NotNil(t, opts)
 	assert.Equal(t, ec2.InstanceMetadataOptionsStateApplied, aws.StringValue(opts.State))
 	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(opts.HttpTokens))
@@ -204,13 +227,15 @@ func TestBuildMetadataOptions_HopLimit(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, aws.Int64Value(buildMetadataOptions(tc.in).HttpPutResponseHopLimit))
+			assert.Equal(t, tc.want, aws.Int64Value(buildMetadataOptions(tc.in, "").HttpPutResponseHopLimit))
 		})
 	}
 }
 
-// Every instance launched after this change carries the constant block so
-// DescribeInstances surfaces the IMDSv2-only posture without a projection change.
+// Every instance launched after this change carries the block so
+// DescribeInstances surfaces the posture without a projection change. A launch
+// that says nothing about http-tokens must still land on "required" — this is
+// the guard against the IMDSv1 opt-in becoming the default by accident.
 func TestRunInstance_MetadataOptionsSeeded(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
@@ -226,17 +251,36 @@ func TestRunInstance_MetadataOptionsSeeded(t *testing.T) {
 	assert.Equal(t, int64(1), aws.Int64Value(ec2Instance.MetadataOptions.HttpPutResponseHopLimit))
 }
 
-// A run-instances launch that tries to re-enable IMDSv1 is rejected before any
-// capacity is allocated — the same UnsupportedOperation the modify path returns.
-// Validation precedes the instance-type lookup, so a bare service suffices.
-func TestPrepareRunInstances_RejectV1MetadataOptions(t *testing.T) {
-	svc := &InstanceServiceImpl{}
-	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+// A launch asking for IMDSv1 passes validation and the opt-in reaches the
+// instance, which is what lets an IMDSv1-only guest agent bootstrap.
+func TestRunInstance_MetadataOptionsTokensOptional(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
 		ImageId:         aws.String("ami-0abcdef1234567890"),
 		InstanceType:    aws.String("t3.micro"),
-		MinCount:        aws.Int64(1),
-		MaxCount:        aws.Int64(1),
 		MetadataOptions: &ec2.InstanceMetadataOptionsRequest{HttpTokens: aws.String(ec2.HttpTokensStateOptional)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ec2Instance.MetadataOptions)
+	assert.Equal(t, ec2.HttpTokensStateOptional, aws.StringValue(ec2Instance.MetadataOptions.HttpTokens))
+}
+
+// An unmodelled metadata option is still rejected before any capacity is
+// allocated. Validation precedes the instance-type lookup, so a bare service
+// suffices.
+func TestPrepareRunInstances_RejectUnsupportedMetadataOptions(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		MetadataOptions: &ec2.InstanceMetadataOptionsRequest{
+			HttpEndpoint: aws.String(ec2.InstanceMetadataEndpointStateDisabled),
+		},
 	}, utils.GlobalAccountID, "")
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)

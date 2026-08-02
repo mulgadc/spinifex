@@ -215,7 +215,7 @@ The signed forms (`signature`, `pkcs7`, `rsa2048`) currently return 404 — they
 
 ## Metadata Options
 
-Metadata options are managed from the **control plane** with the standard EC2 commands. Because the platform is IMDSv2-only, the only mutable knob is the PUT response hop limit.
+Metadata options are managed from the **control plane** with the standard EC2 commands. The mutable knobs are the PUT response hop limit and `HttpTokens`; the remaining fields are fixed.
 
 ### Inspect
 
@@ -254,9 +254,23 @@ aws ec2 modify-instance-metadata-options \
 
 Raise the hop limit above the default of 1 when containers on the instance need IMDS access through an extra routing hop (e.g. containers on a bridge network fetching role credentials). Valid range is 1–64.
 
+### Enabling IMDSv1
+
+Instances default to `HttpTokens=required`, so every read needs a token. Set `optional` to also serve untokened reads:
+
+```bash
+aws ec2 run-instances \
+  --image-id ami-0123456789abcdef0 \
+  --instance-type t3.micro \
+  --metadata-options "HttpTokens=optional"
+```
+
+This exists for guest agents that cannot perform the IMDSv2 handshake. The main one is **cloudbase-init**, the standard Windows bootstrap agent, whose `EC2Service` has no token support in any released version — a Windows instance left at `required` gets 401 on every read and so never receives its hostname, injected administrator password or user-data.
+
+Prefer `required` everywhere else. IMDSv1 has no defence against a confused-deputy SSRF in a guest workload reaching the metadata endpoint on an attacker's behalf, which is the whole reason IMDSv2 binds tokens to the requesting interface.
+
 Rejected settings:
 
-- `--http-tokens optional` → `UnsupportedOperation` (IMDSv2 cannot be relaxed)
 - `--http-endpoint disabled` → `UnsupportedOperation` (the endpoint cannot be turned off)
 - `--http-protocol-ipv6 enabled` → `UnsupportedOperation`
 - `--instance-metadata-tags enabled` → `UnsupportedOperation`
@@ -278,9 +292,9 @@ Useful background for host-side troubleshooting:
 | Token binding | Issuing network interface; in-memory, not persisted |
 | Role credential lifetime | 3600 seconds, refreshed 5 minutes before expiry |
 | PUT response hop limit | Default 1, valid 1–64 |
-| `HttpTokens` | Always `required` (immutable) |
+| `HttpTokens` | `required` (default) or `optional` |
 | `HttpEndpoint` | Always `enabled` (immutable) |
-| Tokenless GET | `401 Unauthorized`, empty body |
+| Tokenless GET | `401 Unauthorized`, empty body, unless `HttpTokens=optional` |
 | `X-Forwarded-For` present | `403 Forbidden` |
 | Wrong method | `405 Method Not Allowed` |
 | Unknown/unsupported path | `404 Not Found` |
@@ -291,7 +305,8 @@ Useful background for host-side troubleshooting:
 
 The request is missing a valid token. Common causes:
 
-- No `X-aws-ec2-metadata-token` header — IMDSv1-style access is not supported; obtain a token first.
+- No `X-aws-ec2-metadata-token` header, on an instance at the default `HttpTokens=required` — obtain a token first, or set `HttpTokens=optional` if the guest agent cannot do the handshake.
+- A change to `HttpTokens` can take up to 30 seconds to take effect: the per-instance setting is cached on the untokened path so an unauthenticated caller cannot drive repeated `DescribeInstances` fan-outs.
 - The token expired — reissue with a fresh `PUT /latest/api/token`.
 - The token was issued to a different instance/interface — tokens are interface-bound and rejected elsewhere, identically to unknown tokens.
 - The token endpoint itself never 401s; if the `PUT` fails, check for a `400` (bad TTL header) instead.

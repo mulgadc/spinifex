@@ -253,12 +253,51 @@ func isAuxVolume(volumeName string) bool {
 	return strings.HasSuffix(volumeName, "-efi")
 }
 
+// validVolumeName reports whether volume is safe to use as a single path
+// component under BaseDir: non-empty, no separator, and not "." or "..".
+func validVolumeName(volume string) bool {
+	return volume != "" && volume != "." && volume != ".." && filepath.Base(volume) == volume
+}
+
+// localVolumeDir validates volume and baseDir, then returns baseDir/volume.
+// Every handler that turns a wire-supplied volume name into a filesystem path
+// (mount, unmount, delete, config) must go through this: the name arrives
+// unmarshalled straight from a NATS message, so an empty or ".."-laden value
+// must never reach a filesystem call. The character checks in validVolumeName
+// already rule out an escape, but the path is still resolved and checked
+// against baseDir as a second, independent guard.
+func localVolumeDir(baseDir, volume string) (string, error) {
+	if baseDir == "" {
+		return "", fmt.Errorf("empty base directory")
+	}
+	if !validVolumeName(volume) {
+		return "", fmt.Errorf("invalid volume name %q", volume)
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base directory: %w", err)
+	}
+	dir := filepath.Join(absBase, volume)
+
+	rel, err := filepath.Rel(absBase, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("volume name %q escapes base directory", volume)
+	}
+	return dir, nil
+}
+
 // volumeNeedsSeal reports whether an unmounted volume has local viperblock
 // state under baseDir/<volume> to flush. A node that never held the local
 // WAL has nothing to seal. Callers handle auxiliary volumes separately (see
 // isAuxVolume).
 func volumeNeedsSeal(volumeName, baseDir string) bool {
-	_, err := os.Stat(filepath.Join(baseDir, volumeName))
+	dir, err := localVolumeDir(baseDir, volumeName)
+	if err != nil {
+		slog.Warn("volumeNeedsSeal: rejecting invalid volume name", "volume", volumeName, "err", err)
+		return false
+	}
+	_, err = os.Stat(dir)
 	return err == nil
 }
 
@@ -469,6 +508,17 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// Reject before touching anything: an empty or path-traversing name
+		// must never reach the RemoveAll below, which is otherwise wide
+		// enough to wipe BaseDir itself or escape it entirely.
+		localPath, err := localVolumeDir(cfg.BaseDir, ebsRequest.Volume)
+		if err != nil {
+			slog.ErrorContext(ctx, "ebs.delete: refusing invalid volume name", "volume", ebsRequest.Volume, "err", err)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSDeleteResponse{Volume: ebsRequest.Volume, Error: fmt.Sprintf("invalid volume name: %v", err)})
+			return
+		}
+
 		response := types.EBSDeleteResponse{Volume: ebsRequest.Volume, Success: true}
 
 		// Find and clean up the mounted volume if it exists
@@ -520,8 +570,7 @@ func launchService(cfg *Config) (err error) {
 		// the unmount seal (isAuxVolume skips it, they carry no durable
 		// data), and a main volume's seal can have been skipped after a
 		// failed flush (e.g. disk full), so this is the only guaranteed
-		// cleanup point for both.
-		localPath := filepath.Join(cfg.BaseDir, ebsRequest.Volume)
+		// cleanup point for both. localPath was validated above.
 		if err := os.RemoveAll(localPath); err != nil {
 			slog.ErrorContext(ctx, "ebs.delete: failed to remove local volume directory",
 				"volume", ebsRequest.Volume, "path", localPath, "err", err)
@@ -733,6 +782,16 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
+		// Reject before the not-live branch below can hand this name to
+		// openLoadedVolumeVB, which derives a BaseDir/<volume> path.
+		if !validVolumeName(req.Volume) {
+			err := fmt.Errorf("invalid volume name %q", req.Volume)
+			slog.ErrorContext(ctx, "ebs.config: refusing invalid volume name", "volume", req.Volume)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
+			return
+		}
+
 		cfg.mu.Lock()
 		var live *viperblock.VB
 		for _, volume := range cfg.MountedVolumes {
@@ -807,6 +866,18 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		slog.InfoContext(ctx, "ebs.mount", "request", ebsRequest)
+
+		// Reject before any local path is derived from the name: this is the
+		// first point an unvalidated wire name would otherwise reach the
+		// filesystem (clearStaleSealReceipt) and, further down, viperblock's
+		// own BaseDir/<volume> layout.
+		if !validVolumeName(ebsRequest.Name) {
+			err := fmt.Errorf("invalid volume name %q", ebsRequest.Name)
+			slog.ErrorContext(ctx, "ebs.mount: refusing invalid volume name", "volume", ebsRequest.Name)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, types.EBSMountResponse{Error: err.Error()})
+			return
+		}
 
 		// Clear any receipt left by a previous mount before anything else can
 		// return early, so a stale receipt can never survive into this mount.

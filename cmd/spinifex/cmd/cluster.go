@@ -15,16 +15,14 @@ import (
 )
 
 // systemIsSystemRunning is overridable in tests so hostIsStopping does not
-// need a real systemd. Returns the trimmed stdout; systemctl exits non-zero
-// for every state other than "running", so a non-nil error alone does not
-// mean the state lookup failed -- callers must still inspect the output.
+// need a real systemd. systemctl exits non-zero for every state other than
+// "running", so callers must inspect the output, not just the error.
 var systemIsSystemRunning = func() (string, error) {
 	out, err := exec.Command("systemctl", "is-system-running").Output()
 	return strings.TrimSpace(string(out)), err
 }
 
 // knownSystemStates are the documented systemctl is-system-running values.
-// Output outside this set is untrusted, not a state to treat as "stopping".
 var knownSystemStates = map[string]bool{
 	"running": true, "degraded": true, "maintenance": true,
 	"stopping": true, "initializing": true, "starting": true, "offline": true,
@@ -33,22 +31,22 @@ var knownSystemStates = map[string]bool{
 // hostIsStopping reports whether systemd is genuinely unwinding into
 // shutdown.target (reboot/poweroff/halt/kexec), as opposed to a plain
 // `systemctl restart/stop spinifex.target` where the host stays up.
-//
-// A recognized non-"stopping" state (running/degraded/...) returns false.
-// Unrecognized output is treated the same as "not stopping" -- an unknown
-// state must never be mistaken for shutdown. If systemctl could not be run
-// at all (empty output, e.g. binary missing), the state is genuinely
-// unknown; this fails toward draining, since a skipped drain on a real
-// shutdown hard-kills guests and loses unflushed writes, while a spurious
-// drain on a restart only costs an extra graceful stop/relaunch cycle.
 func hostIsStopping() (bool, error) {
 	out, err := systemIsSystemRunning()
+
+	// systemctl did not run at all, so the state is genuinely unknown. Fail
+	// toward draining: a skipped drain on a real shutdown hard-kills guests,
+	// while a spurious drain only costs a graceful stop/relaunch cycle.
 	if out == "" {
 		return true, fmt.Errorf("systemctl is-system-running produced no output: %w", err)
 	}
+
+	// Unrecognized output is untrusted; an unknown state must never be
+	// mistaken for shutdown.
 	if !knownSystemStates[out] {
 		return false, fmt.Errorf("systemctl is-system-running returned unrecognized state %q", out)
 	}
+
 	return out == "stopping", nil
 }
 
@@ -214,12 +212,9 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// --only-if-host-stopping is a no-op safety net for the operator running
-	// this by hand: unset, the command drains unconditionally as it always
-	// has. Set (spinifex-shutdown.service's ExecStop), it skips on anything
-	// short of a genuine host shutdown/reboot -- PartOf=spinifex.target fires
-	// ExecStop on every target stop, restart included, even though the host
-	// stays up.
+	// Unset (an operator running this by hand), the command drains
+	// unconditionally. Set, it skips anything short of a real host shutdown,
+	// since PartOf=spinifex.target fires ExecStop on restarts too.
 	if onlyIfHostStopping {
 		stopping, err := hostIsStopping()
 		if err != nil {

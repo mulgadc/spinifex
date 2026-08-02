@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam e2e-rds')"
         required: false
         default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam"
       test_run:

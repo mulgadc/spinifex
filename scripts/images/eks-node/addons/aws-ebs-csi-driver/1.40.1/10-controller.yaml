@@ -94,6 +94,7 @@ spec:
         - --batching=true
         - --logging-format=text
         - --user-agent-extra=kustomize
+        - --k8s-tag-cluster-id={{CLUSTER_NAME}}
         - --v=2
         env:
         - name: CSI_ENDPOINT

@@ -128,7 +128,7 @@ func TestRemoveSystemImage_HappyPath(t *testing.T) {
 	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.NoError(t, err)
 	assert.Equal(t, preview.AMIObjectCount+preview.SnapObjectCount, res.ObjectsDeleted)
-	assert.Equal(t, preview.AMIBytesTotal+preview.SnapBytesTotal, res.BytesFreed)
+	assert.Equal(t, preview.AMIBytesTotal+preview.SnapBytesTotal, res.BytesDeleted)
 	assert.Equal(t, 0, store.Count())
 }
 

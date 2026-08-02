@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
+	"github.com/nats-io/nats.go"
 )
 
 // Ensure ImageServiceImpl implements ImageService.
@@ -43,10 +44,13 @@ type ImageServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
+	natsConn   *nats.Conn
 }
 
-// NewImageServiceImpl creates a new daemon-side image service.
-func NewImageServiceImpl(cfg *config.Config) *ImageServiceImpl {
+// NewImageServiceImpl creates a new daemon-side image service. natsConn is used
+// to drain a running instance's volume (routed to the node hosting it) before
+// CreateImageFromInstance reads its live checkpoint.
+func NewImageServiceImpl(cfg *config.Config, natsConn *nats.Conn) *ImageServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -58,6 +62,7 @@ func NewImageServiceImpl(cfg *config.Config) *ImageServiceImpl {
 		config:     cfg,
 		store:      store,
 		bucketName: cfg.Predastore.Bucket,
+		natsConn:   natsConn,
 	}
 }
 
@@ -66,6 +71,18 @@ func NewImageServiceImplWithStore(store objectstore.ObjectStore, bucketName stri
 	return &ImageServiceImpl{
 		store:      store,
 		bucketName: bucketName,
+	}
+}
+
+// NewImageServiceImplWithConfig creates an image service with an explicit
+// config and NATS connection (for testing the running-volume drain path,
+// which needs config.DataDir/Predastore and a NATS connection to route to).
+func NewImageServiceImplWithConfig(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn) *ImageServiceImpl {
+	return &ImageServiceImpl{
+		config:     cfg,
+		store:      store,
+		bucketName: cfg.Predastore.Bucket,
+		natsConn:   natsConn,
 	}
 }
 
@@ -261,7 +278,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
 			OwnerId:            aws.String(ownerID),
 			Public:             aws.Bool(false),
-			State:              aws.String("available"),
+			State:              aws.String(amiImageState(amiMeta.State)),
 			ImageType:          aws.String("machine"),
 			Hypervisor:         aws.String("xen"), // Default hypervisor
 			BootMode:           aws.String(amiMeta.BootMode),
@@ -302,6 +319,17 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 	return &ec2.DescribeImagesOutput{
 		Images: images,
 	}, nil
+}
+
+// amiImageState maps AMIMetadata.State to the ec2.Image state string. An
+// empty State means the AMI was registered before the field existed, and
+// MUST report as "available" — those images are already complete and
+// launchable, so treating empty as anything else would hide them.
+func amiImageState(state string) string {
+	if state == "" {
+		return "available"
+	}
+	return state
 }
 
 // imageMatchesFilters checks whether an ec2.Image satisfies all parsed filters.
@@ -398,12 +426,14 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		"isRunning", params.IsRunning)
 
 	// Step 1: Snapshot root volume (live via NATS or offline from S3)
-	snapshotFn := s.snapshotStoppedVolume
+	var snapshotErr error
 	if params.IsRunning {
-		snapshotFn = s.snapshotRunningVolume
+		snapshotErr = s.snapshotRunningVolume(params.RootVolumeID, snapshotID, accountID)
+	} else {
+		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID)
 	}
-	if err := snapshotFn(params.RootVolumeID, snapshotID); err != nil {
-		return nil, err
+	if snapshotErr != nil {
+		return nil, snapshotErr
 	}
 
 	// Step 2: Read source volume config for size
@@ -451,6 +481,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		BootMode:        sourceAMI.BootMode,
 		Distro:          sourceAMI.Distro,
 		DistroFamily:    sourceAMI.DistroFamily,
+		// Snapshot succeeded before this point, so the image is complete.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(context.Background(), amiID, meta); err != nil {
@@ -465,10 +497,12 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}, nil
 }
 
-// snapshotRunningVolume creates a crash-consistent snapshot of a running instance by reading
-// the live checkpoint written by nbdkit on every NBD Flush. No IPC with the running nbdkit
-// process is needed; S3 PUT atomicity guarantees we read a complete checkpoint.
-func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID string) error {
+// snapshotRunningVolume creates a snapshot of a running instance's volume by
+// draining it to the node hosting it (so any writes buffered there reach S3),
+// then reading the live checkpoint written by nbdkit on every NBD Flush. This
+// shares handlers/ec2/snapshot's DrainVolume with ec2.CreateSnapshot so the two
+// live-snapshot paths cannot diverge on when a drain is required.
+func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -479,6 +513,16 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID string) er
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	volumeSize := volConfig.VolumeMetadata.SizeGiB * 1024 * 1024 * 1024
+
+	// Flush the writes still buffered by whichever node serves the volume, so
+	// the live checkpoint below is current rather than an arbitrarily stale one
+	// predating e.g. a guest-triggered GPT rewrite (growpart on first boot). An
+	// attached volume that cannot be drained fails here rather than silently
+	// producing an image from a stale checkpoint.
+	if err := handlers_ec2_snapshot.DrainVolume(context.Background(), s.config, s.store, s.natsConn, volumeID, volConfig.VolumeMetadata, accountID); err != nil {
+		slog.Error("snapshotRunningVolume: drain failed", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
 
 	cfg := vbs3.S3Config{
 		VolumeName: volumeID,
@@ -967,6 +1011,9 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		CreationDate:    time.Now(),
 		BootMode:        srcMeta.BootMode,
 		Tags:            tags,
+		// Zero-copy: the new config shares the source's already-durable
+		// snapshot, so the image is complete as soon as this is written.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(ctx, newImageID, meta); err != nil {
@@ -1170,6 +1217,9 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		CreationDate:    time.Now(),
 		Tags:            tags,
 		BootMode:        aws.StringValue(input.BootMode),
+		// The referenced snapshot already exists (checked above), so the
+		// image is complete as soon as this config is written.
+		State: "available",
 	}
 
 	if err := s.putAMIConfig(ctx, amiID, meta); err != nil {

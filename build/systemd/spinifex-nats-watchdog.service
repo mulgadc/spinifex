@@ -5,10 +5,16 @@ After=spinifex-nats.service
 
 [Service]
 Type=oneshot
-# Runs as root: the probe is a local curl to the NATS monitoring port, and the
-# remedy is `systemctl try-restart spinifex-nats` when JetStream is disabled while
-# the process stays alive (which Restart=on-failure cannot catch).
+# Runs as root: the probes are a local curl to the NATS monitoring port and a
+# canary KV round-trip via spx, and the remedy is `systemctl try-restart
+# spinifex-nats` when JetStream stops accepting writes while the process stays
+# alive (which Restart=on-failure cannot catch).
 ExecStart=/var/lib/spinifex/nats-js-watchdog.sh
+# Sized for the probe loop's own worst case (3 samples x (5s curl + 5s canary)
+# + 2 gaps x 2s = 34s): a stop mid-cycle lets the script finish rather than
+# cutting it off. Only the failing path runs that long; a healthy node exits on
+# the first sample.
+TimeoutStopSec=45
 
 # Hardening (kept compatible with talking to PID1 over /run/systemd).
 NoNewPrivileges=yes

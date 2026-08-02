@@ -10,9 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// execRunner runs the command directly when uid 0, otherwise via sudo.
+// execRunner escalates only the commands that need it — see utils.NeedsPrivilege.
+// The OVS/OVN socket clients reach their daemons over the group-owned control
+// sockets, and ip/iptables/arping run under the unit's ambient capabilities.
 type execRunner struct{}
 
 var _ Runner = execRunner{}
@@ -22,10 +26,10 @@ func NewExecRunner() Runner { return execRunner{} }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var cmd *exec.Cmd
-	if os.Getuid() == 0 {
-		cmd = exec.CommandContext(ctx, name, args...)
-	} else {
+	if utils.NeedsPrivilege(name, args...) {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
+	} else {
+		cmd = exec.CommandContext(ctx, name, args...)
 	}
 	// Capture stdout and stderr separately so stderr is not folded into parsed
 	// output: under a restrictive CapabilityBoundingSet (no CAP_AUDIT_WRITE) sudo

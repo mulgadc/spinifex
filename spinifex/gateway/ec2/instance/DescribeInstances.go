@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -18,8 +19,15 @@ import (
 
 // DescribeInstances fans out to all nodes via NATS and aggregates the results.
 // It is lenient: partial results from a slow or unreachable node are returned
-// without error, which is correct for user-facing describes. Callers that must
-// not act on a partial view (the quota reconcile) use DescribeInstancesForReconcile.
+// without error, and an explicitly named instance ID that is simply absent
+// from the aggregate is not an error either — the caller sees an empty list.
+// That silence is required by internal callers (the IMDS instance lookup, the
+// RDS instance-state resolver, the EKS control-plane reconciler) which treat
+// "not found" as "not currently running/present" rather than a fault.
+// The customer-facing gateway action uses DescribeInstancesChecked instead,
+// which adds the InvalidInstanceID.NotFound assertion AWS callers expect.
+// Callers that must not act on a partial view at all (the quota reconcile)
+// use DescribeInstancesForReconcile.
 func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstancesOutput, error) {
 	reservations, _, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, accountID)
 	if err != nil {
@@ -29,6 +37,43 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 	if firstClient4xx != "" && len(reservations) == 0 {
 		return nil, errors.New(firstClient4xx)
 	}
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// DescribeInstancesChecked is the customer-facing variant served by the
+// gateway's DescribeInstances action. On top of DescribeInstances' aggregation,
+// it asserts InvalidInstanceID.NotFound for any explicitly named instance ID
+// absent from the result — but only when the sweep is provably complete
+// (every expected node answered, both KV buckets succeeded). A partial sweep
+// stays silent, the same as DescribeInstances: a node timing out during the
+// fan-out must never turn into a false NotFound for an instance that actually
+// exists on that node. A --filters-only query (no explicit IDs) is never
+// affected and keeps returning an empty list with no error.
+func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	reservations, complete, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if firstClient4xx != "" && len(reservations) == 0 {
+		return nil, errors.New(firstClient4xx)
+	}
+
+	if len(input.InstanceIds) > 0 && complete {
+		found := make(map[string]bool)
+		for _, res := range reservations {
+			for _, inst := range res.Instances {
+				if inst != nil && inst.InstanceId != nil {
+					found[*inst.InstanceId] = true
+				}
+			}
+		}
+		for _, id := range input.InstanceIds {
+			if id != nil && !found[*id] {
+				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			}
+		}
+	}
+
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 

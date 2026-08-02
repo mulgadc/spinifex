@@ -1,0 +1,39 @@
+name: Image Scripts
+
+# Separate from spinifex.yml on purpose: scripts/images/ and images/ are shell
+# and mkosi assets baked into system images, not Go, so they get their own
+# path-filtered gate instead of running on every Go contributor's push (see
+# ui.yml for the same pattern applied to the frontend).
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - scripts/images/**
+      - images/**
+      - .github/workflows/image-scripts.yml
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - scripts/images/**
+      - images/**
+      - .github/workflows/image-scripts.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image_scripts:
+    name: Image Scripts
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Run image script tests + shellcheck
+        run: make test-images

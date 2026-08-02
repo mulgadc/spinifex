@@ -56,7 +56,7 @@ Pre-download the APT packages installed by the production setup. `apt install --
 sudo apt update
 sudo apt install --download-only -y \
   nbdkit nbdkit-plugin-dev pkg-config \
-  qemu-system-x86 qemu-utils qemu-kvm \
+  qemu-system-x86 qemu-utils \
   ovmf qemu-efi-aarch64 \
   libvirt-daemon-system libvirt-clients libvirt-dev \
   ovn-central ovn-host openvswitch-switch \

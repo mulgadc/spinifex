@@ -29,9 +29,14 @@ type RemoveImageOpts struct {
 }
 
 // RemoveImageResult summarises what was deleted from object storage.
+//
+// BytesDeleted is the logical size of the deleted objects, not physical disk
+// space: predastore reclaims a deleted object's bytes asynchronously via
+// background compaction, so this count can be freed well after the call
+// returns, or briefly not at all if compaction is stalled.
 type RemoveImageResult struct {
 	ObjectsDeleted int
-	BytesFreed     int64
+	BytesDeleted   int64
 }
 
 // Dependents lists every resource that transitively backs an admin-imported
@@ -259,7 +264,7 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 			return nil, fmt.Errorf("delete config: %w", err)
 		}
 		result.ObjectsDeleted += n
-		result.BytesFreed += b
+		result.BytesDeleted += b
 	}
 
 	// Step 2: drop the rest of ami-<id>/ (chunks, WAL, checkpoints).
@@ -268,7 +273,7 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 		return nil, fmt.Errorf("delete ami prefix: %w", err)
 	}
 	result.ObjectsDeleted += n
-	result.BytesFreed += b
+	result.BytesDeleted += b
 
 	// Step 3: drop snap-<amiID>/ (the viperblock-internal snap checkpoint).
 	n, b, err = deletePrefix(store, bucket, SnapPrefix(opts.ImageID)+"/")
@@ -276,12 +281,12 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 		return nil, fmt.Errorf("delete snap prefix: %w", err)
 	}
 	result.ObjectsDeleted += n
-	result.BytesFreed += b
+	result.BytesDeleted += b
 
 	slog.Info("RemoveSystemImage completed",
 		"imageId", opts.ImageID,
 		"objectsDeleted", result.ObjectsDeleted,
-		"bytesFreed", result.BytesFreed,
+		"bytesDeleted", result.BytesDeleted,
 		"force", opts.Force,
 	)
 	return result, nil

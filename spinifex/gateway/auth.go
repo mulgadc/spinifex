@@ -52,12 +52,22 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				case errors.Is(err, sigv4.ErrPayloadTooLarge):
 					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge)
 				case errors.Is(err, sigv4.ErrRequestTimeTooSkewed):
-					// Skew/replay: AWS returns this as SignatureDoesNotMatch.
+					// Skew/replay: AWS returns this as SignatureDoesNotMatch, which is
+					// indistinguishable on the wire from a canonicalisation mismatch.
+					// Log the timestamps so the two can be told apart after the fact.
+					slog.Warn("Auth failure: request time too skewed",
+						"sourceIP", clientIP,
+						"requestTime", signingTime(r),
+						"serverTime", time.Now().UTC().Format("20060102T150405Z"),
+						"maxSkew", sigv4.MaxClockSkew)
 					gw.RateLimiter.RecordFailure(clientIP)
 					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				default:
 					// Malformed Authorization, bad credential scope, unsupported
-					// algorithm, missing content hash: a failed auth attempt.
+					// algorithm, missing content hash: a failed auth attempt. The parse
+					// error names which, and is the only record of it.
+					slog.Warn("Auth failure: malformed signature envelope",
+						"sourceIP", clientIP, "err", err)
 					gw.RateLimiter.RecordFailure(clientIP)
 					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
 				}
@@ -67,6 +77,11 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope.
 			if !supportedServices[sig.Credential.Service] {
+				// Also surfaces as SignatureDoesNotMatch, so name the service that was
+				// rejected rather than leaving it to look like a signing bug.
+				slog.Warn("Auth failure: unsupported service in credential scope",
+					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
+					"service", sig.Credential.Service)
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
 			}
@@ -108,8 +123,15 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Region is pinned to the gateway; service is the client-claimed scope,
 			// already gated against supportedServices above.
 			if _, err := sig.Verify(secret, gw.Region, sig.Credential.Service); err != nil {
+				// A mismatch means our canonical request differs from the one the client
+				// signed, so log ours to diff against the SDK's. Warn, not Debug: these
+				// failures are intermittent and never reproduce on demand.
 				slog.Warn("Auth failure: verification failed",
-					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP, "err", err)
+					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
+					"service", sig.Credential.Service,
+					"action", mismatchAction(r, sig.Credential.Service),
+					"canonicalRequest", redactedCanonicalRequest(sig),
+					"err", err)
 				gw.RateLimiter.RecordFailure(clientIP)
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
@@ -159,6 +181,60 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// redactedCanonicalRequest renders the server's canonical request for a mismatch log with
+// the session token masked. The rest is safe: it holds signed header values and a payload
+// hash, never the secret key.
+func redactedCanonicalRequest(sig *sigv4.SignedRequest) string {
+	lines := strings.Split(sig.CanonicalRequest(), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "x-amz-security-token:") {
+			lines[i] = "x-amz-security-token:<redacted>"
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// signingTime returns the timestamp the client signed with, read straight off the
+// request. Parse rejects a skewed request before returning a SignedRequest, so the
+// raw header (or the presigned query arg) is the only copy available to log.
+func signingTime(r *http.Request) string {
+	if ts := r.Header.Get("X-Amz-Date"); ts != "" {
+		return ts
+	}
+	if ts := r.URL.Query().Get("X-Amz-Date"); ts != "" {
+		return ts
+	}
+	return r.Header.Get("Date")
+}
+
+// mismatchAction recovers the Action for a rejected query-protocol request so the log names
+// the operation. Auth fails before the dispatcher parses it, which otherwise leaves the
+// trace as a bare "POST /". S3 is skipped: its body is object data, not query args.
+func mismatchAction(r *http.Request, service string) string {
+	if service == "s3" {
+		return ""
+	}
+
+	if action := r.URL.Query().Get("Action"); action != "" {
+		return action
+	}
+
+	// Parse rewound the body, so this re-reads the same bytes it hashed.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	args, err := ParseAWSQueryArgs(string(body))
+	if err != nil {
+		return ""
+	}
+
+	return args["Action"]
 }
 
 // principalContext is the identity envelope set on the request context after

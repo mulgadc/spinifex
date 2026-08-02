@@ -83,6 +83,8 @@ for n in 0 1 2 3 4 5; do
     eval "cidr=\${NIC${n}_CIDR:-}"
     ip link set "$iface" up
 
+    # dhcp is assigned above via eval; shellcheck can't trace dynamic names.
+    # shellcheck disable=SC2154
     if [ "$dhcp" = "1" ]; then
         if dhcp_acquire "$iface"; then
             echo "[mulga-mgmt-net] data NIC $iface ($mac) up via DHCP"
@@ -120,6 +122,8 @@ for n in 0 1 2 3 4 5; do
     # egress and (with a link-local /16) hijack IMDS. Enforce it — a DHCP client
     # racing this NIC may have added one before we set it static.
     eval "isdefault=\${NIC${n}_DEFAULT:-}"
+    # isdefault is assigned above via eval; shellcheck can't trace dynamic names.
+    # shellcheck disable=SC2154
     if [ "$isdefault" != "1" ]; then
         ip route del default dev "$iface" 2>/dev/null || true
     fi

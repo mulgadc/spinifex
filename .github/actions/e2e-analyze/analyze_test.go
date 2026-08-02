@@ -189,3 +189,25 @@ func TestRender_NoFailuresIsClean(t *testing.T) {
 		t.Errorf("expected zero-failure banner, got:\n%s", out)
 	}
 }
+
+// A cell that fails in provisioning writes junit with no testcases. Rendering
+// the clean banner there reports "nothing ran" as "nothing wrong".
+func TestRender_NoTestsRanIsNotClean(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		suites []SuiteReport
+	}{
+		{"empty junit file", []SuiteReport{{File: "junit-baremetal.xml", Label: "baremetal", Total: 0, FailCount: 0}}},
+		{"no junit files at all", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Render(Report{Title: "E2E failure analysis", Suites: tc.suites})
+			if strings.Contains(out, "No failures across any suite") {
+				t.Errorf("clean banner rendered when no test ran, got:\n%s", out)
+			}
+			if !strings.Contains(out, "No tests ran") {
+				t.Errorf("expected a no-tests-ran warning, got:\n%s", out)
+			}
+		})
+	}
+}

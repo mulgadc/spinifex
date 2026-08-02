@@ -171,7 +171,9 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		logLevel = slog.LevelInfo
 	}
 
-	otelsetup.SetDefaultJSONLogger(logLevel)
+	// Adjust the level only. Reinstalling the default logger here would drop the OTLP
+	// bridge Init fanned on at startup, blinding the sink to every line after this.
+	otelsetup.SetLevel(logLevel)
 
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()
@@ -425,6 +427,12 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 // auth context, allows (pre-IAM compatibility). Used by EC2 paths that
 // enforce iam:PassRole before attaching an instance profile.
 func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
+	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
+	// point with its resolved action, so telemetry enrichment lives here
+	// rather than duplicated per REST-JSON handler. Runs before the IAM
+	// checks below so it still fires when IAM is unconfigured.
+	recordResolvedAction(r.Context(), service, action)
+
 	if gw.IAMService == nil {
 		slog.Warn("checkPolicy: IAM service not available, skipping policy check",
 			"service", service, "action", action)
@@ -553,13 +561,20 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
 	var requestId = uuid.NewString()
-	code, exists := awserrors.ResolveErrorCode(err)
+	code, message, exists := awserrors.ResolveErrorDetail(err)
 	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())
 		code = awserrors.ErrorInternalError
+		message = ""
 	}
 
-	errorMsg := awserrors.ErrorLookup[code]
+	// LookupErrorMessage resolves per-service wording first (e.g. ACM vs EKS
+	// both using "ResourceInUseException"); a message the producing call site
+	// supplied via awserrors.Errorf then takes priority over either default.
+	errorMsg := awserrors.LookupErrorMessage(svc, code)
+	if message != "" {
+		errorMsg.Message = message
+	}
 	if errorMsg.HTTPCode == 0 {
 		errorMsg.HTTPCode = 500
 	}
@@ -718,22 +733,40 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	return activeNodes
 }
 
+// recordResolvedAction renames the current span to service.action, tags it
+// with aws.service/aws.action, and updates the request's metric action name.
+// Query-protocol services resolve their action during SigV4 auth, before
+// dispatch; REST-JSON services (path-routed or X-Amz-Target-routed) only know
+// it once checkPolicyResource runs. Called from both paths, so it must be
+// idempotent — the last call before the response is written wins.
+func recordResolvedAction(ctx context.Context, service, action string) {
+	if action == "" {
+		return
+	}
+	span := trace.SpanFromContext(ctx)
+	name := action
+	if service != "" {
+		name = service + "." + action
+		span.SetAttributes(attribute.String("aws.service", service))
+	}
+	span.SetName(name)
+	span.SetAttributes(attribute.String("aws.action", action))
+	otelsetup.SetRequestAction(ctx, name)
+}
+
 // traceActionEnricher renames the server span to the resolved SigV4
 // service.Action and tags account/region once auth populated the context.
+// Only fires here for query-protocol services, whose action is known before
+// dispatch; REST-JSON services get the same treatment later, from
+// checkPolicyResource, once their dispatcher resolves the action.
 func traceActionEnricher(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		action, _ := ctx.Value(ctxAction).(string)
+		svc, _ := ctx.Value(ctxService).(string)
+		recordResolvedAction(ctx, svc, action)
+
 		span := trace.SpanFromContext(ctx)
-		if action, _ := ctx.Value(ctxAction).(string); action != "" {
-			name := action
-			if svc, _ := ctx.Value(ctxService).(string); svc != "" {
-				name = svc + "." + action
-				span.SetAttributes(attribute.String("aws.service", svc))
-			}
-			span.SetName(name)
-			span.SetAttributes(attribute.String("aws.action", action))
-			otelsetup.SetRequestAction(ctx, name)
-		}
 		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
 			span.SetAttributes(attribute.String("aws.account_id", acct))
 		}

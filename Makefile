@@ -1,6 +1,11 @@
 GO_PROJECT_NAME := spx
 SHELL := /bin/bash
 
+# golangci-lint's default cache (~/.cache/golangci-lint) is keyed by module
+# path, not worktree path, so parallel worktrees of this module collide and
+# surface each other's issues. Scope it per worktree.
+export GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
+
 # Detect architecture for cross-platform support
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -145,6 +150,15 @@ test-integration:
 	@echo -e "\n....Running in-process integration tests...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 
+# Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
+# checked out alongside spinifex (see spinifex/testutil/segscanoracle), which
+# is not the default local or CI layout, so this is a separate target from
+# test-integration rather than folded into it. Skips itself when segscan's
+# source isn't found.
+test-segscan-oracle:
+	@echo -e "\n....Running segscan storage oracle test...."
+	$(_Q)LOG_IGNORE=1 go test -tags=integration,segscanoracle -timeout 120s ./tests/integration/... -run TestSegscanOracle $(_RACEQ)
+
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
 # of services/suites/fixtures + on-disk path existence.
 manifest-check:
@@ -185,6 +199,20 @@ test-actions:
 	@echo -e "\n....Running action tests...."
 	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
 
+# Shell suites + shellcheck for scripts/images/ helpers baked into system
+# images. Kept out of `preflight` (a dedicated CI job gates it on
+# scripts/images/** changes instead) so image-asset churn doesn't run on
+# every Go contributor's commit.
+test-images:
+	@echo -e "\n....Running scripts/images/**/*_test.sh...."
+	@for t in $$(find scripts/images -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		bash "$$t" || exit 1; \
+	done
+	@echo -e "\n....Running shellcheck over scripts/images/**/*.sh...."
+	shellcheck -S warning $$(find scripts/images -name '*.sh' | sort)
+	@echo "  test-images ok"
+
 # Check that new/changed code meets coverage threshold (runs tests first)
 diff-coverage: test-cover
 	@QUIET=$(QUIET) scripts/diff-coverage.sh $(COVERPROFILE)
@@ -222,7 +250,7 @@ install-system:
 	sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 		-o Dpkg::Options::="--force-confdef" \
 		-o Dpkg::Options::="--force-confold" \
-		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils qemu-kvm \
+		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils \
 		ovmf qemu-efi-aarch64 \
 		libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
 		iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \
@@ -254,7 +282,7 @@ quickinstall: install-system install-go install-aws
 
 lint:
 	@echo "Running golangci-lint..."
-	$(_Q)golangci-lint run ./...
+	$(_Q)scripts/run-gate.sh golangci-lint golangci-lint run ./...
 	@echo "  golangci-lint ok"
 
 fix:
@@ -262,13 +290,13 @@ fix:
 
 govulncheck:
 	@echo "Running govulncheck..."
-	$(_Q)go tool govulncheck ./...
+	$(_Q)scripts/run-gate.sh govulncheck go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
 # NilAway — advisory nil-panic analysis. Not in preflight due to false positives
 nilaway:
 	@echo "Running nilaway..."
-	$(_Q)go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
+	$(_Q)scripts/run-gate.sh nilaway go tool nilaway -include-pkgs=github.com/mulgadc/spinifex -exclude-test-files ./...
 	@echo "  nilaway ok"
 
 # Build release tarballs — use distro-ARCH for single arch, distro for both
@@ -314,7 +342,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness test-integration manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

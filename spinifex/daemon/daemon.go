@@ -1392,7 +1392,7 @@ func (d *Daemon) startCluster() error {
 	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config)
+	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
 	type snapResult struct {
 		svc *handlers_ec2_snapshot.SnapshotServiceImpl
@@ -1790,8 +1790,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
 
-	// DNS record writer: the single queue-group consumer of
-	// dns.recordset.change. No-op when northstar S3 is not configured.
+	// DNS record writer: a queue-group consumer of dns.recordset.change. Every
+	// node subscribes, so the writer locks each zone before its
+	// read-modify-write. No-op when northstar S3 is not configured.
 	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
 		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
 	} else if sub != nil {
@@ -1799,10 +1800,10 @@ func (d *Daemon) startCluster() error {
 		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
 	}
 
-	// DNS drift backstop: periodically rebuild managed records
-	// from the live cross-tenant inventory and converge the zone. It publishes
-	// through the same queue-group writer, so every node running it serialises on
-	// one writer and never races the zone. No-op when northstar is not configured.
+	// DNS drift backstop: periodically rebuild managed records from the live
+	// cross-tenant inventory and converge the zone. Started on every node but
+	// gated on a per-cycle leader election, so one node publishes per interval.
+	// No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
 		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)
@@ -1852,9 +1853,10 @@ func (d *Daemon) startCluster() error {
 	d.ready.Store(true)
 	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
 
+	// Return once bootstrap is done. Start already installed the signal handler
+	// and owns the single awaitShutdown; waiting here would block on the wait
+	// group this goroutine is itself a member of, which never resolves.
 	d.setupReload()
-	d.setupShutdown()
-	d.awaitShutdown()
 
 	return nil
 }
@@ -2294,17 +2296,25 @@ func (d *Daemon) WriteState() error {
 		return fmt.Errorf("marshal state: %w", marshalErr)
 	}
 
+	// The KV write is independent of local disk health (JetStream, not this
+	// disk), so a local failure must not skip it — attempt both, then report
+	// the local failure. Revision only advances when the local write (the
+	// source of truth Revision() describes) actually landed.
 	path := d.localStatePath()
-	if err := WriteLocalStateBytes(path, localData); err != nil {
-		slog.Error("Local state write failed", "path", path, "error", err)
-		return fmt.Errorf("write local state: %w", err)
+	localErr := WriteLocalStateBytes(path, localData)
+	if localErr != nil {
+		slog.Error("Local state write failed", "path", path, "error", localErr)
+	} else {
+		d.stateRevision.Add(1)
 	}
-	d.stateRevision.Add(1)
 
 	if d.jsManager != nil {
 		d.jsManager.WriteStateBytesBestEffort(d.node, kvData, kvSyncTimeout)
 	}
 
+	if localErr != nil {
+		return fmt.Errorf("write local state: %w", localErr)
+	}
 	return nil
 }
 

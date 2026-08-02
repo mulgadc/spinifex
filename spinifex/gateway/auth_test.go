@@ -2169,3 +2169,43 @@ func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T)
 	body, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 }
+
+func TestMismatchAction_RecoversActionAndRewindsBody(t *testing.T) {
+	body := []byte("Action=ImportKeyPair&Version=2016-11-15&KeyName=demo&PublicKeyMaterial=c3NoLXJzYQ%3D%3D")
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	assert.Equal(t, "ImportKeyPair", mismatchAction(req, "ec2"))
+
+	// The error path still writes a response, so the body must survive the peek.
+	rest, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.Equal(t, body, rest)
+}
+
+func TestMismatchAction_SkipsS3AndPrefersQueryString(t *testing.T) {
+	// An S3 body is object data, so it must never be parsed as query args.
+	s3req := httptest.NewRequest(http.MethodPut, "/bucket/key", bytes.NewReader([]byte("Action=NotReally")))
+	assert.Empty(t, mismatchAction(s3req, "s3"))
+
+	qreq := httptest.NewRequest(http.MethodGet, "/?Action=DescribeInstances", nil)
+	assert.Equal(t, "DescribeInstances", mismatchAction(qreq, "ec2"))
+}
+
+func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
+	const token = "SUPERSECRETSESSIONTOKEN"
+	body := []byte("Action=DescribeInstances")
+	req := httptest.NewRequest(http.MethodPost, "http://gw.local/", bytes.NewReader(body))
+	req.Header.Set("X-Amz-Security-Token", token)
+	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+
+	sig, err := sigv4.Parse(req)
+	require.NoError(t, err)
+
+	out := redactedCanonicalRequest(sig)
+	assert.NotContains(t, out, token, "session token must not reach the log")
+	assert.Contains(t, out, "x-amz-security-token:<redacted>")
+	// The rest must stay intact, or the log is useless for diffing.
+	assert.Contains(t, out, "POST")
+	assert.Contains(t, out, "x-amz-date:")
+}

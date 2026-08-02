@@ -147,6 +147,10 @@ if [[ "$DISTRO" == "alpine" ]] && ! command -v guestfish &>/dev/null; then
     echo "ERROR: guestfish not found. Install libguestfs-tools."
     exit 1
 fi
+if [[ "$DISTRO" == "alpine" ]] && ! command -v virt-sparsify &>/dev/null; then
+    echo "ERROR: virt-sparsify not found. Install libguestfs-tools."
+    exit 1
+fi
 if [[ "$DISTRO" == "ubuntu" ]] && ! command -v virt-resize &>/dev/null; then
     echo "ERROR: virt-resize not found. Install libguestfs-tools."
     exit 1
@@ -355,6 +359,20 @@ fi
 
 echo "Customizing image (libguestfs appliance)..."
 "${CUST[@]}"
+
+# Step 4b: Sparsify (Alpine only). qemu-img resize + guestfish resize2fs grow
+# the disk file in place, and resize2fs scatters inode-table/journal metadata
+# across the whole newly-grown region — those clusters are non-zero even
+# though the filesystem never allocates most of them, so the plain raw
+# conversion below cannot detect them as holes. virt-sparsify explicitly zeros
+# a guest's unused blocks so the conversion turns them into real holes.
+# Ubuntu's virt-resize path never has this problem: it builds a fresh
+# destination qcow2 and copies only live data, so it stays sparse without
+# this step.
+if [[ "$DISTRO" == "alpine" ]]; then
+    echo "Sparsifying image (virt-sparsify)..."
+    virt-sparsify --in-place "$OUTPUT_IMAGE"
+fi
 
 # Step 5: Convert to raw for import
 echo "Converting to raw format..."

@@ -353,21 +353,29 @@ func DrainVolumeSocket(dataDir, volumeID string) error {
 
 // drainVolume flushes the volume's in-flight writes to S3 before the snapshot
 // reads the live checkpoint from there.
+func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, meta viperblock.VolumeMetadata, accountID string) error {
+	return DrainVolume(ctx, s.config, s.store, s.natsConn, volumeID, meta, accountID)
+}
+
+// DrainVolume flushes the volume's in-flight writes to S3 before a live
+// checkpoint is read from there. Shared by ec2.CreateSnapshot and
+// ec2.CreateImage's running-instance path (handlers/ec2/image) so the two
+// live-snapshot call sites cannot diverge on when a drain is required.
 //
-// The drain socket lives on the node serving the volume, but ec2.CreateSnapshot
-// is queue-grouped across every node, so the node answering the request usually
+// The drain socket lives on the node serving the volume, but both callers are
+// queue-grouped across every node, so the node answering the request usually
 // is not that node. Whether a drain is required is therefore decided from the
 // volume's attachment record, never from whether the socket happens to be
-// local: an attached volume is being written to right now, and snapshotting it
-// without draining silently captures an older checkpoint.
-func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, meta viperblock.VolumeMetadata, accountID string) error {
+// local: an attached volume is being written to right now, and reading its
+// checkpoint without draining silently captures an older one.
+func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, volumeID string, meta viperblock.VolumeMetadata, accountID string) error {
 	// A metadata-only snapshot never reads the live checkpoint, so there is
 	// nothing for a drain to make current.
-	if s.config == nil || s.config.Predastore.Host == "" {
+	if cfg == nil || cfg.Predastore.Host == "" {
 		return nil
 	}
 
-	state, instanceID, err := s.volumeAttachment(ctx, volumeID, meta)
+	state, instanceID, err := volumeAttachment(ctx, store, cfg.Predastore.Bucket, volumeID, meta)
 	if err != nil {
 		return err
 	}
@@ -376,7 +384,7 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 	// left behind is the current one. Decide this before touching the socket —
 	// dialing it is not a probe, it makes the plugin run a full flush.
 	if state != "in-use" || instanceID == "" {
-		slog.InfoContext(ctx, "drainVolume: volume not attached, snapshotting the checkpoint left by Close (stopped instance path)",
+		slog.InfoContext(ctx, "DrainVolume: volume not attached, snapshotting the checkpoint left by Close (stopped instance path)",
 			"volumeId", volumeID, "state", state, "attachedInstance", instanceID)
 		return nil
 	}
@@ -384,7 +392,7 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 	// Fast path: the volume is served by this node, so no hop is needed. This is
 	// every single-node deployment, and the node hosting the instance on a
 	// cluster.
-	localErr := DrainVolumeSocket(s.config.DataDir, volumeID)
+	localErr := DrainVolumeSocket(cfg.DataDir, volumeID)
 	if localErr == nil {
 		return nil
 	}
@@ -396,17 +404,17 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 		return fmt.Errorf("drain volume %s on this node: %w", volumeID, localErr)
 	}
 
-	slog.InfoContext(ctx, "drainVolume: volume attached, routing drain to the node hosting it",
+	slog.InfoContext(ctx, "DrainVolume: volume attached, routing drain to the node hosting it",
 		"volumeId", volumeID, "instanceId", instanceID)
-	return s.drainOnHostNode(ctx, volumeID, instanceID, accountID)
+	return drainOnHostNode(ctx, natsConn, volumeID, instanceID, accountID)
 }
 
 // volumeAttachment returns the volume's authoritative state and attached
 // instance. state.json is control-plane-owned and authoritative; the copy in
 // config.json (passed in as meta) is rewritten by the live NBD plugin from its
 // stale in-memory state and is only used for volumes predating the split.
-func (s *SnapshotServiceImpl) volumeAttachment(ctx context.Context, volumeID string, meta viperblock.VolumeMetadata) (state, instanceID string, err error) {
-	rec, found, err := volumestate.Read(ctx, s.store, s.config.Predastore.Bucket, volumeID)
+func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket, volumeID string, meta viperblock.VolumeMetadata) (state, instanceID string, err error) {
+	rec, found, err := volumestate.Read(ctx, store, bucket, volumeID)
 	if err != nil {
 		return "", "", fmt.Errorf("read volume state for %s: %w", volumeID, err)
 	}
@@ -426,14 +434,14 @@ func (s *SnapshotServiceImpl) volumeAttachment(ctx context.Context, volumeID str
 // not-running signals below are therefore the stopped-instance path, not a
 // failure — treating them as one would make every stopped instance's root
 // volume permanently unsnapshottable.
-func (s *SnapshotServiceImpl) drainOnHostNode(ctx context.Context, volumeID, instanceID, accountID string) error {
+func drainOnHostNode(ctx context.Context, natsConn *nats.Conn, volumeID, instanceID, accountID string) error {
 	command := types.EC2InstanceCommand{
 		ID:              instanceID,
 		Attributes:      types.EC2CommandAttributes{DrainVolume: true},
 		DrainVolumeData: &types.DrainVolumeData{VolumeID: volumeID},
 	}
 
-	resp, err := utils.NATSRequest[types.DrainVolumeResponse](ctx, s.natsConn,
+	resp, err := utils.NATSRequest[types.DrainVolumeResponse](ctx, natsConn,
 		"ec2.cmd."+instanceID, command, drainRequestTimeout, accountID)
 	if err != nil {
 		// No subscriber at all: the instance runs nowhere in the cluster, so it
@@ -622,6 +630,22 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		}
 
 		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
+	}
+
+	// Naming a specific, nonexistent snapshot ID is an error, unlike an
+	// unfiltered list or a --filters query that simply matches nothing.
+	if len(snapshotIDFilter) > 0 {
+		found := make(map[string]bool, len(snapshots))
+		for _, snap := range snapshots {
+			if snap.SnapshotId != nil {
+				found[*snap.SnapshotId] = true
+			}
+		}
+		for id := range snapshotIDFilter {
+			if !found[id] {
+				return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			}
+		}
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))

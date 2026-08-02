@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1686,4 +1687,80 @@ func TestAvailableImages_RDSPostgresEntry(t *testing.T) {
 	assert.Equal(t, "postgres", img.Tags["engine"])
 	assert.Equal(t, "18", img.Tags["engine-version"],
 		"the pinned PostgreSQL major version is what EngineVersion resolves against")
+}
+
+// --- NormalizeXMLOutput / normalizeNilSlices ---
+
+type normalizeInner struct {
+	Tags []string
+}
+
+type normalizeOuter struct {
+	Names    []string
+	Nested   *normalizeInner
+	Children []*normalizeInner
+	Value    normalizeInner
+}
+
+func TestNormalizeXMLOutput_InvalidValue(t *testing.T) {
+	var output any
+	assert.Nil(t, NormalizeXMLOutput(output))
+}
+
+func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
+	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	require.NotNil(t, out.Names)
+	assert.Empty(t, out.Names)
+}
+
+func TestNormalizeXMLOutput_NestedPointerStruct(t *testing.T) {
+	out := NormalizeXMLOutput(normalizeOuter{
+		Nested: &normalizeInner{},
+	}).(normalizeOuter)
+	require.NotNil(t, out.Nested)
+	require.NotNil(t, out.Nested.Tags, "nil slice inside a pointer field must be normalized")
+	assert.Empty(t, out.Nested.Tags)
+}
+
+func TestNormalizeXMLOutput_NestedValueStruct(t *testing.T) {
+	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	require.NotNil(t, out.Value.Tags, "nil slice inside a nested struct field must be normalized")
+}
+
+func TestNormalizeXMLOutput_RecursesIntoSliceElements(t *testing.T) {
+	out := NormalizeXMLOutput(normalizeOuter{
+		Children: []*normalizeInner{{}, {Tags: []string{"a"}}},
+	}).(normalizeOuter)
+	require.Len(t, out.Children, 2)
+	require.NotNil(t, out.Children[0].Tags, "nil slice inside a slice element must be normalized")
+	assert.Equal(t, []string{"a"}, out.Children[1].Tags, "an already-populated slice element must be left untouched")
+}
+
+func TestNormalizeXMLOutput_NilPointerFieldUntouched(t *testing.T) {
+	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	assert.Nil(t, out.Nested, "a nil pointer field must not be allocated")
+}
+
+// --- WithRequestID ---
+
+type requestIDPayload struct {
+	Names []string
+}
+
+func TestWithRequestID_NonStruct(t *testing.T) {
+	assert.Equal(t, "not-a-struct", WithRequestID("not-a-struct", "req-1"))
+}
+
+func TestWithRequestID_StructValue(t *testing.T) {
+	composite := WithRequestID(requestIDPayload{Names: []string{"a"}}, "req-123")
+	v := reflect.ValueOf(composite)
+	require.Equal(t, "req-123", v.FieldByName("RequestId").String())
+	require.Equal(t, []string{"a"}, v.FieldByName("Names").Interface())
+}
+
+func TestWithRequestID_PointerToStruct(t *testing.T) {
+	composite := WithRequestID(&requestIDPayload{Names: []string{"b"}}, "req-456")
+	v := reflect.ValueOf(composite)
+	require.Equal(t, "req-456", v.FieldByName("RequestId").String())
+	require.Equal(t, []string{"b"}, v.FieldByName("Names").Interface())
 }

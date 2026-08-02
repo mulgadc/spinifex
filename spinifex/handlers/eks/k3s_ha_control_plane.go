@@ -38,7 +38,9 @@ var _ controlPlanePlacer = (handlers_ec2_placementgroup.PlacementGroupService)(n
 
 // HostScheduler answers capacity + placement fan-out questions for HA CP placement.
 type HostScheduler interface {
-	// SchedulableHosts returns node IDs that can fit at least one VM of instanceType.
+	// SchedulableHosts returns node IDs that fit at least one VM of instanceType,
+	// ordered so a prefix spans distinct AZs first, then packs within each AZ.
+	// Taking the first N therefore spreads across N AZs whenever that many exist.
 	SchedulableHosts(ctx context.Context, instanceType string) []string
 	// InstanceHosts maps each instance ID to its hosting node; absent entries are not yet visible.
 	InstanceHosts(ctx context.Context, instanceIDs []string) map[string]string
@@ -482,7 +484,7 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 		}
 	}
 
-	var hosts []string
+	var hosts []azHost
 	seen := make(map[string]bool)
 	h.fanout(ctx, "spinifex.node.status", func(data []byte) {
 		var st types.NodeStatusResponse
@@ -495,10 +497,45 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 		}
 		if fits {
 			seen[st.Node] = true
-			hosts = append(hosts, st.Node)
+			hosts = append(hosts, azHost{node: st.Node, az: st.AZ})
 		}
 	})
-	return hosts
+	return spreadHostsByAZ(hosts)
+}
+
+// azHost pairs a schedulable node with the AZ its node status reported.
+type azHost struct {
+	node string
+	az   string
+}
+
+// spreadHostsByAZ round-robins one host per AZ in first-seen order, then a
+// second per AZ, so a prefix spans as many distinct AZs as exist. With fewer
+// AZs than members, later picks repeat an AZ; every host is returned once.
+func spreadHostsByAZ(hosts []azHost) []string {
+	var azOrder []string
+	byAZ := make(map[string][]string, len(hosts))
+	for _, h := range hosts {
+		if _, ok := byAZ[h.az]; !ok {
+			azOrder = append(azOrder, h.az)
+		}
+		byAZ[h.az] = append(byAZ[h.az], h.node)
+	}
+
+	out := make([]string, 0, len(hosts))
+	for round := 0; len(out) < len(hosts); round++ {
+		added := false
+		for _, az := range azOrder {
+			if round < len(byAZ[az]) {
+				out = append(out, byAZ[az][round])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return out
 }
 
 // nodeFitsCustomerInstance reports whether a node advertises at least one free

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
@@ -66,13 +67,29 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *Gateway
 		if err != nil {
 			return nil, err
 		}
-		payload := utils.GenerateXMLPayload(action+"Response", output)
-		xmlOutput, err := utils.MarshalToXML(payload)
+		xmlOutput, err := marshalEC2Response(action, output)
 		if err != nil {
-			return nil, errors.New("failed to marshal response to XML")
+			return nil, err
 		}
 		return xmlOutput, nil
 	}
+}
+
+// marshalEC2Response renders an EC2 handler's output into the action's XML
+// envelope. Every EC2 action funnels through here (via ec2Handler and
+// ec2HandlerWithReq), so wire-format fixes belong here, not in each handler.
+func marshalEC2Response(action string, output any) ([]byte, error) {
+	// BuildXML omits a nil slice's container element entirely but renders an
+	// empty one for a non-nil empty slice; AWS always renders the latter.
+	normalized := utils.NormalizeXMLOutput(output)
+	// The SDK's generated output structs never carry a RequestId field.
+	withRequestID := utils.WithRequestID(normalized, uuid.NewString())
+	payload := utils.GenerateXMLPayload(action+"Response", withRequestID)
+	xmlOutput, err := utils.MarshalToXML(payload)
+	if err != nil {
+		return nil, errors.New("failed to marshal response to XML")
+	}
+	return xmlOutput, nil
 }
 
 // ec2HandlerWithReq is ec2Handler for actions that need the original *http.Request,
@@ -90,10 +107,9 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 		if err != nil {
 			return nil, err
 		}
-		payload := utils.GenerateXMLPayload(action+"Response", output)
-		xmlOutput, err := utils.MarshalToXML(payload)
+		xmlOutput, err := marshalEC2Response(action, output)
 		if err != nil {
-			return nil, errors.New("failed to marshal response to XML")
+			return nil, err
 		}
 		return xmlOutput, nil
 	}
@@ -101,7 +117,7 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 
 var ec2Actions = map[string]EC2Handler{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		out, err := gateway_ec2_instance.DescribeInstances(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 		if err != nil {
 			return out, err
 		}

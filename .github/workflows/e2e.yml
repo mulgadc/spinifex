@@ -139,7 +139,8 @@ jobs:
           ./build-install-artifacts.sh "${GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             "${RUNNER_TEMP}/setup.sh" \
-            "${RUNNER_TEMP}/spinifex-tests.tar"
+            "${RUNNER_TEMP}/spinifex-tests.tar" \
+            --skip-e2e-build
 
       - name: Provision VM
         working-directory: mulga/scripts/tofu-cluster
@@ -616,7 +617,8 @@ jobs:
           ./build-install-artifacts.sh "${GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             "${RUNNER_TEMP}/setup.sh" \
-            "${RUNNER_TEMP}/spinifex-tests.tar"
+            "${RUNNER_TEMP}/spinifex-tests.tar" \
+            --skip-e2e-build
 
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster

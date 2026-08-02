@@ -10,14 +10,19 @@ import (
 	"time"
 )
 
+// imdsStub serves the IMDSv2 token + role + credentials endpoints under the
+// real /latest prefix the SDK IMDS client always requests.
 func imdsStub(t *testing.T, hits *int32, creds map[string]string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/token", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
+		// Real IMDS echoes the requested TTL back as a response header; the SDK
+		// client parses it from there, not the body.
+		w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
 		_, _ = w.Write([]byte("v2-token"))
 	})
-	mux.HandleFunc("/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/meta-data/iam/security-credentials/" {
+	mux.HandleFunc("/latest/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/latest/meta-data/iam/security-credentials/" {
 			_, _ = w.Write([]byte("node-role"))
 			return
 		}
@@ -33,15 +38,17 @@ func imdsStub(t *testing.T, hits *int32, creds map[string]string) *httptest.Serv
 
 func TestRetrieve_FetchesAndCaches(t *testing.T) {
 	var hits int32
-	exp := time.Now().Add(6 * time.Hour).UTC().Round(time.Second)
+	// Kept under an hour: ec2rolecreds caps Expires to now+1h.
+	exp := time.Now().Add(30 * time.Minute).UTC().Round(time.Second)
 	srv := imdsStub(t, &hits, map[string]string{
+		"Code":            "Success",
 		"AccessKeyId":     "AKIA",
 		"SecretAccessKey": "secret",
 		"Token":           "session",
 		"Expiration":      exp.Format(time.RFC3339),
 	})
 
-	p := NewIMDSProvider(srv.Client(), srv.URL)
+	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")
 	got, err := p.Retrieve(context.Background())
 	if err != nil {
 		t.Fatalf("Retrieve: %v", err)
@@ -50,7 +57,7 @@ func TestRetrieve_FetchesAndCaches(t *testing.T) {
 		t.Errorf("creds mismatch: %+v", got)
 	}
 
-	// Second call within validity window must not re-hit IMDS.
+	// Second call well within validity must not re-hit IMDS.
 	if _, err := p.Retrieve(context.Background()); err != nil {
 		t.Fatalf("Retrieve 2: %v", err)
 	}
@@ -59,15 +66,17 @@ func TestRetrieve_FetchesAndCaches(t *testing.T) {
 	}
 }
 
-func TestRetrieve_RefetchesWhenStale(t *testing.T) {
+func TestRetrieve_RefetchesWhenExpired(t *testing.T) {
 	var hits int32
-	// Expiry inside the refresh margin → never cached, always refetched.
+	// Already expired: aws.CredentialsCache refetches once the stored
+	// credentials' real expiry has passed, regardless of ExpiryWindow.
 	srv := imdsStub(t, &hits, map[string]string{
+		"Code":            "Success",
 		"AccessKeyId":     "AKIA",
 		"SecretAccessKey": "secret",
-		"Expiration":      time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		"Expiration":      time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
 	})
-	p := NewIMDSProvider(srv.Client(), srv.URL)
+	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")
 	if _, err := p.Retrieve(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +84,13 @@ func TestRetrieve_RefetchesWhenStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	if hits != 2 {
-		t.Errorf("hits = %d, want 2 (stale refetch)", hits)
+		t.Errorf("hits = %d, want 2 (expired refetch)", hits)
 	}
 }
 
 func TestRetrieve_CancelledContext(t *testing.T) {
-	srv := imdsStub(t, nil, map[string]string{"AccessKeyId": "A", "SecretAccessKey": "B"})
-	p := NewIMDSProvider(srv.Client(), srv.URL)
+	srv := imdsStub(t, nil, map[string]string{"Code": "Success", "AccessKeyId": "A", "SecretAccessKey": "B"})
+	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := p.Retrieve(ctx); err == nil {
@@ -89,16 +98,10 @@ func TestRetrieve_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestCredentials_Valid(t *testing.T) {
-	if (Credentials{}).Valid(0) {
-		t.Error("empty creds should be invalid")
-	}
-	noExp := Credentials{AccessKeyID: "a", SecretAccessKey: "b"}
-	if !noExp.Valid(time.Hour) {
-		t.Error("zero expiry should be treated valid")
-	}
-	soon := Credentials{AccessKeyID: "a", SecretAccessKey: "b", Expiration: time.Now().Add(time.Minute)}
-	if soon.Valid(5 * time.Minute) {
-		t.Error("expiry inside margin should be invalid")
+func TestRetrieve_CodeNotSuccessErrors(t *testing.T) {
+	srv := imdsStub(t, nil, map[string]string{"Code": "Failure", "AccessKeyId": "A", "SecretAccessKey": "B"})
+	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")
+	if _, err := p.Retrieve(context.Background()); err == nil {
+		t.Fatal("expected error when Code != Success")
 	}
 }

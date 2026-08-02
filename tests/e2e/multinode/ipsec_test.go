@@ -14,7 +14,7 @@ import (
 
 // runIPSec verifies OVN native IPsec is live on every node: OVS DB carries cert/key/CA
 // pointers, xfrm shows AES-GCM SAs, and ESP traffic is observed (best-effort tcpdump).
-// Skips if the cluster was bootstrapped with --ipsec=false.
+// Skips only when the node config disables IPsec; a cluster that asked for it fails.
 func runIPSec(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — OVN Native IPsec")
 
@@ -31,7 +31,14 @@ func runIPSec(t *testing.T, fix *Fixture) {
 		t.Fatalf("probe ovs-vsctl on %s: %v", first.Name, err)
 	}
 	if !strings.Contains(string(out), "true") {
-		t.Skipf("IPsec not enabled on cluster (%s reports %q): skip", first.Name, strings.TrimSpace(string(out)))
+		// An empty ipsec_encapsulation alone cannot distinguish "deliberately
+		// disabled" from "enable failed", so cross-check the config's intent.
+		// Skipping on both let ubuntu-24.04 cells run plaintext and report green.
+		if ipsecRequested(t, ssh, first) {
+			t.Fatalf("%s requests network.ipsec_enabled but reports ipsec_encapsulation=%q — intra-AZ Geneve is plaintext; check openvswitch-ipsec.service",
+				first.Name, strings.TrimSpace(string(out)))
+		}
+		t.Skipf("IPsec disabled in node config on %s (network.ipsec_enabled=false): skip", first.Name)
 	}
 
 	harness.Step(t, "OVS DB carries cert pointers + ipsec_encapsulation=true on every node")
@@ -91,4 +98,37 @@ func runIPSec(t *testing.T, fix *Fixture) {
 			t.Logf("WARN: %s tcpdump saw no ESP traffic in 5s window (geneve may be idle):\n%s", n.Name, s)
 		}
 	}
+}
+
+// nodeConfigPath is the daemon config the cluster is provisioned with.
+const nodeConfigPath = "/etc/spinifex/spinifex.toml"
+
+// ipsecRequested reports whether the node was configured to run IPsec.
+// network.ipsec_enabled defaults to true, so an absent or unreadable key means
+// requested; only an explicit false opts out.
+func ipsecRequested(t *testing.T, ssh *harness.PeerSSH, n harness.Node) bool {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := ssh.Run(ctx, n.Addr,
+		"sudo grep -E '^[[:space:]]*ipsec_enabled' "+nodeConfigPath+" 2>/dev/null || true",
+	)
+	if err != nil {
+		t.Logf("WARN: %s read ipsec_enabled from %s: %v — assuming requested (config default)", n.Name, nodeConfigPath, err)
+		return true
+	}
+
+	// Keep the first token after "=" so a trailing comment cannot be mistaken
+	// for the value. An absent key leaves this empty, which reads as requested.
+	value := strings.TrimSpace(string(raw))
+	if _, after, ok := strings.Cut(value, "="); ok {
+		value = strings.TrimSpace(after)
+	}
+	if fields := strings.Fields(value); len(fields) > 0 {
+		value = fields[0]
+	}
+
+	harness.Detail(t, "node", n.Name, "ipsec_enabled", value)
+	return value != "false"
 }

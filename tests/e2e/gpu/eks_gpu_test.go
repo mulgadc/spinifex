@@ -244,6 +244,7 @@ func TestEKSGPUPodExposure(t *testing.T) {
 	}, 8*time.Minute, 5*time.Second)
 	require.NotEmpty(t, nodeName, "GPU worker node name resolved")
 	harness.Detail(t, "node", nodeName)
+	harness.OnFailure(t, func() { captureGPUNodeConsole(t, c, kc, artifacts, nodeName) })
 
 	// (b) node carries the GPU label and scheduling taint.
 	labelOut, err := kc.Run(30*time.Second, "get", "node", nodeName, "-o",
@@ -308,6 +309,53 @@ func TestEKSGPUPodExposure(t *testing.T) {
 	logs, err := kc.Run(30*time.Second, "logs", podName)
 	require.NoErrorf(t, err, "pod logs:\n%s", logs)
 	assert.Contains(t, logs, "NVIDIA RTX A1000", "nvidia-smi output must report the passed-through GPU model")
+}
+
+// captureGPUNodeConsole dumps the GPU worker VM's serial console on
+// failure. A driver or device-plugin hang after boot only ever surfaces
+// on the guest console, never the host daemon journal.
+func captureGPUNodeConsole(t *testing.T, c *harness.AWSClient, kc *harness.Kubectl, artifacts, nodeName string) {
+	t.Helper()
+	providerID, err := kc.Run(10*time.Second, "get", "node", nodeName, "-o", `jsonpath={.spec.providerID}`)
+	if err != nil {
+		t.Logf("console capture: resolve providerID for node %s: %v", nodeName, err)
+		return
+	}
+	instanceID := instanceIDFromProviderID(strings.TrimSpace(providerID))
+	if instanceID == "" {
+		t.Logf("console capture: empty instance ID from providerID %q", providerID)
+		return
+	}
+	harness.DumpInstanceConsole(t, c, instanceID, artifacts, "gpu-worker-console.log")
+}
+
+// instanceIDFromProviderID extracts the EC2 instance ID from a Kubernetes
+// node's spec.providerID, formatted "aws:///<az>/<instance-id>".
+func instanceIDFromProviderID(providerID string) string {
+	if providerID == "" || strings.HasSuffix(providerID, "/") {
+		// A trailing slash means the last segment is empty, i.e. no
+		// instance ID is present.
+		return ""
+	}
+	return providerID[strings.LastIndex(providerID, "/")+1:]
+}
+
+func TestInstanceIDFromProviderID(t *testing.T) {
+	tests := []struct {
+		name       string
+		providerID string
+		want       string
+	}{
+		{"well-formed", "aws:///ap-southeast-2a/i-0123456789abcdef0", "i-0123456789abcdef0"},
+		{"no-az-segment", "aws:///i-0123456789abcdef0", "i-0123456789abcdef0"},
+		{"empty", "", ""},
+		{"trailing-slash-no-id", "aws:///ap-southeast-2a/", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, instanceIDFromProviderID(tt.providerID))
+		})
+	}
 }
 
 // nvidiaSmiPodManifest renders a Never-restart pod that tolerates the GPU

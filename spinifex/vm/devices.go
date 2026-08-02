@@ -105,6 +105,11 @@ func HotplugEBSBus(port int) string {
 // AttachVolume's QMP device_add (rendered as a map) and buildDrives' -device
 // (rendered as a joined command-line string) so the two block-graph shapes
 // cannot diverge.
+//
+// werror/rerror mirror the boot drive's on-error policy (see Drive.Werror):
+// a data volume has no -drive-backed BlockBackend to carry it, so the qdev
+// device itself sets werror=report,rerror=report to report backend ENOSPC to
+// the guest instead of letting QEMU's default werror=enospc pause the VM.
 func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 	return []string{
 		fmt.Sprintf("id=%s", VolumeDeviceID(volumeID)),
@@ -112,6 +117,8 @@ func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 		fmt.Sprintf("iothread=%s", iothreadID),
 		fmt.Sprintf("serial=%s", VolumeSerial(volumeID)),
 		fmt.Sprintf("bus=%s", bus),
+		"werror=report",
+		"rerror=report",
 	}
 }
 
@@ -123,7 +130,8 @@ func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus string) Device {
 }
 
 // VolumeBlkDeviceQMPArgs renders the same virtio-blk-pci arguments as a
-// device_add argument map for AttachVolume's QMP hot-attach path.
+// device_add argument map for AttachVolume's QMP hot-attach path. See
+// VolumeBlkDeviceArgs for why werror/rerror are set here.
 func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus string) map[string]any {
 	return map[string]any{
 		"driver":   "virtio-blk-pci",
@@ -132,6 +140,8 @@ func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus string) map[stri
 		"iothread": iothreadID,
 		"serial":   VolumeSerial(volumeID),
 		"bus":      bus,
+		"werror":   "report",
+		"rerror":   "report",
 	}
 }
 

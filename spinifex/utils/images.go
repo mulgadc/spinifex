@@ -440,7 +440,7 @@ var AvailableImages = map[string]Images{
 	// tags — CreateNodegroup selects it for GPU instance types instead of the Alpine AMI.
 	"spinifex-eks-node-gpu": {
 		Name:         "spinifex-eks-node-gpu",
-		Description:  "Mulga EKS GPU node image — Ubuntu 26.04 + NVIDIA driver + K3s v1.32.5 + eks-token-webhook (server|agent role selected at first boot)",
+		Description:  "Mulga EKS GPU node image — Ubuntu 26.04 + NVIDIA driver + K3s v1.32.5, agent-only (GPU nodes never run the EKS control plane, so no role selector or eks-token-webhook)",
 		Distro:       "ubuntu",
 		Version:      "26.04",
 		Arch:         "x86_64",

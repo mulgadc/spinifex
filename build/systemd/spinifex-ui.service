@@ -12,16 +12,24 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex-ui start
 Restart=on-failure
 RestartSec=5
+# server.Shutdown() uses an internal 30s context (WriteTimeout=120s covers
+# long streaming proxy responses, e.g. console passthrough); add margin above it.
+TimeoutStopSec=40
 OOMScoreAdjust=-500
+# Per-service ceiling bounds a leak in this service alone rather than
+# tripping the slice-wide cap, which would pick an arbitrary victim.
+MemoryHigh=10%
+MemoryMax=20%
 Environment=SPINIFEX_UI_TLS_CERT=/etc/spinifex/server.pem
 Environment=SPINIFEX_UI_TLS_KEY=/etc/spinifex/server.key
+Environment=SPINIFEX_UI_BASE_DIR=/var/lib/spinifex/spinifex-ui/
 
 # Filesystem access
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateDevices=yes
 ReadOnlyPaths=/etc/spinifex/server.pem /etc/spinifex/server.key
-ReadWritePaths=/var/log/spinifex
+ReadWritePaths=/var/lib/spinifex/spinifex-ui /var/log/spinifex
 
 # Hardening
 ProtectHome=yes

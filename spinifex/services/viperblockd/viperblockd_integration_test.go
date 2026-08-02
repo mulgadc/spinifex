@@ -5,10 +5,13 @@ package viperblockd
 //   go test -short ./spinifex/services/viperblockd/...  # unit tests only
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,6 +79,56 @@ func createMockVolumeState(t *testing.T, baseDir, volumeName string) {
 
 	err = os.WriteFile(stateFile, data, 0644)
 	assert.NoError(t, err)
+}
+
+// writeSealReceipt writes a valid seal receipt for volumeName, matching the
+// fixed shape the nbdkit plugin produces after a successful seal.
+func writeSealReceipt(t *testing.T, baseDir, volumeName string) {
+	t.Helper()
+
+	receipt := sealReceipt{
+		Volume:   volumeName,
+		PID:      4242,
+		SealedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	err = os.WriteFile(sealReceiptPath(baseDir, volumeName), data, 0644)
+	require.NoError(t, err)
+}
+
+// syncBuffer is a concurrency-safe io.Writer, used to capture slog output
+// while the service is running its own goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLogs swaps the process-wide default slog logger for one that writes
+// to the returned buffer, restoring the previous logger on test cleanup.
+// Callers must not run in parallel with other tests that log, so do not call
+// this from a test that also calls t.Parallel().
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
 }
 
 // TestIntegration_ServiceStartWithEmbeddedNATS tests service startup with embedded NATS.
@@ -402,6 +455,228 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	defer cfg.mu.Unlock()
 	require.Len(t, cfg.MountedVolumes, 1, "a failed seal must leave the volume in MountedVolumes for retry")
 	assert.Equal(t, "vol-seal-fail", cfg.MountedVolumes[0].Name)
+}
+
+// TestIntegration_EBSUnmountReceiptSkipsFallbackSeal verifies the healthy
+// path: a seal receipt with no local WAL directory means the plugin already
+// sealed and cleaned up, so the fallback seal must not run and no WARN
+// should fire. Not parallel: it swaps the process-wide slog default to
+// assert on log output (see captureLogs).
+func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	logs := captureLogs(t)
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	writeSealReceipt(t, cfg.BaseDir, "vol-clean-receipt")
+	var sealCalls atomic.Int32
+	cfg.sealVolume = func(volumeName string) error {
+		sealCalls.Add(1)
+		return nil
+	}
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-clean-receipt", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-clean-receipt"})
+	require.NoError(t, err)
+
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Empty(t, resp.Error, "a receipt on the healthy path must not surface as an unmount error")
+	assert.Equal(t, int32(0), sealCalls.Load(), "a receipt present with no local WAL must not trigger the fallback seal")
+
+	output := logs.String()
+	assert.NotContains(t, output, "no local viperblock state for volume", "the healthy receipt path must not WARN")
+	assert.Contains(t, output, "level=INFO", "the healthy receipt path should log at Info, not silently")
+	assert.Contains(t, output, "vol-clean-receipt")
+
+	_, statErr := os.Stat(sealReceiptPath(cfg.BaseDir, "vol-clean-receipt"))
+	assert.True(t, os.IsNotExist(statErr), "the receipt must be deleted once consumed")
+}
+
+// TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt verifies that a
+// surviving local WAL directory always triggers the fallback seal, even when
+// a seal receipt is also present — local state is the durability signal that
+// takes precedence.
+func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	createMockVolumeState(t, cfg.BaseDir, "vol-state-and-receipt")
+	writeSealReceipt(t, cfg.BaseDir, "vol-state-and-receipt")
+	var sealCalls atomic.Int32
+	cfg.sealVolume = func(volumeName string) error {
+		sealCalls.Add(1)
+		return nil
+	}
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-state-and-receipt", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-state-and-receipt"})
+	require.NoError(t, err)
+
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Empty(t, resp.Error)
+	assert.Equal(t, int32(1), sealCalls.Load(), "a surviving local WAL must trigger the fallback seal regardless of any receipt")
+}
+
+// TestIntegration_EBSUnmountAuxVolumeNeverSeals pins that auxiliary volumes
+// stay excluded from sealing even when local state survives. The aux check
+// used to live inside volumeNeedsSeal; splitting it out put branch ordering
+// in play, and an -efi volume must never reach the fallback seal.
+func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	createMockVolumeState(t, cfg.BaseDir, "vol-aux-efi")
+	var sealCalls atomic.Int32
+	cfg.sealVolume = func(volumeName string) error {
+		sealCalls.Add(1)
+		return nil
+	}
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-aux-efi", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-aux-efi"})
+	require.NoError(t, err)
+
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Empty(t, resp.Error)
+	assert.Equal(t, int32(0), sealCalls.Load(), "an auxiliary volume must never be sealed, even with local state present")
+}
+
+// TestIntegration_EBSUnmountNoStateNoReceiptWarns verifies the WARN is
+// preserved for the case it actually describes: no local WAL and no seal
+// receipt, meaning this node never held state to seal. Not parallel: it
+// swaps the process-wide slog default to assert on log output.
+func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	logs := captureLogs(t)
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	var sealCalls atomic.Int32
+	cfg.sealVolume = func(volumeName string) error {
+		sealCalls.Add(1)
+		return nil
+	}
+	cfg.MountedVolumes = []MountedVolume{
+		{Name: "vol-no-state-no-receipt", PID: 99999},
+	}
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-no-state-no-receipt"})
+	require.NoError(t, err)
+
+	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSUnMountResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Empty(t, resp.Error)
+	assert.Equal(t, int32(0), sealCalls.Load(), "neither state nor receipt must not trigger the fallback seal")
+	assert.Contains(t, logs.String(), "no local viperblock state for volume, skipping seal")
+}
+
+// TestIntegration_EBSMountClearsStaleSealReceipt verifies staleness is
+// handled at mount: a receipt left over from a previous mount of this volume
+// must not survive into a new one, so it can't later be misread as proof
+// this mount's plugin sealed.
+func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	cfg := setupTestConfig(t, natsURL)
+	writeSealReceipt(t, cfg.BaseDir, "vol-mount-clear")
+	receiptPath := sealReceiptPath(cfg.BaseDir, "vol-mount-clear")
+
+	go func() { launchService(cfg) }()
+	time.Sleep(500 * time.Millisecond)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+	nc.Flush()
+
+	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-mount-clear", VolType: "gp3"})
+	require.NoError(t, err)
+
+	// Fire-and-forget: the mount will fail deep in the mocked S3 backend, but
+	// the receipt is cleared before any of that, so don't wait for a response.
+	require.NoError(t, nc.Publish("ebs.test-node.mount", requestData))
+
+	assert.Eventually(t, func() bool {
+		_, statErr := os.Stat(receiptPath)
+		return os.IsNotExist(statErr)
+	}, 3*time.Second, 20*time.Millisecond, "mount must clear a pre-existing receipt for the volume it is mounting")
 }
 
 // TestIntegration_ConcurrentMountRequests tests multiple concurrent mount requests.

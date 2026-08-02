@@ -220,6 +220,94 @@ func TestErrorHandler_WrappedErrorCode(t *testing.T) {
 	assert.NotContains(t, xmlStr, "launch on node-1")
 }
 
+// TestErrorHandler_PrefersCallSiteMessage covers the DeleteVpc DependencyViolation
+// fidelity gap: a call site that names the blocking resource via awserrors.Errorf
+// must have that wording reach the client instead of the generic ErrorLookup text.
+func TestErrorHandler_PrefersCallSiteMessage(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxService, "ec2")
+		r = r.WithContext(ctx)
+		err := awserrors.Errorf(awserrors.ErrorDependencyViolation,
+			"the VPC has a dependent subnet %s that must be deleted first", "subnet-abc123")
+		gw.ErrorHandler(w, r, err)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := doRequest(handler, req)
+	assert.Equal(t, 400, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "<Code>"+awserrors.ErrorDependencyViolation+"</Code>")
+	assert.Contains(t, xmlStr, "subnet-abc123")
+	assert.NotContains(t, xmlStr, awserrors.ErrorLookup[awserrors.ErrorDependencyViolation].Message)
+}
+
+// TestErrorHandler_ACMResourceInUse_UsesACMWording is one direction of the
+// ResourceInUseException collision check: ACM's DeleteCertificate must not
+// surface EKS's "cluster already exists" wording for the shared wire code.
+func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxService, "acm")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	gw.ErrorHandler(w, req, errors.New(awserrors.ErrorACMResourceInUse))
+
+	var env struct {
+		Type    string `json:"__type"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	assert.NotEqual(t, awserrors.ErrorLookup[awserrors.ErrorEKSResourceInUse].Message, env.Message)
+	assert.NotContains(t, env.Message, "cluster")
+}
+
+// TestErrorHandler_EKSResourceInUse_UsesEKSWording is the other direction: EKS's
+// own ResourceInUseException must keep its existing wording, unaffected by the
+// ACM-specific override.
+func TestErrorHandler_EKSResourceInUse_UsesEKSWording(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	gw.ErrorHandler(w, req, errors.New(awserrors.ErrorEKSResourceInUse))
+
+	var env struct {
+		Type    string `json:"__type"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	assert.Equal(t, awserrors.ErrorLookup[awserrors.ErrorEKSResourceInUse].Message, env.Message)
+}
+
+// TestErrorHandler_NoMessageSupplied_MatchesErrorLookup is the compatibility
+// case: an error path that supplies no message (the vast majority of call
+// sites) must keep rendering exactly today's ErrorLookup text, unchanged.
+func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxService, "ec2")
+		r = r.WithContext(ctx)
+		gw.ErrorHandler(w, r, errors.New(awserrors.ErrorInvalidParameterValue))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := doRequest(handler, req)
+	assert.Equal(t, 400, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "<Code>"+awserrors.ErrorInvalidParameterValue+"</Code>")
+	assert.Contains(t, xmlStr, awserrors.ErrorLookup[awserrors.ErrorInvalidParameterValue].Message)
+}
+
 func TestErrorHandler_ELBv2Service(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 

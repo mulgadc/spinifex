@@ -68,6 +68,89 @@ func GenerateXMLPayload(locationName string, payload any) any {
 	return v.Interface()
 }
 
+// NormalizeXMLOutput returns a copy of output with every nil slice field
+// (recursively) replaced by a non-nil empty slice, since aws-sdk-go's
+// xmlutil.BuildXML omits a nil slice's container element entirely but
+// renders an empty one for a non-nil empty slice, unlike real AWS.
+func NormalizeXMLOutput(output any) any {
+	v := reflect.ValueOf(output)
+	if !v.IsValid() {
+		return output
+	}
+	// Work on an addressable copy: callers pass struct values, and reflection
+	// can only Set fields through an addressable Value.
+	ptr := reflect.New(v.Type())
+	ptr.Elem().Set(v)
+	normalizeNilSlices(ptr.Elem())
+	return ptr.Elem().Interface()
+}
+
+// normalizeNilSlices walks v in place, turning nil slice fields into empty
+// ones and recursing into structs, pointers, and existing slice elements.
+func normalizeNilSlices(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if !v.IsNil() {
+			normalizeNilSlices(v.Elem())
+		}
+	case reflect.Struct:
+		for _, field := range v.Fields() {
+			switch field.Kind() {
+			case reflect.Slice:
+				if field.IsNil() {
+					if field.CanSet() {
+						field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+					}
+				} else {
+					for j := 0; j < field.Len(); j++ {
+						normalizeNilSlices(field.Index(j))
+					}
+				}
+			case reflect.Pointer, reflect.Struct:
+				normalizeNilSlices(field)
+			}
+		}
+	}
+}
+
+// WithRequestID returns a copy of payload's structure with a synthetic
+// RequestId field prepended, since the SDK's generated output structs never
+// carry one. payload must be a struct or pointer to struct; anything else is
+// returned unchanged.
+func WithRequestID(payload any, requestID string) any {
+	pv := reflect.ValueOf(payload)
+	for pv.Kind() == reflect.Pointer {
+		pv = pv.Elem()
+	}
+	if pv.Kind() != reflect.Struct {
+		return payload
+	}
+	pt := pv.Type()
+
+	fields := []reflect.StructField{
+		{
+			Name: "RequestId",
+			Type: reflect.TypeFor[string](),
+			Tag:  reflect.StructTag(`locationName:"requestId" type:"string"`),
+		},
+	}
+	for f := range pt.Fields() {
+		if f.PkgPath == "" { // skip unexported marker fields (e.g. "_")
+			fields = append(fields, f)
+		}
+	}
+
+	composite := reflect.New(reflect.StructOf(fields)).Elem()
+	composite.FieldByName("RequestId").SetString(requestID)
+	for i := 0; i < pt.NumField(); i++ {
+		if f := pt.Field(i); f.PkgPath == "" {
+			composite.FieldByName(f.Name).Set(pv.Field(i))
+		}
+	}
+
+	return composite.Interface()
+}
+
 // GenerateIAMXMLPayload wraps IAM output in the <ActionResponse><ActionResult>...</ActionResult></ActionResponse> structure.
 func GenerateIAMXMLPayload(action string, payload any) any {
 	resultName := action + "Result"

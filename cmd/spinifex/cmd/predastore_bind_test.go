@@ -138,23 +138,15 @@ func TestDerivePredastoreBind_MissingHostErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestPredastoreConfigPathNotShadowedByClusterConfigPathEnv is the
-// regression test for the E2E bootstrap failure caused by viper's
-// AutomaticEnv resolving before explicit BindEnv: SPINIFEX_CONFIG_PATH
-// (the cluster config, bound to the unrelated "config" key) has the same
-// AutomaticEnv-derived name as the bare "config-path" key used to have
-// ("SPINIFEX_" + upper(key), "-"->"_"), so setting SPINIFEX_CONFIG_PATH
-// alongside SPINIFEX_PREDASTORE_CONFIG_PATH made predastore load the
-// cluster config as its own S3 config. This must resolve to the predastore
-// path regardless of what else is set.
+// A bare "config-path" key derives the same AutomaticEnv name as the
+// unrelated cluster-config SPINIFEX_CONFIG_PATH, which made predastore load
+// the cluster config as its own S3 config.
 func TestPredastoreConfigPathNotShadowedByClusterConfigPathEnv(t *testing.T) {
 	t.Cleanup(func() { viper.Reset() })
 	viper.Reset()
 
-	// Mirrors service.go's init(): AutomaticEnv setup plus the real
-	// production binding under test, re-applied against the freshly-Reset
-	// instance (pflags survive Reset since they live on predastoreCmd, a
-	// package-level singleton already registered before any test runs).
+	// Mirrors service.go's init() against the freshly-Reset instance. pflags
+	// survive Reset: they live on predastoreCmd, a package-level singleton.
 	viper.SetEnvPrefix("SPINIFEX")
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	viper.AutomaticEnv()

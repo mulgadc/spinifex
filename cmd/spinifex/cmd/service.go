@@ -1167,10 +1167,9 @@ func registerPredastoreNamespacedFlags() {
 	bindPredastoreNamespacedEnv()
 }
 
-// bindPredastoreNamespacedEnv uses "predastore-"-prefixed viper keys so
-// AutomaticEnv's derived env var always matches the explicit BindEnv target
-// below; a bare key would let AutomaticEnv resolve an unrelated SPINIFEX_HOST
-// / SPINIFEX_BASE_PATH / SPINIFEX_CONFIG_PATH first (viper checks it before BindEnv).
+// bindPredastoreNamespacedEnv uses "predastore-"-prefixed viper keys so each
+// key's AutomaticEnv-derived name matches its explicit BindEnv target. Viper
+// checks AutomaticEnv first, so a bare key resolves SPINIFEX_HOST instead.
 func bindPredastoreNamespacedEnv() {
 	viper.BindEnv("predastore-host", "SPINIFEX_PREDASTORE_HOST")
 	viper.BindPFlag("predastore-host", predastoreCmd.PersistentFlags().Lookup("host"))

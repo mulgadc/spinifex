@@ -10,7 +10,7 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem, default: distributed), `--node-id` (default: 0), `--pprof`, `--pprof-output` | Creates predastore service instance with S3-compatible storage backend → starts service |
+| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem, default: distributed), `--node-id` (default: -1), `--pprof`, `--pprof-output` | Creates predastore service instance with S3-compatible storage backend → starts service. When `--config`/`SPINIFEX_CONFIG_PATH` points at a cluster spinifex.toml, `--host`/`--port`/`--node-id` default to that node's `[nodes.<node>.predastore]` section instead of the flag defaults above; an explicit flag or `SPINIFEX_PREDASTORE_*` env var still overrides it. `node_id` absent from spinifex.toml resolves to -1 (co-located mode), never to 0. |
 | `spx service predastore stop` | — | Stops the predastore service |
 | `spx service predastore status` | — | Reports predastore service status |
 | `spx service viperblock start` | `--s3-host` (default: 0.0.0.0:8443), `--s3-bucket` (default: predastore), `--s3-region` (default: ap-southeast-2), `--plugin-path` (auto-detected via `nbdkit --dump-config plugindir`; typically `/usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-viperblock-plugin.so` on amd64, overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in `/etc/spinifex/systemd.env`) | Loads cluster config → connects to NATS and Predastore → starts viperblock block storage service with NBD plugin |
@@ -254,7 +254,7 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-volumes` | `--volume-ids`, `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:*), persisted `DeleteOnTermination` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
-| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput` | **DONE** |
+| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id`, `--tag-specifications`, `--iops`, `--throughput` | `--encrypted` (hardcoded false) | **DONE** |
 | `delete-volume` | `--volume-id` | `--dry-run` | **DONE** |
 | `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | **DONE** |
 | `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |

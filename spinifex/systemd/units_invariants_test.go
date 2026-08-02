@@ -194,8 +194,9 @@ func TestOptionalNorthstarActivation(t *testing.T) {
 // TestGracefulDrainOrdering asserts the graceful-shutdown contract: the drain
 // oneshot orders After= the storage/daemon units (so a target/host stop runs its
 // ExecStop drain first, while those services are still up), the daemon keeps
-// KillMode=process (guests survive a daemon restart — DDIL reattach), and the
-// drain is wired into the target so a target/host stop triggers it.
+// KillMode=process (guests survive a daemon restart — DDIL reattach), and
+// ExecStop passes --only-if-host-stopping so PartOf=spinifex.target firing on
+// every target stop (restart included) does not drain guests that stay up.
 func TestGracefulDrainOrdering(t *testing.T) {
 	dir := unitsDir(t)
 
@@ -219,8 +220,8 @@ func TestGracefulDrainOrdering(t *testing.T) {
 			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
 		}
 	}
-	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s") {
-		t.Error("spinifex-shutdown.service must drain the local node on stop via ExecStop")
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --only-if-host-stopping") {
+		t.Error("spinifex-shutdown.service must run spx admin node drain --local --only-if-host-stopping on stop via ExecStop")
 	}
 
 	daemon := readUnit(t, dir, "spinifex-daemon.service")

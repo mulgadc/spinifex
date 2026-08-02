@@ -8,23 +8,27 @@ import (
 	"time"
 )
 
-// imdsStub serves the IMDSv2 token + role + credentials endpoints.
+// imdsStub serves the IMDSv2 token + role + credentials endpoints under the
+// real /latest prefix the SDK IMDS client always requests.
 func imdsStub(t *testing.T, creds map[string]string, enforceV2 bool) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/token", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		// Real IMDS echoes the requested TTL back as a response header; the SDK
+		// client parses it from there, not the body.
+		w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
 		_, _ = w.Write([]byte("v2-token"))
 	})
-	mux.HandleFunc("/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/latest/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
 		if enforceV2 && r.Header.Get("X-Aws-Ec2-Metadata-Token") != "v2-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if r.URL.Path == "/meta-data/iam/security-credentials/" {
+		if r.URL.Path == "/latest/meta-data/iam/security-credentials/" {
 			_, _ = w.Write([]byte("node-role"))
 			return
 		}
@@ -36,7 +40,9 @@ func imdsStub(t *testing.T, creds map[string]string, enforceV2 bool) *httptest.S
 }
 
 func TestFetch_OK(t *testing.T) {
-	exp := time.Now().Add(6 * time.Hour).UTC().Round(time.Second)
+	// Kept under an hour: ec2rolecreds caps Expires to now+1h, so anything
+	// further out would not round-trip exactly.
+	exp := time.Now().Add(30 * time.Minute).UTC().Round(time.Second)
 	srv := imdsStub(t, map[string]string{
 		"Code":            "Success",
 		"AccessKeyId":     "AKIATEST",
@@ -45,7 +51,7 @@ func TestFetch_OK(t *testing.T) {
 		"Expiration":      exp.Format(time.RFC3339),
 	}, true)
 
-	got, err := Fetch(srv.Client(), srv.URL)
+	got, err := Fetch(srv.Client(), srv.URL+"/latest")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -57,24 +63,56 @@ func TestFetch_OK(t *testing.T) {
 	}
 }
 
-func TestFetch_MissingKeys(t *testing.T) {
-	srv := imdsStub(t, map[string]string{"Code": "Success"}, false)
-	if _, err := Fetch(srv.Client(), srv.URL); err == nil {
-		t.Fatal("expected error when access/secret key absent")
-	}
-}
-
-func TestFetch_BadExpirationIsZero(t *testing.T) {
+func TestFetch_BaseWithoutLatestSuffix(t *testing.T) {
+	// base URLs without a /latest suffix must keep working too — the SDK
+	// endpoint is always the scheme+host root regardless.
+	exp := time.Now().Add(30 * time.Minute).UTC().Round(time.Second)
 	srv := imdsStub(t, map[string]string{
-		"AccessKeyId":     "AKIA",
-		"SecretAccessKey": "secret",
-		"Expiration":      "not-a-time",
-	}, false)
+		"Code":            "Success",
+		"AccessKeyId":     "AKIATEST",
+		"SecretAccessKey": "secrettest",
+		"Expiration":      exp.Format(time.RFC3339),
+	}, true)
+
 	got, err := Fetch(srv.Client(), srv.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if !got.Expiration.IsZero() {
-		t.Errorf("Expiration = %v, want zero on parse failure", got.Expiration)
+	if got.AccessKeyID != "AKIATEST" {
+		t.Errorf("AccessKeyID = %q, want AKIATEST", got.AccessKeyID)
+	}
+}
+
+func TestFetch_MissingKeys(t *testing.T) {
+	srv := imdsStub(t, map[string]string{"Code": "Success"}, false)
+	if _, err := Fetch(srv.Client(), srv.URL+"/latest"); err == nil {
+		t.Fatal("expected error when access/secret key absent")
+	}
+}
+
+func TestFetch_CodeNotSuccessErrors(t *testing.T) {
+	// A non-Success Code (e.g. the role is mid-rotation) must fail the fetch
+	// rather than being silently ignored.
+	srv := imdsStub(t, map[string]string{
+		"Code":            "Failure",
+		"AccessKeyId":     "AKIA",
+		"SecretAccessKey": "secret",
+	}, false)
+	if _, err := Fetch(srv.Client(), srv.URL+"/latest"); err == nil {
+		t.Fatal("expected error when Code != Success")
+	}
+}
+
+func TestFetch_BadExpirationErrors(t *testing.T) {
+	// An unparseable Expiration must be a hard error, not silently treated as
+	// "never expires" — that was the defect in the hand-rolled implementation.
+	srv := imdsStub(t, map[string]string{
+		"Code":            "Success",
+		"AccessKeyId":     "AKIA",
+		"SecretAccessKey": "secret",
+		"Expiration":      "not-a-time",
+	}, false)
+	if _, err := Fetch(srv.Client(), srv.URL+"/latest"); err == nil {
+		t.Fatal("expected error on unparseable Expiration")
 	}
 }

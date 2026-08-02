@@ -18,12 +18,14 @@ func fakeBackend(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 
-	// IMDSv2 token.
+	// IMDSv2 token. Real IMDS echoes the requested TTL back as a response
+	// header; the SDK client parses it from there, not the body.
 	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
 		_, _ = w.Write([]byte("imds-v2-token"))
 	})
 	// IMDS role name.

@@ -1,4 +1,8 @@
 /var/log/spinifex/*.log {
+    # The directory is 0775 root:spinifex so each service user can write its own
+    # log. logrotate refuses to rotate inside a group-writable directory unless
+    # it is told which user to rotate as.
+    su root spinifex
     daily
     rotate 14
     compress

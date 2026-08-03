@@ -40,31 +40,45 @@ VENV_DIR="${VLLM_HOME}/venv"
 mkdir -p "${VLLM_HOME}"
 
 # uv itself is not in the Ubuntu archive, so its own installer is used rather
-# than Packages=. --no-modify-path: there is no interactive shell profile in a
-# chroot for it to edit, and UV_INSTALL_DIR pins the destination so no PATH
-# guessing is needed for the invocations below.
-curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
-command -v uv >/dev/null || {
-    echo "ERROR: uv installer completed but uv is not on PATH" >&2
+# than Packages=. UV_NO_MODIFY_PATH because there is no interactive shell
+# profile in a chroot for it to edit, and UV_INSTALL_DIR pins the destination.
+UV=/usr/local/bin/uv
+curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" |
+    env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+# Checked as a path, not via `command -v`: mkosi runs this postinst with a
+# minimal PATH that need not carry /usr/local/bin, so a PATH lookup reports a
+# perfectly good install as missing. Every call below names ${UV} for the
+# same reason.
+[ -x "${UV}" ] || {
+    echo "ERROR: uv installer completed but ${UV} is not executable" >&2
     exit 1
 }
 
 echo "[vllm] installing CPython ${VLLM_PYTHON_VERSION} via uv"
-UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv python install "${VLLM_PYTHON_VERSION}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" python install "${VLLM_PYTHON_VERSION}"
 
 echo "[vllm] creating venv at ${VENV_DIR}"
-UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv venv --python "${VLLM_PYTHON_VERSION}" "${VENV_DIR}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" venv --python "${VLLM_PYTHON_VERSION}" "${VENV_DIR}"
 
 echo "[vllm] installing vllm ${VLLM_VERSION} into ${VENV_DIR}"
-UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv pip install --python "${VENV_DIR}/bin/python" "vllm==${VLLM_VERSION}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" pip install --python "${VENV_DIR}/bin/python" "vllm==${VLLM_VERSION}"
 
 # The one thing this script must not do silently: ship an image whose venv
-# does not actually run. vLLM only touches CUDA/the driver at serve time, so
-# --version is safe to assert here with no GPU present in the build sandbox.
-if ! "${VENV_DIR}/bin/vllm" --version; then
-    echo "ERROR: vllm --version failed in the baked venv at ${VENV_DIR}" >&2
+# does not actually hold what was asked for. Checked via package metadata and
+# not by running `vllm --version`, which initialises device config and dies
+# with "Failed to infer device type" in a build sandbox that has no GPU —
+# importing vllm itself is out for the same reason.
+if [ ! -x "${VENV_DIR}/bin/vllm" ]; then
+    echo "ERROR: no vllm entrypoint in the baked venv at ${VENV_DIR}" >&2
     exit 1
 fi
+installed_vllm="$("${VENV_DIR}/bin/python" -c \
+    'import importlib.metadata as m; print(m.version("vllm"))')"
+if [ "${installed_vllm}" != "${VLLM_VERSION}" ]; then
+    echo "ERROR: venv holds vllm ${installed_vllm}, expected the pinned ${VLLM_VERSION}" >&2
+    exit 1
+fi
+echo "[vllm] verified vllm ${installed_vllm} in ${VENV_DIR}"
 
 # 0644 in git, and ExtraTrees= preserves source mode — without this the unit
 # dies with EACCES on first boot and nowhere earlier.

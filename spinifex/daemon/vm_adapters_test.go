@@ -39,7 +39,7 @@ func newHookTestDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	return d, nc
 }
 
-func TestOnInstanceUpHook_RegistersBothPerInstanceTopics(t *testing.T) {
+func TestOnInstanceUpHook_RegistersAllPerInstanceTopics(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-basic"}
 
@@ -52,6 +52,10 @@ func TestOnInstanceUpHook_RegistersBothPerInstanceTopics(t *testing.T) {
 	consoleSub, ok := d.natsSubscriptions[instance.ID+".console"]
 	require.True(t, ok, "console subscription must be registered under <id>.console key")
 	assert.Equal(t, "ec2.i-up-basic.GetConsoleOutput", consoleSub.Subject)
+
+	passwordSub, ok := d.natsSubscriptions[instance.ID+".password"]
+	require.True(t, ok, "password subscription must be registered under <id>.password key")
+	assert.Equal(t, "ec2.i-up-basic.GetPasswordData", passwordSub.Subject)
 }
 
 func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
@@ -116,23 +120,30 @@ func TestOnInstanceUpHook_ReplacesExistingSubsOnDoubleUp(t *testing.T) {
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	first := d.natsSubscriptions[instance.ID]
 	firstConsole := d.natsSubscriptions[instance.ID+".console"]
+	firstPassword := d.natsSubscriptions[instance.ID+".password"]
 	require.NotNil(t, first)
 	require.NotNil(t, firstConsole)
+	require.NotNil(t, firstPassword)
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	second := d.natsSubscriptions[instance.ID]
 	secondConsole := d.natsSubscriptions[instance.ID+".console"]
+	secondPassword := d.natsSubscriptions[instance.ID+".password"]
 	require.NotNil(t, second)
 	require.NotNil(t, secondConsole)
+	require.NotNil(t, secondPassword)
 
 	// Second call must have unsubscribed the originals (so they're no longer
 	// receiving on the topic) and replaced the map entries with fresh subs.
 	assert.False(t, first.IsValid(), "first command sub should be unsubscribed")
 	assert.False(t, firstConsole.IsValid(), "first console sub should be unsubscribed")
+	assert.False(t, firstPassword.IsValid(), "first password sub should be unsubscribed")
 	assert.True(t, second.IsValid(), "second command sub should be live")
 	assert.True(t, secondConsole.IsValid(), "second console sub should be live")
+	assert.True(t, secondPassword.IsValid(), "second password sub should be live")
 	assert.NotSame(t, first, second, "command sub map entry must be replaced")
 	assert.NotSame(t, firstConsole, secondConsole, "console sub map entry must be replaced")
+	assert.NotSame(t, firstPassword, secondPassword, "password sub map entry must be replaced")
 }
 
 func TestOnInstanceDownHook_UnsubscribesAndDeletes(t *testing.T) {
@@ -142,17 +153,22 @@ func TestOnInstanceDownHook_UnsubscribesAndDeletes(t *testing.T) {
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	cmdSub := d.natsSubscriptions[instance.ID]
 	consoleSub := d.natsSubscriptions[instance.ID+".console"]
+	passwordSub := d.natsSubscriptions[instance.ID+".password"]
 	require.NotNil(t, cmdSub)
 	require.NotNil(t, consoleSub)
+	require.NotNil(t, passwordSub)
 
 	d.onInstanceDownHook()(instance.ID)
 
 	_, cmdPresent := d.natsSubscriptions[instance.ID]
 	_, consolePresent := d.natsSubscriptions[instance.ID+".console"]
+	_, passwordPresent := d.natsSubscriptions[instance.ID+".password"]
 	assert.False(t, cmdPresent, "command sub must be deleted from map")
 	assert.False(t, consolePresent, "console sub must be deleted from map")
+	assert.False(t, passwordPresent, "password sub must be deleted from map")
 	assert.False(t, cmdSub.IsValid(), "command sub must be unsubscribed")
 	assert.False(t, consoleSub.IsValid(), "console sub must be unsubscribed")
+	assert.False(t, passwordSub.IsValid(), "password sub must be unsubscribed")
 }
 
 func TestOnInstanceDownHook_NoOpWhenAbsent(t *testing.T) {
@@ -207,13 +223,14 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 
 	require.NoError(t, d.onInstanceUpHook()(keep))
 	require.NoError(t, d.onInstanceUpHook()(drop))
-	require.Len(t, d.natsSubscriptions, 4)
+	require.Len(t, d.natsSubscriptions, 6)
 
 	d.onInstanceDownHook()(drop.ID)
 
-	assert.Len(t, d.natsSubscriptions, 2)
+	assert.Len(t, d.natsSubscriptions, 3)
 	assert.NotNil(t, d.natsSubscriptions[keep.ID])
 	assert.NotNil(t, d.natsSubscriptions[keep.ID+".console"])
+	assert.NotNil(t, d.natsSubscriptions[keep.ID+".password"])
 	_, dropPresent := d.natsSubscriptions[drop.ID]
 	assert.False(t, dropPresent)
 }

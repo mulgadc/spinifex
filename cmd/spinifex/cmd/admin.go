@@ -396,6 +396,8 @@ func init() {
 	}
 }
 
+const bytesPerGiB = 1024 * 1024 * 1024
+
 // amiVolumeSizeGiB returns the smallest whole GiB that still holds sizeBytes.
 //
 // Rounding up is load-bearing. The image is copied into a root volume of
@@ -410,7 +412,6 @@ func init() {
 // raises a caller's requested size to this value, so it inherits the mistake
 // rather than catching it.
 func amiVolumeSizeGiB(sizeBytes int64) uint64 {
-	const bytesPerGiB = 1024 * 1024 * 1024
 	if sizeBytes <= 0 {
 		return 0
 	}

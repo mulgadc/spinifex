@@ -449,9 +449,16 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 		return "", fmt.Errorf("could not stat image: %w", err)
 	}
 
+	// Round the volume up to a whole GiB rather than using the raw image size.
+	// viperblock rejects a tail write whose block overruns VolumeSize, so an
+	// unaligned size fails at the last block. This also keeps the byte size and
+	// the manifest's SizeGiB describing the same volume.
+	sizeGiB := amiVolumeSizeGiB(imageStat.Size())
+	volumeBytes := sizeGiB * bytesPerGiB
+
 	s3Config := vbs3.S3Config{
 		VolumeName: volumeId,
-		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
+		VolumeSize: volumeBytes,
 		Bucket:     node.Predastore.Bucket,
 		Region:     node.Predastore.Region,
 		AccessKey:  node.Predastore.AccessKey,
@@ -467,7 +474,7 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 	manifest.VolumeMetadata.VolumeID = volumeId
 	manifest.VolumeMetadata.VolumeName = volumeId
 	manifest.VolumeMetadata.TenantID = "system"
-	manifest.VolumeMetadata.SizeGiB = amiVolumeSizeGiB(imageStat.Size())
+	manifest.VolumeMetadata.SizeGiB = sizeGiB
 	manifest.VolumeMetadata.State = "available"
 	manifest.VolumeMetadata.AvailabilityZone = node.Predastore.Region
 	manifest.VolumeMetadata.CreatedAt = time.Now()
@@ -476,7 +483,7 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 
 	vbConfig := viperblock.VB{
 		VolumeName:        volumeId,
-		VolumeSize:        utils.SafeInt64ToUint64(imageStat.Size()),
+		VolumeSize:        volumeBytes,
 		BaseDir:           tmpDir,
 		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
 		VolumeConfig:      manifest,
@@ -494,18 +501,20 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 		flushUpdate(current)
 	}
 
+	// Name the volume in the failure path: a part-written import leaves blocks
+	// in predastore, and without the ID an operator cannot find them to reclaim.
 	if err := v_utils.ImportDiskImage(&s3Config, &vbConfig, imagePath, progress); err != nil {
 		if flushBar != nil {
 			_, _ = flushBar.Stop()
 		}
-		return "", fmt.Errorf("could not import weights volume: %w", err)
+		return "", fmt.Errorf("could not import weights volume %s: %w", volumeId, err)
 	}
 	if flushBar != nil {
 		_, _ = flushBar.Stop()
 	}
 
 	fmt.Println("Snapshotting weights volume ...")
-	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, utils.SafeInt64ToUint64(imageStat.Size()), tmpDir, mkey)
+	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, volumeBytes, tmpDir, mkey)
 	if err != nil {
 		return "", fmt.Errorf("could not snapshot weights volume: %w", err)
 	}

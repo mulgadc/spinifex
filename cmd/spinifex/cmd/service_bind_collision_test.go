@@ -129,16 +129,19 @@ func TestViperblockFlagsLookUpTheirOwnCommand(t *testing.T) {
 }
 
 // TestViperblockFlagDefaultsReachViper drives the real bindViperblockEnv, so
-// a lookup pointed at the wrong command fails here: an unbound flag leaves
-// its default invisible and s3-bucket resolves "" rather than "predastore".
+// a lookup pointed at the wrong command fails here: an unbound flag leaves its
+// default invisible and plugin-path resolves "" rather than the install path.
+//
+// The s3-* flags override spinifex.toml and so must default empty, which leaves
+// plugin-path as the only default that can prove the binding.
 func TestViperblockFlagDefaultsReachViper(t *testing.T) {
 	t.Cleanup(func() { viper.Reset() })
 	viper.Reset()
 	bindViperblockEnv()
 
-	assert.Equal(t, "predastore", viper.GetString("s3-bucket"))
-	assert.Equal(t, "ap-southeast-2", viper.GetString("s3-region"))
 	assert.Equal(t, "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", viper.GetString("plugin-path"))
+	assert.Empty(t, viper.GetString("s3-bucket"))
+	assert.Empty(t, viper.GetString("s3-region"))
 }
 
 // TestViperblockEnvBeatsUnchangedFlagDefault pins viper's precedence: wiring

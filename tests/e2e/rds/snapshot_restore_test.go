@@ -50,8 +50,9 @@ func TestSnapshotRestore(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
 	// The source and the instance restored from its snapshot, which have to be
-	// alive together for the restore to be provably a point in time.
-	reserveDBVMs(t, 2)
+	// alive together for the restore to be provably a point in time. The restore
+	// exercises the class override, so it costs more than the source it came from.
+	reserveDBVMs(t, dbClass, grownClass)
 
 	suffix := time.Now().Unix()
 	sourceID := fmt.Sprintf("%s-snapsrc-%d", dbInstancePfx, suffix)

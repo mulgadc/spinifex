@@ -42,13 +42,20 @@ func TestDelete(t *testing.T) {
 	// Two alive at once, not the three this test gets through: the restore is
 	// created after the protected instance it came from is gone, and so is the
 	// one deleted mid-create.
-	reserveDBVMs(t, 2)
+	reserveDBVMs(t, dbClass, dbClass)
 
 	suffix := time.Now().Unix()
 	protectedID := fmt.Sprintf("%s-final-%d", dbInstancePfx, suffix)
 	skippedID := fmt.Sprintf("%s-skipped-%d", dbInstancePfx, suffix)
 	finalSnapshotID := fmt.Sprintf("%s-finalsnap-%d", dbInstancePfx, suffix)
 	restoredID := fmt.Sprintf("%s-fromfinal-%d", dbInstancePfx, suffix)
+
+	// Scoped to the whole test, not to the subtest that creates the snapshot: the
+	// restore below and the removal after it both consume it, so a subtest-scoped
+	// cleanup deletes it before either runs. Registered before the snapshot exists
+	// because the teardown tolerates one that was never created, which also covers
+	// a failure part way through the delete that leaves a snapshot behind.
+	t.Cleanup(func() { deleteDBSnapshot(t, f, finalSnapshotID) })
 
 	harness.Phase(t, "Creating DB instances %q (protected) and %q", protectedID, skippedID)
 	createDBInstance(t, f, protectedID, func(in *rds.CreateDBInstanceInput) {
@@ -149,7 +156,6 @@ func TestDelete(t *testing.T) {
 
 		snapshot, err := harness.DescribeDBSnapshot(f.AWS, finalSnapshotID)
 		require.NoError(t, err, "the final snapshot must exist once the delete has returned")
-		t.Cleanup(func() { deleteDBSnapshot(t, f, finalSnapshotID) })
 		assert.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(snapshot.Status))
 		// Manual, not automated: the customer named it, so only the customer removes
 		// it — and rds-9's retention sweep must not.

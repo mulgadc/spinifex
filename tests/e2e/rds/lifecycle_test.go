@@ -45,7 +45,7 @@ const (
 func TestLifecycle(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
-	reserveDBVMs(t, 1)
+	reserveDBVMs(t, dbClass)
 
 	suffix := time.Now().Unix()
 	id := fmt.Sprintf("%s-lifecycle-%d", dbInstancePfx, suffix)
@@ -232,15 +232,21 @@ func TestLifecycle(t *testing.T) {
 		}
 
 		// The category filter is what a customer subscribes on, so a filter that
-		// returns everything is as broken as one that returns nothing.
+		// returns everything is as broken as one that returns nothing. Scoped to the
+		// same instance as the page above: without SourceIdentifier this returns
+		// every instance in the account and the comparison below is between two
+		// different populations, which passes or fails on how many siblings the
+		// suite happens to have alive.
 		filtered, err := f.AWS.RDS.DescribeEvents(&rds.DescribeEventsInput{
-			SourceType:      aws.String("db-instance"),
-			EventCategories: aws.StringSlice([]string{"availability"}),
-			Duration:        aws.Int64(1440),
+			SourceType:       aws.String("db-instance"),
+			SourceIdentifier: aws.String(id),
+			EventCategories:  aws.StringSlice([]string{"availability"}),
+			Duration:         aws.Int64(1440),
 		})
 		require.NoError(t, err, "describe-events filtered by category")
 		require.NotEmpty(t, filtered.Events, "the availability category covers the stop, start and reboot")
 		for _, event := range filtered.Events {
+			assert.Equal(t, id, aws.StringValue(event.SourceIdentifier))
 			assert.Contains(t, aws.StringValueSlice(event.EventCategories), "availability")
 		}
 		assert.Less(t, len(filtered.Events), len(out.Events),

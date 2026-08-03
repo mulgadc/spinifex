@@ -67,7 +67,7 @@ func TestAPIMatrix(t *testing.T) {
 	// Deliberately not parallel: it is the cheapest test in the suite and the one
 	// whose failures are the API's own, so it runs to completion before Go
 	// releases the parallel tests and the first DB VM boots.
-	reserveDBVMs(t, 1)
+	reserveDBVMs(t, dbClass)
 
 	suffix := time.Now().Unix()
 	rejectedID := fmt.Sprintf("%s-rejected-%d", dbInstancePfx, suffix)

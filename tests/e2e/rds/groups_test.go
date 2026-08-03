@@ -32,7 +32,7 @@ const (
 func TestSubnetAndParameterGroups(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
-	reserveDBVMs(t, 1)
+	reserveDBVMs(t, dbClass)
 
 	suffix := time.Now().Unix()
 	subnetGroup := fmt.Sprintf("%s-subnets-%d", dbInstancePfx, suffix)

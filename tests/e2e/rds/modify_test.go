@@ -56,8 +56,9 @@ func TestModifyStorageAndClass(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
 	// One throughout: the class change replaces the VM behind the instance rather
-	// than adding a second one.
-	reserveDBVMs(t, 1)
+	// than adding a second one. Reserved at the class it ends on, since that is the
+	// peak and the replacement is what has to find room.
+	reserveDBVMs(t, grownClass)
 
 	id := fmt.Sprintf("%s-modify-%d", dbInstancePfx, time.Now().Unix())
 

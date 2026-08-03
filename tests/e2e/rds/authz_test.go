@@ -28,7 +28,7 @@ func TestAuthorization(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
 	// The instance under test, plus the second tenant's short-lived twin.
-	reserveDBVMs(t, 2)
+	reserveDBVMs(t, dbClass, dbClass)
 
 	suffix := time.Now().Unix()
 	id := fmt.Sprintf("%s-authz-%d", dbInstancePfx, suffix)

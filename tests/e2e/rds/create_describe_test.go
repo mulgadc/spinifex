@@ -25,7 +25,7 @@ import (
 func TestCreateDescribe(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
-	reserveDBVMs(t, 1)
+	reserveDBVMs(t, dbClass)
 
 	id := fmt.Sprintf("%s-%d", dbInstancePfx, time.Now().Unix())
 

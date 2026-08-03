@@ -38,7 +38,7 @@ func TestAutomatedBackups(t *testing.T) {
 	t.Parallel()
 	// The instance being backed up, plus the restore that holds one of its
 	// snapshots open across the sweep.
-	reserveDBVMs(t, 2)
+	reserveDBVMs(t, dbClass, dbClass)
 
 	id := fmt.Sprintf("%s-backup-%d", dbInstancePfx, time.Now().Unix())
 

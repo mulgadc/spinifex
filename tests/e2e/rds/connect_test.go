@@ -43,7 +43,7 @@ const (
 func TestConnectivity(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
-	reserveDBVMs(t, 1)
+	reserveDBVMs(t, dbClass)
 
 	id := fmt.Sprintf("%s-connect-%d", dbInstancePfx, time.Now().Unix())
 

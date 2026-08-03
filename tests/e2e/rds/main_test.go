@@ -51,18 +51,30 @@ const (
 	dbMasterPassword = "e2eSup3rSecret1"
 )
 
-// The suite's DB-VM concurrency cap. Each DB instance is a guest with its own
-// data volume on a node that is also running the cluster, and the phase budget
-// — 25 minutes wall clock — is written against four of them alive at once.
-// Every instance-owning test runs in parallel and takes its allowance from here.
-const maxConcurrentDBVMs = 4
+// The suite's DB-VM concurrency cap, in GiB of guest memory. Each DB instance is
+// a guest with its own data volume on a node that is also running the cluster,
+// and the phase budget — 25 minutes wall clock — is written against four floor
+// instances alive at once. Every instance-owning test runs in parallel and takes
+// its allowance from here.
+//
+// Denominated in memory rather than instances because the node admits a launch
+// on live MemAvailable: a budget counting VMs lets a test holding two db.t3.small
+// through a cap written for four db.t3.micro, and the launch is then refused with
+// InsufficientInstanceCapacity rather than made to wait.
+const maxConcurrentDBVMGiB = 4
+
+// What each class the suite names costs against that budget.
+var dbClassGiB = map[string]int64{
+	dbClass:    1,
+	grownClass: 2,
+}
 
 var (
 	pkgFixOnce sync.Once
 	pkgFix     *Fixture
 	pkgFixErr  error
 
-	dbVMSlots = semaphore.NewWeighted(maxConcurrentDBVMs)
+	dbVMSlots = semaphore.NewWeighted(maxConcurrentDBVMGiB)
 )
 
 // Fixture carries per-process state shared across every Test* in this package.
@@ -91,10 +103,11 @@ type Fixture struct {
 func TestMain(m *testing.M) {
 	// How many tests may run at once is dbVMSlots' business, not the runner's CPU
 	// count: -test.parallel defaults to GOMAXPROCS, so a two-core CI VM would
-	// quietly halve the concurrency this suite's budget is written against. An
-	// explicit -test.parallel on the command line still wins, since flag parsing
-	// happens inside m.Run.
-	if err := flag.Set("test.parallel", strconv.Itoa(maxConcurrentDBVMs)); err != nil {
+	// quietly halve the concurrency this suite's budget is written against. The
+	// budget in GiB is the right ceiling because no test reserves less than a
+	// floor instance. An explicit -test.parallel on the command line still wins,
+	// since flag parsing happens inside m.Run.
+	if err := flag.Set("test.parallel", strconv.Itoa(maxConcurrentDBVMGiB)); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: set test.parallel: %v\n", err)
 		os.Exit(1)
 	}
@@ -112,27 +125,37 @@ func TestMain(m *testing.M) {
 }
 
 // reserveDBVMs takes a test's whole DB-VM allowance in one acquisition, before
-// it creates anything. n is the test's peak, so a test that creates and deletes
-// one instance at a time reserves one however many it gets through.
+// it creates anything. classes is the test's peak — the class of every instance
+// it will have alive at once — so a test that creates and deletes one instance at
+// a time names one however many it gets through, and one whose instance ends up
+// on a bigger class names the class it ends on.
 //
 // The acquisition is atomic because acquiring per instance deadlocks: four tests
-// each holding one slot and each waiting for a second would never progress.
-func reserveDBVMs(t *testing.T, n int64) {
+// each holding a floor instance's worth and each waiting for a second would never
+// progress.
+func reserveDBVMs(t *testing.T, classes ...string) {
 	t.Helper()
-	require.LessOrEqual(t, n, int64(maxConcurrentDBVMs),
-		"a test cannot reserve more DB VMs than the whole suite is allowed")
+	var gib int64
+	for _, class := range classes {
+		cost, known := dbClassGiB[class]
+		require.True(t, known, "class %s has no entry in dbClassGiB", class)
+		gib += cost
+	}
+	require.LessOrEqual(t, gib, int64(maxConcurrentDBVMGiB),
+		"a test cannot reserve more DB-VM memory than the whole suite is allowed")
 
 	start := time.Now()
-	if err := dbVMSlots.Acquire(context.Background(), n); err != nil {
-		t.Fatalf("reserve %d DB-VM slots: %v", n, err)
+	if err := dbVMSlots.Acquire(context.Background(), gib); err != nil {
+		t.Fatalf("reserve %d GiB of DB-VM budget: %v", gib, err)
 	}
 	if waited := time.Since(start); waited > time.Second {
-		t.Logf("waited %s for %d of %d DB-VM slots", waited.Round(time.Second), n, maxConcurrentDBVMs)
+		t.Logf("waited %s for %d of %d GiB of DB-VM budget",
+			waited.Round(time.Second), gib, maxConcurrentDBVMGiB)
 	}
 
-	// Registered before any instance's teardown, so LIFO hands the slots back
+	// Registered before any instance's teardown, so LIFO hands the budget back
 	// only once the last DB VM this test owns is actually gone.
-	t.Cleanup(func() { dbVMSlots.Release(n) })
+	t.Cleanup(func() { dbVMSlots.Release(gib) })
 }
 
 // Subtests report under their parent, so a create issued from one is attributed
@@ -208,8 +231,8 @@ func reportCreateLatencies(wall time.Duration) {
 	sort.Slice(dbCreateLatencies, func(i, j int) bool {
 		return dbCreateLatencies[i].took > dbCreateLatencies[j].took
 	})
-	fmt.Fprintf(os.Stderr, "\nRDS suite: %s wall clock, %d DB instances, ≤%d concurrent\n",
-		wall.Round(time.Second), len(dbCreateLatencies), maxConcurrentDBVMs)
+	fmt.Fprintf(os.Stderr, "\nRDS suite: %s wall clock, %d DB instances, ≤%d GiB concurrent\n",
+		wall.Round(time.Second), len(dbCreateLatencies), maxConcurrentDBVMGiB)
 	for _, l := range dbCreateLatencies {
 		fmt.Fprintf(os.Stderr, "  create→available %8s  %s (%s)\n", l.took.Round(time.Second), l.id, l.test)
 	}

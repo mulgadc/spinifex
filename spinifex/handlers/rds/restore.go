@@ -236,7 +236,10 @@ func resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snap
 		DBSubnetGroupName:    subnetGroup,
 		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
-		Tags:                 tagMap,
+
+		AutoMinorVersionUpgrade: input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
+
+		Tags: tagMap,
 	}, nil
 }
 

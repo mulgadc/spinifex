@@ -82,6 +82,9 @@ func (l *natsInstanceLookup) describe(ctx context.Context, accountID, instanceID
 	if inst.IamInstanceProfile != nil {
 		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)
 	}
+	if inst.MetadataOptions != nil {
+		facts.httpTokens = aws.StringValue(inst.MetadataOptions.HttpTokens)
+	}
 
 	facts.userData = l.userData(ctx, accountID, instanceID)
 	return facts, nil

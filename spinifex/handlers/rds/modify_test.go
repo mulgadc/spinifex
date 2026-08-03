@@ -46,13 +46,14 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
+	vmState := &fakeInstanceState{state: instanceStateRunning}
 	h := &modifyHarness{
 		nc:      nc,
 		launch:  newLaunchHarness(),
 		network: newFakeNetwork(),
-		cmdr:    &fakeInstanceCommander{},
+		cmdr:    &fakeInstanceCommander{vm: vmState},
 		storage: newFakeVolumeResizer(testDataVolume, 20),
-		vmState: &fakeInstanceState{state: instanceStateRunning},
+		vmState: vmState,
 	}
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
@@ -62,6 +63,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		Instances:     h.cmdr,
 		Storage:       h.storage,
 		InstanceState: h.vmState,
+		VMStopTimeout: testVMStopTimeout,
 	})
 	h.rec = NewReconciler(h.svc, "node-a")
 	return h

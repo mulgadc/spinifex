@@ -244,8 +244,13 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
+	// reqCtx/cancel let Close() abort the upstream request outright rather
+	// than merely stopping our own reads — a disconnected client must free
+	// the vLLM-side generation, not just this goroutine.
+	reqCtx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
 	if err != nil {
+		cancel()
 		slog.Error("llama invoke-stream: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -254,6 +259,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 
 	resp, err := a.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets the resolved pinned self-host endpoint, not user input
 	if err != nil {
+		cancel()
 		slog.Error("llama invoke-stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
@@ -261,6 +267,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		cancel()
 		slog.Error("llama invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
@@ -269,6 +276,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 		resp:    resp,
 		scanner: newSSEScanner(resp.Body),
 		start:   time.Now(),
+		cancel:  cancel,
 	}, nil
 }
 
@@ -284,17 +292,34 @@ type llamaInvokeStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner
 	start   time.Time
+	cancel  context.CancelFunc
 
 	gotFirstByte                   bool
 	firstByte                      time.Time
 	promptTokens, completionTokens int
+	usageKnown                     bool
+	deltaChunks                    int64
 	pendingFinal                   *llamaInvokeStreamFinalChunk
 }
 
 var _ invokeStreamSource = (*llamaInvokeStreamSource)(nil)
+var _ usageReporter = (*llamaInvokeStreamSource)(nil)
 
+// Close aborts the upstream request via cancel (not just closing the read
+// side), so a disconnected client actually frees the vLLM-side generation.
 func (s *llamaInvokeStreamSource) Close() error {
+	s.cancel()
 	return s.resp.Body.Close()
+}
+
+// usage returns real usage once vLLM's trailing usage-only chunk has set it
+// (usageKnown); until then it falls back to a content-delta chunk count as
+// an estimated output-token proxy, flagged accordingly.
+func (s *llamaInvokeStreamSource) usage() (inputTokens, outputTokens int64, estimated bool) {
+	if s.usageKnown {
+		return int64(s.promptTokens), int64(s.completionTokens), false
+	}
+	return 0, s.deltaChunks, true
 }
 
 func (s *llamaInvokeStreamSource) Next(_ context.Context) ([]byte, bool, error) {
@@ -329,6 +354,7 @@ func (s *llamaInvokeStreamSource) Next(_ context.Context) ([]byte, bool, error) 
 		if chunk.Usage != nil {
 			s.promptTokens = chunk.Usage.PromptTokens
 			s.completionTokens = chunk.Usage.CompletionTokens
+			s.usageKnown = true
 		}
 		if len(chunk.Choices) == 0 {
 			// The trailing usage-only chunk: emit the deferred final chunk
@@ -348,6 +374,7 @@ func (s *llamaInvokeStreamSource) Next(_ context.Context) ([]byte, bool, error) 
 			continue
 		}
 
+		s.deltaChunks++
 		out, err := json.Marshal(llamaInvokeStreamChunk{Generation: choice.Text})
 		if err != nil {
 			return nil, false, newStreamFault(fmt.Errorf("llama invoke-stream: marshal chunk: %w", err))

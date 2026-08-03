@@ -245,13 +245,13 @@ func launchService(config *config.ClusterConfig) error {
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
 	// uploads are owned by the daemon and reached over NATS request/reply. The
 	// /v2 auth bridge resolves the per-request account from a verified token.
-	ecrStore := objectstore.NewS3ObjectStoreFromConfig(
+	objStore := objectstore.NewS3ObjectStoreFromConfig(
 		admin.DialTarget(nodeConfig.Predastore.Host),
 		nodeConfig.Predastore.Region,
 		nodeConfig.Predastore.AccessKey,
 		nodeConfig.Predastore.SecretKey,
 	)
-	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
+	ecrRegistry := gateway_ecr.NewRegistry(objStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
 	// Lifecycle expiry sweep applies each repo's stored lifecycle policy and
 	// deletes the expired set via the registry GC path. It runs here (not the
@@ -301,31 +301,69 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
 
+	// Bedrock self-host weights: a model's serving spec (VRAM, instance type,
+	// vLLM args) ships in-tree, but which staged snapshot serves it is
+	// deployment-local state. tieredCatalog/GetFoundationModel read this
+	// through the package-level resolver rather than a parameter, since they
+	// are called from gateway/bedrock.go's fixed-arity route table.
+	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
+
 	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
 
+	// Bedrock invocation records: every Converse/InvokeModel call (streaming
+	// or not) is published to the invocation stream, then fanned out by
+	// deliveryConsumer to any account with a configured destination bucket
+	// and a metadata-only log line. bedrockLoggingConfig separately gates
+	// whether the record written to that bucket includes body text.
+	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js, len(config.Nodes))
+	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js, len(config.Nodes)); err != nil {
+		return fmt.Errorf("bedrock: ensure invocation stream: %w", err)
+	}
+	deliveryConsumer, err := gateway_bedrock.EnsureDeliveryConsumer(janitorCtx, js)
+	if err != nil {
+		return fmt.Errorf("bedrock: ensure invocation delivery consumer: %w", err)
+	}
+	bedrockRecorder := gateway_bedrock.NewStreamRecorder(js, bedrockLoggingConfig)
+	go gateway_bedrock.NewDeliveryConsumer(objStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
+
+	// Bedrock usage/cost metering: a second durable consumer on the same
+	// invocation stream (LimitsPolicy retention lets both see every message)
+	// updates per-account/model/period counters, deduping on RequestID so
+	// at-least-once redelivery never double-counts. bedrockPrices resolves
+	// KV price overrides over the catalog's in-tree defaults.
+	bedrockUsage := gateway_bedrock.NewUsageStore(js, len(config.Nodes))
+	bedrockPrices := gateway_bedrock.NewPriceStore(js, len(config.Nodes))
+	usageConsumer, err := gateway_bedrock.EnsureUsageConsumer(janitorCtx, js)
+	if err != nil {
+		return fmt.Errorf("bedrock: ensure usage metering consumer: %w", err)
+	}
+	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
+
 	gw := gateway.GatewayConfig{
-		Debug:              nodeConfig.AWSGW.Debug,
-		DisableLogging:     false,
-		NATSConn:           natsConn,
-		Config:             nodeConfig.AWSGW.Config,
-		ExpectedNodes:      len(config.Nodes),
-		Region:             nodeConfig.Region,
-		InternalSuffix:     config.AWS.InternalSuffix,
-		RegistryPort:       registryPort,
-		RegistryHost:       registryHost,
-		AZ:                 nodeConfig.AZ,
-		IAMService:         iamService,
-		STSService:         stsService,
-		Version:            version,
-		Commit:             commit,
-		ECRRegistry:        ecrRegistry,
-		ECRTokenIssuer:     gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier:   gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials: bedrockCredentials,
-		BedrockEndpoints:   bedrockEndpoints,
+		Debug:                nodeConfig.AWSGW.Debug,
+		DisableLogging:       false,
+		NATSConn:             natsConn,
+		Config:               nodeConfig.AWSGW.Config,
+		ExpectedNodes:        len(config.Nodes),
+		Region:               nodeConfig.Region,
+		InternalSuffix:       config.AWS.InternalSuffix,
+		RegistryPort:         registryPort,
+		RegistryHost:         registryHost,
+		AZ:                   nodeConfig.AZ,
+		IAMService:           iamService,
+		STSService:           stsService,
+		Version:              version,
+		Commit:               commit,
+		ECRRegistry:          ecrRegistry,
+		ECRTokenIssuer:       gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:     gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		BedrockCredentials:   bedrockCredentials,
+		BedrockEndpoints:     bedrockEndpoints,
+		BedrockLoggingConfig: bedrockLoggingConfig,
+		BedrockRecorder:      bedrockRecorder,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
@@ -354,6 +392,10 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
 
+	// Bedrock token quota reads the stream-fed usage counters built above,
+	// independent of whether the standing-infra dimensions are enabled.
+	gw.Quota.SetBedrockUsage(bedrockUsage)
+
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band
 	// terminations free quota. Started only when quotas are enabled so default-off
@@ -365,6 +407,12 @@ func launchService(config *config.ClusterConfig) error {
 		expectedNodes := func() int { return len(config.Nodes) }
 		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, activeAccountIDs(iamService), expectedNodes)
 	}
+
+	// Bedrock RPM enforcement is local and immediate (never gated on
+	// quotaCfg.Enabled); this loop only pushes a periodic observability
+	// snapshot to KV and is itself a no-op when the RPM dimension is
+	// disabled.
+	go gw.Quota.RunBedrockRPMSync(janitorCtx, js, len(config.Nodes))
 
 	handler := gw.SetupRoutes()
 

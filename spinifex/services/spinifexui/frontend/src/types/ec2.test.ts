@@ -250,17 +250,42 @@ describe("createLaunchTemplateSchema", () => {
 
 describe("createKeyPairSchema", () => {
   it("accepts a valid key name", () => {
-    const result = createKeyPairSchema.safeParse({ keyName: "my-key" })
+    const result = createKeyPairSchema.safeParse({
+      keyName: "my-key",
+      keyType: "rsa",
+    })
     expect(result.success).toBeTruthy()
   })
 
+  it("accepts ed25519 as a key type", () => {
+    const result = createKeyPairSchema.safeParse({
+      keyName: "my-key",
+      keyType: "ed25519",
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("rejects a key type EC2 cannot generate", () => {
+    const result = createKeyPairSchema.safeParse({
+      keyName: "my-key",
+      keyType: "dsa",
+    })
+    expect(result.success).toBeFalsy()
+  })
+
   it("rejects empty key name", () => {
-    const result = createKeyPairSchema.safeParse({ keyName: "" })
+    const result = createKeyPairSchema.safeParse({
+      keyName: "",
+      keyType: "rsa",
+    })
     expect(result.success).toBeFalsy()
   })
 
   it("rejects key name over 255 chars", () => {
-    const result = createKeyPairSchema.safeParse({ keyName: "a".repeat(256) })
+    const result = createKeyPairSchema.safeParse({
+      keyName: "a".repeat(256),
+      keyType: "rsa",
+    })
     expect(result.success).toBeFalsy()
   })
 })

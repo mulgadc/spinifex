@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -50,6 +51,9 @@ type ConfigSettings struct {
 	DataDir   string
 	LogDir    string
 	ConfigDir string
+	// PredastoreDataDir is the [[host]] data_dir rendered into predastore.toml.
+	// Derived from DataDir via PredastoreDataDir when left unset.
+	PredastoreDataDir string
 
 	Node   string
 	Az     string
@@ -64,8 +68,9 @@ type ConfigSettings struct {
 	ClusterRoutes []string
 	ClusterName   string
 
-	// Predastore multi-node
-	PredastoreNodeID int
+	// Predastore multi-node: which [[host]] of the predastore topology this
+	// node is. Zero means single-node, where one process runs every node.
+	PredastoreHostID int
 
 	// CompactionIntervalSeconds gates the predastore [compaction] block. Zero
 	// means unset: no block is emitted and predastore keeps its built-in default.
@@ -173,6 +178,10 @@ func GenerateConfigFiles(configs []ConfigFile, configSettings ConfigSettings) er
 
 // GenerateConfigFile creates a configuration file from a template.
 func GenerateConfigFile(configPath string, configTemplate string, configSettings ConfigSettings) error {
+	if configSettings.PredastoreDataDir == "" {
+		configSettings.PredastoreDataDir = PredastoreDataDir(configSettings.DataDir)
+	}
+
 	tmpl, err := template.New("config").Parse(configTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
@@ -302,6 +311,15 @@ func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix 
 	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)
 }
 
+// PredastoreDataDir is the root a Predastore host keeps its per-node state
+// under. Each node gets a node-<id> subdirectory beneath it, created by
+// predastore itself. The path is absolute because the service runs under
+// systemd, where the working directory the config would otherwise resolve
+// against is not ours to depend on.
+func PredastoreDataDir(spxRoot string) string {
+	return filepath.Join(spxRoot, "predastore", "cluster")
+}
+
 func CreateServiceDirectories(spxRoot string) {
 	dirs := []string{
 		filepath.Join(spxRoot, "images"),
@@ -334,22 +352,20 @@ func FileExists(path string) bool {
 }
 
 // ChownRecursive changes ownership of path and its contents to username.
-// Best-effort: errors are logged but do not halt the operation.
-func ChownRecursive(path, username string) {
+// Failing to resolve the user is an error, since it leaves path untouched.
+// Per-entry walk failures below path stay best-effort and are only logged.
+func ChownRecursive(path, username string) error {
 	u, err := user.Lookup(username)
 	if err != nil {
-		slog.Warn("ChownRecursive: user lookup failed, skipping", "user", username, "path", path, "err", err)
-		return
+		return fmt.Errorf("chown %s: user %q not found: %w", path, username, err)
 	}
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		slog.Warn("ChownRecursive: invalid UID, skipping", "user", username, "uid", u.Uid, "err", err)
-		return
+		return fmt.Errorf("chown %s: invalid UID %q for user %q: %w", path, u.Uid, username, err)
 	}
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		slog.Warn("ChownRecursive: invalid GID, skipping", "user", username, "gid", u.Gid, "err", err)
-		return
+		return fmt.Errorf("chown %s: invalid GID %q for user %q: %w", path, u.Gid, username, err)
 	}
 
 	// Use os.Root to scope filesystem operations and avoid symlink TOCTOU races.
@@ -363,7 +379,7 @@ func ChownRecursive(path, username string) {
 		if chownErr := os.Lchown(path, uid, gid); chownErr != nil {
 			slog.Warn("chown failed", "path", path, "err", chownErr)
 		}
-		return
+		return nil
 	}
 	defer root.Close()
 
@@ -378,43 +394,61 @@ func ChownRecursive(path, username string) {
 		}
 		return nil
 	})
+	return nil
+}
+
+// servicePaths maps each per-service data/config directory to the system user
+// that must own it. Kept separate from SetServiceOwnership so the aggregation
+// logic can be tested against a small map rather than these absolute paths.
+var servicePaths = map[string]string{
+	"/etc/spinifex/nats":           "spinifex-nats",
+	"/var/lib/spinifex/nats":       "spinifex-nats",
+	"/etc/spinifex/predastore":     "spinifex-storage",
+	"/var/lib/spinifex/predastore": "spinifex-storage",
+	"/etc/spinifex/northstar":      "spinifex-northstar",
+	"/var/lib/spinifex/northstar":  "spinifex-northstar",
+	"/etc/spinifex/viperblock":     "spinifex-viperblock",
+	"/var/lib/spinifex/spinifex":   "spinifex-daemon",
+	"/var/lib/spinifex/viperblock": "spinifex-viperblock",
+	"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
+	"/var/lib/spinifex/awsgw":      "spinifex-gw",
+}
+
+// chownServicePaths applies ChownRecursive to each path in services that
+// exists on disk, collecting every failure instead of stopping at the
+// first so one missing service user doesn't mask problems with the rest.
+func chownServicePaths(services map[string]string) error {
+	var errs []error
+	for path, u := range services {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := ChownRecursive(path, u); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SetServiceOwnership sets per-service ownership on data/config directories
-// and shared config files to root:spinifex with correct modes.
-func SetServiceOwnership() {
+// and shared config files to root:spinifex with correct modes. Returns an error
+// naming every service path whose ownership could not be applied.
+func SetServiceOwnership() error {
 	grp, err := user.LookupGroup("spinifex")
 	if err != nil {
 		slog.Error("SetServiceOwnership: spinifex group not found, skipping all ownership changes", "err", err)
 		fmt.Fprintln(os.Stderr, "WARNING: spinifex group not found — service ownership not set. Run setup.sh first or create the group manually.")
-		return
+		return fmt.Errorf("spinifex group not found: %w", err)
 	}
 	gid, err := strconv.Atoi(grp.Gid)
 	if err != nil {
 		slog.Error("SetServiceOwnership: invalid spinifex group GID", "gid", grp.Gid, "err", err)
 		fmt.Fprintln(os.Stderr, "WARNING: invalid spinifex group GID — service ownership not set.")
-		return
+		return fmt.Errorf("invalid spinifex group GID %q: %w", grp.Gid, err)
 	}
 
 	// Per-service directory trees
-	for path, u := range map[string]string{
-		"/etc/spinifex/nats":           "spinifex-nats",
-		"/var/lib/spinifex/nats":       "spinifex-nats",
-		"/etc/spinifex/predastore":     "spinifex-storage",
-		"/var/lib/spinifex/predastore": "spinifex-storage",
-		"/etc/spinifex/northstar":      "spinifex-northstar",
-		"/var/lib/spinifex/northstar":  "spinifex-northstar",
-		"/etc/spinifex/viperblock":     "spinifex-viperblock",
-		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
-		"/var/lib/spinifex/viperblock": "spinifex-viperblock",
-		"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
-		"/var/lib/spinifex/awsgw":      "spinifex-gw",
-	} {
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		ChownRecursive(path, u)
-	}
+	ownershipErr := chownServicePaths(servicePaths)
 
 	// Shared data directories — root:spinifex 0770 so daemon + admin CLI can write
 	for _, dir := range []string{
@@ -457,6 +491,8 @@ func SetServiceOwnership() {
 			slog.Warn("SetServiceOwnership: chmod failed", "path", path, "err", err)
 		}
 	}
+
+	return ownershipErr
 }
 
 // UpdateAWSINIFile updates or creates an AWS INI file section with the given key-value pairs.
@@ -898,9 +934,13 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 		return err
 	}
 
-	// Fix ownership so the sudo invoking user can read the files
+	// Fix ownership so the sudo invoking user can read the files. This is
+	// cosmetic convenience, not a service-critical permission, so a failure
+	// here is logged and never propagated to fail credential setup.
 	if os.Getuid() == 0 && sudoUser != "" {
-		ChownRecursive(awsDir, sudoUser)
+		if err := ChownRecursive(awsDir, sudoUser); err != nil {
+			slog.Warn("failed to fix AWS config ownership for sudo user", "user", sudoUser, "path", awsDir, "err", err)
+		}
 	}
 
 	fmt.Printf("   Profile: %s\n", profileName)
@@ -911,34 +951,73 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 	return nil
 }
 
+// PredastoreClusterNode is one [[node]] entry of the Predastore topology: a
+// role pinned to a host.
+type PredastoreClusterNode struct {
+	ID     int
+	HostID int
+	Role   string
+}
+
+// Predastore node roles: shard storage holds erasure-coded object shards,
+// state replicas form the Raft quorum over global state.
+const (
+	predastoreRoleShardStorage = "shard-storage"
+	predastoreRoleStateReplica = "state-replica"
+)
+
+// PredastoreTopology derives the cluster nodes for a set of machines: each
+// machine hosts one shard-storage node and one state replica. Node IDs are
+// unique across roles, so storage takes 1..n and the replicas n+1..2n.
+func PredastoreTopology(nodes []PredastoreNodeConfig) []PredastoreClusterNode {
+	out := make([]PredastoreClusterNode, 0, len(nodes)*2)
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleShardStorage})
+	}
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID + len(nodes), HostID: n.ID, Role: predastoreRoleStateReplica})
+	}
+	return out
+}
+
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
-// multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
-// and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
+// multi-node Predastore cluster. Each machine becomes one [[host]] — a
+// predastore process owning a socket on port 6660 and a data directory —
+// carrying the shard-storage and state-replica nodes pinned to it.
+//
+// dataDir is the Spinifex data root; the hosts' data directories are absolute
+// beneath it, since the service runs under systemd with no dependable working
+// directory.
 //
 // A populated northstar credential provisions the zone bucket, grants the
 // system key write access to it, and adds the read-only entry the resolver
 // authenticates with. A zero value omits all three, yielding a config no
 // northstar service can use.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, dataDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {
 		Nodes                     []PredastoreNodeConfig
+		ClusterNodes              []PredastoreClusterNode
 		AccessKey                 string
 		SecretKey                 string
 		Region                    string
 		NatsToken                 string
 		ConfigDir                 string
+		PredastoreDataDir         string
 		BindIP                    string
 		CompactionIntervalSeconds int
 		NorthstarAccessKey        string
 		NorthstarSecretKey        string
 		NorthstarBucket           string
 	}{
-		Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region,
-		NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP,
+		Nodes: nodes, ClusterNodes: PredastoreTopology(nodes),
+		AccessKey: accessKey, SecretKey: secretKey, Region: region,
+		NatsToken: natsToken, ConfigDir: configDir,
+		PredastoreDataDir:         PredastoreDataDir(dataDir),
+		BindIP:                    bindIP,
 		CompactionIntervalSeconds: compactionIntervalSeconds,
 		NorthstarAccessKey:        northstar.AccessKey,
 		NorthstarSecretKey:        northstar.SecretKey,
@@ -969,17 +1048,32 @@ func FindNodeIDByIP(nodes []PredastoreNodeConfig, ip string) int {
 	return 0
 }
 
-// ParsePredastoreNodeIDFromConfig parses a predastore.toml string and returns
-// the node ID whose host matches the given IP, or 0 if not found.
-func ParsePredastoreNodeIDFromConfig(tomlContent string, ip string) int {
+// ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
+// the ID of the [[host]] whose public address matches the given IP, or 0 if
+// not found. The host is what an operator places on a machine; the nodes
+// pinned to it follow from the topology.
+func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 	var cfg struct {
-		DB []PredastoreNodeConfig `toml:"db"`
+		Hosts []struct {
+			ID         int    `toml:"id"`
+			PublicAddr string `toml:"public_addr"`
+		} `toml:"host"`
 	}
 	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
 		slog.Warn("Failed to parse predastore.toml content", "error", err)
 		return 0
 	}
-	return FindNodeIDByIP(cfg.DB, ip)
+	for _, h := range cfg.Hosts {
+		host, _, err := net.SplitHostPort(h.PublicAddr)
+		if err != nil {
+			// A bare address without a port is still a usable match.
+			host = h.PublicAddr
+		}
+		if host == ip {
+			return h.ID
+		}
+	}
+	return 0
 }
 
 // SetMIGProfile idempotently writes mig_profile = "<profile>" for the given node

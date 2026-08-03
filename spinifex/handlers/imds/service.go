@@ -62,6 +62,7 @@ type eniResolver interface {
 type IMDSServiceImpl struct {
 	resolver       eniResolver
 	tokens         *tokenStore
+	v1Allow        *v1AllowCache
 	creds          *credCache
 	iam            profileLookup
 	pubKeys        publicKeyLookup
@@ -136,6 +137,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 			lookup:   &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
 		tokens:         newTokenStore(),
+		v1Allow:        newV1AllowCache(),
 		creds:          newCredCache(sts),
 		iam:            iamSvc,
 		pubKeys:        pubKeys,
@@ -225,6 +227,7 @@ func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
 			now := s.now()
 			s.tokens.sweep(now)
 			s.creds.sweep(now)
+			s.v1Allow.sweep(now)
 		}
 	}
 }

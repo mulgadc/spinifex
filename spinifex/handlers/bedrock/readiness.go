@@ -1,0 +1,62 @@
+package handlers_bedrock
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+)
+
+// defaultStartupTimeout bounds how long Ensure's launch goroutine polls a
+// freshly-launched serving VM's /v1/models endpoint before giving up and
+// reverting the record to ABSENT. PROVISIONAL: chosen conservatively for a
+// small model (Llama 3.2 1B) cold-booting a microVM plus vLLM's own weight
+// load; needs correcting against a real measurement on wattle once the model
+// actually runs there.
+const defaultStartupTimeout = 5 * time.Minute
+
+// readinessPollInterval is the spacing between /v1/models probes. Short
+// enough that a fast-booting VM isn't held back by the poll cadence, long
+// enough not to hammer a guest still bringing its network stack up.
+const readinessPollInterval = 2 * time.Second
+
+// waitReady polls baseURL + "/v1/models" every pollInterval until it returns
+// HTTP 200 or ctx's deadline (set by the caller from startupTimeout) expires.
+// Never a sleep in place of a real check: every non-200 (including connection
+// refused, while the guest is still booting) is swallowed and retried, since
+// readiness is the very thing being waited for. pollInterval is a parameter
+// (not just the readinessPollInterval constant) so tests can poll fast
+// without waiting out the production cadence.
+func waitReady(ctx context.Context, client *http.Client, baseURL string, pollInterval time.Duration) error {
+	url := baseURL + "/v1/models"
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		if probeOnce(ctx, client, url) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("bedrock: readiness probe of %s: %w", url, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// probeOnce issues a single GET and reports whether it returned HTTP 200.
+// Any transport error (guest not listening yet) or non-200 status counts as
+// not-yet-ready, not a failure — the caller's context deadline is what
+// eventually turns "not yet" into an error.
+func probeOnce(ctx context.Context, client *http.Client, url string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}

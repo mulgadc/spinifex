@@ -89,12 +89,12 @@ var spinifexUICmd = &cobra.Command{
 	Short:   "Manage the spinifex-ui service",
 }
 
-// predastoreBind is the local predastore bind host, port and node_id derived
+// predastoreBind is the local predastore bind host, port and host_id derived
 // directly from spinifex.toml.
 type predastoreBind struct {
 	Host   string
 	Port   int
-	NodeID int
+	HostID int
 }
 
 // derivePredastoreBind reads this node's [nodes.<node>.predastore] section
@@ -104,9 +104,9 @@ type predastoreBind struct {
 // normalization for callers that DIAL predastore, not for the address
 // predastore itself binds to.
 //
-// node_id defaults to -1 (co-located: every configured DB peer runs in this
-// one process) when spinifex.toml omits the key. predastore rejects
-// node_id=0, so an absent key must never silently resolve to that.
+// host_id defaults to 0 when spinifex.toml omits the key, which runs the whole
+// predastore topology in this one process — the single-node deployment. Only a
+// multi-node config names a host (>= 1), selecting just that host's nodes.
 func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, error) {
 	node := clusterConfig.Node
 	bindKey := "nodes." + node + ".predastore.host"
@@ -124,12 +124,7 @@ func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, 
 		return predastoreBind{}, fmt.Errorf("parse nodes.%s.predastore.host port %q: %w", node, portStr, err)
 	}
 
-	nodeID := -1
-	if viper.IsSet("nodes." + node + ".predastore.node_id") {
-		nodeID = clusterConfig.Nodes[node].Predastore.NodeID
-	}
-
-	return predastoreBind{Host: host, Port: port, NodeID: nodeID}, nil
+	return predastoreBind{Host: host, Port: port, HostID: clusterConfig.Nodes[node].Predastore.HostID}, nil
 }
 
 var predastoreStartCmd = &cobra.Command{
@@ -140,13 +135,13 @@ var predastoreStartCmd = &cobra.Command{
 		fmt.Println("Starting predastore service...")
 
 		// Get the port from the flags
-		port := viper.GetInt("port")
+		port := viper.GetInt("predastore-port")
 		host := viper.GetString("predastore-host")
 		basePath := viper.GetString("predastore-base-path")
-		debug := viper.GetBool("debug")
-		nodeID := viper.GetInt("node-id")
+		debug := viper.GetBool("predastore-debug")
+		hostID := viper.GetInt("predastore-host-id")
 
-		// Derive bind host/port/node-id from spinifex.toml when its path is
+		// Derive bind host/port/host-id from spinifex.toml when its path is
 		// known and the caller hasn't explicitly overridden them — replaces
 		// predastore-start.sh, which used to do this derivation and exec us.
 		if cfgFile := viper.GetString("config"); cfgFile != "" {
@@ -163,11 +158,11 @@ var predastoreStartCmd = &cobra.Command{
 			if !viper.IsSet("predastore-host") {
 				host = bind.Host
 			}
-			if !viper.IsSet("port") {
+			if !viper.IsSet("predastore-port") {
 				port = bind.Port
 			}
-			if !viper.IsSet("node-id") {
-				nodeID = bind.NodeID
+			if !viper.IsSet("predastore-host-id") {
+				hostID = bind.HostID
 			}
 		}
 
@@ -184,21 +179,21 @@ var predastoreStartCmd = &cobra.Command{
 			return
 		}
 
-		tlsCert := viper.GetString("tls-cert")
+		tlsCert := viper.GetString("predastore-tls-cert")
 
 		if tlsCert == "" {
 			fmt.Println("TLS cert is not set")
 			return
 		}
 
-		tlsKey := viper.GetString("tls-key")
+		tlsKey := viper.GetString("predastore-tls-key")
 
 		if tlsKey == "" {
 			fmt.Println("TLS key is not set")
 			return
 		}
 
-		encryptionKeyFile := viper.GetString("encryption-key-file")
+		encryptionKeyFile := viper.GetString("predastore-encryption-key-file")
 
 		if encryptionKeyFile == "" {
 			fmt.Println("Encryption key file is not set")
@@ -221,7 +216,7 @@ var predastoreStartCmd = &cobra.Command{
 
 			EncryptionKeyFile: encryptionKeyFile,
 
-			NodeID: nodeID,
+			HostID: hostID,
 
 			PprofEnabled:    pprofEnabled,
 			PprofOutputPath: pprofOutput,
@@ -453,9 +448,9 @@ var natsStartCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("Starting nats service...")
 
-		port := viper.GetInt("port")
-		host := viper.GetString("host")
-		debug := viper.GetBool("debug")
+		port := viper.GetInt("nats-port")
+		host := viper.GetString("nats-service-host")
+		debug := viper.GetBool("nats-debug")
 		dataDir := viper.GetString("data-dir")
 		jetStream := viper.GetBool("jetstream")
 
@@ -634,19 +629,19 @@ var awsgwStartCmd = &cobra.Command{
 		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
 
 		// Overwrite defaults (CLI first, config second, env third)
-		awsgwHost := viper.GetString("host")
+		awsgwHost := viper.GetString("awsgw-host")
 		if awsgwHost != "" {
 			fmt.Println("Overwriting awsgw host to:", awsgwHost)
 			nodeConfig.AWSGW.Host = awsgwHost
 		}
 
-		awsgwTlsCert := viper.GetString("tls-cert")
+		awsgwTlsCert := viper.GetString("awsgw-tls-cert")
 		if awsgwTlsCert != "" {
 			fmt.Println("Overwriting awsgw tls-cert to:", awsgwTlsCert)
 			nodeConfig.AWSGW.TLSCert = awsgwTlsCert
 		}
 
-		awsgwTlsKey := viper.GetString("tls-key")
+		awsgwTlsKey := viper.GetString("awsgw-tls-key")
 
 		if awsgwTlsKey != "" {
 			fmt.Println("Overwriting awsgw tls-key to:", awsgwTlsKey)
@@ -663,7 +658,7 @@ var awsgwStartCmd = &cobra.Command{
 		// Apply changes back to cluster config
 		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
 
-		defer initTelemetry("awsgw", viper.GetBool("debug"))()
+		defer initTelemetry("awsgw", viper.GetBool("awsgw-debug"))()
 
 		awsgw.SetBuildInfo(Version, Commit)
 		service, err := service.New("awsgw", clusterConfig)
@@ -1034,7 +1029,6 @@ func runNorthstarStart(options northstarStartOptions, deps northstarStartDepende
 	svc, err := deps.newService(&northstar.Config{
 		ConfigPath: configPath,
 		BasePath:   baseDir,
-		NodeID:     nodeConfig.Predastore.NodeID,
 		NatsHost:   nodeConfig.NATS.Host,
 		NatsToken:  nodeConfig.NATS.ACL.Token,
 		NatsCACert: nodeConfig.NATS.CACert,
@@ -1181,6 +1175,77 @@ func bindPredastoreNamespacedEnv() {
 	viper.BindPFlag("predastore-config-path", predastoreCmd.PersistentFlags().Lookup("config-path"))
 }
 
+// bindPredastoreCollisionEnv namespaces predastore's port, debug, tls-cert,
+// tls-key, encryption-key-file and host-id keys, which nats and awsgw also
+// bind bare. Each derived env name now matches its own BindEnv target.
+func bindPredastoreCollisionEnv() {
+	viper.BindEnv("predastore-port", "SPINIFEX_PREDASTORE_PORT")
+	viper.BindPFlag("predastore-port", predastoreCmd.PersistentFlags().Lookup("port"))
+
+	viper.BindEnv("predastore-debug", "SPINIFEX_PREDASTORE_DEBUG")
+	viper.BindPFlag("predastore-debug", predastoreCmd.PersistentFlags().Lookup("debug"))
+
+	viper.BindEnv("predastore-tls-cert", "SPINIFEX_PREDASTORE_TLS_CERT")
+	viper.BindPFlag("predastore-tls-cert", predastoreCmd.PersistentFlags().Lookup("tls-cert"))
+
+	viper.BindEnv("predastore-tls-key", "SPINIFEX_PREDASTORE_TLS_KEY")
+	viper.BindPFlag("predastore-tls-key", predastoreCmd.PersistentFlags().Lookup("tls-key"))
+
+	viper.BindEnv("predastore-encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
+	viper.BindPFlag("predastore-encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
+
+	viper.BindEnv("predastore-host-id", "SPINIFEX_PREDASTORE_HOST_ID")
+	viper.BindPFlag("predastore-host-id", predastoreCmd.PersistentFlags().Lookup("host-id"))
+}
+
+// bindNatsCollisionEnv namespaces nats's port, host and debug keys, which
+// awsgw also binds bare. The host key is "nats-service-host": rootCmd already
+// owns "nats-host" for its cluster-wide override, so reusing it would clobber.
+func bindNatsCollisionEnv() {
+	viper.BindEnv("nats-port", "SPINIFEX_NATS_PORT")
+	viper.BindPFlag("nats-port", natsCmd.PersistentFlags().Lookup("port"))
+
+	viper.BindEnv("nats-service-host", "SPINIFEX_NATS_HOST")
+	viper.BindPFlag("nats-service-host", natsCmd.PersistentFlags().Lookup("host"))
+
+	viper.BindEnv("nats-debug", "SPINIFEX_NATS_DEBUG")
+	viper.BindPFlag("nats-debug", natsCmd.PersistentFlags().Lookup("debug"))
+}
+
+// bindAwsgwCollisionEnv namespaces awsgw's host, tls-cert, tls-key and debug
+// viper keys, which predastore and/or nats also bind bare. Each
+// AutomaticEnv-derived name now matches its own explicit BindEnv target.
+func bindAwsgwCollisionEnv() {
+	viper.BindEnv("awsgw-host", "SPINIFEX_AWSGW_HOST")
+	viper.BindPFlag("awsgw-host", awsgwCmd.PersistentFlags().Lookup("host"))
+
+	viper.BindEnv("awsgw-tls-cert", "SPINIFEX_AWSGW_TLS_CERT")
+	viper.BindPFlag("awsgw-tls-cert", awsgwCmd.PersistentFlags().Lookup("tls-cert"))
+
+	viper.BindEnv("awsgw-tls-key", "SPINIFEX_AWSGW_TLS_KEY")
+	viper.BindPFlag("awsgw-tls-key", awsgwCmd.PersistentFlags().Lookup("tls-key"))
+
+	viper.BindEnv("awsgw-debug", "SPINIFEX_AWSGW_DEBUG")
+	viper.BindPFlag("awsgw-debug", awsgwCmd.PersistentFlags().Lookup("debug"))
+}
+
+// bindViperblockEnv binds viperblock's S3 and plugin flags. The lookups must
+// target viperblockCmd, which declares them; a predastoreCmd lookup yields nil
+// and BindPFlag drops it silently, hiding both the flag and its default.
+func bindViperblockEnv() {
+	viper.BindEnv("s3-host", "SPINIFEX_VIPERBLOCK_S3_HOST")
+	viper.BindPFlag("s3-host", viperblockCmd.PersistentFlags().Lookup("s3-host"))
+
+	viper.BindEnv("s3-bucket", "SPINIFEX_VIPERBLOCK_S3_BUCKET")
+	viper.BindPFlag("s3-bucket", viperblockCmd.PersistentFlags().Lookup("s3-bucket"))
+
+	viper.BindEnv("s3-region", "SPINIFEX_VIPERBLOCK_S3_REGION")
+	viper.BindPFlag("s3-region", viperblockCmd.PersistentFlags().Lookup("s3-region"))
+
+	viper.BindEnv("plugin-path", "SPINIFEX_VIPERBLOCK_PLUGIN_PATH")
+	viper.BindPFlag("plugin-path", viperblockCmd.PersistentFlags().Lookup("plugin-path"))
+}
+
 func init() {
 	viper.SetEnvPrefix("SPINIFEX") // Prefix for environment variables
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -1193,8 +1258,6 @@ func init() {
 
 	// Predastore Port
 	predastoreCmd.PersistentFlags().Int("port", 8443, "Predastore (S3) port")
-	viper.BindEnv("port", "SPINIFEX_PREDASTORE_PORT")
-	viper.BindPFlag("port", predastoreCmd.PersistentFlags().Lookup("port"))
 
 	// Predastore host, base-path, config-path (namespaced viper keys —
 	// see registerPredastoreNamespacedFlags doc comment)
@@ -1202,30 +1265,25 @@ func init() {
 
 	// Predastore Debug
 	predastoreCmd.PersistentFlags().Bool("debug", false, "Predastore (S3) debug")
-	viper.BindEnv("debug", "SPINIFEX_PREDASTORE_DEBUG")
-	viper.BindPFlag("debug", predastoreCmd.PersistentFlags().Lookup("debug"))
 
 	// Predastore TLS Cert
 	predastoreCmd.PersistentFlags().String("tls-cert", "", "Predastore (S3) TLS certificate")
-	viper.BindEnv("tls-cert", "SPINIFEX_PREDASTORE_TLS_CERT")
-	viper.BindPFlag("tls-cert", predastoreCmd.PersistentFlags().Lookup("tls-cert"))
 
 	// Predastore TLS Key
 	predastoreCmd.PersistentFlags().String("tls-key", "", "Predastore (S3) TLS key")
-	viper.BindEnv("tls-key", "SPINIFEX_PREDASTORE_TLS_KEY")
-	viper.BindPFlag("tls-key", predastoreCmd.PersistentFlags().Lookup("tls-key"))
 
 	// Predastore at-rest encryption master key (per node; mode 0600)
 	predastoreCmd.PersistentFlags().String("encryption-key-file", "", "Path to this node's 32-byte AES-256 master key file (required)")
-	viper.BindEnv("encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
-	viper.BindPFlag("encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
 
-	// Predastore Node ID. Default -1 is dev mode (launch every configured
-	// QUIC node in-process). Production deployments set this to the node's
-	// real ID (>= 1) via SPINIFEX_PREDASTORE_NODE_ID or --node-id.
-	predastoreCmd.PersistentFlags().Int("node-id", -1, "Predastore (S3) node ID (-1 = dev mode, >= 1 = production)")
-	viper.BindEnv("node-id", "SPINIFEX_PREDASTORE_NODE_ID")
-	viper.BindPFlag("node-id", predastoreCmd.PersistentFlags().Lookup("node-id"))
+	// Predastore host ID: which [[host]] of the predastore topology this
+	// process is. Default 0 runs every node of the topology in this process,
+	// which is the single-node deployment. Multi-node deployments set the
+	// host's real ID (>= 1) via SPINIFEX_PREDASTORE_HOST_ID or --host-id.
+	predastoreCmd.PersistentFlags().Int("host-id", 0, "Predastore cluster host ID (0 = run the whole topology in this process, >= 1 = this host only)")
+
+	// Namespaced viper keys for port/debug/tls-cert/tls-key/encryption-key-file/host-id
+	// (see bindPredastoreCollisionEnv doc comment)
+	bindPredastoreCollisionEnv()
 
 	// Predastore CPU Profiling
 	predastoreCmd.PersistentFlags().Bool("pprof", false, "Enable CPU profiling (also via PPROF_ENABLED=1)")
@@ -1243,21 +1301,14 @@ func init() {
 
 	serviceCmd.AddCommand(viperblockCmd)
 
+	// These override spinifex.toml only when set, and the start command tests them
+	// for emptiness to decide that. A non-empty default would make the override
+	// unconditional, discarding the configured value on every start.
 	viperblockCmd.PersistentFlags().String("s3-host", "", "Predastore (S3) host URI")
-	viper.BindEnv("s3-host", "SPINIFEX_VIPERBLOCK_S3_HOST")
-	viper.BindPFlag("s3-host", predastoreCmd.PersistentFlags().Lookup("s3-host"))
-
-	viperblockCmd.PersistentFlags().String("s3-bucket", "predastore", "Predastore (S3) bucket")
-	viper.BindEnv("s3-bucket", "SPINIFEX_VIPERBLOCK_S3_BUCKET")
-	viper.BindPFlag("s3-bucket", predastoreCmd.PersistentFlags().Lookup("s3-bucket"))
-
-	viperblockCmd.PersistentFlags().String("s3-region", "ap-southeast-2", "Predastore (S3) region")
-	viper.BindEnv("s3-region", "SPINIFEX_VIPERBLOCK_S3_REGION")
-	viper.BindPFlag("s3-region", predastoreCmd.PersistentFlags().Lookup("s3-region"))
-
+	viperblockCmd.PersistentFlags().String("s3-bucket", "", "Predastore (S3) bucket")
+	viperblockCmd.PersistentFlags().String("s3-region", "", "Predastore (S3) region")
 	viperblockCmd.PersistentFlags().String("plugin-path", "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", "Pathname to the nbdkit viperblockplugin")
-	viper.BindEnv("plugin-path", "SPINIFEX_VIPERBLOCK_PLUGIN_PATH")
-	viper.BindPFlag("plugin-path", predastoreCmd.PersistentFlags().Lookup("plugin-path"))
+	bindViperblockEnv()
 
 	// Viperblock at-rest encryption master key (shared with other on-node
 	// services via group ownership; mode 0640 or stricter). Distinct viper
@@ -1280,16 +1331,11 @@ func init() {
 
 	// Add NATS flags
 	natsCmd.PersistentFlags().Int("port", 4222, "NATS server port")
-	viper.BindEnv("port", "SPINIFEX_NATS_PORT")
-	viper.BindPFlag("port", natsCmd.PersistentFlags().Lookup("port"))
-
 	natsCmd.PersistentFlags().String("host", "0.0.0.0", "NATS server host")
-	viper.BindEnv("host", "SPINIFEX_NATS_HOST")
-	viper.BindPFlag("host", natsCmd.PersistentFlags().Lookup("host"))
-
 	natsCmd.PersistentFlags().Bool("debug", false, "Enable debug logging")
-	viper.BindEnv("debug", "SPINIFEX_NATS_DEBUG")
-	viper.BindPFlag("debug", natsCmd.PersistentFlags().Lookup("debug"))
+
+	// Namespaced viper keys for port/host/debug (see bindNatsCollisionEnv doc comment)
+	bindNatsCollisionEnv()
 
 	natsCmd.PersistentFlags().String("data-dir", "", "NATS data directory")
 	viper.BindEnv("data-dir", "SPINIFEX_NATS_DATA_DIR")
@@ -1314,22 +1360,17 @@ func init() {
 	serviceCmd.AddCommand(awsgwCmd)
 
 	awsgwCmd.PersistentFlags().String("host", "0.0.0.0:9999", "AWS Gateway server host")
-	viper.BindEnv("host", "SPINIFEX_AWSGW_HOST")
-	viper.BindPFlag("host", awsgwCmd.PersistentFlags().Lookup("host"))
 
 	// AWS GW TLS Cert
 	awsgwCmd.PersistentFlags().String("tls-cert", "", "AWS Gateway TLS certificate")
-	viper.BindEnv("tls-cert", "SPINIFEX_AWSGW_TLS_CERT")
-	viper.BindPFlag("tls-cert", awsgwCmd.PersistentFlags().Lookup("tls-cert"))
 
 	// AWS GW TLS Key
 	awsgwCmd.PersistentFlags().String("tls-key", "", "AWS Gateway TLS key")
-	viper.BindEnv("tls-key", "SPINIFEX_AWSGW_TLS_KEY")
-	viper.BindPFlag("tls-key", awsgwCmd.PersistentFlags().Lookup("tls-key"))
 
 	awsgwCmd.PersistentFlags().Bool("debug", false, "AWS Gateway Debug")
-	viper.BindEnv("debug", "SPINIFEX_AWSGW_DEBUG")
-	viper.BindPFlag("debug", awsgwCmd.PersistentFlags().Lookup("debug"))
+
+	// Namespaced viper keys for host/tls-cert/tls-key/debug (see bindAwsgwCollisionEnv doc comment)
+	bindAwsgwCollisionEnv()
 
 	awsgwCmd.AddCommand(awsgwStartCmd)
 	awsgwCmd.AddCommand(awsgwStopCmd)

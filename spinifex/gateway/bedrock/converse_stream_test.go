@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	esv2 "github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/aws/aws-sdk-go/aws"
@@ -16,6 +18,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeRecorder captures every InvocationRecord passed to Record, for tests
+// asserting a record is emitted on a specific pump exit path.
+type fakeRecorder struct {
+	mu      sync.Mutex
+	records []InvocationRecord
+}
+
+func (f *fakeRecorder) Record(_ context.Context, rec InvocationRecord) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records = append(f.records, rec)
+}
+
+func (f *fakeRecorder) all() []InvocationRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]InvocationRecord, len(f.records))
+	copy(out, f.records)
+	return out
+}
 
 // fakeConverseStreamSource drives pumpConverseStream directly with a scripted
 // event/error sequence, independent of any real backend.
@@ -81,7 +104,7 @@ func TestPumpConverseStream_MidStreamFaultWritesExceptionFrame(t *testing.T) {
 		err: newStreamFault(errors.New("upstream connection reset")),
 	}
 
-	pumpConverseStream(context.Background(), fw, src, "test-model")
+	pumpConverseStream(context.Background(), fw, src, "test-model", streamRecordCtx{})
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 2)
@@ -101,7 +124,7 @@ func TestPumpConverseStream_NonFaultErrorUsesInternalServerException(t *testing.
 	require.NoError(t, err)
 
 	src := &fakeConverseStreamSource{err: errors.New("plain internal error")}
-	pumpConverseStream(context.Background(), fw, src, "test-model")
+	pumpConverseStream(context.Background(), fw, src, "test-model", streamRecordCtx{})
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 1)
@@ -119,7 +142,7 @@ func TestPumpConverseStream_CleanEOFWritesNoExceptionFrame(t *testing.T) {
 			{Kind: converseStreamEventMessageStop, MessageStop: &bedrockruntime.MessageStopEvent{StopReason: aws.String(bedrockruntime.StopReasonEndTurn)}},
 		},
 	}
-	pumpConverseStream(context.Background(), fw, src, "test-model")
+	pumpConverseStream(context.Background(), fw, src, "test-model", streamRecordCtx{})
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 2)
@@ -131,7 +154,7 @@ func TestConverseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.
 	rec := httptest.NewRecorder()
 	body := []byte(`{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`)
 
-	err := ConverseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", body, nil, nil)
+	err := ConverseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", body, nil, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 	// A pre-stream failure must not have written anything: the gateway's
@@ -141,7 +164,7 @@ func TestConverseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.
 
 func TestConverseStream_MalformedBodyReturnsValidationException(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-70b-instruct-v1:0", []byte("{not-json"), nil, nil)
+	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte("{not-json"), nil, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
 }
@@ -154,7 +177,7 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rec := httptest.NewRecorder()
 	body, err := json.Marshal(&bedrockruntime.ConverseStreamInput{
 		Messages: []*bedrockruntime.Message{
@@ -163,7 +186,7 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ConverseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	err = ConverseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -180,6 +203,123 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	assert.Equal(t, "metadata", frames[6].Type)
 }
 
+func TestPumpConverseStream_RecordsInvocationOnCleanEnd(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	src := &fakeConverseStreamSource{
+		events: []ConverseStreamEvent{
+			{Kind: converseStreamEventMessageStart, MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String("assistant")}},
+			{Kind: converseStreamEventContentBlockDelta, ContentBlockDelta: &bedrockruntime.ContentBlockDeltaEvent{Delta: &bedrockruntime.ContentBlockDelta{Text: aws.String("hi")}}},
+			{Kind: converseStreamEventMessageStop, MessageStop: &bedrockruntime.MessageStopEvent{StopReason: aws.String(bedrockruntime.StopReasonEndTurn)}},
+		},
+	}
+	fr := &fakeRecorder{}
+	pumpConverseStream(context.Background(), fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-clean", accountID: "acct-a"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	got := records[0]
+	assert.Equal(t, "req-clean", got.RequestID)
+	assert.Equal(t, "acct-a", got.AccountID)
+	assert.False(t, got.Partial)
+	assert.Empty(t, got.ErrorCode)
+	assert.Equal(t, "hi", got.OutputText)
+}
+
+func TestPumpConverseStream_RecordsInvocationOnClientDisconnect(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate a client that has already disconnected
+
+	src := &fakeConverseStreamSource{
+		events: []ConverseStreamEvent{
+			{Kind: converseStreamEventMessageStart, MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String("assistant")}},
+		},
+	}
+	fr := &fakeRecorder{}
+	pumpConverseStream(ctx, fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-disconnect"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	got := records[0]
+	assert.True(t, got.Partial)
+	assert.Equal(t, errCodeClientDisconnected, got.ErrorCode)
+	// A disconnect must be caught before draining any queued event.
+	assert.Empty(t, rec.Body.Bytes())
+}
+
+func TestPumpConverseStream_RecordsInvocationOnUpstreamFault(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	src := &fakeConverseStreamSource{err: newStreamFault(errors.New("upstream connection reset"))}
+	fr := &fakeRecorder{}
+	pumpConverseStream(context.Background(), fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-fault"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	got := records[0]
+	assert.True(t, got.Partial)
+	assert.NotEmpty(t, got.ErrorCode)
+}
+
+// TestConverseStream_ClientDisconnectAbortsUpstreamRequest proves the
+// disconnect path aborts the real upstream request rather than merely
+// draining it: the fixture handler blocks on r.Context().Done() and never
+// sends EOF, so the only way the handler unblocks is via ConverseStream's
+// deferred src.Close() -> cancel() reaching the upstream request context.
+func TestConverseStream_ClientDisconnectAbortsUpstreamRequest(t *testing.T) {
+	serverCtxDone := make(chan struct{})
+	firstChunkSent := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		<-r.Context().Done()
+		close(serverCtxDone)
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	rec := httptest.NewRecorder()
+	body, err := json.Marshal(&bedrockruntime.ConverseStreamInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = ConverseStream(ctx, rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
+	}()
+
+	select {
+	case <-firstChunkSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never sent its first chunk")
+	}
+	cancel()
+
+	select {
+	case <-serverCtxDone:
+		// Upstream request context was canceled: aborted, not drained.
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream request was never aborted after client disconnect")
+	}
+	<-done
+}
+
 func TestConverseStream_NonFlusherWriter_ReturnsPreHeaderError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -188,7 +328,7 @@ func TestConverseStream_NonFlusherWriter_ReturnsPreHeaderError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	w := &nonFlusherWriter{}
 	body, err := json.Marshal(&bedrockruntime.ConverseStreamInput{
 		Messages: []*bedrockruntime.Message{
@@ -197,7 +337,7 @@ func TestConverseStream_NonFlusherWriter_ReturnsPreHeaderError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ConverseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	err = ConverseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.False(t, w.wroteHeader)

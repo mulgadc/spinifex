@@ -105,6 +105,7 @@ type Config struct {
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
 	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
 	ACM        ACMConfig        `json:"ACM" mapstructure:"acm"`
+	Bedrock    BedrockConfig    `json:"Bedrock" mapstructure:"bedrock"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -201,6 +202,24 @@ type RDSConfig struct {
 // supernet, so a name-hash collision can never place an RDS subnet in EKS space.
 const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
 
+// Every self-hosted vLLM serving VM's primary NIC lives in the shared Bedrock
+// system VPC, mirroring RDS's DB-VM VPC: one shared VPC per region rather
+// than one per endpoint, since a serving VM has no customer ENI to isolate.
+type BedrockConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// RDS or EKS control-plane supernets or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+
+	// Clamped to 1..3. Zero defaults to one, which is all a single-AZ platform
+	// can place across.
+	SystemVPCPrivateSubnets int `json:"SystemVPCPrivateSubnets" mapstructure:"system_vpc_private_subnets"`
+}
+
+// BedrockDefaultSystemVPCSupernet anchors the Bedrock system VPC address
+// space at 10.244.0.0/14, immediately below and disjoint from both the RDS
+// (10.248.0.0/14) and EKS control-plane (10.252.0.0/14) supernets.
+const BedrockDefaultSystemVPCSupernet = "10.244.0.0/14"
+
 // ACMConfig holds the operator-level ACM certificate-issuance configuration.
 // Deliberately small: four keys, nothing deployment-specific and nothing
 // derivable. In particular there is no allowed-domains list (public modes are
@@ -243,7 +262,9 @@ type PredastoreConfig struct {
 	AccessKey string `json:"AccessKey" mapstructure:"accesskey"`
 	SecretKey string `json:"SecretKey" mapstructure:"secretkey"`
 	BaseDir   string `json:"BaseDir" mapstructure:"base_dir"`
-	NodeID    int    `json:"NodeID" mapstructure:"node_id"`
+	// HostID is which [[host]] of the predastore topology this node runs;
+	// unset means the node runs the whole topology in one process.
+	HostID int `json:"HostID" mapstructure:"host_id"`
 }
 
 // GPUModelOverride maps a PCI vendor/device ID to a GPU instance family for

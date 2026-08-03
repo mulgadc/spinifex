@@ -10,7 +10,7 @@ Service lifecycle commands for starting, stopping, and checking status of all Sp
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem, default: distributed), `--node-id` (default: -1), `--pprof`, `--pprof-output` | Creates predastore service instance with S3-compatible storage backend → starts service. When `--config`/`SPINIFEX_CONFIG_PATH` points at a cluster spinifex.toml, `--host`/`--port`/`--node-id` default to that node's `[nodes.<node>.predastore]` section instead of the flag defaults above; an explicit flag or `SPINIFEX_PREDASTORE_*` env var still overrides it. `node_id` absent from spinifex.toml resolves to -1 (co-located mode), never to 0. |
+| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--encryption-key-file`, `--host-id` (default: 0 = run the whole topology in this process), `--pprof`, `--pprof-output` | Creates predastore service instance with S3-compatible storage backend → starts service. When `--config`/`SPINIFEX_CONFIG_PATH` points at a cluster spinifex.toml, `--host`/`--port`/`--host-id` default to that node's `[nodes.<node>.predastore]` section instead of the flag defaults above; an explicit flag or `SPINIFEX_PREDASTORE_*` env var still overrides it. `host_id` absent from spinifex.toml resolves to 0, running the whole topology in this process. |
 | `spx service predastore stop` | — | Stops the predastore service |
 | `spx service predastore status` | — | Reports predastore service status |
 | `spx service viperblock start` | `--s3-host` (default: 0.0.0.0:8443), `--s3-bucket` (default: predastore), `--s3-region` (default: ap-southeast-2), `--plugin-path` (auto-detected via `nbdkit --dump-config plugindir`; typically `/usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-viperblock-plugin.so` on amd64, overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in `/etc/spinifex/systemd.env`) | Loads cluster config → connects to NATS and Predastore → starts viperblock block storage service with NBD plugin |
@@ -174,6 +174,14 @@ read.
 | `spx admin gpu mig status` | — (must be run on target host) | Runs `gpu.Discover()` locally → for each GPU prints: PCI address, model, MIG capability, MIG mode (enabled/disabled/N/A); for GPUs with MIG enabled lists active MIG slices with GI ID, profile name, and mdev path. |
 | `spx admin gpu mig enable` | `--profile <name>` (required, e.g. `1g.10gb`), `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → enables MIG mode on each target (`gpu.EnableMIGMode`) → lists available profiles (`gpu.ListProfiles`) and validates requested profile name → destroys any existing instances (`gpu.DestroyAllInstances`) → creates new instances filling GPU capacity (`gpu.CreateInstances`) → writes `mig_profile` to `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 | `spx admin gpu mig disable` | `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → destroys all GPU instances (`gpu.DestroyAllInstances`) → disables MIG mode (`gpu.DisableMIGMode`) → clears `mig_profile` in `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
+
+### Ochre Weights Management
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` (no-op). Then validates the prefix holds `config.json`, `tokenizer_config.json`, `tokenizer.json`, `tokenizer.model` and at least one `*.safetensors` file, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
+| `spx admin ochre weights list` | — | Lists every staged model with its source URI and snapshot ID, so an operator can see why a model is (or isn't) advertised via `ListFoundationModels`. |
+| `spx admin ochre weights remove` | `--model-id` (required) | Drops `--model-id`'s entry from `bedrock-weights`, hiding it from `ListFoundationModels` again. Refuses if the model has no staged entry. Never deletes the underlying snapshot or source S3 objects; reclaiming that storage is a separate, explicit act. |
 
 ### EKS Control-Plane Disaster Recovery
 
@@ -899,6 +907,142 @@ and `aws_acm_certificate_validation` still blocks correctly by polling until
 | `request-certificate` | `--domain-name`, `--subject-alternative-names`, `--tags` | `--validation-method`, `--certificate-authority-arn`, `--options`, `--idempotency-token` | **PARTIAL** — `PRIVATE_CA` issues synchronously; `PROVIDER_API`/`MANUAL_TXT` are accepted and correctly shaped but stay `PENDING_VALIDATION` until a later issuance worker lands |
 | `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | `--certificate-arn`, `--tags`/`--tag-keys` | — | **DONE** |
 | `export-certificate` | — | `--certificate-arn`, `--passphrase` | **NOT STARTED** |
+
+---
+
+## RDS (PostgreSQL)
+
+Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
+
+- **Engine:** `postgres` 18 only. `EngineVersion` is accepted as `18` or `18.x` and rejected otherwise; there is no in-place version upgrade.
+- **Instance classes:** `db.t3.micro`, `db.t3.small`, `db.t3.medium`, `db.t3.large`, `db.m5.large`, `db.m5.xlarge` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
+- **Storage:** gp3 only, 20–65536 GiB, always encrypted with the cluster key. Grow-only, and a grow is **stop/start with downtime** — the volume cannot be resized while attached.
+- **TLS:** offered, not enforced. The engine serves a per-instance certificate signed by the cluster CA (the same `ca.pem` baked into AMIs), with the ENI IP and the DNS name both in the SAN set, so `sslmode=verify-full` works by name or by address. Clients opt in; a deployment with no cluster CA starts the engine without TLS.
+- **Backups:** daily COW snapshots of the data volume inside `PreferredBackupWindow`. Retention defaults to 7 days and is capped at 7; `0` disables automated backups. Point-in-time recovery is not implemented.
+- **Availability:** single-AZ. An instance whose host is lost is reported `failed` with a reason in `StatusInfos`; recovery is operator-driven. Engine crashes are restarted in-guest and VM crashes on a live host are restarted by `ec2-health-restart`.
+
+Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stopping`, `stopped`, `starting`, `deleting`, `failed`. (`recovering` is defined in the state machine but unreachable until auto-recovery lands.)
+
+### RDS — DB Instances
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-db-instance` | `--db-instance-identifier`, `--engine` (postgres), `--engine-version` (18), `--db-instance-class`, `--allocated-storage` (20–65536 GiB), `--storage-type` (gp3), `--master-username`, `--master-user-password`, `--db-name`, `--port` (1150–65535), `--db-subnet-group-name` (unnamed → the account's default VPC subnet), `--vpc-security-group-ids`, `--db-parameter-group-name`, `--backup-retention-period` (0–7, default 7), `--preferred-backup-window`, `--preferred-maintenance-window` (unnamed → assigned from the identifier), `--deletion-protection`, `--tags`, `--storage-encrypted` (true only) | `--auto-minor-version-upgrade`, `--copy-tags-to-snapshot`, Performance Insights / Enhanced Monitoring flags (all accepted, no-op); see "Rejected Parameters" for those that fail loudly | **DONE** |
+| `describe-db-instances` | `--db-instance-identifier` | `--filters`, `--max-records`, `--marker` (parsed, not applied) | **DONE** |
+| `modify-db-instance` | `--db-instance-identifier`, `--master-user-password`, `--allocated-storage` (grow only, stop/start), `--db-instance-class` (VM replace), `--db-parameter-group-name`, `--vpc-security-group-ids`, `--deletion-protection`, `--backup-retention-period`, `--preferred-backup-window`, `--preferred-maintenance-window`, `--apply-immediately` | `--new-db-instance-identifier`, `--engine-version`, `--db-port-number`, `--db-subnet-group-name`, `--max-allocated-storage`, `--ca-certificate-identifier` (all rejected, not ignored) | **DONE** |
+| `delete-db-instance` | `--db-instance-identifier`, `--skip-final-snapshot`, `--final-db-snapshot-identifier` (exactly one is required) | `--delete-automated-backups` (no-op — automated snapshots are always purged with the instance) | **DONE** — `DeletionProtection` blocks the call; a final snapshot **retains** the data volume until that snapshot is deleted |
+| `reboot-db-instance` | `--db-instance-identifier` | `--force-failover` (rejected — single-AZ) | **DONE** — applies parameters marked `pending-reboot` |
+| `stop-db-instance` | `--db-instance-identifier` | `--db-snapshot-identifier` (rejected) | **DONE** — the data volume and endpoint ENI are retained |
+| `start-db-instance` | `--db-instance-identifier` | — | **DONE** — fresh VM, same data volume, same ENI and IP |
+
+### RDS — Snapshots & Restore
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-db-snapshot` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--tags` | — | **DONE** — the agent quiesces the engine first; a failed quiesce falls back to a crash-consistent snapshot and writes a `DescribeEvents` warning |
+| `describe-db-snapshots` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--snapshot-type` (manual, automated) | `--filters`, `--dbi-resource-id`, `--include-shared`, `--include-public` (rejected), `--max-records`, `--marker` | **DONE** |
+| `delete-db-snapshot` | `--db-snapshot-identifier` | — | **DONE** — refused while a restored volume still references the snapshot; the last snapshot released reclaims a retained data volume |
+| `restore-db-instance-from-db-snapshot` | `--db-instance-identifier`, `--db-snapshot-identifier`, `--db-instance-class`, `--allocated-storage` (≥ the snapshot's), `--storage-type` (gp3), `--port`, `--db-subnet-group-name`, `--vpc-security-group-ids`, `--db-parameter-group-name`, `--deletion-protection`, `--tags`, `--engine` (must match the snapshot) | `--db-name` (rejected when it differs from the snapshot's), plus the create rejections | **DONE** — unnamed fields are inherited from the snapshot; the master password comes from the restored datadir |
+
+`copy-db-snapshot` and cross-account snapshot sharing are not implemented (`InvalidAction`).
+
+### RDS — Automated Backups
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-db-instance-automated-backups` | `--db-instance-identifier` | `--filters`, `--dbi-resource-id`, `--db-instance-automated-backups-arn` (rejected) | **DONE** — one entry per instance with backups enabled; the individual snapshots are listed by `describe-db-snapshots --snapshot-type automated` |
+
+`RestoreWindow` and `LatestRestorableTime` are deliberately absent: backups are discrete daily snapshots, and reporting a window would imply recovery to any instant inside it.
+
+### RDS — Subnet Groups
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-db-subnet-group` | `--db-subnet-group-name`, `--db-subnet-group-description`, `--subnet-ids`, `--tags` | — | **DONE** (any subnet count — every subnet reports the single `spinifexz1` zone) |
+| `describe-db-subnet-groups` | `--db-subnet-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** |
+| `delete-db-subnet-group` | `--db-subnet-group-name` | — | **DONE** — refused while any DB instance still names the group, including one that is deleting |
+| `modify-db-subnet-group` | — | all | **NOT STARTED** (`InvalidAction`) |
+
+### RDS — Parameter Groups
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-db-parameter-group` | `--db-parameter-group-name`, `--db-parameter-group-family` (postgres18), `--description`, `--tags` | — | **DONE** — names beginning with `default.` are reserved; the implicit group is `default.postgres18` |
+| `describe-db-parameter-groups` | `--db-parameter-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** — the implicit default group is always listed |
+| `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written; `immediate` on a static parameter is rejected, as AWS does |
+| `describe-db-parameters` | `--db-parameter-group-name`, `--source` (user, engine-default) | `--filters`, `--max-records`, `--marker` | **DONE** — 51-parameter PostgreSQL 18 catalog; memory defaults are computed per instance class and reported as literals |
+| `delete-db-parameter-group` | `--db-parameter-group-name` | — | **DONE** — refused for a default group and while any instance references it |
+| `reset-db-parameter-group` | — | all | **NOT STARTED** (`InvalidAction`) |
+
+A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`. The resolved set lives on the data volume, so it survives the VM replace a class change performs.
+
+### RDS — Tags
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `add-tags-to-resource` | `--resource-name` (db, snapshot, subgrp, pg ARNs), `--tags` | — | **DONE** |
+| `remove-tags-from-resource` | `--resource-name`, `--tag-keys` | — | **DONE** |
+| `list-tags-for-resource` | `--resource-name` | `--filters` | **DONE** — `describe-db-instances` reports the same tags in `TagList` |
+
+ARNs are AWS-exact: `arn:aws:rds:{region}:{account}:db:{id}`, `:snapshot:{id}`, `:subgrp:{name}`, `:pg:{name}`.
+
+### RDS — Events
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-events` | `--source-type` (db-instance, db-snapshot), `--source-identifier`, `--event-categories`, `--duration`, `--start-time`, `--end-time`, `--max-records` | `--marker` | **DONE** — 100-event ring per resource, 14-day retention, one-hour default window |
+
+The event ring is the only channel some facts have: a backup that could not be quiesced, a modify applied at the maintenance window rather than immediately, a skipped or failed automated backup, and the reason a failed instance failed.
+
+### RDS — Internal Agent Actions
+
+`RegisterDBInstance`, `SubmitDBStateChange`, `PollDBCommands` and `GetDBBootstrapConfig` are served on the same endpoint but are **not customer API**. They are callable only by a DB VM's own IMDS instance-role credentials, bound to that instance's identity, and are refused to every customer principal by class before any policy is evaluated. They are listed here so an operator reading a gateway log recognises them; nothing outside the guest should call them.
+
+### RDS — Rejected Parameters
+
+Policy: a parameter whose omission would create a false safety, security or availability guarantee is rejected with `InvalidParameterValue` rather than silently dropped. Parameters that are merely inert — `AutoMinorVersionUpgrade`, `CopyTagsToSnapshot`, `DeleteAutomatedBackups`, Performance Insights and Enhanced Monitoring fields — are accepted as no-ops.
+
+| Parameter | Why it is rejected |
+|-----------|--------------------|
+| `MultiAZ=true` | Single-AZ platform; a standby would not exist |
+| `PubliclyAccessible=true` | The endpoint is a private VPC address |
+| `StorageEncrypted=false` | Unencrypted storage is not offered |
+| `EnableIAMDatabaseAuthentication` | IAM database authentication is not implemented |
+| `Iops`, `StorageThroughput`, `StorageType` ≠ `gp3` | Provisioned performance classes are not implemented |
+| `KmsKeyId`, `TdeCredentialArn` | Storage is encrypted with the cluster key, not a customer-managed one |
+| `AvailabilityZone` | The platform exposes a single zone |
+| `DBSecurityGroups` | EC2-Classic security groups — use `VpcSecurityGroupIds` |
+| `DBClusterIdentifier`, `DBClusterSnapshotIdentifier` | Clustered engines are not offered |
+| `EnableCloudwatchLogsExports` | Log export is not implemented |
+| `EngineVersion` other than 18, `Engine` on modify | No in-place engine or version change |
+| `NewDBInstanceIdentifier` | The identifier is the DNS label and the KV key |
+| `DBPortNumber`, `DBSubnetGroupName` on modify | Both would move the endpoint |
+| `MaxAllocatedStorage` | Storage autoscaling is not implemented |
+| `ManageMasterUserPassword`, `RotateMasterUserPassword` | Secrets Manager integration is not offered |
+| `CACertificateIdentifier` | The serving certificate is minted from the cluster CA |
+| `Domain`, `DomainFqdn` | Active Directory domain join is not offered |
+| `OptionGroupName` | Option groups are not offered |
+| `CustomIamInstanceProfile` | The DB VM's instance profile is platform-owned |
+| `EnableCustomerOwnedIp` | An Outposts feature |
+| `ForceFailover` (reboot) | No standby to fail over to |
+| `DBSnapshotIdentifier` (stop) | Snapshot-on-stop is not implemented |
+
+### RDS — Not Yet Implemented
+
+Recognised actions below return `OperationNotSupported`, so a client sees "not offered" rather than a typo'd action name. Everything else in the `rds` namespace returns `InvalidAction`.
+
+| Feature | Actions | Priority | Status |
+|---------|---------|----------|--------|
+| MySQL engine | — (second AMI preset + `Engine` implementation) | High | **NOT STARTED** |
+| Point-in-time recovery (WAL archiving to predastore) | `restore-db-instance-to-point-in-time` | High | **NOT STARTED** |
+| Auto-recovery from node loss (failure is detected, not repaired) | — | High | **NOT STARTED** |
+| Read replicas | `create-db-instance-read-replica`, `promote-read-replica` | Medium | **NOT STARTED** |
+| Aurora / DB clusters | `create-db-cluster`, `modify-db-cluster`, `delete-db-cluster`, `describe-db-clusters`, `failover-db-cluster` | Low | **NOT STARTED** |
+| Option groups | `create-option-group`, `modify-option-group`, `delete-option-group`, `describe-option-groups` | Low | **NOT STARTED** |
+| Engine-version / orderable-option data sources | `describe-db-engine-versions`, `describe-orderable-db-instance-options` | Low | **NOT STARTED** (`InvalidAction`) — not required by `aws_db_instance`; pin the class and version literally in Terraform |
+| Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS | — | — | **NOT STARTED** |
+
+IAM: `AmazonRDSFullAccess` and `AmazonRDSReadOnlyAccess` are available as managed policies. They grant `rds:` verb prefixes rather than `rds:*`, because `rds:*` would also appear to grant the internal agent actions the gateway reserves for a DB VM's own role.
 
 ---
 

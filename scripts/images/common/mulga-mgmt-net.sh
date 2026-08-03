@@ -1,9 +1,10 @@
 #!/bin/sh
 # mulga-mgmt-net — boot oneshot that brings a multi-NIC BootAMI system VM's NICs
 # up from the QEMU fw_cfg netcfg blob (opt/spinifex/netcfg) the host writes per
-# launch. The EKS control plane is the case: cloud-init on a stock Alpine guest
-# cannot reliably pick the right NIC out of two, so the host enumerates them and
-# this oneshot configures each by MAC, before cloud-init's network stage:
+# launch. Shared by every system image the host attaches a mgmt NIC to (eks-node,
+# rds-postgres): cloud-init on a stock Alpine guest cannot reliably pick the right
+# NIC out of two, so the host enumerates them and this oneshot configures each by
+# MAC, before cloud-init's network stage:
 #   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (retrying
 #     one-shots on a budget until the cross-host datapath is up) so the Ec2 IMDS
 #     datasource can reach 169.254.169.254, and pin a /32 to it so a link-local
@@ -15,10 +16,24 @@
 # build/microvm/init.sh; interfaces are matched by MAC. No-op when the blob is
 # absent (a single-NIC agent/worker brings its one NIC up via cloud-init/IMDS),
 # so the same image boots unchanged without one.
+#
+# Run twice per boot, over the same blob:
+#   - setup (default), from the boot runlevel: acquires addresses as above.
+#   - --enforce-routes, after cloud-init: re-applies the route policy only.
+#     cloud-init's network stage re-renders every ENI from IMDS and re-DHCPs
+#     them, which puts back the default route the setup pass deleted from a
+#     NIC<n>_DEFAULT=0 interface — leaving the guest with two default routes and
+#     the customer ENI able to capture egress and IMDS. Nothing re-leases or
+#     re-addresses an interface in this pass.
 set -eu
 
 NETCFG="${MULGA_NETCFG:-/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw}"
 IMDS_IP="169.254.169.254"
+
+MODE="setup"
+if [ "${1:-}" = "--enforce-routes" ]; then
+    MODE="enforce"
+fi
 
 # qemu_fw_cfg is a module on the stock Alpine cloud image; load it (best-effort)
 # before reading. Skipped harmlessly when built-in or already loaded.
@@ -67,6 +82,20 @@ dhcp_acquire() {
     done
 }
 
+# Removes every default route on one interface, not just the first: a re-DHCP
+# can leave more than one, and a single `ip route del` would silently keep the
+# rest. Bounded so a route that refuses to delete cannot spin.
+drop_default_route() {
+    iface="$1"
+    attempt=0
+    # The bound is part of the condition, not a `&& break` in the body: under
+    # `set -e` a trailing test that evaluates false takes the whole script down.
+    while [ "$attempt" -lt 8 ] && ip -4 route show default dev "$iface" 2>/dev/null | grep -q .; do
+        ip route del default dev "$iface" 2>/dev/null || break
+        attempt=$(( attempt + 1 ))
+    done
+}
+
 for n in 0 1 2 3 4 5; do
     # ${VAR:-} keeps the unset NIC<n>_* slots safe under `set -u`.
     eval "mac=\${NIC${n}_MAC:-}"
@@ -80,16 +109,42 @@ for n in 0 1 2 3 4 5; do
 
     eval "dhcp=\${NIC${n}_DHCP:-}"
     eval "cidr=\${NIC${n}_CIDR:-}"
+    eval "isdefault=\${NIC${n}_DEFAULT:-}"
     ip link set "$iface" up
 
-    # dhcp is assigned above via eval; shellcheck can't trace dynamic names.
+    # dhcp and isdefault are assigned above via eval; shellcheck can't trace
+    # dynamic names.
     # shellcheck disable=SC2154
     if [ "$dhcp" = "1" ]; then
-        if dhcp_acquire "$iface"; then
-            echo "[mulga-mgmt-net] data NIC $iface ($mac) up via DHCP"
-        else
-            echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac) after ${DHCP_BUDGET}s" >&2
+        if [ "$MODE" = "setup" ]; then
+            # A non-default DHCP NIC (an RDS DB VM's customer-VPC ENI) must not
+            # rewrite the resolver its lease happens to advertise: the guest's DNS
+            # belongs to the primary ENI, and the busybox/dhcpcd hooks would
+            # clobber it. RESOLV_CONF is honoured by udhcpc's default.script.
+            if [ "$isdefault" = "1" ]; then
+                unset RESOLV_CONF
+            else
+                RESOLV_CONF=/dev/null
+                export RESOLV_CONF
+            fi
+            if dhcp_acquire "$iface"; then
+                echo "[mulga-mgmt-net] data NIC $iface ($mac) up via DHCP"
+            else
+                echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac) after ${DHCP_BUDGET}s" >&2
+            fi
         fi
+
+        # Only the default NIC owns the metadata path. A second DHCP NIC leases
+        # its own default route and, left alone, would both blackhole egress and
+        # steal IMDS from the primary ENI.
+        if [ "$isdefault" != "1" ]; then
+            drop_default_route "$iface"
+            if [ "$MODE" = "enforce" ]; then
+                echo "[mulga-mgmt-net] re-asserted no default route on $iface ($mac)"
+            fi
+            continue
+        fi
+
         # Pin IMDS to the data NIC so a link-local 169.254.0.0/16 route on another
         # interface cannot steal the metadata path. Route via the gateway, not
         # on-link: the host demuxes IMDS sent to the gateway MAC, never ARP-answers .254.
@@ -102,28 +157,29 @@ for n in 0 1 2 3 4 5; do
         continue
     fi
 
-    if [ -z "$cidr" ]; then
-        echo "[mulga-mgmt-net] brought up $iface ($mac), no CIDR"
-        continue
-    fi
-    # `replace` is idempotent — adds the address if absent, no-op on a stop/start
-    # re-attach that reuses a surviving interface. A real failure must surface,
-    # not strand mgmt0 IP-less.
-    if ip addr replace "$cidr" dev "$iface"; then
-        echo "[mulga-mgmt-net] configured $iface ($mac) with $cidr"
-    else
-        echo "[mulga-mgmt-net] ERROR: failed to set $cidr on $iface ($mac)" >&2
-        exit 1
+    # A static NIC's address is not something cloud-init re-renders, so the
+    # enforce pass only has its route policy left to re-assert.
+    if [ "$MODE" = "setup" ]; then
+        if [ -z "$cidr" ]; then
+            echo "[mulga-mgmt-net] brought up $iface ($mac), no CIDR"
+            continue
+        fi
+        # `replace` is idempotent — adds the address if absent, no-op on a stop/start
+        # re-attach that reuses a surviving interface. A real failure must surface,
+        # not strand mgmt0 IP-less.
+        if ip addr replace "$cidr" dev "$iface"; then
+            echo "[mulga-mgmt-net] configured $iface ($mac) with $cidr"
+        else
+            echo "[mulga-mgmt-net] ERROR: failed to set $cidr on $iface ($mac)" >&2
+            exit 1
+        fi
     fi
 
     # NIC<n>_DEFAULT=0 means this NIC must never carry the default route: the
     # mgmt NIC reaches the gateway on-link and a default via it would blackhole
     # egress and (with a link-local /16) hijack IMDS. Enforce it — a DHCP client
     # racing this NIC may have added one before we set it static.
-    eval "isdefault=\${NIC${n}_DEFAULT:-}"
-    # isdefault is assigned above via eval; shellcheck can't trace dynamic names.
-    # shellcheck disable=SC2154
     if [ "$isdefault" != "1" ]; then
-        ip route del default dev "$iface" 2>/dev/null || true
+        drop_default_route "$iface"
     fi
 done

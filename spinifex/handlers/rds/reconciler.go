@@ -34,6 +34,12 @@ const (
 	// is the longest a restart can honestly take.
 	transitionTimeout = 10 * time.Minute
 
+	// How long a stop waits for the fleet to report the VM down, unless the
+	// config overrides it. A node accepts a stop command milliseconds after it is
+	// sent but takes seconds to drain and detach the data volume, and it is the
+	// detach a storage grow is actually waiting on.
+	defaultVMStopTimeout = 60 * time.Second
+
 	// How long a DB snapshot record may sit in creating before the reconciler
 	// settles it against EC2. Comfortably past the snapshot request's own budget,
 	// so a record still being written by a live worker is never touched.
@@ -43,6 +49,14 @@ const (
 // The EC2 lifecycle states a DB VM may be in and still be on its way up. The
 // reconciler will not call an instance available until its VM is running.
 const instanceStateRunning = "running"
+
+// The states in which the VM is down and has released its data volume. A VM
+// that is merely stopping or shutting-down still has it mapped, which is the
+// reading a just-issued stop returns and the one ModifyVolume refuses.
+const (
+	instanceStateStopped    = "stopped"
+	instanceStateTerminated = "terminated"
+)
 
 // The VM's EC2 lifecycle state, fanned out across every host so a DB VM is
 // observed wherever it landed. Nil disables the VM half of the check.
@@ -369,7 +383,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValu
 	}
 	err := r.svc.deps.Instances.StopInstance(ctx, rec.InstanceID)
 	if errors.Is(err, ErrInstanceNotOnNode) {
-		err = r.svc.confirmVMNotRunning(ctx, accountID, rec.InstanceID)
+		err = r.svc.confirmVMStopped(ctx, accountID, rec.InstanceID)
 	}
 	if err == nil {
 		return r.transition(ctx, kv, rev, rec, StatusStopped, "")

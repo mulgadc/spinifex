@@ -89,6 +89,7 @@ func TestAmbientCapabilitiesReplaceSudo(t *testing.T) {
 		{"iptables", "-A", "FORWARD", "-j", "ACCEPT"},
 		{"arping", "-U", "-c", "2", "-I", "br-wan", "10.0.0.1"},
 		{"sysctl", "-w", "net.ipv4.neigh.br-wan.proxy_delay=0"},
+		{EndpointSysctlHelper, "ime-12345678", "rp_filter", "0"},
 	}
 	for _, argv := range unescalated {
 		if NeedsPrivilege(argv[0], argv[1:]...) {
@@ -124,6 +125,7 @@ func TestDaemonAmbientSetStillEscalatesIP(t *testing.T) {
 	for _, argv := range [][]string{
 		{"ip", "tuntap", "add", "tap0", "mode", "tap"},
 		{"sysctl", "-qw", "net.ipv4.conf.tap0.rp_filter=0"},
+		{EndpointSysctlHelper, "tap0", "rp_filter", "0"},
 	} {
 		if !NeedsPrivilege(argv[0], argv[1:]...) {
 			t.Errorf("%v is not escalated, but the daemon holds no CAP_NET_ADMIN", argv)

@@ -99,10 +99,10 @@ on-premise, or on a partner Neocloud.
 | **EKS** | Kubernetes | Available |
 | **ECR** | Container registry | Available |
 | **ECS** | Container service | Available |
-| **RDS** | Databases | Q3 2026 |
+| **RDS** | Databases | Available |
+| **Bedrock** | AI Deployment | Q3 2026 |
 
-Roadmap items (Q3 2026) ship under the same AWS API surface. Code written for AWS
-today keeps working the moment they land.
+Roadmap items ship under the same AWS API surface. Code written for AWS today keeps working the moment they land.
 [Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 
 ## Core Components

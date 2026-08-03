@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
@@ -31,7 +32,7 @@ func TestVLLMProvider_Converse_MapsResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -70,7 +71,7 @@ func TestVLLMProvider_Converse_UnresolvedEndpointReturnsModelNotReady(t *testing
 		},
 	}
 
-	_, err := p.Converse(context.Background(), "meta.llama3-70b-instruct-v1:0", input)
+	_, err := p.Converse(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -123,7 +124,7 @@ func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -175,7 +176,7 @@ func TestVLLMProvider_ConverseStream_UnresolvedEndpointReturnsModelNotReady(t *t
 		},
 	}
 
-	_, err := p.ConverseStream(context.Background(), "meta.llama3-70b-instruct-v1:0", input)
+	_, err := p.ConverseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -187,7 +188,7 @@ func TestVLLMProvider_ConverseStream_UpstreamNon2xxMapsStatus(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -215,7 +216,7 @@ func TestVLLMProvider_ConverseStream_UsageWithoutFinishReasonKeepsOrder(t *testi
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -247,7 +248,7 @@ func TestVLLMProvider_ConverseStream_EmptyStreamIsWellFormed(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -271,6 +272,86 @@ func TestVLLMProvider_ConverseStream_EmptyStreamIsWellFormed(t *testing.T) {
 	}, kinds)
 }
 
+// TestVLLMConverseStreamSource_EstimatesOutputTokensBeforeUsageChunk proves
+// vLLM's estimation flag: while the trailing usage-only chunk has not yet
+// been consumed (e.g. the stream was cut short by a fault or disconnect),
+// usage() falls back to a content-delta chunk count and reports estimated.
+func TestVLLMConverseStreamSource_EstimatesOutputTokensBeforeUsageChunk(t *testing.T) {
+	const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sse))
+		w.(http.Flusher).Flush()
+		// Deliberately never sends the trailing usage-only chunk or EOF,
+		// simulating a stream cut short before real usage is known.
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = ts.Client()
+
+	src, err := p.ConverseStream(context.Background(), modelID, &bedrockruntime.ConverseStreamInput{})
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	// Drain exactly the 4 events both chunks queue (messageStart,
+	// contentBlockStart, and two content deltas) without reaching EOF.
+	for range 4 {
+		_, ok, nerr := src.Next(context.Background())
+		require.NoError(t, nerr)
+		require.True(t, ok)
+	}
+
+	ur, ok := src.(usageReporter)
+	require.True(t, ok)
+	inputTokens, outputTokens, estimated := ur.usage()
+	assert.True(t, estimated)
+	assert.Equal(t, int64(0), inputTokens)
+	assert.Equal(t, int64(2), outputTokens)
+}
+
+// TestVLLMConverseStreamSource_CloseAbortsUpstreamRequest proves Close()
+// truly aborts the upstream request rather than merely stopping local reads:
+// the handler blocks on r.Context().Done() and never sends EOF itself, so it
+// can only unblock via the cancel() invoked from Close().
+func TestVLLMConverseStreamSource_CloseAbortsUpstreamRequest(t *testing.T) {
+	serverCtxDone := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(serverCtxDone)
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-70b-instruct-v1:0"
+	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = ts.Client()
+
+	src, err := p.ConverseStream(context.Background(), modelID, &bedrockruntime.ConverseStreamInput{})
+	require.NoError(t, err)
+
+	// Drain one event so the handler's write/flush has definitely happened.
+	_, ok, err := src.Next(context.Background())
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	require.NoError(t, src.Close())
+
+	select {
+	case <-serverCtxDone:
+		// aborted, as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("server request context was never canceled: Close() did not abort the upstream request")
+	}
+}
+
 func TestVLLMConverseStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -279,7 +360,7 @@ func TestVLLMConverseStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *t
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 

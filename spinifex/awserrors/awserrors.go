@@ -201,6 +201,7 @@ var (
 	ErrorInvalidKeyPairDuplicate                               = "InvalidKeyPair.Duplicate"
 	ErrorInvalidKeyPairFormat                                  = "InvalidKeyPair.Format"
 	ErrorInvalidKeyPairNotFound                                = "InvalidKeyPair.NotFound"
+	ErrorInvalidKeyPairType                                    = "InvalidKeyPair.Type"
 	ErrorInvalidLaunchTargets                                  = "InvalidLaunchTargets"
 	ErrorInvalidLaunchTemplateIdMalformed                      = "InvalidLaunchTemplateId.Malformed"
 	ErrorInvalidLaunchTemplateIdNotFound                       = "InvalidLaunchTemplateId.NotFound"
@@ -546,6 +547,10 @@ var (
 	ErrorModelNotReadyException      = "ModelNotReadyException"
 	ErrorServiceUnavailableException = "ServiceUnavailableException"
 	ErrorModelErrorException         = "ModelErrorException"
+	// ErrorServiceQuotaExceededException is for genuine per-account limits
+	// (e.g. Ochre's tokens-per-month cap) — unlike ErrorModelNotReadyException,
+	// which is reserved for transient capacity conditions that breach no quota.
+	ErrorServiceQuotaExceededException = "ServiceQuotaExceededException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -631,7 +636,20 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"acm": {
 		ErrorACMResourceInUse: {HTTPCode: 400, Message: "The certificate is in use by another AWS resource in this account. Remove the reference to the certificate before deleting it."},
 	},
+	// Both keys are needed: the gateway splits bedrock from bedrock-runtime on
+	// the /model/ path prefix, so an override under one does not cover the other.
+	"bedrock": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
+	},
+	"bedrock-runtime": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
+	},
 }
+
+// bedrockResourceNotFoundMessage overrides the EKS wording ErrorLookup carries
+// for the shared ResourceNotFoundException wire code, which otherwise tells a
+// Bedrock caller to go and list EKS clusters.
+const bedrockResourceNotFoundMessage = "Could not resolve the foundation model from the provided model identifier."
 
 // LookupErrorMessage returns the ErrorMessage for code, scoped to service
 // where errorLookupByService has an override, otherwise ErrorLookup's global
@@ -866,6 +884,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidKeyPairDuplicate:                               {HTTPCode: 409, Message: "The key pair name already exists in that AWS Region. If you are creating or importing a key pair, ensure that you use a unique name."},
 	ErrorInvalidKeyPairFormat:                                  {HTTPCode: 400, Message: "The format of the public key you are attempting to import is not valid."},
 	ErrorInvalidKeyPairNotFound:                                {HTTPCode: 404, Message: "The specified key pair name does not exist. Ensure that you specify the AWS Region in which the key pair is located, if it's not in the default Region."},
+	ErrorInvalidKeyPairType:                                    {HTTPCode: 400, Message: "The instance was launched with an ED25519 key pair, which cannot decrypt a Windows administrator password. Only RSA can perform the PKCS#1 v1.5 encryption the guest uses. Relaunch the instance with a key pair created using --key-type rsa."},
 	ErrorInvalidLaunchTargets:                                  {HTTPCode: 400, Message: "One or more specified targets are invalid. Verify the capacity for the Capacity Reservation selected or verify the ID."},
 	ErrorInvalidLaunchTemplateIdMalformed:                      {HTTPCode: 400, Message: "The ID for the launch template is malformed. Ensure that you specify the launch template ID in the form lt-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidLaunchTemplateIdNotFound:                       {HTTPCode: 404, Message: "The specified launch template ID does not exist. Ensure that you specify the AWS Region in which the launch template is located."},
@@ -1185,10 +1204,11 @@ var ErrorLookup = map[string]ErrorMessage{
 
 	// Bedrock/bedrock-runtime error codes. ResourceNotFoundException reuses the
 	// EKS entry (ErrorEKSResourceNotFound) — same wire code, same HTTP status.
-	ErrorValidationException:         {HTTPCode: 400, Message: "The input fails to satisfy the constraints specified by the model or service."},
-	ErrorAccessDeniedException:       {HTTPCode: 403, Message: "You do not have sufficient access to perform this action."},
-	ErrorThrottlingException:         {HTTPCode: 429, Message: "The request was denied due to request throttling."},
-	ErrorModelNotReadyException:      {HTTPCode: 429, Message: "The model specified in the request is not ready to serve inference requests."},
-	ErrorServiceUnavailableException: {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
-	ErrorModelErrorException:         {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
+	ErrorValidationException:           {HTTPCode: 400, Message: "The input fails to satisfy the constraints specified by the model or service."},
+	ErrorAccessDeniedException:         {HTTPCode: 403, Message: "You do not have sufficient access to perform this action."},
+	ErrorThrottlingException:           {HTTPCode: 429, Message: "The request was denied due to request throttling."},
+	ErrorModelNotReadyException:        {HTTPCode: 429, Message: "The model specified in the request is not ready to serve inference requests."},
+	ErrorServiceUnavailableException:   {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
+	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
+	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 }

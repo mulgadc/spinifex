@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -22,30 +24,59 @@ type InvokeAdapter interface {
 type InvokeRouter struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
+	recorder         Recorder
 }
 
-// NewInvokeRouter constructs an InvokeRouter. A nil resolver or
-// endpointResolver falls back to a resolver/resolver that finds nothing, so
-// an InvokeRouter is always safe to use even before the real stores are
-// wired in.
-func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver) *InvokeRouter {
+// NewInvokeRouter constructs an InvokeRouter. A nil resolver,
+// endpointResolver, or recorder falls back to a no-op implementation, so an
+// InvokeRouter is always safe to use even before the real stores are wired
+// in.
+func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) *InvokeRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
 	if endpointResolver == nil {
 		endpointResolver = NewStaticEndpointResolver(nil)
 	}
-	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver}
+	if recorder == nil {
+		recorder = NoopRecorder
+	}
+	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder}
 }
 
 // InvokeModel routes modelID to its family adapter via the catalog. Unknown
 // modelIds and unresolvable vendors return ResourceNotFoundException; a
-// vendor with no resolvable credential returns AccessDeniedException.
-func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID string, body []byte) ([]byte, string, error) {
+// vendor with no resolvable credential returns AccessDeniedException. Every
+// exit records an InvocationRecord via the deferred closure.
+func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID string, body []byte) (respBody []byte, contentType string, err error) {
+	requestID := uuid.NewString()
+	start := time.Now()
+	var backend string
+	defer func() {
+		httpStatus, code := recordOutcome(err)
+		inputTokens, outputTokens, _ := extractTokenUsage(backend, respBody)
+		rt.recorder.Record(ctx, InvocationRecord{
+			RequestID:    requestID,
+			AccountID:    accountID,
+			ModelID:      modelID,
+			Operation:    OperationInvokeModel,
+			Backend:      backend,
+			LatencyMs:    time.Since(start).Milliseconds(),
+			HTTPStatus:   httpStatus,
+			ErrorCode:    code,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			InputText:    string(body),
+			OutputText:   string(respBody),
+		})
+	}()
+
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
-		return nil, "", errors.New(awserrors.ErrorResourceNotFoundException)
+		err = errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, "", err
 	}
+	backend = entry.Provider
 
 	var a InvokeAdapter
 	switch {
@@ -54,29 +85,35 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
-			key, ok, err := rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
+			var key string
+			var resolvable bool
+			key, resolvable, err = rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
 			if err != nil {
 				return nil, "", err
 			}
-			if !ok {
-				return nil, "", errors.New(awserrors.ErrorAccessDeniedException)
+			if !resolvable {
+				err = errors.New(awserrors.ErrorAccessDeniedException)
+				return nil, "", err
 			}
 			a = newAnthropicInvokeAdapter(key)
 		default:
-			return nil, "", errors.New(awserrors.ErrorResourceNotFoundException)
+			err = errors.New(awserrors.ErrorResourceNotFoundException)
+			return nil, "", err
 		}
 	default:
-		return nil, "", errors.New(awserrors.ErrorResourceNotFoundException)
+		err = errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, "", err
 	}
 
-	return a.InvokeModel(ctx, modelID, body)
+	respBody, contentType, err = a.InvokeModel(ctx, modelID, body)
+	return respBody, contentType, err
 }
 
 // InvokeModel is the bedrock-runtime InvokeModel entry point used by the
-// gateway route table. resolver and endpointResolver may be nil;
+// gateway route table. resolver, endpointResolver, and recorder may be nil;
 // NewInvokeRouter supplies no-op fallbacks.
-func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver) ([]byte, string, error) {
-	return NewInvokeRouter(resolver, endpointResolver).InvokeModel(ctx, accountID, modelID, body)
+func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) ([]byte, string, error) {
+	return NewInvokeRouter(resolver, endpointResolver, recorder).InvokeModel(ctx, accountID, modelID, body)
 }
 
 // InvokeStreamAdapter is the optional streaming capability an InvokeAdapter

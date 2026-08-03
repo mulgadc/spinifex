@@ -54,6 +54,9 @@ type Deps struct {
 	// Overrides how long an instance may be observed dark before the classifier
 	// calls it failed. Zero takes defaultFailureGrace.
 	FailureGrace time.Duration
+	// Overrides how long a stop waits for the fleet to report the VM down.
+	// Zero takes defaultVMStopTimeout.
+	VMStopTimeout time.Duration
 	// Bounds and defaults for automated backups and the two scheduled windows.
 	// Every zero field takes the built-in default.
 	Backup BackupPolicy
@@ -95,6 +98,13 @@ func (s *Service) bootstrapTimeout() time.Duration {
 		return s.deps.BootstrapTimeout
 	}
 	return defaultBootstrapTimeout
+}
+
+func (s *Service) vmStopTimeout() time.Duration {
+	if s.deps.VMStopTimeout > 0 {
+		return s.deps.VMStopTimeout
+	}
+	return defaultVMStopTimeout
 }
 
 func (s *Service) failureGrace() time.Duration {

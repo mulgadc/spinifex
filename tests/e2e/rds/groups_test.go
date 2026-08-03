@@ -4,7 +4,6 @@ package rds
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +31,9 @@ const (
 // refused while the instance holds them and accepted once it is gone.
 func TestSubnetAndParameterGroups(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, dbClass)
+
 	suffix := time.Now().Unix()
 	subnetGroup := fmt.Sprintf("%s-subnets-%d", dbInstancePfx, suffix)
 	paramGroup := fmt.Sprintf("%s-params-%d", dbInstancePfx, suffix)
@@ -81,6 +83,14 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	})
 	require.NoError(t, err, "modify-db-parameter-group")
 
+	// Registered before the create, so LIFO runs it last: the create registers its
+	// own instance teardown and, after it, the failure-only diagnostics. A group
+	// teardown registered later would run first and delete the DB VM out from
+	// under the console capture, which is the only window into the guest.
+	t.Cleanup(func() {
+		teardownGroups(t, f, subnetGroup, paramGroup)
+	})
+
 	// D20: the size-derived defaults are formulas internally, but a customer only
 	// ever sees the literal they resolved to.
 	t.Run("DescribeDBParametersReportsLiterals", func(t *testing.T) {
@@ -115,42 +125,30 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 	})
 
 	harness.Phase(t, "Creating DB instance %q against both groups", id)
-	created, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
-		DBSubnetGroupName:    aws.String(subnetGroup),
-		DBParameterGroupName: aws.String(paramGroup),
-	})
-	require.NoError(t, err, "create-db-instance")
-	require.NotNil(t, created.DBInstance)
-
-	// Registered before the waits below, so a failure part-way still frees the
-	// groups the later deletes need.
-	t.Cleanup(func() {
-		teardownGroups(t, f, id, subnetGroup, paramGroup)
+	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.DBSubnetGroupName = aws.String(subnetGroup)
+		in.DBParameterGroupName = aws.String(paramGroup)
 	})
 
-	assert.Equal(t, subnetGroup, dbSubnetGroupName(created.DBInstance))
-	assert.Equal(t, paramGroup, dbParameterGroupName(created.DBInstance))
+	assert.Equal(t, subnetGroup, dbSubnetGroupName(created))
+	assert.Equal(t, paramGroup, dbParameterGroupName(created))
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailableOnTheResolvedParameters", func(t *testing.T) {
-		instance = harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		instance = waitForAvailable(t, f, id)
 		assert.Equal(t, subnetGroup, dbSubnetGroupName(instance),
 			"the describe must report the group the instance was placed from")
 		assert.Equal(t, paramGroup, dbParameterGroupName(instance))
 	})
 
 	// The only assertion that proves the resolved set reached the engine rather
-	// than merely being stored: the running cluster reports the override.
+	// than merely being stored: the running cluster reports the override. Asked
+	// from the client VM, since the endpoint is reachable from nowhere else.
 	t.Run("TheEngineRunsTheOverride", func(t *testing.T) {
 		requireAvailable(t, instance)
-		out := runSQL(t, instance, "SHOW work_mem;")
+		client := rdsClient(t, f)
+		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
+		out := harness.PSQL(t, client, conn, "SHOW work_mem;")
 		assert.Equal(t, "8MB", strings.TrimSpace(out), "the engine is not running the group's work_mem")
 	})
 
@@ -220,17 +218,11 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 // Best-effort teardown: the groups can only go once the instance does, and every
 // step is already the assertion of some subtest, so a failure here is logged
 // rather than failing a test that otherwise passed.
-func teardownGroups(t *testing.T, f *Fixture, id, subnetGroup, paramGroup string) {
+// Frees the two groups only. The instance that referenced them is torn down by
+// the create's own cleanup, which is registered later and so runs first — a
+// group delete issued while the instance still holds it is refused.
+func teardownGroups(t *testing.T, f *Fixture, subnetGroup, paramGroup string) {
 	t.Helper()
-	if _, err := harness.DescribeDBInstance(f.AWS, id); err == nil {
-		if _, err := f.AWS.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
-			DBInstanceIdentifier: aws.String(id),
-			SkipFinalSnapshot:    aws.Bool(true),
-		}); err != nil && !harness.ErrorCodeIs(err, "DBInstanceNotFound") {
-			t.Logf("cleanup: delete DB instance %s: %v", id, err)
-		}
-		harness.WaitForDBInstanceGone(t, f.AWS, id)
-	}
 	if _, err := f.AWS.RDS.DeleteDBSubnetGroup(&rds.DeleteDBSubnetGroupInput{
 		DBSubnetGroupName: aws.String(subnetGroup),
 	}); err != nil && !harness.ErrorCodeIs(err, "DBSubnetGroupNotFoundFault") {
@@ -293,29 +285,4 @@ func dbParameterGroupName(instance *rds.DBInstance) string {
 		return ""
 	}
 	return aws.StringValue(instance.DBParameterGroups[0].DBParameterGroupName)
-}
-
-// Shells to psql for the same reason the smoke test does: no production driver
-// dependency for the suite. Skips when psql is absent.
-func runSQL(t *testing.T, instance *rds.DBInstance, statement string) string {
-	t.Helper()
-	psql, err := exec.LookPath("psql")
-	if err != nil {
-		t.Skip("psql not on PATH; skipping the in-engine assertion")
-	}
-
-	host := aws.StringValue(instance.Endpoint.Address)
-	port := aws.Int64Value(instance.Endpoint.Port)
-	cmd := exec.Command(psql, //nolint:gosec // psql is LookPath-resolved, args test-controlled
-		"--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
-		"--set", "ON_ERROR_STOP=1",
-		"--host", host, "--port", fmt.Sprint(port),
-		"--username", dbMasterUser, "--dbname", dbName,
-		"--command", statement,
-	)
-	cmd.Env = append(cmd.Environ(), "PGPASSWORD="+dbMasterPassword, "PGCONNECT_TIMEOUT=30")
-
-	output, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "psql against %s:%d: %s", host, port, output)
-	return string(output)
 }

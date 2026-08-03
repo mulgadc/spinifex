@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { useForm, useWatch } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -11,8 +11,20 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldTitle,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useCreateKeyPair } from "@/mutations/ec2"
 import { type CreateKeyPairData, createKeyPairSchema } from "@/types/ec2"
 
@@ -29,7 +41,7 @@ export const Route = createFileRoute("/_auth/ec2/(key)/create-key-pair")({
   component: CreateKeyPair,
 })
 
-function CreateKeyPair() {
+export function CreateKeyPair() {
   const navigate = useNavigate()
   const createMutation = useCreateKeyPair()
   const [keyMaterial, setKeyMaterial] = useState<{
@@ -44,6 +56,9 @@ function CreateKeyPair() {
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createKeyPairSchema),
+    // Matches what this page already sent before the selector existed, rather
+    // than the API's ed25519 default.
+    defaultValues: { keyType: "rsa" as const },
   })
 
   const values = useWatch({ control })
@@ -89,6 +104,40 @@ function CreateKeyPair() {
           <FieldError errors={[errors.keyName]} />
         </Field>
 
+        {/* Key Type */}
+        <Field>
+          <FieldTitle>
+            <label htmlFor="keyType">Key Type</label>
+          </FieldTitle>
+          <Controller
+            control={control}
+            name="keyType"
+            render={({ field }) => (
+              <Select
+                onValueChange={(value) => field.onChange(value)}
+                value={field.value}
+              >
+                <SelectTrigger
+                  aria-invalid={!!errors.keyType}
+                  className="w-full"
+                  id="keyType"
+                >
+                  <SelectValue placeholder="Select a key type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="rsa">RSA (2048-bit)</SelectItem>
+                  <SelectItem value="ed25519">ED25519</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          />
+          <FieldDescription>
+            RSA is required to retrieve a Windows administrator password.
+            ED25519 works for SSH only.
+          </FieldDescription>
+          <FieldError errors={[errors.keyType]} />
+        </Field>
+
         <CliCommandPanel commands={buildCreateKeyPairCommands(cliWatch)} />
 
         {/* Actions */}
@@ -120,6 +169,8 @@ function buildCreateKeyPairCommands(
 ): CliCommand[] {
   const rawKeyName = watch("keyName")
   const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
+  const rawKeyType = watch("keyType")
+  const keyType = typeof rawKeyType === "string" ? rawKeyType : "rsa"
 
   return [
     {
@@ -128,6 +179,8 @@ function buildCreateKeyPairCommands(
         { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-key-pair" },
         { type: "flag", value: " --key-name" },
         { type: "value", value: ` ${keyName || "<KeyName>"}` },
+        { type: "flag", value: " --key-type" },
+        { type: "value", value: ` ${keyType}` },
       ],
     },
   ]

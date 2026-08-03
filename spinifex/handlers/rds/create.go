@@ -136,6 +136,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 	now := time.Now().UTC()
 	return DBInstanceRecord{
 		DBInstanceIdentifier: req.Identifier,
+		DbiResourceID:        utils.GenerateResourceID(dbiResourceIDPrefix),
 		AccountID:            accountID,
 		Status:               StatusCreating,
 		Engine:               req.Engine.Name,
@@ -152,6 +153,8 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		DBSubnetGroupName:    req.DBSubnetGroupName,
 		DBParameterGroupName: req.DBParameterGroupName,
 		DeletionProtection:   req.DeletionProtection,
+
+		AutoMinorVersionUpgrade: req.AutoMinorVersionUpgrade,
 
 		BackupRetentionPeriod:      req.BackupRetentionPeriod,
 		PreferredBackupWindow:      req.PreferredBackupWindow,

@@ -17,23 +17,25 @@ import (
 
 // Catalog model IDs mirror the static Phase-1 catalog in gateway_bedrock.
 const (
-	modelSelfHostLlama = "meta.llama3-70b-instruct-v1:0"
+	modelSelfHostLlama = "meta.llama3-2-1b-instruct-v1:0"
 	modelAnthropic     = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 	modelBogus         = "does.not-exist-v1:0"
 )
 
 // TestGetFoundationModel round-trips a known model and asserts
-// ResourceNotFoundException for an unknown one.
+// ResourceNotFoundException for an unknown one. Uses the Anthropic entry: it
+// resolves unconditionally, unlike the self-host entry, which is gated on a
+// weights snapshot being staged — see TestGetFoundationModelSelfHost.
 func TestGetFoundationModel(t *testing.T) {
 	f := requireBedrockFixture(t)
 
 	t.Run("known model", func(t *testing.T) {
 		out, err := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
-			ModelIdentifier: aws.String(modelSelfHostLlama),
+			ModelIdentifier: aws.String(modelAnthropic),
 		})
-		require.NoError(t, err, "get-foundation-model %s", modelSelfHostLlama)
+		require.NoError(t, err, "get-foundation-model %s", modelAnthropic)
 		require.NotNil(t, out.ModelDetails, "empty ModelDetails")
-		assert.Equal(t, modelSelfHostLlama, aws.StringValue(out.ModelDetails.ModelId))
+		assert.Equal(t, modelAnthropic, aws.StringValue(out.ModelDetails.ModelId))
 	})
 
 	t.Run("unknown model", func(t *testing.T) {
@@ -44,6 +46,23 @@ func TestGetFoundationModel(t *testing.T) {
 			return e
 		})
 	})
+}
+
+// TestGetFoundationModelSelfHost describes the self-host model directly.
+// Gated behind OCHRE_E2E_SELFHOST=1: besides a GPU-backed vLLM endpoint, it
+// needs the model's weights snapshot staged in the bedrock-weights KV bucket.
+func TestGetFoundationModelSelfHost(t *testing.T) {
+	if os.Getenv("OCHRE_E2E_SELFHOST") != "1" {
+		t.Skip("OCHRE_E2E_SELFHOST!=1; skipping self-host GetFoundationModel")
+	}
+	f := requireBedrockFixture(t)
+
+	out, err := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
+		ModelIdentifier: aws.String(modelSelfHostLlama),
+	})
+	require.NoError(t, err, "get-foundation-model %s", modelSelfHostLlama)
+	require.NotNil(t, out.ModelDetails, "empty ModelDetails")
+	assert.Equal(t, modelSelfHostLlama, aws.StringValue(out.ModelDetails.ModelId))
 }
 
 // TestConverseSelfHost exercises the real vLLM Converse path. Gated behind

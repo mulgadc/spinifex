@@ -135,6 +135,65 @@ func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 	assert.Equal(t, ClusterStatusFailed, meta.Status)
 }
 
+// A duplicate CreateCluster call with the same ClientRequestToken and identical
+// parameters must replay the in-progress/created cluster rather than launching
+// a second control plane (AWS ClientRequestToken semantics).
+func TestCreateCluster_SameTokenSameParamsReplaysInProgressCluster(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.ClientRequestToken = aws.String("tok-replay")
+
+	out1, err := f.svc.CreateCluster(context.Background(), in, testAccountID, "")
+	require.NoError(t, err)
+
+	out2, err := f.svc.CreateCluster(context.Background(), in, testAccountID, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, aws.StringValue(out1.Cluster.Name), aws.StringValue(out2.Cluster.Name))
+	assert.Equal(t, aws.StringValue(out1.Cluster.Arn), aws.StringValue(out2.Cluster.Arn))
+
+	f.svc.WaitLaunches()
+	assert.Len(t, f.inst.launchCalls, 1, "a replayed duplicate must not launch a second control plane")
+}
+
+// Reusing a ClientRequestToken with different CreateClusterInput parameters is
+// IdempotentParameterMismatch, not a second cluster or a silent replay.
+func TestCreateCluster_SameTokenDifferentParamsIsIdempotentMismatch(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in1 := createInput("alpha")
+	in1.ClientRequestToken = aws.String("tok-mismatch")
+	_, err := f.svc.CreateCluster(context.Background(), in1, testAccountID, "")
+	require.NoError(t, err)
+
+	in2 := createInput("alpha")
+	in2.ClientRequestToken = aws.String("tok-mismatch")
+	in2.Version = aws.String("1.31") // same token, different param
+	_, err = f.svc.CreateCluster(context.Background(), in2, testAccountID, "")
+	require.EqualError(t, err, awserrors.ErrorIdempotentParameterMismatch)
+
+	f.svc.WaitLaunches()
+	assert.Len(t, f.inst.launchCalls, 1, "a mismatched retry must not launch a second control plane")
+}
+
+// A distinct ClientRequestToken reusing the same cluster name is a genuine
+// second create, not a duplicate — it must still hit the atomic name claim and
+// get ResourceInUse, same as with no token at all.
+func TestCreateCluster_DistinctTokenSameNameReturnsResourceInUse(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in1 := createInput("alpha")
+	in1.ClientRequestToken = aws.String("tok-a")
+	_, err := f.svc.CreateCluster(context.Background(), in1, testAccountID, "")
+	require.NoError(t, err)
+
+	in2 := createInput("alpha")
+	in2.ClientRequestToken = aws.String("tok-b")
+	_, err = f.svc.CreateCluster(context.Background(), in2, testAccountID, "")
+	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
+}
+
 // A live (CREATING/ACTIVE) cluster of the same name blocks create with a
 // cluster-scoped ResourceInUseException, not the ELBv2 target-group message.
 func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {

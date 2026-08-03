@@ -269,8 +269,13 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
+	// reqCtx/cancel let Close() abort the upstream request outright rather
+	// than merely stopping our own reads — a disconnected client must free
+	// the vLLM-side generation, not just this goroutine.
+	reqCtx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
 	if err != nil {
+		cancel()
 		slog.Error("vllm stream: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -279,6 +284,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 
 	resp, err := p.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets the resolved pinned self-host endpoint, not user input
 	if err != nil {
+		cancel()
 		slog.Error("vllm stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
@@ -286,6 +292,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		cancel()
 		slog.Error("vllm stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
@@ -294,6 +301,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 		resp:    resp,
 		scanner: newSSEScanner(resp.Body),
 		start:   time.Now(),
+		cancel:  cancel,
 	}, nil
 }
 
@@ -308,6 +316,7 @@ type vllmConverseStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner
 	start   time.Time
+	cancel  context.CancelFunc
 
 	queue           []ConverseStreamEvent
 	started         bool
@@ -315,12 +324,27 @@ type vllmConverseStreamSource struct {
 	metadataEmitted bool
 	inputTokens     int64
 	outputTokens    int64
+	deltaChunks     int64
 }
 
 var _ converseStreamSource = (*vllmConverseStreamSource)(nil)
+var _ usageReporter = (*vllmConverseStreamSource)(nil)
 
+// Close aborts the upstream request via cancel (not just closing the read
+// side), so a disconnected client actually frees the vLLM-side generation.
 func (s *vllmConverseStreamSource) Close() error {
+	s.cancel()
 	return s.resp.Body.Close()
+}
+
+// usage returns real usage once the trailing usage-only chunk has been
+// consumed (metadataEmitted); until then it falls back to a content-delta
+// chunk count as an estimated output-token proxy, flagged accordingly.
+func (s *vllmConverseStreamSource) usage() (inputTokens, outputTokens int64, estimated bool) {
+	if s.metadataEmitted {
+		return s.inputTokens, s.outputTokens, false
+	}
+	return 0, s.deltaChunks, true
 }
 
 func (s *vllmConverseStreamSource) Next(_ context.Context) (ConverseStreamEvent, bool, error) {
@@ -381,6 +405,7 @@ func (s *vllmConverseStreamSource) consume(chunk vllmStreamChunk) {
 	s.ensureStarted()
 
 	if choice.Delta.Content != "" {
+		s.deltaChunks++
 		s.queue = append(s.queue, ConverseStreamEvent{
 			Kind: converseStreamEventContentBlockDelta,
 			ContentBlockDelta: &bedrockruntime.ContentBlockDeltaEvent{

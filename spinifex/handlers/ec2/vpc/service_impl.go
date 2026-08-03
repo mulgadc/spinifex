@@ -489,6 +489,14 @@ var describeVpcsValidFilters = map[string]bool{
 	"owner-id":   true,
 }
 
+// SupportsDescribeVpcsFilter reports whether DescribeVpcs accepts a filter name.
+// Exported so in-process callers that build DescribeVpcs input can assert their
+// filter names against this surface in a unit test, rather than discovering the
+// rejection as an InvalidParameterValue at runtime.
+func SupportsDescribeVpcsFilter(name string) bool {
+	return describeVpcsValidFilters[name]
+}
+
 // DescribeVpcs describes VPCs.
 func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	var vpcs []*ec2.Vpc

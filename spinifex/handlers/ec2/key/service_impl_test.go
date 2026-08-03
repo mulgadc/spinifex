@@ -185,6 +185,9 @@ func TestCreateKeyPair_ED25519(t *testing.T) {
 	// Verify metadata stored in S3, carrying the key type it was created with.
 	metaPath := "keys/" + testAccountID + "/" + *out.KeyPairId + ".json"
 	assert.Contains(t, string(readStoredObject(t, store, metaPath)), `"KeyType":"ed25519"`)
+
+	// ED25519 has no PEM representation, so it stays in the OpenSSH container.
+	assert.Contains(t, *out.KeyMaterial, "BEGIN OPENSSH PRIVATE KEY")
 }
 
 func TestCreateKeyPair_RSA(t *testing.T) {
@@ -199,6 +202,10 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	require.NotNil(t, out)
 
 	assert.Equal(t, "my-rsa-key", *out.KeyName)
+
+	// PKCS#1 PEM, as AWS returns it: get-password-data --priv-launch-key cannot
+	// read the OpenSSH container ssh-keygen writes by default.
+	assert.Contains(t, *out.KeyMaterial, "BEGIN RSA PRIVATE KEY")
 
 	// The key is generated per-run, so the digest is not knowable in advance.
 	// Recompute it from the private key the caller was handed: that is what pins

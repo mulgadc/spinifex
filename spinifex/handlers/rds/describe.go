@@ -11,6 +11,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// The prefix AWS gives a DB instance's immutable resource ID, and the two filter
+// names DescribeDBInstances accepts against it.
+const (
+	dbiResourceIDPrefix = "db"
+
+	filterDbiResourceID = "dbi-resource-id"
+	filterDBInstanceID  = "db-instance-id"
+)
+
 // Named DB instances that do not exist are an error, matching AWS: a client
 // polling a create would otherwise read an empty list as "gone" rather than
 // "not ready".
@@ -20,11 +29,21 @@ func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDB
 		return nil, err
 	}
 
+	var matches func(*DBInstanceRecord) bool
 	if input != nil {
+		matches, err = dbInstanceFilterMatcher(input.Filters)
+		if err != nil {
+			return nil, err
+		}
 		if id := aws.StringValue(input.DBInstanceIdentifier); id != "" {
 			rec, _, err := s.getDBInstance(ctx, kv, id)
 			if err != nil {
 				return nil, err
+			}
+			// A named instance the filters exclude is reported as absent rather than
+			// returned anyway, so the two halves of one request cannot disagree.
+			if matches != nil && !matches(rec) {
+				return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
 			}
 			return &rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{s.projectDBInstance(rec)}}, nil
 		}
@@ -48,9 +67,52 @@ func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDB
 		if !found {
 			continue
 		}
+		if matches != nil && !matches(&rec) {
+			continue
+		}
 		instances = append(instances, s.projectDBInstance(&rec))
 	}
 	return &rds.DescribeDBInstancesOutput{DBInstances: instances}, nil
+}
+
+// The filter names AWS documents for this action and clients actually send.
+// Ignoring them is not a safe default here: the Terraform provider keys its
+// state off DbiResourceId and reads an instance back by filtering on it, so an
+// unapplied filter answers with every instance in the account, which the
+// provider rejects as an ambiguous match. An unrecognised name is refused for
+// the same reason — a filter silently dropped returns rows the caller asked to
+// exclude.
+//
+// Returns nil when there is nothing to filter on, so the common path allocates
+// no closure.
+func dbInstanceFilterMatcher(filters []*rds.Filter) (func(*DBInstanceRecord) bool, error) {
+	if len(filters) == 0 {
+		return nil, nil
+	}
+	for _, filter := range filters {
+		switch name := aws.StringValue(filter.Name); name {
+		case filterDbiResourceID, filterDBInstanceID:
+		default:
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"unrecognized filter name: %s", name)
+		}
+	}
+	// AWS's own semantics: a record must match every filter, and matches a filter
+	// by carrying any one of its values.
+	return func(rec *DBInstanceRecord) bool {
+		for _, filter := range filters {
+			var value string
+			if aws.StringValue(filter.Name) == filterDbiResourceID {
+				value = rec.DbiResourceID
+			} else {
+				value = rec.DBInstanceIdentifier
+			}
+			if !slices.Contains(aws.StringValueSlice(filter.Values), value) {
+				return false
+			}
+		}
+		return true
+	}, nil
 }
 
 // Returns the record plus its revision, for callers that follow with a CAS.
@@ -86,13 +148,22 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 		MultiAZ:              aws.Bool(false),
 		PubliclyAccessible:   aws.Bool(false),
 		DeletionProtection:   aws.Bool(rec.DeletionProtection),
-		InstanceCreateTime:   aws.Time(rec.CreatedAt),
+		// Echoed, not acted on: nothing upgrades a pinned version, but a client
+		// that set it has to read back what it set.
+		AutoMinorVersionUpgrade: aws.Bool(rec.AutoMinorVersionUpgrade),
+		InstanceCreateTime:      aws.Time(rec.CreatedAt),
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
 		TagList: tagsToAWS(rec.Tags),
 	}
 	if rec.DBName != "" {
 		out.DBName = aws.String(rec.DBName)
+	}
+	// Absent only on a record predating the field, where an empty handle would be
+	// worse than none: a client keying its state off it would store the empty
+	// string and never find the instance again.
+	if rec.DbiResourceID != "" {
+		out.DbiResourceId = aws.String(rec.DbiResourceID)
 	}
 	// The Terraform provider reads db_subnet_group_name off the describe, so an
 	// instance placed from a named group has to report it: an empty read-back is a

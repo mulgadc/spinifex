@@ -2,11 +2,15 @@ package gateway_bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -29,29 +33,75 @@ type Provider interface {
 type Router struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
+	recorder         Recorder
 }
 
-// NewRouter constructs a Router. A nil resolver or endpointResolver falls
-// back to a resolver/resolver that finds nothing, so a Router is always safe
+// NewRouter constructs a Router. A nil resolver, endpointResolver, or
+// recorder falls back to a no-op implementation, so a Router is always safe
 // to use even before the real stores are wired in.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver) *Router {
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
 	if endpointResolver == nil {
 		endpointResolver = NewStaticEndpointResolver(nil)
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver}
+	if recorder == nil {
+		recorder = NoopRecorder
+	}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
 // and unresolvable vendors return ResourceNotFoundException; a vendor with no
-// resolvable credential returns AccessDeniedException.
-func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
+// resolvable credential returns AccessDeniedException. Every exit records an
+// InvocationRecord via the deferred closure, matching pumpConverseStream's
+// treatment of the streaming path.
+func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (out *bedrockruntime.ConverseOutput, err error) {
+	requestID := uuid.NewString()
+	start := time.Now()
+	var backend string
+	defer func() {
+		httpStatus, code := recordOutcome(err)
+		var inputTokens, outputTokens int64
+		if out != nil && out.Usage != nil {
+			inputTokens = aws.Int64Value(out.Usage.InputTokens)
+			outputTokens = aws.Int64Value(out.Usage.OutputTokens)
+		}
+		inputText, ierr := json.Marshal(input)
+		if ierr != nil {
+			slog.Error("bedrock converse: failed to marshal input for recording", "model", modelID, "err", ierr)
+		}
+		var outputText []byte
+		if out != nil {
+			var oerr error
+			outputText, oerr = json.Marshal(out)
+			if oerr != nil {
+				slog.Error("bedrock converse: failed to marshal output for recording", "model", modelID, "err", oerr)
+			}
+		}
+		rt.recorder.Record(ctx, InvocationRecord{
+			RequestID:    requestID,
+			AccountID:    accountID,
+			ModelID:      modelID,
+			Operation:    OperationConverse,
+			Backend:      backend,
+			LatencyMs:    time.Since(start).Milliseconds(),
+			HTTPStatus:   httpStatus,
+			ErrorCode:    code,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			InputText:    string(inputText),
+			OutputText:   string(outputText),
+		})
+	}()
+
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		err = errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, err
 	}
+	backend = entry.Provider
 
 	var p Provider
 	switch {
@@ -60,29 +110,35 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
-			key, ok, err := rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
+			var key string
+			var resolvable bool
+			key, resolvable, err = rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
 			if err != nil {
 				return nil, err
 			}
-			if !ok {
-				return nil, errors.New(awserrors.ErrorAccessDeniedException)
+			if !resolvable {
+				err = errors.New(awserrors.ErrorAccessDeniedException)
+				return nil, err
 			}
 			p = newAnthropicProvider(key)
 		default:
-			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+			err = errors.New(awserrors.ErrorResourceNotFoundException)
+			return nil, err
 		}
 	default:
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		err = errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, err
 	}
 
-	return p.Converse(ctx, modelID, input)
+	out, err = p.Converse(ctx, modelID, input)
+	return out, err
 }
 
 // Converse is the bedrock-runtime Converse entry point used by the gateway
-// route table. resolver and endpointResolver may be nil; NewRouter supplies
-// no-op fallbacks.
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver).Converse(ctx, accountID, modelID, input)
+// route table. resolver, endpointResolver, and recorder may be nil; NewRouter
+// supplies no-op fallbacks.
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, recorder).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may

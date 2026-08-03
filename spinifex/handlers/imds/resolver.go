@@ -53,6 +53,7 @@ type instanceFacts struct {
 	architecture          string
 	reservationID         string
 	lifecycleType         string // "spot" for spot-launched instances, else empty (on-demand)
+	httpTokens            string // "optional" permits IMDSv1; empty or "required" does not
 	amiLaunchIndex        int64
 	pendingTime           time.Time
 	userData              []byte

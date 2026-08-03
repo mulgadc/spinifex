@@ -135,6 +135,11 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 	var images []*ec2.Image
 	encryptedAtRest := s.clusterEncryptionEnabled()
 
+	// Counting prefixes seen against those dropped for an unreadable config.json
+	// makes a mismatch with len(images) visible at INFO, so an empty result is
+	// distinguishable from one where every config failed to load.
+	var prefixesExamined, unreadableConfigs int
+
 	// Iterate over CommonPrefixes to find ami-* directories
 	for _, prefix := range result.CommonPrefixes {
 		if prefix.Prefix == nil {
@@ -148,6 +153,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		if !strings.HasPrefix(prefixStr, "ami-") {
 			continue
 		}
+		prefixesExamined++
 
 		// Early skip: if image-id filter is set, check the prefix (ami-xxx/)
 		// against filter values before fetching config from S3.
@@ -168,19 +174,25 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		})
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
+				// No config.json means this is a legitimate non-AMI directory,
+				// not a fault, so it stays at DEBUG and isn't counted below.
 				slog.DebugContext(ctx, "Config file not found", "key", configKey)
 			} else {
-				slog.DebugContext(ctx, "Failed to get config file", "key", configKey, "err", err)
+				unreadableConfigs++
+				slog.WarnContext(ctx, "Failed to get config file", "key", configKey, "err", err)
 			}
 			continue
 		}
 
 		body, err := io.ReadAll(getResult.Body)
-		if err := getResult.Body.Close(); err != nil {
-			slog.DebugContext(ctx, "Failed to close config body", "key", configKey, "err", err)
+		// A close failure alone doesn't drop the prefix (read below may still
+		// succeed), so it's only warned about, not counted as unreadable.
+		if closeErr := getResult.Body.Close(); closeErr != nil {
+			slog.WarnContext(ctx, "Failed to close config body", "key", configKey, "err", closeErr)
 		}
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to read config body", "key", configKey, "err", err)
+			unreadableConfigs++
+			slog.WarnContext(ctx, "Failed to read config body", "key", configKey, "err", err)
 			continue
 		}
 
@@ -191,7 +203,8 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 		}
 		if err := json.Unmarshal(viperblock.StateBody(body), &vbConfig); err != nil {
-			slog.DebugContext(ctx, "Failed to unmarshal config", "key", configKey, "err", err)
+			unreadableConfigs++
+			slog.WarnContext(ctx, "Failed to unmarshal config", "key", configKey, "err", err)
 			continue
 		}
 
@@ -272,6 +285,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			Description:        aws.String(amiMeta.Description),
 			Architecture:       aws.String(amiMeta.Architecture),
 			PlatformDetails:    aws.String(amiMeta.PlatformDetails),
+			Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
 			CreationDate:       aws.String(amiMeta.CreationDate.Format("2006-01-02T15:04:05.000Z")),
 			RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 			VirtualizationType: aws.String(amiMeta.Virtualization),
@@ -314,7 +328,8 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		}
 	}
 
-	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
+	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images),
+		"prefixesExamined", prefixesExamined, "unreadableConfigs", unreadableConfigs)
 
 	return &ec2.DescribeImagesOutput{
 		Images: images,

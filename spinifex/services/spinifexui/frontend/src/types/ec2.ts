@@ -147,6 +147,9 @@ export function nextLaunchWizardName(existingNames: string[]): string {
 
 export const createKeyPairSchema = z.object({
   keyName: keyNameField,
+  // The console has always sent rsa, so that stays its default; the API's own
+  // default is ed25519. Only rsa can wrap a Windows administrator password.
+  keyType: z.enum(["rsa", "ed25519"]),
 })
 
 export type CreateKeyPairData = z.infer<typeof createKeyPairSchema>

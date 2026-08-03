@@ -7,6 +7,11 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+
+	// Config migrations that need more than the framework register themselves
+	// here rather than in migrate, which every handler imports.
+	_ "github.com/mulgadc/spinifex/spinifex/migrate/predastoretopology"
+
 	"github.com/spf13/cobra"
 )
 

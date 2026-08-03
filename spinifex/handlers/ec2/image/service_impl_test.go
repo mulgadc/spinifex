@@ -3,7 +3,9 @@ package handlers_ec2_image
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -733,6 +735,90 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, result.Images)
+}
+
+// TestDescribeImages_ConfigFaultCounting covers mulga-7r6pm: a config.json that
+// exists but can't be fetched/read/parsed must be promoted to WARN and counted
+// as unreadable so it stays visible at INFO, while a genuinely absent
+// config.json (a non-AMI directory) stays silent at DEBUG and uncounted, and a
+// healthy prefix is unaffected either way.
+func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
+	tests := []struct {
+		name           string
+		setup          func(t *testing.T, store *objectstore.MemoryObjectStore)
+		wantImageCount int
+		wantUnreadable int
+		wantWarnLogged bool
+	}{
+		{
+			name: "malformed config.json is counted as unreadable and does not vanish silently",
+			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
+				_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
+					Bucket: aws.String(testBucket),
+					Key:    aws.String("ami-malformed1/config.json"),
+					Body:   strings.NewReader("{not valid json"),
+				})
+				require.NoError(t, err)
+			},
+			wantImageCount: 0,
+			wantUnreadable: 1,
+			wantWarnLogged: true,
+		},
+		{
+			name: "missing config.json (NoSuchKey) is not counted as a fault",
+			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
+				// A placeholder object under the prefix makes ListObjectsV2 surface
+				// "ami-nokey1/" as a CommonPrefix with no config.json underneath.
+				_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
+					Bucket: aws.String(testBucket),
+					Key:    aws.String("ami-nokey1/placeholder.txt"),
+					Body:   strings.NewReader("x"),
+				})
+				require.NoError(t, err)
+			},
+			wantImageCount: 0,
+			wantUnreadable: 0,
+			wantWarnLogged: false,
+		},
+		{
+			name: "healthy prefix still yields its image",
+			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
+				createTestAMIConfigWithOwner(t, store, "ami-healthy1", "healthy-ami", testAccountID)
+			},
+			wantImageCount: 1,
+			wantUnreadable: 0,
+			wantWarnLogged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf strings.Builder
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			svc, store := setupTestImageService(t)
+			tt.setup(t, store)
+
+			out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Len(t, out.Images, tt.wantImageCount)
+
+			logs := buf.String()
+			assert.Contains(t, logs, "prefixesExamined=1", "the single ami-* prefix must be counted as examined")
+			assert.Contains(t, logs, fmt.Sprintf("unreadableConfigs=%d", tt.wantUnreadable))
+
+			if tt.wantWarnLogged {
+				assert.Contains(t, logs, "level=WARN",
+					"a config fetch/read/parse fault must be visible at WARN without raising the daemon's default level")
+			} else {
+				assert.NotContains(t, logs, "level=WARN",
+					"a legitimate skip (missing config or healthy prefix) must not be logged as a fault")
+			}
+		})
+	}
 }
 
 func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {

@@ -21,6 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The wait for a stopping VM, shrunk so a stop that never lands is bounded in
+// milliseconds rather than in the minute a real one is given.
+const testVMStopTimeout = 400 * time.Millisecond
+
 // fakeInstanceCommander records the power commands the lifecycle ops issue, and
 // can refuse them the way a node that no longer holds the VM does.
 type fakeInstanceCommander struct {
@@ -32,6 +36,9 @@ type fakeInstanceCommander struct {
 	// really down rather than assume it.
 	stopNotOnNode bool
 	err           error
+	// The VM state an accepted stop takes down. Nil models a node that accepts
+	// the command and never lands it.
+	vm *fakeInstanceState
 }
 
 var _ instanceCommander = (*fakeInstanceCommander)(nil)
@@ -41,7 +48,13 @@ func (f *fakeInstanceCommander) StopInstance(_ context.Context, instanceID strin
 	if f.stopNotOnNode {
 		return ErrInstanceNotOnNode
 	}
-	return f.err
+	if f.err != nil {
+		return f.err
+	}
+	if f.vm != nil {
+		f.vm.stop()
+	}
+	return nil
 }
 
 func (f *fakeInstanceCommander) RebootInstance(_ context.Context, instanceID string) error {
@@ -230,16 +243,17 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
+	// The state an available instance's VM is in; a case that needs the VM
+	// down for a stop-confirmation path sets it.
+	vmState := &fakeInstanceState{state: instanceStateRunning}
 	h := &lifecycleHarness{
 		nc:       nc,
-		cmdr:     &fakeInstanceCommander{},
+		cmdr:     &fakeInstanceCommander{vm: vmState},
 		snaps:    &fakeSnapshots{},
 		enis:     &fakeENIs{},
 		launcher: &fakeLauncher{},
 		volumes:  &fakeVolumes{},
-		// The state an available instance's VM is in; a case that needs the VM
-		// down for a stop-confirmation path sets it.
-		vmState: &fakeInstanceState{state: instanceStateRunning},
+		vmState:  vmState,
 	}
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
@@ -247,6 +261,7 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 		Instances:     h.cmdr,
 		Snapshots:     h.snaps,
 		InstanceState: h.vmState,
+		VMStopTimeout: testVMStopTimeout,
 		Launch: LaunchDeps{
 			VPC:      h.enis,
 			Instance: h.launcher,
@@ -382,7 +397,7 @@ func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing
 
 	rec := h.record(t)
 	assert.Equal(t, StatusFailed, rec.Status)
-	assert.Contains(t, rec.FailureReason, "still running")
+	assert.Contains(t, rec.FailureReason, `"running", not stopped`)
 }
 
 // The same unanswered command is the normal shape of a VM that is genuinely
@@ -398,6 +413,39 @@ func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, StatusStopped, h.record(t).Status)
+}
+
+// A node accepts a stop milliseconds after it is issued but takes seconds to
+// drain and detach the data volume, so the first reading of the fleet has the VM
+// stopping. That is not down: the stop waits it out rather than returning on it.
+func TestStopDBInstance_WaitsForTheFleetToReportTheVMDown(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.vmState.detachReads = 1
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM stopping")
+	assert.Equal(t, StatusStopped, h.record(t).Status)
+}
+
+// The wait is bounded, and a VM the node accepted the stop for but never took
+// down has to end as a failure rather than as a stop that never returns.
+func TestStopDBInstance_FailsWhenTheVMNeverStops(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	h.cmdr.vm = nil
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.Error(t, err)
+
+	rec := h.record(t)
+	assert.Equal(t, StatusFailed, rec.Status)
+	assert.Contains(t, rec.FailureReason, "did not stop within")
+	assert.Greater(t, len(h.vmState.calls), 1, "the fleet is polled, not read once")
 }
 
 // The reconciler resumes a stop with no caller watching, so it needs the same

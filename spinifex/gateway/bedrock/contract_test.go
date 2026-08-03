@@ -44,7 +44,7 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 	}))
 	defer vllmStub.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	endpoints := NewStaticEndpointResolver(map[string]string{modelID: vllmStub.URL})
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 		if !assert.NoError(t, err) {
 			return
 		}
-		err = ConverseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints)
+		err = ConverseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, nil)
 		assert.NoError(t, err)
 	})
 
@@ -137,7 +137,7 @@ func TestContract_ConverseStream_Anthropic_RealSDKConsumerDecodesFrames(t *testi
 		if !assert.NoError(t, err) {
 			return
 		}
-		pumpConverseStream(r.Context(), fw, src, modelID)
+		pumpConverseStream(r.Context(), fw, src, modelID, streamRecordCtx{})
 	})
 
 	resp, err := svc.ConverseStream(&bedrockruntime.ConverseStreamInput{ModelId: aws.String(modelID)})
@@ -188,7 +188,7 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 	}))
 	defer llamaStub.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	endpoints := NewStaticEndpointResolver(map[string]string{modelID: llamaStub.URL})
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +200,7 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 		if !assert.NoError(t, err) {
 			return
 		}
-		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"))
+		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"), nil)
 		assert.NoError(t, err)
 	})
 

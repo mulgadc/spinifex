@@ -583,12 +583,12 @@ describe("useRebootInstance", () => {
 })
 
 describe("useCreateKeyPair", () => {
-  it("sends CreateKeyPairCommand with key name and rsa type", async () => {
+  it("sends CreateKeyPairCommand with the selected key type", async () => {
     createQueryClient()
     mockSend.mockResolvedValueOnce({ KeyMaterial: "-----BEGIN RSA-----" })
     const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
 
-    result.current.mutate({ keyName: "my-key" })
+    result.current.mutate({ keyName: "my-key", keyType: "rsa" })
 
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
@@ -597,12 +597,26 @@ describe("useCreateKeyPair", () => {
     })
   })
 
+  it("passes ed25519 through rather than forcing rsa", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ KeyMaterial: "-----BEGIN OPENSSH-----" })
+    const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
+
+    result.current.mutate({ keyName: "my-key", keyType: "ed25519" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      KeyName: "my-key",
+      KeyType: "ed25519",
+    })
+  })
+
   it("fails when the API omits the private key material", async () => {
     createQueryClient()
     mockSend.mockResolvedValueOnce({})
     const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
 
-    result.current.mutate({ keyName: "my-key" })
+    result.current.mutate({ keyName: "my-key", keyType: "rsa" })
 
     await waitFor(() => expect(result.current.isError).toBeTruthy())
     expect(result.current.error?.message).toContain("no private key")

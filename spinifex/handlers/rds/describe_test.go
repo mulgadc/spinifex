@@ -90,6 +90,101 @@ func TestDescribeDBInstances_NamedInstanceProjectsTheRecord(t *testing.T) {
 	assert.Equal(t, testDefaultSG, aws.StringValue(instance.VpcSecurityGroups[0].VpcSecurityGroupId))
 }
 
+// The Terraform provider keys its state off DbiResourceId rather than off the
+// identifier, so an instance created without one is unmanageable by the tool
+// this service is driven with — its post-create read finds nothing.
+func TestDescribeDBInstances_ReportsAStableResourceID(t *testing.T) {
+	h := newCreateHarness(t, "")
+	rec := seedCreated(t, h, testDBInstanceID)
+	require.Regexp(t, `^db-[0-9a-f]{17}$`, rec.DbiResourceID)
+
+	other := seedCreated(t, h, "other-db")
+	assert.NotEqual(t, rec.DbiResourceID, other.DbiResourceID, "the handle is per instance")
+
+	out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(testDBInstanceID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBInstances, 1)
+	assert.Equal(t, rec.DbiResourceID, aws.StringValue(out.DBInstances[0].DbiResourceId))
+}
+
+// The read half of the same path: the provider looks an instance up by filtering
+// on the resource ID, and a filter that is parsed but not applied answers with
+// every instance in the account instead of the one asked for.
+func TestDescribeDBInstances_FiltersOnResourceIDAndIdentifier(t *testing.T) {
+	h := newCreateHarness(t, "")
+	want := seedCreated(t, h, testDBInstanceID)
+	seedCreated(t, h, "other-db")
+
+	for name, filter := range map[string]*rds.Filter{
+		filterDbiResourceID: {Name: aws.String(filterDbiResourceID), Values: aws.StringSlice([]string{want.DbiResourceID})},
+		filterDBInstanceID:  {Name: aws.String(filterDBInstanceID), Values: aws.StringSlice([]string{testDBInstanceID})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+				Filters: []*rds.Filter{filter},
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, out.DBInstances, 1)
+			assert.Equal(t, testDBInstanceID, aws.StringValue(out.DBInstances[0].DBInstanceIdentifier))
+		})
+	}
+}
+
+// Nothing acts on AutoMinorVersionUpgrade — the version is pinned — but AWS and
+// the Terraform provider both default it to true, so a describe that reported
+// false would leave every default configuration with a diff that no modify can
+// clear.
+func TestDescribeDBInstances_EchoesAutoMinorVersionUpgrade(t *testing.T) {
+	h := newCreateHarness(t, "")
+
+	unset := seedCreated(t, h, testDBInstanceID)
+	assert.True(t, unset.AutoMinorVersionUpgrade, "an unset request takes AWS's own default")
+
+	input := validCreateInput()
+	input.DBInstanceIdentifier = aws.String("opted-out-db")
+	input.AutoMinorVersionUpgrade = aws.Bool(false)
+	_, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String("opted-out-db"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBInstances, 1)
+	assert.False(t, aws.BoolValue(out.DBInstances[0].AutoMinorVersionUpgrade))
+}
+
+// A filter nobody implemented is refused rather than dropped: dropping it
+// returns exactly the rows the caller asked to exclude.
+func TestDescribeDBInstances_RejectsAnUnrecognizedFilter(t *testing.T) {
+	h := newCreateHarness(t, "")
+	seedCreated(t, h, testDBInstanceID)
+
+	_, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		Filters: []*rds.Filter{{Name: aws.String("engine"), Values: aws.StringSlice([]string{"postgres"})}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+}
+
+// A named instance and a filter that excludes it disagree; reporting the
+// instance anyway would answer a question the caller did not ask.
+func TestDescribeDBInstances_NamedInstanceMustSatisfyTheFilters(t *testing.T) {
+	h := newCreateHarness(t, "")
+	seedCreated(t, h, testDBInstanceID)
+
+	_, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(testDBInstanceID),
+		Filters: []*rds.Filter{{
+			Name: aws.String(filterDbiResourceID), Values: aws.StringSlice([]string{"db-000000000000000ff"}),
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceNotFound)
+}
+
 // Instances live in per-account buckets, so one account's describe must not see
 // another's — the identifier is only unique within an account.
 func TestDescribeDBInstances_IsScopedToTheCallingAccount(t *testing.T) {

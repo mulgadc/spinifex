@@ -58,19 +58,55 @@ func ApplySuiteStartFiles(rep *Report, logDir string) {
 			fmt.Fprintf(os.Stderr, "::warning::e2e-analyze: parse %s: %v\n", startPath, err)
 			continue
 		}
-		if s.Root != nil {
-			s.Root.StartAt = ts.Add(s.Root.OffsetFromSuiteStart)
-		}
-		for ci := range s.Cascades {
-			s.Cascades[ci].StartAt = ts.Add(s.Cascades[ci].OffsetFromSuiteStart)
-		}
-		for bi := range s.Buckets {
-			for fi := range s.Buckets[bi] {
-				f := &s.Buckets[bi][fi]
-				f.StartAt = ts.Add(f.OffsetFromSuiteStart)
+		// The start file is the first wall clock the analyzer has, so it is also
+		// the first chance to tell a parallel suite from a sequential one — and
+		// a parallel one's per-test offsets are fiction, since overlapping tests
+		// never started at the sum of the ones before them.
+		span := suiteSpanIfParallel(s, ts)
+		for _, f := range collectFailures(s) {
+			f.SuiteSpan = span
+			if span > 0 {
+				f.StartAt = ts
+				continue
 			}
+			f.StartAt = ts.Add(f.OffsetFromSuiteStart)
 		}
 	}
+}
+
+// suiteSpanIfParallel returns the suite's wall-clock span when its top-level
+// tests overlapped, and zero when they ran one after another. Consumers read a
+// non-zero span as "no per-test offset is derivable from this suite".
+func suiteSpanIfParallel(s *SuiteReport, start time.Time) time.Duration {
+	if s.EndedAt.IsZero() || s.TopLevelTotal == 0 {
+		return 0
+	}
+	wall := s.EndedAt.Sub(start)
+	// The 5% margin keeps per-testcase rounding from calling a sequential
+	// suite parallel; real overlap runs to several times the wall clock.
+	if wall <= 0 || s.TopLevelTotal <= time.Duration(float64(wall)*1.05) {
+		return 0
+	}
+	return wall
+}
+
+// collectFailures returns every failure in the report by pointer. Root, cascades
+// and buckets hold independent copies of the same failures, so a field that has
+// to reach the bundle writer must be set on all three.
+func collectFailures(s *SuiteReport) []*Failure {
+	var all []*Failure
+	if s.Root != nil {
+		all = append(all, s.Root)
+	}
+	for ci := range s.Cascades {
+		all = append(all, &s.Cascades[ci])
+	}
+	for bi := range s.Buckets {
+		for fi := range s.Buckets[bi] {
+			all = append(all, &s.Buckets[bi][fi])
+		}
+	}
+	return all
 }
 
 // WriteBundles materialises per-failure bundles under <logDir>/analysis/.
@@ -143,7 +179,11 @@ func writeOneBundle(logDir, base, suiteLabel string, f *Failure) {
 
 	writeFailureSummary(dir, suiteLabel, f)
 
-	if !f.StartAt.IsZero() {
+	// A parallel suite offers no derivable per-test window, and the narrowing is
+	// the whole point of the slice: cutting one from the wrong minute leaves out
+	// the lines that explain the failure, and widening it to the suite just
+	// copies the artifact's own journal into every bundle.
+	if !f.StartAt.IsZero() && f.SuiteSpan == 0 {
 		start := f.StartAt.Add(-bundlePad)
 		end := f.StartAt.Add(time.Duration(f.Duration * float64(time.Second))).Add(bundlePad)
 		journalSrc := filepath.Join(logDir, "spinifex-journal.log")
@@ -188,7 +228,11 @@ func writeFailureSummary(dir, suiteLabel string, f *Failure) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Suite:    %s\n", suiteLabel)
 	fmt.Fprintf(&b, "Test:     %s\n", f.Name)
-	if !f.StartAt.IsZero() {
+	switch {
+	case f.SuiteSpan > 0:
+		b.WriteString("Start:    unknown, the suite ran in parallel; " +
+			"no journal window is derivable — read ../../spinifex-journal.log\n")
+	case !f.StartAt.IsZero():
 		fmt.Fprintf(&b, "Start:    %s\n", f.StartAt.Format(time.RFC3339))
 	}
 	fmt.Fprintf(&b, "Duration: %.3fs\n", f.Duration)

@@ -908,3 +908,44 @@ func TestDownloadObjectTo_OpenFileErrorPropagates(t *testing.T) {
 	_, err := downloadObjectTo(context.Background(), store, "models", "llama-3.2-1b/config.json", badDest)
 	require.Error(t, err)
 }
+
+// lookupMkfsExt4 must find e2fsprogs in sbin, which a non-login shell's PATH
+// routinely omits. PATH is emptied so the fallback is what is under test.
+func TestLookupMkfsExt4_FallsBackToSbinDir(t *testing.T) {
+	sbin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sbin, "mkfs.ext4"), []byte("#!/bin/sh\n"), 0o755))
+
+	t.Setenv("PATH", "")
+	prev := mkfsExt4SbinDirs
+	mkfsExt4SbinDirs = []string{sbin}
+	t.Cleanup(func() { mkfsExt4SbinDirs = prev })
+
+	path, err := lookupMkfsExt4()
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(sbin, "mkfs.ext4"), path)
+}
+
+func TestLookupMkfsExt4_AbsentEverywhereIsError(t *testing.T) {
+	t.Setenv("PATH", "")
+	prev := mkfsExt4SbinDirs
+	mkfsExt4SbinDirs = []string{t.TempDir()}
+	t.Cleanup(func() { mkfsExt4SbinDirs = prev })
+
+	_, err := lookupMkfsExt4()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "install e2fsprogs")
+}
+
+// A directory named mkfs.ext4 must not satisfy the lookup.
+func TestLookupMkfsExt4_IgnoresDirectory(t *testing.T) {
+	sbin := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(sbin, "mkfs.ext4"), 0o755))
+
+	t.Setenv("PATH", "")
+	prev := mkfsExt4SbinDirs
+	mkfsExt4SbinDirs = []string{sbin}
+	t.Cleanup(func() { mkfsExt4SbinDirs = prev })
+
+	_, err := lookupMkfsExt4()
+	require.Error(t, err)
+}

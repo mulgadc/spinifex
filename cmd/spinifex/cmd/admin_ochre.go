@@ -242,15 +242,36 @@ func downloadObjectTo(ctx context.Context, store objectstore.ObjectStore, bucket
 	return io.Copy(f, out.Body)
 }
 
+// mkfsExt4SbinDirs are searched when mkfs.ext4 is absent from PATH. e2fsprogs
+// installs into sbin, which a non-login shell routinely omits, so a plain
+// LookPath fails for an unprivileged operator on an otherwise fine host.
+var mkfsExt4SbinDirs = []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
+
+// lookupMkfsExt4 resolves mkfs.ext4 from PATH, falling back to the sbin dirs.
+func lookupMkfsExt4() (string, error) {
+	if path, err := exec.LookPath("mkfs.ext4"); err == nil {
+		return path, nil
+	}
+	for _, dir := range mkfsExt4SbinDirs {
+		candidate := filepath.Join(dir, "mkfs.ext4")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("mkfs.ext4 not found on PATH or in %s (install e2fsprogs)",
+		strings.Join(mkfsExt4SbinDirs, ", "))
+}
+
 // mkfsExt4Runner populates imagePath as an ext4 filesystem from srcDir's
 // files, normally by shelling out to mkfs.ext4 -d. A package var, mirroring
 // caBakeRunner, so tests can substitute a fake instead of requiring
 // mkfs.ext4 on PATH.
 var mkfsExt4Runner = func(srcDir, imagePath string) error {
-	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		return fmt.Errorf("mkfs.ext4 not found: %w", err)
+	mkfs, err := lookupMkfsExt4()
+	if err != nil {
+		return err
 	}
-	out, err := exec.Command("mkfs.ext4", "-F", "-d", srcDir, imagePath).CombinedOutput()
+	out, err := exec.Command(mkfs, "-F", "-d", srcDir, imagePath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mkfs.ext4: %w: %s", err, string(out))
 	}

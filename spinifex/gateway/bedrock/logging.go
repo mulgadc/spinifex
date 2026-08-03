@@ -276,10 +276,11 @@ func (r *StreamRecorder) Record(ctx context.Context, rec InvocationRecord) {
 // LoggingConfig is the account's own invocation-logging preferences: where
 // to deliver, and whether body text may be included at all.
 type LoggingConfig struct {
-	S3BucketName             string `json:"s3BucketName"`
-	S3KeyPrefix              string `json:"s3KeyPrefix"`
-	TextDataDeliveryEnabled  bool   `json:"textDataDeliveryEnabled"`
-	ImageDataDeliveryEnabled bool   `json:"imageDataDeliveryEnabled"`
+	S3BucketName                 string `json:"s3BucketName"`
+	S3KeyPrefix                  string `json:"s3KeyPrefix"`
+	TextDataDeliveryEnabled      bool   `json:"textDataDeliveryEnabled"`
+	ImageDataDeliveryEnabled     bool   `json:"imageDataDeliveryEnabled"`
+	EmbeddingDataDeliveryEnabled bool   `json:"embeddingDataDeliveryEnabled"`
 }
 
 // LoggingConfigReader resolves accountID's stored logging config. ok is
@@ -400,12 +401,16 @@ func loggingConfigFromSDK(in *bedrock.LoggingConfig) (LoggingConfig, error) {
 	}
 	textEnabled := aws.BoolValue(in.TextDataDeliveryEnabled)
 	imageEnabled := aws.BoolValue(in.ImageDataDeliveryEnabled)
-	if (textEnabled || imageEnabled) && (in.S3Config == nil || aws.StringValue(in.S3Config.BucketName) == "") {
+	embeddingEnabled := aws.BoolValue(in.EmbeddingDataDeliveryEnabled)
+	// Embedding delivery joins the bucket requirement: a config enabling it with
+	// nowhere to deliver is as unusable as one enabling text or image.
+	if (textEnabled || imageEnabled || embeddingEnabled) && (in.S3Config == nil || aws.StringValue(in.S3Config.BucketName) == "") {
 		return LoggingConfig{}, errors.New(awserrors.ErrorValidationException)
 	}
 	cfg := LoggingConfig{
-		TextDataDeliveryEnabled:  textEnabled,
-		ImageDataDeliveryEnabled: imageEnabled,
+		TextDataDeliveryEnabled:      textEnabled,
+		ImageDataDeliveryEnabled:     imageEnabled,
+		EmbeddingDataDeliveryEnabled: embeddingEnabled,
 	}
 	if in.S3Config != nil {
 		cfg.S3BucketName = aws.StringValue(in.S3Config.BucketName)
@@ -418,8 +423,9 @@ func loggingConfigFromSDK(in *bedrock.LoggingConfig) (LoggingConfig, error) {
 // the AWS-parity *bedrock.LoggingConfig shape.
 func loggingConfigToSDK(cfg LoggingConfig) *bedrock.LoggingConfig {
 	out := &bedrock.LoggingConfig{
-		TextDataDeliveryEnabled:  aws.Bool(cfg.TextDataDeliveryEnabled),
-		ImageDataDeliveryEnabled: aws.Bool(cfg.ImageDataDeliveryEnabled),
+		TextDataDeliveryEnabled:      aws.Bool(cfg.TextDataDeliveryEnabled),
+		ImageDataDeliveryEnabled:     aws.Bool(cfg.ImageDataDeliveryEnabled),
+		EmbeddingDataDeliveryEnabled: aws.Bool(cfg.EmbeddingDataDeliveryEnabled),
 	}
 	if cfg.S3BucketName != "" {
 		out.S3Config = &bedrock.S3Config{

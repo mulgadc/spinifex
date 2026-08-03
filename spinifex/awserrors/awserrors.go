@@ -635,7 +635,20 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"acm": {
 		ErrorACMResourceInUse: {HTTPCode: 400, Message: "The certificate is in use by another AWS resource in this account. Remove the reference to the certificate before deleting it."},
 	},
+	// Both keys are needed: the gateway splits bedrock from bedrock-runtime on
+	// the /model/ path prefix, so an override under one does not cover the other.
+	"bedrock": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
+	},
+	"bedrock-runtime": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
+	},
 }
+
+// bedrockResourceNotFoundMessage overrides the EKS wording ErrorLookup carries
+// for the shared ResourceNotFoundException wire code, which otherwise tells a
+// Bedrock caller to go and list EKS clusters.
+const bedrockResourceNotFoundMessage = "Could not resolve the foundation model from the provided model identifier."
 
 // LookupErrorMessage returns the ErrorMessage for code, scoped to service
 // where errorLookupByService has an override, otherwise ErrorLookup's global

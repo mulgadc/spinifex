@@ -3,6 +3,7 @@ package awserrors
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -156,6 +157,33 @@ func TestLookupErrorMessage(t *testing.T) {
 	unscoped := LookupErrorMessage("ec2", ErrorInvalidParameterValue)
 	if unscoped != ErrorLookup[ErrorInvalidParameterValue] {
 		t.Errorf("LookupErrorMessage(ec2, InvalidParameterValue) = %+v, want unchanged global %+v", unscoped, ErrorLookup[ErrorInvalidParameterValue])
+	}
+}
+
+// TestLookupErrorMessage_BedrockResourceNotFound guards the second shared-code
+// collision: ResourceNotFoundException is an alias of the EKS code, so both
+// Bedrock service keys must override it rather than inherit cluster wording.
+func TestLookupErrorMessage_BedrockResourceNotFound(t *testing.T) {
+	global := ErrorLookup[ErrorResourceNotFoundException]
+
+	for _, service := range []string{"bedrock", "bedrock-runtime"} {
+		got := LookupErrorMessage(service, ErrorResourceNotFoundException)
+		if got.Message == global.Message {
+			t.Errorf("LookupErrorMessage(%s, ResourceNotFoundException) = %q, want distinct Bedrock wording", service, got.Message)
+		}
+		if got.HTTPCode != 404 {
+			t.Errorf("LookupErrorMessage(%s, ResourceNotFoundException).HTTPCode = %d, want 404", service, got.HTTPCode)
+		}
+		for _, banned := range []string{"cluster", "EKS", "ListClusters"} {
+			if strings.Contains(got.Message, banned) {
+				t.Errorf("LookupErrorMessage(%s, ResourceNotFoundException) = %q, contains EKS wording %q", service, got.Message, banned)
+			}
+		}
+	}
+
+	// EKS itself must still get its own wording from the unscoped global entry.
+	if eks := LookupErrorMessage("eks", ErrorEKSResourceNotFound); eks != global {
+		t.Errorf("LookupErrorMessage(eks, ResourceNotFoundException) = %+v, want unchanged global %+v", eks, global)
 	}
 }
 

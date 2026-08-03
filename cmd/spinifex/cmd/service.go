@@ -1301,9 +1301,12 @@ func init() {
 
 	serviceCmd.AddCommand(viperblockCmd)
 
+	// These override spinifex.toml only when set, and the start command tests them
+	// for emptiness to decide that. A non-empty default would make the override
+	// unconditional, discarding the configured value on every start.
 	viperblockCmd.PersistentFlags().String("s3-host", "", "Predastore (S3) host URI")
-	viperblockCmd.PersistentFlags().String("s3-bucket", "predastore", "Predastore (S3) bucket")
-	viperblockCmd.PersistentFlags().String("s3-region", "ap-southeast-2", "Predastore (S3) region")
+	viperblockCmd.PersistentFlags().String("s3-bucket", "", "Predastore (S3) bucket")
+	viperblockCmd.PersistentFlags().String("s3-region", "", "Predastore (S3) region")
 	viperblockCmd.PersistentFlags().String("plugin-path", "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", "Pathname to the nbdkit viperblockplugin")
 	bindViperblockEnv()
 

@@ -2799,7 +2799,11 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 	admin.CreateServiceDirectories(dataDir)
 
 	if os.Getuid() == 0 {
-		admin.SetServiceOwnership()
+		if err := admin.SetServiceOwnership(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: service ownership not fully applied: %v\n", err)
+		} else {
+			fmt.Println("✅ Service ownership set")
+		}
 	}
 }
 

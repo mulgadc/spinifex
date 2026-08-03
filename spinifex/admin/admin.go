@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -351,22 +352,20 @@ func FileExists(path string) bool {
 }
 
 // ChownRecursive changes ownership of path and its contents to username.
-// Best-effort: errors are logged but do not halt the operation.
-func ChownRecursive(path, username string) {
+// Failing to resolve the user is an error, since it leaves path untouched.
+// Per-entry walk failures below path stay best-effort and are only logged.
+func ChownRecursive(path, username string) error {
 	u, err := user.Lookup(username)
 	if err != nil {
-		slog.Warn("ChownRecursive: user lookup failed, skipping", "user", username, "path", path, "err", err)
-		return
+		return fmt.Errorf("chown %s: user %q not found: %w", path, username, err)
 	}
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		slog.Warn("ChownRecursive: invalid UID, skipping", "user", username, "uid", u.Uid, "err", err)
-		return
+		return fmt.Errorf("chown %s: invalid UID %q for user %q: %w", path, u.Uid, username, err)
 	}
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		slog.Warn("ChownRecursive: invalid GID, skipping", "user", username, "gid", u.Gid, "err", err)
-		return
+		return fmt.Errorf("chown %s: invalid GID %q for user %q: %w", path, u.Gid, username, err)
 	}
 
 	// Use os.Root to scope filesystem operations and avoid symlink TOCTOU races.
@@ -380,7 +379,7 @@ func ChownRecursive(path, username string) {
 		if chownErr := os.Lchown(path, uid, gid); chownErr != nil {
 			slog.Warn("chown failed", "path", path, "err", chownErr)
 		}
-		return
+		return nil
 	}
 	defer root.Close()
 
@@ -395,43 +394,61 @@ func ChownRecursive(path, username string) {
 		}
 		return nil
 	})
+	return nil
+}
+
+// servicePaths maps each per-service data/config directory to the system user
+// that must own it. Kept separate from SetServiceOwnership so the aggregation
+// logic can be tested against a small map rather than these absolute paths.
+var servicePaths = map[string]string{
+	"/etc/spinifex/nats":           "spinifex-nats",
+	"/var/lib/spinifex/nats":       "spinifex-nats",
+	"/etc/spinifex/predastore":     "spinifex-storage",
+	"/var/lib/spinifex/predastore": "spinifex-storage",
+	"/etc/spinifex/northstar":      "spinifex-northstar",
+	"/var/lib/spinifex/northstar":  "spinifex-northstar",
+	"/etc/spinifex/viperblock":     "spinifex-viperblock",
+	"/var/lib/spinifex/spinifex":   "spinifex-daemon",
+	"/var/lib/spinifex/viperblock": "spinifex-viperblock",
+	"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
+	"/var/lib/spinifex/awsgw":      "spinifex-gw",
+}
+
+// chownServicePaths applies ChownRecursive to each path in services that
+// exists on disk, collecting every failure instead of stopping at the
+// first so one missing service user doesn't mask problems with the rest.
+func chownServicePaths(services map[string]string) error {
+	var errs []error
+	for path, u := range services {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := ChownRecursive(path, u); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SetServiceOwnership sets per-service ownership on data/config directories
-// and shared config files to root:spinifex with correct modes.
-func SetServiceOwnership() {
+// and shared config files to root:spinifex with correct modes. Returns an error
+// naming every service path whose ownership could not be applied.
+func SetServiceOwnership() error {
 	grp, err := user.LookupGroup("spinifex")
 	if err != nil {
 		slog.Error("SetServiceOwnership: spinifex group not found, skipping all ownership changes", "err", err)
 		fmt.Fprintln(os.Stderr, "WARNING: spinifex group not found — service ownership not set. Run setup.sh first or create the group manually.")
-		return
+		return fmt.Errorf("spinifex group not found: %w", err)
 	}
 	gid, err := strconv.Atoi(grp.Gid)
 	if err != nil {
 		slog.Error("SetServiceOwnership: invalid spinifex group GID", "gid", grp.Gid, "err", err)
 		fmt.Fprintln(os.Stderr, "WARNING: invalid spinifex group GID — service ownership not set.")
-		return
+		return fmt.Errorf("invalid spinifex group GID %q: %w", grp.Gid, err)
 	}
 
 	// Per-service directory trees
-	for path, u := range map[string]string{
-		"/etc/spinifex/nats":           "spinifex-nats",
-		"/var/lib/spinifex/nats":       "spinifex-nats",
-		"/etc/spinifex/predastore":     "spinifex-storage",
-		"/var/lib/spinifex/predastore": "spinifex-storage",
-		"/etc/spinifex/northstar":      "spinifex-northstar",
-		"/var/lib/spinifex/northstar":  "spinifex-northstar",
-		"/etc/spinifex/viperblock":     "spinifex-viperblock",
-		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
-		"/var/lib/spinifex/viperblock": "spinifex-viperblock",
-		"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
-		"/var/lib/spinifex/awsgw":      "spinifex-gw",
-	} {
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		ChownRecursive(path, u)
-	}
+	ownershipErr := chownServicePaths(servicePaths)
 
 	// Shared data directories — root:spinifex 0770 so daemon + admin CLI can write
 	for _, dir := range []string{
@@ -474,6 +491,8 @@ func SetServiceOwnership() {
 			slog.Warn("SetServiceOwnership: chmod failed", "path", path, "err", err)
 		}
 	}
+
+	return ownershipErr
 }
 
 // UpdateAWSINIFile updates or creates an AWS INI file section with the given key-value pairs.
@@ -915,9 +934,13 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 		return err
 	}
 
-	// Fix ownership so the sudo invoking user can read the files
+	// Fix ownership so the sudo invoking user can read the files. This is
+	// cosmetic convenience, not a service-critical permission, so a failure
+	// here is logged and never propagated to fail credential setup.
 	if os.Getuid() == 0 && sudoUser != "" {
-		ChownRecursive(awsDir, sudoUser)
+		if err := ChownRecursive(awsDir, sudoUser); err != nil {
+			slog.Warn("failed to fix AWS config ownership for sudo user", "user", sudoUser, "path", awsDir, "err", err)
+		}
 	}
 
 	fmt.Printf("   Profile: %s\n", profileName)

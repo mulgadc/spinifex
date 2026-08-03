@@ -42,6 +42,9 @@ var ErrInstanceNotOnNode = errors.New("rds: no node is holding this DB VM")
 // lost. A stop drains and seals the data volume, which is the long pole.
 const instanceCommandTimeout = 90 * time.Second
 
+// How often the fleet is re-read while a stop is settling.
+const vmStopPollInterval = 500 * time.Millisecond
+
 // Reboots the engine, applying any static parameters stored pending-reboot
 // (D16). ForceFailover is rejected outright: there is no standby to fail over
 // to, and silently ignoring it would report a failover that never happened.
@@ -149,15 +152,44 @@ func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanc
 	return &rds.StartDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
 }
 
-// Stops the VM, treating an unanswered command as a stop only once the fleet
-// agrees the VM is not running. Shared with the storage grow, which needs the
-// VM genuinely down before ModifyVolume will touch its volume.
+// Stops the VM and returns once the fleet agrees it is not running. Shared with
+// the storage grow, which needs the VM genuinely down before ModifyVolume will
+// touch its volume.
 func (s *Service) stopInstanceVM(ctx context.Context, accountID, instanceID string) error {
 	err := s.deps.Instances.StopInstance(ctx, instanceID)
-	if errors.Is(err, ErrInstanceNotOnNode) {
-		err = s.confirmVMNotRunning(ctx, accountID, instanceID)
+	// A command no node answered usually means the VM is already down, which is
+	// where the stop was going anyway; a command a node accepted says nothing
+	// about the VM yet. Both are settled by the same fleet-wide wait.
+	if err != nil && !errors.Is(err, ErrInstanceNotOnNode) {
+		return err
 	}
-	return err
+	return s.waitForVMNotRunning(ctx, accountID, instanceID)
+}
+
+// Polls the fleet until the VM has left running or the budget expires. The node
+// accepts a stop command in milliseconds but takes seconds to drain and detach
+// the data volume, and a caller that acts on the acceptance alone — the storage
+// grow above all — acts on a volume the guest still holds.
+func (s *Service) waitForVMNotRunning(ctx context.Context, accountID, instanceID string) error {
+	timeout := s.vmStopTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Scaled to the budget so a short one is still polled rather than read once.
+	interval := min(vmStopPollInterval, timeout/4)
+	for {
+		err := s.confirmVMNotRunning(ctx, accountID, instanceID)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the DB VM %s did not stop within %s: %w", instanceID, timeout, err)
+		case <-time.After(interval):
+			slog.InfoContext(ctx, "rds: waiting for the DB VM to stop",
+				"instanceId", instanceID, "err", err)
+		}
+	}
 }
 
 // The owning node's in-memory command path first, since it is the one that can
@@ -173,10 +205,11 @@ func (s *Service) startInstanceVM(ctx context.Context, instanceID string) error 
 	return s.deps.Instances.StartStoppedInstance(ctx, instanceID)
 }
 
-// A power command no node answered usually means the VM is already down, which
-// is where a stop was going anyway — but a partitioned or restarting node looks
-// identical from here. The fleet-wide view has to agree before the record says
-// stopped, or a VM still serving on the customer ENI is reported as stopped.
+// One reading of the VM's state across the fleet. Neither an accepted stop nor
+// an unanswered one says anything about the VM itself — a partitioned or
+// restarting node looks identical to one that never held it — so this view has
+// to agree before the record says stopped, or a VM still serving on the
+// customer ENI is reported as stopped.
 //
 // A nil resolver disables the check, matching the reconciler's health path.
 func (s *Service) confirmVMNotRunning(ctx context.Context, accountID, instanceID string) error {
@@ -185,10 +218,10 @@ func (s *Service) confirmVMNotRunning(ctx context.Context, accountID, instanceID
 	}
 	state, err := s.deps.InstanceState.InstanceState(ctx, instanceID, accountID)
 	if err != nil {
-		return fmt.Errorf("no node is holding the DB VM and its state could not be resolved: %w", err)
+		return fmt.Errorf("the DB VM's state could not be resolved: %w", err)
 	}
 	if state == instanceStateRunning {
-		return errors.New("no node is holding the DB VM but it is still running")
+		return errors.New("the DB VM is still running")
 	}
 	return nil
 }

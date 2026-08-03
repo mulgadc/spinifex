@@ -34,6 +34,12 @@ const (
 	// is the longest a restart can honestly take.
 	transitionTimeout = 10 * time.Minute
 
+	// How long a stop waits for the fleet to report the VM down, unless the
+	// config overrides it. A node accepts a stop command milliseconds after it is
+	// sent but takes seconds to drain and detach the data volume, and it is the
+	// detach a storage grow is actually waiting on.
+	defaultVMStopTimeout = 60 * time.Second
+
 	// How long a DB snapshot record may sit in creating before the reconciler
 	// settles it against EC2. Comfortably past the snapshot request's own budget,
 	// so a record still being written by a live worker is never touched.

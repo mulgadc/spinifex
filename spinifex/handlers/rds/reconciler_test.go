@@ -15,8 +15,11 @@ import (
 // fakeInstanceState answers the VM half of the bootstrap check.
 type fakeInstanceState struct {
 	state string
-	err   error
-	calls []string
+	// A stopped VM is still reported running for this many more readings, which
+	// is the window a real stop spends draining and detaching its volumes.
+	detachReads int
+	err         error
+	calls       []string
 }
 
 var _ InstanceStateResolver = (*fakeInstanceState)(nil)
@@ -26,8 +29,16 @@ func (f *fakeInstanceState) InstanceState(_ context.Context, instanceID, _ strin
 	if f.err != nil {
 		return "", f.err
 	}
+	if f.detachReads > 0 {
+		f.detachReads--
+		return instanceStateRunning, nil
+	}
 	return f.state, nil
 }
+
+// The VM the node has taken down. The fleet only reports it once the detach
+// window has been read through.
+func (f *fakeInstanceState) stop() { f.state = "stopped" }
 
 type reconcileHarness struct {
 	svc   *Service

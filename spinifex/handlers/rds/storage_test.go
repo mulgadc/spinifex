@@ -147,6 +147,24 @@ func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
 	assert.Equal(t, CommandStopEngine, issued[0].Type)
 }
 
+// The stop command is accepted seconds before the volume detaches, and the
+// store refuses a resize until it has. The grow holds off until the fleet
+// reports the VM down rather than resizing on the accepted command.
+func TestGrowInstanceStorage_WaitsForTheDetachBeforeGrowing(t *testing.T) {
+	h := newModifyHarness(t)
+	h.vmState.detachReads = 1
+	rec := modifiableRecord()
+
+	var vmRunningAtGrow bool
+	h.storage.onModify = func() { vmRunningAtGrow = h.vmState.detachReads > 0 }
+
+	require.NoError(t, h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50))
+
+	assert.False(t, vmRunningAtGrow, "the volume was taken while the fleet still reported the VM running")
+	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM running")
+	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
+}
+
 // A wedged agent must not block a grow: the engine stop is a courtesy, and the
 // VM stop that follows is what actually releases the volume.
 func TestGrowInstanceStorage_ProceedsWhenTheEngineWillNotStop(t *testing.T) {

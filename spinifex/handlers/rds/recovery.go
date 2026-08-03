@@ -196,7 +196,10 @@ func (r *Reconciler) lastHeartbeat(accountID string, rec *DBInstanceRecord) (tim
 	if rec.Agent.LastSeen != nil {
 		lastSeen, bound = *rec.Agent.LastSeen, HeartbeatStaleAfter+HeartbeatPersistFloor
 	}
-	if inMemory, ok := r.svc.LastSeen(accountID, rec.DBInstanceIdentifier); ok && inMemory.After(lastSeen) {
+	// Not strictly after: a persisting beat writes the record from the same
+	// instant it was noted in memory, and losing the tie would hand a beat this
+	// node saw itself the slack meant for one it can only see through KV.
+	if inMemory, ok := r.svc.LastSeen(accountID, rec.DBInstanceIdentifier); ok && !inMemory.Before(lastSeen) {
 		lastSeen, bound = inMemory, HeartbeatStaleAfter
 	}
 	return lastSeen, bound

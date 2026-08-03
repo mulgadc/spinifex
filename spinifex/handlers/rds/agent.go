@@ -164,7 +164,7 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 			"unknown engine health %q", input.EngineHealth)
 	}
 
-	persist := s.noteBeat(accountID, input.DBInstanceIdentifier, input.EngineHealth, input.Message, false)
+	beat, persist := s.noteBeat(accountID, input.DBInstanceIdentifier, input.EngineHealth, input.Message, false)
 	out := &SubmitDBStateChangeOutput{
 		Acknowledged:             true,
 		HeartbeatIntervalSeconds: int64(HeartbeatInterval.Seconds()),
@@ -195,7 +195,10 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 	if input.EngineVersion != "" {
 		rec.Agent.EngineVersion = input.EngineVersion
 	}
-	rec.Agent.LastSeen = &now
+	// Stamped from the beat itself rather than from the write it triggered, so
+	// the persisted clock never reads newer than the in-memory one recording the
+	// same beat — which would cost the reconciler the tighter staleness bound.
+	rec.Agent.LastSeen = &beat
 	rec.UpdatedAt = now
 
 	if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
@@ -205,9 +208,11 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 	return out, nil
 }
 
-// Reports whether the beat must reach KV: a changed health or message persists
-// immediately, an unchanged one only every HeartbeatPersistEvery beats.
-func (s *Service) noteBeat(accountID, dbID string, health EngineHealth, message string, force bool) bool {
+// Records the beat and reports when it must reach KV: a changed health or
+// message persists immediately, an unchanged one only every
+// HeartbeatPersistEvery beats. The beat's own time is returned so a persisting
+// caller stamps the record with it rather than with a later clock reading.
+func (s *Service) noteBeat(accountID, dbID string, health EngineHealth, message string, force bool) (time.Time, bool) {
 	k := accountID + "/" + dbID
 	s.livenessMu.Lock()
 	defer s.livenessMu.Unlock()
@@ -226,9 +231,9 @@ func (s *Service) noteBeat(accountID, dbID string, health EngineHealth, message 
 
 	if force || changed || live.beatsSinceKV >= HeartbeatPersistEvery {
 		live.beatsSinceKV = 0
-		return true
+		return live.lastSeen, true
 	}
-	return false
+	return live.lastSeen, false
 }
 
 // The in-memory beat time, fresher than the record's persisted LastSeen. False

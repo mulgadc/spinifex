@@ -546,6 +546,10 @@ var (
 	ErrorModelNotReadyException      = "ModelNotReadyException"
 	ErrorServiceUnavailableException = "ServiceUnavailableException"
 	ErrorModelErrorException         = "ModelErrorException"
+	// ErrorServiceQuotaExceededException is for genuine per-account limits
+	// (e.g. Ochre's tokens-per-month cap) — unlike ErrorModelNotReadyException,
+	// which is reserved for transient capacity conditions that breach no quota.
+	ErrorServiceQuotaExceededException = "ServiceQuotaExceededException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -1185,10 +1189,11 @@ var ErrorLookup = map[string]ErrorMessage{
 
 	// Bedrock/bedrock-runtime error codes. ResourceNotFoundException reuses the
 	// EKS entry (ErrorEKSResourceNotFound) — same wire code, same HTTP status.
-	ErrorValidationException:         {HTTPCode: 400, Message: "The input fails to satisfy the constraints specified by the model or service."},
-	ErrorAccessDeniedException:       {HTTPCode: 403, Message: "You do not have sufficient access to perform this action."},
-	ErrorThrottlingException:         {HTTPCode: 429, Message: "The request was denied due to request throttling."},
-	ErrorModelNotReadyException:      {HTTPCode: 429, Message: "The model specified in the request is not ready to serve inference requests."},
-	ErrorServiceUnavailableException: {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
-	ErrorModelErrorException:         {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
+	ErrorValidationException:           {HTTPCode: 400, Message: "The input fails to satisfy the constraints specified by the model or service."},
+	ErrorAccessDeniedException:         {HTTPCode: 403, Message: "You do not have sufficient access to perform this action."},
+	ErrorThrottlingException:           {HTTPCode: 429, Message: "The request was denied due to request throttling."},
+	ErrorModelNotReadyException:        {HTTPCode: 429, Message: "The model specified in the request is not ready to serve inference requests."},
+	ErrorServiceUnavailableException:   {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
+	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
+	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 }

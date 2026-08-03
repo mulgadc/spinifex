@@ -50,6 +50,14 @@ const (
 // reconciler will not call an instance available until its VM is running.
 const instanceStateRunning = "running"
 
+// The states in which the VM is down and has released its data volume. A VM
+// that is merely stopping or shutting-down still has it mapped, which is the
+// reading a just-issued stop returns and the one ModifyVolume refuses.
+const (
+	instanceStateStopped    = "stopped"
+	instanceStateTerminated = "terminated"
+)
+
 // The VM's EC2 lifecycle state, fanned out across every host so a DB VM is
 // observed wherever it landed. Nil disables the VM half of the check.
 type InstanceStateResolver interface {
@@ -375,7 +383,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValu
 	}
 	err := r.svc.deps.Instances.StopInstance(ctx, rec.InstanceID)
 	if errors.Is(err, ErrInstanceNotOnNode) {
-		err = r.svc.confirmVMNotRunning(ctx, accountID, rec.InstanceID)
+		err = r.svc.confirmVMStopped(ctx, accountID, rec.InstanceID)
 	}
 	if err == nil {
 		return r.transition(ctx, kv, rev, rec, StatusStopped, "")

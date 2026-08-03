@@ -152,9 +152,9 @@ func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanc
 	return &rds.StartDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
 }
 
-// Stops the VM and returns once the fleet agrees it is not running. Shared with
-// the storage grow, which needs the VM genuinely down before ModifyVolume will
-// touch its volume.
+// Stops the VM and returns once the fleet reports it stopped. Shared with the
+// storage grow, which needs the volume detached before ModifyVolume will touch
+// it, and the detach is the last thing the stop does.
 func (s *Service) stopInstanceVM(ctx context.Context, accountID, instanceID string) error {
 	err := s.deps.Instances.StopInstance(ctx, instanceID)
 	// A command no node answered usually means the VM is already down, which is
@@ -163,14 +163,14 @@ func (s *Service) stopInstanceVM(ctx context.Context, accountID, instanceID stri
 	if err != nil && !errors.Is(err, ErrInstanceNotOnNode) {
 		return err
 	}
-	return s.waitForVMNotRunning(ctx, accountID, instanceID)
+	return s.waitForVMStopped(ctx, accountID, instanceID)
 }
 
-// Polls the fleet until the VM has left running or the budget expires. The node
+// Polls the fleet until the VM reports stopped or the budget expires. The node
 // accepts a stop command in milliseconds but takes seconds to drain and detach
 // the data volume, and a caller that acts on the acceptance alone — the storage
 // grow above all — acts on a volume the guest still holds.
-func (s *Service) waitForVMNotRunning(ctx context.Context, accountID, instanceID string) error {
+func (s *Service) waitForVMStopped(ctx context.Context, accountID, instanceID string) error {
 	timeout := s.vmStopTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -178,7 +178,7 @@ func (s *Service) waitForVMNotRunning(ctx context.Context, accountID, instanceID
 	// Scaled to the budget so a short one is still polled rather than read once.
 	interval := min(vmStopPollInterval, timeout/4)
 	for {
-		err := s.confirmVMNotRunning(ctx, accountID, instanceID)
+		err := s.confirmVMStopped(ctx, accountID, instanceID)
 		if err == nil {
 			return nil
 		}
@@ -208,11 +208,10 @@ func (s *Service) startInstanceVM(ctx context.Context, instanceID string) error 
 // One reading of the VM's state across the fleet. Neither an accepted stop nor
 // an unanswered one says anything about the VM itself — a partitioned or
 // restarting node looks identical to one that never held it — so this view has
-// to agree before the record says stopped, or a VM still serving on the
-// customer ENI is reported as stopped.
+// to agree before the record says stopped.
 //
 // A nil resolver disables the check, matching the reconciler's health path.
-func (s *Service) confirmVMNotRunning(ctx context.Context, accountID, instanceID string) error {
+func (s *Service) confirmVMStopped(ctx context.Context, accountID, instanceID string) error {
 	if s.deps.InstanceState == nil {
 		return nil
 	}
@@ -220,10 +219,17 @@ func (s *Service) confirmVMNotRunning(ctx context.Context, accountID, instanceID
 	if err != nil {
 		return fmt.Errorf("the DB VM's state could not be resolved: %w", err)
 	}
-	if state == instanceStateRunning {
-		return errors.New("the DB VM is still running")
+	// Settled down, not merely no longer running: the node reports stopping
+	// within a millisecond of accepting the command and spends seconds after
+	// that draining the guest and detaching the data volume.
+	switch state {
+	case instanceStateStopped, instanceStateTerminated:
+		return nil
+	case "":
+		// A VM the fleet cannot find anywhere is down and holds nothing.
+		return nil
 	}
-	return nil
+	return fmt.Errorf("the DB VM is in state %q, not stopped", state)
 }
 
 // Asks the engine to shut down cleanly, and records an event rather than

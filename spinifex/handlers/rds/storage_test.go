@@ -155,13 +155,13 @@ func TestGrowInstanceStorage_WaitsForTheDetachBeforeGrowing(t *testing.T) {
 	h.vmState.detachReads = 1
 	rec := modifiableRecord()
 
-	var vmRunningAtGrow bool
-	h.storage.onModify = func() { vmRunningAtGrow = h.vmState.detachReads > 0 }
+	var vmDrainingAtGrow bool
+	h.storage.onModify = func() { vmDrainingAtGrow = h.vmState.detachReads > 0 }
 
 	require.NoError(t, h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50))
 
-	assert.False(t, vmRunningAtGrow, "the volume was taken while the fleet still reported the VM running")
-	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM running")
+	assert.False(t, vmDrainingAtGrow, "the volume was taken while the fleet still reported the VM stopping")
+	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM stopping")
 	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
 }
 

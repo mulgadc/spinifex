@@ -397,7 +397,7 @@ func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing
 
 	rec := h.record(t)
 	assert.Equal(t, StatusFailed, rec.Status)
-	assert.Contains(t, rec.FailureReason, "still running")
+	assert.Contains(t, rec.FailureReason, `"running", not stopped`)
 }
 
 // The same unanswered command is the normal shape of a VM that is genuinely
@@ -416,8 +416,8 @@ func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
 }
 
 // A node accepts a stop milliseconds after it is issued but takes seconds to
-// drain and detach the data volume, so the first reading of the fleet still has
-// the VM running. The stop waits that out rather than returning on it.
+// drain and detach the data volume, so the first reading of the fleet has the VM
+// stopping. That is not down: the stop waits it out rather than returning on it.
 func TestStopDBInstance_WaitsForTheFleetToReportTheVMDown(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	h.vmState.detachReads = 1
@@ -427,7 +427,7 @@ func TestStopDBInstance_WaitsForTheFleetToReportTheVMDown(t *testing.T) {
 		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
 	require.NoError(t, err)
 
-	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM running")
+	assert.Len(t, h.vmState.calls, 2, "the first reading still had the VM stopping")
 	assert.Equal(t, StatusStopped, h.record(t).Status)
 }
 

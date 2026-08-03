@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -94,13 +95,17 @@ func init() {
 // requiredWeightsFiles are the fixed-name Hugging Face artefacts stage
 // refuses to materialise without, mirroring what AWS Bedrock's
 // CreateModelImportJob expects at its S3 source prefix. At least one
-// *.safetensors file (variable name) is checked separately.
+// *.safetensors file and one tokenizer file are checked separately.
 var requiredWeightsFiles = []string{
 	"config.json",
 	"tokenizer_config.json",
-	"tokenizer.json",
-	"tokenizer.model",
 }
+
+// tokenizerFileNames are the two shapes a Hugging Face repo ships its
+// tokenizer under: modern repos ship only tokenizer.json (fast tokenizer),
+// older ones only tokenizer.model (SentencePiece) -- e.g. Llama 3.x keeps
+// tokenizer.model under original/, not at the prefix root. Either is enough.
+var tokenizerFileNames = []string{"tokenizer.json", "tokenizer.model"}
 
 // parseWeightsS3URI splits an s3://bucket/prefix URI into its bucket and
 // prefix. The prefix is normalised to end with '/' so downstream listing and
@@ -180,6 +185,20 @@ func validateWeightsPrefix(ctx context.Context, store objectstore.ObjectStore, b
 		missing = append(missing, "*.safetensors")
 	}
 
+	hasTokenizer := false
+	for _, name := range tokenizerFileNames {
+		key := prefix + name
+		if _, err := store.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)}); err == nil {
+			hasTokenizer = true
+			break
+		} else if !objectstore.IsNoSuchKeyError(err) {
+			return fmt.Errorf("head s3://%s/%s: %w", bucket, key, err)
+		}
+	}
+	if !hasTokenizer {
+		missing = append(missing, "tokenizer.json or tokenizer.model")
+	}
+
 	if len(missing) > 0 {
 		return fmt.Errorf("s3://%s/%s is missing required file(s): %s", bucket, prefix, strings.Join(missing, ", "))
 	}
@@ -223,6 +242,21 @@ func downloadObjectTo(ctx context.Context, store objectstore.ObjectStore, bucket
 	return io.Copy(f, out.Body)
 }
 
+// mkfsExt4Runner populates imagePath as an ext4 filesystem from srcDir's
+// files, normally by shelling out to mkfs.ext4 -d. A package var, mirroring
+// caBakeRunner, so tests can substitute a fake instead of requiring
+// mkfs.ext4 on PATH.
+var mkfsExt4Runner = func(srcDir, imagePath string) error {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		return fmt.Errorf("mkfs.ext4 not found: %w", err)
+	}
+	out, err := exec.Command("mkfs.ext4", "-F", "-d", srcDir, imagePath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mkfs.ext4: %w: %s", err, string(out))
+	}
+	return nil
+}
+
 // buildWeightsImage packages srcDir's files into a raw ext4 filesystem image
 // at imagePath, sized to fit their total bytes plus filesystem overhead and
 // headroom. mkfs.ext4 -d populates the filesystem directly from srcDir, so
@@ -230,10 +264,6 @@ func downloadObjectTo(ctx context.Context, store objectstore.ObjectStore, bucket
 // virt-customize tooling build-system-image.sh needs to customize a
 // bootable cloud image, a weights volume is just a directory of files.
 func buildWeightsImage(srcDir, imagePath string, contentBytes int64) error {
-	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		return fmt.Errorf("mkfs.ext4 not found: %w", err)
-	}
-
 	const overheadFraction = 0.15 // ext4 metadata + inode table headroom
 	const minPaddingBytes = 64 * 1024 * 1024
 	padding := max(int64(float64(contentBytes)*overheadFraction), minPaddingBytes)
@@ -251,11 +281,7 @@ func buildWeightsImage(srcDir, imagePath string, contentBytes int64) error {
 		return fmt.Errorf("close image file: %w", err)
 	}
 
-	out, err := exec.Command("mkfs.ext4", "-F", "-d", srcDir, imagePath).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("mkfs.ext4: %w: %s", err, string(out))
-	}
-	return nil
+	return mkfsExt4Runner(srcDir, imagePath)
 }
 
 // snapshotImportedWeightsVolume snapshots a viperblock volume that
@@ -306,94 +332,100 @@ func snapshotImportedWeightsVolume(s3Config *vbs3.S3Config, volumeID string, vol
 	return snapshotID, nil
 }
 
-func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
-	modelID, _ := cmd.Flags().GetString("model-id")
-	s3URI, _ := cmd.Flags().GetString("s3-uri")
-	tmpDirFlag, _ := cmd.Flags().GetString("tmp-dir")
+// weightsMaterializer builds a servable snapshot from downloadDir's already
+// downloaded and validated Hugging Face files. Isolating this behind a
+// function value lets runStageWeights be tested end to end -- including the
+// idempotent-noop and replace-and-report-previous-snapshot decisions -- with
+// a fake standing in for the real mkfs.ext4 + viperblock + predastore work,
+// which needs a live environment (see materializeWeightsVolume).
+type weightsMaterializer func(ctx context.Context, downloadDir string, contentBytes int64) (snapshotID string, err error)
 
+// runStageWeights holds 'ochre weights stage' decision and side-effect logic:
+// catalog validation, S3 URI parsing, idempotency/replacement detection
+// against the existing KV record, prefix validation, download, materialisation
+// via materialize, and the final KV write. It has no cobra or NATS-connection
+// dependency of its own, so tests drive it directly against a fake object
+// store, a real WeightsStore backed by an embedded JetStream server, and a
+// fake materializer.
+func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *gateway_bedrock.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer) (string, error) {
 	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
 		if !found {
-			fmt.Fprintf(os.Stderr, "Unknown model ID %q: not present in the Ochre catalog\n", modelID)
-		} else {
-			fmt.Fprintf(os.Stderr, "%q is a provider-served model, not self-host; weights staging does not apply\n", modelID)
+			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
 		}
-		os.Exit(1)
+		return "", fmt.Errorf("%q is a provider-served model, not self-host; weights staging does not apply", modelID)
 	}
 
 	bucket, prefix, err := parseWeightsS3URI(s3URI)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 	sourceURI := fmt.Sprintf("s3://%s/%s", bucket, prefix)
 
-	appConfig, nc, err := loadConfigAndConnect()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer nc.Close()
-	node := appConfig.Nodes[appConfig.Node]
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
-
-	ctx := context.Background()
 	existing, hadPrevious, err := weightsStore.GetWeights(ctx, modelID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 	if hadPrevious && existing.SourceURI == sourceURI {
-		fmt.Printf("%s is already staged from %s (snapshot %s); nothing to do.\n", modelID, sourceURI, existing.SnapshotID)
-		return
+		return fmt.Sprintf("%s is already staged from %s (snapshot %s); nothing to do.", modelID, sourceURI, existing.SnapshotID), nil
 	}
-
-	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
 	fmt.Printf("Validating %s ...\n", sourceURI)
 	if err := validateWeightsPrefix(ctx, store, bucket, prefix); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 
 	tmpDir, err := os.MkdirTemp(tmpDirFlag, "spinifex-weights-tmp-*")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not create temp dir: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	downloadDir := filepath.Join(tmpDir, "src")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "Could not create download dir: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not create download dir: %w", err)
 	}
 
 	fmt.Printf("Downloading %s ...\n", sourceURI)
 	contentBytes, err := downloadWeightsPrefix(ctx, store, bucket, prefix, downloadDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 
+	snapshotID, err := materialize(ctx, downloadDir, contentBytes)
+	if err != nil {
+		return "", err
+	}
+
+	if err := weightsStore.PutWeights(ctx, modelID, sourceURI, snapshotID); err != nil {
+		return "", err
+	}
+
+	if hadPrevious {
+		return fmt.Sprintf("✅ Staged %s from %s (snapshot %s). Replaced previous snapshot %s -- reclaim it separately if no longer needed.",
+			modelID, sourceURI, snapshotID, existing.SnapshotID), nil
+	}
+	return fmt.Sprintf("✅ Staged %s from %s (snapshot %s).", modelID, sourceURI, snapshotID), nil
+}
+
+// materializeWeightsVolume is the real weightsMaterializer: it packages
+// downloadDir into a filesystem image, imports it into a new viperblock
+// volume backed by node's predastore, and snapshots it. This is the
+// expensive, environment-dependent half of stage -- it shells out to
+// mkfs.ext4 and talks to a live S3-shaped backend -- so it is exercised live
+// (see the plan's Testing section) rather than in unit tests.
+func materializeWeightsVolume(node config.Config, downloadDir string, contentBytes int64, mkey *masterkey.Key) (string, error) {
+	tmpDir := filepath.Dir(downloadDir)
 	volumeId := utils.GenerateResourceID("vol")
 	imagePath := filepath.Join(tmpDir, volumeId+".img")
 
 	fmt.Println("Building filesystem image ...")
 	if err := buildWeightsImage(downloadDir, imagePath, contentBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 
 	imageStat, err := os.Stat(imagePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not stat image: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not stat image: %w", err)
 	}
 
 	s3Config := vbs3.S3Config{
@@ -404,12 +436,6 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 		AccessKey:  node.Predastore.AccessKey,
 		SecretKey:  node.Predastore.SecretKey,
 		Host:       node.Predastore.Host,
-	}
-
-	mkey, err := utils.LoadViperblockMasterKey(node.Viperblock.EncryptionKeyFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not load viperblock encryption key: %v\n", err)
-		os.Exit(1)
 	}
 
 	// AMIMetadata is deliberately left zero-valued: a weights volume is not
@@ -451,8 +477,7 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 		if flushBar != nil {
 			_, _ = flushBar.Stop()
 		}
-		fmt.Fprintf(os.Stderr, "Could not import weights volume: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not import weights volume: %w", err)
 	}
 	if flushBar != nil {
 		_, _ = flushBar.Stop()
@@ -461,87 +486,157 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 	fmt.Println("Snapshotting weights volume ...")
 	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, utils.SafeInt64ToUint64(imageStat.Size()), tmpDir, mkey)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not snapshot weights volume: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not snapshot weights volume: %w", err)
 	}
-
-	if err := weightsStore.PutWeights(ctx, modelID, sourceURI, snapshotID); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if hadPrevious {
-		fmt.Printf("✅ Staged %s from %s (snapshot %s). Replaced previous snapshot %s -- reclaim it separately if no longer needed.\n",
-			modelID, sourceURI, snapshotID, existing.SnapshotID)
-	} else {
-		fmt.Printf("✅ Staged %s from %s (snapshot %s).\n", modelID, sourceURI, snapshotID)
-	}
+	return snapshotID, nil
 }
 
-func runOchreWeightsList(_ *cobra.Command, _ []string) {
-	appConfig, nc, err := loadConfigAndConnect()
+// loadConfigAndConnectFn and ochreExit indirect the two effects that make
+// the ochre weights Run functions otherwise untestable: a live NATS
+// connection and a process-terminating exit. Tests substitute both -- a fake
+// connection backed by an embedded JetStream server, and an exit stand-in
+// that panics with a sentinel instead of killing the test binary -- so the
+// same connect/validate/exit control flow real operators see is exercised
+// directly.
+var (
+	loadConfigAndConnectFn = loadConfigAndConnect
+	ochreExit              = os.Exit
+)
+
+func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
+	modelID, _ := cmd.Flags().GetString("model-id")
+	s3URI, _ := cmd.Flags().GetString("s3-uri")
+	tmpDirFlag, _ := cmd.Flags().GetString("tmp-dir")
+
+	appConfig, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	defer nc.Close()
+	node := appConfig.Nodes[appConfig.Node]
 
 	js, err := jetstream.New(nc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
-	entries, err := weightsStore.ListWeights(context.Background())
+	mkey, err := utils.LoadViperblockMasterKey(node.Viperblock.EncryptionKeyFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "Could not load viperblock encryption key: %v\n", err)
+		ochreExit(1)
+		return
+	}
+
+	materialize := func(_ context.Context, downloadDir string, contentBytes int64) (string, error) {
+		return materializeWeightsVolume(node, downloadDir, contentBytes, mkey)
+	}
+
+	msg, err := runStageWeights(context.Background(), store, weightsStore, tmpDirFlag, modelID, s3URI, materialize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		ochreExit(1)
+		return
+	}
+	fmt.Println(msg)
+}
+
+// listWeightsOutput renders 'ochre weights list': a friendly message when
+// nothing is staged, else a MODEL ID / SOURCE URI / SNAPSHOT ID table. Split
+// out from runOchreWeightsList so it is testable against a real WeightsStore
+// without a NATS connection.
+func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore) (string, error) {
+	entries, err := weightsStore.ListWeights(ctx)
+	if err != nil {
+		return "", err
 	}
 	if len(entries) == 0 {
-		fmt.Println("No models staged.")
-		return
+		return "No models staged.", nil
 	}
 
 	tableData := pterm.TableData{{"MODEL ID", "SOURCE URI", "SNAPSHOT ID"}}
 	for _, e := range entries {
 		tableData = append(tableData, []string{e.ModelID, e.SourceURI, e.SnapshotID})
 	}
-	pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Render()
+	return pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Srender()
 }
 
-func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
-	modelID, _ := cmd.Flags().GetString("model-id")
-
-	appConfig, nc, err := loadConfigAndConnect()
+func runOchreWeightsList(_ *cobra.Command, _ []string) {
+	appConfig, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	defer nc.Close()
 
 	js, err := jetstream.New(nc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
 
-	ctx := context.Background()
-	entry, ok, err := weightsStore.GetWeights(ctx, modelID)
+	out, err := listWeightsOutput(context.Background(), weightsStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
+	}
+	fmt.Println(out)
+}
+
+// removeWeights drops modelID's KV entry after confirming it exists, so the
+// CLI can report a clear "nothing staged" error rather than a generic KV
+// miss. It never touches the backing snapshot or source S3 objects -- only
+// weightsStore.DeleteWeights's KV key is affected. Split out from
+// runOchreWeightsRemove so it is testable against a real WeightsStore
+// without a NATS connection.
+func removeWeights(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore, modelID string) (gateway_bedrock.WeightsEntry, error) {
+	entry, ok, err := weightsStore.GetWeights(ctx, modelID)
+	if err != nil {
+		return gateway_bedrock.WeightsEntry{}, err
 	}
 	if !ok {
-		fmt.Fprintf(os.Stderr, "%s has no staged weights entry.\n", modelID)
-		os.Exit(1)
+		return gateway_bedrock.WeightsEntry{}, fmt.Errorf("%s has no staged weights entry", modelID)
 	}
 
 	if err := weightsStore.DeleteWeights(ctx, modelID); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return gateway_bedrock.WeightsEntry{}, err
 	}
+	return entry, nil
+}
 
+func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
+	modelID, _ := cmd.Flags().GetString("model-id")
+
+	appConfig, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+	defer nc.Close()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+
+	entry, err := removeWeights(context.Background(), weightsStore, modelID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		ochreExit(1)
+		return
+	}
 	fmt.Printf("✅ Removed staged-weights entry for %s (snapshot %s and source objects untouched).\n", modelID, entry.SnapshotID)
 }

@@ -46,7 +46,7 @@ func TestPumpInvokeStream_MidStreamFaultWritesExceptionFrame(t *testing.T) {
 		chunks: [][]byte{[]byte(`{"generation":"hi"}`)},
 		err:    newStreamFault(errors.New("upstream connection reset")),
 	}
-	pumpInvokeStream(context.Background(), fw, src, "test-model")
+	pumpInvokeStream(context.Background(), fw, src, "test-model", streamRecordCtx{})
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 2)
@@ -61,16 +61,65 @@ func TestPumpInvokeStream_NonFaultErrorUsesInternalServerException(t *testing.T)
 	require.NoError(t, err)
 
 	src := &fakeInvokeStreamSource{err: errors.New("plain internal error")}
-	pumpInvokeStream(context.Background(), fw, src, "test-model")
+	pumpInvokeStream(context.Background(), fw, src, "test-model", streamRecordCtx{})
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 1)
 	assert.Equal(t, excInternalServerException, frames[0].Type)
 }
 
+func TestPumpInvokeStream_RecordsInvocationOnCleanEnd(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	src := &fakeInvokeStreamSource{chunks: [][]byte{[]byte(`{"generation":"hi"}`)}}
+	fr := &fakeRecorder{}
+	pumpInvokeStream(context.Background(), fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-clean"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	assert.Equal(t, "req-clean", records[0].RequestID)
+	assert.False(t, records[0].Partial)
+	assert.Empty(t, records[0].ErrorCode)
+}
+
+func TestPumpInvokeStream_RecordsInvocationOnClientDisconnect(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	src := &fakeInvokeStreamSource{chunks: [][]byte{[]byte(`{"generation":"hi"}`)}}
+	fr := &fakeRecorder{}
+	pumpInvokeStream(ctx, fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-disconnect"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	assert.True(t, records[0].Partial)
+	assert.Equal(t, errCodeClientDisconnected, records[0].ErrorCode)
+}
+
+func TestPumpInvokeStream_RecordsInvocationOnUpstreamFault(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw, err := newFrameWriter(rec)
+	require.NoError(t, err)
+
+	src := &fakeInvokeStreamSource{err: newStreamFault(errors.New("upstream connection reset"))}
+	fr := &fakeRecorder{}
+	pumpInvokeStream(context.Background(), fw, src, "test-model", streamRecordCtx{recorder: fr, requestID: "req-fault"})
+
+	records := fr.all()
+	require.Len(t, records, 1)
+	assert.True(t, records[0].Partial)
+	assert.NotEmpty(t, records[0].ErrorCode)
+}
+
 func TestInvokeModelWithResponseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", []byte(`{}`), nil, nil, "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", []byte(`{}`), nil, nil, "application/json", nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 	assert.Equal(t, 0, rec.Body.Len())
@@ -88,7 +137,7 @@ func TestInvokeModelWithResponseStream_SelfHostHappyPath_WritesChunkFrames(t *te
 	rec := httptest.NewRecorder()
 	body := []byte(`{"prompt":"hello","max_gen_len":128}`)
 
-	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json", nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -113,7 +162,7 @@ func TestInvokeModelWithResponseStream_NonFlusherWriter_ReturnsPreHeaderError(t 
 	w := &nonFlusherWriter{}
 	body := []byte(`{"prompt":"hello"}`)
 
-	err := InvokeModelWithResponseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json")
+	err := InvokeModelWithResponseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), "application/json", nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.False(t, w.wroteHeader)

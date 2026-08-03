@@ -134,8 +134,13 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: a.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
+	// reqCtx/cancel let Close() abort the upstream request outright rather
+	// than merely stopping our own reads — a disconnected client must free
+	// the Anthropic-side generation, not just this goroutine.
+	reqCtx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, a.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: a.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
 	if err != nil {
+		cancel()
 		slog.Error("anthropic invoke-stream: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -146,6 +151,7 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 
 	resp, err := a.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets a.baseURL, not user input
 	if err != nil {
+		cancel()
 		slog.Error("anthropic invoke-stream: request failed", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
@@ -153,23 +159,34 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		cancel()
 		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
-	return &anthropicInvokeStreamSource{resp: resp, scanner: newSSEScanner(resp.Body)}, nil
+	return &anthropicInvokeStreamSource{resp: resp, scanner: newSSEScanner(resp.Body), cancel: cancel}, nil
 }
 
 // anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line
-// verbatim as the chunk payload, skipping keepalive "ping" events.
+// verbatim as the chunk payload, skipping keepalive "ping" events. It also
+// opportunistically taps message_start/message_delta for token usage
+// without altering the forwarded bytes.
 type anthropicInvokeStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner
+	cancel  context.CancelFunc
+
+	inputTokens, outputTokens int64
 }
 
 var _ invokeStreamSource = (*anthropicInvokeStreamSource)(nil)
+var _ usageReporter = (*anthropicInvokeStreamSource)(nil)
 
+// Close aborts the upstream request via cancel (not just closing the read
+// side), so a disconnected client actually frees the Anthropic-side
+// generation — real external cost, not just local compute.
 func (s *anthropicInvokeStreamSource) Close() error {
+	s.cancel()
 	return s.resp.Body.Close()
 }
 
@@ -188,6 +205,43 @@ func (s *anthropicInvokeStreamSource) Next(_ context.Context) ([]byte, bool, err
 		if ev.Event == "ping" || ev.Data == "" {
 			continue
 		}
+		s.tapUsage(ev.Event, ev.Data)
 		return []byte(ev.Data), true, nil
 	}
+}
+
+// tapUsage opportunistically extracts token usage from message_start/
+// message_delta events without altering the bytes InvokeModelWithResponseStream
+// forwards verbatim: Bedrock's Claude invoke-stream contract is "forward
+// Anthropic's own bytes", not "re-derive them"; a parse miss is silently
+// ignored since usage is only ever read back out for the invocation record.
+func (s *anthropicInvokeStreamSource) tapUsage(event, data string) {
+	switch event {
+	case "message_start":
+		var payload struct {
+			Message struct {
+				Usage struct {
+					InputTokens int64 `json:"input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(data), &payload) == nil {
+			s.inputTokens = payload.Message.Usage.InputTokens
+		}
+	case "message_delta":
+		var payload struct {
+			Usage struct {
+				OutputTokens int64 `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(data), &payload) == nil {
+			s.outputTokens = payload.Usage.OutputTokens
+		}
+	}
+}
+
+// usage always reports real, non-estimated tokens, mirroring
+// anthropicConverseStreamSource.usage.
+func (s *anthropicInvokeStreamSource) usage() (inputTokens, outputTokens int64, estimated bool) {
+	return s.inputTokens, s.outputTokens, false
 }

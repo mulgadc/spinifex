@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -25,20 +26,38 @@ type bedrockRoute struct {
 // bedrockRouteHandler invokes a per-action bedrock (control-plane) gateway
 // function. params holds the regex capture groups, PathUnescape'd. resolver
 // is gw.bedrockResolver(): the configured credential store, or a no-op
-// fallback.
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver) (any, error)
+// fallback. loggingStore is gw.bedrockLoggingConfigStore().
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore) (any, error)
 
 // bedrockRoutes is the dispatch table. More-specific paths must precede
 // less-specific ones with the same prefix so the regex matcher picks the
 // deeper route first.
 var bedrockRoutes = []bedrockRoute{
 	{"GET", regexp.MustCompile(`^/foundation-models$`), "ListFoundationModels",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore) (any, error) {
 			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, new(bedrock.ListFoundationModelsInput))
 		}},
 	{"GET", regexp.MustCompile(`^/foundation-models/([^/]+)$`), "GetFoundationModel",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore) (any, error) {
 			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0])
+		}},
+	{"PUT", regexp.MustCompile(`^/logging/modelinvocations$`), "PutModelInvocationLoggingConfiguration",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+			input := new(bedrock.PutModelInvocationLoggingConfigurationInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			return gateway_bedrock.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
+		}},
+	{"GET", regexp.MustCompile(`^/logging/modelinvocations$`), "GetModelInvocationLoggingConfiguration",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+			return gateway_bedrock.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
+		}},
+	{"DELETE", regexp.MustCompile(`^/logging/modelinvocations$`), "DeleteModelInvocationLoggingConfiguration",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+			return gateway_bedrock.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
 		}},
 }
 
@@ -102,7 +121,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore())
 	if err != nil {
 		return err
 	}
@@ -118,6 +137,27 @@ func (gw *GatewayConfig) bedrockResolver() gateway_bedrock.CredentialResolver {
 		return gw.BedrockCredentials
 	}
 	return gateway_bedrock.NoopCredentialResolver
+}
+
+// bedrockLoggingConfigStore returns gw.BedrockLoggingConfig, or a store
+// backed by no JetStream client when unconfigured. Reads/writes then fail
+// with an error (no JetStream to open a KV bucket against) rather than
+// panicking, which is acceptable for unit tests of unrelated routes that
+// never reach a logging-config handler.
+func (gw *GatewayConfig) bedrockLoggingConfigStore() *gateway_bedrock.LoggingConfigStore {
+	if gw.BedrockLoggingConfig != nil {
+		return gw.BedrockLoggingConfig
+	}
+	return gateway_bedrock.NewLoggingConfigStore(nil, 1)
+}
+
+// bedrockRecorder returns gw.BedrockRecorder, or the no-op fallback when no
+// invocation recorder is configured.
+func (gw *GatewayConfig) bedrockRecorder() gateway_bedrock.Recorder {
+	if gw.BedrockRecorder != nil {
+		return gw.BedrockRecorder
+	}
+	return gateway_bedrock.NoopRecorder
 }
 
 // bedrockEndpointResolver returns an EndpointResolver over the configured

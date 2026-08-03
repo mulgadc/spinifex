@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -96,7 +100,13 @@ type converseStreamSource interface {
 // ErrorHandler envelope. Once the first frame is written it always returns
 // nil — any later failure is an in-band exception event, since the HTTP
 // status can no longer change.
-func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver) error {
+func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) error {
+	if recorder == nil {
+		recorder = NoopRecorder
+	}
+	requestID := uuid.NewString()
+	start := time.Now()
+
 	input := new(bedrockruntime.ConverseStreamInput)
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, input); err != nil {
@@ -104,7 +114,9 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}
 
-	src, err := NewRouter(resolver, endpointResolver).ConverseStream(ctx, accountID, modelID, input)
+	entry, _ := lookupCatalogEntry(modelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
+
+	src, err := NewRouter(resolver, endpointResolver, recorder).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}
@@ -119,7 +131,19 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		return err
 	}
 
-	pumpConverseStream(ctx, fw, src, modelID)
+	inputJSON, jerr := json.Marshal(input)
+	if jerr != nil {
+		slog.Error("converse-stream: failed to marshal input for recording", "model", modelID, "err", jerr)
+	}
+	pumpConverseStream(ctx, fw, src, modelID, streamRecordCtx{
+		recorder:  recorder,
+		requestID: requestID,
+		accountID: accountID,
+		backend:   entry.Provider,
+		operation: OperationConverseStream,
+		start:     start,
+		inputText: string(inputJSON),
+	})
 	return nil
 }
 
@@ -128,9 +152,48 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 // messageStop -> metadata). A mid-stream Next error surfaces as an in-band
 // exception event and stops the pump; a write/flush error also stops the
 // pump silently, since the client connection is already broken and the
-// HTTP status can no longer change either way.
-func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStreamSource, modelID string) {
+// HTTP status can no longer change either way. On every exit — clean end,
+// client disconnect (ctx.Done), or upstream fault — the deferred closure
+// records exactly one InvocationRecord via rc.recorder.
+func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStreamSource, modelID string, rc streamRecordCtx) {
+	if rc.recorder == nil {
+		rc.recorder = NoopRecorder
+	}
+	partial := true
+	errCode := ""
+	var outputText strings.Builder
+
+	defer func() {
+		inputTokens, outputTokens, estimated := int64(0), int64(0), true
+		if ur, ok := src.(usageReporter); ok {
+			inputTokens, outputTokens, estimated = ur.usage()
+		}
+		rc.recorder.Record(ctx, InvocationRecord{
+			RequestID:      rc.requestID,
+			AccountID:      rc.accountID,
+			ModelID:        modelID,
+			Operation:      rc.operation,
+			Backend:        rc.backend,
+			LatencyMs:      time.Since(rc.start).Milliseconds(),
+			HTTPStatus:     http.StatusOK, // the 200 header is already committed by the time the pump runs
+			ErrorCode:      errCode,
+			InputTokens:    inputTokens,
+			OutputTokens:   outputTokens,
+			UsageEstimated: estimated,
+			Partial:        partial,
+			InputText:      rc.inputText,
+			OutputText:     outputText.String(),
+		})
+	}()
+
 	for {
+		select {
+		case <-ctx.Done():
+			errCode = errCodeClientDisconnected
+			return
+		default:
+		}
+
 		event, ok, err := src.Next(ctx)
 		if err != nil {
 			excType := excInternalServerException
@@ -138,18 +201,26 @@ func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStream
 			if errors.As(err, &fault) {
 				excType = excModelStreamErrorException
 			}
+			errCode = awserrors.ValidErrorCodeFromError(err)
 			slog.Error("converse-stream: upstream fault", "model", modelID, "err", err)
 			if werr := fw.writeException(excType, exceptionPayload(err)); werr != nil {
 				slog.Error("converse-stream: failed to write exception frame", "model", modelID, "err", werr)
+				errCode = errCodeClientDisconnected
 			}
 			return
 		}
 		if !ok {
+			partial = false
 			return
+		}
+
+		if event.Kind == converseStreamEventContentBlockDelta && event.ContentBlockDelta != nil && event.ContentBlockDelta.Delta != nil {
+			outputText.WriteString(aws.StringValue(event.ContentBlockDelta.Delta.Text))
 		}
 
 		payload, err := event.payload()
 		if err != nil {
+			errCode = awserrors.ErrorInternalError
 			slog.Error("converse-stream: failed to marshal event", "model", modelID, "kind", event.Kind, "err", err)
 			if werr := fw.writeException(excInternalServerException, exceptionPayload(err)); werr != nil {
 				slog.Error("converse-stream: failed to write exception frame", "model", modelID, "err", werr)
@@ -158,6 +229,7 @@ func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStream
 		}
 
 		if werr := fw.writeEvent(event.Kind.eventType(), payload); werr != nil {
+			errCode = errCodeClientDisconnected
 			slog.Error("converse-stream: failed to write frame, aborting", "model", modelID, "err", werr)
 			return
 		}

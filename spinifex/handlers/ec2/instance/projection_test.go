@@ -128,12 +128,40 @@ func TestProjectInstance_UnmappedStatusUsesFallback(t *testing.T) {
 // its fresh copy, never back to the stored vm.VM.Instance shared under the lock.
 func TestProjectInstance_DoesNotMutateSource(t *testing.T) {
 	v := fullVM(vm.StateRunning)
+	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String("eni-1"),
+	}}
 
 	_, _ = ProjectInstance(v, runningCfg())
 
 	assert.Nil(t, v.Instance.PublicIpAddress)
 	assert.Nil(t, v.Instance.State)
 	assert.Nil(t, v.Instance.Placement)
+	assert.Nil(t, v.Instance.SourceDestCheck)
+	assert.Nil(t, v.Instance.NetworkInterfaces[0].SourceDestCheck,
+		"the interfaces are shared with the stored instance, so they must be copied before they are stamped")
+}
+
+// The check is always on and cannot be turned off, but the describe never said
+// so — and the Terraform provider reads it off the primary interface against a
+// schema that defaults it to true, so an absent value left every aws_instance
+// with a diff no apply could clear.
+func TestProjectInstance_ReportsSourceDestCheckEnabled(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
+		{NetworkInterfaceId: aws.String("eni-1"), Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+			DeviceIndex: aws.Int64(0),
+		}},
+		{NetworkInterfaceId: aws.String("eni-2")},
+	}
+
+	got, _ := ProjectInstance(v, runningCfg())
+
+	assert.True(t, aws.BoolValue(got.SourceDestCheck))
+	require.Len(t, got.NetworkInterfaces, 2)
+	for _, nic := range got.NetworkInterfaces {
+		assert.True(t, aws.BoolValue(nic.SourceDestCheck), aws.StringValue(nic.NetworkInterfaceId))
+	}
 }
 
 // TestProjectInstance_PathsAgreeOnRetainedFields is the regression guard that

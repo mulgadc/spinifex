@@ -48,6 +48,11 @@ type validatedCreate struct {
 	DBSubnetGroupName    string
 	DBParameterGroupName string
 	DeletionProtection   bool
+	// Inert, and stored only so a describe echoes back what the request set: the
+	// engine version is pinned, so nothing upgrades either way. AWS defaults it
+	// to true and so does the Terraform provider, so an unset request must not
+	// read back as false.
+	AutoMinorVersionUpgrade bool
 	// Automated backups as they will be in force: the retention defaulted when the
 	// request names none, and both windows in canonical text — assigned from the
 	// instance identifier when unnamed, never left empty (rds-9).
@@ -166,6 +171,8 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 		DBSubnetGroupName:    aws.StringValue(input.DBSubnetGroupName),
 		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
+
+		AutoMinorVersionUpgrade: input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
 
 		BackupRetentionPeriod:      retention,
 		PreferredBackupWindow:      backupWindow,

@@ -9,6 +9,12 @@ type DBInstanceRecord struct {
 	AccountID            string `json:"accountId"`
 	Status               Status `json:"status"`
 
+	// AWS's immutable per-instance handle, distinct from the identifier a
+	// customer may reuse. The Terraform provider keys its own state off it and
+	// reads the instance back by filtering on it, so an instance without one is
+	// unmanageable by Terraform. Assigned at create and never changed.
+	DbiResourceID string `json:"dbiResourceId,omitempty"`
+
 	Engine           string `json:"engine"`
 	EngineVersion    string `json:"engineVersion"`
 	DBInstanceClass  string `json:"dbInstanceClass"`
@@ -24,6 +30,12 @@ type DBInstanceRecord struct {
 
 	// Blocks DeleteDBInstance outright (D18). Settable at create and modify.
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
+
+	// Inert (D19) — the engine version is pinned, so nothing upgrades either way.
+	// Recorded anyway because a describe that does not echo it back reads as
+	// false against a Terraform schema that defaults it to true, and the plan
+	// then never settles on a change no modify can deliver.
+	AutoMinorVersionUpgrade bool `json:"autoMinorVersionUpgrade"`
 
 	// The backup policy in force. Both windows are stored in AWS's canonical text
 	// so a describe reads back the string a later modify compares against; an

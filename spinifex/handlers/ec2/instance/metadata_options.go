@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // defaultMetadataHopLimit matches the AWS default applied when none is requested.
@@ -14,7 +15,8 @@ const defaultMetadataHopLimit = int64(1)
 // buildMetadataOptions returns the metadata-options block stamped at launch.
 // hopLimit applies only in the AWS-valid 1-64 range, otherwise falling back to
 // the default. An empty httpTokens stamps "required", so an instance that does
-// not ask for IMDSv1 never silently gets it.
+// not ask for IMDSv1 never silently gets it; applyPlatformTokenDefault later
+// relaxes that for the one platform that cannot speak IMDSv2.
 func buildMetadataOptions(hopLimit *int64, httpTokens string) *ec2.InstanceMetadataOptionsResponse {
 	limit := defaultMetadataHopLimit
 	if hopLimit != nil && *hopLimit >= 1 && *hopLimit <= 64 {
@@ -32,6 +34,27 @@ func buildMetadataOptions(hopLimit *int64, httpTokens string) *ec2.InstanceMetad
 		InstanceMetadataTags:    aws.String(ec2.InstanceMetadataTagsStateDisabled),
 		HttpPutResponseHopLimit: aws.Int64(limit),
 	}
+}
+
+// defaultHTTPTokensForPlatform returns the launch default an image's platform
+// implies. Windows guests bootstrap with cloudbase-init, which has no IMDSv2
+// token support in any release, so a Windows image has to permit IMDSv1 or its
+// agent never reads metadata at all. Every other platform keeps "required".
+func defaultHTTPTokensForPlatform(platform *string) string {
+	if aws.StringValue(platform) == utils.PlatformWindows {
+		return ec2.HttpTokensStateOptional
+	}
+	return ec2.HttpTokensStateRequired
+}
+
+// applyPlatformTokenDefault relaxes the stamped IMDSv2 posture to the platform
+// default once the launch has resolved its image. A launch that named
+// httpTokens itself is left untouched, so an explicit value always wins.
+func applyPlatformTokenDefault(instance *ec2.Instance, requestedTokens string, platform *string) {
+	if requestedTokens != "" || instance.MetadataOptions == nil {
+		return
+	}
+	instance.MetadataOptions.HttpTokens = aws.String(defaultHTTPTokensForPlatform(platform))
 }
 
 // validateMetadataOptions rejects any request that enables an unmodelled

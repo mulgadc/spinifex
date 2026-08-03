@@ -7,8 +7,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -301,4 +303,105 @@ func TestRunInstance_MetadataOptionsHopLimitFromRequest(t *testing.T) {
 	require.NotNil(t, ec2Instance.MetadataOptions)
 	assert.Equal(t, int64(2), aws.Int64Value(ec2Instance.MetadataOptions.HttpPutResponseHopLimit))
 	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(ec2Instance.MetadataOptions.HttpTokens))
+}
+
+// Windows is the one platform whose guest agent cannot speak IMDSv2, so it is
+// the one platform whose launch default is relaxed. Anything else — including
+// an image whose platform never resolved — stays on "required".
+func TestDefaultHTTPTokensForPlatform(t *testing.T) {
+	cases := map[string]struct {
+		in   *string
+		want string
+	}{
+		"windows":     {aws.String(utils.PlatformWindows), ec2.HttpTokensStateOptional},
+		"nil (linux)": {nil, ec2.HttpTokensStateRequired},
+		"empty":       {aws.String(""), ec2.HttpTokensStateRequired},
+		"unexpected":  {aws.String("Windows"), ec2.HttpTokensStateRequired},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, defaultHTTPTokensForPlatform(tc.in))
+		})
+	}
+}
+
+// The platform default only fills a gap: it moves a Windows instance the launch
+// said nothing about, and never overrides a value the caller named — not even
+// a Windows launch that deliberately asks for the strict posture.
+func TestApplyPlatformTokenDefault(t *testing.T) {
+	windows := aws.String(utils.PlatformWindows)
+
+	cases := map[string]struct {
+		platform  *string
+		requested string
+		want      string
+	}{
+		"windows, unspecified":         {windows, "", ec2.HttpTokensStateOptional},
+		"linux, unspecified":           {nil, "", ec2.HttpTokensStateRequired},
+		"windows, explicitly required": {windows, ec2.HttpTokensStateRequired, ec2.HttpTokensStateRequired},
+		"linux, explicitly optional":   {nil, ec2.HttpTokensStateOptional, ec2.HttpTokensStateOptional},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			instance := &ec2.Instance{MetadataOptions: buildMetadataOptions(nil, tc.requested)}
+			applyPlatformTokenDefault(instance, tc.requested, tc.platform)
+			assert.Equal(t, tc.want, aws.StringValue(instance.MetadataOptions.HttpTokens))
+		})
+	}
+}
+
+// A legacy instance carrying no metadata-options block is left alone rather
+// than panicking; stamping one is applyMetadataOptions' job.
+func TestApplyPlatformTokenDefaultNilBlock(t *testing.T) {
+	instance := &ec2.Instance{}
+	applyPlatformTokenDefault(instance, "", aws.String(utils.PlatformWindows))
+	assert.Nil(t, instance.MetadataOptions)
+}
+
+// End to end through the launch path: the default follows the resolved image's
+// PlatformDetails, and a caller who names http-tokens still gets what they
+// asked for on either platform.
+func TestPrepareRunInstances_PlatformTokenDefault(t *testing.T) {
+	tests := []struct {
+		name            string
+		platformDetails string
+		requested       string
+		want            string
+	}{
+		{"windows ami, unspecified", "Windows", "", ec2.HttpTokensStateOptional},
+		{"windows byol ami, unspecified", "Windows BYOL", "", ec2.HttpTokensStateOptional},
+		{"linux ami, unspecified", "Linux/UNIX", "", ec2.HttpTokensStateRequired},
+		{"windows ami, explicitly required", "Windows", ec2.HttpTokensStateRequired, ec2.HttpTokensStateRequired},
+		{"linux ami, explicitly optional", "Linux/UNIX", ec2.HttpTokensStateOptional, ec2.HttpTokensStateOptional},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			types, _ := defaultPrepareInstanceTypes()
+			svc := &InstanceServiceImpl{
+				config:        &config.Config{},
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+					"ami-1": {ImageOwnerAlias: "acc", PlatformDetails: tc.platformDetails},
+				}},
+				resourceMgr: &fakeResourceCapacityProvider{
+					instanceTypes: types,
+					canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+				},
+			}
+			input := &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}
+			if tc.requested != "" {
+				input.MetadataOptions = &ec2.InstanceMetadataOptionsRequest{HttpTokens: aws.String(tc.requested)}
+			}
+			reservation, _, _, err := svc.PrepareRunInstances(context.Background(), input, "acc", "")
+			require.NoError(t, err)
+			require.Len(t, reservation.Instances, 1)
+			require.NotNil(t, reservation.Instances[0].MetadataOptions)
+			assert.Equal(t, tc.want, aws.StringValue(reservation.Instances[0].MetadataOptions.HttpTokens))
+		})
+	}
 }

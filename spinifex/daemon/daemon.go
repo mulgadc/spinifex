@@ -2085,25 +2085,18 @@ func (d *Daemon) checkViperblockReady() bool {
 	return d.natsConn.IsConnected()
 }
 
-// predastoreReadinessClient probes predastore's HTTPS endpoint from
-// checkPredastoreReady. Hoisted to package scope so the 2s readiness poll
-// loop doesn't build a fresh transport (and TLS session cache) every call.
-//
-// InsecureSkipVerify is safe here: the probe authenticates nothing and reads
-// no data, it only confirms predastore is serving TLS. This is a
-// liveness/readiness check, not a data path.
+// predastoreReadinessClient is hoisted to package scope so the 2s readiness
+// poll loop doesn't build a fresh transport every call. Verification is off
+// because the probe authenticates nothing and reads no data.
 var predastoreReadinessClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // readiness probe only, no data exchanged
 	},
 }
 
-// checkPredastoreReady reports whether predastore is actually serving HTTPS,
-// not just listening. Any HTTP response counts as ready, including 401/403
-// from this deliberately unsigned request — that is exactly what an S3
-// endpoint returns for an unauthenticated GET. Only a transport or TLS
-// failure (predastore's listener is up but the TLS/HTTP stack behind it
-// isn't yet) means not-ready.
+// checkPredastoreReady reports whether predastore is serving HTTPS, not just
+// listening. Any response counts as ready, including the 401/403 an S3
+// endpoint returns for this deliberately unsigned request.
 func (d *Daemon) checkPredastoreReady() bool {
 	host := admin.DialTarget(d.config.Predastore.Host)
 	if host == "" {

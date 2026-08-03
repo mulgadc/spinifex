@@ -13,9 +13,9 @@
 // mulga, the module that contains it, without a repo-level cycle. It is
 // deliberately its own leaf package, not part of the shared spinifex/testutil
 // package that ~80 test files import — see tests/fixtures/predastore's package
-// comment for why that matters (goleak poisoning via a transitively-linked
-// init-time goroutine). vbscan does not import predastore/quic/quicclient,
-// directly or transitively, and must stay that way.
+// comment for why that matters (goleak poisoning via transitively-linked
+// long-lived goroutines). vbscan does not pull in a predastore cluster
+// runtime, directly or transitively, and must stay that way.
 //
 // # Scope: no chunk-reference-integrity scan
 //

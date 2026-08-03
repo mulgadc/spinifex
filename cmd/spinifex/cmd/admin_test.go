@@ -274,7 +274,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 		{ID: 3, Host: "10.0.0.3"},
 	}
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "0.0.0.0", 0, admin.NorthstarCredentials{},
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "/var/lib/spinifex", "0.0.0.0", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content, `nats_url = "nats://localhost:4222"`)
@@ -282,7 +282,7 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 
 	// Specific bind IP → stays as-is.
 	content2, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "10.11.12.1", 0, admin.NorthstarCredentials{},
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "/var/lib/spinifex", "10.11.12.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
@@ -771,7 +771,7 @@ func (c predastoreBucketAuth) hasBucket(name string) bool {
 // them.
 func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0,
 		admin.NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: admin.NorthstarBucketName},
 	)
 	require.NoError(t, err)
@@ -815,7 +815,7 @@ func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
 // zone bucket.
 func TestPredastoreMultinodeTemplate_NorthstarOmittedWithoutCredentials(t *testing.T) {
 	content, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0,
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0,
 		admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
@@ -1025,7 +1025,7 @@ func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
 		"unset single-node tail changed: %q", single[len(single)-40:])
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", 0, admin.NorthstarCredentials{},
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, multi, "[compaction]")
@@ -1046,7 +1046,7 @@ func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
 	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(
-		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "10.0.0.1", interval, admin.NorthstarCredentials{},
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", interval, admin.NorthstarCredentials{},
 	)
 	require.NoError(t, err)
 	var multiCfg compactionConfig

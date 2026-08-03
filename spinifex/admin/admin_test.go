@@ -990,17 +990,20 @@ secretkey = "{{.SecretKey}}"
 }
 
 func TestChownRecursive_InvalidUser(t *testing.T) {
-	// ChownRecursive should silently return on invalid username
+	// ChownRecursive must report a non-nil error naming the user when the
+	// user cannot be resolved, rather than silently doing nothing.
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
 	os.WriteFile(testFile, []byte("test"), 0644)
 
-	// Should not panic or error with a non-existent user
-	ChownRecursive(tmpDir, "nonexistent-user-that-does-not-exist-12345")
+	const badUser = "nonexistent-user-that-does-not-exist-12345"
+	err := ChownRecursive(tmpDir, badUser)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), badUser)
 
 	// File should still exist and be readable
-	_, err := os.ReadFile(testFile)
-	assert.NoError(t, err)
+	_, readErr := os.ReadFile(testFile)
+	assert.NoError(t, readErr)
 }
 
 func TestChownRecursive_CurrentUser(t *testing.T) {
@@ -1016,7 +1019,7 @@ func TestChownRecursive_CurrentUser(t *testing.T) {
 		t.Skip("USER env not set")
 	}
 
-	ChownRecursive(tmpDir, currentUser)
+	assert.NoError(t, ChownRecursive(tmpDir, currentUser))
 
 	// Verify files are still accessible
 	_, err := os.ReadFile(testFile)
@@ -1024,12 +1027,48 @@ func TestChownRecursive_CurrentUser(t *testing.T) {
 }
 
 func TestChownRecursive_NonExistentPath(t *testing.T) {
-	// Should not panic on a path that doesn't exist
+	// Should not panic on a path that doesn't exist; OpenRoot fails and the
+	// fallback Lchown fails too, but both are logged, not returned — the
+	// user itself resolved fine, so this is not one of the abort cases.
 	currentUser := os.Getenv("USER")
 	if currentUser == "" {
 		t.Skip("USER env not set")
 	}
-	ChownRecursive("/tmp/nonexistent-path-12345", currentUser)
+	assert.NoError(t, ChownRecursive("/tmp/nonexistent-path-12345", currentUser))
+}
+
+func TestChownServicePaths_MissingUser(t *testing.T) {
+	// chownServicePaths is the map-walking core extracted from
+	// SetServiceOwnership so it can be exercised against a small map
+	// instead of the hardcoded /etc/spinifex and /var/lib/spinifex paths,
+	// which are not writable/creatable without root in CI.
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+
+	const badUser = "nonexistent-user-that-does-not-exist-12345"
+	err := chownServicePaths(map[string]string{tmpDir: badUser})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), badUser)
+	assert.Contains(t, err.Error(), tmpDir)
+}
+
+func TestChownServicePaths_SkipsMissingPath(t *testing.T) {
+	// A path that doesn't exist on disk is never attempted, so it can't
+	// produce a "user not found" failure even for a bogus user.
+	err := chownServicePaths(map[string]string{
+		"/nonexistent-path-12345": "nonexistent-user-that-does-not-exist-12345",
+	})
+	assert.NoError(t, err)
+}
+
+func TestSetServiceOwnership_RequiresRoot(t *testing.T) {
+	// SetServiceOwnership operates on hardcoded /etc/spinifex and
+	// /var/lib/spinifex paths and chowns to the spinifex group, both of
+	// which require root. The per-service failure-aggregation logic itself
+	// is covered without root via TestChownServicePaths_MissingUser above.
+	if os.Geteuid() != 0 {
+		t.Skip("SetServiceOwnership requires root")
+	}
 }
 
 // --- SetGPUPassthrough ---

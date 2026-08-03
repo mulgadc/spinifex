@@ -201,6 +201,7 @@ var (
 	ErrorInvalidKeyPairDuplicate                               = "InvalidKeyPair.Duplicate"
 	ErrorInvalidKeyPairFormat                                  = "InvalidKeyPair.Format"
 	ErrorInvalidKeyPairNotFound                                = "InvalidKeyPair.NotFound"
+	ErrorInvalidKeyPairType                                    = "InvalidKeyPair.Type"
 	ErrorInvalidLaunchTargets                                  = "InvalidLaunchTargets"
 	ErrorInvalidLaunchTemplateIdMalformed                      = "InvalidLaunchTemplateId.Malformed"
 	ErrorInvalidLaunchTemplateIdNotFound                       = "InvalidLaunchTemplateId.NotFound"
@@ -883,6 +884,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidKeyPairDuplicate:                               {HTTPCode: 409, Message: "The key pair name already exists in that AWS Region. If you are creating or importing a key pair, ensure that you use a unique name."},
 	ErrorInvalidKeyPairFormat:                                  {HTTPCode: 400, Message: "The format of the public key you are attempting to import is not valid."},
 	ErrorInvalidKeyPairNotFound:                                {HTTPCode: 404, Message: "The specified key pair name does not exist. Ensure that you specify the AWS Region in which the key pair is located, if it's not in the default Region."},
+	ErrorInvalidKeyPairType:                                    {HTTPCode: 400, Message: "The instance was launched with an ED25519 key pair, which cannot decrypt a Windows administrator password. Only RSA can perform the PKCS#1 v1.5 encryption the guest uses. Relaunch the instance with a key pair created using --key-type rsa."},
 	ErrorInvalidLaunchTargets:                                  {HTTPCode: 400, Message: "One or more specified targets are invalid. Verify the capacity for the Capacity Reservation selected or verify the ID."},
 	ErrorInvalidLaunchTemplateIdMalformed:                      {HTTPCode: 400, Message: "The ID for the launch template is malformed. Ensure that you specify the launch template ID in the form lt-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidLaunchTemplateIdNotFound:                       {HTTPCode: 404, Message: "The specified launch template ID does not exist. Ensure that you specify the AWS Region in which the launch template is located."},

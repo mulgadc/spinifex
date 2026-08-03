@@ -2,7 +2,9 @@ package topology
 
 // BuildSubnetDHCPOptions returns the OVN DHCPOptions map for a subnet. Shared
 // by the live manager and reconciler to prevent dns_server drift. IMDS is not
-// steered via option 121; the subnet-switch localport answers L2 ARP directly.
+// steered via option 121: a guest either routes to it via the gateway, where the
+// br-imds ingress demux catches it, or resolves it on-link, where the per-tap ARP
+// responder answers. Both live in network/host/imds_datapath.go.
 func BuildSubnetDHCPOptions(gwIP, routerMAC, dnsServer string) map[string]string {
 	return map[string]string{
 		"server_id":  gwIP,

@@ -136,6 +136,10 @@ func TestInstallTapDatapath(t *testing.T) {
 		utils.EndpointSysctlHelper + " " + d.Endpoint + " accept_local 1",
 		// Flows are not cleared here: installIMDSDatapath clears the shared cookie
 		// once up front so this install does not wipe the patch's forward flows.
+		// ARP responder, one per captured addr, for guests that resolve the
+		// link-local addresses on-link instead of routing via the gateway.
+		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=250,in_port=" + d.Tap + ",arp,arp_tpa=" + imdsMetaAddr + ",arp_op=1,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:" + d.GatewayMAC + ",load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],load:0x02aaaaaaaaaa->NXM_NX_ARP_SHA[],load:0xa9fea9fe->NXM_OF_ARP_SPA[],IN_PORT",
+		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=250,in_port=" + d.Tap + ",arp,arp_tpa=" + imdsDNSAddr + ",arp_op=1,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:" + d.GatewayMAC + ",load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],load:0x02aaaaaaaaaa->NXM_NX_ARP_SHA[],load:0xa9fea9fd->NXM_OF_ARP_SPA[],IN_PORT",
 		// Ingress demux (gateway dst MAC -> endpoint MAC), one per captured addr.
 		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsMetaAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint,
 		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsDNSAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint,
@@ -219,5 +223,65 @@ func TestRemoveTapDatapathDeletesEndpointDespitePatchError(t *testing.T) {
 	// The endpoint delete must still have run, or it leaks on br-imds.
 	if !s.called("ovs-vsctl --if-exists del-port " + IMDSBridge + " " + d.Endpoint) {
 		t.Errorf("endpoint must be deleted even after a patch delete failure; calls: %v", s.calls)
+	}
+}
+
+// A guest that treats 169.254.0.0/16 as on-link ARPs for the captured addresses
+// rather than routing via the gateway. The reply must advertise GatewayMAC, the
+// same L2 identity the egress flow presents, so the guest sees one MAC for the
+// address whichever way it resolved it.
+func TestIMDSARPResponderFlow(t *testing.T) {
+	d := testDatapath()
+	spec, err := imdsARPResponderFlow(d, imdsMetaAddr)
+	if err != nil {
+		t.Fatalf("imdsARPResponderFlow: %v", err)
+	}
+
+	for _, want := range []string{
+		"priority=250",
+		"in_port=" + d.Tap,
+		"arp_tpa=" + imdsMetaAddr,
+		"arp_op=1",
+		"mod_dl_src:" + d.GatewayMAC,
+		"load:0x2->NXM_OF_ARP_OP[]",
+		"load:0x02aaaaaaaaaa->NXM_NX_ARP_SHA[]",
+		"load:0xa9fea9fe->NXM_OF_ARP_SPA[]",
+		"IN_PORT",
+	} {
+		if !strings.Contains(spec, want) {
+			t.Errorf("flow missing %q:\n  %s", want, spec)
+		}
+	}
+}
+
+// Every captured address gets a responder, or the one left out is unreachable
+// from an on-link guest.
+func TestIMDSARPResponderCoversEveryCapturedAddr(t *testing.T) {
+	d := testDatapath()
+	for _, addr := range imdsCaptureAddrs {
+		spec, err := imdsARPResponderFlow(d, addr)
+		if err != nil {
+			t.Fatalf("imdsARPResponderFlow(%s): %v", addr, err)
+		}
+		if !strings.Contains(spec, "arp_tpa="+addr) {
+			t.Errorf("flow for %s does not match it:\n  %s", addr, spec)
+		}
+	}
+}
+
+// A malformed MAC or address must fail loudly rather than install a flow that
+// silently answers ARP with nonsense.
+func TestIMDSARPResponderFlowRejectsBadInput(t *testing.T) {
+	d := testDatapath()
+	d.GatewayMAC = "not-a-mac"
+	if _, err := imdsARPResponderFlow(d, imdsMetaAddr); err == nil {
+		t.Error("expected an error for a malformed gateway MAC")
+	}
+
+	if _, err := imdsARPResponderFlow(testDatapath(), "fe80::1"); err == nil {
+		t.Error("expected an error for a non-IPv4 captured address")
+	}
+	if _, err := imdsARPResponderFlow(testDatapath(), "not-an-ip"); err == nil {
+		t.Error("expected an error for a malformed captured address")
 	}
 }

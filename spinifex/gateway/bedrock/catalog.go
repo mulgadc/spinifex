@@ -28,19 +28,31 @@ const (
 // MinVRAMMiB, InstanceType and VLLMArgs are the in-tree serving spec for
 // self-host entries; the actual staged weights artifact is deployment-local
 // state resolved from KV instead (see WeightsResolver).
+//
+// InputPriceMicroUSDPerMillion/OutputPriceMicroUSDPerMillion and PriceKnown
+// are the in-tree default price (D12): integer micro-USD per million tokens,
+// same shape as the serving spec above. PriceKnown distinguishes an
+// explicitly-priced provider entry from one nobody has priced yet — a bare
+// zero value is ambiguous with a genuine $0 price, so resolvePrice never
+// reads the two int fields without checking it first. Self-host entries leave
+// all three at their zero value: resolvePrice special-cases tierSelfHost to
+// always return a known zero price rather than consulting these fields.
 type catalogEntry struct {
-	ModelID                    string
-	ModelName                  string
-	ProviderName               string
-	Provider                   string // "self-host" or "provider:<vendor>"
-	InputModalities            []string
-	OutputModalities           []string
-	ResponseStreamingSupported bool
-	InferenceTypesSupported    []string
-	CustomizationsSupported    []string
-	MinVRAMMiB                 int      // self-host only; 0 for provider entries
-	InstanceType               string   // self-host only; system-instance type a launcher boots
-	VLLMArgs                   []string // self-host only; extra vLLM server args this model needs
+	ModelID                       string
+	ModelName                     string
+	ProviderName                  string
+	Provider                      string // "self-host" or "provider:<vendor>"
+	InputModalities               []string
+	OutputModalities              []string
+	ResponseStreamingSupported    bool
+	InferenceTypesSupported       []string
+	CustomizationsSupported       []string
+	MinVRAMMiB                    int      // self-host only; 0 for provider entries
+	InstanceType                  string   // self-host only; system-instance type a launcher boots
+	VLLMArgs                      []string // self-host only; extra vLLM server args this model needs
+	InputPriceMicroUSDPerMillion  int64    // provider entries only; meaningless unless PriceKnown
+	OutputPriceMicroUSDPerMillion int64    // provider entries only; meaningless unless PriceKnown
+	PriceKnown                    bool     // provider entries only; self-host is always known-zero
 }
 
 // catalog is the static Phase-1 model set: one self-hosted open model and one
@@ -71,6 +83,10 @@ var catalog = []catalogEntry{
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		// List pricing at launch: $3/MTok input, $15/MTok output.
+		InputPriceMicroUSDPerMillion:  3_000_000,
+		OutputPriceMicroUSDPerMillion: 15_000_000,
+		PriceKnown:                    true,
 	},
 }
 

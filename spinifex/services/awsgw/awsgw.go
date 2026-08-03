@@ -329,6 +329,19 @@ func launchService(config *config.ClusterConfig) error {
 	bedrockRecorder := gateway_bedrock.NewStreamRecorder(js, bedrockLoggingConfig)
 	go gateway_bedrock.NewDeliveryConsumer(objStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
 
+	// Bedrock usage/cost metering: a second durable consumer on the same
+	// invocation stream (LimitsPolicy retention lets both see every message)
+	// updates per-account/model/period counters, deduping on RequestID so
+	// at-least-once redelivery never double-counts. bedrockPrices resolves
+	// KV price overrides over the catalog's in-tree defaults.
+	bedrockUsage := gateway_bedrock.NewUsageStore(js, len(config.Nodes))
+	bedrockPrices := gateway_bedrock.NewPriceStore(js, len(config.Nodes))
+	usageConsumer, err := gateway_bedrock.EnsureUsageConsumer(janitorCtx, js)
+	if err != nil {
+		return fmt.Errorf("bedrock: ensure usage metering consumer: %w", err)
+	}
+	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
+
 	gw := gateway.GatewayConfig{
 		Debug:                nodeConfig.AWSGW.Debug,
 		DisableLogging:       false,
@@ -379,6 +392,10 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
 
+	// Bedrock token quota reads the stream-fed usage counters built above,
+	// independent of whether the standing-infra dimensions are enabled.
+	gw.Quota.SetBedrockUsage(bedrockUsage)
+
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band
 	// terminations free quota. Started only when quotas are enabled so default-off
@@ -390,6 +407,12 @@ func launchService(config *config.ClusterConfig) error {
 		expectedNodes := func() int { return len(config.Nodes) }
 		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, activeAccountIDs(iamService), expectedNodes)
 	}
+
+	// Bedrock RPM enforcement is local and immediate (never gated on
+	// quotaCfg.Enabled); this loop only pushes a periodic observability
+	// snapshot to KV and is itself a no-op when the RPM dimension is
+	// disabled.
+	go gw.Quota.RunBedrockRPMSync(janitorCtx, js, len(config.Nodes))
 
 	handler := gw.SetupRoutes()
 

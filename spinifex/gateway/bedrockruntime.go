@@ -103,6 +103,17 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Ochre metering (mulga-vmfng.7.6). RPM is a local, in-memory check —
+	// cheap enough to run before the body is even read. The token cap reads
+	// the stream-fed usage counter, so it goes second; both are no-ops
+	// (nil-safe on gw.Quota) unless their dimension is explicitly enabled.
+	if err := gw.Quota.CheckBedrockRPM(accountID); err != nil {
+		return err
+	}
+	if err := gw.Quota.CheckBedrockTokens(r.Context(), accountID); err != nil {
+		return err
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: failed to read body", "err", err)

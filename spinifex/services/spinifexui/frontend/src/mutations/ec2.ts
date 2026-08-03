@@ -473,7 +473,7 @@ export function useCreateKeyPair() {
     mutationFn: async (params: CreateKeyPairData) => {
       const command = new CreateKeyPairCommand({
         KeyName: params.keyName,
-        KeyType: "rsa",
+        KeyType: params.keyType,
       })
       const response = await getEc2Client().send(command)
       if (!response.KeyMaterial) {

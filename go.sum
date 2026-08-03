@@ -1321,6 +1321,8 @@ github.com/mulgadc/northstar v1.14.0 h1:8JzDcS4k3SN5PF3jBdB8x9FOWC24eITCClmOdwpo
 github.com/mulgadc/northstar v1.14.0/go.mod h1:6EArbWIQUrCFQ+XZ5ZJrGS/ep/u/rF6l+dKZh5vVIRs=
 github.com/mulgadc/predastore v1.14.1-0.20260730221229-608939ef2bb4 h1:Q4/NEryYTMiALkFwbPPOrKpNgLir+d7T2hbyRpAFnWc=
 github.com/mulgadc/predastore v1.14.1-0.20260730221229-608939ef2bb4/go.mod h1:na0aNXABZF03/HfFWCrAPHrId/2FIEIUQfB82vlu1xg=
+github.com/mulgadc/predastore v1.14.1-0.20260802230245-1b2e787f8591 h1:ieayCZRTFwSO2LCCjQZ2cmNCkzgY8MTUagfzjleilyY=
+github.com/mulgadc/predastore v1.14.1-0.20260802230245-1b2e787f8591/go.mod h1:mbo8xMtF7jnsqZg88Y7Ye9S6LqGzkkc46NFP2DESfTM=
 github.com/mulgadc/viperblock v1.14.1-0.20260802141430-3d448922ab52 h1:XFgNGFofRtqv7A85F1i9WxYK8UxpzRP5X2tv6yL/zdY=
 github.com/mulgadc/viperblock v1.14.1-0.20260802141430-3d448922ab52/go.mod h1:5ENQb0OrjTplIRiLShRW/oNWOzbFvSCFgo+PkNH4858=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=

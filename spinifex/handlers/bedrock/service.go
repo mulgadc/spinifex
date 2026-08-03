@@ -125,8 +125,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	spec, ok := gateway_bedrock.LookupServingSpec(in.ModelID)
-	if !ok {
+	spec, specFound, selfHost := gateway_bedrock.LookupServingSpec(in.ModelID)
+	if !specFound || !selfHost {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 

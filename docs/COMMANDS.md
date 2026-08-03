@@ -175,6 +175,14 @@ read.
 | `spx admin gpu mig enable` | `--profile <name>` (required, e.g. `1g.10gb`), `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → enables MIG mode on each target (`gpu.EnableMIGMode`) → lists available profiles (`gpu.ListProfiles`) and validates requested profile name → destroys any existing instances (`gpu.DestroyAllInstances`) → creates new instances filling GPU capacity (`gpu.CreateInstances`) → writes `mig_profile` to `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 | `spx admin gpu mig disable` | `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → destroys all GPU instances (`gpu.DestroyAllInstances`) → disables MIG mode (`gpu.DisableMIGMode`) → clears `mig_profile` in `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. |
 
+### Ochre Weights Management
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` (no-op). Then validates the prefix holds `config.json`, `tokenizer_config.json`, `tokenizer.json`, `tokenizer.model` and at least one `*.safetensors` file, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
+| `spx admin ochre weights list` | — | Lists every staged model with its source URI and snapshot ID, so an operator can see why a model is (or isn't) advertised via `ListFoundationModels`. |
+| `spx admin ochre weights remove` | `--model-id` (required) | Drops `--model-id`'s entry from `bedrock-weights`, hiding it from `ListFoundationModels` again. Refuses if the model has no staged entry. Never deletes the underlying snapshot or source S3 objects; reclaiming that storage is a separate, explicit act. |
+
 ### EKS Control-Plane Disaster Recovery
 
 | Command | Flags | Description |

@@ -23,7 +23,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/northstar v1.14.0
 	github.com/mulgadc/predastore v1.14.1-0.20260802230245-1b2e787f8591
-	github.com/mulgadc/viperblock v1.14.1-0.20260802141430-3d448922ab52
+	github.com/mulgadc/viperblock v1.14.1-0.20260803010735-4e6f5e45b479
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -180,6 +180,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tidwall/btree v1.8.1 // indirect
 	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect

@@ -9,7 +9,8 @@ set -eu
 # and rds-datadir are executed directly by their services.
 chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-init /etc/init.d/rds-agent \
     /usr/local/sbin/rds-datadir /usr/local/sbin/rds-init
-chmod 0755 /etc/init.d/mulga-mgmt-net /usr/local/sbin/mulga-mgmt-net
+chmod 0755 /etc/init.d/mulga-mgmt-net /etc/init.d/mulga-mgmt-net-routes \
+    /usr/local/sbin/mulga-mgmt-net
 
 # mulga-mgmt-net goes in the boot runlevel, not default (where ENABLE_SERVICES
 # lands services). It applies mgmt0's static address, which rds-agent needs to

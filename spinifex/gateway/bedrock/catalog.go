@@ -187,6 +187,30 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 	return &bedrock.ListFoundationModelsOutput{ModelSummaries: summaries}, nil
 }
 
+// ServingSpec is the subset of a self-host catalog entry the daemon-side
+// launcher needs to place and boot a serving VM. A separate type (rather than
+// exporting catalogEntry) keeps the launcher from depending on the AWS-shaped
+// summary/details fields this package alone renders.
+type ServingSpec struct {
+	MinVRAMMiB   int
+	InstanceType string
+	VLLMArgs     []string
+}
+
+// LookupServingSpec returns modelID's serving spec. ok is false for an
+// unknown model or a provider (non-self-host) entry, which has none.
+func LookupServingSpec(modelID string) (spec ServingSpec, ok bool) {
+	entry, found := lookupCatalogEntry(modelID)
+	if !found || entry.Provider != tierSelfHost {
+		return ServingSpec{}, false
+	}
+	return ServingSpec{
+		MinVRAMMiB:   entry.MinVRAMMiB,
+		InstanceType: entry.InstanceType,
+		VLLMArgs:     entry.VLLMArgs,
+	}, true
+}
+
 // GetFoundationModel looks up a single model by exact modelId. Unknown
 // models, and self-host models with no resolvable weights snapshot, return
 // ResourceNotFoundException. A weights resolve error is an internal fault,

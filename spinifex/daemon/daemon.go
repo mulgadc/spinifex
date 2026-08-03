@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
@@ -151,6 +152,7 @@ type Daemon struct {
 	ecsScheduler          *handlers_ecs.Scheduler
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
+	bedrockService        *handlers_bedrock.Service
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
@@ -1084,6 +1086,18 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Bedrock serving-endpoint lifecycle (daemon is the sole KV writer; the
+	// gateway reads/requests transitions over these subjects instead of
+	// touching JetStream directly).
+	if d.bedrockService != nil {
+		subs = append(subs,
+			natsSub{handlers_bedrock.SubjectEnsureEndpoint, handleNATSRequest(d.bedrockService.Ensure), "spinifex-workers"},
+			natsSub{handlers_bedrock.SubjectDescribeEndpoint, handleNATSRequest(d.bedrockService.Describe), "spinifex-workers"},
+			natsSub{handlers_bedrock.SubjectListEndpoints, handleNATSRequest(d.bedrockService.List), "spinifex-workers"},
+			natsSub{handlers_bedrock.SubjectDeleteEndpoint, handleNATSRequest(d.bedrockService.Delete), "spinifex-workers"},
+		)
+	}
+
 	// ACM gateway → daemon subscriptions (certificate import and managed issuance).
 	if d.acmService != nil {
 		subs = append(subs,
@@ -1661,6 +1675,12 @@ func (d *Daemon) startCluster() error {
 		}()
 		d.rdsReconciler.Run(d.ctx)
 	})
+
+	// Bedrock serving-endpoint lifecycle: no reconciler yet (no idle-reclaim or
+	// health sweep — out of this bead's scope), just the request-driven
+	// ensure/describe/list/delete surface RDS-style, constructed synchronously
+	// since it touches no JetStream KV until its first request.
+	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())
 
 	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
 	// (which degrades to "feature disabled" without a master key) there is no

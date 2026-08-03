@@ -132,3 +132,35 @@ func TestCatalog_SelfHostEntryCarriesServingSpec(t *testing.T) {
 	assert.NotEmpty(t, entry.InstanceType)
 	assert.NotEmpty(t, entry.VLLMArgs)
 }
+
+// TestLookupServingSpec_SelfHostEntry covers 'ochre weights stage's happy
+// path: a known self-host model resolves found=true, selfHost=true, and a
+// non-empty serving spec.
+func TestLookupServingSpec_SelfHostEntry(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec("meta.llama3-2-1b-instruct-v1:0")
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, "meta.llama3-2-1b-instruct-v1:0", spec.ModelID)
+	assert.NotEmpty(t, spec.InstanceType)
+	assert.Positive(t, spec.MinVRAMMiB)
+}
+
+// TestLookupServingSpec_ProviderEntry covers the refusal case 'stage' must
+// hit for a valid-but-wrong-tier model ID: found=true (it IS a catalog
+// entry), selfHost=false, so staging must be refused rather than proceed.
+func TestLookupServingSpec_ProviderEntry(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec("anthropic.claude-3-5-sonnet-20240620-v1:0")
+	require.True(t, found)
+	assert.False(t, selfHost)
+	assert.Zero(t, spec)
+}
+
+// TestLookupServingSpec_UnknownModel covers the other refusal case: a
+// typo'd or nonexistent model ID must report found=false, not merely
+// selfHost=false, so the CLI can give a precise error either way.
+func TestLookupServingSpec_UnknownModel(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec("not-a-real-model")
+	assert.False(t, found)
+	assert.False(t, selfHost)
+	assert.Zero(t, spec)
+}

@@ -172,6 +172,35 @@ func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 	return catalogEntry{}, false
 }
 
+// ServingSpec is the subset of a self-host catalog entry that external
+// callers (the 'ochre weights stage' CLI) need to validate a model ID before
+// staging weights against it.
+type ServingSpec struct {
+	ModelID      string
+	InstanceType string
+	MinVRAMMiB   int
+}
+
+// LookupServingSpec returns modelID's self-host serving spec. found reports
+// whether modelID exists in the catalog at all; selfHost reports whether it
+// is a self-host entry (as opposed to a provider entry) when found is true.
+// Staging weights against an unknown or non-self-host model ID is always a
+// mistake, so callers should refuse rather than proceed when either is false.
+func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return ServingSpec{}, false, false
+	}
+	if entry.Provider != tierSelfHost {
+		return ServingSpec{}, true, false
+	}
+	return ServingSpec{
+		ModelID:      entry.ModelID,
+		InstanceType: entry.InstanceType,
+		MinVRAMMiB:   entry.MinVRAMMiB,
+	}, true, true
+}
+
 // ListFoundationModels returns the deployment-tiered catalog: self-host
 // entries where a weights snapshot resolves, provider entries where a
 // credential resolves.

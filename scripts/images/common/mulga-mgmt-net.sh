@@ -81,16 +81,37 @@ for n in 0 1 2 3 4 5; do
 
     eval "dhcp=\${NIC${n}_DHCP:-}"
     eval "cidr=\${NIC${n}_CIDR:-}"
+    eval "isdefault=\${NIC${n}_DEFAULT:-}"
     ip link set "$iface" up
 
-    # dhcp is assigned above via eval; shellcheck can't trace dynamic names.
+    # dhcp and isdefault are assigned above via eval; shellcheck can't trace
+    # dynamic names.
     # shellcheck disable=SC2154
     if [ "$dhcp" = "1" ]; then
+        # A non-default DHCP NIC (an RDS DB VM's customer-VPC ENI) must not
+        # rewrite the resolver its lease happens to advertise: the guest's DNS
+        # belongs to the primary ENI, and the busybox/dhcpcd hooks would
+        # clobber it. RESOLV_CONF is honoured by udhcpc's default.script.
+        if [ "$isdefault" = "1" ]; then
+            unset RESOLV_CONF
+        else
+            RESOLV_CONF=/dev/null
+            export RESOLV_CONF
+        fi
         if dhcp_acquire "$iface"; then
             echo "[mulga-mgmt-net] data NIC $iface ($mac) up via DHCP"
         else
             echo "[mulga-mgmt-net] ERROR: no DHCP lease on data NIC $iface ($mac) after ${DHCP_BUDGET}s" >&2
         fi
+
+        # Only the default NIC owns the metadata path. A second DHCP NIC leases
+        # its own default route and, left alone, would both blackhole egress and
+        # steal IMDS from the primary ENI.
+        if [ "$isdefault" != "1" ]; then
+            ip route del default dev "$iface" 2>/dev/null || true
+            continue
+        fi
+
         # Pin IMDS to the data NIC so a link-local 169.254.0.0/16 route on another
         # interface cannot steal the metadata path. Route via the gateway, not
         # on-link: the host demuxes IMDS sent to the gateway MAC, never ARP-answers .254.
@@ -121,9 +142,6 @@ for n in 0 1 2 3 4 5; do
     # mgmt NIC reaches the gateway on-link and a default via it would blackhole
     # egress and (with a link-local /16) hijack IMDS. Enforce it — a DHCP client
     # racing this NIC may have added one before we set it static.
-    eval "isdefault=\${NIC${n}_DEFAULT:-}"
-    # isdefault is assigned above via eval; shellcheck can't trace dynamic names.
-    # shellcheck disable=SC2154
     if [ "$isdefault" != "1" ]; then
         ip route del default dev "$iface" 2>/dev/null || true
     fi

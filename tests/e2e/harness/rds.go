@@ -39,11 +39,16 @@ const rdsDBInstanceTagKey = "spinifex:rds-db-instance"
 // ran initdb and the in-guest agent reported healthy, so it is by far the
 // longest; the rest are control-plane transitions with no bootstrap in them.
 //
+// available must outlast the control plane's own bootstrap timeout (20m,
+// handlers/rds defaultBootstrapTimeout), or the two expire together and a
+// wedged instance is reported as a bare wait expiry rather than as the failed
+// status the reconciler was about to publish, with its reason attached.
+//
 // failed is bounded by the detection ladder rather than by a generous guess: a
 // heartbeat goes stale after three intervals (90s), the classifier then holds a
 // one-interval grace (30s), and the reconciler acts on its next pass (15s).
 var dbInstanceWaitTimeouts = map[string]time.Duration{
-	DBInstanceAvailable: 20 * time.Minute,
+	DBInstanceAvailable: 23 * time.Minute,
 	DBInstanceFailed:    4 * time.Minute,
 	DBInstanceStopped:   5 * time.Minute,
 	DBInstanceModifying: 5 * time.Minute,

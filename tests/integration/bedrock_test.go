@@ -57,7 +57,7 @@ func TestListFoundationModels(t *testing.T) {
 		ids[aws.StringValue(m.ModelId)] = m
 	}
 
-	assert.Contains(t, ids, modelSelfHostLlama, "self-host model must always be advertised")
+	assert.Contains(t, ids, modelSelfHostLlama, "self-host model must be advertised when its weights resolve")
 
 	// This tier configures no BedrockCredentials resolver, so the Anthropic
 	// entry is never resolvable and must not be advertised — the mirror image

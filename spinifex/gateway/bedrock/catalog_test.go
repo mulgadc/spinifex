@@ -2,6 +2,7 @@ package gateway_bedrock
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
@@ -22,6 +23,37 @@ func (s stubResolver) Resolve(_ context.Context, _, vendor string) (string, bool
 	return "stub-key", true, nil
 }
 
+// stubWeightsResolver reports a resolvable weights snapshot only for model
+// IDs in ok.
+type stubWeightsResolver struct {
+	ok map[string]bool
+}
+
+func (s stubWeightsResolver) Resolve(_ context.Context, modelID string) (string, bool, error) {
+	if !s.ok[modelID] {
+		return "", false, nil
+	}
+	return "snap-stub", true, nil
+}
+
+// errWeightsResolver simulates a broken resolver (e.g. a JetStream outage):
+// every Resolve call fails rather than cleanly reporting not-found.
+type errWeightsResolver struct{}
+
+func (errWeightsResolver) Resolve(_ context.Context, _ string) (string, bool, error) {
+	return "", false, errors.New("kv unavailable")
+}
+
+// withWeightsResolver installs r as the package-level weights resolver for
+// the duration of the test, restoring the no-op default on cleanup —
+// ListFoundationModels and GetFoundationModel read it via
+// currentWeightsResolver rather than a parameter.
+func withWeightsResolver(t *testing.T, r WeightsResolver) {
+	t.Helper()
+	SetWeightsResolver(r)
+	t.Cleanup(func() { SetWeightsResolver(nil) })
+}
+
 func modelIDs(out *bedrock.ListFoundationModelsOutput) []string {
 	ids := make([]string, 0, len(out.ModelSummaries))
 	for _, m := range out.ModelSummaries {
@@ -30,33 +62,73 @@ func modelIDs(out *bedrock.ListFoundationModelsOutput) []string {
 	return ids
 }
 
-func TestListFoundationModels_SelfHostAlwaysIncluded(t *testing.T) {
+func TestListFoundationModels_SelfHostIncludedWhenWeightsResolve(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{"meta.llama3-2-1b-instruct-v1:0": true}})
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
-	assert.Contains(t, modelIDs(out), "meta.llama3-70b-instruct-v1:0")
+	assert.Contains(t, modelIDs(out), "meta.llama3-2-1b-instruct-v1:0")
+}
+
+func TestListFoundationModels_SelfHostExcludedWhenWeightsUnresolvable(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
+	require.NoError(t, err)
+	assert.NotContains(t, modelIDs(out), "meta.llama3-2-1b-instruct-v1:0")
 }
 
 func TestListFoundationModels_ProviderIncludedWhenResolvable(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
 	assert.Contains(t, modelIDs(out), "anthropic.claude-3-5-sonnet-20240620-v1:0")
 }
 
 func TestListFoundationModels_ProviderExcludedWhenUnresolvable(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
 	assert.NotContains(t, modelIDs(out), "anthropic.claude-3-5-sonnet-20240620-v1:0")
 }
 
-func TestGetFoundationModel_KnownModel(t *testing.T) {
-	out, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0")
+func TestGetFoundationModel_KnownModelWithResolvableWeights(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{"meta.llama3-2-1b-instruct-v1:0": true}})
+	out, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0")
 	require.NoError(t, err)
 	require.NotNil(t, out.ModelDetails)
-	assert.Equal(t, "meta.llama3-70b-instruct-v1:0", *out.ModelDetails.ModelId)
+	assert.Equal(t, "meta.llama3-2-1b-instruct-v1:0", *out.ModelDetails.ModelId)
+}
+
+func TestGetFoundationModel_SelfHostWithUnresolvableWeightsReturnsNotFound(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
+	_, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0")
+	require.Error(t, err)
+	assert.Equal(t, "ResourceNotFoundException", err.Error())
 }
 
 func TestGetFoundationModel_UnknownModelReturnsNotFound(t *testing.T) {
 	_, err := GetFoundationModel(context.Background(), "000000000001", "does-not-exist")
 	require.Error(t, err)
 	assert.Equal(t, "ResourceNotFoundException", err.Error())
+}
+
+func TestGetFoundationModel_WeightsResolveErrorIsNotResourceNotFound(t *testing.T) {
+	withWeightsResolver(t, errWeightsResolver{})
+	_, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0")
+	require.Error(t, err)
+	assert.NotEqual(t, "ResourceNotFoundException", err.Error())
+}
+
+func TestListFoundationModels_WeightsResolveErrorPropagates(t *testing.T) {
+	withWeightsResolver(t, errWeightsResolver{})
+	_, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
+	require.Error(t, err)
+	assert.NotEqual(t, "ResourceNotFoundException", err.Error())
+}
+
+func TestCatalog_SelfHostEntryCarriesServingSpec(t *testing.T) {
+	entry, ok := lookupCatalogEntry("meta.llama3-2-1b-instruct-v1:0")
+	require.True(t, ok)
+	assert.Positive(t, entry.MinVRAMMiB)
+	assert.NotEmpty(t, entry.InstanceType)
+	assert.NotEmpty(t, entry.VLLMArgs)
 }

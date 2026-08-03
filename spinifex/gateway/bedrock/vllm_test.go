@@ -31,7 +31,7 @@ func TestVLLMProvider_Converse_MapsResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -70,7 +70,7 @@ func TestVLLMProvider_Converse_UnresolvedEndpointReturnsModelNotReady(t *testing
 		},
 	}
 
-	_, err := p.Converse(context.Background(), "meta.llama3-70b-instruct-v1:0", input)
+	_, err := p.Converse(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -123,7 +123,7 @@ func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -175,7 +175,7 @@ func TestVLLMProvider_ConverseStream_UnresolvedEndpointReturnsModelNotReady(t *t
 		},
 	}
 
-	_, err := p.ConverseStream(context.Background(), "meta.llama3-70b-instruct-v1:0", input)
+	_, err := p.ConverseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -187,7 +187,7 @@ func TestVLLMProvider_ConverseStream_UpstreamNon2xxMapsStatus(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -215,7 +215,7 @@ func TestVLLMProvider_ConverseStream_UsageWithoutFinishReasonKeepsOrder(t *testi
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -247,7 +247,7 @@ func TestVLLMProvider_ConverseStream_EmptyStreamIsWellFormed(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 
@@ -279,7 +279,7 @@ func TestVLLMConverseStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *t
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	p := newVLLMProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 

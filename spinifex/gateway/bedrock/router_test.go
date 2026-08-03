@@ -45,7 +45,7 @@ func TestRouter_Converse_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 
 	out, err := rt.Converse(context.Background(), "000000000001", modelID, converseInput())
@@ -79,7 +79,7 @@ func TestConverse_PackageEntryPoint_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	out, err := Converse(context.Background(), "000000000001", modelID, converseInput(), nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	require.NoError(t, err)
 	require.NotNil(t, out.Output.Message)
@@ -108,7 +108,7 @@ func TestRouter_ConverseStream_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 
 	src, err := rt.ConverseStream(context.Background(), "000000000001", modelID, converseStreamInput())
@@ -135,7 +135,7 @@ func TestRouter_ConverseStream_AnthropicNoCredentialReturnsAccessDenied(t *testi
 
 func TestRouter_ConverseStream_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
 	rt := NewRouter(nil, nil)
-	_, err := rt.ConverseStream(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", converseStreamInput())
+	_, err := rt.ConverseStream(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", converseStreamInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -146,7 +146,7 @@ func TestNewRouter_NilArgumentsFallBackToNoops(t *testing.T) {
 
 	// Self-host model with no endpoint resolver configured resolves nothing,
 	// so it must report ModelNotReady rather than panic on a nil resolver.
-	_, err := rt.Converse(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", converseInput())
+	_, err := rt.Converse(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", converseInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }

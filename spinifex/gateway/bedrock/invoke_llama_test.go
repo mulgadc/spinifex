@@ -29,7 +29,7 @@ func TestLlamaInvokeAdapter_InvokeModel_MapsRequestAndResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	a.httpClient = ts.Client()
 
@@ -66,7 +66,7 @@ func TestLlamaInvokeAdapter_InvokeModel_MapsLengthFinishReason(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	a.httpClient = ts.Client()
 
@@ -86,7 +86,7 @@ func TestLlamaInvokeAdapter_InvokeModel_EmptyChoicesReturnsModelError(t *testing
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	a.httpClient = ts.Client()
 
@@ -98,7 +98,7 @@ func TestLlamaInvokeAdapter_InvokeModel_EmptyChoicesReturnsModelError(t *testing
 func TestLlamaInvokeAdapter_InvokeModel_UnresolvedEndpointReturnsModelNotReady(t *testing.T) {
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(nil))
 
-	_, _, err := a.InvokeModel(context.Background(), "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	_, _, err := a.InvokeModel(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -147,7 +147,7 @@ func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_TranslatesChunks(t *te
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	a.httpClient = ts.Client()
 
@@ -178,7 +178,7 @@ func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_TranslatesChunks(t *te
 func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_UnresolvedEndpointReturnsModelNotReady(t *testing.T) {
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(nil))
 
-	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -191,7 +191,7 @@ func TestLlamaInvokeStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *te
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	a := newLlamaInvokeAdapter(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	a.httpClient = ts.Client()
 

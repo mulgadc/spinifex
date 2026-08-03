@@ -301,6 +301,13 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
 
+	// Bedrock self-host weights: a model's serving spec (VRAM, instance type,
+	// vLLM args) ships in-tree, but which staged snapshot serves it is
+	// deployment-local state. tieredCatalog/GetFoundationModel read this
+	// through the package-level resolver rather than a parameter, since they
+	// are called from gateway/bedrock.go's fixed-arity route table.
+	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
+
 	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.

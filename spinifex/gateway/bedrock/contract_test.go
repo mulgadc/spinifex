@@ -44,7 +44,7 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 	}))
 	defer vllmStub.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	endpoints := NewStaticEndpointResolver(map[string]string{modelID: vllmStub.URL})
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +188,7 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 	}))
 	defer llamaStub.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	endpoints := NewStaticEndpointResolver(map[string]string{modelID: llamaStub.URL})
 
 	svc := contractSession(t, func(w http.ResponseWriter, r *http.Request) {

@@ -141,7 +141,7 @@ func TestConverseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.
 
 func TestConverseStream_MalformedBodyReturnsValidationException(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-70b-instruct-v1:0", []byte("{not-json"), nil, nil)
+	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte("{not-json"), nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
 }
@@ -154,7 +154,7 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rec := httptest.NewRecorder()
 	body, err := json.Marshal(&bedrockruntime.ConverseStreamInput{
 		Messages: []*bedrockruntime.Message{
@@ -188,7 +188,7 @@ func TestConverseStream_NonFlusherWriter_ReturnsPreHeaderError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	w := &nonFlusherWriter{}
 	body, err := json.Marshal(&bedrockruntime.ConverseStreamInput{
 		Messages: []*bedrockruntime.Message{

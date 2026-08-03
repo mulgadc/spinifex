@@ -2,10 +2,12 @@ package host
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"net"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -22,10 +24,11 @@ const (
 // Kept in one place so the endpoint addresses and the ingress flows stay in sync.
 var imdsCaptureAddrs = []string{imdsMetaAddr, imdsDNSAddr}
 
-// Per-tap OpenFlow priorities on IMDSBridge. Demux (.254/.253 interception) and
-// egress sit above the forward flows so IMDS traffic is captured and everything
-// else is bridged tap<->patch to br-int.
+// Per-tap OpenFlow priorities on IMDSBridge. The ARP responder, demux
+// (.254/.253 interception) and egress sit above the forward flows so IMDS
+// traffic is captured and everything else is bridged tap<->patch to br-int.
 const (
+	imdsARPPriority     = 250
 	imdsDemuxPriority   = 200
 	imdsForwardPriority = 100
 )
@@ -220,9 +223,23 @@ func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val stri
 // here would wipe the forward flows the patch installer added under the same cookie.
 func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	cookie := imdsFlowCookie(d.Endpoint)
-	// Ingress: guest -> endpoint. The guest addresses the frame to its gateway
-	// MAC (.254/.253 are off-link, routed via the default gateway), so rewrite
-	// the dst MAC to the endpoint or the kernel drops it as OTHERHOST.
+	// ARP: a guest that treats 169.254.0.0/16 as on-link (RFC 3927, which is what
+	// Windows does) resolves the captured addresses itself instead of routing via
+	// the gateway. Nothing on br-int or in OVN owns them, so answer here or that
+	// guest never reaches IMDS at all.
+	for _, addr := range imdsCaptureAddrs {
+		spec, err := imdsARPResponderFlow(d, addr)
+		if err != nil {
+			return err
+		}
+		if err := installIMDSFlow(ctx, r, cookie, spec); err != nil {
+			return err
+		}
+	}
+	// Ingress: guest -> endpoint. A guest that routed the frame addressed it to
+	// its gateway MAC, and one that resolved it on-link used the MAC the ARP
+	// responder gave out; either way rewrite the dst MAC to the endpoint or the
+	// kernel drops it as OTHERHOST.
 	for _, addr := range imdsCaptureAddrs {
 		spec := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,nw_dst=%s,actions=mod_dl_dst:%s,output:%s",
 			imdsDemuxPriority, d.Tap, addr, d.EndpointMAC, d.Endpoint)
@@ -235,4 +252,52 @@ func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error
 	egress := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,actions=mod_dl_src:%s,mod_dl_dst:%s,output:%s",
 		imdsDemuxPriority, d.Endpoint, d.GatewayMAC, d.GuestMAC, d.Tap)
 	return installIMDSFlow(ctx, r, cookie, egress)
+}
+
+// imdsARPResponderFlow builds the flow that turns a guest's ARP request for addr
+// into a reply reflected back out the tap. The reply advertises GatewayMAC — the
+// same L2 identity the egress flow already presents — so the guest sees one MAC
+// for the address however it resolved it, and the ingress demux (which matches
+// in_port and nw_dst, not dst MAC) still catches what it sends.
+func imdsARPResponderFlow(d IMDSTapDatapath, addr string) (string, error) {
+	mac, err := macToHex(d.GatewayMAC)
+	if err != nil {
+		return "", err
+	}
+	ip, err := ipv4ToHex(addr)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("table=0,priority=%d,in_port=%s,arp,arp_tpa=%s,arp_op=1,"+
+		"actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:%s,"+
+		"load:0x2->NXM_OF_ARP_OP[],"+
+		"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],"+
+		"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],"+
+		"load:0x%s->NXM_NX_ARP_SHA[],load:0x%s->NXM_OF_ARP_SPA[],IN_PORT",
+		imdsARPPriority, d.Tap, addr, d.GatewayMAC, mac, ip), nil
+}
+
+// macToHex renders a MAC as the bare hex OpenFlow's load: action expects.
+func macToHex(mac string) (string, error) {
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return "", fmt.Errorf("parse MAC %q: %w", mac, err)
+	}
+	if len(hw) != 6 {
+		return "", fmt.Errorf("MAC %q is not 48-bit", mac)
+	}
+	return hex.EncodeToString(hw), nil
+}
+
+// ipv4ToHex renders an IPv4 address as the bare hex OpenFlow's load: action expects.
+func ipv4ToHex(addr string) (string, error) {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return "", fmt.Errorf("parse IP %q", addr)
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return "", fmt.Errorf("IP %q is not IPv4", addr)
+	}
+	return hex.EncodeToString(v4), nil
 }

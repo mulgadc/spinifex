@@ -272,6 +272,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			Description:        aws.String(amiMeta.Description),
 			Architecture:       aws.String(amiMeta.Architecture),
 			PlatformDetails:    aws.String(amiMeta.PlatformDetails),
+			Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
 			CreationDate:       aws.String(amiMeta.CreationDate.Format("2006-01-02T15:04:05.000Z")),
 			RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 			VirtualizationType: aws.String(amiMeta.Virtualization),

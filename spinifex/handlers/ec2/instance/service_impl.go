@@ -551,6 +551,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		}
 		instance.BootMode = amiMeta.BootMode
 
+		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
+		// even if the image is later deregistered.
+		ec2Instance.Platform = utils.PlatformFromDetails(amiMeta.PlatformDetails)
+
 		// Terraform may pass subnet/SG via NetworkInterfaces[0]; lift to top-level.
 		if (input.SubnetId == nil || *input.SubnetId == "") &&
 			len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {

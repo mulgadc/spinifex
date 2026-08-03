@@ -1,0 +1,75 @@
+#!/bin/bash
+set -euo pipefail
+
+# vllm postinst — bakes vLLM's OpenAI-compatible server into a uv-managed venv
+# and enables vllm-serve.service. A venv, not a container: a runtime `docker
+# pull vllm/vllm-openai` inside a guest is known-fatal on this platform (see
+# the viperblock write-plane-throughput investigation — it stalled indefinitely
+# and drove host load to ~124), and mkosi's unprivileged user-namespace build
+# has no daemon in the builder to pull into regardless. Baking the venv here
+# instead makes first boot a pure local read.
+#
+# The .chroot suffix means mkosi has already chrooted into the image root
+# before this runs, same as gpu-nvidia's postinst.
+
+VLLM_HOME=/opt/vllm
+
+# The exact CPython version vLLM's own wheels are built and tested against.
+# Ubuntu 26.04's system interpreter is newer than that range, and pinning
+# against a distro default that moves is exactly the drift the mkosi
+# migration exists to delete — uv fetches this standalone build instead, so
+# the interpreter is a build input, not a distro accident. Bumping this is a
+# deliberate edit, done alongside checking vLLM's published wheel matrix.
+readonly VLLM_PYTHON_VERSION="3.12.8"
+
+# uv's own version, not the Python or vllm it installs. Astral's installer
+# accepts a versioned URL, so this pin is the same "build input, not a distro
+# accident" guarantee as VLLM_PYTHON_VERSION above — an unpinned `install.sh`
+# would let the installer itself drift between two builds of the same commit.
+readonly UV_VERSION="0.12.1"
+
+# The vLLM release baked into the venv. Pinned for the same reason as the
+# CPython and uv versions above: two builds of the same commit must produce
+# the same image. Bumping this is a deliberate edit, done alongside checking
+# vLLM's published wheel matrix against VLLM_PYTHON_VERSION.
+readonly VLLM_VERSION="0.26.0"
+
+PYTHON_INSTALL_DIR="${VLLM_HOME}/python"
+VENV_DIR="${VLLM_HOME}/venv"
+
+mkdir -p "${VLLM_HOME}"
+
+# uv itself is not in the Ubuntu archive, so its own installer is used rather
+# than Packages=. --no-modify-path: there is no interactive shell profile in a
+# chroot for it to edit, and UV_INSTALL_DIR pins the destination so no PATH
+# guessing is needed for the invocations below.
+curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
+command -v uv >/dev/null || {
+    echo "ERROR: uv installer completed but uv is not on PATH" >&2
+    exit 1
+}
+
+echo "[vllm] installing CPython ${VLLM_PYTHON_VERSION} via uv"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv python install "${VLLM_PYTHON_VERSION}"
+
+echo "[vllm] creating venv at ${VENV_DIR}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv venv --python "${VLLM_PYTHON_VERSION}" "${VENV_DIR}"
+
+echo "[vllm] installing vllm ${VLLM_VERSION} into ${VENV_DIR}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" uv pip install --python "${VENV_DIR}/bin/python" "vllm==${VLLM_VERSION}"
+
+# The one thing this script must not do silently: ship an image whose venv
+# does not actually run. vLLM only touches CUDA/the driver at serve time, so
+# --version is safe to assert here with no GPU present in the build sandbox.
+if ! "${VENV_DIR}/bin/vllm" --version; then
+    echo "ERROR: vllm --version failed in the baked venv at ${VENV_DIR}" >&2
+    exit 1
+fi
+
+# 0644 in git, and ExtraTrees= preserves source mode — without this the unit
+# dies with EACCES on first boot and nowhere earlier.
+chmod 0755 /usr/local/sbin/vllm-serve
+
+systemctl enable vllm-serve.service
+
+echo "vllm postinst complete: CPython ${VLLM_PYTHON_VERSION} / uv ${UV_VERSION} / vllm ${VLLM_VERSION} venv baked at ${VENV_DIR}, vllm-serve.service enabled"

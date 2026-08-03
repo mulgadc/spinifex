@@ -26,6 +26,10 @@ const (
 	// UI's listings and the platform's own sweeps.
 	ManagedByRDS = "rds"
 
+	// ManagedByBedrock identifies self-hosted vLLM serving VMs, their ENIs, the
+	// vllm-serving AMI, and the shared Bedrock system VPC.
+	ManagedByBedrock = "bedrock"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 
@@ -45,5 +49,5 @@ const (
 // VMs bind a system.TerminateInstance.{id} subject so a cluster-wide teardown
 // invoked on any node can route a terminate to the owning node.
 func IsSystemManaged(managedBy string) bool {
-	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS
+	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS || managedBy == ManagedByBedrock
 }

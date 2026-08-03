@@ -11,13 +11,14 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const bedrockTestAccount = "123456789012"
-const bedrockTestLlamaModelID = "meta.llama3-70b-instruct-v1:0"
+const bedrockTestLlamaModelID = "meta.llama3-2-1b-instruct-v1:0"
 
 // newVLLMStub stands up an httptest server that answers the OpenAI
 // chat-completions wire, mirroring gateway/bedrock/vllm_test.go's stub.
@@ -52,13 +53,30 @@ func newLlamaCompletionsStub(t *testing.T) *httptest.Server {
 	return ts
 }
 
+// bedrockRequestWeightsStub resolves a weights snapshot only for
+// bedrockTestLlamaModelID, standing in for the KV override
+// ListFoundationModels/GetFoundationModel gate self-host entries on.
+type bedrockRequestWeightsStub struct{}
+
+func (bedrockRequestWeightsStub) Resolve(_ context.Context, modelID string) (string, bool, error) {
+	if modelID != bedrockTestLlamaModelID {
+		return "", false, nil
+	}
+	return "snap-stub", true, nil
+}
+
 // newBedrockRequestGateway builds a GatewayConfig with a real NATS connection
 // (satisfying Bedrock_Request/BedrockRuntime_Request's nil-check only — no
 // NATS subject handling is required for these routes), no IAMService (so
 // checkPolicy is a no-op), and BedrockEndpoints pinned at the given vLLM stub.
+// ListFoundationModels/GetFoundationModel read the weights resolver through a
+// package-level setter rather than a GatewayConfig field, so it is installed
+// here and reset on cleanup.
 func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
+	gateway_bedrock.SetWeightsResolver(bedrockRequestWeightsStub{})
+	t.Cleanup(func() { gateway_bedrock.SetWeightsResolver(nil) })
 	return &GatewayConfig{
 		NATSConn:       nc,
 		DisableLogging: true,

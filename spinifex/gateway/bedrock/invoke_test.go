@@ -23,7 +23,7 @@ func TestInvokeRouter_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 
 	respBody, contentType, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`))
@@ -51,7 +51,7 @@ func TestInvokeRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
 
 func TestInvokeRouter_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
 	rt := NewInvokeRouter(nil, nil)
-	_, _, err := rt.InvokeModel(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	_, _, err := rt.InvokeModel(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
@@ -67,7 +67,7 @@ func TestInvokeModel_PackageEntryPoint_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	respBody, contentType, err := InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	require.NoError(t, err)
 	assert.Equal(t, "application/json", contentType)
@@ -91,7 +91,7 @@ func TestInvokeStreamRouter_SelfHostSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`))
@@ -118,7 +118,7 @@ func TestInvokeStreamRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.
 
 func TestInvokeStreamRouter_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
 	rt := NewInvokeStreamRouter(nil, nil)
-	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "meta.llama3-70b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }

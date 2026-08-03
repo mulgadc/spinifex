@@ -84,7 +84,7 @@ func TestInvokeModelWithResponseStream_SelfHostHappyPath_WritesChunkFrames(t *te
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	rec := httptest.NewRecorder()
 	body := []byte(`{"prompt":"hello","max_gen_len":128}`)
 
@@ -109,7 +109,7 @@ func TestInvokeModelWithResponseStream_NonFlusherWriter_ReturnsPreHeaderError(t 
 	}))
 	defer ts.Close()
 
-	modelID := "meta.llama3-70b-instruct-v1:0"
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	w := &nonFlusherWriter{}
 	body := []byte(`{"prompt":"hello"}`)
 

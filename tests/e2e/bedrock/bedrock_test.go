@@ -17,7 +17,7 @@ import (
 
 // Catalog model IDs mirror the static Phase-1 catalog in gateway_bedrock.
 const (
-	modelSelfHostLlama = "meta.llama3-70b-instruct-v1:0"
+	modelSelfHostLlama = "meta.llama3-2-1b-instruct-v1:0"
 	modelAnthropic     = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 	modelBogus         = "does.not-exist-v1:0"
 )

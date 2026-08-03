@@ -120,6 +120,11 @@ func deleteJSON(ctx context.Context, kv jetstream.KeyValue, key string) error {
 func ListEndpoints(ctx context.Context, kv jetstream.KeyValue, accountID string) ([]EndpointRecord, error) {
 	keys, err := kvutil.Keys(ctx, kv)
 	if err != nil {
+		// An empty bucket is the normal state before any endpoint has ever
+		// been created, not a failure, matching every other kvutil.Keys caller.
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return []EndpointRecord{}, nil
+		}
 		return nil, fmt.Errorf("bedrock: list endpoint keys: %w", err)
 	}
 	prefix := endpointsPrefix(accountID)

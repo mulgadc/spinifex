@@ -86,6 +86,11 @@ func TestAutomatedBackups(t *testing.T) {
 			if len(snapshots) == 0 {
 				return fmt.Errorf("no automated snapshot of %s yet", id)
 			}
+			// The record is published as creating and settles a second or so
+			// later, so its mere existence is not the backup being taken.
+			if status := aws.StringValue(snapshots[0].Status); status != "available" {
+				return fmt.Errorf("the automated snapshot of %s is %s", id, status)
+			}
 			snapshot = aws.StringValue(snapshots[0].DBSnapshotIdentifier)
 			return nil
 		}, 8*time.Minute, 15*time.Second)

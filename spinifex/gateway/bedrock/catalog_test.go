@@ -143,6 +143,7 @@ func TestLookupServingSpec_SelfHostEntry(t *testing.T) {
 	assert.Equal(t, "meta.llama3-2-1b-instruct-v1:0", spec.ModelID)
 	assert.NotEmpty(t, spec.InstanceType)
 	assert.Positive(t, spec.MinVRAMMiB)
+	assert.NotEmpty(t, spec.VLLMArgs)
 }
 
 // TestLookupServingSpec_ProviderEntry covers the refusal case 'stage' must

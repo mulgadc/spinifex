@@ -172,20 +172,21 @@ func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 	return catalogEntry{}, false
 }
 
-// ServingSpec is the subset of a self-host catalog entry that external
-// callers (the 'ochre weights stage' CLI) need to validate a model ID before
-// staging weights against it.
+// ServingSpec is the subset of a self-host catalog entry needed both by
+// external callers (the 'ochre weights stage' CLI, validating a model ID
+// before staging weights) and by the daemon-side launcher (placing and
+// booting the serving VM), without exposing catalogEntry's AWS-shaped fields.
 type ServingSpec struct {
 	ModelID      string
-	InstanceType string
 	MinVRAMMiB   int
+	InstanceType string
+	VLLMArgs     []string
 }
 
-// LookupServingSpec returns modelID's self-host serving spec. found reports
-// whether modelID exists in the catalog at all; selfHost reports whether it
-// is a self-host entry (as opposed to a provider entry) when found is true.
-// Staging weights against an unknown or non-self-host model ID is always a
-// mistake, so callers should refuse rather than proceed when either is false.
+// LookupServingSpec returns modelID's serving spec. found reports whether
+// modelID exists in the catalog at all; selfHost reports whether it is a
+// self-host entry (as opposed to a provider entry) when found is true. A
+// caller wanting the old found-and-servable behaviour checks found && selfHost.
 func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
@@ -196,8 +197,9 @@ func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) 
 	}
 	return ServingSpec{
 		ModelID:      entry.ModelID,
-		InstanceType: entry.InstanceType,
 		MinVRAMMiB:   entry.MinVRAMMiB,
+		InstanceType: entry.InstanceType,
+		VLLMArgs:     entry.VLLMArgs,
 	}, true, true
 }
 
@@ -214,30 +216,6 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 		summaries = append(summaries, entry.toSummary())
 	}
 	return &bedrock.ListFoundationModelsOutput{ModelSummaries: summaries}, nil
-}
-
-// ServingSpec is the subset of a self-host catalog entry the daemon-side
-// launcher needs to place and boot a serving VM. A separate type (rather than
-// exporting catalogEntry) keeps the launcher from depending on the AWS-shaped
-// summary/details fields this package alone renders.
-type ServingSpec struct {
-	MinVRAMMiB   int
-	InstanceType string
-	VLLMArgs     []string
-}
-
-// LookupServingSpec returns modelID's serving spec. ok is false for an
-// unknown model or a provider (non-self-host) entry, which has none.
-func LookupServingSpec(modelID string) (spec ServingSpec, ok bool) {
-	entry, found := lookupCatalogEntry(modelID)
-	if !found || entry.Provider != tierSelfHost {
-		return ServingSpec{}, false
-	}
-	return ServingSpec{
-		MinVRAMMiB:   entry.MinVRAMMiB,
-		InstanceType: entry.InstanceType,
-		VLLMArgs:     entry.VLLMArgs,
-	}, true
 }
 
 // GetFoundationModel looks up a single model by exact modelId. Unknown

@@ -13,16 +13,6 @@
 name: Segscan Storage Oracle
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-    paths:
-      - "**/*.go"
-      - go.mod
-      - go.sum
-      - Makefile
-      - .github/workflows/segscan-oracle.yml
   workflow_dispatch:
 
 permissions:

@@ -84,6 +84,21 @@ func TestPutModelInvocationLoggingConfiguration_RequiresBucketWhenDeliveryEnable
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
 }
 
+// TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelivery
+// covers embedding delivery on its own: enabling it with no bucket is as
+// undeliverable as text or image, so it must not slip past the same gate.
+func TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelivery(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	store := NewLoggingConfigStore(js, 1)
+
+	input := &bedrock.PutModelInvocationLoggingConfigurationInput{
+		LoggingConfig: &bedrock.LoggingConfig{EmbeddingDataDeliveryEnabled: aws.Bool(true)},
+	}
+	_, err := PutModelInvocationLoggingConfiguration(context.Background(), "000000000001", store, input)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+}
+
 // TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs drives the
 // three control-plane handlers with real aws-sdk-go v1 bedrock structs, the
 // same shapes a genuine SDK client marshals, rather than this package's own
@@ -95,9 +110,10 @@ func TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs(t *testing.
 
 	putInput := &bedrock.PutModelInvocationLoggingConfigurationInput{
 		LoggingConfig: &bedrock.LoggingConfig{
-			S3Config:                 &bedrock.S3Config{BucketName: aws.String("acct-bucket"), KeyPrefix: aws.String("bedrock")},
-			TextDataDeliveryEnabled:  aws.Bool(true),
-			ImageDataDeliveryEnabled: aws.Bool(false),
+			S3Config:                     &bedrock.S3Config{BucketName: aws.String("acct-bucket"), KeyPrefix: aws.String("bedrock")},
+			TextDataDeliveryEnabled:      aws.Bool(true),
+			ImageDataDeliveryEnabled:     aws.Bool(false),
+			EmbeddingDataDeliveryEnabled: aws.Bool(true),
 		},
 	}
 	_, err := PutModelInvocationLoggingConfiguration(ctx, "000000000001", store, putInput)
@@ -111,6 +127,9 @@ func TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs(t *testing.
 	assert.Equal(t, "bedrock", aws.StringValue(getOut.LoggingConfig.S3Config.KeyPrefix))
 	assert.True(t, aws.BoolValue(getOut.LoggingConfig.TextDataDeliveryEnabled))
 	assert.False(t, aws.BoolValue(getOut.LoggingConfig.ImageDataDeliveryEnabled))
+	// A flag the internal LoggingConfig has no field for is accepted by Put and
+	// then silently absent from Get, so assert the round-trip, not just the Put.
+	assert.True(t, aws.BoolValue(getOut.LoggingConfig.EmbeddingDataDeliveryEnabled))
 
 	_, err = DeleteModelInvocationLoggingConfiguration(ctx, "000000000001", store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
 	require.NoError(t, err)

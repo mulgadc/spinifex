@@ -4,6 +4,7 @@ package rds
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The namespace automated snapshots own, as in AWS.
-const automatedSnapshotPrefix = "rds:"
+const (
+	// The namespace automated snapshots own, as in AWS.
+	automatedSnapshotPrefix = "rds:"
+
+	// The retention reaper runs every two minutes. Three passes leave room for a
+	// pass already in flight when the snapshot ages are changed.
+	retentionSweepTimeout = 7 * time.Minute
+)
 
 // TestAutomatedBackups drives what only a live cluster can prove about rds-9:
 // the leader's window pass actually fires against a real engine, the snapshot it
@@ -28,23 +35,19 @@ const automatedSnapshotPrefix = "rds:"
 // slower than the window would otherwise miss it and there is no catch-up.
 func TestAutomatedBackups(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	// The instance being backed up, plus the restore that holds one of its
+	// snapshots open across the sweep.
+	reserveDBVMs(t, dbClass, dbClass)
+
 	id := fmt.Sprintf("%s-backup-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q with automated backups on", id)
-	_, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier:  aws.String(id),
-		Engine:                aws.String(dbEngine),
-		DBInstanceClass:       aws.String(dbClass),
-		AllocatedStorage:      aws.Int64(dbStorageGiB),
-		DBName:                aws.String(dbName),
-		MasterUsername:        aws.String(dbMasterUser),
-		MasterUserPassword:    aws.String(dbMasterPassword),
-		BackupRetentionPeriod: aws.Int64(1),
+	createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.BackupRetentionPeriod = aws.Int64(1)
 	})
-	require.NoError(t, err, "create-db-instance")
-	t.Cleanup(func() { deleteInstance(t, f, id) })
 
-	instance := harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+	instance := waitForAvailable(t, f, id)
 	assert.Equal(t, int64(1), aws.Int64Value(instance.BackupRetentionPeriod))
 	// A create that names no window is assigned one, as AWS does, so a customer is
 	// never left believing nothing is scheduled.
@@ -82,6 +85,11 @@ func TestAutomatedBackups(t *testing.T) {
 			}
 			if len(snapshots) == 0 {
 				return fmt.Errorf("no automated snapshot of %s yet", id)
+			}
+			// The record is published as creating and settles a second or so
+			// later, so its mere existence is not the backup being taken.
+			if status := aws.StringValue(snapshots[0].Status); status != "available" {
+				return fmt.Errorf("the automated snapshot of %s is %s", id, status)
 			}
 			snapshot = aws.StringValue(snapshots[0].DBSnapshotIdentifier)
 			return nil
@@ -128,6 +136,61 @@ func TestAutomatedBackups(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, snapshots, 1, "the window has already fired; a second backup means it fired per pass")
 		}
+	})
+
+	// One sweep over three aged backups proves all retention rules together: the
+	// oldest is deleted, the middle snapshot is held by a restore, and the newest
+	// survives even though it is beyond the configured retention.
+	t.Run("RetentionSweepRules", func(t *testing.T) {
+		requireSnapshot(t, snapshot)
+		oldest := snapshot
+		inUse := waitForNextAutomatedSnapshot(t, f, id)
+		newest := waitForNextAutomatedSnapshot(t, f, id)
+
+		restoredID := fmt.Sprintf("%s-backup-reader-%d", dbInstancePfx, time.Now().Unix())
+		harness.Phase(t, "Restoring %q from automated snapshot %q", restoredID, inUse)
+		restoreFromSnapshot(t, f, restoredID, inUse)
+		waitForAvailable(t, f, restoredID)
+
+		for _, snapshotID := range []string{oldest, inUse, newest} {
+			harness.AgeAutomatedBackup(t, f.Env, f.Account, snapshotID, 2*24*time.Hour)
+		}
+
+		harness.Phase(t, "Waiting for the retention sweep of %q", id)
+		harness.EventuallyErr(t, func() error {
+			snapshots, err := automatedSnapshots(f, id)
+			if err != nil {
+				return err
+			}
+			ids := automatedSnapshotIDs(snapshots)
+			if !slices.Contains(ids, inUse) {
+				t.Fatalf("in-use automated snapshot %s was swept", inUse)
+			}
+			if !slices.Contains(ids, newest) {
+				t.Fatalf("newest automated snapshot %s was swept", newest)
+			}
+			if slices.Contains(ids, oldest) {
+				return fmt.Errorf("over-retention automated snapshot %s still exists", oldest)
+			}
+			return nil
+		}, retentionSweepTimeout, 15*time.Second)
+
+		t.Run("AnOverRetentionSnapshotIsSwept", func(t *testing.T) {
+			_, err := harness.DescribeDBSnapshot(f.AWS, oldest)
+			harness.AssertAWSError(t, err, "DBSnapshotNotFound")
+		})
+		t.Run("AnInUseSnapshotIsSkipped", func(t *testing.T) {
+			_, err := harness.DescribeDBSnapshot(f.AWS, inUse)
+			require.NoError(t, err, "the restore still reads through this snapshot")
+		})
+		t.Run("TheNewestIsKeptRegardless", func(t *testing.T) {
+			_, err := harness.DescribeDBSnapshot(f.AWS, newest)
+			require.NoError(t, err, "the newest backup must survive beyond retention")
+		})
+
+		// Release the restored volume before retention zero asks the next sweep to
+		// remove every snapshot, including the one that was in use above.
+		deleteInstance(t, f, restoredID)
 	})
 
 	// Turning retention off is what makes the data volume GC-eligible again, so it
@@ -182,6 +245,57 @@ func requireSnapshot(t *testing.T, snapshot string) {
 	}
 }
 
+// Moves the window forward and returns the one new snapshot it produces. The
+// existing identifiers distinguish it from every earlier fired window.
+func waitForNextAutomatedSnapshot(t *testing.T, f *Fixture, id string) string {
+	t.Helper()
+	before, err := automatedSnapshots(f, id)
+	require.NoError(t, err, "describe automated snapshots before moving the window")
+	beforeIDs := automatedSnapshotIDs(before)
+
+	instance, err := harness.DescribeDBInstance(f.AWS, id)
+	require.NoError(t, err, "describe-db-instances before moving the backup window")
+	currentWindow := aws.StringValue(instance.PreferredBackupWindow)
+	opens := time.Now().UTC().Add(time.Minute)
+	nextWindow := dailyWindowAt(opens, 30*time.Minute)
+	if nextWindow == currentWindow {
+		opens = opens.Add(time.Minute)
+		nextWindow = dailyWindowAt(opens, 30*time.Minute)
+	}
+
+	harness.Phase(t, "Moving the backup window of %q to %s", id, nextWindow)
+	_, err = f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
+		DBInstanceIdentifier:  aws.String(id),
+		PreferredBackupWindow: aws.String(nextWindow),
+		ApplyImmediately:      aws.Bool(true),
+	})
+	require.NoError(t, err, "modify-db-instance backup window")
+
+	var created string
+	harness.EventuallyErr(t, func() error {
+		snapshots, err := automatedSnapshots(f, id)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range automatedSnapshotIDs(snapshots) {
+			if !slices.Contains(beforeIDs, candidate) {
+				created = candidate
+				return nil
+			}
+		}
+		return fmt.Errorf("no new automated snapshot of %s yet", id)
+	}, 8*time.Minute, 15*time.Second)
+	return created
+}
+
+func automatedSnapshotIDs(snapshots []*rds.DBSnapshot) []string {
+	ids := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		ids = append(ids, aws.StringValue(snapshot.DBSnapshotIdentifier))
+	}
+	return ids
+}
+
 // AWS's hh24:mi-hh24:mi in UTC.
 func dailyWindowAt(start time.Time, length time.Duration) string {
 	return start.UTC().Format("15:04") + "-" + start.UTC().Add(length).Format("15:04")
@@ -195,17 +309,4 @@ func weeklyWindowAt(start time.Time, length time.Duration) string {
 func weekdayClock(at time.Time) string {
 	at = at.UTC()
 	return strings.ToLower(at.Format("Mon")) + ":" + at.Format("15:04")
-}
-
-func deleteInstance(t *testing.T, f *Fixture, id string) {
-	t.Helper()
-	_, err := f.AWS.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
-		DBInstanceIdentifier: aws.String(id),
-		SkipFinalSnapshot:    aws.Bool(true),
-	})
-	if err != nil {
-		t.Logf("delete-db-instance %s: %v (left behind for manual teardown)", id, err)
-		return
-	}
-	harness.WaitForDBInstanceGone(t, f.AWS, id)
 }

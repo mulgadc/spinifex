@@ -9,6 +9,14 @@ set -eu
 # and rds-datadir are executed directly by their services.
 chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-init /etc/init.d/rds-agent \
     /usr/local/sbin/rds-datadir /usr/local/sbin/rds-init
+chmod 0755 /etc/init.d/mulga-mgmt-net /etc/init.d/mulga-mgmt-net-routes \
+    /usr/local/sbin/mulga-mgmt-net
+
+# mulga-mgmt-net goes in the boot runlevel, not default (where ENABLE_SERVICES
+# lands services). It applies mgmt0's static address, which rds-agent needs to
+# reach the gateway at all, and DHCPs the data NIC so the init-local Ec2 crawl
+# reaches IMDS; a default entry runs after cloud-init-local and is too late.
+rc-update add mulga-mgmt-net boot
 
 # Where cloud-init drops the agent's env file and the gateway CA. Created here
 # so the delivery lands in a root-only directory.

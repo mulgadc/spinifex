@@ -19,6 +19,10 @@ HANDOFF_ENV="${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env"
 # before letting rds-init fail visibly rather than hanging forever.
 handoff_timeout="${RDS_HANDOFF_TIMEOUT:-120}"
 
+# How much of the agent log to mirror to the console when the handoff times out.
+# Enough to carry a few backed-off retries with their errors, not the whole boot.
+handoff_tail="${RDS_HANDOFF_TAIL:-20}"
+
 depend() {
     need net
     before rds-init
@@ -45,7 +49,19 @@ start_post() {
     _waited=0
     while [ ! -f "${HANDOFF_ENV}" ]; do
         if [ "${_waited}" -ge "${handoff_timeout}" ]; then
-            eend 1 "no bootstrap handoff after ${handoff_timeout}s; see /var/log/rds-agent.log"
+            eend 1 "no bootstrap handoff after ${handoff_timeout}s"
+            # Mirror the agent's own tail onto the console. The log lives inside a
+            # guest nothing can reach when this fails — an unreachable gateway is
+            # the usual cause — so the host-side console capture is the only way
+            # the dial error survives, and without it the failure reads as silence.
+            if [ -s "${output_log}" ]; then
+                einfo "last ${handoff_tail} lines of ${output_log}:"
+                tail -n "${handoff_tail}" "${output_log}" 2>/dev/null | while IFS= read -r _line; do
+                    einfo "  [rds-agent] ${_line}"
+                done
+            else
+                einfo "${output_log} is empty — the agent produced no output at all"
+            fi
             # The agent keeps retrying, so it is left running: rds-init fails on
             # the missing handoff and the engine stays down, which is what the
             # control plane observes.

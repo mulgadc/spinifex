@@ -94,7 +94,53 @@ func TestApplyPendingModifications_AppliesTheParametersBeforeTheOutage(t *testin
 
 	stored := h.record(t)
 	assert.Equal(t, testDefaultGroup, stored.DBParameterGroupName)
-	assert.Equal(t, []string{"shared_buffers"}, stored.PendingRebootParameters)
+	// The grow's stop/start is that restart, so the record does not go on
+	// advertising settings the engine came back on.
+	assert.Empty(t, stored.PendingRebootParameters)
+	assert.Contains(t, h.eventMessages(t), "Applied the parameters that were pending a reboot.")
+}
+
+// A group change on its own restarts nothing, so its statically-scoped settings
+// stay pending until the customer reboots — the one path that still reports
+// pending-reboot.
+func TestApplyPendingModifications_KeepsThePendingRebootParametersWithoutAnOutage(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.replyWith("shared_buffers")
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBParameterGroupName: testDefaultGroup,
+		RequestedAt:          time.Now().UTC(),
+	})
+	rec.DBParameterGroupName = ""
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+
+	assert.Empty(t, h.cmdr.calls, "a group change alone takes the engine down for nothing")
+	assert.Equal(t, []string{"shared_buffers"}, h.record(t).PendingRebootParameters)
+}
+
+// D16: a class change re-resolves the size-derived defaults and the replacement
+// VM boots on them, so the record must not report a change that has landed —
+// the customer would reboot a healthy database to clear it, and Terraform would
+// see it on every plan.
+func TestApplyPendingModifications_ClassChangeClearsThePendingRebootParameters(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.replyWith("shared_buffers")
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBInstanceClass: "db.m5.large",
+		RequestedAt:     time.Now().UTC(),
+	})
+	seedReplaceable(t, h, rec)
+
+	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+
+	stored := h.record(t)
+	assert.Equal(t, "db.m5.large", stored.DBInstanceClass)
+	assert.Empty(t, stored.PendingRebootParameters)
+	assert.Empty(t, rec.PendingRebootParameters, "the caller's copy reports what the store holds")
+	group := projectParameterGroup(&stored)
+	require.Len(t, group, 1)
+	assert.Equal(t, "in-sync", *group[0].ParameterApplyStatus)
 }
 
 // A parameter apply the agent rejects stops the modify before the outage: the

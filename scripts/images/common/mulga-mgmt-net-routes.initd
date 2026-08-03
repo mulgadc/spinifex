@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# mulga-mgmt-net-routes — the second pass of mulga-mgmt-net, re-applying the
+# fw_cfg netcfg route policy after cloud-init has run. The boot-runlevel pass
+# deletes the default route a NIC<n>_DEFAULT=0 interface leased, but cloud-init's
+# network stage then re-renders every ENI from IMDS and re-DHCPs them, putting it
+# back: an RDS DB VM ends up with default routes on both its system ENI and its
+# customer ENI, and the customer ENI can capture egress and (with a link-local
+# /16) the metadata path. Nothing is re-leased or re-addressed here.
+
+description="Re-assert fw_cfg netcfg route policy after cloud-init"
+
+# cloud-init is the network stage that re-renders the ENIs; this must follow it,
+# and precede anything that reaches the control plane over the primary ENI.
+depend() {
+    after cloud-init
+    before k3s k3s-agent rds-agent
+}
+
+start() {
+    ebegin "Re-asserting system-VM route policy from fw_cfg netcfg"
+    /usr/local/sbin/mulga-mgmt-net --enforce-routes
+    eend $?
+}

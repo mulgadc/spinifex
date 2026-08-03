@@ -5,8 +5,6 @@ package rds
 import (
 	"fmt"
 	"net"
-	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,54 +15,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	dbInstancePfx = "rds-e2e"
-	dbEngine      = "postgres"
-	dbClass       = "db.t3.medium"
-	dbStorageGiB  = 20
-	dbName        = "orders"
-	dbMasterUser  = "appuser"
-	// No '/', '"', '@' or spaces: the characters the API rejects because they
-	// break a connection string or the engine's own role syntax.
-	dbMasterPassword = "e2eSup3rSecret1"
-)
-
-// TestCreateDescribeConnect drives the first live RDS path: CreateDBInstance
-// (postgres, single-AZ) → available → an endpoint that resolves → a client that
-// connects with the master credentials and writes a row.
+// TestCreateDescribe drives the control-plane half of the first live RDS path:
+// CreateDBInstance (postgres, single-AZ) → available → the describe and tag
+// views a customer and the Terraform provider read it back through.
 //
-// The instance is created once and shared by the subtests: booting the VM and
-// running initdb is by far the slowest step.
-func TestCreateDescribeConnect(t *testing.T) {
+// The client leg is TestConnectivity's: a connection is only meaningful from
+// inside the customer VPC. The instance is created once and shared by the
+// subtests, because booting the VM and running initdb is by far the slowest step.
+func TestCreateDescribe(t *testing.T) {
 	f := requireRDSFixture(t)
+	t.Parallel()
+	reserveDBVMs(t, dbClass)
+
 	id := fmt.Sprintf("%s-%d", dbInstancePfx, time.Now().Unix())
 
 	harness.Phase(t, "Creating DB instance %q", id)
-	out, err := f.AWS.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create — the instance under test
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
-		Tags: []*rds.Tag{
+	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.Tags = []*rds.Tag{
 			{Key: aws.String("env"), Value: aws.String("e2e")},
 			{Key: aws.String("suite"), Value: aws.String("rds")},
-		},
+		}
 	})
-	require.NoError(t, err, "create-db-instance")
-	require.NotNil(t, out.DBInstance)
 
 	// The create returns before the engine exists, so the customer sees creating
 	// and polls; the reconciler owns the flip to available.
-	assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, id, aws.StringValue(out.DBInstance.DBInstanceIdentifier))
-	t.Logf("DB instance %s left behind for manual teardown: DeleteDBInstance is not implemented yet", id)
+	assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(created.DBInstanceStatus))
+	assert.Equal(t, id, aws.StringValue(created.DBInstanceIdentifier))
 
 	var instance *rds.DBInstance
 	t.Run("BecomesAvailable", func(t *testing.T) {
-		instance = harness.WaitForDBInstanceAvailable(t, f.AWS, id)
+		instance = waitForAvailable(t, f, id)
 
 		assert.Equal(t, dbEngine, aws.StringValue(instance.Engine))
 		assert.Equal(t, dbClass, aws.StringValue(instance.DBInstanceClass))
@@ -129,25 +109,19 @@ func TestCreateDescribeConnect(t *testing.T) {
 		assert.Equal(t, map[string]string{"env": "e2e-updated"}, tagMap(described.DBInstances[0].TagList))
 	})
 
-	t.Run("EndpointResolves", func(t *testing.T) {
+	// The endpoint's name, its resolution inside the guest and the client
+	// connection itself belong to TestConnectivity: a lookup or a psql on the
+	// machine running the test proves nothing about the path a customer takes.
+	t.Run("PublishesAnEndpoint", func(t *testing.T) {
 		requireAvailable(t, instance)
 		host := aws.StringValue(instance.Endpoint.Address)
-
-		// Without northstar the endpoint is the bare ENI IP, which is a valid
-		// endpoint and needs no resolution.
-		if ip := net.ParseIP(host); ip != nil {
-			require.Empty(t, f.BaseDomain, "with northstar configured the endpoint must be a hostname, got %s", host)
-			t.Logf("endpoint is the bare ENI IP %s (no base domain configured)", host)
+		if f.BaseDomain == "" {
+			assert.NotNil(t, net.ParseIP(host),
+				"with no base domain the endpoint is the bare ENI address, got %s", host)
 			return
 		}
 		assert.Equal(t, fmt.Sprintf("%s.%s.%s.rds.%s", id, f.Account, f.Region, f.BaseDomain), host,
 			"the endpoint name is account-qualified so identifiers collide across tenants without colliding in DNS")
-		assertResolves(t, host)
-	})
-
-	t.Run("AcceptsAClientConnection", func(t *testing.T) {
-		requireAvailable(t, instance)
-		runSQLSmokeTest(t, instance)
 	})
 }
 
@@ -164,59 +138,4 @@ func requireAvailable(t *testing.T, instance *rds.DBInstance) {
 	if instance == nil {
 		t.Skip("DB instance never reached available (BecomesAvailable failed)")
 	}
-}
-
-func assertResolves(t *testing.T, host string) {
-	t.Helper()
-	// The record is published as soon as the ENI IP is known, well before the
-	// instance is available, so a short envelope only covers zone propagation.
-	harness.EventuallyErr(t, func() error {
-		addrs, err := net.LookupHost(host)
-		if err != nil {
-			return fmt.Errorf("lookup %s: %w", host, err)
-		}
-		if len(addrs) == 0 {
-			return fmt.Errorf("lookup %s returned no addresses", host)
-		}
-		t.Logf("endpoint %s resolved to %v", host, addrs)
-		return nil
-	}, 90*time.Second, 3*time.Second)
-}
-
-// runSQLSmokeTest connects with the master credentials and writes a row, which
-// is the only assertion that proves the engine actually bootstrapped rather than
-// the agent merely reporting that it had. Shells to psql rather than linking a
-// driver so the suite adds no production dependency; skips when psql is absent.
-func runSQLSmokeTest(t *testing.T, instance *rds.DBInstance) {
-	t.Helper()
-	psql, err := exec.LookPath("psql")
-	if err != nil {
-		t.Skip("psql not on PATH; skipping the client connection leg")
-	}
-
-	host := aws.StringValue(instance.Endpoint.Address)
-	port := aws.Int64Value(instance.Endpoint.Port)
-	table := "e2e_smoke"
-
-	statements := strings.Join([]string{
-		fmt.Sprintf("DROP TABLE IF EXISTS %s;", table),
-		fmt.Sprintf("CREATE TABLE %s (id int primary key, note text);", table),
-		fmt.Sprintf("INSERT INTO %s VALUES (1, 'hello from e2e');", table),
-		fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", table),
-	}, " ")
-
-	// TLS is offered but not enforced (D14), so the smoke test does not pin
-	// verify-full — the cert chain is the cert suite's concern.
-	cmd := exec.Command(psql, //nolint:gosec // psql is LookPath-resolved, args test-controlled
-		"--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
-		"--set", "ON_ERROR_STOP=1",
-		"--host", host, "--port", fmt.Sprint(port),
-		"--username", dbMasterUser, "--dbname", dbName,
-		"--command", statements,
-	)
-	cmd.Env = append(cmd.Environ(), "PGPASSWORD="+dbMasterPassword, "PGCONNECT_TIMEOUT=30")
-
-	output, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "psql against %s:%d: %s", host, port, output)
-	assert.Contains(t, string(output), "hello from e2e", "the row written over the endpoint must read back")
 }

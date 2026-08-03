@@ -57,6 +57,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	// terminated and the new one launching, which is the only window ModifyVolume
 	// will accept it in.
 	grewStorage := false
+	restarted := false
 	switch {
 	case pending.DBInstanceClass != "":
 		instanceType, err := InstanceTypeForClass(pending.DBInstanceClass)
@@ -72,15 +73,32 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 			return err
 		}
 		grewStorage = pending.AllocatedStorage != nil
+		restarted = true
 	case pending.AllocatedStorage != nil:
 		if err := s.growInstanceStorage(ctx, accountID, rec, *pending.AllocatedStorage); err != nil {
 			return err
 		}
 		grewStorage = true
+		restarted = true
+	}
+
+	// The outage above is the restart the statically-scoped parameters were
+	// waiting for — the replacement VM boots on the set, and a grow's stop/start
+	// re-reads it — so the record stops advertising them. A group change with
+	// neither a class nor a storage move alongside it restarts nothing, and its
+	// parameters stay pending until RebootDBInstance.
+	appliedPendingReboot := restarted && len(rec.PendingRebootParameters) > 0
+	if appliedPendingReboot {
+		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+			"Applied the parameters that were pending a reboot.", EventCategoryConfigurationChange)
+		rec.PendingRebootParameters = nil
 	}
 
 	applied := *pending
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		if appliedPendingReboot {
+			stored.PendingRebootParameters = nil
+		}
 		if applied.DBInstanceClass != "" {
 			stored.DBInstanceClass = applied.DBInstanceClass
 		}
@@ -125,6 +143,9 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	// already running, rather than re-deriving it from a group that may since
 	// have changed underneath the instance.
 	rec.Bootstrap.ResolvedParameters = resolved
+	// Kept in step so the caller decides on the set this apply produced rather
+	// than on the one the instance carried in.
+	rec.PendingRebootParameters = pendingReboot
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.Bootstrap.ResolvedParameters = resolved
 		stored.PendingRebootParameters = pendingReboot

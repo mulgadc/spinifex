@@ -314,6 +314,27 @@ func TestReconciler_AllowsThePersistFloorOnAPersistedHeartbeat(t *testing.T) {
 	assert.Nil(t, stored.UnhealthySince)
 }
 
+// The persist floor is slack for beats this node cannot see. A beat it handled
+// itself earns no slack, and a leader that took the last beat before the VM went
+// dark must call it failed on the stale window rather than on window plus floor.
+func TestReconciler_UsesTheTightBoundOnABeatThisNodeHandled(t *testing.T) {
+	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
+	h.state.state = instanceStateStopped
+	rec := servingRecord()
+	// The shape a persisting beat leaves behind: one instant, written to the
+	// record and held in memory, and nothing since.
+	beat := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Second)
+	rec.Agent.LastSeen = &beat
+	seedInstance(t, h.svc, rec)
+	h.svc.liveness[testAccountID+"/"+testDBID] = &agentLiveness{lastSeen: beat, health: EngineHealthHealthy}
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+
+	stored := h.recordOf(t, testDBID)
+	assert.Equal(t, StatusFailed, stored.Status)
+	assert.Contains(t, stored.FailureReason, "its agent has not reported for")
+}
+
 // Without a VM-state resolver the failure half of the evidence cannot be
 // gathered at all, so nothing is ever reported failed. Detection goes missing
 // rather than being declared on the heartbeat alone.

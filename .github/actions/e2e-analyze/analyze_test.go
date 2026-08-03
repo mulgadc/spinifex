@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // updateGolden lets `go test ./.github/actions/e2e-analyze/ -update` rewrite
@@ -124,6 +125,22 @@ func TestExtractErrorLine_FallsBackToLastTestLine(t *testing.T) {
 	}
 }
 
+// A test's cleanup logs after it has failed, so its lines are the last in the
+// body — and the cleanup line here is one passing tests emit too.
+func TestExtractErrorLine_SkipsCleanupLoggedAfterTheFailure(t *testing.T) {
+	body := `    failure_test.go:42: DB instance rds-e2e-failure-1 reached status available
+    failure_test.go:60: EventuallyErr: condition not met within 4m0s: rds-e2e-failure-1 status=available want=failed
+    rds.go:364: db diagnostics rds-e2e-failure-1: no VM to capture a console from (<nil>)
+    main_test.go:325: DB instance rds-e2e-failure-1 is gone`
+	got := extractErrorLine(body)
+	if !strings.HasPrefix(got, "EventuallyErr:") {
+		t.Errorf("extractErrorLine = %q, want the assertion at failure_test.go:60", got)
+	}
+	if hint := extractFileHint(body); hint != "failure_test.go:60" {
+		t.Errorf("extractFileHint = %q, want failure_test.go:60", hint)
+	}
+}
+
 func TestExtractFileHint_PicksLastMatch(t *testing.T) {
 	body := "ec2helpers.go:50: setup\n    vpc_test.go:227: Eventually: condition not met"
 	got := extractFileHint(body)
@@ -154,6 +171,116 @@ func TestParseFile_SkipsEmptyParentFailure(t *testing.T) {
 	}
 	if sr.Root == nil || sr.Root.Name != "TestX/RealFailure" {
 		t.Fatalf("expected real failure as root, got %+v", sr.Root)
+	}
+}
+
+func TestParseFile_SkipsParentRolledUpBySubtests(t *testing.T) {
+	// A parent that logs during cleanup gets a non-empty body, and a t.Log like
+	// "DB instance … is gone" — which passing tests emit too — reads exactly
+	// like an assertion site. Its subtest holds the real failure.
+	xml := []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="2" failures="2">
+  <testcase name="TestX" time="1.5"><failure message="Failed"><![CDATA[
+    main_test.go:325: DB instance rds-e2e-backup-1 is gone
+]]></failure></testcase>
+  <testcase name="TestX/RealFailure" time="0.5"><failure message="Failed"><![CDATA[
+    foo_test.go:10:
+        Messages: real assertion message
+]]></failure></testcase>
+</testsuite></testsuites>`)
+	sr, err := ParseFile("junit-x.xml", xml)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if sr.FailCount != 1 {
+		t.Fatalf("FailCount = %d, want 1 (the parent rollup should be skipped)", sr.FailCount)
+	}
+	if sr.Root == nil || sr.Root.Name != "TestX/RealFailure" {
+		t.Fatalf("expected the subtest as root, got %+v", sr.Root)
+	}
+}
+
+// A parent that fails on its own after its subtests passed is a real failure,
+// and dropping it would lose the only record of it.
+func TestParseFile_KeepsParentWithNoFailingSubtest(t *testing.T) {
+	xml := []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="2" failures="1">
+  <testcase name="TestX" time="1.5"><failure message="Failed"><![CDATA[
+    foo_test.go:42:
+        Messages: the parent asserted after its subtests
+]]></failure></testcase>
+  <testcase name="TestX/Passing" time="0.5"></testcase>
+</testsuite></testsuites>`)
+	sr, err := ParseFile("junit-x.xml", xml)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if sr.Root == nil || sr.Root.Name != "TestX" {
+		t.Fatalf("expected the parent as root, got %+v", sr.Root)
+	}
+}
+
+// suiteFixture writes a junit file plus its .start sidecar into a temp log dir
+// and returns the parsed, start-file-corrected report for one suite.
+func suiteFixture(t *testing.T, start string, xml []byte) SuiteReport {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "test-x.start"), []byte(start), 0o644); err != nil {
+		t.Fatalf("write start file: %v", err)
+	}
+	sr, err := ParseFile("junit-x.xml", xml)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	rep := Report{Suites: []SuiteReport{sr}}
+	ApplySuiteStartFiles(&rep, dir)
+	return rep.Suites[0]
+}
+
+// Parallel tests overlap, so summing the ones before a failure puts its start
+// minutes past where it really was — and the journal slice cut from that window
+// misses the failure entirely. The tell is the top-level tests taking longer in
+// total than the suite's own wall clock.
+func TestApplySuiteStartFiles_DropsTheOffsetWhenTheSuiteRanInParallel(t *testing.T) {
+	// timestamp is when go-junit-report wrote the XML, i.e. the suite's end.
+	s := suiteFixture(t, "2026-08-03T02:00:00Z", []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="2" failures="1" timestamp="2026-08-03T02:02:00Z">
+  <testcase name="TestSlow" time="100.0"></testcase>
+  <testcase name="TestX" time="90.0"><failure message="Failed"><![CDATA[
+    foo_test.go:10:
+        Messages: real assertion message
+]]></failure></testcase>
+</testsuite></testsuites>`))
+	if s.Root == nil {
+		t.Fatal("expected a root failure")
+	}
+	if s.Root.SuiteSpan != 2*time.Minute {
+		t.Errorf("SuiteSpan = %s, want 2m0s to mark the suite parallel", s.Root.SuiteSpan)
+	}
+	if want := time.Date(2026, 8, 3, 2, 0, 0, 0, time.UTC); !s.Root.StartAt.Equal(want) {
+		t.Errorf("StartAt = %s, want the suite start %s rather than a summed offset", s.Root.StartAt, want)
+	}
+}
+
+// The sequential case must keep its offsets: they are the only thing that makes
+// a per-failure journal slice narrow enough to read.
+func TestApplySuiteStartFiles_KeepsTheOffsetWhenTheSuiteRanSequentially(t *testing.T) {
+	s := suiteFixture(t, "2026-08-03T02:00:00Z", []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="2" failures="1" timestamp="2026-08-03T02:02:00Z">
+  <testcase name="TestFirst" time="30.0"></testcase>
+  <testcase name="TestX" time="90.0"><failure message="Failed"><![CDATA[
+    foo_test.go:10:
+        Messages: real assertion message
+]]></failure></testcase>
+</testsuite></testsuites>`))
+	if s.Root == nil {
+		t.Fatal("expected a root failure")
+	}
+	if s.Root.SuiteSpan != 0 {
+		t.Errorf("SuiteSpan = %s, want 0 for a sequential suite", s.Root.SuiteSpan)
+	}
+	if want := time.Date(2026, 8, 3, 2, 0, 30, 0, time.UTC); !s.Root.StartAt.Equal(want) {
+		t.Errorf("StartAt = %s, want the suite start plus 30s of preceding tests %s", s.Root.StartAt, want)
 	}
 }
 

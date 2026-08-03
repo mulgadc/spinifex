@@ -73,6 +73,12 @@ type Failure struct {
 	// `test-<suite>.start` file written by the workflow before the suite
 	// runs) can recompute StartAt without re-parsing the XML.
 	OffsetFromSuiteStart time.Duration
+	// SuiteSpan is the suite's own wall-clock span, set only when the suite
+	// ran its tests in parallel. Overlapping tests make the cumulative
+	// offset above pure fiction — it lands minutes past the real failure —
+	// so consumers widen the journal window to the suite instead of
+	// slicing a plausible-looking window around the wrong minute.
+	SuiteSpan time.Duration
 	// BundlePath is the relative path (from log-dir) to the per-failure
 	// bundle written by Stage 2's WriteBundles. Empty when bundles were
 	// not generated (e.g. unit tests that call Render directly).
@@ -88,6 +94,12 @@ type SuiteReport struct {
 	Root      *Failure    // nil if no failures
 	Cascades  []Failure   // everything else that failed in this suite
 	Buckets   [][]Failure // failures grouped by signature (root's bucket first)
+	// EndedAt is go-junit-report's <testsuite timestamp>, which records when
+	// the XML was produced — i.e. when the suite finished, not when it began.
+	EndedAt time.Time
+	// TopLevelTotal is the summed duration of the parentless tests. Longer than
+	// the suite's wall clock means they overlapped.
+	TopLevelTotal time.Duration
 }
 
 // Report is the full analysis across every junit file.
@@ -117,6 +129,28 @@ var cascadeMarkers = []string{
 	"must populate fix.",
 	"Should NOT be empty",
 	"Expected value not to be nil",
+}
+
+// teardownPatterns match the content a test logs from t.Cleanup or from the
+// harness's on-failure diagnostics — i.e. after it has already failed. They are
+// the LAST file:line lines in the failure body, so extractErrorLine's
+// keep-the-last rule picks them over the assertion unless they are skipped.
+// Anchored deliberately: a fragment loose enough to match an assertion would
+// blank out the one line the report exists to show.
+var teardownPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^DB instance \S+ is gone$`),
+	regexp.MustCompile(`^db diagnostics \S+:`),
+}
+
+// isTeardownLine reports whether a candidate error line was emitted after the
+// failure it would otherwise be mistaken for.
+func isTeardownLine(content string) bool {
+	for _, re := range teardownPatterns {
+		if re.MatchString(content) {
+			return true
+		}
+	}
+	return false
 }
 
 // noiseReplacers normalise dynamic identifiers so that "ten failures, same
@@ -206,11 +240,14 @@ func extractErrorLine(body string) string {
 		if m := goFileLineRe.FindStringSubmatch(l); m != nil {
 			// Keep the LAST occurrence: t.Log / harness traces emit
 			// progress lines from the same file:line pattern before the
-			// failing assertion finally fires.
-			goFileLine = strings.TrimSpace(m[1])
+			// failing assertion finally fires. Cleanup runs after it, though,
+			// so its lines are last of all and have to be skipped.
+			if content := strings.TrimSpace(m[1]); !isTeardownLine(content) {
+				goFileLine = content
+			}
 			continue
 		}
-		if fileHintRe.MatchString(l) {
+		if fileHintRe.MatchString(l) && !isTeardownLine(l) {
 			lastTestLine = l
 		}
 	}
@@ -254,11 +291,19 @@ func extractFileHint(body string) string {
 	if m := errorTraceRe.FindStringSubmatch(body); m != nil {
 		return m[1]
 	}
-	all := fileHintRe.FindAllString(body, -1)
-	if len(all) == 0 {
-		return ""
+	// Scanned line by line rather than across the body so a cleanup line's own
+	// file:line does not become the site the report points a reader at.
+	hint := ""
+	for _, raw := range strings.Split(body, "\n") {
+		l := strings.TrimSpace(raw)
+		if m := goFileLineRe.FindStringSubmatch(l); m != nil && isTeardownLine(strings.TrimSpace(m[1])) {
+			continue
+		}
+		if all := fileHintRe.FindAllString(l, -1); len(all) > 0 {
+			hint = all[len(all)-1]
+		}
 	}
-	return all[len(all)-1]
+	return hint
 }
 
 // signature normalises an error line so different runs of the same root
@@ -313,6 +358,47 @@ func computeLeafSet(cases []junitTC) map[string]bool {
 	return leaf
 }
 
+// computeRolledUpSet returns the testcase names whose failure is already
+// reported by a failing descendant. go-junit-report gives such a parent a
+// testcase of its own, and its body is the parent's t.Log output rather than an
+// assertion — a cleanup line like "DB instance … is gone", which passing tests
+// emit too, reads to extractErrorLine exactly like a failure site.
+func computeRolledUpSet(cases []junitTC) map[string]bool {
+	rolledUp := make(map[string]bool, len(cases))
+	for _, tc := range cases {
+		if tc.Failure == nil && tc.Error == nil {
+			continue
+		}
+		// Mark every ancestor: the failure belongs to the deepest case that
+		// carries it, not to the tests it is nested under.
+		name := tc.Name
+		for {
+			i := strings.LastIndex(name, "/")
+			if i <= 0 {
+				break
+			}
+			name = name[:i]
+			rolledUp[name] = true
+		}
+	}
+	return rolledUp
+}
+
+// topLevelTotal sums the durations of the tests with no parent, which are the
+// units t.Parallel overlaps. Compared against the suite's wall clock it says
+// whether the suite ran its tests concurrently — see ApplySuiteStartFiles.
+// suite.Time cannot answer that: go-junit-report sets it to the sum of every
+// testcase, parents included, so it is never less than any subset of itself.
+func topLevelTotal(cases []junitTC) time.Duration {
+	total := 0.0
+	for _, tc := range cases {
+		if !strings.Contains(tc.Name, "/") {
+			total += tc.Time
+		}
+	}
+	return time.Duration(total * float64(time.Second))
+}
+
 // parseStartTime turns a junit timestamp attr (RFC3339) into a time.Time;
 // zero value if unparseable.
 func parseStartTime(s string) time.Time {
@@ -359,6 +445,9 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 		// summing every testcase double-counts. Pre-compute the leaf set so
 		// only leaves contribute to the suite's running offset.
 		isLeaf := computeLeafSet(suite.Cases)
+		rolledUp := computeRolledUpSet(suite.Cases)
+		rep.EndedAt = start
+		rep.TopLevelTotal += topLevelTotal(suite.Cases)
 		cumul := 0.0
 		for _, tc := range suite.Cases {
 			rep.Total++
@@ -376,11 +465,12 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 				continue
 			}
 
-			// Skip the synthetic parent-test "Failed" stub that go-junit-report
-			// emits for any Go test whose subtests failed. It has an empty body
-			// and would otherwise outrank real failures by XML order.
+			// Skip the parent-test entry go-junit-report emits for any Go test
+			// whose subtests failed: it is a rollup of failures already counted
+			// below it, and it would outrank them by XML order. An empty body is
+			// the same stub in the case where the parent logged nothing.
 			trimmed := strings.TrimSpace(stripANSI(body))
-			if trimmed == "" {
+			if trimmed == "" || rolledUp[tc.Name] {
 				if leaf {
 					cumul += tc.Time
 				}
@@ -494,12 +584,22 @@ func Render(r Report) string {
 		fmt.Fprintf(&b, "### Suite `%s`: %d failed, 1 root cause likely\n\n", s.Label, s.FailCount)
 
 		if s.Root != nil {
-			b.WriteString("**Root cause (earliest non-cascade)**\n\n")
+			// XML order is completion order, so "earliest" only means earliest
+			// in time for a suite whose tests ran one after another.
+			if s.Root.SuiteSpan > 0 {
+				b.WriteString("**First non-cascade failure** (the suite ran in parallel, so this is report order, not time order)\n\n")
+			} else {
+				b.WriteString("**Root cause (earliest non-cascade)**\n\n")
+			}
 			fmt.Fprintf(&b, "- Test: `%s`\n", s.Root.Name)
-			if !s.Root.StartAt.IsZero() {
+			switch {
+			case s.Root.SuiteSpan > 0:
+				fmt.Fprintf(&b, "- Start: unknown, the suite ran in parallel (duration %.1fs)\n",
+					s.Root.Duration)
+			case !s.Root.StartAt.IsZero():
 				fmt.Fprintf(&b, "- Start: %s (duration %.1fs)\n",
 					s.Root.StartAt.Format("15:04:05"), s.Root.Duration)
-			} else {
+			default:
 				fmt.Fprintf(&b, "- Duration: %.1fs\n", s.Root.Duration)
 			}
 			if s.Root.Error != "" {

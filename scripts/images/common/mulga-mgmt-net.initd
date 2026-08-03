@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# mulga-mgmt-net — boot oneshot that configures a multi-NIC system VM's NICs from
+# the fw_cfg netcfg blob before cloud-init crawls IMDS. Shared by every BootAMI
+# system image (eks-node, rds-postgres): all are dual-NIC, so the data ENI is
+# DHCP'd here for the Ec2 IMDS datasource to reach 169.254.169.254 (cloud-init
+# can't pick the right NIC out of two on Alpine), and mgmt0's static br-mgmt
+# address is applied — without it the in-guest agent cannot reach the control
+# plane at all. Runs in the boot runlevel before cloud-init-local, whose
+# init-local Ec2 crawl otherwise burns its whole probe window with no data-NIC
+# route. No-op without a blob.
+
+description="Configure system-VM NICs from fw_cfg netcfg (data DHCP + mgmt static)"
+
+# cloud-init-local runs the init-local Ec2 datasource crawl; it must see the data
+# NIC + IMDS route already up, so this must precede it (not just cloud-init, the
+# later network-stage service).
+depend() {
+    before cloud-init-local cloud-init k3s k3s-agent rds-agent
+}
+
+start() {
+    ebegin "Configuring system-VM NICs from fw_cfg netcfg"
+    /usr/local/sbin/mulga-mgmt-net
+    eend $?
+}

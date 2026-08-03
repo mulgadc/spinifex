@@ -182,16 +182,23 @@ func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID strin
 }
 
 // AuthorizeSSHIngress idempotently authorizes tcp/22 ingress from 0.0.0.0/0
+// on sgID.
+func AuthorizeSSHIngress(t *testing.T, c *AWSClient, sgID string) {
+	t.Helper()
+	AuthorizeTCPIngress(t, c, sgID, 22)
+}
+
+// AuthorizeTCPIngress idempotently authorizes a single TCP port from 0.0.0.0/0
 // on sgID. InvalidPermission.Duplicate is treated as success — the rule was
 // already in place on a re-run.
-func AuthorizeSSHIngress(t *testing.T, c *AWSClient, sgID string) {
+func AuthorizeTCPIngress(t *testing.T, c *AWSClient, sgID string, port int64) {
 	t.Helper()
 	_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: aws.String("tcp"),
-			FromPort:   aws.Int64(22),
-			ToPort:     aws.Int64(22),
+			FromPort:   aws.Int64(port),
+			ToPort:     aws.Int64(port),
 			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
 		}},
 	})
@@ -202,7 +209,7 @@ func AuthorizeSSHIngress(t *testing.T, c *AWSClient, sgID string) {
 	if asErr(err, &aerr) && aerr.Code() == "InvalidPermission.Duplicate" {
 		return
 	}
-	t.Fatalf("authorize-security-group-ingress tcp/22 on %s: %v", sgID, err)
+	t.Fatalf("authorize-security-group-ingress tcp/%d on %s: %v", port, sgID, err)
 }
 
 // AuthorizeICMPIngress idempotently authorizes ICMP (all types) ingress from

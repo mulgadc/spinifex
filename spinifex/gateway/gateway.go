@@ -124,6 +124,14 @@ type GatewayConfig struct {
 	// config; a later phase backs it with the daemon's dynamic endpoint
 	// registry. Nil/empty means no self-hosted models are reachable.
 	BedrockEndpoints map[string]string
+	// BedrockLoggingConfig persists per-account invocation-logging preferences
+	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
+	// an unconfigured store, under which reads/writes error rather than panic.
+	BedrockLoggingConfig *gateway_bedrock.LoggingConfigStore
+	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
+	// to a no-op recorder, so routes stay safe to exercise before the
+	// invocation stream is wired in (e.g. unit tests of unrelated routes).
+	BedrockRecorder gateway_bedrock.Recorder
 }
 
 var supportedServices = map[string]bool{

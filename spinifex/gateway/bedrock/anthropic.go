@@ -272,8 +272,13 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: p.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
+	// reqCtx/cancel let Close() abort the upstream request outright rather
+	// than merely stopping our own reads — a disconnected client must free
+	// the Anthropic-side generation, not just this goroutine.
+	reqCtx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: p.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
 	if err != nil {
+		cancel()
 		slog.Error("anthropic stream: failed to build request", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -284,6 +289,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 
 	resp, err := p.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets p.baseURL, not user input
 	if err != nil {
+		cancel()
 		slog.Error("anthropic stream: request failed", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
@@ -291,6 +297,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		cancel()
 		slog.Error("anthropic stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
@@ -299,6 +306,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 		resp:    resp,
 		scanner: newSSEScanner(resp.Body),
 		start:   time.Now(),
+		cancel:  cancel,
 	}, nil
 }
 
@@ -311,15 +319,29 @@ type anthropicConverseStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner
 	start   time.Time
+	cancel  context.CancelFunc
 
 	inputTokens  int64
 	outputTokens int64
 }
 
 var _ converseStreamSource = (*anthropicConverseStreamSource)(nil)
+var _ usageReporter = (*anthropicConverseStreamSource)(nil)
 
+// Close aborts the upstream request via cancel (not just closing the read
+// side), so a disconnected client actually frees the Anthropic-side
+// generation — real external cost, not just local compute.
 func (s *anthropicConverseStreamSource) Close() error {
+	s.cancel()
 	return s.resp.Body.Close()
+}
+
+// usage always reports real, non-estimated tokens: Anthropic streams
+// incremental usage throughout (input at message_start, output at
+// message_delta), and unlike self-host generation those tokens carry real
+// external cost that must never be guessed at.
+func (s *anthropicConverseStreamSource) usage() (inputTokens, outputTokens int64, estimated bool) {
+	return s.inputTokens, s.outputTokens, false
 }
 
 func (s *anthropicConverseStreamSource) Next(_ context.Context) (ConverseStreamEvent, bool, error) {

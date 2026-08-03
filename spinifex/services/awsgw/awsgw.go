@@ -313,26 +313,44 @@ func launchService(config *config.ClusterConfig) error {
 	// is a comma-separated list of modelId=baseURL pairs.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
 
+	// Bedrock invocation records: every Converse/InvokeModel call (streaming
+	// or not) is published to the invocation stream, then fanned out by
+	// deliveryConsumer to the account's own predastore bucket (body, if that
+	// account enabled it) and a metadata-only log line. bedrockLoggingConfig
+	// also gates that per-account body delivery.
+	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js, len(config.Nodes))
+	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js); err != nil {
+		return fmt.Errorf("bedrock: ensure invocation stream: %w", err)
+	}
+	deliveryConsumer, err := gateway_bedrock.EnsureDeliveryConsumer(janitorCtx, js)
+	if err != nil {
+		return fmt.Errorf("bedrock: ensure invocation delivery consumer: %w", err)
+	}
+	bedrockRecorder := gateway_bedrock.NewStreamRecorder(js, bedrockLoggingConfig)
+	go gateway_bedrock.NewDeliveryConsumer(ecrStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
+
 	gw := gateway.GatewayConfig{
-		Debug:              nodeConfig.AWSGW.Debug,
-		DisableLogging:     false,
-		NATSConn:           natsConn,
-		Config:             nodeConfig.AWSGW.Config,
-		ExpectedNodes:      len(config.Nodes),
-		Region:             nodeConfig.Region,
-		InternalSuffix:     config.AWS.InternalSuffix,
-		RegistryPort:       registryPort,
-		RegistryHost:       registryHost,
-		AZ:                 nodeConfig.AZ,
-		IAMService:         iamService,
-		STSService:         stsService,
-		Version:            version,
-		Commit:             commit,
-		ECRRegistry:        ecrRegistry,
-		ECRTokenIssuer:     gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier:   gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials: bedrockCredentials,
-		BedrockEndpoints:   bedrockEndpoints,
+		Debug:                nodeConfig.AWSGW.Debug,
+		DisableLogging:       false,
+		NATSConn:             natsConn,
+		Config:               nodeConfig.AWSGW.Config,
+		ExpectedNodes:        len(config.Nodes),
+		Region:               nodeConfig.Region,
+		InternalSuffix:       config.AWS.InternalSuffix,
+		RegistryPort:         registryPort,
+		RegistryHost:         registryHost,
+		AZ:                   nodeConfig.AZ,
+		IAMService:           iamService,
+		STSService:           stsService,
+		Version:              version,
+		Commit:               commit,
+		ECRRegistry:          ecrRegistry,
+		ECRTokenIssuer:       gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:     gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		BedrockCredentials:   bedrockCredentials,
+		BedrockEndpoints:     bedrockEndpoints,
+		BedrockLoggingConfig: bedrockLoggingConfig,
+		BedrockRecorder:      bedrockRecorder,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

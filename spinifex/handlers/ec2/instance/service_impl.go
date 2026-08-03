@@ -555,6 +555,14 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		// even if the image is later deregistered.
 		ec2Instance.Platform = utils.PlatformFromDetails(amiMeta.PlatformDetails)
 
+		// RunInstance has no image in hand, so the platform-derived IMDS default
+		// lands here, where the AMI is resolved.
+		var requestedTokens string
+		if input.MetadataOptions != nil {
+			requestedTokens = aws.StringValue(input.MetadataOptions.HttpTokens)
+		}
+		applyPlatformTokenDefault(ec2Instance, requestedTokens, ec2Instance.Platform)
+
 		// Terraform may pass subnet/SG via NetworkInterfaces[0]; lift to top-level.
 		if (input.SubnetId == nil || *input.SubnetId == "") &&
 			len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {

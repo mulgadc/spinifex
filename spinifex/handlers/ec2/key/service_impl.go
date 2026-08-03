@@ -92,7 +92,9 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
 	}
 
-	// Determine key type (default: ed25519, optional: rsa)
+	// Determine key type (default: ed25519, optional: rsa). This deviates from
+	// AWS, which defaults to rsa. Only rsa can wrap a Windows administrator
+	// password, so a Windows launch has to ask for it explicitly.
 	keyType := "ed25519"
 	if input.KeyType != nil {
 		switch *input.KeyType {
@@ -119,11 +121,13 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	// Generate key pair using ssh-keygen
 	var cmd *exec.Cmd
 	if keyType == "ed25519" {
-		// ED25519 key (modern, recommended)
+		// ED25519 has no PEM representation, so it stays in OpenSSH format.
 		cmd = exec.Command("ssh-keygen", "-t", "ed25519", "-f", privateKeyPath, "-N", "", "-C", "")
 	} else {
-		// RSA 2048-bit key
-		cmd = exec.Command("ssh-keygen", "-t", "rsa", "-b", "2048", "-f", privateKeyPath, "-N", "", "-C", "")
+		// RSA 2048-bit in PKCS#1 PEM, as AWS returns it. OpenSSH reads that format
+		// for SSH either way, but GetPasswordData's --priv-launch-key cannot read
+		// the OpenSSH container at all.
+		cmd = exec.Command("ssh-keygen", "-t", "rsa", "-b", "2048", "-m", "PEM", "-f", privateKeyPath, "-N", "", "-C", "")
 	}
 
 	var stderr bytes.Buffer

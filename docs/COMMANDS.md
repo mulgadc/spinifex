@@ -179,9 +179,20 @@ read.
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` (no-op). Then validates the prefix holds `config.json`, `tokenizer_config.json`, `tokenizer.json`, `tokenizer.model` and at least one `*.safetensors` file, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
+| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` (no-op). Then validates the prefix holds `config.json`, `tokenizer_config.json`, at least one `*.safetensors` file, and at least one of `tokenizer.json` or `tokenizer.model`, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
 | `spx admin ochre weights list` | — | Lists every staged model with its source URI and snapshot ID, so an operator can see why a model is (or isn't) advertised via `ListFoundationModels`. |
 | `spx admin ochre weights remove` | `--model-id` (required) | Drops `--model-id`'s entry from `bedrock-weights`, hiding it from `ListFoundationModels` again. Refuses if the model has no staged entry. Never deletes the underlying snapshot or source S3 objects; reclaiming that storage is a separate, explicit act. |
+
+### Ochre Serving Endpoints
+
+Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway does not request endpoints itself yet, so until it does these are the only way to start a serving VM.
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `spx admin ochre endpoint ensure` | `--model-id` (required), `--wait`, `--timeout` (default: 15m) | Asks the daemon to bring up a serving VM for `--model-id`, which must already have staged weights. Idempotent: a model already `STARTING` or `READY` returns the current record rather than launching a second VM. The daemon replies `STARTING` as soon as it has claimed the model and the launch continues in the background, so `--wait` polls `describe` until `READY` and reports the elapsed cold start. A launch that fails deletes its record, so a return to `ABSENT` is reported as an abort. A `--timeout` leaves the endpoint running rather than tearing it down. |
+| `spx admin ochre endpoint describe` | `--model-id` (required) | Shows the model's current endpoint record: state, instance and node IDs, base URL, weights volume, and the derived startup time once `READY`. A model with no record reads as `ABSENT`. |
+| `spx admin ochre endpoint list` | — | Lists every endpoint record with its state, instance ID and base URL. |
+| `spx admin ochre endpoint delete` | `--model-id` (required) | Moves a `READY` endpoint to `DRAINING` and tears its VM down, releasing the GPU. Idempotent: an already-absent endpoint reports success. |
 
 ### EKS Control-Plane Disaster Recovery
 

@@ -14,6 +14,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// getPasswordDataTimeout is the NATS request timeout, overridable in tests so
+// the ErrTimeout path can be exercised without a real 5-second wait.
+var getPasswordDataTimeout = 5 * time.Second
+
 func ValidateGetPasswordDataInput(input *ec2.GetPasswordDataInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -42,7 +46,7 @@ func GetPasswordData(ctx context.Context, input *ec2.GetPasswordDataInput, natsC
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	utils.InjectTraceContext(ctx, reqMsg.Header)
-	msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
+	msg, err := natsConn.RequestMsg(reqMsg, getPasswordDataTimeout)
 	if err != nil {
 		// No daemon subscription or timeout: stopped/terminated/non-existent instances all surface as NotFound.
 		if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout) {

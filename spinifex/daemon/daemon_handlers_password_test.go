@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -138,6 +139,70 @@ func TestHandleEC2GetPasswordData_EmptyLog(t *testing.T) {
 	assert.Equal(t, instanceID, *output.InstanceId)
 	require.NotNil(t, output.PasswordData)
 	assert.Empty(t, *output.PasswordData)
+}
+
+func TestHandleEC2GetPasswordData_MissingInstanceId(t *testing.T) {
+	natsURL := sharedNATSURL
+	daemon := createFullTestDaemon(t, natsURL)
+
+	topic := "ec2._.GetPasswordData"
+	sub, err := daemon.natsConn.Subscribe(topic, daemon.handleEC2GetPasswordData)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.GetPasswordDataInput{}
+	reqData, _ := json.Marshal(input)
+	reply, err := daemon.natsConn.Request(topic, reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(reply.Data), awserrors.ErrorMissingParameter)
+}
+
+func TestHandleEC2GetPasswordData_MalformedInput(t *testing.T) {
+	natsURL := sharedNATSURL
+	daemon := createFullTestDaemon(t, natsURL)
+
+	topic := "ec2._.GetPasswordData"
+	sub, err := daemon.natsConn.Subscribe(topic, daemon.handleEC2GetPasswordData)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reply, err := daemon.natsConn.Request(topic, []byte("not json"), 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(reply.Data), awserrors.ErrorValidationError)
+}
+
+func TestHandleEC2GetPasswordData_OwnershipDenied(t *testing.T) {
+	natsURL := sharedNATSURL
+	daemon := createFullTestDaemon(t, natsURL)
+
+	instanceID := "i-password-other-account"
+
+	// Instance is owned by testAccountID; the request below comes from a
+	// different account and must be refused as NotFound rather than leaking
+	// whether the instance exists.
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:        instanceID,
+		Status:    vm.StateRunning,
+		AccountID: testAccountID,
+		Config: vm.Config{
+			ConsoleLogPath: "/nonexistent/console.log",
+		},
+	})
+	topic := fmt.Sprintf("ec2.%s.GetPasswordData", instanceID)
+	sub, err := daemon.natsConn.Subscribe(topic, daemon.handleEC2GetPasswordData)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.GetPasswordDataInput{
+		InstanceId: aws.String(instanceID),
+	}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequestAs(daemon.natsConn, topic, reqData, "999999999999", 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(reply.Data), awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestHandleEC2GetPasswordData_NotFound(t *testing.T) {

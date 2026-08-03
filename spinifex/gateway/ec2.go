@@ -181,6 +181,9 @@ var ec2Actions = map[string]EC2Handler{
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
 	}),
+	"GetPasswordData": ec2Handler(func(ctx context.Context, input *ec2.GetPasswordDataInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.GetPasswordData(ctx, input, gw.NATSConn, accountID)
+	}),
 	"ModifyInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		var delta int
 		if input.InstanceType != nil {

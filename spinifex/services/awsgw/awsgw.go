@@ -245,13 +245,13 @@ func launchService(config *config.ClusterConfig) error {
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
 	// uploads are owned by the daemon and reached over NATS request/reply. The
 	// /v2 auth bridge resolves the per-request account from a verified token.
-	ecrStore := objectstore.NewS3ObjectStoreFromConfig(
+	objStore := objectstore.NewS3ObjectStoreFromConfig(
 		admin.DialTarget(nodeConfig.Predastore.Host),
 		nodeConfig.Predastore.Region,
 		nodeConfig.Predastore.AccessKey,
 		nodeConfig.Predastore.SecretKey,
 	)
-	ecrRegistry := gateway_ecr.NewRegistry(ecrStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
+	ecrRegistry := gateway_ecr.NewRegistry(objStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
 	// Lifecycle expiry sweep applies each repo's stored lifecycle policy and
 	// deletes the expired set via the registry GC path. It runs here (not the
@@ -315,11 +315,11 @@ func launchService(config *config.ClusterConfig) error {
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
-	// deliveryConsumer to the account's own predastore bucket (body, if that
-	// account enabled it) and a metadata-only log line. bedrockLoggingConfig
-	// also gates that per-account body delivery.
+	// deliveryConsumer to any account with a configured destination bucket
+	// and a metadata-only log line. bedrockLoggingConfig separately gates
+	// whether the record written to that bucket includes body text.
 	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js, len(config.Nodes))
-	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js); err != nil {
+	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js, len(config.Nodes)); err != nil {
 		return fmt.Errorf("bedrock: ensure invocation stream: %w", err)
 	}
 	deliveryConsumer, err := gateway_bedrock.EnsureDeliveryConsumer(janitorCtx, js)
@@ -327,7 +327,7 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("bedrock: ensure invocation delivery consumer: %w", err)
 	}
 	bedrockRecorder := gateway_bedrock.NewStreamRecorder(js, bedrockLoggingConfig)
-	go gateway_bedrock.NewDeliveryConsumer(ecrStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
+	go gateway_bedrock.NewDeliveryConsumer(objStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
 
 	gw := gateway.GatewayConfig{
 		Debug:                nodeConfig.AWSGW.Debug,

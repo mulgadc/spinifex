@@ -52,14 +52,18 @@ const (
 )
 
 // EnsureInvocationStream idempotently creates (or updates) the invocation
-// stream. Safe to call from every gateway node at boot.
-func EnsureInvocationStream(ctx context.Context, js jetstream.JetStream) (jetstream.Stream, error) {
+// stream. Safe to call from every gateway node at boot. replicas must match
+// the cluster's node count: at replicas=1, losing the one node holding this
+// stream loses billing/audit records even though the control plane survives
+// on the others, defeating the point of using JetStream over a lossy buffer.
+func EnsureInvocationStream(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.Stream, error) {
 	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      InvocationStreamName,
 		Subjects:  []string{InvocationStreamSubject},
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
 		MaxAge:    invocationStreamMaxAge,
+		Replicas:  replicas,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ensure invocation stream: %w", err)
@@ -534,14 +538,16 @@ func (c *DeliveryConsumer) deliver(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	if rec.InputText != "" || rec.OutputText != "" {
-		if err := c.deliverS3(ctx, rec); err != nil {
-			slog.Error("bedrock: invocation delivery consumer: S3 delivery failed", "request_id", rec.RequestID, "account", rec.AccountID, "err", err)
-			if nakErr := msg.Nak(); nakErr != nil {
-				slog.Error("bedrock: invocation delivery consumer: nak failed", "err", nakErr)
-			}
-			return
+	// deliverS3 is unconditional: any account with a resolvable S3 bucket
+	// gets its invocation records, body or not. The delivery *flags*
+	// (TextDataDeliveryEnabled et al) already gated InputText/OutputText
+	// back in Record — this is not a second gate on top of that one.
+	if err := c.deliverS3(ctx, rec); err != nil {
+		slog.Error("bedrock: invocation delivery consumer: S3 delivery failed", "request_id", rec.RequestID, "account", rec.AccountID, "err", err)
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("bedrock: invocation delivery consumer: nak failed", "err", nakErr)
 		}
+		return
 	}
 
 	// Metadata only: never rec.InputText/rec.OutputText.

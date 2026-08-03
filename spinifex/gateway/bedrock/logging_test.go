@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -138,7 +140,7 @@ func TestStreamRecorder_DropsAndCountsWhenStreamMissing(t *testing.T) {
 func TestStreamRecorder_Record_BodyOnlyWhenLoggingEnabled(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
-	_, err := EnsureInvocationStream(ctx, js)
+	_, err := EnsureInvocationStream(ctx, js, 1)
 	require.NoError(t, err)
 	consumer, err := EnsureDeliveryConsumer(ctx, js)
 	require.NoError(t, err)
@@ -177,7 +179,7 @@ func TestDeliveryConsumer_Run_WritesS3AndNeverLogsBodyText(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := EnsureInvocationStream(ctx, js)
+	_, err := EnsureInvocationStream(ctx, js, 1)
 	require.NoError(t, err)
 	consumer, err := EnsureDeliveryConsumer(ctx, js)
 	require.NoError(t, err)
@@ -214,4 +216,57 @@ func TestDeliveryConsumer_Run_WritesS3AndNeverLogsBodyText(t *testing.T) {
 	assert.NotContains(t, logOutput, secretPrompt)
 	assert.NotContains(t, logOutput, secretCompletion)
 	assert.Contains(t, logOutput, "req-body-test")
+}
+
+// TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3 covers the common
+// case: an account configured a destination bucket but left body delivery
+// disabled. It must still receive its invocation record in S3 (metadata
+// only, InputText/OutputText empty) — S3 delivery is not itself gated on
+// body presence, only the body fields are.
+func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, err := EnsureInvocationStream(ctx, js, 1)
+	require.NoError(t, err)
+	consumer, err := EnsureDeliveryConsumer(ctx, js)
+	require.NoError(t, err)
+
+	store := objectstore.NewMemoryObjectStore()
+	// TextDataDeliveryEnabled is deliberately false: the account asked for a
+	// destination bucket but not body delivery.
+	configs := stubLoggingConfigReader{cfg: LoggingConfig{S3BucketName: "acct-bucket"}, ok: true}
+
+	recorder := NewStreamRecorder(js, configs)
+	recorder.Record(ctx, InvocationRecord{
+		RequestID: "req-metadata-only", AccountID: "acct-a", ModelID: "meta.llama3-70b-instruct-v1:0",
+		Operation: OperationConverse, InputText: "prompt", OutputText: "completion",
+	})
+
+	dc := NewDeliveryConsumer(store, configs)
+	done := make(chan struct{})
+	go func() {
+		dc.Run(ctx, consumer)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool { return store.Count() == 1 }, 2*time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
+
+	listing, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String("acct-bucket")})
+	require.NoError(t, err)
+	require.Len(t, listing.Contents, 1, "expected the record to land in the account's bucket despite body delivery being disabled")
+
+	obj, err := store.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String("acct-bucket"), Key: listing.Contents[0].Key})
+	require.NoError(t, err)
+	body, err := io.ReadAll(obj.Body)
+	require.NoError(t, err)
+
+	var stored InvocationRecord
+	require.NoError(t, json.Unmarshal(body, &stored))
+	assert.Equal(t, "req-metadata-only", stored.RequestID)
+	assert.Empty(t, stored.InputText)
+	assert.Empty(t, stored.OutputText)
 }

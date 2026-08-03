@@ -28,6 +28,7 @@ type modifyPlan struct {
 	MasterUserPassword         string
 	SecurityGroupIDs           []string
 	DeletionProtection         *bool
+	AutoMinorVersionUpgrade    *bool
 	BackupRetentionPeriod      *int64
 	PreferredBackupWindow      string
 	PreferredMaintenanceWindow string
@@ -53,7 +54,8 @@ func (p *modifyPlan) disruptive() bool {
 // deferred must not report a configuration change that has not happened.
 func (p *modifyPlan) immediate() bool {
 	return p.MasterUserPassword != "" || p.SecurityGroupIDs != nil || p.DeletionProtection != nil ||
-		p.BackupRetentionPeriod != nil || p.PreferredBackupWindow != "" || p.PreferredMaintenanceWindow != ""
+		p.AutoMinorVersionUpgrade != nil || p.BackupRetentionPeriod != nil ||
+		p.PreferredBackupWindow != "" || p.PreferredMaintenanceWindow != ""
 }
 
 func (p *modifyPlan) empty() bool {
@@ -219,6 +221,11 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	if input.DeletionProtection != nil && aws.BoolValue(input.DeletionProtection) != rec.DeletionProtection {
 		plan.DeletionProtection = input.DeletionProtection
 	}
+	// Nothing acts on it (D19), but a value the record does not adopt is one the
+	// next describe contradicts, and the client re-sends it forever.
+	if input.AutoMinorVersionUpgrade != nil && aws.BoolValue(input.AutoMinorVersionUpgrade) != rec.AutoMinorVersionUpgrade {
+		plan.AutoMinorVersionUpgrade = input.AutoMinorVersionUpgrade
+	}
 	if err := s.planBackupSettings(input, rec, plan); err != nil {
 		return nil, err
 	}
@@ -329,6 +336,9 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 		}
 		if plan.DeletionProtection != nil {
 			stored.DeletionProtection = *plan.DeletionProtection
+		}
+		if plan.AutoMinorVersionUpgrade != nil {
+			stored.AutoMinorVersionUpgrade = *plan.AutoMinorVersionUpgrade
 		}
 		if plan.BackupRetentionPeriod != nil {
 			stored.BackupRetentionPeriod = *plan.BackupRetentionPeriod

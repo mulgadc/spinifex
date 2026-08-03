@@ -231,6 +231,47 @@ assert_nginx_webserver() {
     wait_for_http_200 "http://${ip}/"
 }
 
+# The DB endpoint is a private VPC address and there is no publicly_accessible
+# mode, so nothing on the runner can reach it. The assertion therefore runs psql
+# from the workbook's client VM over SSH — which is also what proves the
+# security-group rule admitting :5432 from the client group is enforced.
+assert_rds_quickstart() {
+    local ip key endpoint
+    ip=$(tofu output -raw client_public_ip)
+    endpoint=$(tofu output -raw db_address)
+    key="$(pwd)/rds-quickstart-client.pem"
+    chmod 600 "$key"
+
+    log "  rds-quickstart: endpoint ${endpoint}, client ${ip}"
+
+    wait_for_ssh "$key" "$ip" || {
+        log "  rds-quickstart: client SSH not ready"
+        return 1
+    }
+
+    # cloud-init installs postgresql-client on first boot, so psql appears after
+    # sshd does. 300s covers an apt-get on a cold mirror.
+    if ! ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+        'for _ in $(seq 1 60); do command -v psql >/dev/null && exit 0; sleep 5; done; exit 1'; then
+        log "  rds-quickstart: psql never installed on the client (cloud-init stalled?)"
+        ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+            'cloud-init status --long; sudo tail -n 40 /var/log/cloud-init-output.log' 2>&1 | \
+            sed "s|^|    |" || true
+        return 1
+    fi
+
+    # A round-trip rather than a bare connect: a SELECT 1 would pass against an
+    # engine that cannot write, which is the half of a bootstrap most likely to
+    # be wrong. Run under a login shell so /etc/profile.d supplies PGHOST — an
+    # ssh command runs a non-login shell, which sources none of it.
+    printf '%s\n' \
+        "CREATE TABLE IF NOT EXISTS smoke (id int primary key, note text);" \
+        "INSERT INTO smoke VALUES (1, 'nightly') ON CONFLICT (id) DO UPDATE SET note = 'nightly';" \
+        "SELECT note FROM smoke WHERE id = 1;" |
+        ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+            'bash -lc "psql -v ON_ERROR_STOP=1 -tA"' 2>&1 | tail -1 | grep -q '^nightly$'
+}
+
 # dump_s3_webapp_guest SSHes into the webapp instance and tails cloud-init's
 # output log plus the s3-webapp unit status, so a first-boot apt/pip/egress
 # failure is distinguishable from a control-plane regression in the bundle.
@@ -281,6 +322,36 @@ assert_s3_webapp() {
     rm -f "$tmp"
 
     curl -sf "http://${ip}/" | grep -q "$sentinel"
+}
+
+# Workbooks whose describe path has to round-trip every attribute their config
+# sets. A second plan on these must be empty; a diff is a describe response that
+# failed to echo back a field Terraform sent, which makes the provider unusable
+# while every individual API call still looks correct.
+#
+# Opt-in rather than universal: the four original workbooks were never written
+# against this assertion, and a pre-existing diff in one of them would fail a
+# suite that is otherwise reporting on something else.
+CLEAN_PLAN_WORKBOOKS=" rds-quickstart "
+
+assert_clean_plan() {
+    local example="$1"
+    shift
+    case "$CLEAN_PLAN_WORKBOOKS" in
+        *" ${example} "*) ;;
+        *) return 0 ;;
+    esac
+
+    local out rc
+    out=$(tofu plan -detailed-exitcode -input=false -no-color "$@" 2>&1)
+    rc=$?
+    case "$rc" in
+        0) log "  ${example}: second plan is clean" ; return 0 ;;
+        2) log "  ${example}: second plan is not empty — a describe is not echoing back what apply sent" ;;
+        *) log "  ${example}: second plan errored (exit ${rc})" ;;
+    esac
+    echo "$out" | tail -60 | sed "s|^|    |"
+    return 1
 }
 
 # Pick an instance type available on this cluster. Workbooks default to
@@ -351,7 +422,7 @@ run_workbook() {
     fi
 
     local rc=0
-    if assert_"${example//-/_}"; then
+    if assert_"${example//-/_}" && assert_clean_plan "$example" "${apply_args[@]}"; then
         log "  PASS ${example}"
     else
         log "  FAIL ${example}: assertion"
@@ -384,8 +455,14 @@ log "Using instance_type=${INSTANCE_TYPE}"
 # tee'd log into junit-tofu.xml and the e2e-analyze action produces the same
 # RCA bundle the Go suites do (nightly cell 17). The per-workbook log() output
 # between RUN and the result line is captured as the failure diagnostics.
+#
+# rds-quickstart runs last because it is the most expensive: its apply carries a
+# DB VM boot, initdb and the first healthy agent heartbeat before Terraform even
+# launches the client, then the client's own boot and an apt-get. Budget it at
+# ~15 minutes against the ~7 the other four share, and note that its assertion
+# needs roughly 2 GiB of free guest memory for the two VMs.
 SUITE_RC=0
-for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp; do
+for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart; do
     tname="TestTofuWorkbook_${workbook//-/_}"
     wb_start=$SECONDS
     echo "=== RUN   ${tname}"

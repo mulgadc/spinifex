@@ -123,6 +123,27 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		instanceCopy.SpotInstanceRequestId = aws.String(v.SpotInstanceRequestId)
 	}
 
+	// The check is always on: OVN port security enforces it and
+	// ModifyInstanceAttribute refuses to turn it off. DescribeInstanceAttribute
+	// and DescribeNetworkInterfaces already report that; the describe did not,
+	// and the Terraform provider reads the value off the primary interface — so
+	// it read as false against a schema whose default is true, and no plan on an
+	// aws_instance ever settled. Interfaces are copied rather than mutated
+	// because instanceCopy shares their pointers with the stored instance.
+	instanceCopy.SourceDestCheck = aws.Bool(true)
+	if len(instanceCopy.NetworkInterfaces) > 0 {
+		nics := make([]*ec2.InstanceNetworkInterface, 0, len(instanceCopy.NetworkInterfaces))
+		for _, nic := range instanceCopy.NetworkInterfaces {
+			if nic == nil {
+				continue
+			}
+			nicCopy := *nic
+			nicCopy.SourceDestCheck = aws.Bool(true)
+			nics = append(nics, &nicCopy)
+		}
+		instanceCopy.NetworkInterfaces = nics
+	}
+
 	return &instanceCopy, stateMapped
 }
 

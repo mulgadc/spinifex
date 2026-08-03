@@ -2,6 +2,7 @@ package gateway_bedrock
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
@@ -33,6 +34,14 @@ func (s stubWeightsResolver) Resolve(_ context.Context, modelID string) (string,
 		return "", false, nil
 	}
 	return "snap-stub", true, nil
+}
+
+// errWeightsResolver simulates a broken resolver (e.g. a JetStream outage):
+// every Resolve call fails rather than cleanly reporting not-found.
+type errWeightsResolver struct{}
+
+func (errWeightsResolver) Resolve(_ context.Context, _ string) (string, bool, error) {
+	return "", false, errors.New("kv unavailable")
 }
 
 // withWeightsResolver installs r as the package-level weights resolver for
@@ -100,6 +109,20 @@ func TestGetFoundationModel_UnknownModelReturnsNotFound(t *testing.T) {
 	_, err := GetFoundationModel(context.Background(), "000000000001", "does-not-exist")
 	require.Error(t, err)
 	assert.Equal(t, "ResourceNotFoundException", err.Error())
+}
+
+func TestGetFoundationModel_WeightsResolveErrorIsNotResourceNotFound(t *testing.T) {
+	withWeightsResolver(t, errWeightsResolver{})
+	_, err := GetFoundationModel(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0")
+	require.Error(t, err)
+	assert.NotEqual(t, "ResourceNotFoundException", err.Error())
+}
+
+func TestListFoundationModels_WeightsResolveErrorPropagates(t *testing.T) {
+	withWeightsResolver(t, errWeightsResolver{})
+	_, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, &bedrock.ListFoundationModelsInput{})
+	require.Error(t, err)
+	assert.NotEqual(t, "ResourceNotFoundException", err.Error())
 }
 
 func TestCatalog_SelfHostEntryCarriesServingSpec(t *testing.T) {

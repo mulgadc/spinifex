@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,12 +25,9 @@ const (
 // catalogEntry is one static catalog record. Model IDs mirror AWS exactly so
 // existing SDK code and configs are drop-in.
 //
-// MinVRAMMiB, InstanceType and VLLMArgs are the serving spec for self-host
-// entries — what a launcher needs to boot the model — shipped in-tree because
-// they follow the code, not the deployment. The deployment's actual staged
-// weights artifact is deployment-local state resolved from KV instead (see
-// WeightsResolver): two clusters running this same catalog can have staged
-// different snapshots, or none at all.
+// MinVRAMMiB, InstanceType and VLLMArgs are the in-tree serving spec for
+// self-host entries; the actual staged weights artifact is deployment-local
+// state resolved from KV instead (see WeightsResolver).
 type catalogEntry struct {
 	ModelID                    string
 	ModelName                  string
@@ -47,16 +45,6 @@ type catalogEntry struct {
 
 // catalog is the static Phase-1 model set: one self-hosted open model and one
 // Anthropic-direct model. Later phases extend this list.
-//
-// The self-host entry is Llama 3.2 1B Instruct, not the original 70B: wattle's
-// only GPU is an RTX A1000 with 8188 MiB of VRAM, and 70B needs roughly 140 GB
-// in fp16. Llama-3.2-1B-Instruct's ~1.24B parameters need about 2.5 GiB in
-// bf16; MinVRAMMiB budgets 4096 MiB to also cover CUDA context, activations
-// and vLLM's KV cache, leaving headroom under the device's 8188 MiB rather
-// than assuming vLLM's default (near-100%) memory grab. VLLMArgs caps vLLM at
-// half the device accordingly. This is a sized estimate, not a measurement
-// taken on wattle; a launcher (`.7.5`) should correct MinVRAMMiB once it can
-// read actual `nvidia-smi` usage under load.
 var catalog = []catalogEntry{
 	{
 		ModelID:                    "meta.llama3-2-1b-instruct-v1:0",
@@ -67,9 +55,12 @@ var catalog = []catalogEntry{
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
-		MinVRAMMiB:                 4096,
-		InstanceType:               "g5.xlarge",
-		VLLMArgs:                   []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.5"},
+		// MinVRAMMiB is the admission-gate floor; --gpu-memory-utilization
+		// caps vLLM's own pool to roughly the same figure (8188 MiB * 0.6 ≈
+		// 4913 MiB) so the two stay consistent rather than drifting apart.
+		MinVRAMMiB:   5120,
+		InstanceType: "g5.xlarge",
+		VLLMArgs:     []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.6"},
 	},
 	{
 		ModelID:                    "anthropic.claude-3-5-sonnet-20240620-v1:0",
@@ -91,17 +82,22 @@ type CredentialResolver interface {
 }
 
 // tieredCatalog returns the catalog entries advertised to accountID:
-// self-host entries only where a weights snapshot resolves (D4 — a model
-// nothing can serve is not advertised), provider entries only when resolver
-// finds a usable credential.
-func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver) []catalogEntry {
+// self-host entries only where a weights snapshot resolves, provider entries
+// only when resolver finds a usable credential. A resolve error (as opposed
+// to a clean not-found) is an internal fault, not a servability verdict, and
+// aborts the whole list rather than silently thinning it out.
+func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver) ([]catalogEntry, error) {
 	var out []catalogEntry
 	for _, entry := range catalog {
 		if entry.Provider == tierSelfHost {
-			if _, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID); err != nil || !resolvable {
-				continue
+			_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
+			if err != nil {
+				slog.Error("bedrock: weights resolve failed", "model", entry.ModelID, "err", err)
+				return nil, fmt.Errorf("resolve weights for %s: %w", entry.ModelID, err)
 			}
-			out = append(out, entry)
+			if resolvable {
+				out = append(out, entry)
+			}
 			continue
 		}
 		vendor, ok := strings.CutPrefix(entry.Provider, providerPrefix)
@@ -114,7 +110,7 @@ func tieredCatalog(ctx context.Context, accountID string, resolver CredentialRes
 		}
 		out = append(out, entry)
 	}
-	return out
+	return out, nil
 }
 
 func (e catalogEntry) toSummary() *bedrock.FoundationModelSummary {
@@ -164,7 +160,10 @@ func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 // entries where a weights snapshot resolves, provider entries where a
 // credential resolves.
 func ListFoundationModels(ctx context.Context, accountID string, resolver CredentialResolver, _ *bedrock.ListFoundationModelsInput) (*bedrock.ListFoundationModelsOutput, error) {
-	entries := tieredCatalog(ctx, accountID, resolver)
+	entries, err := tieredCatalog(ctx, accountID, resolver)
+	if err != nil {
+		return nil, err
+	}
 	summaries := make([]*bedrock.FoundationModelSummary, 0, len(entries))
 	for _, entry := range entries {
 		summaries = append(summaries, entry.toSummary())
@@ -174,15 +173,20 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 
 // GetFoundationModel looks up a single model by exact modelId. Unknown
 // models, and self-host models with no resolvable weights snapshot, return
-// ResourceNotFoundException — describing a model nothing can serve would be
-// worse than pretending it doesn't exist.
+// ResourceNotFoundException. A weights resolve error is an internal fault,
+// not a not-found verdict, and is surfaced (and logged) as such.
 func GetFoundationModel(ctx context.Context, _ string, modelID string) (*bedrock.GetFoundationModelOutput, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 	if entry.Provider == tierSelfHost {
-		if _, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID); err != nil || !resolvable {
+		_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
+		if err != nil {
+			slog.Error("bedrock: weights resolve failed", "model", entry.ModelID, "err", err)
+			return nil, fmt.Errorf("resolve weights for %s: %w", entry.ModelID, err)
+		}
+		if !resolvable {
 			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 		}
 	}

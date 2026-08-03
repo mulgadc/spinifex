@@ -12,11 +12,8 @@ import (
 )
 
 // bedrockWeightsBucket is the cluster-replicated KV bucket holding, per
-// model, the snapshot ID of this deployment's staged weights volume. The
-// tree defines what a self-host model needs (catalogEntry.MinVRAMMiB,
-// InstanceType, VLLMArgs); which artifact actually serves it is deployment
-// state, since two deployments of the same catalog can stage different
-// snapshots (or none at all).
+// model, the snapshot ID of this deployment's staged weights volume. Two
+// deployments of the same catalog can stage different snapshots, or none.
 const bedrockWeightsBucket = "bedrock-weights"
 
 // bedrockWeightsHistory keeps one revision; a re-stage overwrites in place.
@@ -109,25 +106,21 @@ func (noopWeightsResolver) Resolve(_ context.Context, _ string) (string, bool, e
 	return "", false, nil
 }
 
-// NoopWeightsResolver resolves no weights for any model. It is the fallback
-// wherever no WeightsStore is configured: the unconfigured direction is "no
-// self-host model is servable", not "every self-host model is", matching how
+// NoopWeightsResolver resolves no weights for any model: the unconfigured
+// direction is "no self-host model is servable", matching how
 // NoopCredentialResolver resolves no provider credentials.
 var NoopWeightsResolver WeightsResolver = noopWeightsResolver{}
 
-// weightsResolverMu guards weightsResolver, process-wide runtime
-// configuration set once at service start (SetWeightsResolver) rather than
-// threaded as a parameter, since ListFoundationModels and GetFoundationModel
-// are called through a fixed-arity route table.
+// weightsResolverMu guards weightsResolver, process-wide state set once at
+// service start via SetWeightsResolver.
 var (
 	weightsResolverMu sync.RWMutex
 	weightsResolver   WeightsResolver = NoopWeightsResolver
 )
 
-// SetWeightsResolver installs the WeightsResolver that tieredCatalog and
-// GetFoundationModel use to gate self-host entries on a resolvable weights
-// snapshot. Call once during service construction; a nil resolver restores
-// the no-op default.
+// SetWeightsResolver installs the resolver tieredCatalog and
+// GetFoundationModel gate self-host entries on. A nil resolver restores the
+// no-op default.
 func SetWeightsResolver(r WeightsResolver) {
 	weightsResolverMu.Lock()
 	defer weightsResolverMu.Unlock()

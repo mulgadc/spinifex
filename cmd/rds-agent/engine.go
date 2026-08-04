@@ -24,7 +24,7 @@ import (
 // stays engine-agnostic.
 type engineOps interface {
 	// Rotates the master role's password live. Never persisted anywhere in the
-	// guest: it exists only for the length of this call (D8).
+	// guest: it exists only for the length of this call.
 	SetPassword(ctx context.Context, username, password string) error
 	// Installs the resolved parameter set and reloads. Returns the settings the
 	// engine accepted but will not honour until it restarts.
@@ -180,7 +180,7 @@ ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 // The include the resolved parameter set is rendered to, and the copy of the
 // last one the engine accepted. Both live beside the data rather than in /etc,
 // matching rds-init: a class change boots a fresh root volume, which would
-// otherwise revert them (D9).
+// otherwise revert them when a fresh root volume is used.
 const (
 	parametersFileName = "10-rds-parameters.conf"
 	// Deliberately not a .conf name: include_dir globs *.conf, so the rollback

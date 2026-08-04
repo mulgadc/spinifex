@@ -45,7 +45,7 @@ func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdMalformed, err.Error())
 }
 
-// The placement-group + capacity-reservation combination is rejected (Phase 2).
+// The placement-group + capacity-reservation combination is rejected.
 func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
 	input := crTargetedInput(testCRID)
 	input.Placement = &ec2.Placement{GroupName: aws.String("pg-cluster")}

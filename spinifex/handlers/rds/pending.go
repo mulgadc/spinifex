@@ -16,7 +16,7 @@ import (
 // modify that quietly does something different from the one the customer
 // watched happen.
 //
-// rds-9 owns the trigger: its window machinery — parsing, deterministic
+// The backup scheduler owns the trigger: its window machinery — parsing, deterministic
 // assignment, a persisted last-fired stamp, exactly-once firing across leader
 // churn — is the same mechanism a maintenance window needs, so it is built once
 // there and calls this.
@@ -35,7 +35,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	// puts any statically-scoped setting into effect.
 	//
 	// A class change re-derives every size-derived default, so the set is
-	// recomputed when either the group or the class moves (D20). It is resolved
+	// recomputed when either the group or the class moves. It is resolved
 	// against the class the instance is becoming: the include lives on the data
 	// volume, so it is the replacement VM that adopts it.
 	if pending.DBParameterGroupName != "" || pending.DBInstanceClass != "" {
@@ -124,7 +124,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 
 // Re-resolves the effective set and installs it into the engine's config,
 // recording the settings the engine accepted but will not honour until it
-// restarts (D16). The set lives on the data volume, so it survives the VM
+// restarts. The set lives on the data volume, so it survives the VM
 // replace a class change performs and needs no second apply afterwards.
 //
 // A re-resolve, never a merge: the whole set is recomputed from the catalog and

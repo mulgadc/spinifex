@@ -9,7 +9,7 @@ import (
 )
 
 // The vanity hostname for a DB instance, or "" on a deployment with no base
-// domain — where the endpoint is the bare ENI IP instead (D6).
+// domain — where the endpoint is the bare ENI IP instead.
 func (s *Service) dnsName(accountID, dbInstanceIdentifier string) string {
 	if s.baseDomain == "" {
 		return ""

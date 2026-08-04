@@ -327,7 +327,7 @@ func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 	assert.Equal(t, StatusRebooting, h.record(t).Status)
 }
 
-// D16: the static parameters are already in the engine's config, so the restart
+// The static parameters are already in the engine's config, so the restart
 // is what applies them and the record stops advertising them.
 func TestRebootDBInstance_ClearsThePendingRebootParameters(t *testing.T) {
 	h := newLifecycleHarness(t, false)
@@ -343,7 +343,7 @@ func TestRebootDBInstance_ClearsThePendingRebootParameters(t *testing.T) {
 	assert.Contains(t, eventMessages(h.events(t)), "Applied the parameters that were pending a reboot.")
 }
 
-// D19: there is no standby to fail over to, so silently ignoring the flag would
+// There is no standby to fail over to, so silently ignoring the flag would
 // report a failover that never happened.
 func TestRebootDBInstance_RejectsForceFailover(t *testing.T) {
 	h := newLifecycleHarness(t, false)
@@ -466,7 +466,7 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 	assert.Equal(t, StatusStopping, h.record(t).Status)
 }
 
-// D5/D9: the data volume, the customer ENI and the DNS record are all retained,
+// The data volume, the customer ENI and the DNS record are all retained,
 // so a start comes back on the same datadir at the same address.
 func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 	h := newLifecycleHarness(t, false)

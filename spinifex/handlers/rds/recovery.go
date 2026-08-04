@@ -17,7 +17,7 @@ const defaultFailureGrace = HeartbeatInterval
 
 // What the classifier decides about one instance. Reduced from the EKS
 // classifier's live/restartable/lost to healthy/failed, because v1.0 RDS reports
-// failure rather than repairing it (D13).
+// failure rather than repairing it.
 type healthVerdict int
 
 const (
@@ -54,7 +54,7 @@ type healthObservation struct {
 func classifyHealth(obs healthObservation) healthVerdict {
 	// Every other state is owned by something already acting on the VM, and
 	// stopped is legitimate rather than a failure. This is the interlock that
-	// keeps the classifier from fighting rds-5a/rds-5b over the same VM.
+	// keeps the classifier from fighting other recovery paths over the same VM.
 	if obs.status != StatusAvailable && obs.status != StatusFailed {
 		return verdictSkip
 	}
@@ -207,7 +207,7 @@ func (r *Reconciler) lastHeartbeat(accountID string, rec *DBInstanceRecord) (tim
 
 // Whether the record's VM is running, fanned out across the fleet. A nil
 // resolver answers true, which is what leaves failure undetectable on a node
-// with EC2 unwired instead of declaring it on the heartbeat alone (D13).
+// with EC2 unwired instead of declaring it on the heartbeat alone.
 func (r *Reconciler) vmRunning(ctx context.Context, accountID string, rec *DBInstanceRecord) (bool, error) {
 	if r.svc.deps.InstanceState == nil || rec.InstanceID == "" {
 		return true, nil

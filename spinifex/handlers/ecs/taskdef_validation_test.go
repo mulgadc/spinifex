@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRegisterTaskDefinition_RejectsSecrets covers siv-458: a container secrets[]
+// TestRegisterTaskDefinition_RejectsSecrets verifies that a container secrets[]
 // is hard-rejected rather than silently dropped.
 func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
 	svc, _ := newTestService(t)
@@ -27,7 +27,7 @@ func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidParameterException")
 }
 
-// TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver covers siv-455/458: a
+// TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver verifies that a
 // non-json-file driver is accepted for parity (warned, not rejected) and the
 // driver round-trips through DescribeTaskDefinition.
 func TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver(t *testing.T) {
@@ -77,8 +77,8 @@ func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
 	assert.Equal(t, []string{"EC2"}, aws.StringValueSlice(d.TaskDefinition.RequiresCompatibilities))
 }
 
-// TestRunTask_AssignCarriesExecutionRoleAndLogDriver covers siv-459 (execution
-// role plumbed to the agent) and siv-455 (log driver reaches the assign).
+// TestRunTask_AssignCarriesExecutionRoleAndLogDriver verifies that execution
+// role plumbed to the agent) and the log driver reaches the assign.
 func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -113,7 +113,7 @@ func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
 	assert.Equal(t, LogDriverJSONFile, poll.Assignments[0].Containers[0].LogDriver)
 }
 
-// TestRunTask_AssignCarriesGPU covers mulga-11opz (Epic C task C1): a
+// TestRunTask_AssignCarriesGPU verifies that a
 // resourceRequirements GPU count on the task def is threaded end-to-end —
 // conv -> ContainerDef -> task-level aggregate (TaskRecord.GPU) -> the
 // AssignContainer the agent polls for.

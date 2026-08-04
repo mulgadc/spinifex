@@ -1940,7 +1940,7 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
 }
 
-// TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the mulga-1dzx9
+// TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the
 // fix: TerminateStoppedInstance must stamp Teardown[vm.TeardownVolumes] on
 // success, mirroring the running-instance path's markTeardownResult
 // (vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and

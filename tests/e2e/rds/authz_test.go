@@ -56,7 +56,7 @@ func TestAuthorization(t *testing.T) {
 	})
 
 	// The internal actions are refused by principal class, before any policy is
-	// read: GetDBBootstrapConfig hands back the master password (D8), so rds:* —
+	// read: GetDBBootstrapConfig hands back the master password, so rds:* —
 	// a legitimate administrator grant — must not reach it. Asserted with a
 	// principal that holds rds:*, or the denial would only prove a missing grant.
 	t.Run("RDSStarCannotReachAnInternalAction", func(t *testing.T) {

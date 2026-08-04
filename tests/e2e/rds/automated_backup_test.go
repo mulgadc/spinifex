@@ -25,7 +25,7 @@ const (
 	retentionSweepTimeout = 7 * time.Minute
 )
 
-// TestAutomatedBackups drives what only a live cluster can prove about rds-9:
+// TestAutomatedBackups drives what only a live cluster can prove about automated backups:
 // the leader's window pass actually fires against a real engine, the snapshot it
 // takes is a real quiesced copy of the data volume, it fires once and not once per
 // pass, and turning retention off sweeps the set through the cluster-wide reaper.

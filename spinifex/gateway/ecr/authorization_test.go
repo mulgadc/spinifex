@@ -9,7 +9,7 @@ import (
 )
 
 // TestClassifyOperation_RouteMatrix pins the plan's OCI request -> ECR action
-// -> resource table exactly. Every row here must match the plan doc's table;
+// -> resource table exactly. Every row here must match the service's table;
 // changing an entry without a corresponding plan-doc update is a regression.
 func TestClassifyOperation_RouteMatrix(t *testing.T) {
 	cases := []struct {

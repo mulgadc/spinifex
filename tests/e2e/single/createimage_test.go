@@ -20,8 +20,8 @@ import (
 // Boot-verifies both CreateImage paths: --no-reboot against the running
 // singleton (IsRunning path), and a second image against the same instance
 // stopped (offline path). The IsRunning path can register a well-formed AMI
-// that never reaches the OS — mulga-i8nfx found this stuck at the UEFI shell
-// on a root volume grown past the base image's native size — so
+// that never reaches the OS, such as one stuck at the UEFI shell on a root
+// volume grown past the base image's native size — so
 // describe-images reporting State=available is not itself evidence the AMI
 // boots; only a real guest login is.
 func runCreateImage(t *testing.T, fix *Fixture) {
@@ -103,8 +103,8 @@ func runCreateImage(t *testing.T, fix *Fixture) {
 
 // runBootVerifyAMI launches a short-lived, test-owned instance from amiID and
 // requires it to reach a real SSH login — not just EC2 State=running — so a
-// well-formed-but-unbootable AMI (mulga-i8nfx: stuck at the UEFI shell) fails
-// this test instead of shipping silently. Terminates the probe instance via
+// well-formed-but-unbootable AMI fails this test instead of shipping
+// silently. Terminates the probe instance via
 // t.Cleanup regardless of outcome.
 func runBootVerifyAMI(t *testing.T, fix *Fixture, amiID, label string) {
 	t.Helper()

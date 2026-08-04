@@ -1,8 +1,7 @@
 name: E2E DDIL
 
-# Phase 1 trigger: workflow_dispatch only. Nightly cron + on-main-merge
-# land in mulga-siv-5.8 once ≥4 scenarios are asserting. See
-# docs/development/improvements/ddil-e2e-test-harness.md §4 / §Dependencies.
+# This workflow is manually triggered while the DDIL scenarios are being
+# validated.
 on:
   workflow_dispatch:
     inputs:

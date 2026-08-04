@@ -682,7 +682,7 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 }
 
 // TestRefreshSystemInstanceState_WriteErrorPropagates exercises the
-// writeFwCfgBlobs error path (plan §3): a write failure under the tmpfs
+// writeFwCfgBlobs error path: a write failure under the tmpfs
 // path must surface as a wrapped error so MarkRecoveryFailed gets called.
 func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 	d, nc, tmpDir := newRefreshTestDaemon(t)

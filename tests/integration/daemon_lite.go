@@ -244,8 +244,8 @@ func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	// TagsServiceImpl and skips the instance-ID routing split and the
 	// recordTagMirrors projection onto owning resource records — both exist
 	// only to support instance/volume tagging, which is out of scope here
-	// (see mulga-xaa9f), and neither is observed by the ported
-	// TestTagManagement assertions (all of which read back through
+	// and neither is observed by the ported TestTagManagement assertions (all
+	// of which read back through
 	// DescribeTags, the central tag store both paths write identically).
 	sub(t, nc, "ec2.CreateTags", func(m *nats.Msg) { dispatch(m, dl.Tags.CreateTags) })
 	sub(t, nc, "ec2.DeleteTags", func(m *nats.Msg) { dispatch(m, dl.Tags.DeleteTags) })

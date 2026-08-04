@@ -12,7 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// D12: ModifyVolume refuses a volume a running VM holds, so a storage grow is
+// ModifyVolume refuses a volume a running VM holds, so a storage grow is
 // stop the engine, stop the VM, grow the volume, start the VM, and extend the
 // filesystem inside the guest. There is no online grow in v1, and a shrink is
 // rejected outright — as AWS rejects it.

@@ -34,7 +34,7 @@ import (
 // plane publishes is region-qualified.
 const defaultRegion = "ap-southeast-2"
 
-// The instance spec every test in the suite creates from. The class is the D15
+// The instance spec every test in the suite creates from. The class is the
 // floor and the storage is the API's own minimum: nothing here needs more, and
 // each DB VM booted is charged against the phase's instance budget. Only a
 // class-sensitive assertion names a bigger class, and only a grow names a

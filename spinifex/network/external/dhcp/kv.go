@@ -17,7 +17,7 @@ import (
 
 // KVBucketPrefix is the lease bucket's name prefix. The full bucket name
 // is BucketName(az), per-AZ to keep chassis-failover within the AZ scope
-// (D7 in the design doc).
+// as part of the DHCP lease record.
 const KVBucketPrefix = "spinifex-dhcp-leases"
 
 // BucketName returns the per-AZ lease bucket name. Empty az is allowed

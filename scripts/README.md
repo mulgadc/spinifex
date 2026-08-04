@@ -3,9 +3,6 @@
 Node installation, dev-environment lifecycle, guest image builds, and verification
 tooling for Spinifex.
 
-Repo-level tooling (releases, CI infrastructure, ISO builds, beads) lives in
-[`mulga/scripts/`](../../scripts/README.md).
-
 ## Install and node setup
 
 | Script | What it does |

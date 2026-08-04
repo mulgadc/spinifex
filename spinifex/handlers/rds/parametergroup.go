@@ -129,7 +129,7 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 }
 
 // Stores validated overrides, one KV key per parameter, so a modify touching one
-// setting cannot clobber a concurrent change to another (D3). The whole request
+// setting cannot clobber a concurrent change to another. The whole request
 // is validated before anything is written: a batch with one bad value must leave
 // the group exactly as it was rather than half-applied.
 func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyDBParameterGroupInput, accountID string) (*rds.DBParameterGroupNameMessage, error) {
@@ -186,7 +186,7 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 // Merges catalog defaults with the group's stored overrides. The defaults are
 // evaluated at the smallest supported class, because a parameter group is not
 // bound to an instance: a customer reading a group's values before creating
-// anything has to see literals, and D20 keeps formulas off this surface.
+// anything has to see literals, and formulas stay off this surface.
 func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeDBParametersInput, accountID string) (*rds.DescribeDBParametersOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -428,7 +428,7 @@ func parameterSource(isOverride bool) string {
 }
 
 // A computed default is reported as engine-default with its literal value, never
-// as the formula that produced it (D20).
+// as the formula that produced it.
 func projectParameter(spec ParameterSpec, value string, isOverride bool) *rds.Parameter {
 	out := &rds.Parameter{
 		ParameterName:  aws.String(spec.Name),

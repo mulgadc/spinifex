@@ -73,7 +73,7 @@ type MgmtIPRecord struct {
 //
 // Allocation is backed by a cluster-wide NATS KV compare-and-swap record
 // once BindKV has been called, so nodes sharing the same br-mgmt L2 segment
-// never hand out the same address (mulga-f3j2x): every node independently
+// never hand out the same address: every node independently
 // scanning from .10 was the bug, since br-mgmt is one flat subnet across the
 // whole cluster, not a per-host range.
 //
@@ -204,7 +204,7 @@ func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
 
 // nextFreeIP scans rangeMin-rangeMax on the /24 rooted at baseIP, skipping
 // every IP already present in allocated regardless of which entry's Node it
-// belongs to — that is the whole fix for mulga-f3j2x: the range is shared
+// belongs to — the range is shared
 // across the cluster, not partitioned per host.
 func nextFreeIP(baseIP net.IP, rangeMin, rangeMax byte, allocated []MgmtIPEntry) (string, error) {
 	used := make(map[string]struct{}, len(allocated))
@@ -268,7 +268,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 // — once KV is bound (see BindKV) and healthy — CAS-inserts an entry for
 // every local VM carrying a MgmtIP, idempotent by instance ID. This never
 // removes another node's entries: reclaiming addresses of a dead node is a
-// separate concern (tracked apart from mulga-f3j2x).
+// separate concern.
 //
 // Called on daemon startup (startLocal, cache-only since KV isn't bound yet)
 // and again after cluster bootstrap (startCluster, once BindKV has run) so

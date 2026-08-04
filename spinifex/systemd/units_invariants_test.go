@@ -245,10 +245,10 @@ func TestGracefulDrainOrdering(t *testing.T) {
 
 // TestRG11_LeanUnits asserts the RG-11 contract: unit/slice files carry settings
 // plus terse # RG-n references, not paragraphs of rationale, and never reference
-// a plan doc, bead, or CI run (project policy — reasoning lives in the ADR).
+// external planning or CI artifacts (reasoning is kept separately).
 func TestRG11_LeanUnits(t *testing.T) {
 	dir := unitsDir(t)
-	// Plan/bead/doc/CI-run references that must not appear in a unit comment.
+	// External planning and CI references that must not appear in a unit comment.
 	planRef := regexp.MustCompile(`(?i)siv-[0-9]+|mulga-[a-z0-9-]+|[a-z0-9_-]+\.md|\b[0-9]{9,}\b`)
 	const maxComments = 12
 
@@ -262,7 +262,7 @@ func TestRG11_LeanUnits(t *testing.T) {
 			}
 			comments++
 			if m := planRef.FindString(ls); m != "" {
-				t.Errorf("RG-11: %s comment references a plan/bead/CI artifact (%q); rationale belongs in the ADR: %s", name, m, ls)
+				t.Errorf("unit comment references external planning or CI material (%q): %s", m, ls)
 			}
 		}
 		if comments > maxComments {

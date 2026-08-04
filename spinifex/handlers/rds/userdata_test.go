@@ -43,7 +43,7 @@ func TestBuildAgentUserData(t *testing.T) {
 	}
 }
 
-// D8: the master password reaches the guest only over GetDBBootstrapConfig, and
+// The master password reaches the guest only over GetDBBootstrapConfig, and
 // the agent's gateway credentials come from IMDS — so nothing secret is written
 // to a data source any process on the VM can read.
 func TestBuildAgentUserDataCarriesNoCredentials(t *testing.T) {

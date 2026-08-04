@@ -20,7 +20,7 @@ import (
 
 // The EC2 snapshot surface the RDS control plane drives. A DB snapshot is an
 // ec2.CreateSnapshot of the instance's data volume wrapped in an agent quiesce
-// (D10); DescribeSnapshots is also what answers whether a volume is still
+// consistent; DescribeSnapshots is also what answers whether a volume is still
 // referenced, which is what decides between deleting and retaining it.
 type snapshotProvider interface {
 	CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error)
@@ -45,7 +45,7 @@ const (
 // Takes a customer-requested snapshot of the instance's data volume. The engine
 // is held at a checkpoint for the length of it, so the captured datadir is a
 // checkpoint rather than a mid-write state — and if it cannot be, the snapshot
-// is still taken and reported as crash consistent (D10).
+// is still taken and reported as crash consistent.
 func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnapshotInput, accountID string) (*rds.CreateDBSnapshotOutput, error) {
 	req, err := validateCreateSnapshotRequest(input)
 	if err != nil {
@@ -70,8 +70,8 @@ func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnaps
 	return &rds.CreateDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(record)}, nil
 }
 
-// The one snapshot path (D10). A customer's CreateDBSnapshot and an rds-9
-// automated backup differ only in who asks and in the type stamped on the record;
+// The one snapshot path. A customer's CreateDBSnapshot and an automated
+// backup differ only in who asks and in the type stamped on the record;
 // the quiesce, the node-addressed EC2 snapshot, the db-snapshots record and the
 // per-instance in-flight guard are the same for both.
 //
@@ -147,7 +147,7 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 	// graceful stop, which is the checkpoint a quiesce would be forcing.
 	if resume == StatusAvailable {
 		if quiesceErr := s.quiesceEngine(ctx, accountID, rec.DBInstanceIdentifier, dbSnapshotIdentifier); quiesceErr != nil {
-			// D10: still a restorable backup, so it is taken and reported honestly
+			// Still a restorable backup, so it is taken and reported honestly
 			// rather than refused. The engine replays WAL on restore.
 			crashConsistent = true
 			slog.WarnContext(ctx, "rds: the engine could not be quiesced; taking a crash-consistent snapshot",
@@ -287,7 +287,7 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 }
 
 // Removes a DB snapshot, its EC2 data and — when this was the last reference — the
-// data volume behind it. Shared with rds-9's retention sweep, which cannot go
+// data volume behind it. Shared with the retention sweep, which cannot go
 // through DeleteDBSnapshot: that rejects the rds: namespace automated snapshots
 // live in, so a customer can never delete one by hand.
 func (s *Service) removeDBSnapshot(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBSnapshotRecord) error {
@@ -388,7 +388,7 @@ func (s *Service) releaseRetainedVolume(ctx context.Context, kv jetstream.KeyVal
 }
 
 // Deletes a retained data volume once nothing holds it, or records the holders it
-// still has. Reports whether the volume actually went, which is what lets rds-9's
+// still has. Reports whether the volume actually went, which is what lets the
 // reaper count the ones it reclaimed.
 func (s *Service) reclaimRetainedVolume(ctx context.Context, kv jetstream.KeyValue,
 	retained *RetainedVolumeRecord) (bool, error) {
@@ -428,7 +428,7 @@ func (s *Service) reclaimRetainedVolume(ctx context.Context, kv jetstream.KeyVal
 	return true, nil
 }
 
-// The request as CreateDBSnapshot resolved it, or as rds-9's scheduler and the
+// The request as CreateDBSnapshot resolved it, or as the scheduler and the
 // delete path's final-snapshot reservation construct it. SnapshotType is what the
 // record is stamped with, and the only thing separating an automated backup from
 // a manual snapshot once it exists.
@@ -463,7 +463,7 @@ func validateCreateSnapshotRequest(input *rds.CreateDBSnapshotInput) (*validated
 	}, nil
 }
 
-// Returns the snapshot type to filter on, empty for "any". D19: a filter this
+// Returns the snapshot type to filter on, empty for "any". A filter this
 // phase cannot honour is rejected rather than dropped, because a silently
 // unfiltered list reads as a complete answer.
 func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (string, error) {
@@ -608,7 +608,7 @@ func (s *Service) discardSnapshotRecord(ctx context.Context, kv jetstream.KeyVal
 
 // Moves the instance into backing-up and records the snapshot holding it in one
 // CAS, returning the status the instance goes back to. That write is the
-// per-instance guard: a second snapshot, an rds-9 automated one or a lifecycle
+// per-instance guard: a second snapshot, an automated one or a lifecycle
 // op finds the instance already backing-up and is rejected rather than queued.
 func (s *Service) beginSnapshotOperation(ctx context.Context, kv jetstream.KeyValue, rev uint64,
 	rec *DBInstanceRecord, dbSnapshotIdentifier string) (Status, error) {

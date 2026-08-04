@@ -19,7 +19,7 @@ import (
 // is a boot loop, and the bad config is on the persistent data volume.
 
 // When a parameter takes effect. Static settings are stored and reported
-// pending-reboot; dynamic ones are adopted by a reload (D16).
+// pending-reboot; dynamic ones are adopted by a reload.
 const (
 	ApplyTypeStatic  = "static"
 	ApplyTypeDynamic = "dynamic"
@@ -50,7 +50,7 @@ const (
 
 // One catalog entry. Exactly one of Default and DefaultFor is set: a literal for
 // the parameters whose engine default is size-independent, and a formula over
-// the instance class's memory for the ones that are not (D20).
+// the instance class's memory for the ones that are not.
 type ParameterSpec struct {
 	Name        string
 	DataType    string
@@ -441,7 +441,7 @@ func CatalogParameterNames() []string {
 }
 
 // The engine default for one parameter at one instance class: the literal, or
-// the formula evaluated against the class's memory (D20).
+// the formula evaluated against the class's memory.
 func (s ParameterSpec) DefaultAt(memoryMiB int64) string {
 	if s.DefaultFor != nil {
 		return s.DefaultFor(memoryMiB)

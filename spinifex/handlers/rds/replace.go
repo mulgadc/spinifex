@@ -11,10 +11,10 @@ import (
 )
 
 // The one primitive a class change, a storage grow that rides the same outage,
-// and rds-6's auto-recovery all reduce to: stop the engine, terminate the VM,
-// launch a fresh one at the target size, re-attach the same data volume (D9)
-// and the same persisted customer ENI (D5), and rewrite the rds-system index so
-// the superseded agent can no longer authenticate as this instance (D3).
+// and automatic recovery all reduce to: stop the engine, terminate the VM,
+// launch a fresh one at the target size, re-attach the same data volume and
+// persisted customer ENI, and rewrite the rds-system index so the superseded
+// agent can no longer authenticate as this instance.
 //
 // The endpoint is untouched throughout: the customer ENI keeps its address, so
 // the DNS record and the serving cert's SANs stay correct and clients reconnect
@@ -122,7 +122,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 
 // A fresh COW clone of the engine AMI, re-attached to the identity the DB
 // instance owns. The new agent fetches its bootstrap config in attach mode
-// (D8): it gets the port, the resolved parameters and a freshly minted serving
+// It gets the port, the resolved parameters and a freshly minted serving
 // cert, but no master password, and rds-init skips initdb on the datadir it
 // finds already initialised.
 func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec *DBInstanceRecord, instanceType, profileARN string) (*LaunchOutput, error) {
@@ -155,7 +155,7 @@ func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec
 
 // The instance index keys off the internal EC2 instance ID, which every replace
 // mints anew. The old entry is removed first: while it exists the superseded
-// agent's IMDS credentials still resolve to this DB instance (D3).
+// agent's IMDS credentials still resolve to this DB instance.
 func (s *Service) rewriteInstanceIndex(ctx context.Context, accountID string, rec *DBInstanceRecord, oldInstanceID, newInstanceID string) error {
 	if oldInstanceID != "" && oldInstanceID != newInstanceID {
 		if err := s.DeleteInstanceIndex(ctx, oldInstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {

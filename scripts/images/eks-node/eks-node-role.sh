@@ -138,7 +138,7 @@ case "${ROLE}" in
         # Managed-addon delivery runs only on the primary server: it renders
         # staged addon bundles into the K3s auto-deploy dir, which a single
         # writer owns. HA multi-server addon delivery is tracked separately
-        # (mulga-siv-231.7); server-join nodes do not run it.
+        # Server-join nodes do not run this setup.
         svc_enable mulga-eks-addon-sync
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery

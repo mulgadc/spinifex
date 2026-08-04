@@ -77,7 +77,7 @@ func TestConnectivity(t *testing.T) {
 		assert.Equal(t, connectNote, strings.TrimSpace(out), "the row written over the endpoint must read back")
 	})
 
-	// D6: the name is the customer's handle on the instance, and it has to resolve
+	// The name is the customer's handle on the instance, and it has to resolve
 	// where a customer resolves it — inside the VPC. A lookup on the runner proves
 	// nothing, because the runner's resolver may point straight at northstar.
 	t.Run("TheEndpointNameResolvesInTheGuest", func(t *testing.T) {
@@ -95,7 +95,7 @@ func TestConnectivity(t *testing.T) {
 			"the name and the address must reach the same database")
 	})
 
-	// D14 puts both the vanity name and the ENI address in the serving
+	// Both the vanity name and the ENI address are in the serving
 	// certificate's SAN set specifically so verify-full works either way, and that
 	// is the mode a customer who cares about TLS actually uses.
 	t.Run("VerifyFullSucceedsByNameAndByIP", func(t *testing.T) {
@@ -149,7 +149,7 @@ func TestConnectivity(t *testing.T) {
 		}, sgSettleTimeout, 5*time.Second)
 	})
 
-	// D21: the master user is administrative but not a PostgreSQL superuser. This
+	// The master user is administrative but not a PostgreSQL superuser. This
 	// is the only leg that can prove it — the bootstrap unit test sees the SQL
 	// that was sent, not what the engine then refuses.
 	t.Run("TheMasterUserIsAdministrativeButNotASuperuser", func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestConnectivity(t *testing.T) {
 			"the master user must be able to install a trusted extension in a database it owns")
 	})
 
-	// Last: it retires the credential every subtest above connects with. D8 keeps
+	// Last: it retires the credential every subtest above connects with. The system keeps
 	// no cleartext password anywhere, so the only proof the rotation reached the
 	// engine is that the new one authenticates and the old one does not.
 	t.Run("TheMasterPasswordRotates", func(t *testing.T) {

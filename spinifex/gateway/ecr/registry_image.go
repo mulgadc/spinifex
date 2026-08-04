@@ -211,7 +211,7 @@ func (reg *Registry) ListImages(ctx context.Context, account, repo string) ([]Im
 
 // DeleteImage removes an image by tag and/or digest. A tag deletes only that tag
 // pointer; a digest deletes the manifest meta and every tag pointing at it. Blob
-// and manifest-object GC is deferred (siv-361). The resolved digest is returned.
+// and manifest-object GC is deferred. The resolved digest is returned.
 // A missing image yields ErrImageNotFound.
 func (reg *Registry) DeleteImage(ctx context.Context, account, repo, tag, digest string) (string, error) {
 	scoped := reg.forAccount(account)

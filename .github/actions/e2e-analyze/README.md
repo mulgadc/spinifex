@@ -70,7 +70,7 @@ When the report format changes intentionally, regenerate the snapshots:
 go test ./.github/actions/e2e-analyze/ -update
 ```
 
-## Per-failure bundles (Stage 2)
+## Per-failure bundles
 
 After parsing, the action materialises a bundle directory per failure
 under `<log-dir>/analysis/NN-<TestName>/`. The report links to it from

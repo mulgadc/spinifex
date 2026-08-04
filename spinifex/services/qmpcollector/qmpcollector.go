@@ -1,4 +1,4 @@
-// Package qmpcollector is the per-node guest-metrics producer (Goanna Phase 1):
+// Package qmpcollector is the per-node guest-metrics producer:
 // it discovers running VMs via their qmp-telemetry-*.json sidecar files, polls
 // each VM's dedicated telemetry QMP socket (never the manager's control
 // socket) plus host tap counters, and publishes CloudWatch-mappable series to

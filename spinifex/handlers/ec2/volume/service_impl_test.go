@@ -1492,7 +1492,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 }
 
 // TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes locks the
-// mulga-1dzx9 fix: a DeleteOnTermination root volume left attached to a
+// A DeleteOnTermination root volume left attached to a
 // stopped instance (Stop's Unmount deliberately never clears a Boot volume's
 // AttachedInstance, daemon/vm_adapters.go) hits DeleteVolume's in-use guard
 // directly — see TestDeleteVolume_VolumeAttachedButAvailable above.

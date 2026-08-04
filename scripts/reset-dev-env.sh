@@ -398,8 +398,8 @@ if ip link show veth-wan-br >/dev/null 2>&1; then
     sudo ip link del veth-wan-br 2>/dev/null || true
 fi
 
-# Remove veth persistence units (Fix 1, mulga-998.b). Without this, systemd-networkd
-# recreates the veth on next reboot even after a full dev reset.
+# Remove veth persistence units. Without this, systemd-networkd recreates the
+# veth on next reboot even after a full dev reset.
 if [ -e /etc/systemd/network/15-spinifex-veth-wan.netdev ] || \
    [ -e /etc/systemd/network/15-spinifex-veth-wan.network ] || \
    [ -e /etc/systemd/network/16-spinifex-veth-wan-ovs.network ]; then

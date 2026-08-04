@@ -319,7 +319,7 @@ func withShortForwardTimeout(t *testing.T, d time.Duration) {
 }
 
 // TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally pins
-// siv-481: a forward to LastNode that times out (as opposed to an immediate
+// A forward to LastNode that times out (as opposed to an immediate
 // ErrNoResponders) must still fall back to a local start attempt instead of
 // surfacing a bare ServerInternal. The target subscriber below is alive but
 // silent, so nats: timeout is the only error the forward can produce — proof
@@ -350,7 +350,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing
 }
 
 // TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleStart
-// pins the other half of siv-481: if the forward times out on the caller's
+// If the forward times out on the caller's
 // side AFTER the original node already won the atomic claim (removed the
 // record from shared KV) and kept working, the caller's local fallback must
 // not double-start the instance. It should observe the record already gone

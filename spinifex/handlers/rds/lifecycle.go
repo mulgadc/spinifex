@@ -45,8 +45,8 @@ const instanceCommandTimeout = 90 * time.Second
 // How often the fleet is re-read while a stop is settling.
 const vmStopPollInterval = 500 * time.Millisecond
 
-// Reboots the engine, applying any static parameters stored pending-reboot
-// (D16). ForceFailover is rejected outright: there is no standby to fail over
+// Reboots the engine, applying any static parameters stored pending-reboot.
+// ForceFailover is rejected outright: there is no standby to fail over
 // to, and silently ignoring it would report a failover that never happened.
 func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInstanceInput, accountID string) (*rds.RebootDBInstanceOutput, error) {
 	if input == nil {
@@ -93,12 +93,12 @@ func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInsta
 
 // Stops the engine and then the VM. The data volume, the customer ENI and its
 // IP, and the DNS record are all retained, so a start comes back on the same
-// datadir at the same address (D5/D9).
+// datadir at the same address.
 func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, accountID string) (*rds.StopDBInstanceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
-	// A pre-stop snapshot is rds-8's; accepting it here would report a snapshot
+	// A pre-stop snapshot is already in progress; accepting it here would report a snapshot
 	// the customer would then not find.
 	if aws.StringValue(input.DBSnapshotIdentifier) != "" {
 		return nil, unimplemented("DBSnapshotIdentifier", "taking a snapshot as part of a stop is not implemented yet")

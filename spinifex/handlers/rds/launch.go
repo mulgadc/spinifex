@@ -113,7 +113,7 @@ type LaunchInput struct {
 	RequireEncryptedData bool
 
 	// A replace re-uses the DB instance's persisted customer ENI and data
-	// volume instead of minting new ones (D5/D9): the endpoint address and the
+	// volume instead of minting new ones: the endpoint address and the
 	// datadir are the identity that must survive the VM. Both empty is a
 	// create, which builds them.
 	ExistingCustomerENI string

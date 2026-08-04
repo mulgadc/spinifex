@@ -110,7 +110,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	// which only matches the API-form name persisted in volume metadata.
 	// A guest-form name here breaks the immediate post-attach wait loop.
 	// This diverges intentionally from BlockDeviceMappings, which retain
-	// the guest path under mulga-599.
+	// the guest path for in-guest device discovery.
 	d.respondWithVolumeAttachment(msg, volumeID, command.ID, device, "attached")
 }
 

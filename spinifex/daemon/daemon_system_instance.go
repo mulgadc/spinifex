@@ -767,7 +767,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 	// Without virtio_mmio.device params the kernel never discovers the devices
 	// (auto-kernel-cmdline does not append when -append is specified).
 	//
-	// Boot-time perf flags (Phase 2):
+	// Boot-time performance flags:
 	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
 	//                             writes dominate boot time; warnings+errors only)
 	//   mitigations=off         — skip spectre/meltdown microcode patching at

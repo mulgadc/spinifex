@@ -372,7 +372,7 @@ func TestCreateDBInstance_FailureAfterLaunchUnwindsEveryResource(t *testing.T) {
 	assert.Len(t, h.launch.enis.deleted, 2, "both the customer and system ENI are deleted")
 }
 
-// D19 honesty: the request may not be answered with an instance whose storage is
+// The request may not be answered with an instance whose storage is
 // not actually encrypted, so an unencrypted volume fails the whole create.
 func TestCreateDBInstance_UnencryptedDataVolumeFailsTheCreate(t *testing.T) {
 	h := newCreateHarness(t, "")
@@ -426,7 +426,7 @@ func TestCreateDBInstance_RequiresADefaultVPCWithASubnet(t *testing.T) {
 // need one. A zero policy carries the built-in defaults.
 func newCreateValidator() *Service { return NewService(nil, testRegion) }
 
-// D19: a parameter that would create a false safety, security or availability
+// A parameter that would create a false safety, security or availability
 // guarantee is rejected rather than silently dropped.
 func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 	cases := []struct {
@@ -460,7 +460,7 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 	}
 }
 
-// DeletionProtection is honoured from rds-5a onwards, so it has to be accepted
+// DeletionProtection is honoured, so it has to be accepted
 // at create and carried onto the record DeleteDBInstance checks.
 func TestValidateCreateRequest_AcceptsDeletionProtection(t *testing.T) {
 	input := validCreateInput()

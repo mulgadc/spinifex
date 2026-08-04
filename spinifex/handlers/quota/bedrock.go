@@ -16,7 +16,7 @@ import (
 
 // BedrockUsageReader resolves accountID's current-period Bedrock token usage
 // (input+output, across every model), the counter gateway_bedrock's usage
-// consumer maintains from the invocation stream (mulga-vmfng.7.6). The
+// consumer maintains from the invocation stream. The
 // interface is defined here rather than importing gateway_bedrock so the two
 // packages stay decoupled; gateway_bedrock.UsageStore satisfies it
 // structurally, and awsgw.go wires the two together at startup.
@@ -39,7 +39,7 @@ func (s *Service) SetBedrockUsage(r BedrockUsageReader) {
 // gate: the invocation that crosses the cap is itself allowed (its cost
 // isn't known until it finishes), and the next one is rejected once the
 // stream-fed counter catches up. A few seconds of lag behind real usage is
-// an accepted property of a monthly cap (D8).
+// an accepted property of a monthly cap.
 func (s *Service) CheckBedrockTokens(ctx context.Context, accountID string) error {
 	if s == nil || !s.limits.TokensPerMonthEnabled || accountID == utils.GlobalAccountID {
 		return nil
@@ -192,7 +192,7 @@ func (l *rpmLimiter) snapshot() map[string]int {
 // KVBucketBedrockRPMUsage is the gateway-owned KV bucket RunBedrockRPMSync
 // writes each account's current bucket occupancy to, keyed by accountID. It
 // exists for cross-node visibility and dashboards only: CheckBedrockRPM never
-// reads it back. Enforcement must stay local and immediate (D8) — reading a
+// reads it back. Enforcement must stay local and immediate — reading a
 // remote value here would reintroduce exactly the round-trip latency that
 // ruled out stream-fed RPM enforcement in the first place. Concurrent
 // gateways overwrite each other's snapshot for the same account with no

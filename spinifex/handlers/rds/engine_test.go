@@ -25,7 +25,7 @@ func TestLookupEngine(t *testing.T) {
 	assert.Equal(t, []string{"postgres"}, SupportedEngines())
 }
 
-// D19: a version other than the pinned one would be served by an image that is
+// A version other than the pinned one would be served by an image that is
 // not the one asked for, so it is rejected rather than quietly substituted.
 func TestEngineValidateVersion(t *testing.T) {
 	engine, err := LookupEngine("postgres")

@@ -1,6 +1,6 @@
 // Package main implements the e2e-analyze GitHub Action.
 //
-// Stage 1: cluster failures from go-junit-report's junit-*.xml by error signature,
+// Cluster failures from go-junit-report's junit-*.xml by error signature,
 // pick the earliest non-cascade failure per suite as the likely root cause,
 // and render a human-readable report.
 //
@@ -80,7 +80,7 @@ type Failure struct {
 	// slicing a plausible-looking window around the wrong minute.
 	SuiteSpan time.Duration
 	// BundlePath is the relative path (from log-dir) to the per-failure
-	// bundle written by Stage 2's WriteBundles. Empty when bundles were
+	// bundle written by WriteBundles. Empty when bundles were
 	// not generated (e.g. unit tests that call Render directly).
 	BundlePath string
 }
@@ -552,7 +552,7 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 	return rep, nil
 }
 
-// Render writes the markdown report (Stage 1).
+// Render writes the markdown report.
 func Render(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n\n", r.Title)

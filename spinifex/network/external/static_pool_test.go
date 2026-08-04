@@ -180,7 +180,7 @@ func TestStaticPool_Release_OwnershipScoped(t *testing.T) {
 }
 
 // TestNextAvailableIP_SkipsGwLrpRange verifies the static allocator honors
-// gw_lrp_range — addresses inside the reservation are skipped (siv-36).
+// gw_lrp_range — addresses inside the reservation are skipped.
 func TestNextAvailableIP_SkipsGwLrpRange(t *testing.T) {
 	rec := &PoolRecord{
 		PoolName:        "wan",

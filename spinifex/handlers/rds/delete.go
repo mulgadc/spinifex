@@ -193,7 +193,7 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	// Before the volume is released, so the automated backups are no longer holding
 	// its chunks when that decides between deleting and retaining it. AWS keeps
 	// automated backups after a delete as a separate resource; doing that here
-	// would pin the data volume indefinitely under rds-8's retention rule (D10).
+	// would pin the data volume indefinitely under the retention rule.
 	if err := s.purgeAutomatedBackups(ctx, kv, accountID, rec.DBInstanceIdentifier); err != nil {
 		return fmt.Errorf("rds: sweep the automated backups of %s: %w", rec.DBInstanceIdentifier, err)
 	}
@@ -248,7 +248,7 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv jetstream.KeyValu
 	}
 
 	// Manual, deliberately: the customer named it, so only the customer removes it
-	// — which is also what keeps rds-9's retention sweep away from it.
+	// — which is also what keeps the retention sweep away from it.
 	record := newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
 		SnapshotType:         SnapshotTypeManual,
@@ -443,7 +443,7 @@ func (s *Service) recordFinalSnapshotCreated(ctx context.Context, accountID stri
 // A viperblock snapshot references its source volume's chunk files rather than
 // copying them, so the volume cannot be deleted while any snapshot survives —
 // including the final one just taken. It is retained instead, recorded with the
-// snapshots holding it so the last DeleteDBSnapshot can release it (D10).
+// snapshots holding it so the last DeleteDBSnapshot can release it.
 func (s *Service) releaseDataVolume(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord) error {
 	if rec.DataVolumeID == "" {
 		return nil
@@ -476,7 +476,7 @@ func (s *Service) releaseDataVolume(ctx context.Context, kv jetstream.KeyValue, 
 }
 
 // Records a volume the teardown left behind, with the snapshots holding it so
-// the last DeleteDBSnapshot can release it (D10). holdersUnresolved marks the
+// the last DeleteDBSnapshot can release it. holdersUnresolved marks the
 // case where the volume store refused the delete but named nobody, so a release
 // has to re-check rather than trust an empty list.
 func (s *Service) retainDataVolume(ctx context.Context, kv jetstream.KeyValue, accountID string,

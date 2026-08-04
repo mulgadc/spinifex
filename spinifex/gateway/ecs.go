@@ -23,7 +23,7 @@ func ecsActionFromTarget(target string) string {
 // ECS_Request dispatches AWS JSON 1.1 ECS control-plane requests. The action
 // comes from X-Amz-Target; errors are returned as awserrors codes and rendered
 // by the shared ErrorHandler. Every action is a NotImplemented (501) stub until
-// its real handler lands in a later Phase 4 sprint.
+// its real handler is added when the service supports the operation.
 func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) error {
 	action := ecsActionFromTarget(r.Header.Get("X-Amz-Target"))
 	if action == "" {

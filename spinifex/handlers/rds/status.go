@@ -90,7 +90,7 @@ func CanTransition(from, to Status) bool {
 }
 
 // The snapshot's own lifecycle, separate from the instance's backing-up state
-// (D4): the instance is derived from an in-flight control-plane operation, while
+// The instance is derived from an in-flight control-plane operation, while
 // the snapshot record moves creating → available once the data exists. There is
 // no failed state — a snapshot that never completed is removed rather than kept
 // as an unrestorable record.

@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 )
 
-// A DB instance's endpoint only ever has a private address (D5 rejects
+// A DB instance's endpoint only ever has a private address (public access is rejected
 // PubliclyAccessible), and nothing on the runner routes into a customer subnet.
 // So the client that proves a customer can reach the database has to be a VM in
 // that subnet, driven over SSH — not psql on the machine running the test.
@@ -269,7 +269,7 @@ func psqlCommand(conn PSQLConn, sql string) string {
 // ResolveInGuest returns the addresses host resolves to inside the guest.
 //
 // This is the only resolution that proves anything about the guest's DNS path
-// (D6): the runner's own resolver may point straight at northstar, so a
+// The runner's own resolver may point straight at northstar, so a
 // host-side lookup can pass on a cluster where no guest can resolve anything. An
 // empty result means the name does not resolve, which is the assertion after a
 // delete withdraws the record.

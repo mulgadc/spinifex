@@ -205,7 +205,7 @@ func TestCreateDBSnapshot_DoesNotQuiesceAStoppedInstance(t *testing.T) {
 	assert.False(t, stored.CrashConsistent)
 }
 
-// D10: a snapshot that could not be quiesced is still a restorable backup, so it
+// A snapshot that could not be quiesced is still a restorable backup, so it
 // is taken and reported honestly rather than refused.
 func TestCreateDBSnapshot_FallsBackToCrashConsistentWhenTheQuiesceFails(t *testing.T) {
 	h := newSnapshotHarness(t, true)
@@ -334,7 +334,7 @@ func TestDescribeDBSnapshots_NamedSnapshotThatDoesNotExistIsAnError(t *testing.T
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotNotFound)
 }
 
-// D19: a filter this phase cannot honour is rejected, because a silently
+// A filter this phase cannot honour is rejected, because a silently
 // unfiltered list reads as a complete answer.
 func TestDescribeDBSnapshots_RejectsUnhonouredScoping(t *testing.T) {
 	h := newSnapshotHarness(t, false)

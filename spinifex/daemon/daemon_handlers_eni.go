@@ -192,7 +192,7 @@ func eniHotplugErrorCode(err error) string {
 }
 
 // publishENIHotplugEvent emits the per-instance NATS event on best-effort
-// basis — observers (Phase 4 ecs-agent, future vpcd subscribers) read it
+// basis — observers such as the ecs-agent and future vpcd subscribers read it
 // for fanout. A publish failure does not roll back the pipeline.
 func publishENIHotplugEvent(nc *nats.Conn, subject, instanceID string, payload map[string]any) {
 	if nc == nil {

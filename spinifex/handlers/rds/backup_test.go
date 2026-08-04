@@ -409,7 +409,7 @@ func TestRunBackupWindow_TakesIndexesAndStampsTheBackup(t *testing.T) {
 
 	require.True(t, h.runBackupPass(t))
 
-	// One EC2 snapshot, taken through rds-8's path: the engine was quiesced and let
+	// One EC2 snapshot, taken through the automated backup path: the engine was quiesced and let
 	// go again rather than copied mid-write.
 	require.Len(t, h.snaps.created, 1)
 	issued := make([]string, 0, 2)
@@ -506,7 +506,7 @@ func TestRunBackupWindow_SkipsAnInstanceItCannotBackUp(t *testing.T) {
 	assert.Len(t, h.events(t, EventSourceTypeDBInstance, testDBID), len(messages))
 }
 
-// D-rds-9: a failed backup is a backup fault, never an instance fault. The
+// A failed backup is a backup fault, never an instance fault. The
 // database stays available and the failure is counted so it is visible.
 func TestRunBackupWindow_CountsAFailureAndLeavesTheInstanceAvailable(t *testing.T) {
 	h := newSnapshotHarness(t, false)
@@ -542,7 +542,7 @@ func TestRunBackupWindow_IgnoresAMalformedStoredWindow(t *testing.T) {
 // The other half of the pair is resolved for the overlap check, not to be
 // written down. A record that carried no maintenance window before the modify
 // still carries none after it: reporting one back would show as drift in the next
-// plan of a config that never set it.
+// configuration read for a request that never set it.
 func TestModifyDBInstance_DoesNotPersistTheWindowItWasNotGiven(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	rec := retainingRecord(7)
@@ -561,7 +561,7 @@ func TestModifyDBInstance_DoesNotPersistTheWindowItWasNotGiven(t *testing.T) {
 	assert.Empty(t, stored.PreferredMaintenanceWindow, "a window the request did not name is not stored")
 }
 
-// A record written before rds-9 carries no window at all, and still has to be
+// A record written before window fields existed carries no window at all, and still has to be
 // backed up — on the window a describe reports for it.
 func TestResolvedBackupWindow_DerivesAWindowForARecordWithoutOne(t *testing.T) {
 	svc := NewService(nil, testRegion)
@@ -710,7 +710,7 @@ func TestDescribeDBInstanceAutomatedBackups_ReportsTheBackupSet(t *testing.T) {
 	assert.Equal(t, int64(7), aws.Int64Value(backup.BackupRetentionPeriod))
 	assert.Equal(t, testRegion, aws.StringValue(backup.Region))
 
-	// D11 Phase B: this phase backs discrete daily snapshots. A restore window
+	// This phase backs discrete daily snapshots. A restore window
 	// would tell a client it can recover to any instant inside it.
 	assert.Nil(t, backup.RestoreWindow)
 }
@@ -736,7 +736,7 @@ func TestDescribeDBInstanceAutomatedBackups_RejectsAnUnknownInstance(t *testing.
 	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceNotFound)
 }
 
-// D19: a filter this phase cannot honour is rejected, because a silently
+// A filter this phase cannot honour is rejected, because a silently
 // unfiltered list reads as a complete answer.
 func TestDescribeDBInstanceAutomatedBackups_RejectsUnimplementedFilters(t *testing.T) {
 	cases := map[string]*rds.DescribeDBInstanceAutomatedBackupsInput{

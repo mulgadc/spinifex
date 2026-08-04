@@ -64,7 +64,7 @@ func SupportedEngines() []string {
 
 // An empty version takes the pin. A supplied one must name the pinned major,
 // with or without a minor, since a mismatch would silently run a version the
-// customer did not ask for (D19).
+// customer did not ask for.
 func (e Engine) ValidateVersion(version string) error {
 	v := strings.TrimSpace(version)
 	if v == "" || v == e.MajorVersion {
@@ -118,7 +118,7 @@ func (e Engine) ValidateUsernameNotReserved(username string) error {
 }
 
 // Bounds only. The password is never inspected beyond this and never stored in
-// cleartext past the first bootstrap fetch (D8).
+// cleartext past the first bootstrap fetch.
 func ValidateMasterUserPassword(password string) error {
 	switch {
 	case password == "":

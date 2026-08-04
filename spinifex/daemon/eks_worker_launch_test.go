@@ -113,7 +113,7 @@ func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
 // torn down at stop). The terminate must fall back to the ec2.terminate queue
 // group so TerminateStoppedInstance reaps the worker from shared KV — otherwise
 // a stopped+wedged node's ENI pins the customer subnet/VPC undeletable and
-// DeleteCluster wedges in DELETING (mulga-siv-475).
+// DeleteCluster wedges in DELETING.
 func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
 	noopTerminateRetrySleep(t)
 	nc, err := nats.Connect(sharedNATSURL)

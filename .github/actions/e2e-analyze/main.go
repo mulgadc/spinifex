@@ -45,7 +45,7 @@ func main() {
 		report.Suites = append(report.Suites, sr)
 	}
 
-	// Stage 2: prefer authoritative per-suite start times written by the
+	// Prefer authoritative per-suite start times written by the
 	// workflow over junit-report's conversion-time `timestamp` attribute,
 	// then materialise per-failure bundles so Render can link them.
 	if logDir != "" {

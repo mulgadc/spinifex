@@ -1,6 +1,6 @@
 package main
 
-// Stage 2: per-failure log slicers used by bundle.go to materialise time-window /
+// Per-failure log slicers used by bundle.go to materialise time-window /
 // testcase-window log excerpts next to each named failure.
 
 import (

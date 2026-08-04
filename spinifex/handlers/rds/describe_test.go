@@ -316,7 +316,7 @@ func TestProjectDBInstance_ReportsTheParameterGroupApplyStatus(t *testing.T) {
 
 	assert.Equal(t, "in-sync", statusOf(rec))
 
-	// D16: static settings are in the engine's config but not in effect until
+	// Static settings are in the engine's config but not in effect until
 	// the restart that adopts them.
 	rec.PendingRebootParameters = []string{"shared_buffers"}
 	assert.Equal(t, "pending-reboot", statusOf(rec))

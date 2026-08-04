@@ -23,7 +23,7 @@ const renewJitter = time.Second
 
 // postExpiryBackoff is the cool-off applied after a re-DORA fails post
 // lease expiry. Bounded — the manager keeps re-DORAing in the
-// background until the server comes back (per plan §Failure modes).
+// background until the server comes back.
 const postExpiryBackoff = 30 * time.Second
 
 // defaultAcquireSchedule is the per-attempt timeout schedule for the outer DORA

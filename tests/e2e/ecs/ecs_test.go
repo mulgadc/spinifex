@@ -137,9 +137,9 @@ func TestECS(t *testing.T) {
 	// teardown so the assertion below observes a clean sweep. By this point the
 	// instance carries its own primary ENI plus a post-launch-attached one per
 	// awsvpc task/service subtest above (TaskAwsvpc, TaskRoleCredentials,
-	// ServiceWithELB) — none of those ever touch vm.VM.ENIId, so this is the
-	// regression proof for mulga-73xte: relying on the launch-time scalar alone
-	// would leave every one of them attached, blocking SG/subnet/VPC teardown
+	// ServiceWithELB) — none of those ever touch vm.VM.ENIId. Relying on the
+	// launch-time scalar alone would leave every one attached, blocking
+	// SG/subnet/VPC teardown
 	// behind DependencyViolation.
 	t.Run("TerminateReleasesAttachedENIs", func(t *testing.T) {
 		terminateContainerInstanceAndAssertENIsReleased(t, c, fx)

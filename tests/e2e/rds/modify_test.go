@@ -18,7 +18,7 @@ import (
 const (
 	// The table both modifications are asserted across: a grow that loses it has
 	// grown the wrong volume, and a class change that loses it has replaced the VM
-	// without re-attaching the data (D9).
+	// without re-attaching the data.
 	modifyTable = "e2e_modify"
 	modifyNote  = "written before the grow"
 
@@ -27,8 +27,8 @@ const (
 	// costs nothing.
 	grownStorageGiB = 30
 
-	// The one place in the suite a second class is meaningful: it is the class D20
-	// exists to protect, and one step up from the D15 floor.
+	// The one place in the suite a second class is meaningful: it protects the size-derived defaults
+	// and is one step up from the smallest supported class.
 	grownClass = "db.t3.small"
 
 	// shared_buffers is a quarter of class memory, so it is the parameter that
@@ -50,7 +50,7 @@ const (
 //
 // The filesystem-level half of the grow is deliberately not here. Proving in SQL
 // that the guest's filesystem grew means writing enough data to exceed the old
-// volume, which does not belong in a PR gate; the runbook reads df -h off the
+// volume, which does not belong in an automated gate; the runbook reads df -h off the
 // serial console instead.
 func TestModifyStorageAndClass(t *testing.T) {
 	f := requireRDSFixture(t)
@@ -87,7 +87,7 @@ func TestModifyStorageAndClass(t *testing.T) {
 		"CREATE TABLE %s (id int primary key, note text); INSERT INTO %s VALUES (1, '%s');",
 		modifyTable, modifyTable, modifyNote))
 
-	// D12: there is no online grow, so a grow is a stop, a ModifyVolume the volume
+	// There is no online grow, so a grow is a stop, a ModifyVolume the volume
 	// will only accept while nothing holds it, and a start. The VM is restarted
 	// rather than replaced — only a class change replaces it.
 	t.Run("AGrowEnlargesTheVolumeUnderTheSameVM", func(t *testing.T) {
@@ -136,9 +136,9 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assertGrowEventRecorded(t, f, id)
 	})
 
-	// D15 and D20 in one assertion: the class moves, which replaces the VM, and the
+	// The class moves, which replaces the VM, and the
 	// size-derived defaults have to be re-resolved against the class the instance is
-	// becoming. D12 keeps the endpoint through it — the data volume and the customer
+	// becoming. The endpoint is kept through it — the data volume and the customer
 	// ENI are re-attached to the replacement, so the address clients hold is unmoved.
 	t.Run("AClassChangeReplacesTheVMAndReResolvesTheDefaults", func(t *testing.T) {
 		assert.Equal(t, sharedBuffersAtFloor, showParameter(t, client, conn, "shared_buffers"),
@@ -165,14 +165,14 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assert.Equal(t, endpoint, aws.StringValue(changed.Endpoint.Address),
 			"the endpoint is the customer's handle on the instance and must survive the VM being replaced")
 		assert.Equal(t, privateIP, aws.StringValue(harness.DBEndpointENI(t, f.AWS, id).PrivateIpAddress),
-			"D5: the ENI is re-attached to the replacement, so the address the name resolves to is unchanged")
+			"the ENI is re-attached to the replacement, so the address the name resolves to is unchanged")
 		assert.Equal(t, dataVolumeID, aws.StringValue(harness.DBInstanceDataVolume(t, system, id).VolumeId),
-			"D9: the data volume is re-attached rather than rebuilt")
+			"the data volume is re-attached rather than rebuilt")
 
 		replacementID := aws.StringValue(harness.DBInstanceVM(t, system, id).InstanceId)
 		assert.NotEqual(t, vmID, replacementID, "a class change is delivered by replacing the VM")
 		// The old VM has to actually go: one left running would still hold the class
-		// the customer has stopped paying for, and D3's index rewrite assumes it is
+		// the customer has stopped paying for, and the index rewrite assumes it is
 		// gone rather than merely superseded.
 		harness.AssertVMGone(t, system, vmID)
 
@@ -180,7 +180,7 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assert.Equal(t, modifyNote, strings.TrimSpace(note),
 			"the row written before both modifications must survive the replace")
 
-		// The whole point of D20: the defaults are formulas over class memory, so a
+		// The defaults are formulas over class memory, so a
 		// class change that did not re-resolve them leaves a 2 GiB instance running a
 		// 1 GiB configuration.
 		assert.Equal(t, sharedBuffersAtSmall, showParameter(t, client, conn, "shared_buffers"),

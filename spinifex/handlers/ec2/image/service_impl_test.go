@@ -737,7 +737,7 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	assert.Empty(t, result.Images)
 }
 
-// TestDescribeImages_ConfigFaultCounting covers mulga-7r6pm: a config.json that
+// TestDescribeImages_ConfigFaultCounting covers a config.json that
 // exists but can't be fetched/read/parsed must be promoted to WARN and counted
 // as unreadable so it stays visible at INFO, while a genuinely absent
 // config.json (a non-AMI directory) stays silent at DEBUG and uncounted, and a

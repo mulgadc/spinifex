@@ -120,7 +120,7 @@ func TestDeleteDBInstance_HonoursDeletionProtection(t *testing.T) {
 	assert.Empty(t, h.volumes.deleted)
 }
 
-// D18: the snapshot is taken once the VM is gone, so it reads a sealed data
+// The snapshot is taken once the VM is gone, so it reads a sealed data
 // volume rather than one a live engine is still writing to.
 func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *testing.T) {
 	h := newLifecycleHarness(t, false)
@@ -207,7 +207,7 @@ func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 	assert.Equal(t, "snap-cut-before-crash", stored.SnapshotID)
 }
 
-// D10: a snapshot references its source volume's chunks, so the volume cannot
+// A snapshot references its source volume's chunks, so the volume cannot
 // be deleted while the final snapshot survives. It is retained and recorded
 // with the snapshots holding it.
 func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T) {

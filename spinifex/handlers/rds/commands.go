@@ -14,7 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// The control-plane half of the rds-2b command channel. The agent side is a
+// The control-plane half of the command channel. The agent side is a
 // long poll over the gateway; this publishes on the bus subject that poll is
 // subscribed to and waits for the reply the agent carries back on its next one.
 
@@ -23,10 +23,10 @@ const (
 	CommandApplyParams = "apply-params"
 	CommandStopEngine  = "stop-engine"
 	// Extends the in-guest filesystem onto a data volume the control plane has
-	// already grown (D12).
+	// already grown.
 	CommandGrowFilesystem = "grow-filesystem"
 	// Holds the engine at a checkpoint for the length of a snapshot, and releases
-	// it again (D10). The hold is a session the agent keeps open, so the pair is
+	// it again. The hold is a session the agent keeps open, so the pair is
 	// two commands rather than one with a duration.
 	CommandQuiesce   = "quiesce"
 	CommandUnquiesce = "unquiesce"
@@ -67,7 +67,7 @@ const (
 	// time in backup mode rather than the rest of its life.
 	quiesceHold = 6 * time.Minute
 
-	// The channel is a live subscription rather than a durable queue (D8), so a
+	// The channel is a live subscription rather than a durable queue, so a
 	// command published between two of the agent's polls reaches nobody.
 	// Re-publishing on this interval closes that gap without queueing anything.
 	commandRepublishEvery = 2 * time.Second
@@ -80,7 +80,7 @@ var ErrCommandUnreachable = errors.New("rds: the instance agent did not answer t
 
 // Sets the engine's master password live. It is never persisted anywhere: an
 // unreachable agent fails loudly rather than leaving cleartext queued for
-// later (D8).
+// later.
 func (s *Service) setMasterPassword(ctx context.Context, accountID, dbInstanceIdentifier, username, password string) error {
 	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandSetPassword, setPasswordTimeout, []Parameter{
 		{Name: CommandParamMasterUsername, Value: username},
@@ -91,7 +91,7 @@ func (s *Service) setMasterPassword(ctx context.Context, accountID, dbInstanceId
 
 // Writes the resolved parameter set into the engine's config and reloads it.
 // Returns the settings the engine accepted but will not apply until it
-// restarts, which is what RebootDBInstance then clears (D16).
+// restarts, which is what RebootDBInstance then clears.
 func (s *Service) applyParameters(ctx context.Context, accountID, dbInstanceIdentifier string, params []Parameter) ([]string, error) {
 	reply, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandApplyParams, applyParamsTimeout, params)
 	if err != nil {
@@ -109,7 +109,7 @@ func (s *Service) stopEngine(ctx context.Context, accountID, dbInstanceIdentifie
 
 // Extends the guest's filesystem onto the already-grown data volume. Issued
 // once the agent is back rather than during boot: both ext4 and XFS grow while
-// mounted, so this needs no ordering against the engine start (D12).
+// mounted, so this needs no ordering against the engine start.
 func (s *Service) growFilesystem(ctx context.Context, accountID, dbInstanceIdentifier string) error {
 	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandGrowFilesystem, growFilesystemTimeout, nil)
 	return err
@@ -118,7 +118,7 @@ func (s *Service) growFilesystem(ctx context.Context, accountID, dbInstanceIdent
 // Holds the engine at a checkpoint so the data volume can be snapshotted at a
 // consistent point. The agent keeps the backup session open until the release
 // below, or until the deadline expires — so a control plane that dies here does
-// not leave the engine in backup mode indefinitely (D10).
+// not leave the engine in backup mode indefinitely.
 func (s *Service) quiesceEngine(ctx context.Context, accountID, dbInstanceIdentifier, label string) error {
 	_, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandQuiesce, quiesceTimeout, []Parameter{
 		{Name: CommandParamQuiesceLabel, Value: label},

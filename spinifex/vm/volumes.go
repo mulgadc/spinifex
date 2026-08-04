@@ -252,10 +252,9 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 
 	// BlockDeviceMappings[].DeviceName carries the in-guest path so
 	// callers who SSH into the VM and `lsblk` see names that match
-	// DescribeInstances (mulga-599 / PR #55). UpdateGuestDeviceNames
-	// re-applies this convention on every Launch/Start, so any "fix"
-	// to use the API name here would be silently overwritten on the
-	// next start.
+	// DescribeInstances. UpdateGuestDeviceNames re-applies this convention on
+	// every Launch/Start, so using the API name here would be silently overwritten
+	// on the next start.
 	m.UpdateState(id, func(v *VM) {
 		if v.Instance == nil {
 			return

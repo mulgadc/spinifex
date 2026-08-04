@@ -28,7 +28,7 @@ func seedReplaceable(t *testing.T, h *modifyHarness, rec DBInstanceRecord) DBIns
 	return rec
 }
 
-// D5/D9: the endpoint ENI and the datadir outlive the VM, so a replace adopts
+// The endpoint ENI and the datadir outlive the VM, so a replace adopts
 // both. Minting either would move the address clients resolve or hand the
 // customer an empty database.
 func TestReplaceInstanceVM_ReusesTheEndpointENIAndDataVolume(t *testing.T) {
@@ -101,7 +101,7 @@ func TestReplaceInstanceVM_StopsTheEngineAndTerminatesTheOldVMFirst(t *testing.T
 	assert.Contains(t, h.launch.enis.deleted, "eni-sys01")
 }
 
-// D3: while the old index entry exists the superseded agent's IMDS credentials
+// While the old index entry exists the superseded agent's IMDS credentials
 // still resolve to this DB instance, so it goes before the new one lands.
 func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
 	h := newModifyHarness(t)

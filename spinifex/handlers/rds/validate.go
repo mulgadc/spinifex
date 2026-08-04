@@ -55,7 +55,7 @@ type validatedCreate struct {
 	AutoMinorVersionUpgrade bool
 	// Automated backups as they will be in force: the retention defaulted when the
 	// request names none, and both windows in canonical text — assigned from the
-	// instance identifier when unnamed, never left empty (rds-9).
+	// instance identifier when unnamed, never left empty.
 	BackupRetentionPeriod      int64
 	PreferredBackupWindow      string
 	PreferredMaintenanceWindow string
@@ -183,7 +183,7 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 }
 
 // AWS's own identifier rules. Enforcing them here keeps the identifier usable
-// as a DNS label, which D6 makes it.
+// as a DNS label, which makes it suitable for hostname use.
 func validateDBInstanceIdentifier(id string) error {
 	switch {
 	case id == "":
@@ -208,7 +208,7 @@ func validateDBInstanceIdentifier(id string) error {
 	return nil
 }
 
-// D19: a supported action carrying an unimplemented parameter must not silently
+// A supported action carrying an unimplemented parameter must not silently
 // drop it. Each rejection below is a parameter whose omission would create a
 // false safety, security or availability guarantee. Parameters that are merely
 // inert — AutoMinorVersionUpgrade, Performance Insights, Enhanced Monitoring,

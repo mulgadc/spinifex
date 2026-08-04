@@ -22,7 +22,7 @@ import (
 // instance in every respect but its data: a new identifier, customer ENI, DNS
 // name, serving certificate and VM. What it inherits is the datadir — which
 // already holds the database, its roles and their password hashes, so the engine
-// starts on it rather than running initdb (D10).
+// starts on it rather than running initdb.
 func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, accountID string) (out *rds.RestoreDBInstanceFromDBSnapshotOutput, err error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -236,7 +236,7 @@ func resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snap
 		Port:             port,
 		MasterUsername:   snapshot.MasterUsername,
 		// Deliberately empty: the datadir already holds the master role and its
-		// password hash, so there is nothing for a bootstrap to set (D8).
+		// password hash, so there is nothing for a bootstrap to set.
 		DBName:               snapshot.DBName,
 		SecurityGroupIDs:     securityGroups,
 		DBSubnetGroupName:    subnetGroup,
@@ -298,7 +298,7 @@ func resolveRestorePort(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapsho
 	return engine.DefaultPort, nil
 }
 
-// D19: a parameter that would create a false safety, security or availability
+// A parameter that would create a false safety, security or availability
 // guarantee is rejected rather than silently dropped. The list mirrors the one
 // at create, plus what only a restore can be asked for.
 func rejectUnimplementedRestore(input *rds.RestoreDBInstanceFromDBSnapshotInput) error {
@@ -347,7 +347,7 @@ func rejectUnimplementedRestore(input *rds.RestoreDBInstanceFromDBSnapshotInput)
 
 // The reserved record for a restored instance: everything the request and the
 // snapshot decided, with the bootstrap marked consumed so the agent's first
-// fetch returns attach rather than a password it would use to run initdb (D8).
+// fetch returns attach rather than a password it would use to run initdb.
 func newRestoredDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement,
 	parameters []Parameter, snapshot *DBSnapshotRecord) DBInstanceRecord {
 	rec := newDBInstanceRecord(accountID, req, placement, parameters)

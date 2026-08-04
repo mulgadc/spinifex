@@ -37,10 +37,10 @@ type Deps struct {
 	// Takes the final snapshot at delete, and reports which snapshots still
 	// reference a data volume before it can be deleted.
 	Snapshots snapshotProvider
-	// Grows the data volume behind an AllocatedStorage modify (D12).
+	// Grows the data volume behind an AllocatedStorage modify.
 	Storage volumeResizer
 	// The northstar base zone. Empty means no vanity hostname, and the endpoint
-	// is the customer-ENI IP instead (D6).
+	// is the customer-ENI IP instead.
 	BaseDomain string
 	// Identifies this node in the reconciler lease.
 	HolderID string

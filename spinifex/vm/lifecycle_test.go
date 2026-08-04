@@ -515,7 +515,7 @@ func TestStart_AbortedByConcurrentTerminate(t *testing.T) {
 
 // TestLaunchStillValid_Allowlist locks in the launchStillValid allowlist
 // across every defined InstanceState plus the zero value. The parent
-// plan flagged: "a regression in the allowlist would silently break the
+// A regression in the allowlist would silently break the
 // start-stopped path" — e.g. dropping StateStopped would make
 // StartInstances on a stopped VM no-op without surfacing an error.
 func TestLaunchStillValid_Allowlist(t *testing.T) {
@@ -582,7 +582,7 @@ func startBrokenQMPListener(t *testing.T) (string, func()) {
 }
 
 // TestAttachQMP_DialFailure_NoHeartbeatLeak covers the regression the
-// parent plan flagged: a swap that started qmpHeartbeat before checking
+// A swap that started qmpHeartbeat before checking
 // the factory error would leak one goroutine per failed reconnect. With
 // no listener at the configured socket, net.Dial fails inside
 // newQMPClientWithHandshake and AttachQMP must return without spawning
@@ -1200,7 +1200,7 @@ func serveSingleClientQMPConn(conn net.Conn) {
 }
 
 // TestSendQMPCommand_ReconnectsAgainstSingleClientServer is the regression
-// test for the reconnectQMP ordering bug (PR #487): against a real QEMU
+// test for the reconnectQMP ordering bug against a real QEMU
 // `server,nowait` QMP monitor, only one client may hold a connection at a
 // time. A wedged client's reconnect must close its own stale connection
 // BEFORE dialing fresh, freeing the slot — dialing fresh first (the pre-fix

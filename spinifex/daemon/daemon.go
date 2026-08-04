@@ -651,7 +651,7 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 	totalVCPU = rm.hostVCPU
 	totalMemGB = rm.hostMemGB
 	// Fold the capacity-reservation carve-out into the reported reserve figures;
-	// Phase 1 has no separate status field for it.
+	// The probe has no separate status field for it.
 	reservedVCPU = rm.reservedVCPU + rm.reservedCRVCPU
 	reservedMemGB = rm.reservedMem + rm.reservedCRMem
 	allocVCPU = rm.allocatedVCPU
@@ -695,10 +695,10 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		cfg.Nodes[cfg.Node] = nodeCfg
 	}
 
-	// Phase 1: always probe GPU hardware (no side effects, no config required).
+	// Always probe GPU hardware (no side effects, no config required).
 	gpuProbe := probeGPU()
 
-	// Phase 2: activate GPU passthrough only when the operator has opted in.
+	// Activate GPU passthrough only when the operator has opted in.
 	var gpuModels []instancetypes.GPUModel
 	var gpuMigProfiles []instancetypes.MIGProfileSpec
 	var gpuMgr *gpu.Manager
@@ -1677,7 +1677,7 @@ func (d *Daemon) startCluster() error {
 	})
 
 	// Bedrock serving-endpoint lifecycle: no reconciler yet (no idle-reclaim or
-	// health sweep — out of this bead's scope), just the request-driven
+	// health sweep), just the request-driven
 	// ensure/describe/list/delete surface RDS-style, constructed synchronously
 	// since it touches no JetStream KV until its first request.
 	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())

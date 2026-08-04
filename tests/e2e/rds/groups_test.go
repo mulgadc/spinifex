@@ -91,7 +91,7 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 		teardownGroups(t, f, subnetGroup, paramGroup)
 	})
 
-	// D20: the size-derived defaults are formulas internally, but a customer only
+	// The size-derived defaults are formulas internally, but a customer only
 	// ever sees the literal they resolved to.
 	t.Run("DescribeDBParametersReportsLiterals", func(t *testing.T) {
 		params := describeAllParameters(t, f, paramGroup)

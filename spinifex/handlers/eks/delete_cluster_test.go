@@ -424,7 +424,7 @@ func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
 }
 
 // TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord locks the
-// mulga-jbb2i teardown-idempotency fix: when the managed CP VPC is already
+// Teardown is idempotent when the managed CP VPC is already
 // gone (its tag-indexed EC2 record is absent — the "InvalidVpcID.NotFound"
 // case confirmed live), DeleteClusterCPVPC converges to success, and the
 // internal cp-vpc state record (meta.ManagedCPVPC) must be cleared right away —
@@ -491,7 +491,7 @@ func subscribeVPCDelete(t *testing.T, nc *nats.Conn) func() string {
 }
 
 // TestDeleteClusterCPVPC_OVNGCSelection locks the OVN-GC half of the
-// mulga-jbb2i fix: DeleteClusterCPVPC must republish vpc.delete for the CP
+// DeleteClusterCPVPC must republish vpc.delete for the CP
 // VPC so vpcd's topology manager gets another chance to remove the orphaned
 // logical router/subnets/egress-drop policies — both when the EC2 VPC is
 // actually deleted this call, and when it was already gone, where the only

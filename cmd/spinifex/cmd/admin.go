@@ -2529,7 +2529,7 @@ func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northst
 			continue
 		}
 		// Prefer the peer's advertise IP (off-host dial target); fall back
-		// to BindIP for pre-siv-8 joiners that didn't send AdvertiseIP.
+		// to BindIP for joiners that did not send AdvertiseIP.
 		host := n.AdvertiseIP
 		if host == "" {
 			host = n.BindIP

@@ -416,7 +416,7 @@ func dumpDBInstanceEvents(t *testing.T, d DBDiag, id string) {
 // per-instance tag, so it can only be asserted against an ID captured while the
 // instance was alive — see AssertVMGone. And the DNS withdrawal: a record only
 // proves anything resolved the way a customer resolves it, from inside a guest
-// (D6), so that assertion belongs with ResolveInGuest.
+// so that assertion belongs with ResolveInGuest.
 func AssertNoRDSRemnants(t *testing.T, d DBDiag, id string, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 3 * time.Minute, interval: 5 * time.Second}, opts...)

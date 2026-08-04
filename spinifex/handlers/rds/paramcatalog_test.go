@@ -53,8 +53,8 @@ func TestParameterCatalog_EntriesAreWellFormed(t *testing.T) {
 	}
 }
 
-// D20: the size-derived defaults have to actually move with the class, or the
-// formulas are decoration and one end of the D15 range is mis-tuned.
+// The size-derived defaults have to actually move with the class, or the
+// formulas are decoration and one end of the supported range is mis-tuned.
 func TestParameterCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) {
 	smallest, err := classMemoryMiB("db.t3.micro")
 	require.NoError(t, err)

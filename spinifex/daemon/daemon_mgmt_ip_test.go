@@ -317,7 +317,7 @@ func TestMgmtIPAllocator_Concurrent(t *testing.T) {
 	}
 }
 
-// --- Cluster-safety coverage (mulga-f3j2x) ---
+// --- Cluster-safety coverage ---
 
 // TestMgmtIPAllocator_SharedKV_NoDuplicates is the core regression test:
 // two allocators standing in for two nodes, sharing one KV, must never both

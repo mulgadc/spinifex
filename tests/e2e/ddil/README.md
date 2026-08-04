@@ -5,9 +5,6 @@ Go-based E2E harness that exercises Spinifex and Predastore against DDIL
 daemon-without-NATS restart, cluster partition, degraded links, Predastore
 writes under partition, Raft under SATCOM latency.
 
-Design: [`docs/development/improvements/ddil-e2e-test-harness.md`](../../../../docs/development/improvements/ddil-e2e-test-harness.md)
-(in the mulga monorepo).
-
 ## Layout
 
 ```
@@ -47,7 +44,7 @@ DDIL_DRY_RUN=1 go test -tags=e2e ./tests/e2e/ddil/scenarios/...
 ```
 
 Quarantine listed scenarios (failures downgrade to `t.Skip` with a tagged
-reason; quarantined scenarios must have a linked bead):
+reason):
 
 ```bash
 DDIL_QUARANTINED=D,F go test -tags=e2e ./tests/e2e/ddil/scenarios/...

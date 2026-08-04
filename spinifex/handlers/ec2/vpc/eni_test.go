@@ -1169,7 +1169,7 @@ func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
 	assert.True(t, owned)
 }
 
-// --- validateSGAttachment (Phase 2.2) ---
+// --- validateSGAttachment ---
 
 func TestValidateSGAttachment_OK(t *testing.T) {
 	svc := setupTestVPCService(t)
@@ -1224,7 +1224,7 @@ func TestValidateSGAttachment_CrossVPC(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidParameterValue")
 }
 
-// Phase 7: ModifyNetworkInterfaceAttribute must propagate vpcd errors so the
+// ModifyNetworkInterfaceAttribute must propagate vpcd errors so the
 // caller knows OVN port-group reconciliation didn't happen. The KV record
 // already changed by this point — that's intentional (reconciler converges).
 func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {

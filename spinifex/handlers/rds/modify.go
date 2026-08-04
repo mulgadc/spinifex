@@ -23,7 +23,7 @@ import (
 type modifyPlan struct {
 	// Applied on the spot whatever ApplyImmediately says, because none of them
 	// interrupts service and AWS applies them as soon as possible too. The
-	// password especially: D8 forbids persisting the cleartext, so there is
+	// password especially: cleartext is never persisted, so there is
 	// nothing that could be deferred.
 	MasterUserPassword         string
 	SecurityGroupIDs           []string
@@ -65,7 +65,7 @@ func (p *modifyPlan) empty() bool {
 // Changes a live DB instance. The non-disruptive settings land immediately; a
 // storage grow, a class change or a parameter-group change is applied now when
 // ApplyImmediately is set and otherwise recorded in PendingModifiedValues for
-// the maintenance window (rds-9) to drain through applyPendingModifications.
+// the maintenance window to drain through applyPendingModifications.
 //
 // The endpoint survives every path: the data volume, the customer ENI and its
 // address, and the DNS A-record are untouched by a grow and by a class change.
@@ -221,7 +221,7 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	if input.DeletionProtection != nil && aws.BoolValue(input.DeletionProtection) != rec.DeletionProtection {
 		plan.DeletionProtection = input.DeletionProtection
 	}
-	// Nothing acts on it (D19), but a value the record does not adopt is one the
+	// Nothing acts on it, but a value the record does not adopt is one the
 	// next describe contradicts, and the client re-sends it forever.
 	if input.AutoMinorVersionUpgrade != nil && aws.BoolValue(input.AutoMinorVersionUpgrade) != rec.AutoMinorVersionUpgrade {
 		plan.AutoMinorVersionUpgrade = input.AutoMinorVersionUpgrade
@@ -255,7 +255,7 @@ func (s *Service) planSecurityGroups(ctx context.Context, accountID string, rec 
 	return requested, nil
 }
 
-// The rds-9 fields, now validated and effective rather than record-only. Both
+// The backup fields, now validated and effective rather than record-only. Both
 // windows are resolved as a pair even when the request names one, because AWS's
 // non-overlap rule is about the pair: a request moving the backup window onto the
 // stored maintenance window has to be rejected too.
@@ -311,7 +311,7 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 		return nil
 	}
 	// Never persisted anywhere: an unreachable agent fails the call rather than
-	// leaving cleartext queued for a later window (D8).
+	// leaving cleartext queued for a later window.
 	if plan.MasterUserPassword != "" {
 		if err := s.setMasterPassword(ctx, accountID, rec.DBInstanceIdentifier, rec.MasterUsername, plan.MasterUserPassword); err != nil {
 			return awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
@@ -404,7 +404,7 @@ func (s *Service) reassociateSecurityGroups(ctx context.Context, accountID strin
 	return nil
 }
 
-// D19: a supported action carrying an unimplemented parameter must not silently
+// A supported action carrying an unimplemented parameter must not silently
 // drop it. Every rejection below is a parameter whose omission would create a
 // false safety, security or availability guarantee; the inert ones —
 // AutoMinorVersionUpgrade, CopyTagsToSnapshot, Performance Insights, Enhanced

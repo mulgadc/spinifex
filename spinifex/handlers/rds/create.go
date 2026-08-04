@@ -14,7 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// The first VM behind a DB instance. rds-5b and rds-6 increment it on replace,
+// The first VM behind a DB instance. Replacement and recovery increment it,
 // so an agent report carrying an older generation is a superseded VM.
 const firstVMGeneration = 1
 
@@ -22,7 +22,7 @@ const firstVMGeneration = 1
 // the identifier, place and launch the dual-NIC VM with its data volume and
 // customer ENI, seed the one-shot bootstrap config, and publish the endpoint
 // record. The instance is returned at status=creating; the reconciler flips it
-// to available on the first healthy agent heartbeat (D7).
+// to available on the first healthy agent heartbeat.
 func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInstanceInput, accountID string) (out *rds.CreateDBInstanceOutput, err error) {
 	req, err := s.validateCreateRequest(input)
 	if err != nil {
@@ -39,7 +39,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// Resolved before the identifier is reserved, so a create naming a group that
 	// does not exist leaves no record behind. The set is literals only: the
 	// class's memory has already been folded into every size-derived default, so
-	// the agent never sees a formula (D20).
+	// the agent never sees a formula.
 	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	}
 	rec.DNSName = s.dnsName(accountID, rec.DBInstanceIdentifier)
 	// Without northstar there is no resolvable name, so the endpoint is the ENI
-	// IP itself — stable per D5 and therefore as durable as a hostname (D6).
+	// IP itself — stable across VM replacement and therefore as durable as a hostname.
 	rec.EndpointAddress = rec.DNSName
 	if rec.EndpointAddress == "" {
 		rec.EndpointAddress = rec.ENIPrivateIP

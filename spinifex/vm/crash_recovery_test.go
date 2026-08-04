@@ -323,7 +323,7 @@ func TestMaybeRestart_ExceedsMaxInWindow(t *testing.T) {
 }
 
 // TestMaybeRestart_ExceedsMaxInWindow_ReleasesGPU is the regression test for
-// mulga-keptb: a GPU instance that crashes past restart-exhaustion must
+// A GPU instance that crashes past restart-exhaustion must
 // release its GPU pool slot instead of holding it forever in StateError,
 // since no restart will ever be scheduled to reclaim it.
 func TestMaybeRestart_ExceedsMaxInWindow_ReleasesGPU(t *testing.T) {
@@ -615,7 +615,7 @@ func TestRestartCrashedInstance_RunFailureRollback(t *testing.T) {
 }
 
 // TestRestartCrashedInstance_RunFailureReleasesGPU is the regression test for
-// mulga-keptb: when the relaunch attempt itself fails, the instance settles
+// When the relaunch attempt itself fails, the instance settles
 // back in StateError for good — the GPU pool slot it still held from before
 // the crash must be released, not left claimed forever.
 func TestRestartCrashedInstance_RunFailureReleasesGPU(t *testing.T) {

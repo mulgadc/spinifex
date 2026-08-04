@@ -14,7 +14,7 @@ chmod 0755 /etc/init.d/ecs-agent /etc/init.d/ecs-ca-install
 
 # cni-plugins (alpine) installs to /usr/libexec/cni; containerd's CRI plugin
 # defaults its bin dir to /opt/cni/bin. Symlink so the baked bridge conflist
-# resolves its plugins when Sprint 4d wires task networking.
+# resolves its plugins when task networking is configured.
 mkdir -p /opt/cni
 ln -sf /usr/libexec/cni /opt/cni/bin
 

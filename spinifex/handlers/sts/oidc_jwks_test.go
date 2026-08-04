@@ -19,7 +19,7 @@ func TestParseEKSIssuerURL_Valid(t *testing.T) {
 
 // Cross-component contract: a token whose iss is built by ClusterOIDCIssuer
 // must parse cleanly via ParseEKSIssuerURL and resolve to the same
-// (accountID, clusterName). This is the collision that bead 165.11 fixes.
+// (accountID, clusterName). This is the collision the lookup must avoid.
 func TestParseEKSIssuerURL_RoundTripsClusterOIDCIssuer(t *testing.T) {
 	issuer, err := handlers_eks.ClusterOIDCIssuer("https://10.0.0.1:9999", "au-mel-1", "123456789012", "my-cluster")
 	require.NoError(t, err)

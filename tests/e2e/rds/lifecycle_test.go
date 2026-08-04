@@ -30,7 +30,7 @@ const (
 	staticParameterName  = "max_connections"
 	staticParameterValue = "137"
 
-	// How long the rds-6 classifier is watched for a false positive: the ladder is
+	// How long the failure classifier is watched for a false positive: the ladder is
 	// 90s of heartbeat staleness plus a 30s grace plus one 15s reconciler pass, so
 	// a window past all three is what proves a stop is not read as a failure.
 	failureClassifierWindow = 3 * time.Minute
@@ -70,7 +70,7 @@ func TestLifecycle(t *testing.T) {
 		"CREATE TABLE %s (id int primary key, note text); INSERT INTO %s VALUES (1, '%s');",
 		lifecycleTable, lifecycleTable, lifecycleNote))
 
-	// D5/D9: a stop keeps the data volume, the customer ENI and its address, so a
+	// A stop keeps the data volume, the customer ENI and its address, so a
 	// start comes back on the same datadir at the same endpoint. The VM is stopped
 	// rather than terminated — only a class change replaces it.
 	t.Run("StopKeepsTheDataAndTheAddress", func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestLifecycle(t *testing.T) {
 		assert.Equal(t, endpoint, aws.StringValue(stopped.Endpoint.Address))
 	})
 
-	// rds-6 classifies an instance whose heartbeats go stale as failed. A stop the
+	// The failure classifier treats an instance whose heartbeats go stale as failed. A stop the
 	// control plane itself performed is the one case where they go stale by design,
 	// and reading it as a failure would page an operator for a working database.
 	t.Run("AStoppedInstanceIsNotClassifiedFailed", func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestLifecycle(t *testing.T) {
 		require.NotNil(t, started.Endpoint)
 		assert.Equal(t, endpoint, aws.StringValue(started.Endpoint.Address), "the endpoint must survive a stop/start")
 		assert.Equal(t, privateIP, aws.StringValue(harness.DBEndpointENI(t, f.AWS, id).PrivateIpAddress),
-			"D5: the private address is what the endpoint name resolves to, so it must persist")
+			"the private address is what the endpoint name resolves to, so it must persist")
 
 		out := harness.PSQL(t, client, conn, fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", lifecycleTable))
 		assert.Equal(t, lifecycleNote, strings.TrimSpace(out), "the row written before the stop must still be there")
@@ -184,7 +184,7 @@ func TestLifecycle(t *testing.T) {
 			"the window must leave the instance on the group the modify named")
 		require.NotEmpty(t, applied.DBParameterGroups)
 		assert.Equal(t, "pending-reboot", aws.StringValue(applied.DBParameterGroups[0].ParameterApplyStatus),
-			"a static parameter is accepted by the engine but not in force until it restarts (D16)")
+			"a static parameter is accepted by the engine but not in force until it restarts")
 
 		// Still the old value: the whole point of pending-reboot is that the engine
 		// is running without it.

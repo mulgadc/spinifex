@@ -40,7 +40,7 @@ func TestOrphanQEMUReaper(t *testing.T) {
 
 		assert.Equal(t, 1, reaped, "the orphan QEMU for a terminated instance must be reaped")
 		assert.False(t, utils.ProcessAlive(pid),
-			"a terminated instance must have no surviving process — otherwise it holds OVN ports (siv-476)")
+			"a terminated instance must have no surviving process — otherwise it holds OVN ports ")
 		_, perr := utils.ReadPidFile(id)
 		assert.Error(t, perr, "the PID file must be removed after reaping")
 	})

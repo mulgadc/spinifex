@@ -15,7 +15,7 @@ import (
 )
 
 // The retention sweep is a cluster-wide vm.Reaper rather than a reconciler tick,
-// because it is the one part of rds-9 that deletes customer data. The shared GC
+// because it is the one part of retention that deletes customer data. The shared GC
 // backstop buys it the two properties that matters most for: it is skipped
 // entirely while KV is unhealthy, so it can never reap against a desired state it
 // cannot read, and cluster-wide scope is leader-gated by the framework. Backup
@@ -100,7 +100,7 @@ func (r *BackupRetentionReaper) sweepAccount(ctx context.Context, kv jetstream.K
 		}
 	}
 
-	// The backstop for a crash between rds-8's last DeleteDBSnapshot and the
+	// The backstop for a crash between the last DeleteDBSnapshot and the
 	// inline volume delete that follows it: nothing else references the volume by
 	// then, so without this it is orphaned permanently.
 	volumes, err := r.svc.reclaimOrphanedVolumes(ctx, kv)
@@ -289,7 +289,7 @@ func (s *Service) dropAutomatedBackupIndex(ctx context.Context, kv jetstream.Key
 // Two callers, both of which mean "there is nothing left to retain for": a
 // BackupRetentionPeriod=0 modify, which turns the feature off, and the teardown
 // of the instance itself, whose automated backups would otherwise pin its data
-// volume after the instance is gone (D10).
+// volume after the instance is gone.
 func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyValue,
 	accountID, dbInstanceIdentifier string) error {
 	stamps, err := ListAutomatedBackupStamps(ctx, kv, dbInstanceIdentifier)
@@ -309,7 +309,7 @@ func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyVal
 	return errors.Join(failures...)
 }
 
-// Deletes the data volumes retained for snapshots that no longer exist. rds-8
+// Deletes the data volumes retained for snapshots that no longer exist. The service
 // deletes the volume inline on the last DeleteDBSnapshot, so this only ever fires
 // for a crash between those two steps — which is precisely what a KV-health-gated
 // cluster-wide sweep is for.

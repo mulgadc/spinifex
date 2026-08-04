@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// The in-guest half of a storage grow (D12). The control plane has already
+// The in-guest half of a storage grow. The control plane has already
 // grown the block device by the time this runs; all that is left is to put the
 // filesystem on the capacity that is now there. Both ext4 and XFS grow while
 // mounted, so this needs no ordering against the engine start.

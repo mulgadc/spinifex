@@ -139,7 +139,7 @@ func TestDelete(t *testing.T) {
 
 	// The engine is stopped cleanly before the VM goes, so the final snapshot is a
 	// checkpoint rather than a datadir needing WAL replay. The volume it was cut
-	// from outlives the instance, because the snapshot references its chunks (D18).
+	// from outlives the instance, because the snapshot references its chunks.
 	t.Run("AFinalSnapshotIsTakenAndTheVolumeRetained", func(t *testing.T) {
 		harness.Phase(t, "Deleting %q with final snapshot %q", protectedID, finalSnapshotID)
 		out, err := f.AWS.RDS.DeleteDBInstance(&rds.DeleteDBInstanceInput{
@@ -158,7 +158,7 @@ func TestDelete(t *testing.T) {
 		require.NoError(t, err, "the final snapshot must exist once the delete has returned")
 		assert.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(snapshot.Status))
 		// Manual, not automated: the customer named it, so only the customer removes
-		// it — and rds-9's retention sweep must not.
+		// it — and the retention sweep must not.
 		assert.Equal(t, "manual", aws.StringValue(snapshot.SnapshotType))
 		assert.Equal(t, protectedID, aws.StringValue(snapshot.DBInstanceIdentifier),
 			"the snapshot must name the instance it outlived")
@@ -228,7 +228,7 @@ func TestDelete(t *testing.T) {
 			})
 		})
 
-		// D6: the record only proves anything from inside a guest, and its withdrawal
+		// The record only proves anything from inside a guest, and its withdrawal
 		// is the half nothing else in the suite covers.
 		t.Run("TheEndpointNameStopsResolvingInTheGuest", func(t *testing.T) {
 			requireEndpointName(t, endpoint)

@@ -1645,7 +1645,7 @@ func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
 // must be detected via a revision conflict and retried, and both the
 // injected concurrent write and the retried write must land — mirroring
 // UpdateStoppedInstance/UpdateTerminatedInstance's conflict-retry tests,
-// applied to the allocator's backing store (mulga-f3j2x).
+// applied to the allocator's backing store.
 func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)

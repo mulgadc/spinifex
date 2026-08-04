@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Every D17 ARN the builders mint must parse back into the parts it was built
+// Every ARN the builders mint must parse back into the parts it was built
 // from, so a resource named by a describe is addressable by a tag action.
 func TestParseARN_RoundTripsEveryResourceType(t *testing.T) {
 	cases := []struct {

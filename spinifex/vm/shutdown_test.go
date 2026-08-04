@@ -1112,7 +1112,7 @@ func TestTerminate_WriteRunningStateFailure_RollbackInsert(t *testing.T) {
 }
 
 // TestMarkRecoveryFailed_PreservesVolumesAndAWSResources locks down the
-// siv-25 architectural invariant: when daemon recovery cannot bring a
+// Architectural invariant: when daemon recovery cannot bring a
 // previously-running instance back online, the cleanup path must NOT
 // invoke DeleteVolumes, ReleasePublicIP, DetachAndDeleteENI, or
 // RemoveFromPlacementGroup. A regression here re-introduces the P0 data

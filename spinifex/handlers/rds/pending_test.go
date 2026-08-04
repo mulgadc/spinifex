@@ -44,7 +44,7 @@ func TestApplyPendingModifications_GrowsStorageOnTheSameVM(t *testing.T) {
 	assert.Nil(t, stored.PendingModifiedValues.AllocatedStorage)
 }
 
-// D15: a class change is a VM replace, and a grow asked for alongside it rides
+// A class change is a VM replace, and a grow asked for alongside it rides
 // the same outage rather than opening a second one.
 func TestApplyPendingModifications_ClassChangeReplacesTheVMAndCarriesTheGrow(t *testing.T) {
 	h := newModifyHarness(t)
@@ -71,7 +71,7 @@ func TestApplyPendingModifications_ClassChangeReplacesTheVMAndCarriesTheGrow(t *
 	assert.True(t, stored.PendingModifiedValues.FilesystemGrowPending)
 }
 
-// D16: the parameters go in while the engine this modify started against is
+// The parameters go in while the engine this modify started against is
 // still the one running, so the restart that follows is what adopts the
 // statically-scoped ones.
 func TestApplyPendingModifications_AppliesTheParametersBeforeTheOutage(t *testing.T) {
@@ -119,10 +119,10 @@ func TestApplyPendingModifications_KeepsThePendingRebootParametersWithoutAnOutag
 	assert.Equal(t, []string{"shared_buffers"}, h.record(t).PendingRebootParameters)
 }
 
-// D16: a class change re-resolves the size-derived defaults and the replacement
+// A class change re-resolves the size-derived defaults and the replacement
 // VM boots on them, so the record must not report a change that has landed —
 // the customer would reboot a healthy database to clear it, and Terraform would
-// see it on every plan.
+// see it in every configuration read.
 func TestApplyPendingModifications_ClassChangeClearsThePendingRebootParameters(t *testing.T) {
 	h := newModifyHarness(t)
 	h.agent.replyWith("shared_buffers")
@@ -308,7 +308,7 @@ func TestReconciler_RetriesAFailedModifyInsideTheBudget(t *testing.T) {
 	assert.Equal(t, int64(50), h.record(t).AllocatedStorage)
 }
 
-// D20: the size-derived defaults are the reason a class change has to re-resolve
+// The size-derived defaults are the reason a class change has to re-resolve
 // rather than carry the old set forward — a shared_buffers computed for the old
 // class is wrong at the new one in whichever direction the class moved.
 func TestApplyPendingModifications_ReResolvesTheParametersForTheNewClass(t *testing.T) {

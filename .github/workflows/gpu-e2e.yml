@@ -1,6 +1,6 @@
 # GPU E2E — drives wattle's persistent, shared-host Spinifex stack over SSH to
 # exercise GPU passthrough (raw EC2, ECS task GPU exposure, EKS pod GPU
-# exposure). See docs/development/feature/wattle-deploy-and-ci.md (Part B).
+# exposure).
 #
 # ---------------------------------------------------------------------------
 # ONE-TIME HOST-SIDE SETUP — NOT part of this repo, a human must do this:
@@ -32,7 +32,6 @@
 #      to skip cleanly (job succeeds, all work steps skipped) instead of
 #      queuing behind manual work indefinitely.
 #
-#   Runbook: docs/development/feature/wattle-deploy-and-ci.md (Part B).
 # ---------------------------------------------------------------------------
 
 name: GPU E2E
@@ -236,9 +235,8 @@ jobs:
       # (SPINIFEX_E2E=1 SPINIFEX_MODE=single, ./<suite>.test -test.v
       # -test.timeout=NNm), plus SPINIFEX_WAN_IP: wattle's ~24 bridges make
       # net.InterfaceAddrs() enumeration pick a co-tenant bridge instead of
-      # the advertised gateway (mulga-7suds), so the override is required
-      # here (proper fix tracked separately: tests/e2e/harness/env.go should
-      # prefer spinifex.toml's advertised bridge).
+      # the advertised gateway, so the override is required here. The harness
+      # should prefer spinifex.toml's advertised bridge.
       - name: Run GPU e2e suite on wattle
         id: e2e
         if: steps.gate.outputs.paused != 'true'

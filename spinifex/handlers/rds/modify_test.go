@@ -145,7 +145,7 @@ func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
 	assert.Nil(t, rec.PendingModifiedValues)
 }
 
-// D8: only the fact of the rotation is recorded. A password that reached KV
+// Only the fact of the rotation is recorded. A password that reached KV
 // would be readable by anything that can read the bucket, forever.
 func TestModifyDBInstance_NeverPersistsTheRotatedPassword(t *testing.T) {
 	h := newModifyHarness(t)
@@ -231,7 +231,7 @@ func TestModifyDBInstance_IgnoresTheSecurityGroupsAlreadyAttached(t *testing.T) 
 	assert.Empty(t, h.launch.enis.modified)
 }
 
-// D12: storage is grow-only, and a request to shrink must be refused before the
+// Storage is grow-only, and a request to shrink must be refused before the
 // instance moves anywhere — a rejected request cannot cost a running database
 // its availability.
 func TestModifyDBInstance_RejectsAStorageShrinkBeforeAnythingMoves(t *testing.T) {
@@ -257,7 +257,7 @@ func TestModifyDBInstance_RejectsAStorageShrinkBeforeAnythingMoves(t *testing.T)
 
 // Terraform sends the whole body on every apply, so a size that repeats the
 // current one accompanies unrelated changes constantly. Failing it would fail
-// every one of them; it contributes nothing to the plan instead.
+// every one of them; it contributes nothing to the resulting configuration instead.
 func TestModifyDBInstance_TreatsTheCurrentStorageSizeAsNoChange(t *testing.T) {
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
@@ -296,7 +296,7 @@ func TestModifyDBInstance_IsANoOpWhenNothingDiffers(t *testing.T) {
 	assert.Nil(t, h.record(t).PendingModifiedValues)
 }
 
-// D15: the db.* classes are a facade over the platform's instance types, so a
+// The db.* classes are a facade over the platform's instance types, so a
 // class with nothing behind it is rejected with the set that has.
 func TestModifyDBInstance_RejectsAnUnmappedInstanceClass(t *testing.T) {
 	h := newModifyHarness(t)
@@ -312,7 +312,7 @@ func TestModifyDBInstance_RejectsAnUnmappedInstanceClass(t *testing.T) {
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 }
 
-// Until rds-7 materialises real groups the implicit default is the only name
+// Until real groups are materialised the implicit default is the only name
 // that resolves, so any other one names a group that does not exist.
 func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 	h := newModifyHarness(t)
@@ -327,7 +327,7 @@ func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 	assert.Nil(t, h.record(t).PendingModifiedValues)
 }
 
-// The rds-9 fields are stored rather than acted on, but a value outside AWS's
+// These fields are stored rather than acted on, but a value outside AWS's
 // range would fail in a maintenance window nobody is watching.
 func TestModifyDBInstance_RejectsAnOutOfRangeBackupRetention(t *testing.T) {
 	h := newModifyHarness(t)
@@ -342,7 +342,7 @@ func TestModifyDBInstance_RejectsAnOutOfRangeBackupRetention(t *testing.T) {
 	assert.Zero(t, h.record(t).BackupRetentionPeriod)
 }
 
-// D19: a supported action carrying a parameter this platform does not implement
+// A supported action carrying a parameter this platform does not implement
 // is rejected, never served with the parameter quietly dropped. Each of these
 // would otherwise leave the customer believing in a guarantee they do not have.
 func TestModifyDBInstance_RejectsTheUnimplementedParameters(t *testing.T) {
@@ -397,7 +397,7 @@ func TestModifyDBInstance_AcceptsTheStorageTypeItAlreadyHas(t *testing.T) {
 	assert.True(t, h.record(t).DeletionProtection)
 }
 
-// A disruptive change without ApplyImmediately is recorded and left for rds-9's
+// A disruptive change without ApplyImmediately is recorded and left for the
 // maintenance window: the database keeps serving until then.
 func TestModifyDBInstance_DefersADisruptiveChangeToTheMaintenanceWindow(t *testing.T) {
 	h := newModifyHarness(t)

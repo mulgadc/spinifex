@@ -4,7 +4,7 @@
 // subject shape and message schema have a single source of truth.
 //
 // Cluster identity is "<accountID>.<clusterName>" (matching the KV layout), not a
-// UUID. The Phase 5 per-AZ NATS cutover inserts "{azID}" after "ecs." — keep
+// UUID. The per-AZ NATS routing inserts "{azID}" after "ecs." — keep
 // these builders the one place that knows the shape so that change stays local.
 package bus
 

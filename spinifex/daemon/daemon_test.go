@@ -1551,7 +1551,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 }
 
 // TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear
-// locks the mulga-1dzx9 fix on the running-instance terminate path: a Boot,
+// locks the running-instance terminate path: a Boot,
 // DeleteOnTermination root volume left attached (terminateCleanup's
 // shutdownAndUnmount runs Unmount, which deliberately never clears a Boot
 // volume's AttachedInstance) previously hit DeleteVolume's in-use guard
@@ -3119,7 +3119,7 @@ func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
 }
 
 // canAllocate for GPU types is gated by CPU/memory like any other instance
-// type. Regression for mulga-jeo02: the whole-GPU early return used to
+// type. The whole-GPU early return used to
 // bypass this check entirely, letting a launch proceed on a host with no
 // memory headroom.
 func TestCanAllocate_GPUType_GatedByCPUMemory(t *testing.T) {

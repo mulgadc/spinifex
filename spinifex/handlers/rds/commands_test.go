@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// D8: the password is handed straight to the agent and never persisted, so the
+// The password is handed straight to the agent and never persisted, so the
 // command is the only place it exists between the request and the engine.
 func TestSetMasterPassword_CarriesTheCredentialsToTheAgent(t *testing.T) {
 	h := newLifecycleHarness(t, false)
@@ -34,7 +34,7 @@ func TestSetMasterPassword_FailsWhenTheAgentRejectsIt(t *testing.T) {
 	assert.Contains(t, err.Error(), CommandSetPassword)
 }
 
-// D16: the settings the engine accepted but will not honour until it restarts
+// The settings the engine accepted but will not honour until it restarts
 // come back as the reply message, which is what a later reboot then clears.
 func TestApplyParameters_ReportsWhatIsPendingARestart(t *testing.T) {
 	h := newLifecycleHarness(t, false)

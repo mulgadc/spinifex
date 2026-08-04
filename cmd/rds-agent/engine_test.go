@@ -156,7 +156,7 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	return newPostgresEngine(cfg, run, nil)
 }
 
-// D8: the password reaches psql through the environment and is re-quoted there,
+// The password reaches psql through the environment and is re-quoted there,
 // so it is never a shell word or an argv another process can read.
 func TestPostgresEngine_SetPasswordKeepsTheSecretOutOfArgv(t *testing.T) {
 	runner := &recordingRunner{}
@@ -215,7 +215,7 @@ func TestPostgresEngine_SetPasswordRejectsAnIncompleteCommand(t *testing.T) {
 	}
 }
 
-// D21: the apply runs as the cluster superuser under peer auth, so a reserved
+// The apply runs as the cluster superuser under peer auth, so a reserved
 // name arriving in a command payload would rotate the bootstrap superuser's
 // password rather than the customer's own role.
 func TestPostgresEngine_SetPasswordRefusesReservedRoles(t *testing.T) {

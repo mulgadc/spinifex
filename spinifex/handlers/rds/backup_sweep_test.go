@@ -304,7 +304,7 @@ func TestSweep_FailsWhenTheAccountBucketsCannotBeEnumerated(t *testing.T) {
 	require.Error(t, err)
 }
 
-// The backstop for a crash between rds-8's last DeleteDBSnapshot and the inline
+// The backstop for a crash between the last DeleteDBSnapshot and the inline
 // volume delete that follows it: nothing else references the volume by then.
 func TestSweep_ReclaimsAnOrphanedRetainedVolume(t *testing.T) {
 	h := newSnapshotHarness(t, false)
@@ -392,7 +392,7 @@ func TestModifyDBInstance_SweepsTheAutomatedBackupsWhenRetentionGoesToZero(t *te
 	assert.Empty(t, h.automatedStamps(t, testDBID))
 }
 
-// D10: an automated backup outliving its instance would pin the instance's data
+// An automated backup outliving its instance would pin the instance's data
 // volume for good, so teardown sweeps the set before releasing the volume.
 func TestDeleteDBInstance_SweepsTheAutomatedBackups(t *testing.T) {
 	h := newLifecycleHarness(t, false)

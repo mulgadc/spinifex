@@ -61,7 +61,7 @@ func TestFailureDetection(t *testing.T) {
 		harness.WithTimeout(failureDetectionBudget))
 	detectionTime := time.Since(failureStarted)
 	require.LessOrEqual(t, detectionTime, failureDetectionBudget,
-		"failure detection exceeded the D13 bound")
+		"failure detection exceeded the allowed bound")
 	t.Logf("DB instance %s was classified failed after %s", id, detectionTime.Round(time.Second))
 
 	require.Len(t, failed.StatusInfos, 1, "a failed instance must explain its status")

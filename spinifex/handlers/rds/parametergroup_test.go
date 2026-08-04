@@ -269,7 +269,7 @@ func TestModifyDBParameterGroup_RejectsAnUnknownGroup(t *testing.T) {
 		"the code has to survive resolution or the client sees a 500")
 }
 
-// D20: a computed default reaches the customer as the literal it evaluated to,
+// A computed default reaches the customer as the literal it evaluated to,
 // never as the formula that produced it.
 func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	h := newCreateHarness(t, testBaseDomain)

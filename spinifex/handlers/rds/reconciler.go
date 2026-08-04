@@ -71,7 +71,7 @@ type InstanceStateResolver interface {
 // Its responsibilities are the transitions no single API call can finish — the
 // ones it drives itself and the ones whose caller died partway through — plus
 // the failure classifier that gives a settled instance an honest health state.
-// The backup sweep (rds-9) extends the same loop.
+// The backup sweep extends the same loop.
 type Reconciler struct {
 	svc    *Service
 	holder string
@@ -436,7 +436,7 @@ func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv jetstream.KeyVal
 	return r.transition(ctx, kv, rev, rec, resume, "")
 }
 
-// The two scheduled passes (rds-9): the automated backup its backup window is
+// The two scheduled passes: the automated backup's backup window is
 // due, and the deferred modify its maintenance window opens. Both ride the leader
 // lease, and both are driven from a persisted stamp rather than a timer, so a
 // leader change cannot fire either of them twice for one window.

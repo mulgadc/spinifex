@@ -27,7 +27,7 @@ const (
 	snapshotRowsBefore = 1
 
 	// The message a snapshot taken over a running engine must not carry: the
-	// engine was available, so the quiesce had every opportunity to work, and D10's
+	// engine was available, so the quiesce had every opportunity to work, and the
 	// crash-consistent fallback is for the case where it does not.
 	crashConsistentNotice = "could not be quiesced"
 
@@ -44,8 +44,8 @@ const (
 // that the restore is a wholly separate instance — its own volume, its own ENI,
 // its own endpoint.
 //
-// Both instances are consumed: the source is deleted to prove D18's retained
-// volume is released, which is an assertion that cannot be made while it exists.
+// Both instances are consumed: deleting the source proves the retained volume
+// is released, which is an assertion that cannot be made while it exists.
 func TestSnapshotRestore(t *testing.T) {
 	f := requireRDSFixture(t)
 	t.Parallel()
@@ -146,7 +146,7 @@ func TestSnapshotRestore(t *testing.T) {
 		assert.NotEqual(t, sourceVolumeID, aws.StringValue(harness.DBInstanceDataVolume(t, system, restoredID).VolumeId),
 			"the restore reads a volume created from the snapshot, never the source's own")
 
-		// D8: no password was supplied to the restore and none could be — the role
+		// No password was supplied to the restore and none could be — the role
 		// and its hash came from the datadir, so the source's credentials are the
 		// restore's. A restore that needed new credentials would be unusable.
 		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
@@ -174,7 +174,7 @@ func TestSnapshotRestore(t *testing.T) {
 		require.NotEmpty(t, created, "a snapshot with no event is a backup a customer cannot audit")
 		assert.Contains(t, strings.Join(created, "\n"), "DB snapshot created")
 
-		// D10 reports an unquiesced snapshot rather than refusing it, which makes the
+		// An unquiesced snapshot is reported rather than refused, which makes the
 		// notice the only signal that a backup is crash consistent. The engine was
 		// available here, so its absence is the assertion.
 		instanceEvents := dbInstanceEventMessages(t, f, sourceID)
@@ -236,7 +236,7 @@ func TestSnapshotRestore(t *testing.T) {
 		assert.Equal(t, snapshotID, aws.StringValue(mine.DBSnapshotIdentifier))
 	})
 
-	// D18: a data volume whose chunks a snapshot still references outlives its DB
+	// A data volume whose chunks a snapshot still references outlives its DB
 	// instance, and is reclaimed by the delete of the last snapshot holding it. The
 	// failure this catches is the expensive one — a volume nothing points at, paid
 	// for indefinitely, invisible to the customer who deleted the database.
@@ -276,7 +276,7 @@ func createDBSnapshot(t *testing.T, f *Fixture, dbInstanceID, snapshotID string)
 }
 
 // Idempotent teardown for one snapshot, so the assertions above can delete
-// snapshots in the order D18 is proven in without the cleanups then failing.
+// snapshots in the order the retention behavior is proven without the cleanups then failing.
 func deleteDBSnapshot(t *testing.T, f *Fixture, snapshotID string) {
 	t.Helper()
 	if _, err := f.AWS.RDS.DeleteDBSnapshot(&rds.DeleteDBSnapshotInput{

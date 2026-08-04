@@ -47,7 +47,7 @@ func TestHTTPHandler_ProducesSpan(t *testing.T) {
 // TestHTTPHandler_RejectedForwardedStillTraced is the load-bearing assertion
 // for the middleware-ordering call: otelsetup.HTTPMiddleware wraps OUTSIDE
 // rejectForwarded, so an X-Forwarded-For request rejected by the SSRF guard
-// still produces a span (the 431+431 rooted fan-out gap the bead reports
+// still produces a span (the 431+431 rooted fan-out gap
 // starts on requests exactly like this) — but the rejection itself is
 // unaffected by tracing being present. A span cannot let a rejected request
 // through; it only observes it.

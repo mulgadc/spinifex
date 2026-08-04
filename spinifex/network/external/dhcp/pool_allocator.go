@@ -115,7 +115,7 @@ func (a *DHCPPoolAllocator) rememberHWAddr(clientID string, hw net.HardwareAddr)
 }
 
 // poolClientID picks the first non-empty AWS identifier. Mirrors the
-// precedence documented in the plan: AllocationID > ENIID > InstanceID.
+// precedence: AllocationID > ENIID > InstanceID.
 func poolClientID(req external.AllocateRequest) string {
 	switch {
 	case req.AllocationID != "":

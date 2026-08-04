@@ -388,7 +388,7 @@ func TestManager_ConcurrentSoak(t *testing.T) {
 	}
 }
 
-// TestManager_SlotOccupancyRace simulates the production race the plan calls
+// TestManager_SlotOccupancyRace simulates the production race the implementation
 // out at daemon_handlers_instance.go:594-626 and daemon.go:2140/2149: a
 // terminate handler running DeleteIf(id, original) concurrently with a start
 // handler running InsertIfAbsent(replacement) for the same slot, plus the

@@ -14,9 +14,9 @@ RUN         ?=
 GOTESTSUM   ?=
 SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 
-# Pre-built test binaries — see mulga-siv-80. `e2e-build` cross-compiles each
-# named suite into BIN_DIR/<suite>.test so CI can ship binaries (not source +
-# go toolchain) to the remote VM.
+# Pre-built test binaries. `e2e-build` cross-compiles each named suite into
+# BIN_DIR/<suite>.test so CI can ship binaries (not source + go toolchain) to
+# the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
 SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds
 

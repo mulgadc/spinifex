@@ -491,7 +491,7 @@ func (m *JetStreamManager) UpdateClusterShutdown(mutate func(*ClusterShutdownSta
 // empty record into existence. Every node sharing the management bridge's
 // L2 segment reads and writes the same record, keyed by subnet, which is
 // what makes mgmt IP allocation safe across the whole cluster rather than
-// just this process (mulga-f3j2x).
+// just this process.
 func (m *JetStreamManager) UpdateMgmtIPAM(subnet string, mutate func(*MgmtIPRecord), createIfAbsent bool) (*MgmtIPRecord, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")

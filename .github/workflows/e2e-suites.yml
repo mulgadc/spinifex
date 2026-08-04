@@ -1,7 +1,5 @@
-# E2E (per-suite blocks) — EXPERIMENTAL, workflow_dispatch only.
-#
-# Restructures the looped e2e.yml into env-grouped job blocks so each suite
-# surfaces as its own node in the Actions graph (mulga-siv-283):
+# E2E per-suite blocks. Each suite appears as its own node in the Actions
+# graph:
 #
 #   single_provision ─┬─ single_suite (matrix: the single-node-eligible suites)
 #                     └─ single_teardown (if: always)

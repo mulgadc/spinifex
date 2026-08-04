@@ -860,7 +860,7 @@ print_summary() {
     echo ""
 }
 
-# --- Configure host swap (mulga-siv-251) ---
+# --- Configure host swap ---
 # Provisions an 8G swapfile and lowers vm.swappiness so spinifex.slice
 # (MemorySwapMax=100%) has a backing device for graceful degradation under
 # memory pressure. Reverses the historical swap=0 assumption. Idempotent.

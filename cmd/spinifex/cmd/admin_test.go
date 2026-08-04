@@ -47,7 +47,7 @@ func TestPrintChecksumError(t *testing.T) {
 }
 
 // buildRemoteNodes must prefer AdvertiseIP (off-host dial target) and fall
-// back to BindIP when the peer pre-dates siv-8 and didn't send AdvertiseIP.
+// back to BindIP when the peer did not send AdvertiseIP.
 func TestBuildRemoteNodes_AdvertiseFallback(t *testing.T) {
 	nodes := map[string]formation.NodeInfo{
 		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "203.0.113.1"},
@@ -190,7 +190,7 @@ func TestSpinifexTomlTemplate_GatewayListensOnAllPlanes(t *testing.T) {
 	assert.Contains(t, content, `host = "10.0.0.3:4432"`, "daemon stays internal")
 }
 
-// Empty AdvertiseIP (e.g. loading an existing cluster pre-siv-8) must NOT
+// Empty AdvertiseIP (for example when loading an existing cluster) must NOT
 // render an empty advertise = "" line — downstream fallback to Host kicks in.
 func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
 	dir := t.TempDir()
@@ -253,7 +253,7 @@ func TestSpinifexTomlTemplate_NorthstarDomains(t *testing.T) {
 }
 
 // Legacy `wan_bridge` TOML key must fail-start vpcd with guidance, not silently
-// alias (per mulga-998 D3). Prevents the footgun where operators inherited the
+// alias. Prevents the footgun where operators inherited the
 // old key pointing at 'br-ext' and got broken DHCP on veth-mode hosts.
 func TestCheckLegacyWanBridgeKey_TOMLRejected(t *testing.T) {
 	dir := t.TempDir()

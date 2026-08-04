@@ -419,14 +419,14 @@ func TestCanAllocateLocked_MIGvsWholeGPU(t *testing.T) {
 	rm.allocatedMem = 32.0
 	assert.Equal(t, 0, rm.canAllocateLocked(migType, 10), "MIG: second slice rejected when resources exhausted")
 
-	// Whole-GPU: regression for mulga-jeo02. With cpu/mem already exhausted by
+	// Whole-GPU: with cpu/mem already exhausted by
 	// the MIG slice above, a whole-GPU instance must also be refused instead
 	// of bypassing the check.
 	assert.Equal(t, 0, rm.canAllocateLocked(wholeGPUType, 10), "whole-GPU: no longer bypasses the cpu/mem gate")
 }
 
 // TestCanAllocateLocked_WholeGPU_MemoryAndSlotGates is the regression test
-// for mulga-jeo02: a whole-GPU launch must be refused (allocateForLaunch maps
+// a whole-GPU launch must be refused (allocateForLaunch maps
 // this to InsufficientInstanceCapacity) when the node lacks the instance's
 // memory, must succeed when memory is available, and must be refused up
 // front — not just late at gpuManager.Claim — when the GPU pool is exhausted.

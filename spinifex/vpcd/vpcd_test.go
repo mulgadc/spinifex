@@ -148,7 +148,7 @@ func TestPreflightOVN_BothFail_ReportsFirst(t *testing.T) {
 	}
 }
 
-// verifyBridgeMode is the post-detect sanity check — mulga-998.b Fix 2.
+// verifyBridgeMode is the post-detect sanity check.
 // portToBr and readLinkMaster are injected for tests.
 
 func stubBridgeProbes(t *testing.T, ovsPorts map[string]string, links map[string]string) {
@@ -248,7 +248,7 @@ func TestVerifyBridgeMode_UnknownModeLists(t *testing.T) {
 func TestVerifyBridgeMode_EmptyModeRejected(t *testing.T) {
 	err := verifyBridgeMode("", "", "")
 	if err == nil {
-		t.Fatal("expected error for empty mode (D12)")
+		t.Fatal("expected error for empty mode")
 	}
 }
 
@@ -283,7 +283,7 @@ func TestVerifyBridgeMode_VethLinuxBrMissing(t *testing.T) {
 	}
 }
 
-// detectBridgeMode — mulga-998.b Fix 2.
+// detectBridgeMode selects the bridge mode after detection.
 
 func stubDetectProbes(t *testing.T, links []string) {
 	t.Helper()
@@ -331,7 +331,7 @@ func TestResolveBridgeConfig_AutoDetects(t *testing.T) {
 func TestResolveBridgeConfig_EmptyStaysEmptyWithNoIface(t *testing.T) {
 	mode, _ := resolveBridgeConfig("", "")
 	if mode != "" {
-		t.Errorf("empty mode + no iface should stay empty (D12); got %q", mode)
+		t.Errorf("empty mode + no iface should stay empty; got %q", mode)
 	}
 }
 

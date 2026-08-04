@@ -263,7 +263,7 @@ func subscribeEmptyInstanceBuckets(t *testing.T, nc *nats.Conn) {
 }
 
 // TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep covers the
-// bead's primary criterion: naming a nonexistent instance ID with a
+// The primary criterion: naming a nonexistent instance ID with a
 // fully-answered fan-out returns InvalidInstanceID.NotFound instead of a
 // silent empty list.
 func TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep(t *testing.T) {
@@ -346,7 +346,7 @@ func TestDescribeInstancesChecked_ExplicitIDFound_CompleteSweep(t *testing.T) {
 }
 
 // TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound
-// covers the bead's second criterion: a --filters query that matches nothing
+// covers the second criterion: a --filters query that matches nothing
 // must still return rc=0 with an empty list, never NotFound (no instance IDs
 // were named).
 func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *testing.T) {
@@ -370,7 +370,7 @@ func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *t
 	assert.Empty(t, output.Reservations)
 }
 
-// TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout is the bead's
+// TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout verifies the
 // subtle third criterion: a node timing out during the fan-out must not
 // produce a false NotFound. Only one of two expected nodes answers, so the
 // sweep is provably incomplete and the naive found-set check must be

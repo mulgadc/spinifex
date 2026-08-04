@@ -31,7 +31,7 @@ func claimMIGSliceForReconcilerTest(t *testing.T, instanceID string) *gpu.Manage
 }
 
 // TestGPUPoolReconciler_FreesOrphanedSlot is the regression test for
-// mulga-keptb: a GPU pool entry whose InstanceID names an instance absent
+// A GPU pool entry whose InstanceID names an instance absent
 // from the running map entirely must be released.
 func TestGPUPoolReconciler_FreesOrphanedSlot(t *testing.T) {
 	mgr := claimMIGSliceForReconcilerTest(t, "i-orphan")

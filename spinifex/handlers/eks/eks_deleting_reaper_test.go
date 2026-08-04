@@ -166,7 +166,7 @@ func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
 	assert.Len(t, f.inst.terminateCalls, terminateCallsAtExhaustion, "an exhausted cluster must never be re-driven again")
 }
 
-// TestDeletingReaper_PersistsLastErrorOnFailure guards mulga-djaep criterion 2:
+// TestDeletingReaper_PersistsLastErrorOnFailure guards the second cleanup condition:
 // a terminal give-up must carry the last error, not just a bare boolean flag.
 // The error must be visible on the very first failed attempt (so an operator
 // checking a still-retrying cluster already sees why), and the same error must

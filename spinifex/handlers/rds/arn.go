@@ -66,7 +66,7 @@ type ParsedARN struct {
 // arn:aws:rds:{region}:{accountID}:{kind}:{identifier}
 const arnSegmentCount = 7
 
-// Parses one of the four D17 ARNs and validates it belongs to the caller.
+// Parses one of the four supported RDS ARNs and validates it belongs to the caller.
 // Region and account are checked here rather than at policy evaluation, so a
 // foreign-account reference never reaches the evaluator at all.
 func ParseARN(arn, region, accountID string) (ParsedARN, error) {

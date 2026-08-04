@@ -240,7 +240,7 @@ func projectPendingModifiedValues(pending *PendingModifiedValues) *rds.PendingMo
 // AWS reports a parameter group's state on the membership rather than in
 // PendingModifiedValues, and the Terraform provider reads it there: applying
 // while a modify is draining, pending-reboot while static settings await the
-// restart that adopts them (D16).
+// restart that adopts them.
 func projectParameterGroup(rec *DBInstanceRecord) []*rds.DBParameterGroupStatus {
 	if rec.DBParameterGroupName == "" {
 		return nil

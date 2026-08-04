@@ -125,7 +125,7 @@ func TestGrowDataVolume_FailsWithoutAVolume(t *testing.T) {
 	require.Error(t, h.svc.growDataVolume(t.Context(), "", 50))
 }
 
-// D12: ModifyVolume refuses a volume a running VM holds, so the order is the
+// ModifyVolume refuses a volume a running VM holds, so the order is the
 // whole mechanism — engine down, VM down, grow, VM back.
 func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
 	h := newModifyHarness(t)

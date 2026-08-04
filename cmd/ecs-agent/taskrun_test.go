@@ -70,8 +70,8 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 }
 
-// TestRunTask_GPUCarriedToRunSpec covers mulga-11opz (Epic C task C1): the
-// AssignContainer's GPU count reaches the runtime RunSpec unchanged; a
+// TestRunTask_GPUCarriedToRunSpec verifies that the AssignContainer's GPU count
+// reaches the runtime RunSpec unchanged; a
 // container with no GPU request keeps RunSpec.GPU at zero (regression).
 func TestRunTask_GPUCarriedToRunSpec(t *testing.T) {
 	cp := &fakeCP{}
@@ -534,7 +534,7 @@ func (sentinelResolver) Authorize(context.Context, string) (string, string, stri
 	return "", "", "", nil
 }
 
-// TestPullResolver covers siv-459: an assign with no execution role (or no
+// TestPullResolver verifies that an assign with no execution role (or no
 // credential endpoint) uses the instance resolver; with both, a distinct
 // exec-role resolver is built.
 func TestPullResolver(t *testing.T) {

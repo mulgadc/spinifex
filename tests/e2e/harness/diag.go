@@ -33,8 +33,8 @@ type VPCDiagnosticsOpts struct {
 	LogicalIP string
 	// ArtifactDir is the per-test bundle directory (typically
 	// `fix.Artifacts`). When set, every capture is also persisted as
-	// a separate file so the Stage 2 analyzer bundler picks it up
-	// alongside the journal + test-log slices.
+	// a separate file so the analyzer bundler picks it up alongside the
+	// journal + test-log slices.
 	ArtifactDir string
 }
 
@@ -269,7 +269,7 @@ type hostCapture struct {
 
 // runHostCaptures runs each capture under `sudo -n`, echoes it to stdout for the
 // CI log, and persists it as a separate file under artifactDir (when set) so the
-// Stage 2 analyzer bundler picks it up. Assumes the caller already verified
+// analyzer bundler picks it up. Assumes the caller already verified
 // passwordless sudo is available.
 func runHostCaptures(t *testing.T, artifactDir string, caps []hostCapture) {
 	t.Helper()

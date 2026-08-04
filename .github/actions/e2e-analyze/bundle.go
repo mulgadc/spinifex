@@ -17,9 +17,9 @@ import (
 )
 
 // bundlePad is the per-failure window padding either side of the
-// [StartAt, StartAt+Duration] testcase span. Five seconds matches the
-// plan doc: long enough to catch the daemon's pre-test setup and
-// post-test cleanup chatter, short enough to keep the slice focused.
+// [StartAt, StartAt+Duration] testcase span. Five seconds catches the
+// daemon's pre-test setup and post-test cleanup chatter while keeping
+// the slice focused.
 const bundlePad = 5 * time.Second
 
 // nameSanitiseRe replaces characters unsafe in directory names with `_`.

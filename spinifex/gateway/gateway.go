@@ -120,8 +120,8 @@ type GatewayConfig struct {
 	// routes. Nil falls back to no external providers (self-host models only).
 	BedrockCredentials *gateway_bedrock.CredentialStore
 	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
-	// URL. Phase 1 endpoints are pinned/always-resident, so this is static
-	// config; a later phase backs it with the daemon's dynamic endpoint
+	// URL. These endpoints are pinned/always-resident, so this is static
+	// config; a future implementation can back it with the daemon's dynamic endpoint
 	// registry. Nil/empty means no self-hosted models are reachable.
 	BedrockEndpoints map[string]string
 	// BedrockLoggingConfig persists per-account invocation-logging preferences

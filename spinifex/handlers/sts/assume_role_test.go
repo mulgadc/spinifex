@@ -185,7 +185,7 @@ func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
 	caller := testCallerARN()
 
 	// Allow listed first; Deny second. A single-pass "return on first Allow"
-	// loop would silently skip the Deny and grant the session — see plan §4.
+	// loop would silently skip the Deny and grant the session.
 	policyAllowThenDeny := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
         {"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"},
         {"Effect":"Deny","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}

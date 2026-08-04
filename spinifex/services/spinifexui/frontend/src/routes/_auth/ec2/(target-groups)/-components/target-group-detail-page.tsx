@@ -140,7 +140,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
           <TabsPanel value="health-checks">
             <p className="mb-3 text-sm text-muted-foreground">
               Health-check settings are set at creation time. Editing lands in a
-              future slice (mulga-948).
+              future enhancement.
             </p>
             <DetailCard>
               <DetailCard.Header>Health check</DetailCard.Header>

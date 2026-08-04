@@ -784,8 +784,8 @@ var spinifexUIStatusCmd = &cobra.Command{
 }
 
 // checkLegacyWanBridgeKey fails vpcd startup if the deprecated `wan_bridge`
-// TOML key or `SPINIFEX_VPCD_WAN_BRIDGE` env-var is present. Per D3: no silent
-// alias, no auto-rewrite — operator must remove the key before vpcd will start.
+// TOML key or `SPINIFEX_VPCD_WAN_BRIDGE` env-var is present. There is no silent
+// alias or auto-rewrite; the operator must remove the key before vpcd will start.
 func checkLegacyWanBridgeKey(node, cfgFile string) error {
 	legacyInTOML := viper.IsSet("nodes." + node + ".vpcd.wan_bridge")
 	legacyInEnv := os.Getenv("SPINIFEX_VPCD_WAN_BRIDGE") != ""

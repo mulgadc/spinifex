@@ -28,7 +28,7 @@ func createInput(name string) *eks.CreateClusterInput {
 
 // A create that fails after the NLB is provisioned must leave the NLB ARNs
 // persisted on the (now FAILED) meta, otherwise the resources leak with no
-// owning record and DeleteCluster cannot reclaim them (bead 165.3).
+// owning record and DeleteCluster cannot reclaim them.
 func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
@@ -235,7 +235,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 	assert.NotEmpty(t, f.nlb.deleteLBCalls, "reclaim must tear down the failed attempt's NLB")
 }
 
-// A FAILED cluster is observable via Describe and List (bead 165.6) — no state
+// A FAILED cluster is observable via Describe and List — no state
 // where create blocks but describe/list show nothing.
 func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 	f := newEKSServiceFixture(t)
@@ -262,7 +262,7 @@ func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 
 // An ACTIVE cluster whose reconciler recorded a /healthz failure must surface
 // that as a ClusterHealth issue in describe-cluster, so a dead control plane is
-// visible behind the still-ACTIVE status (bead 165.13).
+// visible behind the still-ACTIVE status .
 func TestDescribeCluster_SurfacesHealthIssueForActiveCluster(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
@@ -295,7 +295,7 @@ func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
 
 // A missing eks-server AMI is an operator/config gap surfaced during the async
 // launch: CreateCluster accepts the request (CREATING) and the background launch
-// marks the half-built cluster FAILED so the reclaim path can retry (bead 165.4).
+// marks the half-built cluster FAILED so the reclaim path can retry .
 func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks

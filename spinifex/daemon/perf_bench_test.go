@@ -14,21 +14,21 @@ const (
 	phase2ArtifactGateMiB = 50
 )
 
-func TestBootGate_Phase1(t *testing.T) {
+func TestBootGate_ProbeThreshold(t *testing.T) {
 	if phase1BootGateMs != 500 {
-		t.Errorf("Phase 1 boot gate changed: got %d, want 500", phase1BootGateMs)
+		t.Errorf("probe boot gate changed: got %d, want 500", phase1BootGateMs)
 	}
 	if phase1RSSGateMiB != 25 {
-		t.Errorf("Phase 1 RSS gate changed: got %d, want 25", phase1RSSGateMiB)
+		t.Errorf("probe RSS gate changed: got %d, want 25", phase1RSSGateMiB)
 	}
 }
 
-func TestBootGate_Phase2(t *testing.T) {
+func TestBootGate_ActivationThreshold(t *testing.T) {
 	if phase2BootGateMs != 300 {
-		t.Errorf("Phase 2 boot gate changed: got %d, want 300", phase2BootGateMs)
+		t.Errorf("activation boot gate changed: got %d, want 300", phase2BootGateMs)
 	}
 	if phase2ArtifactGateMiB != 50 {
-		t.Errorf("Phase 2 artifact gate changed: got %d, want 50", phase2ArtifactGateMiB)
+		t.Errorf("activation artifact gate changed: got %d, want 50", phase2ArtifactGateMiB)
 	}
 }
 

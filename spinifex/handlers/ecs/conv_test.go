@@ -82,7 +82,7 @@ func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
 	assert.Empty(t, containerDefsFromAWS([]*ecs.ContainerDefinition{nil}))
 }
 
-// TestContainerDefsFromAWS_GPU covers mulga-11opz (Epic C task C1): a
+// TestContainerDefsFromAWS_GPU verifies that a
 // resourceRequirements entry of type=GPU is parsed as a whole-GPU count and
 // carried onto ContainerDef, its AWS round trip, and the bus AssignContainer.
 func TestContainerDefsFromAWS_GPU(t *testing.T) {

@@ -78,10 +78,8 @@ const (
 	// root mode. service_impl.go's parseVolumeParams defaults to exactly this
 	// string when BlockDeviceMappings[0].DeviceName is unset on a
 	// RunInstances request, and DescribeInstances reports the same name back
-	// for a virtio-blk-pci root volume (see
-	// docs/development/archive/bugs/fix-blockdevicemappings-devicename.md),
-	// so this one constant is used both to request the mapping and to
-	// re-identify it afterward.
+	// for a virtio-blk-pci root volume. This constant is used both to request
+	// the mapping and to re-identify it afterward.
 	imagePullRootDevice = "/dev/vda"
 
 	// imagePullPullCyclesEnv selects how many pull-then-free cycles the guest

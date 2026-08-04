@@ -61,7 +61,7 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 	assert.Equal(t, testSnapshotID, stored.RestoredFromDBSnapshot)
 	assert.True(t, stored.StorageEncrypted)
 
-	// D8: the datadir already holds the master role and its password hash, so
+	// The datadir already holds the master role and its password hash, so
 	// the agent's first bootstrap fetch has to attach rather than run initdb.
 	assert.True(t, stored.Bootstrap.Consumed)
 	require.NotNil(t, stored.Bootstrap.ConsumedAt)
@@ -201,7 +201,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsASnapshotStillBeingTaken(t *test
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotInvalidState)
 }
 
-// D19: a parameter that would create a false safety, security or availability
+// A parameter that would create a false safety, security or availability
 // guarantee is rejected rather than silently dropped.
 func TestRestoreDBInstanceFromDBSnapshot_RejectsUnimplementedParameters(t *testing.T) {
 	h := newSnapshotHarness(t, false)

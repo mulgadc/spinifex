@@ -24,14 +24,14 @@ type DBInstanceRecord struct {
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
-	// A one-way marker (D8). A rotated password is handed to the agent over the
+	// A one-way marker. A rotated password is handed to the agent over the
 	// command channel and never persisted, so this records only that it changed.
 	MasterPasswordUpdatedAt *time.Time `json:"masterPasswordUpdatedAt,omitempty"`
 
-	// Blocks DeleteDBInstance outright (D18). Settable at create and modify.
+	// Blocks DeleteDBInstance outright. Settable at create and modify.
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
 
-	// Inert (D19) — the engine version is pinned, so nothing upgrades either way.
+	// Inert — the engine version is pinned, so nothing upgrades either way.
 	// Recorded anyway because a describe that does not echo it back reads as
 	// false against a Terraform schema that defaults it to true, and the plan
 	// then never settles on a change no modify can deliver.
@@ -106,7 +106,7 @@ type DBInstanceRecord struct {
 	// When the classifier first observed the instance dark, and the timestamp the
 	// failure grace window is measured from. Persisted rather than held in leader
 	// memory so a leader change does not restart the clock. Cleared only by a
-	// healthy heartbeat or an explicit lifecycle op (D13).
+	// healthy heartbeat or an explicit lifecycle operation.
 	UnhealthySince *time.Time `json:"unhealthySince,omitempty"`
 
 	// When the lifecycle op that put the instance in its current transitional
@@ -128,7 +128,7 @@ type DBInstanceRecord struct {
 	RestoredFromDBSnapshot string `json:"restoredFromDbSnapshot,omitempty"`
 
 	// Static parameters written to the engine's config but not yet in effect.
-	// Cleared by the reboot that applies them (D16).
+	// Cleared by the reboot that applies them.
 	PendingRebootParameters []string `json:"pendingRebootParameters,omitempty"`
 
 	// Inline rather than a separate key space, so the record delete that ends the
@@ -146,10 +146,10 @@ type DBInstanceRecord struct {
 // each is recorded before the work starts and cleared as it lands. That makes
 // one structure serve both meanings AWS gives PendingModifiedValues — a
 // deferred change waiting for its maintenance window, and an in-flight change a
-// crashed leader has to be able to finish (D12/D15/D16).
+// crashed leader has to be able to finish.
 //
-// MasterUserPassword is deliberately absent: D8 forbids persisting the
-// cleartext, and AWS applies a password change as soon as possible regardless
+// MasterUserPassword is deliberately absent: cleartext is never persisted,
+// and AWS applies a password change as soon as possible regardless
 // of ApplyImmediately, so there is nothing to defer.
 type PendingModifiedValues struct {
 	AllocatedStorage     *int64 `json:"allocatedStorage,omitempty"`
@@ -229,7 +229,7 @@ const (
 
 // The snapshot operation holding a DB instance, written under the same CAS that
 // moves it to backing-up so a second request is rejected rather than queued. An
-// rds-9 automated snapshot and a manual one serialise against each other here.
+// An automated snapshot and a manual one serialise against each other here.
 type SnapshotOperation struct {
 	DBSnapshotIdentifier string `json:"dbSnapshotIdentifier"`
 	// Where the instance goes when the snapshot finishes. Recorded rather than
@@ -282,7 +282,7 @@ type DBSnapshotRecord struct {
 
 	// True when the engine was still writing as it was taken, so a restore
 	// replays WAL. A final snapshot is taken with the engine already down, so it
-	// is never crash-consistent; rds-8's quiesce fallback is what sets this.
+	// is never crash-consistent; the quiesce fallback is what sets this.
 	CrashConsistent bool `json:"crashConsistent,omitempty"`
 
 	Tags map[string]string `json:"tags,omitempty"`
@@ -307,8 +307,8 @@ type AutomatedBackupRecord struct {
 }
 
 // A data volume that outlived its DB instance because a COW snapshot still
-// references its chunks (D10). The last DeleteDBSnapshot to empty Snapshots
-// deletes it; rds-9's reaper is the backstop for a crash in between.
+// references its chunks. The last DeleteDBSnapshot to empty Snapshots
+// deletes it; the retention reaper is the backstop for a crash in between.
 type RetainedVolumeRecord struct {
 	VolumeID  string `json:"volumeId"`
 	AccountID string `json:"accountId"`
@@ -365,7 +365,7 @@ func (r *DBSubnetGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
 // The db-parameter-groups/{name}/meta record. The values themselves live one key
 // each under .../params/, so a modify touching one parameter cannot clobber a
-// concurrent change to another (D3).
+// concurrent change to another.
 type DBParameterGroupRecord struct {
 	Name        string `json:"name"`
 	AccountID   string `json:"accountId"`
@@ -386,7 +386,7 @@ func (r *DBParameterGroupRecord) SetTags(tags map[string]string) { r.Tags = tags
 
 // One stored override, at db-parameter-groups/{name}/params/{key}. ApplyMethod
 // is the customer's request rather than a fact: whether a change lands live is
-// decided by the parameter's own ApplyType (D16).
+// decided by the parameter's own ApplyType.
 type DBParameterRecord struct {
 	Name        string    `json:"name"`
 	Value       string    `json:"value"`

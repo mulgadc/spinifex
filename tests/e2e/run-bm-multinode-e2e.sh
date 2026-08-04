@@ -164,7 +164,7 @@ dump_guest_ssh_diagnostics() {
         peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,mac list Port_Binding 2>&1 | grep -F '${mac}' || echo '(no Port_Binding matched MAC ${mac})'" 2>&1 || true
     fi
 
-    # ----- Cross-chassis dataplane diagnostics (mulga-siv-27 follow-up) -----
+    # ----- Cross-chassis dataplane diagnostics -----
     echo "  --- OVN SB chassis registrations (from primary) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 || true" 2>&1 || true
 

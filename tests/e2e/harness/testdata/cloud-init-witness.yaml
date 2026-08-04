@@ -1,7 +1,7 @@
 #cloud-config
 # DDIL witness VM payload. Runs a monotonic counter-to-file loop so the
 # harness can prove a workload kept making progress across a fault injection.
-# See docs/development/improvements/ddil-e2e-test-harness.md §1 (witness helpers).
+# Witness helper cloud-init configuration.
 
 write_files:
   - path: /usr/local/bin/witness-counter.sh

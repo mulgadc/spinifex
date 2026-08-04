@@ -588,7 +588,7 @@ func TestReboot_NotRunning(t *testing.T) {
 }
 
 // TestReboot_DoesNotFireHooks asserts that Manager.Reboot fires neither
-// OnInstanceUp nor OnInstanceDown. The plan's "Hook firing contract" requires
+// OnInstanceUp nor OnInstanceDown. The hook contract requires
 // hooks to fire only on Pending→Running and terminal transitions; reboot keeps
 // the VM in StateRunning across system_reset, so firing OnInstanceDown +
 // OnInstanceUp would tear down per-instance NATS subs on every reboot.
@@ -920,7 +920,7 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // The QMP responder returns a query-block payload where vdisk-vol-1
 // maps to /dev/vdc (the third virtio slot after os + cloudinit), so the
 // test can distinguish the API name from the guest name in every assertion.
-// BlockDeviceMappings still carries the guest device name per mulga-599;
+// BlockDeviceMappings still carries the guest device name;
 // only the volume-metadata path uses the API name.
 func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
@@ -985,7 +985,7 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 	bdm := v.Instance.BlockDeviceMappings[0]
 	require.NotNil(t, bdm.DeviceName)
 	assert.Equal(t, "/dev/vdc", *bdm.DeviceName,
-		"BlockDeviceMappings[].DeviceName must carry the guest virtio path so `lsblk` inside the VM matches DescribeInstances (mulga-599 / PR #55)")
+		"BlockDeviceMappings[].DeviceName must carry the guest virtio path so `lsblk` inside the VM matches DescribeInstances")
 	require.NotNil(t, bdm.Ebs)
 	require.NotNil(t, bdm.Ebs.VolumeId)
 	assert.Equal(t, "vol-1", *bdm.Ebs.VolumeId)

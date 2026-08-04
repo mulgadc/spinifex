@@ -15,13 +15,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Automated backups (D11 Phase A): one snapshot per instance per day inside its
-// backup window, taken through rds-8's snapshot path and swept past
+// Automated backups: one snapshot per instance per day inside its
+// backup window, taken through the shared snapshot path and swept past
 // BackupRetentionPeriod. PITR, WAL archiving and LatestRestorableTime are Phase B
 // and stay unreported, so nothing here implies continuous recovery.
 
 const (
-	// AWS's own bound is 35 days; this platform's is 7 (D11 Phase A). The cost of
+	// AWS's own bound is 35 days; this platform's is 7. The cost of
 	// a retained snapshot here is metadata and restore surface, not chunks: any
 	// snapshot latches viperblock chunk GC off for the life of the source volume,
 	// so one day and seven pin exactly the same data.
@@ -60,7 +60,7 @@ const (
 	automatedBackupRetryShiftCap = 3
 )
 
-// The operator-tunable half of rds-9: bounds and defaults, never a per-instance
+// The operator-tunable backup settings: bounds and defaults, never a per-instance
 // setting — those live on the DB instance record.
 type BackupPolicy struct {
 	// The upper bound ModifyDBInstance and CreateDBInstance accept. Zero takes
@@ -131,7 +131,7 @@ func (s *Service) windowBlock(configured, fallback, kind string) dailyWindow {
 }
 
 // The window in force for this instance. A record that names one uses it; one
-// that does not — a record written before rds-9, or an instance whose create
+// that does not — a record written before these settings existed, or an instance whose create
 // named neither — takes the deterministic assignment, which is the same value
 // this phase persists at create.
 func (s *Service) resolvedBackupWindow(rec *DBInstanceRecord) (dailyWindow, error) {
@@ -177,7 +177,7 @@ func (s *Service) scheduledBackupWindow(rec *DBInstanceRecord) (dailyWindow, boo
 	return window, err == nil
 }
 
-// The windows as a describe reports them. A record written before rds-9 carries
+// The windows as a describe reports them. A record written before these settings existed carries
 // neither, so the derived window is reported rather than an empty string: it is
 // the window the scheduler will actually use, and reporting nothing would have the
 // customer believe no backup is scheduled.
@@ -206,7 +206,7 @@ var backupCapableStatuses = []Status{StatusAvailable, StatusStopped}
 // Fires this instance's automated backup when its window is open and none has
 // succeeded since the window opened, reporting whether it took one. Called from
 // the leader-elected reconciler pass, which is what makes it cluster-singular;
-// rds-8's per-instance in-flight guard is what makes it safe anyway.
+// the per-instance in-flight guard is what makes it safe anyway.
 func (s *Service) runBackupWindow(ctx context.Context, kv jetstream.KeyValue, rev uint64,
 	accountID string, rec *DBInstanceRecord) (bool, error) {
 	now := time.Now().UTC()
@@ -235,9 +235,9 @@ func (s *Service) runBackupWindow(ctx context.Context, kv jetstream.KeyValue, re
 	}
 
 	if err := s.takeAutomatedBackup(ctx, kv, rev, accountID, rec, now); err != nil {
-		// D-rds-9: the database is healthy and stays available. The failure is
+		// The database is healthy and stays available. The failure is
 		// counted and evented so it is visible, and retried while the window is
-		// open; it never reaches rds-6's recovery ladder.
+		// open; it never reaches the instance recovery path.
 		return false, s.recordBackupFailure(ctx, kv, accountID, rec, err)
 	}
 	return true, nil
@@ -266,7 +266,7 @@ func backupRetryDelay(failures int) time.Duration {
 	return automatedBackupRetryBase << min(max(failures-1, 0), automatedBackupRetryShiftCap)
 }
 
-// Takes the snapshot through rds-8's path, indexes it, and stamps the window as
+// Takes the snapshot through the shared path, indexes it, and stamps the window as
 // fired. The index is written before the stamp: an indexed backup with no stamp
 // costs one duplicate snapshot at worst and is swept on schedule, while a stamped
 // backup with no index would be invisible to retention for the life of the
@@ -442,7 +442,7 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 	return &rds.DescribeDBInstanceAutomatedBackupsOutput{DBInstanceAutomatedBackups: backups}, nil
 }
 
-// D19: a filter this phase cannot honour is rejected rather than dropped, since a
+// A filter this phase cannot honour is rejected rather than dropped, since a
 // silently unfiltered list reads as a complete answer. Returns the DB instance to
 // report on, empty for every one.
 func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutomatedBackupsInput) (string, error) {
@@ -464,11 +464,11 @@ func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutoma
 
 // RestoreWindow and LatestRestorableTime are deliberately absent: this phase
 // backs discrete daily snapshots, and reporting a restore window would tell a
-// client it can recover to any instant inside it (D11 Phase B).
+// client it can recover to any instant inside it.
 func (s *Service) projectAutomatedBackup(rec *DBInstanceRecord, snapshots int) *rds.DBInstanceAutomatedBackup {
 	// AWS's own vocabulary: creating until the first snapshot exists, active once
 	// one does. retained — an automated backup outliving its instance — is not
-	// offered, because it would pin the source data volume indefinitely (D10).
+	// offered, because it would pin the source data volume indefinitely.
 	status := "creating"
 	if snapshots > 0 {
 		status = "active"

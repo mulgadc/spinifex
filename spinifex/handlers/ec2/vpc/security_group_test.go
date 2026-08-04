@@ -1112,7 +1112,7 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 	assert.Empty(t, out.SecurityGroups)
 }
 
-// --- Phase 3: default SG lifecycle, dependency checks, quotas ---
+// --- default SG lifecycle, dependency checks, quotas ---
 
 // findDefaultSGInVPC returns the default-SG ID for a VPC by filtering on
 // IsDefault=true (production code keys off IsDefault, not GroupName).
@@ -1302,7 +1302,7 @@ func TestEnsureDefaultVPC_CreatesDefaultSG(t *testing.T) {
 	require.Len(t, desc.SecurityGroups, 1)
 }
 
-// --- Phase 5.3: SourceSG existence + same-VPC validation on Authorize ---
+// --- SourceSG existence + same-VPC validation on Authorize ---
 
 func TestAuthorizeSecurityGroupIngress_SourceSG_SameVPC(t *testing.T) {
 	svc := setupTestVPCService(t)
@@ -1439,7 +1439,7 @@ func TestAuthorizeSecurityGroupEgress_RuleLimit(t *testing.T) {
 	assert.Contains(t, err.Error(), "RulesPerSecurityGroupLimitExceeded")
 }
 
-// --- Phase 7: vpcd error propagation across the SG surface ---
+// --- vpcd error propagation across the SG surface ---
 
 // CreateSecurityGroup writes to KV before requesting vpcd, so the record
 // persists on vpcd error — the orphan-PG reconciler is the safety net. This

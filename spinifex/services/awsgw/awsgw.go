@@ -308,7 +308,7 @@ func launchService(config *config.ClusterConfig) error {
 	// are called from gateway/bedrock.go's fixed-arity route table.
 	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
 
-	// Bedrock self-host endpoints: Phase 1 models are pinned, so their
+	// Bedrock self-host endpoints are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))

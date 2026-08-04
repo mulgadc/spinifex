@@ -15,8 +15,8 @@ import (
 // runTagManagement, driving the REAL tags/service_impl.go over the harness's
 // DaemonLite. The E2E source tags a running instance and its root EBS
 // volume; instance lifecycle and volume creation are out of scope for this
-// tier (they need vm.Manager/QEMU and viperblock respectively — see
-// mulga-xaa9f), so this port substitutes two in-scope resources that stand
+// tier (they need vm.Manager/QEMU and viperblock respectively), so this port
+// substitutes two in-scope resources that stand
 // in for the same two-resource-isolation shape: a scratch VPC (stand-in for
 // "instance") and its own auto-created main route table (stand-in for "root
 // volume"). CreateTags/DescribeTags/DeleteTags never inspect resource

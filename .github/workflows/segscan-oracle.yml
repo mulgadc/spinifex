@@ -8,8 +8,8 @@
 # every PR; adding a second-repo checkout there would make every spinifex PR
 # depend on mulga main being healthy and pay that checkout cost on every run,
 # for one storage-accounting oracle test. Mirrors e2e.yml's push-only trigger
-# (mulga-siv-283 precedent): this never gates a PR before merge, matching how
-# e2e.yml's own "front gate" job already works.
+# This never gates a PR before merge, matching how e2e.yml's own
+# "front gate" job works.
 name: Segscan Storage Oracle
 
 on:

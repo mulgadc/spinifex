@@ -19,9 +19,9 @@ const (
 	// it is refused at validation rather than surfacing as a launch failure after
 	// a volume and an ENI exist.
 	unmappedDBClass = "db.r5.large"
-	// Deferred to rds-11: until then it has to be refused rather than half-served.
+	// Until this is supported, it has to be refused rather than half-served.
 	unsupportedDBEngine = "mysql"
-	// One day over the D11 retention cap.
+	// One day over the retention cap.
 	overCapRetentionDays = 8
 )
 
@@ -46,14 +46,14 @@ var outOfScopeRDSActions = []string{
 
 // The two catalog describes a Terraform module may reach for are unimplemented,
 // so today they are unknown actions rather than empty results. Pinned here so a
-// provider that needs one produces a bead instead of a silent success.
+// provider that needs one produces a clear failure instead of a silent success.
 var unregisteredRDSActions = []string{
 	"DescribeDBEngineVersions",
 	"DescribeOrderableDBInstanceOptions",
 	"NotAnRDSAction",
 }
 
-// TestAPIMatrix is the negative matrix: validation, the D19 rejections, the
+// TestAPIMatrix is the negative matrix: validation and unsupported requests,
 // actions that are recognised but not offered, and the parameters that are
 // accepted as no-ops. It runs first and boots almost nothing, so a broken API
 // surface fails the suite in seconds rather than after a VM boot.
@@ -72,7 +72,7 @@ func TestAPIMatrix(t *testing.T) {
 	suffix := time.Now().Unix()
 	rejectedID := fmt.Sprintf("%s-rejected-%d", dbInstancePfx, suffix)
 
-	// D5 and D19: a parameter whose omission would create a false safety,
+	// A parameter whose omission would create a false safety,
 	// security or availability guarantee is refused outright.
 	t.Run("RejectsUnimplementedCreateParameters", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -230,7 +230,7 @@ func TestAPIMatrix(t *testing.T) {
 	// Above the floor so a shrink request is reachable: a shrink to anything below
 	// the floor is refused by the floor rule first.
 	probe.AllocatedStorage = aws.Int64(dbStorageGiB + 10)
-	// The inert parameters D19 accepts rather than rejects. Each one names a
+	// The inert parameters accepted rather than rejected. Each one names a
 	// feature this platform does not have, but omitting it promises nothing.
 	probe.AutoMinorVersionUpgrade = aws.Bool(true)
 	probe.EnablePerformanceInsights = aws.Bool(true)
@@ -242,7 +242,7 @@ func TestAPIMatrix(t *testing.T) {
 	require.NotNil(t, created.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, probeID) })
 
-	// D19's other half: an inert parameter is accepted and then reported honestly,
+	// An inert parameter is accepted and then reported honestly,
 	// so a customer reading the instance back is never told a feature is on when
 	// nothing implements it.
 	t.Run("InertParametersAreAcceptedAndReportedOff", func(t *testing.T) {

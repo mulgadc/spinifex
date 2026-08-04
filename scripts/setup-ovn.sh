@@ -544,7 +544,7 @@ if [ -n "$WAN_BRIDGE" ]; then
     # when switching to any non-veth mode. Idempotent — each command uses
     # --if-exists / 2>/dev/null to tolerate absence. Without this, the
     # veth pair re-materialises on reboot and fights the current mode's
-    # bridge plumbing (Fix 1, mulga-998.b, per D17).
+    # Bridge plumbing for the host-to-OVN datapath.
     if [ "$WAN_BRIDGE_MODE" != "veth" ]; then
         sudo rm -f /etc/systemd/network/14-spinifex-br-wan.netdev \
                    /etc/systemd/network/15-spinifex-veth-wan.netdev \
@@ -621,7 +621,7 @@ if [ -n "$WAN_BRIDGE" ]; then
             # Persist the veth pair across reboot via systemd-networkd. Veths
             # are kernel-only and vanish on reboot; without persistence vpcd
             # starts with the OVS port pointing at a nonexistent peer and
-            # silently falls back to direct mode (Fix 1, mulga-998.b).
+            # silently falls back to direct mode.
             #
             # networkd's Bridge= directive requires the target bridge to be a
             # known NetDev. On ISO-installed nodes the installer writes
@@ -673,7 +673,7 @@ NETWORK
             # (enslaved via ovs-vsctl add-port above) but does not flip admin
             # state on external ports — that's networkd's job. Without this,
             # veth-wan-ovs stays DOWN after reboot, peer goes LOWERLAYERDOWN,
-            # br-wan loses carrier (Fix 1 follow-up, mulga-998.b).
+            # br-wan loses carrier.
             sudo tee "$VETH_OVS_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=veth-wan-ovs

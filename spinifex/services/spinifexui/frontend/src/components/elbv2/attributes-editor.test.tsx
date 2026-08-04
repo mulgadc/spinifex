@@ -147,7 +147,7 @@ describe("AttributesEditor", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("boom")
   })
 
-  it("exports spec sets covering every DefaultLoadBalancerAttributes/TG key required by plan", () => {
+  it("exports spec sets covering every DefaultLoadBalancerAttributes/TG key", () => {
     const lbKeys = albAttributeSpecs.map((s) => s.key)
     expect(lbKeys).toContain("deletion_protection.enabled")
     expect(lbKeys).toContain("load_balancing.cross_zone.enabled")

@@ -29,7 +29,7 @@ const KVBucketQuotaReconcile = "spinifex-quota-reconcile"
 // false) is a valid no-op, so gateways without a [quota] block are unaffected.
 //
 // TokensPerMonthEnabled and RequestsPerMinuteEnabled are deliberately
-// separate from Enabled above (mulga-vmfng.7.6): a deployment already
+// separate from Enabled above: a deployment already
 // enforcing standing-infra quotas (Enabled=true for VCPUs/VPCs/...) must opt
 // in to Bedrock token/RPM enforcement independently, since a bare Enabled
 // would otherwise silently cap Bedrock usage at zero the moment any other
@@ -60,7 +60,7 @@ type Service struct {
 	usage jetstream.KeyValue
 
 	// bedrockUsage resolves the stream-fed Bedrock token counter
-	// (mulga-vmfng.7.6). Nil until SetBedrockUsage is called, in which case
+	// Nil until SetBedrockUsage is called, in which case
 	// CheckBedrockTokens treats the dimension as unconfigured rather than
 	// erroring — a wiring gap must not block every Bedrock call.
 	bedrockUsage BedrockUsageReader

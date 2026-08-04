@@ -1,4 +1,4 @@
-// Command manifest-lint runs the e2e manifest drift guards (Bead 5):
+// Command manifest-lint runs the e2e manifest drift guards:
 // fixture-create lint + NATS subject lint, both ratcheted against a checked-in
 // baseline.
 //

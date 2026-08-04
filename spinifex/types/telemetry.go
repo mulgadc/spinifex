@@ -22,7 +22,7 @@ type GuestTelemetryMeta struct {
 const MetricsEC2SubjectPrefix = "metrics.ec2."
 
 // TelemetrySeries is one CloudWatch-mappable datapoint. Names and labels
-// follow the schema locked in the Goanna plan: goanna_ec2_* metrics with
+// follow the Goanna schema: goanna_ec2_* metrics with
 // namespace/instance_id/account_id labels.
 type TelemetrySeries struct {
 	Name   string            `json:"name"`

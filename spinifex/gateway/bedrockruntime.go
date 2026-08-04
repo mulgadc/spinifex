@@ -103,7 +103,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Ochre metering (mulga-vmfng.7.6). RPM is a local, in-memory check —
+	// Ochre metering. RPM is a local, in-memory check —
 	// cheap enough to run before the body is even read. The token cap reads
 	// the stream-fed usage counter, so it goes second; both are no-ops
 	// (nil-safe on gw.Quota) unless their dimension is explicitly enabled.

@@ -1,10 +1,8 @@
 // Package manifestcheck loads and validates spinifex/docs/service-interfaces.yaml.
 //
-// The validator is documentation-only at this stage of Bead 1: it confirms
-// the manifest parses, that every declared service/suite path exists on
-// disk, and that cross-references (suites.covers → services, fixtures →
-// services) resolve. It does not yet enforce that subjects in the manifest
-// match subjects in source — that's Bead 5 (e2e-manifest-drift-lint).
+// The validator confirms the manifest parses, every declared service/suite
+// path exists on disk, and cross-references (suites.covers → services,
+// fixtures → services) resolve. Subject-to-source drift is checked separately.
 package manifestcheck
 
 import (

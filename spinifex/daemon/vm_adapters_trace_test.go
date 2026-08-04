@@ -67,7 +67,7 @@ func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
 // helper viperblockd's ebs.mount/ebs.unmount handlers use) shares the producer
 // span's trace ID and names it as its parent, rather than rooting a new trace
 // — the exact gap this fix closes for the 81 mount + 81 unmount rooted spans
-// the bead's CI trace-analysis run found.
+// the trace analysis found.
 func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	sr := withRecordedSpans(t)
 	daemon := createTestDaemon(t, sharedNATSURL)

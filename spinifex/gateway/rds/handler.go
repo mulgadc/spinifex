@@ -94,12 +94,13 @@ var actions = map[string]actionDef{
 	"StartDBInstance":     {handler: typed(StartDBInstance), scope: dbInstanceScope},
 	"StopDBInstance":      {handler: typed(StopDBInstance), scope: dbInstanceScope},
 
-	// Snapshots. A create names two resources — the source instance and the new
-	// snapshot — so it is not scoped to either.
-	"CreateDBSnapshot":                {handler: typed(CreateDBSnapshot)},
+	// Snapshots. A create and a restore each name two resources, and both are
+	// scoped to the source: a deny written on an instance has to stop it being
+	// snapshotted, and a deny on a snapshot has to stop it being restored.
+	"CreateDBSnapshot":                {handler: typed(CreateDBSnapshot), scope: dbInstanceScope},
 	"DescribeDBSnapshots":             {handler: typed(DescribeDBSnapshots)},
 	"DeleteDBSnapshot":                {handler: typed(DeleteDBSnapshot), scope: dbSnapshotScope},
-	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot)},
+	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot), scope: dbSnapshotScope},
 
 	// Automated backups.
 	"DescribeDBInstanceAutomatedBackups": {handler: typed(DescribeDBInstanceAutomatedBackups)},

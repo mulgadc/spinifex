@@ -4,7 +4,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/mulgadc/predastore/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -106,6 +108,13 @@ func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
 			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
 		{"DeleteDBSnapshot", map[string]string{"DBSnapshotIdentifier": "orders-db-pre-upgrade"},
 			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
+		// Both name a source and a target; each is scoped to its source.
+		{"CreateDBSnapshot", map[string]string{
+			"DBInstanceIdentifier": "orders-db", "DBSnapshotIdentifier": "orders-db-pre-upgrade"},
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
+		{"RestoreDBInstanceFromDBSnapshot", map[string]string{
+			"DBInstanceIdentifier": "orders-db-restored", "DBSnapshotIdentifier": "orders-db-pre-upgrade"},
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
 		{"DeleteDBSubnetGroup", map[string]string{"DBSubnetGroupName": "db-private"},
 			"arn:aws:rds:ap-southeast-2:123456789012:subgrp:db-private"},
 		{"ModifyDBParameterGroup", map[string]string{"DBParameterGroupName": "pg16-tuned"},
@@ -128,8 +137,8 @@ func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
 // addresses, so both are evaluated against "*".
 func TestResourceARN_UnscopedActions(t *testing.T) {
 	unscoped := []string{
-		"CreateDBInstance", "DescribeDBInstances", "CreateDBSnapshot", "DescribeDBSnapshots",
-		"RestoreDBInstanceFromDBSnapshot", "DescribeDBInstanceAutomatedBackups",
+		"CreateDBInstance", "DescribeDBInstances", "DescribeDBSnapshots",
+		"DescribeDBInstanceAutomatedBackups",
 		"CreateDBSubnetGroup", "DescribeDBSubnetGroups",
 		"CreateDBParameterGroup", "DescribeDBParameterGroups",
 		"DescribeEvents",
@@ -145,6 +154,51 @@ func TestResourceARN_UnscopedActions(t *testing.T) {
 			})
 			require.NoError(t, err)
 			assert.Equal(t, anyResource, got)
+		})
+	}
+}
+
+// The escalation the source scope exists to break. Unscoped, these two evaluate
+// against "*", and a Deny written on a specific ARN never matches that value —
+// so a principal fenced off an instance could snapshot it, restore the copy
+// under a name the Deny does not cover, and set a master password of their own.
+func TestResourceARN_ResourceScopedDenyReachesTheSnapshotActions(t *testing.T) {
+	deniedInstance := handlers_rds.DBInstanceARN(testRegion, testAccountID, "prod-db")
+	deniedSnapshot := handlers_rds.DBSnapshotARN(testRegion, testAccountID, "prod-db-nightly")
+	// The common shape: a blanket grant fenced by a resource-scoped deny.
+	policies := []iampolicy.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iampolicy.Statement{
+			{Effect: iampolicy.EffectAllow, Action: iampolicy.StringOrArr{"rds:*"}, Resource: iampolicy.StringOrArr{"*"}},
+			{Effect: iampolicy.EffectDeny, Action: iampolicy.StringOrArr{"rds:*"},
+				Resource: iampolicy.StringOrArr{deniedInstance, deniedSnapshot}},
+		},
+	}}
+
+	tests := []struct {
+		name   string
+		action string
+		params map[string]string
+		want   iampolicy.Decision
+	}{
+		{"snapshot of the fenced instance", "CreateDBSnapshot",
+			map[string]string{"DBInstanceIdentifier": "prod-db", "DBSnapshotIdentifier": "prod-db-copy"},
+			iampolicy.Deny},
+		{"snapshot of another instance", "CreateDBSnapshot",
+			map[string]string{"DBInstanceIdentifier": "staging-db", "DBSnapshotIdentifier": "staging-db-copy"},
+			iampolicy.Allow},
+		{"restore from the fenced snapshot", "RestoreDBInstanceFromDBSnapshot",
+			map[string]string{"DBSnapshotIdentifier": "prod-db-nightly", "DBInstanceIdentifier": "prod-db-clone"},
+			iampolicy.Deny},
+		{"restore from another snapshot", "RestoreDBInstanceFromDBSnapshot",
+			map[string]string{"DBSnapshotIdentifier": "staging-db-nightly", "DBInstanceIdentifier": "staging-db-clone"},
+			iampolicy.Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resource, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, iampolicy.Evaluate(policy.IAMAction("rds", tt.action), resource, policies))
 		})
 	}
 }
@@ -186,7 +240,10 @@ func TestResourceARN_RejectsUnusableARNs(t *testing.T) {
 // A missing identifier is the handler's validation fault to report. Answering it
 // with a denial here would tell the caller the wrong thing about their policy.
 func TestResourceARN_MissingIdentifierFallsBackToAnyResource(t *testing.T) {
-	for _, action := range []string{"DeleteDBInstance", "DescribeDBParameters", "ListTagsForResource"} {
+	for _, action := range []string{
+		"DeleteDBInstance", "DescribeDBParameters", "ListTagsForResource",
+		"CreateDBSnapshot", "RestoreDBInstanceFromDBSnapshot",
+	} {
 		got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{})
 		require.NoError(t, err, "action %q", action)
 		assert.Equal(t, anyResource, got, "action %q", action)

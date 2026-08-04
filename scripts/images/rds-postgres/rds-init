@@ -36,6 +36,11 @@ PG_USER="${RDS_PG_USER:-postgres}"
 DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/postgresql}"
 PGDATA="${RDS_PGDATA:-${DATA_MOUNT}/${PG_VERSION}/data}"
 
+# Written between initdb and a working master role. It lives on the data volume
+# because no trap survives a crash or a hard kill, and it is what stops the next
+# boot attaching to a datadir whose master role was never created.
+BOOTSTRAP_SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
+
 HANDOFF_DIR="${RDS_HANDOFF_DIR:-/run/spinifex-rds}"
 ENV_FILE="${HANDOFF_DIR}/bootstrap.env"
 SOCKET_DIR="${RDS_SOCKET_DIR:-/run/postgresql}"
@@ -60,9 +65,9 @@ fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
 _created_datadir=0
 _bootstrapped=0
 
-# Runs from an EXIT trap rather than a statement, so `set -e` on any unguarded
-# step between initdb and a working master role cannot skip it — that would leave
-# a healthy-looking engine whose master role has no password, unrepairable.
+# Runs from a trap rather than a statement, so neither `set -e` on an unguarded
+# step between initdb and a working master role nor a signal can skip it — either
+# would leave a healthy-looking engine with no usable master role, unrepairable.
 clear_unfinished_datadir() {
     [ "${_created_datadir}" = "1" ] || return 0
     [ "${_bootstrapped}" = "1" ] && return 0
@@ -163,6 +168,20 @@ initialise_cluster() {
     # Only a datadir initdb built over an empty directory may be swept later.
     _created_datadir="${_was_empty}"
     trap clear_unfinished_datadir EXIT
+    # An EXIT trap does not run on a signal in a POSIX shell, so the same sweep
+    # is armed for the signals a shutdown, an ACPI powerdown or a host-side
+    # force-stop delivers. EXIT is disarmed first so the sweep runs once.
+    trap 'trap - EXIT; clear_unfinished_datadir; exit 1' INT TERM HUP
+
+    # No trap survives a crash or a SIGKILL, so the incomplete state is also
+    # recorded on the volume itself. Cleared once the master role exists.
+    printf '%s\n' \
+        'rds-init created this datadir and did not finish bootstrapping the master role.' \
+        'While this file exists rds-init refuses to start the engine: the one-shot master' \
+        'password is spent, so the cluster cannot be repaired in place. Recover out of band.' \
+        > "${BOOTSTRAP_SENTINEL}"
+    chown "${PG_USER}:${PG_USER}" "${BOOTSTRAP_SENTINEL}"
+    chmod 0600 "${BOOTSTRAP_SENTINEL}"
 
     cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
 
@@ -268,9 +287,10 @@ start_bootstrap_server() {
         start"
 }
 
+# The trust-authenticated pg_hba is removed by the caller, not here: a caller
+# reading this function's status must be reading pg_ctl's.
 stop_bootstrap_server() {
     as_pg "'${PG_BIN}/pg_ctl' --pgdata='${PGDATA}' --wait --timeout=60 --mode=fast stop"
-    rm -f "${BOOTSTRAP_DIR}/pg_hba.conf"
 }
 
 # Identifiers and the password ride the environment and are re-quoted by psql,
@@ -296,15 +316,37 @@ bootstrap_master() {
         create_database || _rc=$?
     fi
 
-    # A failed stop must not abort before the check below, or a failed bootstrap
-    # would be reported as a pg_ctl error and skip the cleanup.
-    stop_bootstrap_server || log "warning: the bootstrap server did not stop cleanly"
+    # `set -e` is suspended for a function called from an AND-OR list, so the
+    # stop status is captured rather than propagated. A failed stop must also not
+    # abort before the bootstrap check below, which names the real cause.
+    _stop_rc=0
+    stop_bootstrap_server || _stop_rc=$?
+    rm -f "${BOOTSTRAP_DIR}/pg_hba.conf"
 
-    # The datadir is swept by the EXIT trap, which also covers the steps here
-    # that abort under `set -e` before this check is ever reached.
+    # The datadir is swept by the traps, which also cover the steps here that
+    # abort under `set -e` before this check is ever reached.
     if [ "${_rc}" -ne 0 ]; then
         fail "bootstrapping the master role/database failed (rc=${_rc})"
     fi
+
+    # The master role exists from here, so the datadir is complete and nothing
+    # may clear it — including on the stop failure reported below.
+    mark_bootstrap_complete
+
+    # A postmaster still holding the datadir blocks the postgresql service for
+    # the life of the boot, so this is a failure and not a warning.
+    if [ "${_stop_rc}" -ne 0 ]; then
+        fail "the bootstrap server did not stop (rc=${_stop_rc}) and still holds ${PGDATA}; the postgresql service cannot start until it is gone"
+    fi
+}
+
+# Retires the guards armed at initdb, in an order where no signal in between can
+# clear a datadir that now carries a usable master role.
+mark_bootstrap_complete() {
+    _bootstrapped=1
+    rm -f "${BOOTSTRAP_SENTINEL}" ||
+        fail "the master role exists but ${BOOTSTRAP_SENTINEL} could not be removed; the next boot will refuse to start until it is deleted"
+    trap - EXIT INT TERM HUP
 }
 
 # The master role is administrative but deliberately not a PostgreSQL SUPERUSER,
@@ -363,14 +405,18 @@ load_handoff
 require_data_volume
 
 if [ -s "${PGDATA}/PG_VERSION" ]; then
+    # The engine would start cleanly on such a datadir and pass every health
+    # probe with no master role to log in as. The sentinel says the bootstrap did
+    # not finish, not that the volume is empty, so nothing here clears it.
+    if [ -e "${BOOTSTRAP_SENTINEL}" ]; then
+        fail "datadir ${PGDATA} carries ${BOOTSTRAP_SENTINEL}: an earlier bootstrap was interrupted before the master role existed, and the one-shot master password is spent; recover the data volume out of band rather than starting the engine"
+    fi
     log "datadir ${PGDATA} is already initialised — attaching"
     install_runtime_config
 else
     initialise_cluster
     install_runtime_config
     bootstrap_master
-    _bootstrapped=1
-    trap - EXIT
 fi
 
 consume_secrets

@@ -96,12 +96,19 @@ EOF
 
 # pg_ctl stub: records start/stop of the bootstrap server. PGCTL_START_FAIL
 # simulates a cluster that will not come up, e.g. a parameter the guest cannot
-# allocate.
+# allocate; PGCTL_STOP_FAIL a postmaster that will not let go of the datadir.
+# PGCTL_KILL_PARENT signals rds-init from the start call, which is the window
+# between initdb and the master role.
 cat > "${STUBBIN}/pg_ctl" <<'EOF'
 #!/bin/sh
 echo "pg_ctl $*" >> "${PGCTL_CALLS}"
 for a in "$@"; do
     [ "$a" = "start" ] && [ "${PGCTL_START_FAIL:-0}" = "1" ] && exit 1
+    [ "$a" = "stop" ] && [ "${PGCTL_STOP_FAIL:-0}" = "1" ] && exit 1
+    if [ "$a" = "start" ] && [ "${PGCTL_KILL_PARENT:-0}" = "1" ]; then
+        kill -TERM "$(cat "${KILL_PID_FILE}")"
+        exit 0
+    fi
 done
 exit 0
 EOF
@@ -130,8 +137,11 @@ pass() { echo "ok: $*"; }
 
 DATA_MOUNT="${WORK}/data"
 PGDATA="${DATA_MOUNT}/18/data"
+SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
+KILL_PID_FILE="${WORK}/rds-init.pid"
+export KILL_PID_FILE
 
 INITDB_CALLS="${WORK}/initdb.calls"
 PGCTL_CALLS="${WORK}/pg_ctl.calls"
@@ -175,8 +185,8 @@ reset_state() {
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
 }
 
-# run: invoke rds-init with every path knob pointed into the temp dir.
-run() {
+# run_env: invoke a command with every path knob pointed into the temp dir.
+run_env() {
     env RDS_PG_BIN="${STUBBIN}" \
         RDS_DATA_MOUNT="${DATA_MOUNT}" \
         RDS_HANDOFF_DIR="${HANDOFF}" \
@@ -189,11 +199,27 @@ run() {
         PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
         PSQL_FAIL="${PSQL_FAIL:-0}" \
         INITDB_CALLS="${INITDB_CALLS}" PGCTL_CALLS="${PGCTL_CALLS}" PSQL_CALLS="${PSQL_CALLS}" \
-        sh "${SCRIPT}" </dev/null
+        "$@" </dev/null
 }
+
+run() { run_env sh "${SCRIPT}"; }
 
 run_ok() { run > "${WORK}/out" 2>&1 || { fail "$1: non-zero exit: $(cat "${WORK}/out")"; return 1; }; }
 run_fails() { run > "${WORK}/out" 2>&1 && fail "$1: expected a non-zero exit" || pass "$1: refused"; }
+
+# run_signalled: run rds-init in the background with its PID published for the
+# stub that signals it. The wrapper writes the PID before exec'ing the script,
+# so the stub cannot read the file before it exists.
+run_signalled() {
+    run_env sh -c 'echo $$ > "$1"; shift; exec sh "$@"' _ "${KILL_PID_FILE}" "${SCRIPT}" \
+        > "${WORK}/out" 2>&1 &
+    _bg=$!
+    wait "${_bg}"
+}
+
+run_signalled_fails() {
+    run_signalled && fail "$1: expected a non-zero exit" || pass "$1: refused"
+}
 
 # --- Case 1: initialize on a fresh data volume ---
 reset_state
@@ -243,6 +269,12 @@ if run_ok "initialize"; then
         && pass "initialize: bootstrap server is socket-only" || fail "initialize: bootstrap server listened on TCP"
     grep -q 'stop' "${PGCTL_CALLS}" \
         && pass "initialize: bootstrap server stopped" || fail "initialize: bootstrap server left running"
+    [ -e "${SENTINEL}" ] \
+        && fail "initialize: incomplete-bootstrap sentinel left behind" \
+        || pass "initialize: sentinel cleared once the master role exists"
+    [ -e "${WORK}/run/rds-init/pg_hba.conf" ] \
+        && fail "initialize: the trust-auth pg_hba outlived the bootstrap window" \
+        || pass "initialize: trust-auth pg_hba removed"
 fi
 
 # --- Case 2: the master password does not outlive its use ---
@@ -402,6 +434,58 @@ run_fails "preexisting-nosweep"
     && pass "preexisting-nosweep: pre-existing datadir untouched" \
     || fail "preexisting-nosweep: swept a datadir it did not create"
 unset INITDB_FAIL
+
+# --- Case 6g: a SIGTERM between initdb and the master role clears the datadir ---
+# An EXIT trap does not run on a signal in a POSIX shell, so a shutdown, an ACPI
+# powerdown from a stop arriving while the instance is still creating, or a
+# host-side force-stop would otherwise leave a datadir with no master role.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PGCTL_KILL_PARENT=1
+export PGCTL_KILL_PARENT
+run_signalled_fails "sigterm-midbootstrap"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "sigterm-midbootstrap: datadir kept after a signal mid-bootstrap" \
+    || pass "sigterm-midbootstrap: datadir cleared"
+[ -s "${PSQL_CALLS}" ] \
+    && fail "sigterm-midbootstrap: the master role work ran after the signal" \
+    || pass "sigterm-midbootstrap: stopped before the master role"
+unset PGCTL_KILL_PARENT
+
+# --- Case 6h: a datadir carrying the sentinel is refused, not started ---
+# No trap survives a crash or a SIGKILL, so the sentinel is the only record that
+# the bootstrap did not finish. It says the master role is missing, not that the
+# volume is empty, so the refusal must not clear anything.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+if run_ok "sentinel-setup"; then
+    echo 'customer table data' > "${PGDATA}/base-relation"
+    : > "${SENTINEL}"
+    write_handoff attach '' appdb
+    run_fails "sentinel-refused"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "sentinel-refused: datadir preserved" || fail "sentinel-refused: datadir cleared"
+    grep -q 'recover the data volume out of band' "${WORK}/out" \
+        && pass "sentinel-refused: refusal points at out-of-band recovery" \
+        || fail "sentinel-refused: no refusal message"
+fi
+
+# --- Case 6i: a bootstrap server that will not stop is a failure ---
+# It holds the datadir, so the postgresql service cannot start for the life of
+# the boot. The master role exists by then, so the datadir itself must survive.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PGCTL_STOP_FAIL=1
+export PGCTL_STOP_FAIL
+run_fails "stop-fail"
+grep -q 'did not stop' "${WORK}/out" \
+    && pass "stop-fail: reported rather than swallowed" || fail "stop-fail: no failure message"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && pass "stop-fail: bootstrapped datadir kept" || fail "stop-fail: cleared a datadir with a master role"
+[ -e "${SENTINEL}" ] \
+    && fail "stop-fail: sentinel kept although the master role exists" \
+    || pass "stop-fail: sentinel cleared"
+unset PGCTL_STOP_FAIL
 
 # --- Case 7: no serving cert -> TLS off rather than a failed start ---
 reset_state

@@ -51,6 +51,9 @@ type ConfigSettings struct {
 	DataDir   string
 	LogDir    string
 	ConfigDir string
+	// PredastoreDataDir is the [[host]] data_dir rendered into predastore.toml.
+	// Derived from DataDir via PredastoreDataDir when left unset.
+	PredastoreDataDir string
 
 	Node   string
 	Az     string
@@ -65,8 +68,9 @@ type ConfigSettings struct {
 	ClusterRoutes []string
 	ClusterName   string
 
-	// Predastore multi-node
-	PredastoreNodeID int
+	// Predastore multi-node: which [[host]] of the predastore topology this
+	// node is. Zero means single-node, where one process runs every node.
+	PredastoreHostID int
 
 	// CompactionIntervalSeconds gates the predastore [compaction] block. Zero
 	// means unset: no block is emitted and predastore keeps its built-in default.
@@ -174,6 +178,10 @@ func GenerateConfigFiles(configs []ConfigFile, configSettings ConfigSettings) er
 
 // GenerateConfigFile creates a configuration file from a template.
 func GenerateConfigFile(configPath string, configTemplate string, configSettings ConfigSettings) error {
+	if configSettings.PredastoreDataDir == "" {
+		configSettings.PredastoreDataDir = PredastoreDataDir(configSettings.DataDir)
+	}
+
 	tmpl, err := template.New("config").Parse(configTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
@@ -301,6 +309,15 @@ func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix 
 	// Always pin the canonical mgmt-bridge IP (see GenerateCertificatesIfNeeded).
 	extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
 	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)
+}
+
+// PredastoreDataDir is the root a Predastore host keeps its per-node state
+// under. Each node gets a node-<id> subdirectory beneath it, created by
+// predastore itself. The path is absolute because the service runs under
+// systemd, where the working directory the config would otherwise resolve
+// against is not ours to depend on.
+func PredastoreDataDir(spxRoot string) string {
+	return filepath.Join(spxRoot, "predastore", "cluster")
 }
 
 func CreateServiceDirectories(spxRoot string) {
@@ -934,34 +951,73 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 	return nil
 }
 
+// PredastoreClusterNode is one [[node]] entry of the Predastore topology: a
+// role pinned to a host.
+type PredastoreClusterNode struct {
+	ID     int
+	HostID int
+	Role   string
+}
+
+// Predastore node roles: shard storage holds erasure-coded object shards,
+// state replicas form the Raft quorum over global state.
+const (
+	predastoreRoleShardStorage = "shard-storage"
+	predastoreRoleStateReplica = "state-replica"
+)
+
+// PredastoreTopology derives the cluster nodes for a set of machines: each
+// machine hosts one shard-storage node and one state replica. Node IDs are
+// unique across roles, so storage takes 1..n and the replicas n+1..2n.
+func PredastoreTopology(nodes []PredastoreNodeConfig) []PredastoreClusterNode {
+	out := make([]PredastoreClusterNode, 0, len(nodes)*2)
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleShardStorage})
+	}
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID + len(nodes), HostID: n.ID, Role: predastoreRoleStateReplica})
+	}
+	return out
+}
+
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
-// multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
-// and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
+// multi-node Predastore cluster. Each machine becomes one [[host]] — a
+// predastore process owning a socket on port 6660 and a data directory —
+// carrying the shard-storage and state-replica nodes pinned to it.
+//
+// dataDir is the Spinifex data root; the hosts' data directories are absolute
+// beneath it, since the service runs under systemd with no dependable working
+// directory.
 //
 // A populated northstar credential provisions the zone bucket, grants the
 // system key write access to it, and adds the read-only entry the resolver
 // authenticates with. A zero value omits all three, yielding a config no
 // northstar service can use.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, dataDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {
 		Nodes                     []PredastoreNodeConfig
+		ClusterNodes              []PredastoreClusterNode
 		AccessKey                 string
 		SecretKey                 string
 		Region                    string
 		NatsToken                 string
 		ConfigDir                 string
+		PredastoreDataDir         string
 		BindIP                    string
 		CompactionIntervalSeconds int
 		NorthstarAccessKey        string
 		NorthstarSecretKey        string
 		NorthstarBucket           string
 	}{
-		Nodes: nodes, AccessKey: accessKey, SecretKey: secretKey, Region: region,
-		NatsToken: natsToken, ConfigDir: configDir, BindIP: bindIP,
+		Nodes: nodes, ClusterNodes: PredastoreTopology(nodes),
+		AccessKey: accessKey, SecretKey: secretKey, Region: region,
+		NatsToken: natsToken, ConfigDir: configDir,
+		PredastoreDataDir:         PredastoreDataDir(dataDir),
+		BindIP:                    bindIP,
 		CompactionIntervalSeconds: compactionIntervalSeconds,
 		NorthstarAccessKey:        northstar.AccessKey,
 		NorthstarSecretKey:        northstar.SecretKey,
@@ -992,17 +1048,32 @@ func FindNodeIDByIP(nodes []PredastoreNodeConfig, ip string) int {
 	return 0
 }
 
-// ParsePredastoreNodeIDFromConfig parses a predastore.toml string and returns
-// the node ID whose host matches the given IP, or 0 if not found.
-func ParsePredastoreNodeIDFromConfig(tomlContent string, ip string) int {
+// ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
+// the ID of the [[host]] whose public address matches the given IP, or 0 if
+// not found. The host is what an operator places on a machine; the nodes
+// pinned to it follow from the topology.
+func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 	var cfg struct {
-		DB []PredastoreNodeConfig `toml:"db"`
+		Hosts []struct {
+			ID         int    `toml:"id"`
+			PublicAddr string `toml:"public_addr"`
+		} `toml:"host"`
 	}
 	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
 		slog.Warn("Failed to parse predastore.toml content", "error", err)
 		return 0
 	}
-	return FindNodeIDByIP(cfg.DB, ip)
+	for _, h := range cfg.Hosts {
+		host, _, err := net.SplitHostPort(h.PublicAddr)
+		if err != nil {
+			// A bare address without a port is still a usable match.
+			host = h.PublicAddr
+		}
+		if host == ip {
+			return h.ID
+		}
+	}
+	return 0
 }
 
 // SetMIGProfile idempotently writes mig_profile = "<profile>" for the given node

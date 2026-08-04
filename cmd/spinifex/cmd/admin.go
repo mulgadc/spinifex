@@ -1524,7 +1524,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
 	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
-	var predastoreNodeID int
+	var predastoreHostID int
 	if predastoreNodesStr != "" {
 		ips := strings.Split(predastoreNodesStr, ",")
 		if len(ips) < 2 {
@@ -1545,14 +1545,16 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			})
 		}
 
-		predastoreNodeID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
-		if predastoreNodeID == 0 {
+		// One machine is one predastore host, so the node list index that
+		// matches this bind IP is this node's host ID.
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
 			fmt.Fprintf(os.Stderr, "❌ Error: --bind IP %s not found in --predastore-nodes list\n", bindIP)
 			os.Exit(1)
 		}
 
 		// Generate multi-node predastore.toml
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, spxRoot, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1563,7 +1565,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			fmt.Fprintf(os.Stderr, "Error writing predastore config: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✅ Created: multi-node predastore.toml (node ID: %d)\n", predastoreNodeID)
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
 	}
 
 	// Pre-generate default VPC/subnet/IGW IDs for bootstrap config.
@@ -1593,7 +1595,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   clusterName,
 
-		PredastoreNodeID:          predastoreNodeID,
+		PredastoreHostID:          predastoreHostID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 
@@ -1840,10 +1842,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
 	// Generate multi-node predastore config
-	var predastoreNodeID int
+	var predastoreHostID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP, compactionInterval, northstarCreds)
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, spxRoot, bindIP, compactionInterval, northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
 			os.Exit(1)
@@ -1855,8 +1857,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 			os.Exit(1)
 		}
 
-		predastoreNodeID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
-		fmt.Printf("✅ Created: multi-node predastore.toml (node ID: %d)\n", predastoreNodeID)
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
 	}
 
 	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
@@ -1880,7 +1882,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   clusterName,
 
-		PredastoreNodeID:          predastoreNodeID,
+		PredastoreHostID:          predastoreHostID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
@@ -2390,11 +2392,11 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
 
 	// Generate multi-node predastore config
-	var predastoreNodeID int
+	var predastoreHostID int
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
-		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP, compactionInterval,
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, dataDir, bindIP, compactionInterval,
 			northstarCreds)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
@@ -2407,12 +2409,12 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
-		predastoreNodeID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
-		if predastoreNodeID == 0 {
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
 			fmt.Fprintf(os.Stderr, "❌ Error: bind IP %s not found in predastore node list\n", bindIP)
 			os.Exit(1)
 		}
-		fmt.Printf("✅ Created: multi-node predastore.toml (node ID: %d)\n", predastoreNodeID)
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
 	}
 
 	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
@@ -2436,7 +2438,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   creds.ClusterName,
 
-		PredastoreNodeID:          predastoreNodeID,
+		PredastoreHostID:          predastoreHostID,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),

@@ -28,7 +28,7 @@ func writeSpinifexToml(t *testing.T, body string) string {
 	return path
 }
 
-func TestDerivePredastoreBind_NodeIDConfigured(t *testing.T) {
+func TestDerivePredastoreBind_HostIDConfigured(t *testing.T) {
 	resetGlobalViper(t)
 
 	path := writeSpinifexToml(t, `
@@ -45,7 +45,7 @@ az = "us-east-1a"
 host = "0.0.0.0:8443"
 bucket = "predastore"
 region = "us-east-1"
-node_id = 3
+host_id = 3
 `)
 
 	clusterConfig, err := config.LoadConfig(path)
@@ -55,16 +55,14 @@ node_id = 3
 	require.NoError(t, err)
 	assert.Equal(t, "0.0.0.0", bind.Host)
 	assert.Equal(t, 8443, bind.Port)
-	assert.Equal(t, 3, bind.NodeID)
+	assert.Equal(t, 3, bind.HostID)
 }
 
-// TestDerivePredastoreBind_NodeIDAbsentDefaultsToColocated covers the
-// co-located NODE_ID=-1 rule: single-node spinifex.toml templates omit
-// node_id entirely, since every configured DB peer runs in this one process.
-// predastore-start.sh defaulted to -1 for exactly that reason, and predastore
-// itself rejects node_id=0, so an absent key must never silently resolve to
-// the Go zero value instead.
-func TestDerivePredastoreBind_NodeIDAbsentDefaultsToColocated(t *testing.T) {
+// TestDerivePredastoreBind_HostIDAbsentRunsWholeTopology covers the
+// single-node rule: those spinifex.toml templates omit host_id entirely,
+// pinning every node of the topology to one host, which only a
+// whole-topology process can serve.
+func TestDerivePredastoreBind_HostIDAbsentRunsWholeTopology(t *testing.T) {
 	resetGlobalViper(t)
 
 	path := writeSpinifexToml(t, `
@@ -90,7 +88,7 @@ region = "us-east-1"
 	require.NoError(t, err)
 	assert.Equal(t, "0.0.0.0", bind.Host)
 	assert.Equal(t, 8443, bind.Port)
-	assert.Equal(t, -1, bind.NodeID)
+	assert.Equal(t, 0, bind.HostID)
 }
 
 // TestDerivePredastoreBind_BindHostSurvivesLoadConfigNormalization asserts

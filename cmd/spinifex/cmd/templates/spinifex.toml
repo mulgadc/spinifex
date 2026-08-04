@@ -1,5 +1,5 @@
 # Domain configuration file in TOML format.
-version = "3"
+version = "4"
 epoch = 1
 node = "{{.Node}}"
 {{- if .OperatorEmail}}
@@ -140,8 +140,8 @@ region = "{{.Region}}"
 bucket = "predastore"
 accesskey = "{{.AccessKey}}"
 secretkey = "{{.SecretKey}}"
-{{- if gt .PredastoreNodeID 0}}
-node_id = {{.PredastoreNodeID}}
+{{- if gt .PredastoreHostID 0}}
+host_id = {{.PredastoreHostID}}
 {{- end}}
 
 {{- if .NorthstarConfigPath}}

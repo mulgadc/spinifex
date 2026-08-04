@@ -83,10 +83,9 @@ func TestPredastoreObjectLifecycle(t *testing.T) {
 }
 
 // predastoreS3Client builds an aws-sdk-go v1 S3 client against the shared
-// predastore fixture daemon. TLS verification is skipped: the fixture's
-// self-signed certificate is trusted process-wide for quicclient/the s3db
-// REST client (see testpredastore.Start), but a plain s3.S3 built here has
-// its own independent HTTP transport.
+// predastore fixture daemon. TLS verification is skipped: the fixture serves
+// the S3 API under a self-signed certificate it generates for itself (see
+// testpredastore.Start), which no trust store knows about.
 func predastoreS3Client(t *testing.T, fixture *testpredastore.Fixture) *s3.S3 {
 	t.Helper()
 	httpClient := &http.Client{

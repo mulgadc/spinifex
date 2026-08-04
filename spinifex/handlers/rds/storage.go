@@ -51,12 +51,24 @@ func (s *Service) growInstanceStorage(ctx context.Context, accountID string, rec
 	}
 	// The engine is checkpointed first so the filesystem the grow extends is not
 	// one a live postmaster is still writing into.
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "growing its storage")
 
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if err := s.stopInstanceVM(ctx, accountID, rec.InstanceID); err != nil {
 		return fmt.Errorf("stop the DB VM before growing its storage: %w", err)
 	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if err := s.growDataVolume(ctx, rec.DataVolumeID, targetGiB); err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	if err := s.startInstanceVM(ctx, rec.InstanceID); err != nil {
@@ -84,6 +96,9 @@ func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB
 		slog.InfoContext(ctx, "rds: data volume is already at the requested size; skipping the modify",
 			"volumeId", volumeID, "sizeGiB", current, "targetGiB", targetGiB)
 		return nil
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
 	}
 
 	if _, err := s.deps.Storage.ModifyVolume(ctx, &ec2.ModifyVolumeInput{

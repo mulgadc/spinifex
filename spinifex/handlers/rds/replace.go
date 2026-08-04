@@ -63,26 +63,45 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	// Checkpointed first so the replacement boots on a clean datadir rather than
 	// one it has to replay a WAL over. A wedged agent degrades this rather than
 	// blocking the replace, exactly as a stop does.
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "replacing its VM")
 
 	oldInstanceID := rec.InstanceID
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if err := s.terminateInstanceVM(ctx, oldInstanceID); err != nil {
 		return fmt.Errorf("terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	// The system NIC is disposable and the fresh launch mints its own; leaving
 	// this one behind would hold an address in the shared RDS system subnet.
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	s.deleteSystemENI(ctx, rec)
 
 	// The only moment the volume is held by nothing, which is the only moment
 	// ModifyVolume will take it.
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if in.GrowStorageToGiB > 0 {
 		if err := s.growDataVolume(ctx, rec.DataVolumeID, in.GrowStorageToGiB); err != nil {
 			return err
 		}
 	}
 
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	launched, err := s.launchReplacementVM(ctx, accountID, rec, instanceType, profileARN)
 	if err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); err != nil {
+		s.unwindLaunched(context.WithoutCancel(ctx), launched)
 		return err
 	}
 
@@ -90,8 +109,10 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	// gateway is resolvable; the old entry goes first, or a superseded VM still
 	// authenticates as this instance.
 	if err := s.rewriteInstanceIndex(ctx, accountID, rec, oldInstanceID, launched.InstanceID); err != nil {
-		s.unwindLaunched(ctx, launched)
-		return err
+		return errors.Join(err, s.rollbackReplacementLaunch(ctx, accountID, rec, oldInstanceID, launched))
+	}
+	if err := context.Cause(ctx); err != nil {
+		return errors.Join(err, s.rollbackReplacementLaunch(ctx, accountID, rec, oldInstanceID, launched))
 	}
 
 	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
@@ -102,8 +123,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 		// this one's — the reconciler would call the replace finished at once.
 		stored.Agent = AgentState{}
 	}); err != nil {
-		s.unwindLaunched(ctx, launched)
-		return err
+		return errors.Join(err, s.rollbackReplacementLaunch(ctx, accountID, rec, oldInstanceID, launched))
 	}
 	// Kept in step so the caller's own record write does not resurrect the old
 	// VM's identity on top of this one.
@@ -170,6 +190,35 @@ func (s *Service) rewriteInstanceIndex(ctx context.Context, accountID string, re
 		return fmt.Errorf("rds: write the instance index for %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	return nil
+}
+
+// Restores the index to the record's old VM before unwinding a replacement that
+// could not commit. Cleanup is bounded but detached from lease cancellation.
+func (s *Service) rollbackReplacementLaunch(
+	ctx context.Context,
+	accountID string,
+	rec *DBInstanceRecord,
+	oldInstanceID string,
+	launched *LaunchOutput,
+) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+
+	var cleanupErrs []error
+	if err := s.DeleteInstanceIndex(cleanupCtx, launched.InstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delete replacement instance index %s: %w", launched.InstanceID, err))
+	}
+	if oldInstanceID != "" {
+		if err := s.PutInstanceIndex(cleanupCtx, oldInstanceID, InstanceIndexEntry{
+			AccountID:            accountID,
+			DBInstanceIdentifier: rec.DBInstanceIdentifier,
+			VMGeneration:         rec.VMGeneration,
+		}); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("restore old instance index %s: %w", oldInstanceID, err))
+		}
+	}
+	s.unwindLaunched(cleanupCtx, launched)
+	return errors.Join(cleanupErrs...)
 }
 
 // Best-effort: a leaked system NIC costs an address in a platform-owned subnet,

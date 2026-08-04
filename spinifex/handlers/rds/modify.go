@@ -148,9 +148,14 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 	}
 	// Under the lease, or the reconciler's sweep of modifying instances re-enters
 	// this same change while it is still running.
-	if _, err := s.withModifyLease(ctx, kv, id, func() error {
-		return s.applyPendingModifications(ctx, kv, accountID, moved)
+	if _, err := s.withModifyLease(ctx, kv, id, func(applyCtx context.Context) error {
+		return s.applyPendingModifications(applyCtx, kv, accountID, moved)
 	}); err != nil {
+		// Lease loss transfers recovery to another holder or the next reconcile
+		// pass; the losing worker must not fail their still-retryable transition.
+		if errors.Is(err, errModifyLeaseLost) {
+			return nil, err
+		}
 		return nil, s.failTransition(ctx, kv, accountID, moved,
 			fmt.Sprintf("the DB instance could not be modified: %v", err))
 	}

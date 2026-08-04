@@ -317,10 +317,14 @@ func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyVal
 	if !pending.empty() && !pending.growingFilesystem() {
 		// The lease is what separates the two: a change still inside its own API
 		// call holds it, and one whose worker died does not.
-		resumed, err := r.svc.withModifyLease(ctx, kv, rec.DBInstanceIdentifier, func() error {
-			return r.svc.applyPendingModifications(ctx, kv, accountID, rec)
+		resumed, err := r.svc.withModifyLease(ctx, kv, rec.DBInstanceIdentifier, func(applyCtx context.Context) error {
+			return r.svc.applyPendingModifications(applyCtx, kv, accountID, rec)
 		})
 		switch {
+		case errors.Is(err, errModifyLeaseLost):
+			// Ownership moved or expired; leave the pending transition for its
+			// current holder or the next pass rather than failing it underneath them.
+			return nil
 		case err != nil && overrun:
 			// Claiming and releasing the lease moved the record, so this pass's
 			// revision is stale by now and a CAS on it would lose to our own

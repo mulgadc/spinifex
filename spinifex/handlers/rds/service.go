@@ -57,6 +57,10 @@ type Deps struct {
 	// Overrides how long a stop waits for the fleet to report the VM down.
 	// Zero takes defaultVMStopTimeout.
 	VMStopTimeout time.Duration
+	// Override the modify lease lifetime and renewal cadence in tests. A zero
+	// TTL takes the default; a refresh outside (0, TTL) derives as TTL/3.
+	ModifyLeaseTTL     time.Duration
+	ModifyLeaseRefresh time.Duration
 	// Bounds and defaults for automated backups and the two scheduled windows.
 	// Every zero field takes the built-in default.
 	Backup BackupPolicy
@@ -110,6 +114,24 @@ func (s *Service) failureGrace() time.Duration {
 		return s.deps.FailureGrace
 	}
 	return defaultFailureGrace
+}
+
+func (s *Service) modifyLeaseTTL() time.Duration {
+	if s.deps.ModifyLeaseTTL > 0 {
+		return s.deps.ModifyLeaseTTL
+	}
+	return modifyLeaseTTL
+}
+
+func (s *Service) modifyLeaseRefresh() time.Duration {
+	ttl := s.modifyLeaseTTL()
+	if refresh := s.deps.ModifyLeaseRefresh; refresh > 0 && refresh < ttl {
+		return refresh
+	}
+	if refresh := ttl / 3; refresh > 0 {
+		return refresh
+	}
+	return time.Nanosecond
 }
 
 func (s *Service) js() (jetstream.JetStream, error) {

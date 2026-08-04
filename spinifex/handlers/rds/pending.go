@@ -29,6 +29,9 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	if pending.empty() {
 		return nil
 	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 
 	// Parameters first, while the engine this modify started against is still
 	// the one running: the disruptive step below restarts it, which is also what
@@ -39,6 +42,9 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	// against the class the instance is becoming: the include lives on the data
 	// volume, so it is the replacement VM that adopts it.
 	if pending.DBParameterGroupName != "" || pending.DBInstanceClass != "" {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		group := pending.DBParameterGroupName
 		if group == "" {
 			group = rec.DBParameterGroupName
@@ -58,6 +64,9 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	// will accept it in.
 	grewStorage := false
 	restarted := false
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	switch {
 	case pending.DBInstanceClass != "":
 		instanceType, err := InstanceTypeForClass(pending.DBInstanceClass)
@@ -95,6 +104,9 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 	}
 
 	applied := *pending
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		if appliedPendingReboot {
 			stored.PendingRebootParameters = nil

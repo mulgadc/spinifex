@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -121,6 +122,111 @@ func TestReconciler_FailsAModifyWhoseHolderOverrunsTheBudget(t *testing.T) {
 	require.NotNil(t, stored.PendingModifiedValues, "the request stays recorded so the retry has something to run")
 }
 
+// A long-running apply has to keep its lease current, remain exclusive, and
+// stop as soon as another holder takes ownership.
+func TestWithModifyLease_RenewsAndCancelsTheApplyWhenTakenOver(t *testing.T) {
+	h := newModifyHarness(t)
+	h.svc.deps.ModifyLeaseTTL = 500 * time.Millisecond
+	h.svc.deps.ModifyLeaseRefresh = 20 * time.Millisecond
+	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
+	seedInstance(t, h.svc, rec)
+	kv := h.kv(t)
+
+	started := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := h.svc.withModifyLease(t.Context(), kv, testDBID, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return context.Cause(ctx)
+		})
+		finished <- err
+	}()
+	<-started
+
+	initial := h.record(t).ModifyLease
+	require.NotNil(t, initial)
+	require.Eventually(t, func() bool {
+		lease := h.record(t).ModifyLease
+		return lease != nil && lease.ExpiresAt.After(initial.ExpiresAt)
+	}, time.Second, 10*time.Millisecond, "a blocking apply must keep extending its lease")
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	assert.Empty(t, h.storage.modified, "a reconcile pass must not claim a renewed lease")
+
+	takeoverExpiry := time.Now().UTC().Add(time.Second)
+	require.NoError(t, h.svc.updateInstance(t.Context(), kv, testDBID, func(stored *DBInstanceRecord) {
+		stored.ModifyLease = &ModifyLease{Holder: "node-b/takeover", ExpiresAt: takeoverExpiry}
+	}))
+
+	select {
+	case err := <-finished:
+		require.ErrorIs(t, err, errModifyLeaseLost)
+	case <-time.After(time.Second):
+		t.Fatal("the apply context was not cancelled after the lease takeover")
+	}
+
+	stored := h.record(t)
+	require.NotNil(t, stored.ModifyLease)
+	assert.Equal(t, "node-b/takeover", stored.ModifyLease.Holder)
+	assert.Equal(t, takeoverExpiry, stored.ModifyLease.ExpiresAt)
+}
+
+func TestModifyDBInstance_LeaseTakeoverLeavesTheTransitionRetryable(t *testing.T) {
+	h := newModifyHarness(t)
+	h.svc.deps.ModifyLeaseTTL = 500 * time.Millisecond
+	h.svc.deps.ModifyLeaseRefresh = 10 * time.Millisecond
+	seedInstance(t, h.svc, modifiableRecord())
+	kv := h.kv(t)
+
+	h.storage.onModify = func() {
+		require.NoError(t, h.svc.updateInstance(t.Context(), kv, testDBID, func(stored *DBInstanceRecord) {
+			stored.ModifyLease = heldLease(time.Second)
+		}))
+		time.Sleep(50 * time.Millisecond)
+	}
+	in := modifyInput()
+	in.AllocatedStorage, in.ApplyImmediately = aws.Int64(50), aws.Bool(true)
+
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+	require.ErrorIs(t, err, errModifyLeaseLost)
+	stored := h.record(t)
+	assert.Equal(t, StatusModifying, stored.Status)
+	require.NotNil(t, stored.PendingModifiedValues)
+	assert.Equal(t, "node-b/deadbeef", stored.ModifyLease.Holder)
+	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls,
+		"the losing holder must not continue to restart the VM")
+}
+
+func TestWithModifyLease_CancelsWhenRenewalsFailUntilExpiry(t *testing.T) {
+	h := newModifyHarness(t)
+	h.svc.deps.ModifyLeaseTTL = 100 * time.Millisecond
+	h.svc.deps.ModifyLeaseRefresh = 10 * time.Millisecond
+	seedInstance(t, h.svc, modifiableRecord())
+	kv := h.kv(t)
+	js, err := h.svc.js()
+	require.NoError(t, err)
+
+	bucketDeleted := make(chan error, 1)
+	finished := make(chan error, 1)
+	go func() {
+		_, applyErr := h.svc.withModifyLease(t.Context(), kv, testDBID, func(ctx context.Context) error {
+			bucketDeleted <- js.DeleteKeyValue(ctx, kv.Bucket())
+			<-ctx.Done()
+			return context.Cause(ctx)
+		})
+		finished <- applyErr
+	}()
+	require.NoError(t, <-bucketDeleted)
+
+	select {
+	case applyErr := <-finished:
+		require.ErrorIs(t, applyErr, errModifyLeaseLost)
+	case <-time.After(time.Second):
+		t.Fatal("the apply context was not cancelled when renewal failed through the lease expiry")
+	}
+}
+
 // Re-taking a lease we already hold has to be allowed, or a caller that claims
 // twice deadlocks against itself.
 func TestClaimModifyLease_RefusesAnotherHolderButNotItsOwn(t *testing.T) {
@@ -128,15 +234,15 @@ func TestClaimModifyLease_RefusesAnotherHolderButNotItsOwn(t *testing.T) {
 	seedInstance(t, h.svc, modifiableRecord())
 	kv := h.kv(t)
 
-	claimed, err := h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-a/0001")
+	claimed, _, err := h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-a/0001")
 	require.NoError(t, err)
 	assert.True(t, claimed)
 
-	claimed, err = h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-b/0002")
+	claimed, _, err = h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-b/0002")
 	require.NoError(t, err)
 	assert.False(t, claimed, "a live lease belongs to its holder alone")
 
-	claimed, err = h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-a/0001")
+	claimed, _, err = h.svc.claimModifyLease(t.Context(), kv, testDBID, "node-a/0001")
 	require.NoError(t, err)
 	assert.True(t, claimed)
 }

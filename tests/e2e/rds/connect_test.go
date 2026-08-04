@@ -149,6 +149,38 @@ func TestConnectivity(t *testing.T) {
 		}, sgSettleTimeout, 5*time.Second)
 	})
 
+	// D21: the master user is administrative but not a PostgreSQL superuser. This
+	// is the only leg that can prove it — the bootstrap unit test sees the SQL
+	// that was sent, not what the engine then refuses.
+	t.Run("TheMasterUserIsAdministrativeButNotASuperuser", func(t *testing.T) {
+		out := harness.PSQL(t, client, byIP, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user;")
+		assert.Equal(t, "f", strings.TrimSpace(out),
+			"the master user must not be a PostgreSQL superuser")
+
+		// A superuser master is command execution as the postgres OS user inside
+		// the DB VM, which is what makes this the one assertion that matters.
+		out, err := harness.TryPSQL(client, byIP,
+			"CREATE TEMP TABLE rce(l text); COPY rce FROM PROGRAM 'id';")
+		require.Error(t, err, "COPY FROM PROGRAM must be refused: %s", out)
+		// Matched on the phrase the engine's own refusal carries, rather than on
+		// the privilege it names: PG16 reworded that half of the message.
+		assert.Contains(t, out, "external program",
+			"the engine must refuse the program COPY, not fail for some other reason")
+
+		// The administrative capability a customer is actually owed, on the same
+		// connection: create a database, create a role, install a trusted extension.
+		harness.PSQL(t, client, byIP, "CREATE DATABASE e2e_master_admin;")
+		t.Cleanup(func() { harness.PSQL(t, client, byIP, "DROP DATABASE IF EXISTS e2e_master_admin;") })
+
+		harness.PSQL(t, client, byIP, "CREATE ROLE e2e_master_role LOGIN PASSWORD 'e2eR0leSecret1';")
+		t.Cleanup(func() { harness.PSQL(t, client, byIP, "DROP ROLE IF EXISTS e2e_master_role;") })
+
+		harness.PSQL(t, client, byIP, "CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+		out = harness.PSQL(t, client, byIP, "SELECT extname FROM pg_extension WHERE extname = 'pg_trgm';")
+		assert.Equal(t, "pg_trgm", strings.TrimSpace(out),
+			"the master user must be able to install a trusted extension in a database it owns")
+	})
+
 	// Last: it retires the credential every subtest above connects with. D8 keeps
 	// no cleartext password anywhere, so the only proof the rotation reached the
 	// engine is that the new one authenticates and the old one does not.

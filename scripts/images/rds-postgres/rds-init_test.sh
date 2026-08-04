@@ -111,7 +111,7 @@ EOF
 cat > "${STUBBIN}/psql" <<'EOF'
 #!/bin/sh
 {
-    echo "--- psql $* [master=${RDS_MASTER_USERNAME:-} password=${RDS_MASTER_PASSWORD:-} db=${RDS_DB_NAME:-}]"
+    echo "--- psql $* [master=${RDS_MASTER_USERNAME:-} password=${RDS_MASTER_PASSWORD:-} db=${RDS_DB_NAME:-} grp=${RDS_GROUP_ROLE:-}]"
     cat
 } >> "${PSQL_CALLS}"
 # ON_ERROR_STOP makes a real psql exit non-zero on any SQL failure; the stub
@@ -140,11 +140,12 @@ export INITDB_CALLS PGCTL_CALLS PSQL_CALLS
 
 # write_handoff <mode> <password> <dbname>: lay down the bootstrap.env rds-agent
 # would have written. An empty password omits the field, as `attach` does.
+# MASTER_USER overrides the master role name, for the reserved-name cases.
 write_handoff() {
     mkdir -p "${HANDOFF}"
     {
         echo "RDS_MODE=$1"
-        echo "RDS_MASTER_USERNAME=mulgamaster"
+        echo "RDS_MASTER_USERNAME=${MASTER_USER:-mulgamaster}"
         [ -n "$2" ] && echo "RDS_MASTER_PASSWORD=$2"
         [ -n "$3" ] && echo "RDS_DB_NAME=$3"
         echo "RDS_PORT=6543"
@@ -171,7 +172,7 @@ reset_state() {
     : > "${INITDB_CALLS}"
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
-    unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR || true
+    unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
 }
 
 # run: invoke rds-init with every path knob pointed into the temp dir.
@@ -213,12 +214,31 @@ if run_ok "initialize"; then
         && pass "initialize: ssl enabled" || fail "initialize: ssl not enabled"
     grep -q 'shared_buffers = 128MB' "${PGDATA}/conf.d/10-rds-parameters.conf" \
         && pass "initialize: resolved parameters installed" || fail "initialize: no parameter include"
-    grep -q 'ALTER ROLE :"master" WITH LOGIN SUPERUSER PASSWORD' "${PSQL_CALLS}" \
+    grep -q 'ALTER ROLE :"master" WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD' "${PSQL_CALLS}" \
         && pass "initialize: master password applied" || fail "initialize: no ALTER ROLE"
     grep -q 'password=s3cr3t' "${PSQL_CALLS}" \
         && pass "initialize: password passed through the environment" || fail "initialize: password not in psql env"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && pass "initialize: initial database created" || fail "initialize: no CREATE DATABASE"
+
+    # The master role is administrative but not a PostgreSQL superuser: a
+    # superuser reaches outside the database (COPY FROM PROGRAM, pg_read_file,
+    # untrusted languages), so master credentials would be a shell in the DB VM.
+    grep -qE '(^|[^O])SUPERUSER' "${PSQL_CALLS}" \
+        && fail "initialize: bootstrap SQL still grants SUPERUSER" \
+        || pass "initialize: master role is not a superuser"
+    grep -q 'GRANT :"grp" TO :"master" WITH ADMIN OPTION' "${PSQL_CALLS}" \
+        && pass "initialize: master holds the administrative group role" \
+        || fail "initialize: master never granted the group role"
+    grep -q 'grp=rds_superuser' "${PSQL_CALLS}" \
+        && pass "initialize: the group role is named as on AWS" || fail "initialize: group role name not delivered"
+    grep -q 'GRANT pg_monitor, pg_signal_backend, pg_checkpoint TO :"grp"' "${PSQL_CALLS}" \
+        && pass "initialize: monitoring/signal/checkpoint granted" || fail "initialize: group role has no privileges"
+
+    # The three predefined roles that hand back exactly what SUPERUSER gave away.
+    grep -qE 'pg_(read|write)_server_files|pg_execute_server_program' "${PSQL_CALLS}" \
+        && fail "initialize: granted a role that restores file or program access" \
+        || pass "initialize: no server-file or program-execution roles granted"
     grep -q "listen_addresses=''" "${PGCTL_CALLS}" \
         && pass "initialize: bootstrap server is socket-only" || fail "initialize: bootstrap server listened on TCP"
     grep -q 'stop' "${PGCTL_CALLS}" \
@@ -399,6 +419,21 @@ fi
 reset_state
 rm -rf "${HANDOFF}"
 run_fails "no-handoff"
+
+# --- Case 9: a master username the platform reserves ---
+# The master role is created NOSUPERUSER, so one named after the bootstrap
+# superuser would leave the cluster without a superuser at all and strip
+# rds-agent of the privileged SQL it needs — on a datadir that bootstraps once.
+for reserved in postgres rds_superuser; do
+    reset_state
+    MASTER_USER="${reserved}"
+    write_handoff initialize 's3cr3t' appdb
+    run_fails "reserved-master-${reserved}"
+    [ -s "${INITDB_CALLS}" ] \
+        && fail "reserved-master-${reserved}: initdb ran before the name was refused" \
+        || pass "reserved-master-${reserved}: refused before initdb"
+    unset MASTER_USER
+done
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"

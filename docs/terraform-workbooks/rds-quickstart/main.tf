@@ -105,7 +105,7 @@ variable "db_name" {
 variable "db_username" {
   type        = string
   default     = "appuser"
-  description = "Master user. postgres, rdsadmin and pg_* are reserved by the engine."
+  description = "Master user. postgres, rdsadmin, rds_superuser and pg_* are reserved by the engine."
 }
 
 # No '/', '"', '@' or spaces: the characters the API rejects because they break a

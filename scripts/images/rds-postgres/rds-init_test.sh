@@ -508,7 +508,9 @@ run_fails "no-handoff"
 # The master role is created NOSUPERUSER, so one named after the bootstrap
 # superuser would leave the cluster without a superuser at all and strip
 # rds-agent of the privileged SQL it needs — on a datadir that bootstraps once.
-for reserved in postgres rds_superuser; do
+# The set and the case-insensitive matching are the control plane's: a name it
+# refuses must not reach initdb here and spend the one-shot password.
+for reserved in postgres rds_superuser rdsadmin pg_toast_owner PostGres; do
     reset_state
     MASTER_USER="${reserved}"
     write_handoff initialize 's3cr3t' appdb

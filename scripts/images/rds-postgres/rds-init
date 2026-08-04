@@ -98,9 +98,14 @@ load_handoff() {
     # The master role is created NOSUPERUSER, so a master named after the
     # bootstrap superuser would leave the cluster without one and strip rds-agent
     # of the privileged SQL it reaches over peer auth — unrepairable, since the
-    # datadir bootstraps once. The control plane reserves both names already.
-    case "${RDS_MASTER_USERNAME}" in
-        "${PG_USER}" | "${MASTER_GROUP_ROLE}")
+    # datadir bootstraps once.
+    #
+    # The same set the control plane reserves, matched the same way: anything it
+    # refuses must be refused here too, or the name reaches initdb, fails at role
+    # creation and spends the one-shot password on the way.
+    _master_lower=$(printf '%s' "${RDS_MASTER_USERNAME}" | tr '[:upper:]' '[:lower:]')
+    case "${_master_lower}" in
+        "${PG_USER}" | "${MASTER_GROUP_ROLE}" | rdsadmin | pg_*)
             fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
             ;;
     esac

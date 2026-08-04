@@ -96,7 +96,14 @@ func (e Engine) ValidateMasterUsername(username string) error {
 				"MasterUsername may contain only letters, digits and underscores")
 		}
 	}
-	lower := strings.ToLower(username)
+	return e.ValidateUsernameNotReserved(username)
+}
+
+// The reserved-role half of the check on its own, exported for the in-guest
+// agent: its live password apply runs as the cluster superuser, so it re-checks
+// the name it is handed rather than trusting the control plane to have done it.
+func (e Engine) ValidateUsernameNotReserved(username string) error {
+	lower := strings.ToLower(strings.TrimSpace(username))
 	if slices.Contains(e.reservedUsernames, lower) {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"MasterUsername %q is reserved by %s", username, e.Name)

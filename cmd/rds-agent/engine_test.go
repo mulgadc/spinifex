@@ -61,7 +61,7 @@ func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 		CommandID: "cmd-1",
 		Type:      handlers_rds.CommandSetPassword,
 		Parameters: []handlers_rds.Parameter{
-			{Name: handlers_rds.CommandParamMasterUsername, Value: "postgres"},
+			{Name: handlers_rds.CommandParamMasterUsername, Value: "mulgamaster"},
 			{Name: handlers_rds.CommandParamMasterUserPassword, Value: "n3w-pw"},
 		},
 	})
@@ -69,8 +69,8 @@ func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 	if reply.Status != handlers_rds.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
-	if engine.username != "postgres" || engine.password != "n3w-pw" {
-		t.Errorf("engine got %q/%q, want postgres/n3w-pw", engine.username, engine.password)
+	if engine.username != "mulgamaster" || engine.password != "n3w-pw" {
+		t.Errorf("engine got %q/%q, want mulgamaster/n3w-pw", engine.username, engine.password)
 	}
 	// The reply is recorded by the control plane; the new password must not be
 	// in it.
@@ -162,7 +162,7 @@ func TestPostgresEngine_SetPasswordKeepsTheSecretOutOfArgv(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
 
-	if err := engine.SetPassword(context.Background(), "postgres", "n3w-pw"); err != nil {
+	if err := engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
 	}
 	if len(runner.calls) != 1 {
@@ -191,7 +191,7 @@ func TestPostgresEngine_SetPasswordRedactsTheSecretFromAFailure(t *testing.T) {
 	runner := &recordingRunner{err: errors.New(`ERROR: syntax error at or near "n3w-pw"`)}
 	engine := newTestEngine(t, runner.run)
 
-	err := engine.SetPassword(context.Background(), "postgres", "n3w-pw")
+	err := engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw")
 	if err == nil {
 		t.Fatal("SetPassword succeeded against a failing psql")
 	}
@@ -207,11 +207,31 @@ func TestPostgresEngine_SetPasswordRejectsAnIncompleteCommand(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
 
-	if err := engine.SetPassword(context.Background(), "postgres", ""); err == nil {
+	if err := engine.SetPassword(context.Background(), "mulgamaster", ""); err == nil {
 		t.Error("SetPassword accepted an empty password")
 	}
 	if len(runner.calls) != 0 {
 		t.Errorf("ran %d commands for an incomplete request, want 0", len(runner.calls))
+	}
+}
+
+// D21: the apply runs as the cluster superuser under peer auth, so a reserved
+// name arriving in a command payload would rotate the bootstrap superuser's
+// password rather than the customer's own role.
+func TestPostgresEngine_SetPasswordRefusesReservedRoles(t *testing.T) {
+	for _, username := range []string{"postgres", "rds_superuser", "rdsadmin", "pg_toast_owner", "PostGres"} {
+		t.Run(username, func(t *testing.T) {
+			runner := &recordingRunner{}
+			engine := newTestEngine(t, runner.run)
+
+			err := engine.SetPassword(context.Background(), username, "n3w-pw")
+			if err == nil {
+				t.Fatalf("SetPassword accepted the reserved role %q", username)
+			}
+			if len(runner.calls) != 0 {
+				t.Errorf("ran %d commands for a reserved role, want 0", len(runner.calls))
+			}
+		})
 	}
 }
 

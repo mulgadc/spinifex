@@ -155,6 +155,12 @@ func (e *postgresEngine) SetPassword(ctx context.Context, username, password str
 		return fmt.Errorf("set-password requires both %s and %s",
 			handlers_rds.CommandParamMasterUsername, handlers_rds.CommandParamMasterUserPassword)
 	}
+	// The statement below runs as the cluster superuser over the socket under
+	// peer auth, so a reserved name in the command payload would hand the
+	// customer the bootstrap superuser rather than rotate their own role.
+	if err := handlers_rds.EnginePostgres().ValidateUsernameNotReserved(username); err != nil {
+		return fmt.Errorf("refusing to set the password of a role the engine reserves: %w", err)
+	}
 	const sql = `\getenv master RDS_MASTER_USERNAME
 \getenv password RDS_MASTER_PASSWORD
 ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';

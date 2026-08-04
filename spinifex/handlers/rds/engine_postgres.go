@@ -13,3 +13,8 @@ var enginePostgres = Engine{
 	reservedUsernames:        []string{"rdsadmin", "postgres", "rds_superuser"},
 	reservedUsernamePrefixes: []string{"pg_"},
 }
+
+// The pinned engine as a value, for the in-guest agent: it enforces the same
+// reserved-role set before altering a role as the cluster superuser, and a
+// lookup by name there could only fail silently into an empty set.
+func EnginePostgres() Engine { return enginePostgres }

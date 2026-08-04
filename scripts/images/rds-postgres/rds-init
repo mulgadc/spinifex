@@ -49,6 +49,10 @@ BOOTSTRAP_DIR="${RDS_BOOTSTRAP_DIR:-/run/rds-init}"
 
 MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 
+# The group role the master's administrative privileges hang off. Named as on
+# AWS, so a customer's `GRANT rds_superuser TO ...` works here too.
+MASTER_GROUP_ROLE="rds_superuser"
+
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
 
@@ -85,6 +89,17 @@ load_handoff() {
     RDS_PORT="${RDS_PORT:-5432}"
 
     [ -n "${RDS_MASTER_USERNAME}" ] || fail "bootstrap config has no RDS_MASTER_USERNAME"
+
+    # The master role is created NOSUPERUSER, so a master named after the
+    # bootstrap superuser would leave the cluster without one and strip rds-agent
+    # of the privileged SQL it reaches over peer auth — unrepairable, since the
+    # datadir bootstraps once. The control plane reserves both names already.
+    case "${RDS_MASTER_USERNAME}" in
+        "${PG_USER}" | "${MASTER_GROUP_ROLE}")
+            fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
+            ;;
+    esac
+
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
     esac
@@ -264,6 +279,7 @@ psql_bootstrap() {
     RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
     RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
     RDS_DB_NAME="${RDS_DB_NAME}" \
+    RDS_GROUP_ROLE="${MASTER_GROUP_ROLE}" \
         "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
             -v ON_ERROR_STOP=1 \
             -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f -
@@ -291,18 +307,32 @@ bootstrap_master() {
     fi
 }
 
-# initdb may already have made it the bootstrap superuser, when the master
-# username is "postgres".
+# The master role is administrative but deliberately not a PostgreSQL SUPERUSER,
+# as on AWS: a superuser reaches outside the database entirely — COPY FROM
+# PROGRAM, pg_read_file/pg_write_file, untrusted languages — so master
+# credentials would be a shell in the DB VM rather than a database privilege.
+# The cluster's own superuser stays the bootstrap role, which only rds-init and
+# rds-agent reach, over the unix socket under peer auth.
 apply_master_role() {
-    log "setting the master password for role ${RDS_MASTER_USERNAME}"
+    log "creating the master role ${RDS_MASTER_USERNAME}"
+    # PG16 hardened CREATEROLE: it can neither grant itself SUPERUSER nor take
+    # membership in a predefined role it does not administer, so CREATEROLE here
+    # is not a route back to the privileges above.
     psql_bootstrap <<'SQL'
 \getenv master RDS_MASTER_USERNAME
 \getenv password RDS_MASTER_PASSWORD
+\getenv grp RDS_GROUP_ROLE
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'grp') AS create_group \gset
+\if :create_group
+CREATE ROLE :"grp" NOLOGIN;
+\endif
+GRANT pg_monitor, pg_signal_backend, pg_checkpoint TO :"grp";
 SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'master') AS create_role \gset
 \if :create_role
-CREATE ROLE :"master" WITH LOGIN SUPERUSER;
+CREATE ROLE :"master" WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE;
 \endif
-ALTER ROLE :"master" WITH LOGIN SUPERUSER PASSWORD :'password';
+ALTER ROLE :"master" WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'password';
+GRANT :"grp" TO :"master" WITH ADMIN OPTION;
 SQL
 }
 

@@ -57,6 +57,11 @@ func TestEngineValidateMasterUsername(t *testing.T) {
 		"too long":       strings.Repeat("a", maxMasterUsernameLen+1),
 		"reserved":       "rdsadmin",
 		"reserved cased": "RDSAdmin",
+		// The cluster superuser and the group role the master's administrative
+		// privileges come through. Both exist by the time the master is created,
+		// so a collision would surface as a failed bootstrap inside the guest.
+		"cluster superuser": "postgres",
+		"group role":        "rds_superuser",
 		// postgres reserves the pg_ prefix for its own internal roles, so a master
 		// role taking one would collide inside the engine, not at the API.
 		"reserved prefix": "pg_backup",

@@ -8,6 +8,8 @@ var enginePostgres = Engine{
 	DefaultPort:  5432,
 	// rdsadmin is the management role AWS reserves; postgres is the cluster
 	// superuser initdb creates, which the master role must not collide with.
-	reservedUsernames:        []string{"rdsadmin", "postgres"},
+	// rds_superuser is the group role the bootstrap grants the master its
+	// administrative privileges through.
+	reservedUsernames:        []string{"rdsadmin", "postgres", "rds_superuser"},
 	reservedUsernamePrefixes: []string{"pg_"},
 }

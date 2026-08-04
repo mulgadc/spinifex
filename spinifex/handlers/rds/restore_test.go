@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
@@ -87,8 +88,8 @@ func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(
 	assert.Nil(t, h.launch.launcher.input)
 }
 
-// Everything the request left out comes from the snapshot, so a bare restore
-// reproduces the instance it was taken from rather than defaulting away from it.
+// Source-instance configuration comes from the snapshot when the restore
+// request does not override it; platform-owned settings use current defaults.
 func TestRestoreDBInstanceFromDBSnapshot_FallsBackToTheSnapshotsConfiguration(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
@@ -105,6 +106,49 @@ func TestRestoreDBInstanceFromDBSnapshot_FallsBackToTheSnapshotsConfiguration(t 
 	assert.Equal(t, "orders", stored.DBName)
 	assert.Equal(t, int64(5432), stored.Port)
 	assert.Equal(t, []string{testDefaultSG}, stored.VpcSecurityGroupIDs)
+}
+
+func TestRestoreDBInstanceFromDBSnapshot_DefaultsRetentionAndTakesAnAutomatedBackup(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	now := time.Now().UTC()
+	h.svc.deps.Backup = BackupPolicy{
+		RetentionDays:     3,
+		BackupWindowBlock: openBackupWindow(now),
+	}
+	h.seedSnapshot(t)
+
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+	require.NoError(t, err)
+
+	stored := h.instance(t, testRestoredID)
+	assert.Equal(t, int64(3), h.svc.defaultRetentionDays())
+	assert.Equal(t, int64(3), stored.BackupRetentionPeriod)
+	assert.Empty(t, stored.PreferredBackupWindow)
+	assert.Empty(t, stored.PreferredMaintenanceWindow)
+	window, err := h.svc.resolvedBackupWindow(&stored)
+	require.NoError(t, err)
+	require.True(t, window.contains(now), "the lazily assigned window should be open")
+
+	newStubAgent(t, h.nc, testAccountID, testRestoredID, false)
+	stored.Status = StatusAvailable
+	seedInstance(t, h.svc, stored)
+	require.True(t, h.runBackupPassFor(t, testRestoredID))
+
+	stamps := h.automatedStamps(t, testRestoredID)
+	require.Len(t, stamps, 1)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var entry AutomatedBackupRecord
+	found, err := getJSON(t.Context(), kv, AutomatedBackupKey(testRestoredID, stamps[0]), &entry)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, testRestoredID, entry.DBInstanceIdentifier)
+	backup, found := h.snapshot(t, entry.DBSnapshotIdentifier)
+	require.True(t, found)
+	assert.Equal(t, testRestoredID, backup.DBInstanceIdentifier)
+	assert.Equal(t, SnapshotTypeAutomated, backup.SnapshotType)
+	assert.Equal(t, SnapshotStatusAvailable, backup.Status)
+	assert.NotNil(t, h.instance(t, testRestoredID).LastAutomatedBackupAt)
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_HonoursTheRequestedOverrides(t *testing.T) {

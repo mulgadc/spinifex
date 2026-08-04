@@ -53,9 +53,8 @@ type validatedCreate struct {
 	// to true and so does the Terraform provider, so an unset request must not
 	// read back as false.
 	AutoMinorVersionUpgrade bool
-	// Automated backups as they will be in force: the retention defaulted when the
-	// request names none, and both windows in canonical text — assigned from the
-	// instance identifier when unnamed, never left empty.
+	// Automated backup settings in force. Create assigns unnamed windows, while
+	// restore leaves them empty for lazy deterministic assignment.
 	BackupRetentionPeriod      int64
 	PreferredBackupWindow      string
 	PreferredMaintenanceWindow string

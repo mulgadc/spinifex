@@ -59,9 +59,14 @@ func instanceRevision(t *testing.T, svc *Service, id string) (*DBInstanceRecord,
 // then fire.
 func (h *snapshotHarness) runBackupPass(t *testing.T) bool {
 	t.Helper()
+	return h.runBackupPassFor(t, testDBID)
+}
+
+func (h *snapshotHarness) runBackupPassFor(t *testing.T, id string) bool {
+	t.Helper()
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	rec, rev := instanceRevision(t, h.svc, testDBID)
+	rec, rev := instanceRevision(t, h.svc, id)
 	fired, err := h.svc.runBackupWindow(t.Context(), kv, rev, testAccountID, rec)
 	require.NoError(t, err)
 	return fired

@@ -51,7 +51,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 			snapshot.DBSnapshotIdentifier, snapshot.Status, SnapshotStatusAvailable)
 	}
 
-	req, err := resolveRestoreRequest(input, snapshot)
+	req, err := s.resolveRestoreRequest(input, snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -161,10 +161,9 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	return &rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: s.projectDBInstance(stored)}, nil
 }
 
-// Every field the request left out comes from the snapshot's own recorded
-// configuration, so a bare restore reproduces the instance the snapshot was
-// taken from rather than defaulting away from it.
-func resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord) (*validatedCreate, error) {
+// Request-overridable configuration comes from the snapshot when omitted.
+// Platform-owned settings use the defaults in force when the restore runs.
+func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord) (*validatedCreate, error) {
 	// The snapshot's engine, never the request's: the datadir is written in one
 	// engine's on-disk format and no other can read it.
 	engine, err := LookupEngine(snapshot.Engine)
@@ -244,6 +243,7 @@ func resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snap
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 
 		AutoMinorVersionUpgrade: input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
+		BackupRetentionPeriod:   s.defaultRetentionDays(),
 
 		Tags: tagMap,
 	}, nil

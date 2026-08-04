@@ -242,13 +242,16 @@ func TestAPIMatrix(t *testing.T) {
 	require.NotNil(t, created.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, probeID) })
 
-	// D19's other half: an inert parameter is accepted and then reported as not in
-	// effect, so a customer reading the instance back is never told a feature is
-	// on when nothing implements it.
+	// D19's other half: an inert parameter is accepted and then reported honestly,
+	// so a customer reading the instance back is never told a feature is on when
+	// nothing implements it.
 	t.Run("InertParametersAreAcceptedAndReportedOff", func(t *testing.T) {
 		instance := created.DBInstance
-		assert.False(t, aws.BoolValue(instance.AutoMinorVersionUpgrade),
-			"there is no minor-version upgrade path, so it cannot be reported as enabled")
+		// The exception, echoed rather than reported off: nothing upgrades a pinned
+		// version, but the provider's schema defaults it to true, so a false
+		// read-back would leave every default configuration with an uncleanable diff.
+		assert.True(t, aws.BoolValue(instance.AutoMinorVersionUpgrade),
+			"a client that set it has to read back what it set")
 		assert.False(t, aws.BoolValue(instance.PerformanceInsightsEnabled))
 		assert.Zero(t, aws.Int64Value(instance.MonitoringInterval),
 			"enhanced monitoring is not implemented, so no interval is in effect")

@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -311,7 +312,10 @@ func buildWeightsImage(srcDir, imagePath string, contentBytes int64) error {
 // offline snapshot sequence handlers/ec2/image/service_impl.go's
 // snapshotStoppedVolume uses for a stopped instance's root volume: reopen
 // read-only, load the numbered checkpoint Close() wrote, then CreateSnapshot.
-func snapshotImportedWeightsVolume(s3Config *vbs3.S3Config, volumeID string, volumeSize uint64, walDir string, mkey *masterkey.Key) (string, error) {
+//
+// az names the zone recorded on the snapshot for DescribeSnapshots; it is not
+// used to resolve the clone.
+func snapshotImportedWeightsVolume(s3Config *vbs3.S3Config, volumeID string, volumeSize uint64, walDir, az string, mkey *masterkey.Key) (string, error) {
 	vbConfig := viperblock.VB{
 		VolumeName:        volumeID,
 		VolumeSize:        volumeSize,
@@ -350,7 +354,39 @@ func snapshotImportedWeightsVolume(s3Config *vbs3.S3Config, volumeID string, vol
 	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
 		return "", fmt.Errorf("create snapshot: %w", err)
 	}
+
+	store := objectstore.NewS3ObjectStoreFromConfig(s3Config.Host, s3Config.Region, s3Config.AccessKey, s3Config.SecretKey)
+	if err := registerWeightsSnapshot(store, s3Config.Bucket, snapshotID, volumeID, volumeSize, az, mkey != nil); err != nil {
+		return "", err
+	}
+
 	return snapshotID, nil
+}
+
+// registerWeightsSnapshot writes the EC2 control plane's half of the snapshot
+// prefix. CreateSnapshot above writes only viperblock's half -- the block
+// checkpoint and config.json -- but CreateVolume resolves a SnapshotId through
+// metadata.json sitting alongside them, so without this the endpoint launcher
+// cannot see the snapshot at all and fails with InvalidSnapshot.NotFound.
+func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, volumeID string, volumeSize uint64, az string, encrypted bool) error {
+	cfg := &handlers_ec2_snapshot.SnapshotConfig{
+		SnapshotID: snapshotID,
+		VolumeID:   volumeID,
+		// GiB, not bytes: CreateVolume compares this against a requested Size
+		// already in GiB, and would reject every clone if handed raw bytes.
+		VolumeSize:       utils.SafeUint64ToInt64(volumeSize / bytesPerGiB),
+		State:            "completed",
+		Progress:         "100%",
+		StartTime:        time.Now(),
+		Description:      fmt.Sprintf("Ochre weights volume %s", volumeID),
+		Encrypted:        encrypted,
+		OwnerID:          utils.GlobalAccountID,
+		AvailabilityZone: az,
+	}
+	if err := handlers_ec2_snapshot.WriteSnapshotConfig(store, bucket, snapshotID, cfg); err != nil {
+		return fmt.Errorf("register snapshot metadata: %w", err)
+	}
+	return nil
 }
 
 // weightsMaterializer builds a servable snapshot from downloadDir's already
@@ -514,7 +550,7 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 	}
 
 	fmt.Println("Snapshotting weights volume ...")
-	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, volumeBytes, tmpDir, mkey)
+	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, volumeBytes, tmpDir, node.AZ, mkey)
 	if err != nil {
 		return "", fmt.Errorf("could not snapshot weights volume: %w", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
@@ -724,8 +725,16 @@ type failingObjectStore struct {
 
 	failListObjects bool
 	failGetObject   bool
+	failPutObject   bool
 	// failHeadObjectKeys, if set, fails HeadObject only for these keys.
 	failHeadObjectKeys map[string]bool
+}
+
+func (f *failingObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	if f.failPutObject {
+		return nil, errors.New("put boom")
+	}
+	return f.MemoryObjectStore.PutObject(ctx, input)
 }
 
 func (f *failingObjectStore) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
@@ -948,4 +957,46 @@ func TestLookupMkfsExt4_IgnoresDirectory(t *testing.T) {
 
 	_, err := lookupMkfsExt4()
 	require.Error(t, err)
+}
+
+// The launcher clones the weights snapshot through the EC2 control plane, so
+// what stage writes must be readable by the same helper CreateVolume reads
+// with, and carry the two fields it consumes: VolumeID (the viperblock source
+// prefix) and VolumeSize (compared against a requested size, so GiB).
+func TestRegisterWeightsSnapshot_WritesEC2ReadableMetadata(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const bucket = "predastore"
+	require.NoError(t, registerWeightsSnapshot(store, bucket,
+		"snap-vol-abc", "vol-abc", 12*bytesPerGiB, "ap-southeast-2a", true))
+
+	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, bucket, "snap-vol-abc")
+	require.NoError(t, err)
+	assert.Equal(t, "snap-vol-abc", cfg.SnapshotID)
+	assert.Equal(t, "vol-abc", cfg.VolumeID)
+	assert.Equal(t, int64(12), cfg.VolumeSize)
+	assert.Equal(t, "completed", cfg.State)
+	assert.Equal(t, "ap-southeast-2a", cfg.AvailabilityZone)
+	assert.True(t, cfg.Encrypted)
+}
+
+// An unencrypted volume must not be advertised as encrypted, which would let a
+// consumer skip a key it actually needs.
+func TestRegisterWeightsSnapshot_UnencryptedVolume(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	require.NoError(t, registerWeightsSnapshot(store, "predastore",
+		"snap-vol-plain", "vol-plain", bytesPerGiB, "ap-southeast-2a", false))
+
+	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, "predastore", "snap-vol-plain")
+	require.NoError(t, err)
+	assert.False(t, cfg.Encrypted)
+}
+
+// A failed metadata write must surface, not leave stage reporting a snapshot
+// ID the launcher will later reject as not found.
+func TestRegisterWeightsSnapshot_WriteFailureSurfaces(t *testing.T) {
+	store := &failingObjectStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(), failPutObject: true}
+	err := registerWeightsSnapshot(store, "predastore",
+		"snap-vol-abc", "vol-abc", bytesPerGiB, "ap-southeast-2a", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "register snapshot metadata")
 }

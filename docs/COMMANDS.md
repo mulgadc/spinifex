@@ -103,66 +103,6 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | `spx admin images promote` | `--image-id` (required), `--yes` | Reads `ami-<id>/config.json`, validates the AMI is account-owned, then rewrites `ImageOwnerAlias` to `"system"` in-place. No block data is copied. The change takes effect immediately — the AMI becomes visible to all accounts via `DescribeImages`. Prompts for confirmation (skipped with `--yes`). Already-system AMIs are refused. |
 | `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. |
 
-#### Image integrity verification (CMMC SI.L1-3.14.2)
-
-Catalog imports (`spx admin images import --name <name>`) verify the image
-against the catalog-declared SHA-256/SHA-512 digest before extraction. The sums
-file is fetched from the catalog `Checksum` URL over HTTPS only (cross-scheme
-redirects refused), and verification runs on both fresh downloads and cache
-hits so a poisoned cache is caught on the next import.
-
-On mismatch the import exits non-zero, the cached file is left on disk for
-inspection, and the printed guidance is `spx admin images import --name <name>
---force` to re-download.
-
-`--file` imports skip verification by design: operator-supplied media is
-outside Spinifex's trust boundary and the operator is responsible for
-integrity (e.g. `sha256sum` against a trusted upstream digest before import).
-The skip is recorded as an INFO `slog` event with `reason=local-file-import`
-so a CMMC assessor can audit the decision from journald.
-
-`--skip-verify` bypasses the checksum step for catalog imports. The command
-still downloads via the catalog URL but does not compare the image digest
-against the sums file. Intended for narrow cases such as debugging upstream
-mirror issues or running against a transiently-broken `latest/` path; the
-skip is logged at WARN with `reason=skip-verify-flag` and printed to stderr
-so operators and assessors see it. Prefer `--file` with an out-of-band
-verified image over `--skip-verify` whenever possible.
-
-**Limitation:** verification confirms the image matches the digest the mirror
-served. A mirror compromise that swaps both image and sums file is not
-detected; closing that gap requires GPG signature verification of the sums
-file, deferred to a later phase.
-
-#### `spx admin images remove` caveats
-
-Admin-imported AMIs (`ImageOwnerAlias = "system"`) live
-under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
-at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
-(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
-`UnauthorizedOperation`, which is the right behaviour for tenant API callers
-but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
-the admin-trust-boundary counterpart that performs the dependency walk and
-hard-deletes the blocks directly against predastore.
-
-`CopyImage` of a system AMI is metadata-only: it writes a fresh
-`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
-`ami-<acct>/config.json` referencing that snap. Volumes launched from the
-copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
-walks this transitive set and refuses if anything references the target.
-
-**TOCTOU window:** between the safety scan and the `config.json` delete a
-concurrent `RunInstances` against the AMI could create a new dependent
-volume. The window is sub-second on a healthy cluster. The admin running
-this command is expected to know the fleet's operational state; if the race
-fires the result is a `vol-<id>` with deleted backing blocks, recovered by
-terminating the orphaned instance.
-
-**`--force` bypasses every safety check** (dependents, ownership, missing /
-corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
-against a live system AMI corrupts every dependent volume on the next disk
-read.
-
 ### GPU Management
 
 | Command | Flags | Description |
@@ -195,7 +135,7 @@ read.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; IMDSv2-only enforced — rejects `http-tokens=optional`), `--launch-template` (LaunchTemplateId/LaunchTemplateName, Version — resolves `$Default`/`$Latest`; direct params override the template) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--hibernate-options` | **DONE** |
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--security-group-ids`, `--tag-specifications` (instance-scoped), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn), `--capacity-reservation-specification` (CapacityReservationTarget.CapacityReservationId, targeted-by-id only), `--metadata-options` (HttpPutResponseHopLimit; `HttpTokens` `required`/`optional`, defaulting to `required` except on Windows images), `--launch-template` (LaunchTemplateId/LaunchTemplateName, Version — resolves `$Default`/`$Latest`; direct params override the template) | `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--hibernate-options` | **DONE** |
 | `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
 | `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
@@ -205,7 +145,7 @@ read.
 | `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
 | `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
 | `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
-| `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — secure values are no-ops, downgrades return `UnsupportedOperation` | `--dry-run` | **DONE** |
+| `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`/`optional`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — unmodelled values return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
 | `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
 | `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
@@ -220,8 +160,7 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | `request-spot-instances` | `--instance-count` (default 1), `--type` (`one-time`/`persistent` — stored, behaviour identical), `--spot-price` (echoed only), `--client-token`, `--launch-specification` (ImageId, InstanceType, KeyName, SubnetId, SecurityGroupIds, UserData, BlockDeviceMappings, IamInstanceProfile, Placement.GroupName, NetworkInterfaces), `--tag-specifications` (spot-instances-request) | `--valid-from`, `--valid-until`, `--launch-group`, `--availability-zone-group`, `--block-duration-minutes`, `--instance-interruption-behavior`, `--dry-run` | **DONE** (mock) |
 | `describe-spot-instance-requests` | `--spot-instance-request-ids`, `--filters` (spot-instance-request-id, state, instance-id, launch.image-id, launch.instance-type, launch.key-name, type, launched-availability-zone, tag-key, tag:*) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 | `cancel-spot-instance-requests` | `--spot-instance-request-ids` | `--dry-run` | **DONE** |
-
-`describe-spot-price-history` is **unsupported** (returns `InvalidAction`): on owned hardware there is no spot/on-demand price differential, so any synthetic price would be misleading rather than helpful.
+| `describe-spot-price-history` | — | all | **NOT STARTED** (`InvalidAction`) — on owned hardware there is no spot/on-demand price differential, so any synthetic price would be misleading rather than helpful |
 
 ### EC2 — IAM Instance Profile Associations
 
@@ -249,13 +188,11 @@ Spot Instance Requests (SIRs) are a **mock** over the on-demand `run-instances` 
 | `create-image` | `--instance-id`, `--name`, `--description`, `--tag-specifications` | `--no-reboot`, `--block-device-mappings`, `--dry-run` | **DONE** |
 | `register-image` | `--name`, `--description`, `--architecture` (x86_64/arm64/i386), `--root-device-name`, `--virtualization-type` (hvm), `--boot-mode` (bios/uefi/uefi-preferred), `--block-device-mappings` (root w/ `Ebs.SnapshotId`+`VolumeSize`), `--tag-specifications` | `--billing-products`, `--uefi-data` | **DONE** |
 | `deregister-image` | `--image-id` | `--dry-run` | **DONE** |
-| `copy-image` | `--source-image-id`, `--source-region`, `--name`, `--description`, `--client-token`, `--copy-image-tags`, `--tag-specifications` (image only) | `--encrypted`, `--kms-key-id`, `--destination-outpost-arn`, `--dry-run` | **DONE** |
+| `copy-image` | `--source-image-id`, `--source-region`, `--name`, `--description`, `--client-token`, `--copy-image-tags`, `--tag-specifications` (image only) | `--encrypted`, `--kms-key-id`, `--destination-outpost-arn`, `--dry-run` | **DONE** — metadata-only, no block copy; the new snapshot inherits the source `VolumeID` |
 | `describe-image-attribute` | `--image-id`, `--attribute` (`description`, `blockDeviceMapping`) | `--dry-run`, other attributes (`launchPermission`, `bootMode`, `kernel`, `ramdisk`, `sriovNetSupport`, `productCodes`, `tpmSupport`, `uefiData`, `imdsSupport`, `lastLaunchedTime`, `deregistrationProtection`) | **DONE** |
 | `modify-image-attribute` | `--image-id`, `--description` (top-level or structured) | `--launch-permission`, `--imds-support`, `--operation-type`, `--user-ids`, `--user-groups`, `--organization-arns`, `--product-codes`, `--dry-run`, other `--attribute` values | **DONE** |
 | `reset-image-attribute` | `--image-id`, `--attribute description` | `--attribute launchPermission`, `--dry-run` | **DONE** |
 | `import-image` | — | `--disk-containers`, `--description`, `--architecture`, `--platform` | **NOT STARTED** |
-
-`copy-image` is metadata-only — no block copy. The new snapshot inherits the. source `VolumeID`.
 
 ### EC2 — Volumes (EBS)
 
@@ -314,10 +251,8 @@ Persistence works but stored values are not yet enforced by downstream services.
 | `enable-image-block-public-access` | — | `--image-block-public-access-state` | **NOT STARTED** |
 | `disable-image-block-public-access` | — | `--dry-run` | **NOT STARTED** |
 | `get-image-block-public-access-state` | — | `--dry-run` | **NOT STARTED** |
-| `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** |
-| `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** |
-
-The account-level `modify-/get-instance-metadata-defaults` are blocked on an `aws-sdk-go` bump: the `InstanceMetadataDefaultsResponse` type is absent from our version (these APIs landed ~March 2024), and the gateway's generic handler needs the typed input struct to route them.
+| `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** — account-level; blocked on an `aws-sdk-go` bump, since the gateway's generic handler needs the typed input struct to route it |
+| `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** — account-level; blocked on an `aws-sdk-go` bump, as `InstanceMetadataDefaultsResponse` is absent from our version |
 
 ### EC2 — VPC Core
 
@@ -362,7 +297,7 @@ The account-level `modify-/get-instance-metadata-defaults` are blocked on an `aw
 
 ### EC2 — Egress-Only Internet Gateway
 
-KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on network topology.
+KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on network topology. Implementation is blocked on platform-wide IPv6 support.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -385,9 +320,6 @@ KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on 
 | `replace-route-table-association` | `--association-id`, `--route-table-id` | `--dry-run` | **DONE** |
 
 ### EC2 — Network Interfaces (ENIs)
-
-ENIs are auto-created by `run-instances --subnet-id` and auto-deleted on
-termination. Standalone attach/detach API is internal-only.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
@@ -708,11 +640,11 @@ Trust policies (`AssumeRolePolicyDocument`) reject `NotPrincipal`, `NotAction`, 
 
 ## IMDS (Instance Metadata Service)
 
-Available at `169.254.169.254` from inside every running guest VM, matching AWS. The endpoint is reached from within a guest over plain HTTP, exactly as on EC2, with no in-VM agent to install. DHCP and fully static guests reach it identically, with no in-guest route configuration.
+Available at `169.254.169.254` from inside every running guest VM, matching AWS. The endpoint is reached from within a guest over plain HTTP, with no in-VM agent to install.
 
-**IMDSv2-only.** Every read requires a session token. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
+**IMDSv2 by default.** Every read requires a session token unless the instance opted into IMDSv1. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body unless the requesting ENI's instance carries `MetadataOptions.HttpTokens=optional`.
 
-The EC2 control plane reports this posture faithfully: `describe-instances` returns `MetadataOptions.HttpTokens=required`, and `run-instances`/`modify-instance-metadata-options` reject `--http-tokens optional` (and `--http-endpoint disabled`) with `UnsupportedOperation` — exactly as AWS does under account-level IMDSv2 enforcement.
+IMDSv1 is opt-in per instance via `--metadata-options HttpTokens=optional` on `run-instances` or `modify-instance-metadata-options`, on any platform, exactly as AWS does. The launch default is `required` everywhere except **Windows** images, which default to `optional` because cloudbase-init has no IMDSv2 token support in any release and would otherwise never read metadata at all. `--http-endpoint disabled`, `--http-protocol-ipv6 enabled` and `--instance-metadata-tags enabled` are still rejected with `UnsupportedOperation`.
 
 ```bash
 # Inside the guest VM:
@@ -871,15 +803,9 @@ The default certificate cannot be added/removed via these calls — set it on th
 
 ## ACM (AWS Certificate Manager)
 
-Spinifex both stores externally-issued certificates (`import-certificate`) and
-issues its own (`request-certificate`) for ELBv2 listener references. Certs
-are account-scoped; `describe`/`delete` enforce ownership, and
-`delete-certificate` refuses with `ResourceInUseException` while any load
-balancer listener still references the ARN — no force flag, matching AWS.
+Spinifex both stores externally-issued certificates (`import-certificate`) and issues its own (`request-certificate`) for ELBv2 listener references. Certs are account-scoped; `describe`/`delete` enforce ownership, and `delete-certificate` refuses with `ResourceInUseException` while any load balancer listener still references the ARN — no force flag, matching AWS.
 
-`request-certificate` mints a `CertificateArn` immediately and returns
-`PENDING_VALIDATION`; it never issues inline. The validation mode is derived
-from deployment state, never configured:
+`request-certificate` mints a `CertificateArn` immediately and returns `PENDING_VALIDATION`; it never issues inline. The validation mode is derived from deployment state, never configured:
 
 | Mode | Who writes the DNS record | `ResourceRecord` returned | Renewal | Status |
 | --- | --- | --- | --- | --- |
@@ -888,14 +814,7 @@ from deployment state, never configured:
 | `CNAME_DELEGATION` | operator once, then Spinifex | CNAME, stable | automatic | deferred — never selected yet (northstar cannot serve public authoritative queries); an ARN-stable delegation token is minted on every managed certificate now so this lands as a non-breaking addition |
 | `PRIVATE_CA` | nobody — no validation | none | automatic | **DONE** — issues synchronously against the tenant CA, no domain outside its name constraints |
 
-`PROVIDER_API` is selected when a DNS provider credential is configured;
-`MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only
-option for a deployment with no real, publicly delegated domain. Terraform's
-canonical `aws_acm_certificate` → `aws_route53_record` →
-`aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in
-every mode: where Spinifex owns the record write, no `ResourceRecord` is
-emitted, so `for_each` over `domain_validation_options` yields zero records
-and `aws_acm_certificate_validation` still blocks correctly by polling until
+`PROVIDER_API` is selected when a DNS provider credential is configured; `MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only option for a deployment with no real, publicly delegated domain. Terraform's canonical `aws_acm_certificate` → `aws_route53_record` → `aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in every mode: where Spinifex owns the record write, no `ResourceRecord` is emitted, so `for_each` over `domain_validation_options` yields zero records and `aws_acm_certificate_validation` still blocks correctly by polling until
 `ISSUED`.
 
 | Command | Implemented Flags | Missing Flags | Status |
@@ -914,13 +833,13 @@ and `aws_acm_certificate_validation` still blocks correctly by polling until
 
 Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
 
-- **Engine:** `postgres` 18 only. `EngineVersion` is accepted as `18` or `18.x` and rejected otherwise; there is no in-place version upgrade.
-- **Instance classes:** `db.t3.micro`, `db.t3.small`, `db.t3.medium`, `db.t3.large`, `db.m5.large`, `db.m5.xlarge` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
+- **Engine:** `postgres` 18 only — `EngineVersion` accepts `18` or `18.x`, and there is no in-place upgrade.
+- **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
 - **Storage:** gp3 only, 20–65536 GiB, always encrypted with the cluster key. Grow-only, and a grow is **stop/start with downtime** — the volume cannot be resized while attached.
-- **TLS:** offered, not enforced. The engine serves a per-instance certificate signed by the cluster CA (the same `ca.pem` baked into AMIs), with the ENI IP and the DNS name both in the SAN set, so `sslmode=verify-full` works by name or by address. Clients opt in; a deployment with no cluster CA starts the engine without TLS.
-- **Master user:** administrative but **not a PostgreSQL superuser**, as on AWS. It is created with `CREATEDB` and `CREATEROLE`, owns the initial database, and holds the `rds_superuser` group role (`pg_monitor`, `pg_signal_backend`, `pg_checkpoint`) with `ADMIN OPTION`, so it can grant the same set to roles it creates. It cannot `COPY ... FROM/TO PROGRAM`, read or write server-side files, run `ALTER SYSTEM`, or install **untrusted** extensions — those need the cluster superuser, which no customer credential is. Trusted extensions install normally in a database the master owns. `postgres`, `rdsadmin` and `rds_superuser` are reserved and rejected as `--master-username`.
-- **Backups:** daily COW snapshots of the data volume inside `PreferredBackupWindow`. Retention defaults to 7 days and is capped at 7; `0` disables automated backups. Point-in-time recovery is not implemented.
-- **Availability:** single-AZ. An instance whose host is lost is reported `failed` with a reason in `StatusInfos`; recovery is operator-driven. Engine crashes are restarted in-guest and VM crashes on a live host are restarted by `ec2-health-restart`.
+- **TLS:** offered, not enforced. The engine serves a per-instance certificate signed by the cluster CA (the `ca.pem` baked into AMIs) carrying both the ENI IP and the DNS name in its SAN set, so `sslmode=verify-full` works by name or by address. A deployment with no cluster CA starts the engine without TLS.
+- **Master user:** administrative but **not a PostgreSQL superuser**, as on AWS. It gets `CREATEDB` and `CREATEROLE`, owns the initial database, and holds `rds_superuser` (`pg_monitor`, `pg_signal_backend`, `pg_checkpoint`) with `ADMIN OPTION`, so it can grant that set onward. It cannot `COPY ... FROM/TO PROGRAM`, touch server-side files, run `ALTER SYSTEM`, or install **untrusted** extensions — those need the cluster superuser, which no customer credential is. Trusted extensions install normally in a database it owns. `postgres`, `rdsadmin` and `rds_superuser` are rejected as `--master-username`.
+- **Backups:** daily COW snapshots of the data volume inside `PreferredBackupWindow`. Retention defaults to 7 days and caps at 7; `0` disables automated backups. No point-in-time recovery.
+- **Availability:** single-AZ. Engine crashes restart in-guest and VM crashes on a live host restart via `ec2-health-restart`, but an instance whose host is lost is reported `failed` with a reason in `StatusInfos` and needs operator recovery.
 
 Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stopping`, `stopped`, `starting`, `deleting`, `failed`. (`recovering` is defined in the state machine but unreachable until auto-recovery lands.)
 
@@ -944,8 +863,8 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 | `describe-db-snapshots` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--snapshot-type` (manual, automated) | `--filters`, `--dbi-resource-id`, `--include-shared`, `--include-public` (rejected), `--max-records`, `--marker` | **DONE** |
 | `delete-db-snapshot` | `--db-snapshot-identifier` | — | **DONE** — refused while a restored volume still references the snapshot; the last snapshot released reclaims a retained data volume |
 | `restore-db-instance-from-db-snapshot` | `--db-instance-identifier`, `--db-snapshot-identifier`, `--db-instance-class`, `--allocated-storage` (≥ the snapshot's), `--storage-type` (gp3), `--port`, `--db-subnet-group-name`, `--vpc-security-group-ids`, `--db-parameter-group-name`, `--deletion-protection`, `--tags`, `--engine` (must match the snapshot) | `--db-name` (rejected when it differs from the snapshot's), plus the create rejections | **DONE** — unnamed fields are inherited from the snapshot; the master password comes from the restored datadir |
-
-`copy-db-snapshot` and cross-account snapshot sharing are not implemented (`InvalidAction`).
+| `copy-db-snapshot` | — | all | **NOT STARTED** (`InvalidAction`) |
+| `modify-db-snapshot-attribute` / `describe-db-snapshot-attributes` | — | all | **NOT STARTED** (`InvalidAction`) — cross-account snapshot sharing |
 
 ### RDS — Automated Backups
 
@@ -975,7 +894,7 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 | `delete-db-parameter-group` | `--db-parameter-group-name` | — | **DONE** — refused for a default group and while any instance references it |
 | `reset-db-parameter-group` | — | all | **NOT STARTED** (`InvalidAction`) |
 
-A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`. The resolved set lives on the data volume, so it survives the VM replace a class change performs.
+A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
 
 ### RDS — Tags
 
@@ -985,19 +904,11 @@ A group takes effect on an instance when `modify-db-instance --db-parameter-grou
 | `remove-tags-from-resource` | `--resource-name`, `--tag-keys` | — | **DONE** |
 | `list-tags-for-resource` | `--resource-name` | `--filters` | **DONE** — `describe-db-instances` reports the same tags in `TagList` |
 
-ARNs are AWS-exact: `arn:aws:rds:{region}:{account}:db:{id}`, `:snapshot:{id}`, `:subgrp:{name}`, `:pg:{name}`.
-
 ### RDS — Events
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-events` | `--source-type` (db-instance, db-snapshot), `--source-identifier`, `--event-categories`, `--duration`, `--start-time`, `--end-time`, `--max-records` | `--marker` | **DONE** — 100-event ring per resource, 14-day retention, one-hour default window |
-
-The event ring is the only channel some facts have: a backup that could not be quiesced, a modify applied at the maintenance window rather than immediately, a skipped or failed automated backup, and the reason a failed instance failed.
-
-### RDS — Internal Agent Actions
-
-`RegisterDBInstance`, `SubmitDBStateChange`, `PollDBCommands` and `GetDBBootstrapConfig` are served on the same endpoint but are **not customer API**. They are callable only by a DB VM's own IMDS instance-role credentials, bound to that instance's identity, and are refused to every customer principal by class before any policy is evaluated. They are listed here so an operator reading a gateway log recognises them; nothing outside the guest should call them.
 
 ### RDS — Rejected Parameters
 

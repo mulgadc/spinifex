@@ -6,6 +6,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckCapacity(t *testing.T) {
@@ -81,6 +82,54 @@ func TestCheckCapacity(t *testing.T) {
 func TestCheckCapacity_ErrorCode(t *testing.T) {
 	err := checkCapacity(nil, 5120)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, awserrors.ValidErrorCodeFromError(err))
+}
+
+// TestCheckCapacity_UnknownVRAM pins that an available device
+// reporting 0 MiB (undiscoverable, not exhausted) must produce a distinct,
+// actionable error naming the device — not the generic "no free GPU device
+// has N MiB free" exhaustion message, which would mislead an operator into
+// thinking the card is genuinely too small or already claimed.
+func TestCheckCapacity_UnknownVRAM(t *testing.T) {
+	snapshot := []gpu.PoolEntry{
+		{
+			Device:    gpu.GPUDevice{PCIAddress: "0000:03:00.0", Model: "NVIDIA RTX A1000", VendorID: "10de", DeviceID: "25b0", MemoryMiB: 0},
+			Available: true,
+		},
+	}
+	err := checkCapacity(snapshot, 5120)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "0000:03:00.0")
+	assert.Contains(t, err.Error(), "10de:25b0")
+	assert.Contains(t, err.Error(), "gpu model catalog")
+	assert.Contains(t, err.Error(), "GPUModelOverride")
+	assert.NotContains(t, err.Error(), "no free GPU device has")
+}
+
+// TestCheckCapacity_UnknownVRAM_DistinctFromExhaustion proves the two
+// failure modes produce different messages for the same minVRAMMiB, so an
+// operator (or a caller matching on message text) can tell "data gap" apart
+// from "genuinely too small / already claimed".
+func TestCheckCapacity_UnknownVRAM_DistinctFromExhaustion(t *testing.T) {
+	unknownErr := checkCapacity([]gpu.PoolEntry{
+		{Device: gpu.GPUDevice{MemoryMiB: 0}, Available: true},
+	}, 5120)
+	exhaustedErr := checkCapacity([]gpu.PoolEntry{
+		{Device: gpu.GPUDevice{MemoryMiB: 2048}, Available: true},
+	}, 5120)
+	require.Error(t, unknownErr)
+	require.Error(t, exhaustedErr)
+	assert.NotEqual(t, unknownErr.Error(), exhaustedErr.Error())
+}
+
+// TestCheckCapacity_UnknownVRAM_SkippedWhenAnotherDeviceSuffices ensures an
+// unknown-VRAM device never blocks admission when a different available
+// device in the same snapshot already satisfies minVRAMMiB.
+func TestCheckCapacity_UnknownVRAM_SkippedWhenAnotherDeviceSuffices(t *testing.T) {
+	snapshot := []gpu.PoolEntry{
+		{Device: gpu.GPUDevice{MemoryMiB: 0}, Available: true},
+		{Device: gpu.GPUDevice{MemoryMiB: 16384}, Available: true},
+	}
+	assert.NoError(t, checkCapacity(snapshot, 5120))
 }
 
 type stubSnapshotter struct {

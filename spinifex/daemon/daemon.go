@@ -2836,6 +2836,11 @@ func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manage
 		models = append(models, resolveGPUModel(dev, cfg.GPUModelOverrides))
 	}
 
+	// Apply MemoryMiB overrides to the raw devices too, not just the advertised
+	// model above, so a configured override reaches admission checks (e.g.
+	// Bedrock capacity) that read Device.MemoryMiB straight from the pool.
+	applyGPUModelOverrides(wholeGPU, cfg.GPUModelOverrides)
+
 	mgr := gpu.NewManager(wholeGPU)
 	for _, me := range migEntries {
 		if len(me.existing) > 0 {
@@ -2849,6 +2854,28 @@ func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manage
 		"whole_gpu", len(wholeGPU), "mig_free", freeMIGGPUs,
 		"mig_slices_recovered", recoveredSlices, "mig_profiles", len(migProfiles))
 	return mgr, models, migProfiles
+}
+
+// applyGPUModelOverrides sets MemoryMiB on each device matched by a
+// GPUModelOverride, in place, so a corrected VRAM figure reaches admission
+// checks and not just the advertised model.
+func applyGPUModelOverrides(devices []gpu.GPUDevice, overrides []config.GPUModelOverride) {
+	for i := range devices {
+		dev := &devices[i]
+		for _, o := range overrides {
+			if o.VendorID != dev.VendorID || o.DeviceID != dev.DeviceID {
+				continue
+			}
+			// Only a positive value applies. An override set purely for
+			// xvga_off or mig_profile leaves memory_mib at 0, which the struct
+			// cannot distinguish from a deliberate 0 — so treat it as "not
+			// specified" rather than wiping discovered VRAM.
+			if o.MemoryMiB > 0 {
+				dev.MemoryMiB = o.MemoryMiB
+			}
+			break
+		}
+	}
 }
 
 // resolveGPUModel maps a GPU device to an instance type model. Overrides take

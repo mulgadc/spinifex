@@ -89,12 +89,12 @@ var spinifexUICmd = &cobra.Command{
 	Short:   "Manage the spinifex-ui service",
 }
 
-// predastoreBind is the local predastore bind host, port and host_id derived
+// predastoreBind is the local predastore bind host, port and node_id derived
 // directly from spinifex.toml.
 type predastoreBind struct {
 	Host   string
 	Port   int
-	HostID int
+	NodeID int
 }
 
 // derivePredastoreBind reads this node's [nodes.<node>.predastore] section
@@ -104,9 +104,9 @@ type predastoreBind struct {
 // normalization for callers that DIAL predastore, not for the address
 // predastore itself binds to.
 //
-// host_id defaults to 0 when spinifex.toml omits the key, which runs the whole
-// predastore topology in this one process — the single-node deployment. Only a
-// multi-node config names a host (>= 1), selecting just that host's nodes.
+// node_id defaults to -1 (co-located: every configured DB peer runs in this
+// one process) when spinifex.toml omits the key. predastore rejects
+// node_id=0, so an absent key must never silently resolve to that.
 func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, error) {
 	node := clusterConfig.Node
 	bindKey := "nodes." + node + ".predastore.host"
@@ -124,7 +124,12 @@ func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, 
 		return predastoreBind{}, fmt.Errorf("parse nodes.%s.predastore.host port %q: %w", node, portStr, err)
 	}
 
-	return predastoreBind{Host: host, Port: port, HostID: clusterConfig.Nodes[node].Predastore.HostID}, nil
+	nodeID := -1
+	if viper.IsSet("nodes." + node + ".predastore.node_id") {
+		nodeID = clusterConfig.Nodes[node].Predastore.NodeID
+	}
+
+	return predastoreBind{Host: host, Port: port, NodeID: nodeID}, nil
 }
 
 var predastoreStartCmd = &cobra.Command{
@@ -139,9 +144,9 @@ var predastoreStartCmd = &cobra.Command{
 		host := viper.GetString("predastore-host")
 		basePath := viper.GetString("predastore-base-path")
 		debug := viper.GetBool("predastore-debug")
-		hostID := viper.GetInt("predastore-host-id")
+		nodeID := viper.GetInt("predastore-node-id")
 
-		// Derive bind host/port/host-id from spinifex.toml when its path is
+		// Derive bind host/port/node-id from spinifex.toml when its path is
 		// known and the caller hasn't explicitly overridden them — replaces
 		// predastore-start.sh, which used to do this derivation and exec us.
 		if cfgFile := viper.GetString("config"); cfgFile != "" {
@@ -161,8 +166,8 @@ var predastoreStartCmd = &cobra.Command{
 			if !viper.IsSet("predastore-port") {
 				port = bind.Port
 			}
-			if !viper.IsSet("predastore-host-id") {
-				hostID = bind.HostID
+			if !viper.IsSet("predastore-node-id") {
+				nodeID = bind.NodeID
 			}
 		}
 
@@ -216,7 +221,7 @@ var predastoreStartCmd = &cobra.Command{
 
 			EncryptionKeyFile: encryptionKeyFile,
 
-			HostID: hostID,
+			NodeID: nodeID,
 
 			PprofEnabled:    pprofEnabled,
 			PprofOutputPath: pprofOutput,
@@ -1029,6 +1034,7 @@ func runNorthstarStart(options northstarStartOptions, deps northstarStartDepende
 	svc, err := deps.newService(&northstar.Config{
 		ConfigPath: configPath,
 		BasePath:   baseDir,
+		NodeID:     nodeConfig.Predastore.NodeID,
 		NatsHost:   nodeConfig.NATS.Host,
 		NatsToken:  nodeConfig.NATS.ACL.Token,
 		NatsCACert: nodeConfig.NATS.CACert,
@@ -1176,7 +1182,7 @@ func bindPredastoreNamespacedEnv() {
 }
 
 // bindPredastoreCollisionEnv namespaces predastore's port, debug, tls-cert,
-// tls-key, encryption-key-file and host-id keys, which nats and awsgw also
+// tls-key, encryption-key-file and node-id keys, which nats and awsgw also
 // bind bare. Each derived env name now matches its own BindEnv target.
 func bindPredastoreCollisionEnv() {
 	viper.BindEnv("predastore-port", "SPINIFEX_PREDASTORE_PORT")
@@ -1194,8 +1200,8 @@ func bindPredastoreCollisionEnv() {
 	viper.BindEnv("predastore-encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
 	viper.BindPFlag("predastore-encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
 
-	viper.BindEnv("predastore-host-id", "SPINIFEX_PREDASTORE_HOST_ID")
-	viper.BindPFlag("predastore-host-id", predastoreCmd.PersistentFlags().Lookup("host-id"))
+	viper.BindEnv("predastore-node-id", "SPINIFEX_PREDASTORE_NODE_ID")
+	viper.BindPFlag("predastore-node-id", predastoreCmd.PersistentFlags().Lookup("node-id"))
 }
 
 // bindNatsCollisionEnv namespaces nats's port, host and debug keys, which
@@ -1275,13 +1281,12 @@ func init() {
 	// Predastore at-rest encryption master key (per node; mode 0600)
 	predastoreCmd.PersistentFlags().String("encryption-key-file", "", "Path to this node's 32-byte AES-256 master key file (required)")
 
-	// Predastore host ID: which [[host]] of the predastore topology this
-	// process is. Default 0 runs every node of the topology in this process,
-	// which is the single-node deployment. Multi-node deployments set the
-	// host's real ID (>= 1) via SPINIFEX_PREDASTORE_HOST_ID or --host-id.
-	predastoreCmd.PersistentFlags().Int("host-id", 0, "Predastore cluster host ID (0 = run the whole topology in this process, >= 1 = this host only)")
+	// Predastore Node ID. Default -1 is dev mode (launch every configured
+	// QUIC node in-process). Production deployments set this to the node's
+	// real ID (>= 1) via SPINIFEX_PREDASTORE_NODE_ID or --node-id.
+	predastoreCmd.PersistentFlags().Int("node-id", -1, "Predastore (S3) node ID (-1 = dev mode, >= 1 = production)")
 
-	// Namespaced viper keys for port/debug/tls-cert/tls-key/encryption-key-file/host-id
+	// Namespaced viper keys for port/debug/tls-cert/tls-key/encryption-key-file/node-id
 	// (see bindPredastoreCollisionEnv doc comment)
 	bindPredastoreCollisionEnv()
 

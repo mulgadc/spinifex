@@ -26,6 +26,7 @@ type Config struct {
 	ConfigPath string
 	// BasePath is the node base dir where the PID file is written.
 	BasePath   string
+	NodeID     int
 	NatsHost   string
 	NatsToken  string
 	NatsCACert string

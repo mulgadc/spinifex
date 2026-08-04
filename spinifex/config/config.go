@@ -262,9 +262,7 @@ type PredastoreConfig struct {
 	AccessKey string `json:"AccessKey" mapstructure:"accesskey"`
 	SecretKey string `json:"SecretKey" mapstructure:"secretkey"`
 	BaseDir   string `json:"BaseDir" mapstructure:"base_dir"`
-	// HostID is which [[host]] of the predastore topology this node runs;
-	// unset means the node runs the whole topology in one process.
-	HostID int `json:"HostID" mapstructure:"host_id"`
+	NodeID    int    `json:"NodeID" mapstructure:"node_id"`
 }
 
 // GPUModelOverride maps a PCI vendor/device ID to a GPU instance family for

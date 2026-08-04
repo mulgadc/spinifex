@@ -800,10 +800,9 @@ func TestCreateServiceDirectories_Idempotent(t *testing.T) {
 // --- Predastore multi-node config ---
 
 func TestGenerateMultiNodePredastoreConfig_Success(t *testing.T) {
-	tmpl := `{{range .Nodes}}[[host]]
+	tmpl := `{{range .Nodes}}[[db]]
 id = {{.ID}}
-public_addr = "{{.Host}}:6660"
-data_dir = "{{$.PredastoreDataDir}}"
+host = "{{.Host}}"
 {{end}}`
 	nodes := []PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
@@ -811,51 +810,10 @@ data_dir = "{{$.PredastoreDataDir}}"
 		{ID: 3, Host: "10.0.0.3"},
 	}
 
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	require.NoError(t, err)
-	assert.Contains(t, result, `public_addr = "10.0.0.1:6660"`)
-	assert.Contains(t, result, `public_addr = "10.0.0.3:6660"`)
-	assert.Contains(t, result, `data_dir = "/var/lib/spinifex/predastore/cluster"`)
-}
-
-// Each machine hosts one shard-storage node and one state replica, with node
-// IDs unique across both roles so the topology validates.
-func TestGenerateMultiNodePredastoreConfig_Topology(t *testing.T) {
-	tmpl := `{{range .ClusterNodes}}[[node]]
-id = {{.ID}}
-host_id = {{.HostID}}
-role = "{{.Role}}"
-{{end}}`
-	nodes := []PredastoreNodeConfig{
-		{ID: 1, Host: "10.0.0.1"},
-		{ID: 2, Host: "10.0.0.2"},
-		{ID: 3, Host: "10.0.0.3"},
-	}
-
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
-	require.NoError(t, err)
-
-	assert.Contains(t, result, "id = 1\nhost_id = 1\nrole = \"shard-storage\"")
-	assert.Contains(t, result, "id = 3\nhost_id = 3\nrole = \"shard-storage\"")
-	assert.Contains(t, result, "id = 4\nhost_id = 1\nrole = \"state-replica\"")
-	assert.Contains(t, result, "id = 6\nhost_id = 3\nrole = \"state-replica\"")
-}
-
-func TestPredastoreTopology_UniqueIDsAcrossRoles(t *testing.T) {
-	topology := PredastoreTopology([]PredastoreNodeConfig{
-		{ID: 1, Host: "10.0.0.1"},
-		{ID: 2, Host: "10.0.0.2"},
-	})
-
-	require.Len(t, topology, 4)
-	seen := map[int]bool{}
-	for _, n := range topology {
-		assert.False(t, seen[n.ID], "duplicate node id %d", n.ID)
-		seen[n.ID] = true
-		assert.Contains(t, []int{1, 2}, n.HostID)
-	}
-	assert.Equal(t, "shard-storage", topology[0].Role)
-	assert.Equal(t, "state-replica", topology[2].Role)
+	assert.Contains(t, result, `host = "10.0.0.1"`)
+	assert.Contains(t, result, `host = "10.0.0.3"`)
 }
 
 // The northstar template fields were declared but never assigned, so every
@@ -868,7 +826,7 @@ func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *
 		{ID: 2, Host: "10.0.0.2"},
 	}
 
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0,
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0,
 		NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: "northstar"})
 	require.NoError(t, err)
 	assert.Equal(t, `access = "NSAK" secret = "NSSK" bucket = "northstar"`, result)
@@ -883,7 +841,7 @@ func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) 
 		{ID: 2, Host: "10.0.0.2"},
 	}
 
-	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0,
+	result, err := GenerateMultiNodePredastoreConfig(tmpl, nodes, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0,
 		NorthstarCredentials{})
 	require.NoError(t, err)
 	assert.Equal(t, `access = "" secret = "" bucket = ""`, result)
@@ -894,7 +852,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 
 	_, err := GenerateMultiNodePredastoreConfig(tmpl, []PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "at least 2 nodes")
 }
@@ -902,7 +860,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
 	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []PredastoreNodeConfig{
 		{ID: 1, Host: "a"}, {ID: 2, Host: "b"}, {ID: 3, Host: "c"},
-	}, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
+	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse")
 }
@@ -921,40 +879,26 @@ func TestFindNodeIDByIP(t *testing.T) {
 	assert.Equal(t, 0, FindNodeIDByIP(nil, "10.0.0.1"))
 }
 
-// --- ParsePredastoreHostIDFromConfig ---
+// --- ParsePredastoreNodeIDFromConfig ---
 
-func TestParsePredastoreHostIDFromConfig(t *testing.T) {
+func TestParsePredastoreNodeIDFromConfig(t *testing.T) {
 	tomlContent := `
-[[host]]
+[[db]]
 id = 1
-bind_addr = "0.0.0.0:6660"
-public_addr = "10.0.0.1:6660"
+host = "10.0.0.1"
 
-[[host]]
+[[db]]
 id = 2
-bind_addr = "0.0.0.0:6660"
-public_addr = "10.0.0.2:6660"
+host = "10.0.0.2"
 
-[[host]]
+[[db]]
 id = 3
-bind_addr = "0.0.0.0:6660"
-public_addr = "10.0.0.3:6660"
+host = "10.0.0.3"
 `
-	assert.Equal(t, 2, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.2"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.99"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig("invalid toml {{{", "10.0.0.1"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig("", "10.0.0.1"))
-}
-
-// A public_addr without a port must still match, so a hand-edited config that
-// omits it resolves to a host rather than silently to zero.
-func TestParsePredastoreHostIDFromConfig_AddressWithoutPort(t *testing.T) {
-	tomlContent := `
-[[host]]
-id = 7
-public_addr = "10.0.0.7"
-`
-	assert.Equal(t, 7, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.7"))
+	assert.Equal(t, 2, ParsePredastoreNodeIDFromConfig(tomlContent, "10.0.0.2"))
+	assert.Equal(t, 0, ParsePredastoreNodeIDFromConfig(tomlContent, "10.0.0.99"))
+	assert.Equal(t, 0, ParsePredastoreNodeIDFromConfig("invalid toml {{{", "10.0.0.1"))
+	assert.Equal(t, 0, ParsePredastoreNodeIDFromConfig("", "10.0.0.1"))
 }
 
 // --- Integration: Full config generation flow ---

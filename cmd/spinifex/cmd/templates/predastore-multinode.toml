@@ -1,10 +1,10 @@
 # Predastore S3-compatible storage configuration file in TOML format.
 # Generated for multi-node cluster
-version = "5"
+version = "4"
 region = "{{.Region}}"
 
-# The gateway listen address comes from the daemon CLI options: a top-level
-# host key would collide with the [[host]] topology tables below.
+host = "0.0.0.0"
+port = 8443
 
 debug = false
 
@@ -16,28 +16,26 @@ parity = 1
 data = 2
 parity = 1
 {{- end}}
-
-# One host per machine: a predastore process owning a socket and a data
-# directory. bind_addr binds every interface; public_addr is what the other
-# hosts dial.
 {{- range .Nodes}}
 
-[[host]]
+[[db]]
 id = {{.ID}}
-bind_addr = "0.0.0.0:6660"
-public_addr = "{{.Host}}:6660"
-data_dir = "{{$.PredastoreDataDir}}"
+host = "{{.Host}}"
+port = 6660
+path = "distributed/db/node-{{.ID}}/"
+access_key_id = "{{$.AccessKey}}"
+secret_access_key = "{{$.SecretKey}}"
+{{- if eq .ID 1}}
+leader = true
 {{- end}}
+{{- end}}
+{{- range .Nodes}}
 
-# Nodes are roles pinned to a host: each machine carries one shard-storage
-# node for erasure-coded object shards and one state replica for the Raft
-# quorum over global state.
-{{- range .ClusterNodes}}
-
-[[node]]
+[[nodes]]
 id = {{.ID}}
-host_id = {{.HostID}}
-role = "{{.Role}}"
+host = "{{.Host}}"
+port = 9991
+path = "distributed/nodes/node-{{.ID}}/"
 {{- end}}
 
 [[buckets]]

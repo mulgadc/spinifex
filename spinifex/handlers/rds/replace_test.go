@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +59,27 @@ func TestReplaceInstanceVM_ReusesTheEndpointENIAndDataVolume(t *testing.T) {
 
 // The engine is checkpointed and the old VM is gone before the new one comes
 // up, or two VMs hold the same datadir.
+func TestReplaceInstanceVM_IAMFailureLeavesTheCurrentVMServing(t *testing.T) {
+	h := newModifyHarness(t)
+	rec := seedReplaceable(t, h, modifiableRecord())
+	iamErr := errors.New("IAM store unavailable")
+	h.iam.policyErr = iamErr
+
+	err := h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{
+		GrowStorageToGiB: 80,
+		Reason:           "the instance class changed",
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, iamErr)
+	assert.Empty(t, h.agent.received())
+	assert.Empty(t, h.launch.launcher.terminated)
+	assert.Empty(t, h.launch.enis.deleted)
+	assert.Empty(t, h.storage.modified)
+	assert.Nil(t, h.launch.launcher.input)
+	assert.Equal(t, testInstance, h.record(t).InstanceID)
+}
+
 func TestReplaceInstanceVM_StopsTheEngineAndTerminatesTheOldVMFirst(t *testing.T) {
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
@@ -298,4 +320,5 @@ func TestReplaceInstanceVM_LaunchesWithTheInstancesOwnIdentity(t *testing.T) {
 	assert.Equal(t, testAccountID, h.launch.launcher.input.ExtraENIs[0].AccountID)
 	assert.NotEqual(t, testAccountID, h.launch.launcher.input.AccountID,
 		"the VM and its management NIC live in the system account")
+	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }

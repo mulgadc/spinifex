@@ -63,6 +63,12 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	if err != nil {
 		return nil, err
 	}
+	// The agent cannot bootstrap without this profile, so resolve it before the
+	// identifier reservation or restored-volume creation.
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	if err != nil {
+		return nil, err
+	}
 
 	// The record is the identifier's reservation, exactly as at create, and is
 	// withdrawn on any failure below.
@@ -124,7 +130,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 			EngineVersion:        req.EngineVersion,
 			EnginePort:           req.Port,
 		}),
-		IamInstanceProfileArn: ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID),
+		IamInstanceProfileArn: profileARN,
 	})
 	if err != nil {
 		return nil, err

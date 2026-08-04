@@ -183,8 +183,13 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 	}
 
 	// Replies are published before the subscription is opened so a reply is not
-	// delayed by the poll's own wait.
-	publishReplies(ctx, nc, id, input.Replies)
+	// delayed by the poll's own wait. Publication is part of poll success: the
+	// agent retains and retries this entire batch when the poll fails.
+	if err := publishReplies(nc, id, input.Replies); err != nil {
+		slog.ErrorContext(ctx, "RDS: publish command replies failed",
+			"dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 
 	sub, err := nc.QueueSubscribeSync(
 		handlers_rds.BusCommandSubject(id.AccountID, id.DBInstanceIdentifier),
@@ -234,9 +239,7 @@ func pollWait(requested int64) time.Duration {
 	return min(max(time.Duration(requested)*time.Second, minPollWait), maxPollWait)
 }
 
-// Failures are logged rather than returned: a lost reply times the issuer out,
-// the same outcome as a lost command and better than failing the whole poll.
-func publishReplies(ctx context.Context, nc *nats.Conn, id *agentIdentity, replies []handlers_rds.CommandReply) {
+func publishReplies(nc *nats.Conn, id *agentIdentity, replies []handlers_rds.CommandReply) error {
 	subject := handlers_rds.BusCommandReplySubject(id.AccountID, id.DBInstanceIdentifier)
 	for _, reply := range replies {
 		if reply.CommandID == "" {
@@ -244,11 +247,11 @@ func publishReplies(ctx context.Context, nc *nats.Conn, id *agentIdentity, repli
 		}
 		data, err := json.Marshal(reply)
 		if err != nil {
-			slog.ErrorContext(ctx, "RDS: marshal command reply", "commandID", reply.CommandID, "err", err)
-			continue
+			return fmt.Errorf("marshal command reply %s: %w", reply.CommandID, err)
 		}
 		if err := nc.Publish(subject, data); err != nil {
-			slog.ErrorContext(ctx, "RDS: publish command reply", "commandID", reply.CommandID, "err", err)
+			return fmt.Errorf("publish command reply %s: %w", reply.CommandID, err)
 		}
 	}
+	return nil
 }

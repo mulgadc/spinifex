@@ -53,6 +53,12 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 		}
 		instanceType = resolved
 	}
+	// Resolve the profile before stopping the engine or terminating its VM. A
+	// profile failure must leave the current database serving.
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	if err != nil {
+		return err
+	}
 
 	// Checkpointed first so the replacement boots on a clean datadir rather than
 	// one it has to replay a WAL over. A wedged agent degrades this rather than
@@ -75,7 +81,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 		}
 	}
 
-	launched, err := s.launchReplacementVM(ctx, accountID, rec, instanceType)
+	launched, err := s.launchReplacementVM(ctx, accountID, rec, instanceType, profileARN)
 	if err != nil {
 		return err
 	}
@@ -119,7 +125,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 // (D8): it gets the port, the resolved parameters and a freshly minted serving
 // cert, but no master password, and rds-init skips initdb on the datadir it
 // finds already initialised.
-func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec *DBInstanceRecord, instanceType string) (*LaunchOutput, error) {
+func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec *DBInstanceRecord, instanceType, profileARN string) (*LaunchOutput, error) {
 	launched, err := LaunchDBInstanceVM(ctx, s.deps.Launch, LaunchInput{
 		DBInstanceIdentifier: rec.DBInstanceIdentifier,
 		AccountID:            accountID,
@@ -139,7 +145,7 @@ func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec
 			EngineVersion:        rec.EngineVersion,
 			EnginePort:           rec.Port,
 		}),
-		IamInstanceProfileArn: ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID),
+		IamInstanceProfileArn: profileARN,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("launch the replacement VM for %s: %w", rec.DBInstanceIdentifier, err)

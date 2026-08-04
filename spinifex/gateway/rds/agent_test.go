@@ -3,6 +3,7 @@ package gateway_rds
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,62 @@ func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
 
 // The agent's replies ride the next poll and are republished for the issuer,
 // which correlates them by command ID.
+func TestPublishReplies_ReturnsNATSPublishFailure(t *testing.T) {
+	nc := newIndexedNATS(t)
+	closed, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	closed.Close()
+
+	err = publishReplies(closed, &agentIdentity{
+		AccountID: testAccountID, DBInstanceIdentifier: testDBID,
+	}, []handlers_rds.CommandReply{{CommandID: "cmd-1"}})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, nats.ErrConnectionClosed)
+}
+
+func TestPublishReplies_StopsAtFirstPublicationFailure(t *testing.T) {
+	nc := newIndexedNATS(t)
+	replySub, err := nc.SubscribeSync(handlers_rds.BusCommandReplySubject(testAccountID, testDBID))
+	require.NoError(t, err)
+	defer func() { _ = replySub.Unsubscribe() }()
+	require.NoError(t, nc.Flush())
+
+	err = publishReplies(nc, &agentIdentity{
+		AccountID: testAccountID, DBInstanceIdentifier: testDBID,
+	}, []handlers_rds.CommandReply{
+		{CommandID: "cmd-1", Status: handlers_rds.CommandStatusSucceeded},
+		{CommandID: "cmd-2", Message: strings.Repeat("x", int(nc.MaxPayload()))},
+		{CommandID: "cmd-3", Status: handlers_rds.CommandStatusSucceeded},
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, nats.ErrMaxPayload)
+	msg, err := replySub.NextMsg(time.Second)
+	require.NoError(t, err)
+	var reply handlers_rds.CommandReply
+	require.NoError(t, json.Unmarshal(msg.Data, &reply))
+	assert.Equal(t, "cmd-1", reply.CommandID)
+	_, err = replySub.NextMsg(100 * time.Millisecond)
+	assert.Error(t, err, "replies after the first failure must not be published")
+}
+
+func TestPollDBCommands_FailsWhenReplyPublicationFails(t *testing.T) {
+	nc := newIndexedNATS(t)
+
+	out, err := PollDBCommands(t.Context(), &PollDBCommandsInput{
+		WaitTimeSeconds: 1,
+		Replies: []handlers_rds.CommandReply{{
+			CommandID: "cmd-too-large",
+			Message:   strings.Repeat("x", int(nc.MaxPayload())),
+		}},
+	}, nc, agentCaller())
+
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
 func TestPollDBCommands_RepublishesReplies(t *testing.T) {
 	nc := newIndexedNATS(t)
 	replySub, err := nc.SubscribeSync(handlers_rds.BusCommandReplySubject(testAccountID, testDBID))

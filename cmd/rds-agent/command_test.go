@@ -7,6 +7,8 @@ import (
 	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCommander_DispatchesByNameAndReplies(t *testing.T) {
@@ -99,6 +101,56 @@ func TestCommander_RunCarriesRepliesOnTheNextPoll(t *testing.T) {
 	if got := replies[1][0]; got.CommandID != "cmd-1" || got.Status != handlers_rds.CommandStatusSucceeded {
 		t.Errorf("second poll carried %+v, want the succeeded reply for cmd-1", got)
 	}
+}
+
+func TestCommander_RetainsAndRetriesTheCompletePendingBatch(t *testing.T) {
+	cp := newFakeControlPlane()
+	pending := []handlers_rds.CommandReply{
+		{CommandID: "cmd-1", Status: handlers_rds.CommandStatusSucceeded},
+		{CommandID: "cmd-2", Status: handlers_rds.CommandStatusFailed, Message: "disk full"},
+	}
+	c := newCommander(cp, commandRegistry{
+		"reload-parameters": func(context.Context, handlers_rds.Command) (string, error) {
+			return "reloaded", nil
+		},
+	}, 10*time.Millisecond)
+	c.pending = append([]handlers_rds.CommandReply(nil), pending...)
+	cp.pollErr = errors.New("reply publication failed")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	<-cp.polled
+	cancel()
+	<-done
+
+	assert.Equal(t, pending, c.pending)
+	replies := cp.snapshotReplies()
+	require.Len(t, replies, 1)
+	assert.Equal(t, pending, replies[0])
+
+	cp.mu.Lock()
+	cp.pollErr = nil
+	cp.pollQueue = [][]handlers_rds.Command{{{
+		CommandID: "cmd-3",
+		Type:      "reload-parameters",
+	}}}
+	cp.mu.Unlock()
+
+	ctx, cancel = context.WithCancel(context.Background())
+	done = make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	waitFor(t, func() bool {
+		return len(cp.snapshotReplies()) >= 3
+	}, "the retained batch to succeed and the new reply to reach the following poll")
+	cancel()
+	<-done
+
+	replies = cp.snapshotReplies()
+	assert.Equal(t, pending, replies[1], "the complete failed batch must be retried in order")
+	require.Len(t, replies[2], 1)
+	assert.Equal(t, "cmd-3", replies[2][0].CommandID)
+	assert.Equal(t, handlers_rds.CommandStatusSucceeded, replies[2][0].Status)
 }
 
 // A poll error must not spin the loop: without a backoff a gateway that is down

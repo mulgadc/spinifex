@@ -2,7 +2,9 @@ package handlers_rds
 
 import (
 	"encoding/json"
-	"log/slog"
+	"errors"
+	"fmt"
+	"strings"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
@@ -52,26 +54,25 @@ var instanceRoleInlinePolicy = func() string {
 // daemon boot and fails permanently on the node that loses.
 type IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
 
-// Returns the instance-profile ARN, or "" when IAM is unwired or the ensure
-// failed. Unlike EKS there is no static-credential fallback: without the role
-// the agent cannot authenticate, so an empty ARN launches a VM whose agent
-// never registers and the reconciler marks failed.
-func ensureInstanceProfile(provider IAMProvider, accountID string) string {
+// Returns the mandatory instance-profile ARN. Unlike EKS there is no
+// static-credential fallback: without the role the agent cannot authenticate.
+func ensureInstanceProfile(provider IAMProvider, accountID string) (string, error) {
 	if provider == nil {
-		slog.Warn("rds: IAM unwired; the DB VM agent will have no gateway credentials")
-		return ""
+		return "", errors.New("rds: IAM provider is not configured")
 	}
 	iamSvc := provider()
 	if iamSvc == nil {
-		slog.Warn("rds: IAM service unavailable; the DB VM agent will have no gateway credentials")
-		return ""
+		return "", errors.New("rds: IAM service is unavailable")
 	}
 	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iamSvc, accountID,
 		InstanceRoleName, instanceRoleInlinePolicyName, instanceRoleInlinePolicy)
 	if err != nil {
-		slog.Warn("rds: ensure instance profile failed; the DB VM agent will have no gateway credentials",
-			"role", InstanceRoleName, "err", err)
-		return ""
+		return "", fmt.Errorf("rds: ensure instance profile %s for account %s: %w",
+			InstanceRoleName, accountID, err)
 	}
-	return profileARN
+	if strings.TrimSpace(profileARN) == "" {
+		return "", fmt.Errorf("rds: ensure instance profile %s for account %s: empty profile ARN",
+			InstanceRoleName, accountID)
+	}
+	return profileARN, nil
 }

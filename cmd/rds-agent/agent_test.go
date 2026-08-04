@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -99,7 +100,7 @@ func (f *fakeControlPlane) GetBootstrapConfig(_ context.Context, id identity) (*
 
 func (f *fakeControlPlane) PollCommands(ctx context.Context, _ identity, replies []handlers_rds.CommandReply, _ time.Duration) ([]handlers_rds.Command, error) {
 	f.mu.Lock()
-	f.pollReplies = append(f.pollReplies, replies)
+	f.pollReplies = append(f.pollReplies, slices.Clone(replies))
 	err := f.pollErr
 	var out []handlers_rds.Command
 	if len(f.pollQueue) > 0 {
@@ -132,7 +133,11 @@ func (f *fakeControlPlane) snapshotStates() []submittedState {
 func (f *fakeControlPlane) snapshotReplies() [][]handlers_rds.CommandReply {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([][]handlers_rds.CommandReply(nil), f.pollReplies...)
+	out := make([][]handlers_rds.CommandReply, len(f.pollReplies))
+	for i := range f.pollReplies {
+		out[i] = slices.Clone(f.pollReplies[i])
+	}
+	return out
 }
 
 // testConfig points the agent's file output at a temp dir and its probe at a

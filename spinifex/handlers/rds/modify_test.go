@@ -30,6 +30,7 @@ type modifyHarness struct {
 	nc      *nats.Conn
 	launch  *launchHarness
 	network *fakeNetwork
+	iam     *fakeRDSEnsurer
 	cmdr    *fakeInstanceCommander
 	storage *fakeVolumeResizer
 	vmState *fakeInstanceState
@@ -51,6 +52,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		nc:      nc,
 		launch:  newLaunchHarness(),
 		network: newFakeNetwork(),
+		iam:     &fakeRDSEnsurer{},
 		cmdr:    &fakeInstanceCommander{vm: vmState},
 		storage: newFakeVolumeResizer(testDataVolume, 20),
 		vmState: vmState,
@@ -60,6 +62,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		LoadCA:        newTestCA(t),
 		Launch:        h.launch.deps(),
 		Network:       h.network,
+		IAM:           testIAMProvider(h.iam),
 		Instances:     h.cmdr,
 		Storage:       h.storage,
 		InstanceState: h.vmState,

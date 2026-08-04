@@ -4115,6 +4115,57 @@ func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
 	assert.Equal(t, int64(12288), m.MemoryMiB)
 }
 
+// TestApplyGPUModelOverrides_SetsDeviceMemory pins that a GPUModelOverride
+// reaches the raw device passed into gpu.NewManager, not just the advertised
+// instance type, so admission checks that read Device.MemoryMiB directly
+// (e.g. Bedrock capacity) see the override too.
+func TestApplyGPUModelOverrides_SetsDeviceMemory(t *testing.T) {
+	devices := []gpu.GPUDevice{
+		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 0},
+		{VendorID: "10de", DeviceID: "2236", PCIAddress: "0000:04:00.0", MemoryMiB: 23028},
+	}
+	overrides := []config.GPUModelOverride{
+		{VendorID: "10de", DeviceID: "25b0", Name: "RTX A1000", MemoryMiB: 8188},
+	}
+	applyGPUModelOverrides(devices, overrides)
+	assert.Equal(t, int64(8188), devices[0].MemoryMiB, "overridden device should carry the corrected VRAM")
+	assert.Equal(t, int64(23028), devices[1].MemoryMiB, "device with no matching override is untouched")
+}
+
+// TestApplyGPUModelOverrides_ZeroMemoryDoesNotWipe covers an override set for
+// a non-VRAM reason: memory_mib is absent, so it decodes to 0, and applying
+// that would erase discovered VRAM and fail admission on a device that is fine.
+func TestApplyGPUModelOverrides_ZeroMemoryDoesNotWipe(t *testing.T) {
+	devices := []gpu.GPUDevice{
+		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 8188},
+	}
+	overrides := []config.GPUModelOverride{
+		{VendorID: "10de", DeviceID: "25b0", XVGAOff: true},
+	}
+	applyGPUModelOverrides(devices, overrides)
+	assert.Equal(t, int64(8188), devices[0].MemoryMiB, "override without memory_mib must leave discovered VRAM intact")
+}
+
+// TestBuildGPUPool_OverrideReachesManagerSnapshot exercises the full path:
+// buildGPUPool must apply GPUModelOverrides.MemoryMiB to the device before
+// constructing the gpu.Manager, so Manager.Snapshot (what checkCapacity
+// reads) reports the overridden VRAM rather than the raw discovered value.
+func TestBuildGPUPool_OverrideReachesManagerSnapshot(t *testing.T) {
+	devices := []gpu.GPUDevice{
+		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 0},
+	}
+	cfg := config.DaemonConfig{
+		GPUModelOverrides: []config.GPUModelOverride{
+			{VendorID: "10de", DeviceID: "25b0", Name: "RTX A1000", MemoryMiB: 8188},
+		},
+	}
+	mgr, _, _ := buildGPUPool(devices, cfg)
+	require.NotNil(t, mgr)
+	snapshot := mgr.Snapshot()
+	require.Len(t, snapshot, 1)
+	assert.Equal(t, int64(8188), snapshot[0].Device.MemoryMiB)
+}
+
 // --- initServiceWithRetry ---
 
 // stubInitRetrySleep replaces the package-level sleep seam with a recorder

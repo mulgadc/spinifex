@@ -645,14 +645,14 @@ func TestEnrichMdevPaths_NoMatchingUUID_ReturnsError(t *testing.T) {
 
 func TestIsMIGCapable(t *testing.T) {
 	capable := [][2]string{
-		{"10de", "20b2"}, // A100 SXM 40GB
-		{"10de", "20b5"}, // A100 SXM 80GB
+		{"10de", "20b2"}, // A100 SXM4 80GB
+		{"10de", "20b5"}, // A100 PCIe 80GB
 		{"10de", "20f1"}, // A100 PCIe 40GB
-		{"10de", "20f3"}, // A100 PCIe 80GB
-		{"10de", "2233"}, // A30
+		{"10de", "20f3"}, // A800-SXM4-80GB
+		{"10de", "20b7"}, // A30 PCIe
 		{"10de", "2330"}, // H100 SXM
 		{"10de", "2331"}, // H100 PCIe
-		{"10de", "233a"}, // H100 NVL
+		{"10de", "233a"}, // H800L 94GB
 		{"10de", "2335"}, // H200 SXM
 		{"10de", "2bb5"}, // RTX Pro 6000 Blackwell Server Edition
 	}
@@ -663,6 +663,7 @@ func TestIsMIGCapable(t *testing.T) {
 
 	notCapable := [][2]string{
 		{"10de", "2236"}, // A10 (not MIG capable)
+		{"10de", "2233"}, // RTX A5500 (workstation, has display)
 		{"10de", "1e04"}, // RTX 2080 Ti
 		{"1002", "687f"}, // AMD Vega 10
 		{"8086", "0000"}, // Intel

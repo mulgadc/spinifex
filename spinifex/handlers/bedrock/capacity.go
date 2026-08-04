@@ -24,7 +24,12 @@ func checkCapacity(snapshot []gpu.PoolEntry, minVRAMMiB int) error {
 	if minVRAMMiB <= 0 {
 		return fmt.Errorf("bedrock: invalid MinVRAMMiB %d", minVRAMMiB)
 	}
-	for _, entry := range snapshot {
+	// An available device with 0 MiB reported is undiscoverable VRAM, not an
+	// exhausted or tiny device — memMiB >= minVRAMMiB below would otherwise
+	// read it as "too small" and blame capacity for a data-gap problem.
+	var unknownVRAM *gpu.PoolEntry
+	for i := range snapshot {
+		entry := &snapshot[i]
 		if !entry.Available {
 			continue
 		}
@@ -35,6 +40,16 @@ func checkCapacity(snapshot []gpu.PoolEntry, minVRAMMiB int) error {
 		if memMiB >= int64(minVRAMMiB) {
 			return nil
 		}
+		if memMiB == 0 && unknownVRAM == nil {
+			unknownVRAM = entry
+		}
+	}
+	if unknownVRAM != nil {
+		return awserrors.Errorf(awserrors.ErrorModelNotReadyException,
+			"bedrock: GPU %s (%s, vendor:device %s:%s) has undiscoverable VRAM (reported 0 MiB); "+
+				"add it to the gpu model catalog or set memory_mib in a GPUModelOverride for it",
+			unknownVRAM.Device.PCIAddress, unknownVRAM.Device.Model,
+			unknownVRAM.Device.VendorID, unknownVRAM.Device.DeviceID)
 	}
 	return awserrors.Errorf(awserrors.ErrorModelNotReadyException,
 		"bedrock: no free GPU device has %d MiB of VRAM free", minVRAMMiB)

@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -19,6 +20,20 @@ func modifyingRecord(pending *PendingModifiedValues) DBInstanceRecord {
 	rec.TransitionStartedAt = &started
 	rec.PendingModifiedValues = pending
 	return rec
+}
+
+func TestApplyPendingModifications_StopsBeforeDestructiveWorkWhenCancelled(t *testing.T) {
+	h := newModifyHarness(t)
+	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
+	seedInstance(t, h.svc, rec)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(errModifyLeaseLost)
+
+	err := h.svc.applyPendingModifications(ctx, h.kv(t), testAccountID, &rec)
+	require.ErrorIs(t, err, errModifyLeaseLost)
+	assert.Empty(t, h.cmdr.calls)
+	assert.Empty(t, h.storage.modified)
+	assert.Empty(t, h.launch.launcher.terminated)
 }
 
 // A grow with no class change alongside it keeps the VM: it goes down, the

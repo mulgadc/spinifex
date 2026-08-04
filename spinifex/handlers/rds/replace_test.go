@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -26,6 +27,19 @@ func seedReplaceable(t *testing.T, h *modifyHarness, rec DBInstanceRecord) DBIns
 		VMGeneration:         rec.VMGeneration,
 	}))
 	return rec
+}
+
+func TestReplaceInstanceVM_StopsBeforeDestructiveWorkWhenCancelled(t *testing.T) {
+	h := newModifyHarness(t)
+	rec := seedReplaceable(t, h, modifiableRecord())
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(errModifyLeaseLost)
+
+	err := h.svc.replaceInstanceVM(ctx, h.kv(t), testAccountID, &rec, replaceInput{Reason: "recovery"})
+	require.ErrorIs(t, err, errModifyLeaseLost)
+	assert.Empty(t, h.cmdr.calls)
+	assert.Empty(t, h.launch.launcher.terminated)
+	assert.Nil(t, h.launch.launcher.input)
 }
 
 // The endpoint ENI and the datadir outlive the VM, so a replace adopts

@@ -261,12 +261,26 @@ func relocatePredastoreData(ctx migrate.ConfigContext, topo *predastoreTopology)
 			continue
 		}
 
+		// The rename preserved this directory's ownership, which is what
+		// recovery must leave behind on everything it writes into it.
+		uid, gid, err := dirOwner(m.To)
+		if err != nil {
+			return err
+		}
+
 		// The replica set is renumbered, so the configuration persisted here
 		// names servers that no longer exist. Raft will not bootstrap over
 		// existing state to correct that; it has to be rewritten.
 		recovered, err := clusterrun.RecoverStateReplica(m.To, m.NodeID, topo.ReplicaIDs)
 		if err != nil {
 			return fmt.Errorf("recover raft configuration for state replica %d in %s: %w", m.NodeID, m.To, err)
+		}
+
+		// Recovery reopened badger and wrote a fresh snapshot as root, both of
+		// which create files. Runs even when there was nothing to recover,
+		// which still opens the stores.
+		if err := chownTree(m.To, uid, gid); err != nil {
+			return err
 		}
 		ctx.Logger.Info("Migrated predastore state replica", "nodeID", m.NodeID, "dataDir", m.To, "raftRecovered", recovered)
 	}
@@ -292,9 +306,23 @@ func movePredastoreNodeDir(ctx migrate.ConfigContext, m predastoreMove) (bool, e
 		return false, fmt.Errorf("cannot move %s to %s: destination already exists", m.From, m.To)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(m.To), 0750); err != nil {
-		return false, fmt.Errorf("create %s: %w", filepath.Dir(m.To), err)
+	// Taken before the rename, which carries it to the destination; the data
+	// dir created below has to match or predastore cannot traverse into it.
+	uid, gid, err := dirOwner(m.From)
+	if err != nil {
+		return false, err
 	}
+
+	dataDir := filepath.Dir(m.To)
+	if err := os.MkdirAll(dataDir, 0750); err != nil {
+		return false, fmt.Errorf("create %s: %w", dataDir, err)
+	}
+	// Unconditional, so a re-run also repairs a data dir left root-owned by an
+	// earlier run that failed after creating it.
+	if err := chown(dataDir, uid, gid); err != nil {
+		return false, err
+	}
+
 	if err := os.Rename(m.From, m.To); err != nil {
 		return false, fmt.Errorf("move %s to %s: %w", m.From, m.To, err)
 	}

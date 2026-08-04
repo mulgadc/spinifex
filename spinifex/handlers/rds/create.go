@@ -88,7 +88,6 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		EngineVersion:        req.EngineVersion,
 		InstanceType:         req.InstanceType,
 		AllocatedStorage:     req.AllocatedStorage,
-		RequireEncryptedData: true,
 		UserData: buildAgentUserData(agentUserDataInput{
 			GatewayURL:           s.deps.GatewayURL,
 			GatewayCACert:        s.deps.GatewayCACert,

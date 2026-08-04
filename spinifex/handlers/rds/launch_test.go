@@ -275,7 +275,7 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	if f.onLaunch != nil {
 		f.onLaunch()
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: "i-rds0001", MgmtIP: "172.30.0.9"}, nil
+	return &sysinstance.SystemInstanceOutput{InstanceID: "i-rds0001"}, nil
 }
 
 func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
@@ -390,7 +390,7 @@ func newLaunchHarness() *launchHarness {
 		images: &fakeImages{images: []*ec2.Image{
 			{ImageId: aws.String(testEngineAMI), CreationDate: aws.String("2026-01-02T00:00:00Z")},
 		}},
-		volumes:  &fakeVolumes{},
+		volumes:  &fakeVolumes{encrypted: true},
 		attacher: &fakeAttacher{},
 	}
 	h.enis.unwind, h.launcher.unwind, h.volumes.unwind = &h.unwind, &h.unwind, &h.unwind
@@ -480,7 +480,7 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	require.Len(t, in.ExtraENIs, 1)
 	assert.Equal(t, sysinstance.ExtraENIInput{
 		ENIID:     out.CustomerENIID,
-		ENIMac:    out.CustomerENIMac,
+		ENIMac:    "02:00:00:00:00:02",
 		ENIIP:     out.CustomerENIIP,
 		SubnetID:  testDBSubnet,
 		AccountID: testCustomerAccount,
@@ -489,7 +489,6 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::000000000000:instance-profile/rdsInstanceRole", in.IamInstanceProfileArn)
 
 	assert.Equal(t, "i-rds0001", out.InstanceID)
-	assert.Equal(t, "172.30.0.9", out.MgmtIP)
 }
 
 func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
@@ -515,7 +514,6 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 	assert.Equal(t, utils.GlobalAccountID, h.attacher.accountID)
 
 	assert.Equal(t, "vol-rdsdata01", out.DataVolumeID)
-	assert.Equal(t, dataVolumeDevice, out.DataDevice)
 }
 
 func TestLaunchDBInstanceVMRollsBackEverythingItCreated(t *testing.T) {

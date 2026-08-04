@@ -49,32 +49,11 @@ var transitions = map[Status][]Status{
 	StatusDeleted:  nil,
 }
 
-// Statuses meaning the control plane is already acting on this instance, so the
-// recovery classifier does not recover a VM out from under a lifecycle op.
-var transitional = map[Status]bool{
-	StatusCreating:   true,
-	StatusModifying:  true,
-	StatusBackingUp:  true,
-	StatusRebooting:  true,
-	StatusStopping:   true,
-	StatusStarting:   true,
-	StatusRecovering: true,
-	StatusDeleting:   true,
-}
-
 // Anything read back from KV that fails this check was written by a newer or
 // corrupted control plane, not a state to act on.
 func (s Status) Valid() bool {
 	_, ok := transitions[s]
 	return ok
-}
-
-func (s Status) Terminal() bool {
-	return s == StatusDeleted
-}
-
-func (s Status) Transitional() bool {
-	return transitional[s]
 }
 
 // A no-op is legal for any valid status, so a repeated observation of the same
@@ -87,29 +66,4 @@ func CanTransition(from, to Status) bool {
 		return true
 	}
 	return slices.Contains(transitions[from], to)
-}
-
-// The snapshot's own lifecycle, separate from the instance's backing-up state
-// The instance is derived from an in-flight control-plane operation, while
-// the snapshot record moves creating → available once the data exists. There is
-// no failed state — a snapshot that never completed is removed rather than kept
-// as an unrestorable record.
-var snapshotTransitions = map[string][]string{
-	SnapshotStatusCreating:  {SnapshotStatusAvailable},
-	SnapshotStatusAvailable: nil,
-}
-
-func ValidSnapshotStatus(status string) bool {
-	_, ok := snapshotTransitions[status]
-	return ok
-}
-
-func CanTransitionSnapshot(from, to string) bool {
-	if !ValidSnapshotStatus(from) || !ValidSnapshotStatus(to) {
-		return false
-	}
-	if from == to {
-		return true
-	}
-	return slices.Contains(snapshotTransitions[from], to)
 }

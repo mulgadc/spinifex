@@ -83,7 +83,7 @@ await_data_disk() {
 # when it could not find out: a blkid that is missing, errored or pointed at an
 # absent node prints exactly what a blank disk prints, so only the status decides.
 fstype_of() {
-    if _out=$(blkid "$1" 2>/dev/null); then
+    if _out=$(blkid -o value -s TYPE "$1" 2>/dev/null); then
         _rc=0
     else
         _rc=$?
@@ -91,7 +91,7 @@ fstype_of() {
     # 0 is a signature found, 2 a clean probe that found none. Anything else
     # means the probe did not run, which is not an answer.
     [ "${_rc}" -eq 0 ] || [ "${_rc}" -eq 2 ] || return 1
-    printf '%s' "${_out}" | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p'
+    printf '%s' "${_out}"
 }
 
 # Partitions appear as child directories of the disk in sysfs, which needs no

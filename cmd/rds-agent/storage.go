@@ -40,9 +40,6 @@ type guestStorage struct {
 	dataMount  string
 	mountsFile string
 	sysBlock   string
-	growpart   string
-	resize2fs  string
-	xfsGrowfs  string
 }
 
 var _ storageOps = (*guestStorage)(nil)
@@ -53,9 +50,6 @@ func newGuestStorage(cfg config, run commandRunner) *guestStorage {
 		dataMount:  cfg.DataMount,
 		mountsFile: cfg.MountsFile,
 		sysBlock:   cfg.SysBlock,
-		growpart:   defaultGrowpart,
-		resize2fs:  defaultResize2fs,
-		xfsGrowfs:  defaultXFSGrowfs,
 	}
 }
 
@@ -82,7 +76,7 @@ func (g *guestStorage) GrowFilesystem(ctx context.Context) (string, error) {
 	case strings.HasPrefix(mount.fstype, "ext"):
 		// resize2fs grows a mounted ext filesystem online, and takes the device.
 		if _, err := g.run(ctx, command{
-			Name: g.resize2fs,
+			Name: defaultResize2fs,
 			Args: []string{mount.device},
 			Env:  []string{"PATH=" + defaultGuestPath},
 		}); err != nil {
@@ -91,7 +85,7 @@ func (g *guestStorage) GrowFilesystem(ctx context.Context) (string, error) {
 	case mount.fstype == "xfs":
 		// xfs_growfs is addressed by mount point, and XFS can only grow mounted.
 		if _, err := g.run(ctx, command{
-			Name: g.xfsGrowfs,
+			Name: defaultXFSGrowfs,
 			Args: []string{g.dataMount},
 			Env:  []string{"PATH=" + defaultGuestPath},
 		}); err != nil {
@@ -116,7 +110,7 @@ func (g *guestStorage) growPartition(ctx context.Context, device string) error {
 		return nil
 	}
 	out, err := g.run(ctx, command{
-		Name: g.growpart,
+		Name: defaultGrowpart,
 		Args: []string{disk, number},
 		Env:  []string{"PATH=" + defaultGuestPath},
 	})

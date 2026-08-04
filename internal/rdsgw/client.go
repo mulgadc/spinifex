@@ -111,7 +111,6 @@ type errorResponse struct {
 		Code    string `xml:"Code"`
 		Message string `xml:"Message"`
 	} `xml:"Error"`
-	RequestID string `xml:"RequestId"`
 }
 
 // params carries the action's own arguments; Action and Version are set here.

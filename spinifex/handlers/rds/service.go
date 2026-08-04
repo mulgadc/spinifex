@@ -64,10 +64,9 @@ type Deps struct {
 
 // The RDS control plane's KV-backed handler set. One per daemon.
 type Service struct {
-	nc         *nats.Conn
-	region     string
-	baseDomain string
-	deps       Deps
+	nc     *nats.Conn
+	region string
+	deps   Deps
 
 	// Heartbeat state that never reaches KV: beats are counted here and
 	// persisted only on change or on the slower floor.
@@ -89,7 +88,6 @@ func NewService(nc *nats.Conn, region string) *Service {
 
 func (s *Service) WithDeps(d Deps) *Service {
 	s.deps = d
-	s.baseDomain = d.BaseDomain
 	return s
 }
 

@@ -278,8 +278,8 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	shared := params["shared_buffers"]
 	require.NotNil(t, shared)
 
-	// The class is named rather than read back from describeParametersClass, which
-	// would make this assert the code agrees with itself.
+	// The class is named rather than derived from the class catalog, which would
+	// make this assert the code agrees with itself.
 	memoryMiB, err := classMemoryMiB("db.t3.micro")
 	require.NoError(t, err)
 	assert.Equal(t, sharedBuffersFor(memoryMiB), aws.StringValue(shared.ParameterValue))

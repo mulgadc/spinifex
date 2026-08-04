@@ -11,19 +11,19 @@ import (
 // The vanity hostname for a DB instance, or "" on a deployment with no base
 // domain — where the endpoint is the bare ENI IP instead.
 func (s *Service) dnsName(accountID, dbInstanceIdentifier string) string {
-	if s.baseDomain == "" {
+	if s.deps.BaseDomain == "" {
 		return ""
 	}
-	return handlers_dns.RDSName(dbInstanceIdentifier, accountID, s.region, s.baseDomain)
+	return handlers_dns.RDSName(dbInstanceIdentifier, accountID, s.region, s.deps.BaseDomain)
 }
 
 // Best-effort: a miss is repaired by the reconcile backstop within a cycle, and
 // a create must not fail because northstar was briefly unreachable.
 func (s *Service) publishDNS(ctx context.Context, accountID string, rec *DBInstanceRecord, action handlers_dns.Action) {
-	if s.baseDomain == "" || rec == nil || rec.DNSName == "" || rec.ENIPrivateIP == "" {
+	if s.deps.BaseDomain == "" || rec == nil || rec.DNSName == "" || rec.ENIPrivateIP == "" {
 		return
 	}
-	changes := handlers_dns.RDSChanges(action, rec.DNSName, s.baseDomain, rec.ENIPrivateIP)
+	changes := handlers_dns.RDSChanges(action, rec.DNSName, s.deps.BaseDomain, rec.ENIPrivateIP)
 	slog.DebugContext(ctx, "rds: publishing endpoint record",
 		"dbInstance", rec.DBInstanceIdentifier, "name", rec.DNSName, "action", action)
 	handlers_dns.PublishChangesBestEffort(s.nc, accountID, changes)
@@ -35,7 +35,7 @@ func (s *Service) publishDNS(ctx context.Context, accountID string, rec *DBInsta
 // failure yields ok=false, which suppresses RDS pruning rather than deleting a
 // tenant's endpoint on a partial view.
 func (s *Service) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
-	if s == nil || s.baseDomain == "" {
+	if s == nil || s.deps.BaseDomain == "" {
 		return nil, false
 	}
 	ctx := context.Background()
@@ -54,7 +54,7 @@ func (s *Service) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
 			slog.Warn("rds DesiredDNSChanges: open account bucket", "bucket", bucket, "err", err)
 			return nil, false
 		}
-		bucketChanges, err := desiredBucketDNSChanges(ctx, kv, s.baseDomain)
+		bucketChanges, err := desiredBucketDNSChanges(ctx, kv, s.deps.BaseDomain)
 		if err != nil {
 			slog.Warn("rds DesiredDNSChanges: read DB instances", "bucket", bucket, "err", err)
 			return nil, false

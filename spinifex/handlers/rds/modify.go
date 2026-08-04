@@ -112,7 +112,7 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 		return nil, err
 	}
 	if !plan.disruptive() {
-		stored, err := s.reloadInstance(ctx, kv, id)
+		stored, _, err := s.getDBInstance(ctx, kv, id)
 		if err != nil {
 			return nil, err
 		}
@@ -157,18 +157,11 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 
 	// Returned as modifying: the replacement or restarted VM has to come back
 	// and report healthy before the reconciler calls it available.
-	stored, err := s.reloadInstance(ctx, kv, id)
+	stored, _, err := s.getDBInstance(ctx, kv, id)
 	if err != nil {
 		return nil, err
 	}
 	return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(stored)}, nil
-}
-
-// The record as stored, for a response that reports what actually landed rather
-// than what the handler believed it wrote.
-func (s *Service) reloadInstance(ctx context.Context, kv jetstream.KeyValue, id string) (*DBInstanceRecord, error) {
-	rec, _, err := s.getDBInstance(ctx, kv, id)
-	return rec, err
 }
 
 // Resolves the request against the stored record: drops every field that

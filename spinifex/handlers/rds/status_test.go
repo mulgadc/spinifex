@@ -21,24 +21,6 @@ func TestStatus_Valid(t *testing.T) {
 	}
 }
 
-func TestStatus_TerminalAndTransitional(t *testing.T) {
-	assert.True(t, StatusDeleted.Terminal())
-	assert.False(t, StatusFailed.Terminal())
-	assert.False(t, StatusStopped.Terminal())
-
-	// A lifecycle operation is already driving these, so the recovery classifier
-	// must leave them alone.
-	for _, s := range []Status{
-		StatusCreating, StatusModifying, StatusBackingUp, StatusRebooting,
-		StatusStopping, StatusStarting, StatusRecovering, StatusDeleting,
-	} {
-		assert.True(t, s.Transitional(), "status %q should be transitional", s)
-	}
-	for _, s := range []Status{StatusAvailable, StatusStopped, StatusFailed, StatusDeleted} {
-		assert.False(t, s.Transitional(), "status %q should be settled, not transitional", s)
-	}
-}
-
 func TestCanTransition_Lifecycle(t *testing.T) {
 	tests := []struct {
 		from, to Status

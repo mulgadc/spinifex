@@ -16,18 +16,19 @@ trap 'rm -rf "${WORK}"' EXIT
 STUBBIN="${WORK}/bin"
 mkdir -p "${STUBBIN}"
 
-# blkid stub: prints a real blkid's line for any device listed in FS_TABLE as
-# "<dev> <fstype>", and exits non-zero for one that holds no filesystem.
+# blkid stub: prints the requested filesystem type value for any device listed
+# in FS_TABLE as "<dev> <fstype>", and exits non-zero when none is present.
 cat > "${STUBBIN}/blkid" <<'EOF'
 #!/bin/sh
 # BLKID_RC simulates a probe that could not run at all — 127 is a blkid missing
 # from the image, 4 an internal error. Both print nothing, which is precisely
 # what a genuinely blank disk prints, so only the exit status separates them.
 [ "${BLKID_RC:-0}" = "0" ] || exit "${BLKID_RC}"
-dev="$1"
+[ "$1" = "-o" ] && [ "$2" = "value" ] && [ "$3" = "-s" ] && [ "$4" = "TYPE" ] || exit 4
+dev="$5"
 fstype=$(awk -v d="${dev}" '$1 == d { print $2 }' "${FS_TABLE}" 2>/dev/null)
 [ -n "${fstype}" ] || exit 2
-echo "${dev}: UUID=\"1234-5678\" TYPE=\"${fstype}\""
+printf '%s\n' "${fstype}"
 EOF
 
 # mkfs.ext4 stub: records the call and marks the device formatted, so a mount

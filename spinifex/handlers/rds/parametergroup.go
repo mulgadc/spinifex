@@ -214,7 +214,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	if err != nil {
 		return nil, err
 	}
-	memoryMiB, err := classMemoryMiB(describeParametersClass())
+	memoryMiB, err := classMemoryMiB(smallestInstanceClass())
 	if err != nil {
 		return nil, err
 	}
@@ -410,14 +410,6 @@ func validateParameterGroupFamily(family string) (string, error) {
 	}
 	return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 		"DBParameterGroupFamily %q is not offered; %s is the only supported family", family, enginePostgres.ParameterGroupFamily())
-}
-
-// The class DescribeDBParameters evaluates the size-derived defaults at. A group
-// has no instance, so the smallest supported class is the honest choice: it is
-// the one whose computed values a customer most needs to see before attaching
-// the group to anything.
-func describeParametersClass() string {
-	return smallestInstanceClass()
 }
 
 func parameterSource(isOverride bool) string {

@@ -252,6 +252,7 @@ func (f *fakeENIs) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.Mo
 // fakeLauncher stands in for the system-instance launcher.
 type fakeLauncher struct {
 	input      *sysinstance.SystemInstanceInput
+	instanceID string
 	err        error
 	terminated []string
 	unwind     *[]string
@@ -262,7 +263,8 @@ type fakeLauncher struct {
 
 	// onLaunch runs once the VM exists, for tests that need to disturb state
 	// after the launch has committed resources but before the caller records it.
-	onLaunch func()
+	onLaunch    func()
+	onTerminate func()
 }
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
@@ -275,13 +277,20 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	if f.onLaunch != nil {
 		f.onLaunch()
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: "i-rds0001"}, nil
+	instanceID := f.instanceID
+	if instanceID == "" {
+		instanceID = "i-rds0001"
+	}
+	return &sysinstance.SystemInstanceOutput{InstanceID: instanceID}, nil
 }
 
 func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
 	f.terminated = append(f.terminated, instanceID)
 	if f.unwind != nil {
 		*f.unwind = append(*f.unwind, "terminate")
+	}
+	if f.onTerminate != nil {
+		f.onTerminate()
 	}
 	return f.terminateErr
 }

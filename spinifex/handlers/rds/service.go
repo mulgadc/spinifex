@@ -236,12 +236,19 @@ func createJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, 
 
 // Writes v at key only if the stored entry is still at rev.
 func updateJSON(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64, v any) error {
+	_, err := updateJSONRevision(ctx, kv, key, rev, v)
+	return err
+}
+
+// updateJSON plus the revision written by the successful CAS update.
+func updateJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64, v any) (uint64, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := kv.Update(ctx, key, data, rev); err != nil {
-		return fmt.Errorf("update %s: %w", key, err)
+	updatedRev, err := kv.Update(ctx, key, data, rev)
+	if err != nil {
+		return 0, fmt.Errorf("update %s: %w", key, err)
 	}
-	return nil
+	return updatedRev, nil
 }

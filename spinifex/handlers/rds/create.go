@@ -18,6 +18,9 @@ import (
 // so an agent report carrying an older generation is a superseded VM.
 const firstVMGeneration = 1
 
+// Bounds retries when same-owner record writes race rollback cleanup.
+const rollbackDeleteAttempts = 3
+
 // Assembles a live DB instance out of the launch primitives: validate, reserve
 // the identifier, place and launch the dual-NIC VM with its data volume and
 // customer ENI, seed the one-shot bootstrap config, and publish the endpoint
@@ -56,7 +59,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// uniqueness check atomic against a concurrent create on another node — a
 	// prior read-then-write would let both pass and both launch a VM.
 	rec := newDBInstanceRecord(accountID, req, placement, parameters)
-	if createErr := createJSON(ctx, kv, key, &rec); createErr != nil {
+	rollbackRev, createErr := createJSONRevision(ctx, kv, key, &rec)
+	if createErr != nil {
 		if errors.Is(createErr, jetstream.ErrKeyExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
 				"DB instance %s already exists", req.Identifier)
@@ -64,19 +68,13 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		return nil, createErr
 	}
 
-	// The record is the reservation, so it is withdrawn on any failure below:
-	// leaving it behind would make the identifier permanently unusable while
-	// naming an instance that was never provisioned.
+	// The record is the reservation, so it is withdrawn on any failure below.
+	// The revision guard leaves a concurrent recreation of the identifier intact.
 	defer func() {
 		if err == nil {
 			return
 		}
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
-		defer cancel()
-		if delErr := kv.Delete(rbCtx, key); delErr != nil {
-			slog.WarnContext(rbCtx, "rds: rollback delete of reserved DB instance record failed",
-				"dbInstance", req.Identifier, "err", delErr)
-		}
+		s.rollbackDBInstanceReservation(ctx, kv, key, req.Identifier, rec.DbiResourceID, rollbackRev)
 	}()
 
 	launched, err := LaunchDBInstanceVM(ctx, s.deps.Launch, LaunchInput{
@@ -106,11 +104,12 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 
 	// The launch already unwound everything on failure, so from here the resources
 	// exist and the record has to catch up with them.
-	stored, err := s.recordLaunch(ctx, kv, key, accountID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err
 	}
+	rollbackRev = launchRev
 
 	// Written before the DNS publish because an agent that boots fast enough to
 	// call the gateway before this exists is denied and has to retry.
@@ -178,14 +177,18 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 // Folds the launch results into the reserved record and returns it as written.
 // The endpoint is settled here because the ENI IP — and so the vanity name — is
 // only known now.
-func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID string, launched *LaunchOutput) (*DBInstanceRecord, error) {
+func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID,
+	expectedResourceID string, launched *LaunchOutput) (*DBInstanceRecord, uint64, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
+		return nil, 0, errors.New(awserrors.ErrorDBInstanceNotFound)
+	}
+	if rec.DbiResourceID != expectedResourceID {
+		return nil, 0, fmt.Errorf("rds: DB instance reservation %s changed ownership during launch", key)
 	}
 
 	rec.InstanceID = launched.InstanceID
@@ -208,10 +211,44 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	}
 	rec.UpdatedAt = time.Now().UTC()
 
-	if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
-		return nil, err
+	updatedRev, err := updateJSONRevision(ctx, kv, key, rev, &rec)
+	if err != nil {
+		return nil, 0, err
 	}
-	return &rec, nil
+	return &rec, updatedRev, nil
+}
+
+func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstream.KeyValue,
+	key, identifier, resourceID string, rev uint64) {
+	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+
+	var rollbackErr error
+	for range rollbackDeleteAttempts {
+		rollbackErr = kv.Delete(rbCtx, key, jetstream.LastRevision(rev))
+		if rollbackErr == nil || errors.Is(rollbackErr, jetstream.ErrKeyNotFound) {
+			return
+		}
+		if !errors.Is(rollbackErr, jetstream.ErrKeyExists) {
+			break
+		}
+
+		// A same-owner update remains part of this failed create and must be
+		// withdrawn. A different resource ID is a replacement to preserve.
+		var current DBInstanceRecord
+		currentRev, found, getErr := getJSONRevision(rbCtx, kv, key, &current)
+		if getErr != nil {
+			rollbackErr = getErr
+			break
+		}
+		if !found || current.DbiResourceID != resourceID {
+			return
+		}
+		rev = currentRev
+	}
+
+	slog.WarnContext(rbCtx, "rds: rollback delete of reserved DB instance record failed",
+		"dbInstance", identifier, "err", rollbackErr)
 }
 
 // The launch's own rollback only covers failures inside it. A failure after it

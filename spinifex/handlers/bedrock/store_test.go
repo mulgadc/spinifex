@@ -94,3 +94,13 @@ func TestListEndpoints_FiltersByAccountPrefix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, recs)
 }
+
+// A bucket that has never held an endpoint is the normal pre-launch state.
+// JetStream reports it as ErrNoKeysFound, which must read as empty, not fail.
+func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
+	kv := newTestBucket(t)
+
+	recs, err := ListEndpoints(t.Context(), kv, "000000000000")
+	require.NoError(t, err)
+	assert.Empty(t, recs)
+}

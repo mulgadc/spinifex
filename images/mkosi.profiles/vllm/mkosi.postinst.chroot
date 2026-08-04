@@ -86,4 +86,32 @@ chmod 0755 /usr/local/sbin/vllm-serve
 
 systemctl enable vllm-serve.service
 
+# Assert the MERGED result, not the file's presence: the pin already existed at
+# a 90- prefix in the EKS image and did nothing there, shadowed by 90_dpkg.cfg.
+# read_conf_with_confd is the same function cloud-init calls at boot.
+command -v python3 >/dev/null || {
+    echo "ERROR: python3 missing — cannot verify the merged cloud-init datasource_list" >&2
+    exit 1
+}
+python3 - <<'PY'
+import sys
+
+try:
+    from cloudinit import util
+except ImportError as e:
+    sys.exit(f"ERROR: cloudinit python module unavailable ({e}) — cloud-init is expected to be installed by now")
+
+cfg = util.read_conf_with_confd("/etc/cloud/cloud.cfg")
+got = cfg.get("datasource_list")
+want = ["Ec2", "None"]
+if got != want:
+    sys.exit(
+        "ERROR: merged cloud-init datasource_list is "
+        f"{got!r}, expected {want!r} — the 99-spinifex-ec2-imds.cfg pin is "
+        "being shadowed by another cloud.cfg.d drop-in (check sort order: "
+        "read_conf_d() applies the directory in REVERSE, first source wins)"
+    )
+print(f"[vllm] cloud-init datasource_list assertion passed: {got!r}")
+PY
+
 echo "vllm postinst complete: CPython ${VLLM_PYTHON_VERSION} / uv ${UV_VERSION} / vllm ${VLLM_VERSION} venv baked at ${VENV_DIR}, vllm-serve.service enabled"

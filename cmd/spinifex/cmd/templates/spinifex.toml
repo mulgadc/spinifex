@@ -89,7 +89,11 @@ gpu_passthrough = true
 {{- end}}
 
 [nodes.{{.Node}}.awsgw]
-host = "{{.BindIP}}:9999"
+# Wildcard rather than the bind IP: the gateway is the public AWS-API surface and
+# has to answer on the wan plane as well as internally, while --bind names only
+# the internal plane. TLS + SigV4 gate it, and the ECR registry host falls back
+# to the advertise address when the listener is unspecified.
+host = "0.0.0.0:9999"
 tlskey = "config/server.key"
 tlscert = "config/server.pem"
 debug = false
@@ -122,7 +126,16 @@ bridge_mode = "{{.BridgeMode}}"
 {{- end}}
 
 [nodes.{{.Node}}.predastore]
-host = "{{.BindIP}}:8443"
+# Wildcard rather than the bind IP: S3 is a public service and has to answer on
+# the wan plane, and predastore-start.sh scrapes this line into
+# SPINIFEX_PREDASTORE_HOST, which outranks the host set in predastore.toml. Only
+# the S3 API moves — the [[db]] and [[nodes]] peer addresses in
+# predastore-multinode.toml stay on the bind address.
+#
+# This doubles as the local dial target, and 0.0.0.0 is not one: config loading
+# rewrites it to 127.0.0.1 for this node, and admin.DialTarget does the same for
+# callers that read it directly.
+host = "0.0.0.0:8443"
 region = "{{.Region}}"
 bucket = "predastore"
 accesskey = "{{.AccessKey}}"

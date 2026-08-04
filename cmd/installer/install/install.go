@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,40 +20,55 @@ import (
 	"github.com/mulgadc/spinifex/cmd/installer/systemd"
 )
 
-const (
-	mountRoot = "/mnt/spinifex-install"
-	efiPart   = mountRoot + "/boot/efi"
-)
+// mountRoot is the install target. A variable, not a constant, so tests can
+// drive the file-writing steps against a temp tree rather than a real mount.
+var mountRoot = "/mnt/spinifex-install"
+
+// efiPart is the ESP mount point inside the target. Derived on each call so it
+// cannot go stale against mountRoot.
+func efiPart() string { return filepath.Join(mountRoot, "boot/efi") }
+
+// step is one named unit of work in the install sequence.
+type step struct {
+	name string
+	fn   func() error
+}
 
 // Run executes all installation steps in order. It is intentionally sequential
 // and explicit — each step is visible in logs so failures are easy to diagnose.
 func Run(cfg *Config) error {
+	// Re-checked here even though the UI and the headless path both validate:
+	// this is the last point before anything is erased, and it is the only one
+	// every caller must pass through.
+	if err := cfg.Storage.Validate(); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+
 	// The live environment may not have /sbin or /usr/sbin in PATH. Set it
 	// explicitly so exec.Command's LookPath finds system binaries like grub-install.
 	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
-	// Unmount unconditionally on exit so a failed step never leaves partitions
-	// mounted in the live environment, which would cause a retry to double-mount.
-	defer func() {
-		_ = run("umount", efiPart)
-		_ = run("umount", mountRoot)
-	}()
+	// Unmount unconditionally on exit so a failed step never leaves the target
+	// mounted in the live environment, which would make a retry double-mount or,
+	// on ZFS, fail with "pool is busy".
+	defer cleanupTarget(cfg.Storage)
 
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"partition disk", func() error { return partitionDisk(cfg.Disk) }},
-		{"format partitions", func() error { return formatPartitions(cfg.Disk) }},
-		{"mount partitions", func() error { return mountPartitions(cfg.Disk) }},
-		{"copy rootfs", copyRootfs},
-		{"write fstab", func() error { return writeFstab(cfg.Disk) }},
-		{"install spinifex", func() error { return installSpinifex(cfg) }},
-		{"write network config", func() error { return writeNetworkConfig(cfg) }},
-		{"write firstboot service", func() error { return firstboot.Write(mountRoot, cfg.toFirstbootConfig()) }},
-		{"install bootloader", func() error { return installBootloader(cfg.Disk) }},
-		{"install CA cert", func() error { return installCACert(cfg) }},
+	steps := []step{{"partition disks", func() error { return partitionDisks(cfg.Storage) }}}
+	if cfg.Storage.FS.IsZFS() {
+		steps = append(steps, zfsRootSteps(cfg)...)
+	} else {
+		steps = append(steps, ext4RootSteps(cfg)...)
 	}
+	steps = append(steps,
+		step{"copy rootfs", func() error { return copyRootfs(cfg.Storage) }},
+		step{"create swap", func() error { return createSwap(cfg.Storage) }},
+		step{"write fstab", func() error { return writeFstab(cfg.Storage) }},
+		step{"install spinifex", func() error { return installSpinifex(cfg) }},
+		step{"write network config", func() error { return writeNetworkConfig(cfg) }},
+		step{"write firstboot service", func() error { return firstboot.Write(mountRoot, cfg.toFirstbootConfig()) }},
+		step{"install bootloader", func() error { return installBootloader(cfg.Storage) }},
+		step{"install CA cert", func() error { return installCACert(cfg) }},
+	)
 
 	for _, s := range steps {
 		slog.Info("installer", "step", s.name)
@@ -62,90 +78,83 @@ func Run(cfg *Config) error {
 	}
 
 	slog.Info("installation complete")
+	refreshBootToolNote(cfg.Storage)
 	fireInstallCallback()
 	promptRemoveUSB()
 	return reboot()
 }
 
-func partitionDisk(disk string) error {
-	// GPT table with three partitions:
-	//   p1: 1MiB BIOS Boot Partition — required for grub-install i386-pc on GPT
-	//   p2: 512MiB EFI System Partition
-	//   p3: remainder as root (ext4)
-	if err := run("parted", "--script", disk,
-		"mklabel", "gpt",
-		"mkpart", "bios_boot", "1MiB", "2MiB",
-		"set", "1", "bios_grub", "on",
-		"mkpart", "ESP", "fat32", "2MiB", "514MiB",
-		"set", "2", "esp", "on",
-		"mkpart", "root", "ext4", "514MiB", "100%",
-	); err != nil {
+// ext4RootSteps formats and mounts a single-disk ext4 root.
+func ext4RootSteps(cfg *Config) []step {
+	return []step{
+		{"format partitions", func() error { return formatPartitions(cfg.Storage) }},
+		{"mount partitions", func() error { return mountPartitions(cfg.Storage) }},
+	}
+}
+
+// zfsRootSteps builds the root pool. The ESPs are formatted here rather than
+// with the bootloader so that a failure to make a filesystem on one of them is
+// reported before the rootfs has been copied.
+func zfsRootSteps(cfg *Config) []step {
+	// Resolved once, before any step runs, so the values written to the pool,
+	// to modprobe.d and to the daemon's reserve are all the same numbers.
+	var opts ZFSOpts
+	return []step{
+		{"format ESPs", func() error { return formatESPs(cfg.Storage) }},
+		{"load zfs module", loadZFSModule},
+		{"create zfs pool", func() error {
+			opts = resolveZFSOpts(cfg.Storage)
+			slog.Info("zfs pool", "topology", cfg.Storage.FS, "disks", len(cfg.Storage.Disks),
+				"ashift", opts.Ashift, "compress", opts.Compress, "arc_max_mib", opts.ARCMaxMiB)
+			return createPool(cfg.Storage, opts)
+		}},
+		{"create zfs datasets", createDatasets},
+		{"configure zfs", func() error { return writeZFSSystemConfig(opts) }},
+	}
+}
+
+// cleanupTarget releases everything the install mounted, in the right order for
+// the filesystem in use.
+func cleanupTarget(cfg DiskConfig) {
+	unbindChrootMounts()
+	if cfg.FS.IsZFS() {
+		// Recursive: the layout is a dozen nested datasets, and leaving one
+		// mounted is enough to block the export.
+		_ = runQuiet("umount", "-R", mountRoot)
+		exportPool()
+		return
+	}
+	_ = runQuiet("umount", efiPart())
+	_ = runQuiet("umount", mountRoot)
+}
+
+func formatPartitions(cfg DiskConfig) error {
+	if err := formatESPs(cfg); err != nil {
 		return err
 	}
-	// Force the kernel to re-read the partition table and wait for udev to
-	// create the partition device nodes. Without this, mkfs.fat in the next
-	// step may race and fail with "No such file or directory" on /dev/sda2 —
-	// the kernel has accepted the new layout but /dev hasn't been populated
-	// yet. Trixie's udev seems slower at this than Bookworm's was.
-	return waitForPartitions(disk)
+	return run("mkfs.ext4", "-F", cfg.Primary().PartitionPath(rootPartNum))
 }
 
-// waitForPartitions ensures the EFI and root partition device nodes exist
-// after parted creates them. It runs partprobe (kernel re-read) and
-// udevadm settle (wait for queued events), then polls /dev for the files.
-func waitForPartitions(disk string) error {
-	// Best-effort: partprobe failure isn't fatal — udev may still pick up
-	// the change from the BLKRRPART ioctl that parted itself issued.
-	if err := run("partprobe", disk); err != nil {
-		slog.Warn("partprobe failed, continuing", "disk", disk, "err", err)
-	}
-	if err := run("udevadm", "settle", "--timeout=10"); err != nil {
-		slog.Warn("udevadm settle failed, continuing", "err", err)
-	}
-	efi, root := partitionPaths(disk)
-	deadline := time.Now().Add(15 * time.Second)
-	for _, part := range []string{efi, root} {
-		for {
-			if _, err := os.Stat(part); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("partition device %s did not appear within timeout — kernel/udev did not pick up new partition table", part)
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
-	return nil
-}
-
-func formatPartitions(disk string) error {
-	efi, root := partitionPaths(disk)
-	if err := run("mkfs.fat", "-F32", efi); err != nil {
-		return err
-	}
-	return run("mkfs.ext4", "-F", root)
-}
-
-func mountPartitions(disk string) error {
-	_, root := partitionPaths(disk)
+func mountPartitions(cfg DiskConfig) error {
+	d := cfg.Primary()
 	if err := os.MkdirAll(mountRoot, 0o755); err != nil {
 		return err
 	}
-	if err := run("mount", root, mountRoot); err != nil {
+	if err := run("mount", d.PartitionPath(rootPartNum), mountRoot); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(efiPart, 0o755); err != nil {
+	if err := os.MkdirAll(efiPart(), 0o755); err != nil {
 		return err
 	}
-	efi, _ := partitionPaths(disk)
-	return run("mount", efi, efiPart)
+	return run("mount", d.PartitionPath(espPartNum), efiPart())
 }
 
 // copyRootfs copies the live squashfs environment onto the target disk using
 // rsync. This is the air-gapped alternative to debootstrap — all packages are
 // already embedded in the ISO so no network access is required.
-func copyRootfs() error {
-	if err := run("rsync", "-aHAX", "--delete", "--info=progress2",
+func copyRootfs(cfg DiskConfig) error {
+	args := []string{
+		"-aHAX", "--delete", "--info=progress2",
 		"--exclude=/proc",
 		"--exclude=/sys",
 		"--exclude=/dev",
@@ -161,8 +170,10 @@ func copyRootfs() error {
 		"--exclude=/etc/ssh/ssh_host_*",
 		"--exclude=/lost+found",
 		"--exclude=/boot/efi",
-		"/", mountRoot+"/",
-	); err != nil {
+	}
+	args = append(args, datasetProtectFilters(cfg)...)
+	args = append(args, "/", mountRoot+"/")
+	if err := run("rsync", args...); err != nil {
 		return err
 	}
 
@@ -278,7 +289,7 @@ func installSpinifex(cfg *Config) error {
 	// MANAGEMENT_IFACE is the bridge (br-wan), not the physical NIC.
 	// MANAGEMENT_IP is empty for DHCP — banner's --boot-check fills it in at boot.
 	nodeConf := fmt.Sprintf("MANAGEMENT_IP=%s\nMANAGEMENT_IFACE=br-wan\nNODE_HOSTNAME=%s\n",
-		cfg.WANAddress, cfg.Hostname)
+		cfg.WAN.Address, cfg.Hostname)
 	confDir := filepath.Join(mountRoot, "etc/spinifex")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		return err
@@ -309,23 +320,47 @@ func writeNetworkConfig(cfg *Config) error {
 		return err
 	}
 
-	if err := writeNetworkdBridge(netdDir, cfg.WANInterface, "br-wan", false,
-		cfg.WANDHCPMode, cfg.WANAddress, cfg.WANMask, cfg.WANGateway, cfg.WANDNS,
-		cfg.WANWiFiSSID, cfg.WANWiFiPass); err != nil {
-		return err
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("network roles: %w", err)
 	}
 
-	if cfg.LANInterface != "" {
-		if err := writeNetworkdBridge(netdDir, cfg.LANInterface, "br-lan", true,
-			cfg.LANDHCPMode, cfg.LANAddress, cfg.LANMask, "", cfg.LANDNS,
-			cfg.LANWiFiSSID, cfg.LANWiFiPass); err != nil {
+	// A physical NIC is configured once even when two roles share it via
+	// VLANs, so parent-interface files are keyed by NIC rather than by plane.
+	parents := map[string]*parentNIC{}
+	for _, rb := range cfg.Roles() {
+		p, ok := parents[rb.Role.Interface]
+		if !ok {
+			p = &parentNIC{}
+			parents[rb.Role.Interface] = p
+		}
+		if rb.Role.VLAN > 0 {
+			p.vlans = append(p.vlans, rb.Role.Link())
+		} else {
+			p.bridge = rb.Plane.Bridge()
+		}
+		// The parent must carry at least the largest MTU of any VLAN riding it.
+		if rb.Role.MTU > p.mtu {
+			p.mtu = rb.Role.MTU
+		}
+	}
+	for iface, p := range parents {
+		if err := writeParentNIC(netdDir, iface, p); err != nil {
 			return err
 		}
-		// br-lan timing is controlled by spinifex-lan-bridge.service, not
-		// networkd auto-activation — ActivationPolicy=manual in the .network
-		// file ensures networkd creates the bridge but does not bring it up.
-		if err := systemd.WriteLANBridgeUnit(mountRoot); err != nil {
-			return fmt.Errorf("lan bridge unit: %w", err)
+	}
+
+	for _, rb := range cfg.Roles() {
+		// Only br-wan auto-activates; the east-west bridges are brought up by
+		// their own unit after network-online.target so a missing cable or a
+		// DHCP timeout on them can never stall the management path.
+		manual := rb.Plane != PlaneWAN
+		if err := writeNetworkdBridge(netdDir, rb.Plane, rb.Role, manual); err != nil {
+			return err
+		}
+		if manual {
+			if err := systemd.WriteBridgeUnit(mountRoot, rb.Plane.Bridge()); err != nil {
+				return fmt.Errorf("%s bridge unit: %w", rb.Plane, err)
+			}
 		}
 	}
 
@@ -353,9 +388,9 @@ func writeNetworkConfig(cfg *Config) error {
 
 	// Disable IPv6 via sysctl — belt-and-suspenders alongside IPv6AcceptRA=no
 	// in the networkd .network files.
-	bridges := []string{"br-wan"}
-	if cfg.LANInterface != "" {
-		bridges = append(bridges, "br-lan")
+	var bridges []string
+	for _, rb := range cfg.Roles() {
+		bridges = append(bridges, rb.Plane.Bridge())
 	}
 	var sysctl strings.Builder
 	sysctl.WriteString("# Generated by Spinifex installer — IPv6 disabled on management bridges\n")
@@ -377,10 +412,14 @@ func writeNetworkConfig(cfg *Config) error {
 		return err
 	}
 	var udevRules strings.Builder
-	for _, iface := range []string{cfg.WANInterface, cfg.LANInterface} {
-		if iface == "" {
+	pinned := map[string]bool{}
+	for _, rb := range cfg.Roles() {
+		iface := rb.Role.Interface
+		// Two roles can share one NIC via VLANs; pin the physical name once.
+		if iface == "" || pinned[iface] {
 			continue
 		}
+		pinned[iface] = true
 		mac, err := os.ReadFile("/sys/class/net/" + iface + "/address")
 		if err != nil {
 			slog.Warn("writeNetworkConfig: could not read NIC MAC, skipping udev pin", "iface", iface, "err", err)
@@ -395,35 +434,90 @@ func writeNetworkConfig(cfg *Config) error {
 	return nil
 }
 
-// writeNetworkdBridge writes the three systemd-networkd files that configure a
-// physical NIC enslaved to a Linux bridge:
+// parentNIC accumulates how one physical interface is used across roles. A NIC
+// is either enslaved directly to a bridge (untagged) or carries VLAN
+// subinterfaces — never both for the same plane.
+type parentNIC struct {
+	bridge string
+	vlans  []string
+	mtu    int
+}
+
+// writeParentNIC writes the .network file for a physical interface. An
+// untagged NIC is enslaved straight to its bridge; a tagged one declares its
+// VLAN subinterfaces and stays unbridged, since the VLAN devices are what get
+// enslaved.
+func writeParentNIC(dir, iface string, p *parentNIC) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[Match]\nName=%s\n\n", iface)
+	// A physical NIC here is either a bridge port or a VLAN trunk, and neither
+	// carries the address — the bridge above it does. Such a link never reaches
+	// the "degraded" state systemd-networkd-wait-online requires, so leaving it
+	// required makes that unit fail on every boot and stall until it times out.
+	b.WriteString("[Link]\nRequiredForOnline=no\n")
+	if p.mtu > 0 {
+		fmt.Fprintf(&b, "MTUBytes=%d\n", p.mtu)
+	}
+	b.WriteString("\n[Network]\n")
+	if p.bridge != "" {
+		fmt.Fprintf(&b, "Bridge=%s\n", p.bridge)
+	}
+	for _, v := range p.vlans {
+		fmt.Fprintf(&b, "VLAN=%s\n", v)
+	}
+	b.WriteString("IPv6AcceptRA=no\n")
+	return os.WriteFile(filepath.Join(dir, fmt.Sprintf("05-spinifex-nic-%s.network", iface)), []byte(b.String()), 0o644)
+}
+
+// writeNetworkdBridge writes the systemd-networkd files that put a plane's
+// address on its own Linux bridge:
 //
-//   - {prio}-spinifex-{suffix}-nic.network  enslaves the NIC to the bridge
-//   - {prio+1}-spinifex-{suffix}.netdev     declares the bridge device
-//   - {prio+1}-spinifex-{suffix}.network    configures IP on the bridge
+//   - 1{n}-spinifex-{plane}-vlan.netdev   VLAN subinterface (tagged roles only)
+//   - 1{n}-spinifex-{plane}-vlan.network  enslaves the VLAN device to the bridge
+//   - 2{n}-spinifex-{plane}.netdev        declares the bridge device
+//   - 2{n}-spinifex-{plane}.network       configures IP on the bridge
+//
+// The physical NIC itself is written separately by writeParentNIC, because two
+// roles may share one NIC and it must be configured exactly once.
 //
 // manual=true sets ActivationPolicy=manual so networkd creates the bridge but
-// does not auto-activate it — used for br-lan, which spinifex-lan-bridge.service
-// activates after network-online.target.
-func writeNetworkdBridge(dir, nicIface, bridgeName string, manual, dhcp bool,
-	addr, mask, gw string, dns []string, wifiSSID, wifiPass string) error {
-	suffix := strings.TrimPrefix(bridgeName, "br-")
-	nicPrio, brPrio := 10, 11
-	if manual {
-		nicPrio, brPrio = 12, 13
+// does not auto-activate it — used for br-lan and br-vpc, which their own
+// spinifex-{plane}-bridge.service activates after network-online.target.
+func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool) error {
+	name := string(plane)
+	bridgeName := plane.Bridge()
+
+	if role.VLAN > 0 {
+		link := role.Link()
+		vlanNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=vlan\n\n[VLAN]\nId=%d\n", link, role.VLAN)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("10-spinifex-%s-vlan.netdev", name)), []byte(vlanNetdev), 0o644); err != nil {
+			return err
+		}
+		var v strings.Builder
+		fmt.Fprintf(&v, "[Match]\nName=%s\n\n", link)
+		// Enslaved to the bridge below, so it is not what "online" means here.
+		v.WriteString("[Link]\nRequiredForOnline=no\n")
+		if role.MTU > 0 {
+			fmt.Fprintf(&v, "MTUBytes=%d\n", role.MTU)
+		}
+		fmt.Fprintf(&v, "\n[Network]\nBridge=%s\nIPv6AcceptRA=no\n", bridgeName)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("11-spinifex-%s-vlan.network", name)), []byte(v.String()), 0o644); err != nil {
+			return err
+		}
 	}
 
-	// NIC .network — enslaves the physical NIC to the bridge.
-	nicNet := fmt.Sprintf("[Match]\nName=%s\n\n[Network]\nBridge=%s\n", nicIface, bridgeName)
-	nicFile := fmt.Sprintf("%02d-spinifex-%s-nic.network", nicPrio, suffix)
-	if err := os.WriteFile(filepath.Join(dir, nicFile), []byte(nicNet), 0o644); err != nil {
-		return err
+	// Without a policy systemd-networkd invents a MAC for the bridge, so the node
+	// appears on the wire as an address that belongs to no NIC — the DHCP server
+	// sees a request whose source does not match its own chaddr and the unicast
+	// reply goes nowhere. "none" leaves the kernel to inherit the enslaved port's
+	// address, which is what a bridged uplink is supposed to present, and keeps
+	// it stable across boots for switch MAC tables and DHCP reservations.
+	brNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=bridge\nMACAddressPolicy=none\n", bridgeName)
+	if role.MTU > 0 {
+		brNetdev += fmt.Sprintf("MTUBytes=%d\n", role.MTU)
 	}
-
-	// Bridge .netdev — declares the bridge device.
-	brNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=bridge\n\n[Bridge]\nSTP=no\n", bridgeName)
-	brNetdevFile := fmt.Sprintf("%02d-spinifex-%s.netdev", brPrio, suffix)
-	if err := os.WriteFile(filepath.Join(dir, brNetdevFile), []byte(brNetdev), 0o644); err != nil {
+	brNetdev += "\n[Bridge]\nSTP=no\n"
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.netdev", name)), []byte(brNetdev), 0o644); err != nil {
 		return err
 	}
 
@@ -434,36 +528,43 @@ func writeNetworkdBridge(dir, nicIface, bridgeName string, manual, dhcp bool,
 		b.WriteString("[Link]\nActivationPolicy=manual\nRequiredForOnline=no\n\n")
 	}
 	b.WriteString("[Network]\n")
-	if dhcp {
+	if role.DHCPMode {
 		b.WriteString("DHCP=ipv4\n")
 	} else {
-		cidr, err := addrCIDR(addr, mask)
+		cidr, err := addrCIDR(role.Address, role.Mask)
 		if err != nil {
 			return fmt.Errorf("bridge %s: %w", bridgeName, err)
 		}
 		fmt.Fprintf(&b, "Address=%s\n", cidr)
-		if gw != "" {
-			fmt.Fprintf(&b, "Gateway=%s\n", gw)
+		// Only the wan plane installs a default route; the east-west planes
+		// are link-local to the rack.
+		if role.Gateway != "" && plane == PlaneWAN {
+			fmt.Fprintf(&b, "Gateway=%s\n", role.Gateway)
 		}
-		for _, ns := range dns {
-			if ns = strings.TrimSpace(ns); ns != "" {
-				fmt.Fprintf(&b, "DNS=%s\n", ns)
+		// Resolvers follow the default route for the same reason. A resolver
+		// pinned to an east-west bridge is unreachable — those bridges are
+		// link-local and activate manually — but resolved would still try it,
+		// putting a timeout in front of every lookup on the node.
+		if plane == PlaneWAN {
+			for _, ns := range role.DNS {
+				if ns = strings.TrimSpace(ns); ns != "" {
+					fmt.Fprintf(&b, "DNS=%s\n", ns)
+				}
 			}
 		}
 	}
 	b.WriteString("IPv6AcceptRA=no\nConfigureWithoutCarrier=yes\n")
-	if manual && dhcp {
-		// br-lan is non-critical; fail fast on DHCP so a missing LAN cable
-		// does not stall spinifex-lan-bridge.service indefinitely.
+	if manual && role.DHCPMode {
+		// The east-west bridges are non-critical; fail fast on DHCP so a
+		// missing cable does not stall their activation unit indefinitely.
 		b.WriteString("\n[DHCP]\nTimeout=10\n")
 	}
-	brNetFile := fmt.Sprintf("%02d-spinifex-%s.network", brPrio, suffix)
-	if err := os.WriteFile(filepath.Join(dir, brNetFile), []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.network", name)), []byte(b.String()), 0o644); err != nil {
 		return err
 	}
 
-	if wifiSSID != "" {
-		if err := writeWPASupplicant(nicIface, wifiSSID, wifiPass); err != nil {
+	if role.WiFiSSID != "" {
+		if err := writeWPASupplicant(role.Interface, role.WiFiSSID, role.WiFiPass); err != nil {
 			return err
 		}
 	}
@@ -513,7 +614,59 @@ func writeWPASupplicant(nicIface, ssid, psk string) error {
 	return os.Symlink("/lib/systemd/system/wpa_supplicant@.service", link)
 }
 
-func installBootloader(disk string) error {
+func installBootloader(cfg DiskConfig) error {
+	// Branding assets have to be in place before either path regenerates
+	// grub.cfg — the ZFS path copies them out of /boot onto each ESP.
+	copySplashImage(mountRoot)
+	copyGrubFont(mountRoot)
+
+	if cfg.FS.IsZFS() {
+		// The initramfs must be able to import the pool before the ESPs are
+		// synced, since refresh copies whatever initrd exists at that moment.
+		if err := buildZFSInitramfs(); err != nil {
+			return err
+		}
+		return installBootToolZFS(cfg)
+	}
+	return installBootloaderExt4(cfg.Primary())
+}
+
+// buildZFSInitramfs regenerates the target's initramfs so it carries the ZFS
+// module, the pool cache and the hostid. The image copied from the live ISO was
+// built for a machine with an ext4 root and cannot import a pool.
+func buildZFSInitramfs() error {
+	// ZFS refuses to import a pool last touched by a different host without
+	// -f, and the hostid the initramfs sees must match the one recorded on the
+	// pool — otherwise every boot stops in the initramfs shell.
+	if err := run("cp", "-f", "/etc/hostid", filepath.Join(mountRoot, "etc/hostid")); err != nil {
+		slog.Warn("could not copy /etc/hostid, generating one in the target", "err", err)
+		if err := run("zgenhostid", "-f", "-o", filepath.Join(mountRoot, "etc/hostid")); err != nil {
+			return fmt.Errorf("zgenhostid: %w", err)
+		}
+	}
+
+	// The pool was created with cachefile=none so the live environment would
+	// not claim it. The installed system needs the cache to import at boot
+	// without scanning every block device.
+	cacheDir := filepath.Join(mountRoot, "etc/zfs")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	if err := run("zpool", "set", "cachefile="+filepath.Join(cacheDir, "zpool.cache"), ZFSPoolName); err != nil {
+		return fmt.Errorf("set zpool cachefile: %w", err)
+	}
+
+	if err := bindChrootMounts(); err != nil {
+		return err
+	}
+	defer unbindChrootMounts()
+	if err := run("chroot", mountRoot, "update-initramfs", "-u", "-k", "all"); err != nil {
+		return fmt.Errorf("update-initramfs: %w", err)
+	}
+	return nil
+}
+
+func installBootloaderExt4(disk Disk) error {
 	// grub-install runs in the live environment (not chroot) using the
 	// grub-pc-bin and grub-efi-amd64-bin packages already present on the ISO.
 	// --boot-directory points at the installed system's /boot.
@@ -535,7 +688,7 @@ func installBootloader(disk string) error {
 		"--target=i386-pc",
 		"--boot-directory="+bootDir,
 		"--recheck",
-		disk,
+		disk.Path,
 	); biosErr != nil {
 		if efiErr != nil {
 			// Both targets failed — the system will not boot.
@@ -543,56 +696,9 @@ func installBootloader(disk string) error {
 		}
 		return biosErr
 	}
-	// Copy splash image and unicode font from the ISO (mounted at /cdrom) so the
-	// installed GRUB shows the same branded background as the installer GRUB.
-	// The font must be at /boot/grub/fonts/unicode.pf2 so update-grub finds it
-	// there and emits the same loadfont path as the ISO's grub.cfg — GRUB 2.12
-	// (trixie) needs the font in the boot partition, not just /usr/share/grub/.
-	copySplashImage(mountRoot)
-	copyGrubFont(mountRoot)
 
-	// Both consoles listed: tty0 stays primary for local install, ttyS0 mirrors
-	// kernel output to serial so headless installs (CI, racks with serial-only
-	// IPMI, remote-dev SSH-to-QEMU) see boot messages. The last `console=` on
-	// the cmdline becomes the system console, so ttyS0 wins on serial-only
-	// hardware while tty0 still receives output for local display.
-	grubDefault := `GRUB_DEFAULT=0
-GRUB_TIMEOUT=5
-GRUB_DISTRIBUTOR=Spinifex
-GRUB_CMDLINE_LINUX_DEFAULT=""
-GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 systemd.show_status=1"
-`
-
-	if err := os.WriteFile(filepath.Join(mountRoot, "etc/default/grub"), []byte(grubDefault), 0o644); err != nil {
-		return fmt.Errorf("write /etc/default/grub: %w", err)
-	}
-
-	// Mirror the ISO grub.cfg graphical block exactly so the installed GRUB menu
-	// looks identical to the installer menu. gfxterm MUST be activated before
-	// serial is appended — background_image silently does nothing in text mode.
-	// Using exec tail so update-grub includes everything from line 3 as raw GRUB config.
-	grubTheme := `#!/bin/sh
-exec tail -n +3 $0
-insmod all_video
-insmod font
-if loadfont /boot/grub/fonts/unicode.pf2; then
-  set gfxmode=auto
-  insmod gfxterm
-  terminal_output gfxterm
-fi
-insmod serial
-if serial --unit=0 --speed=115200 --timeout=1; then
-  terminal_input  --append serial
-  terminal_output --append serial
-fi
-
-# --- Branding ---
-insmod png
-set theme=/boot/grub/theme.txt
-export theme
-`
-	if err := os.WriteFile(filepath.Join(mountRoot, "etc/grub.d/06_spinifex"), []byte(grubTheme), 0o755); err != nil {
-		return fmt.Errorf("write /etc/grub.d/06_spinifex: %w", err)
+	if err := writeGrubDefaults(DiskConfig{FS: FSExt4}); err != nil {
+		return err
 	}
 
 	if err := bindChrootMounts(); err != nil {
@@ -667,40 +773,245 @@ func reboot() error {
 
 // toFirstbootConfig maps installer Config to the firstboot package's Config.
 func (c *Config) toFirstbootConfig() firstboot.Config {
-	// Geneve encap IP: use LAN bridge IP when a dedicated LAN NIC is present,
-	// otherwise fall back to WAN bridge IP. Empty for DHCP — setup-ovn.sh
+	// Both addresses come from their plane after collapsing, so a single-NIC
+	// node resolves them to the wan address and a three-plane rack keeps
+	// Geneve on vpc and cluster traffic on lan. Empty for DHCP — setup-ovn.sh
 	// auto-detects the IP from the default route at boot in that case.
-	encapIP := c.WANAddress
-	if c.LANInterface != "" && c.LANAddress != "" {
-		encapIP = c.LANAddress
-	}
 	return firstboot.Config{
 		Hostname:        c.Hostname,
-		EncapIP:         encapIP,
-		ClusterRole:     c.ClusterRole,
-		JoinAddr:        c.JoinAddr,
+		EncapIP:         c.PlaneAddress(PlaneVPC),
+		LANIP:           c.PlaneAddress(PlaneLAN),
+		WANIP:           c.PlaneAddress(PlaneWAN),
 		Email:           c.Email,
 		InstallCallback: strings.TrimSpace(os.Getenv("SPINIFEX_INSTALL_CALLBACK")),
 		SkipFormation:   c.SkipFormation,
 	}
 }
 
-// writeFstab writes /etc/fstab on the installed system using partition UUIDs so
-// the root filesystem is mounted read-write at boot and the EFI partition is
-// mounted at /boot/efi.
-func writeFstab(disk string) error {
-	efi, root := partitionPaths(disk)
-	rootUUID, err := partUUID(root)
-	if err != nil {
-		return fmt.Errorf("get root UUID: %w", err)
+// writeFstab writes /etc/fstab on the installed system.
+//
+// On ZFS the root and every dataset are mounted by ZFS itself from properties
+// stored on the pool, and the ESPs are mounted on demand by spinifex-boot-tool,
+// so the file holds nothing but swap.
+func writeFstab(cfg DiskConfig) error {
+	fstab := "# /etc/fstab — generated by Spinifex installer\n"
+
+	if !cfg.FS.IsZFS() {
+		d := cfg.Primary()
+		rootUUID, err := partUUID(d.PartitionPath(rootPartNum))
+		if err != nil {
+			return fmt.Errorf("get root UUID: %w", err)
+		}
+		efiUUID, err := partUUID(d.PartitionPath(espPartNum))
+		if err != nil {
+			return fmt.Errorf("get EFI UUID: %w", err)
+		}
+		fstab += fmt.Sprintf("UUID=%s / ext4 errors=remount-ro 0 1\nUUID=%s /boot/efi vfat umask=0077 0 1\n",
+			rootUUID, efiUUID)
 	}
-	efiUUID, err := partUUID(efi)
-	if err != nil {
-		return fmt.Errorf("get EFI UUID: %w", err)
+
+	// Only claim the swap the previous step actually produced; systemd fails the
+	// boot on a missing swap unit rather than ignoring the line.
+	switch {
+	case cfg.FS.IsZFS():
+		if _, err := os.Stat("/dev/zvol/" + swapZvolName); err == nil {
+			fstab += fmt.Sprintf("/dev/zvol/%s none swap discard 0 0\n", swapZvolName)
+		}
+	default:
+		if _, err := os.Stat(filepath.Join(mountRoot, swapFileName)); err == nil {
+			fstab += fmt.Sprintf("/%s none swap sw 0 0\n", swapFileName)
+		}
 	}
-	fstab := fmt.Sprintf("# /etc/fstab — generated by Spinifex installer\nUUID=%s / ext4 errors=remount-ro 0 1\nUUID=%s /boot/efi vfat umask=0077 0 1\n",
-		rootUUID, efiUUID)
 	return os.WriteFile(filepath.Join(mountRoot, "etc/fstab"), []byte(fstab), 0o644)
+}
+
+const (
+	swapFileName = "swapfile"
+	// Nodes below this get half their RAM, which keeps a 4 GiB test VM to a
+	// 2 GiB file instead of eating its disk. At or above it the machine is a
+	// real host with a real disk, so swap is worth sizing for large imports.
+	swapRAMThreshold = 32 << 30
+	swapLargeBytes   = 64 << 30
+	// Below this there is not enough to be worth the space it costs.
+	swapMinBytes = 512 << 20
+	// Hard ceiling as a share of free disk, whatever RAM suggests: a 64 GiB file
+	// must never fill a small root filesystem.
+	swapDiskShare = 4
+)
+
+// createSwapFile lays down /swapfile on the installed root, sized to the disk.
+//
+// Importing an image streams the decompressed disk through viperblock into
+// predastore, which a 2-4 GiB node cannot hold in RAM — the kernel OOM-kills the
+// import mid-flush. Swap trades speed for completing the operation at all. It is
+// a stopgap for the memory profile of that path, not a fix for it.
+//
+// Failure is logged and not fatal: a node that boots without swap is worse at
+// large imports but is otherwise fine, and losing a whole install over it would
+// be the greater harm.
+// swapZvolName is the swap volume on a ZFS root. ZFS cannot host a swap *file*
+// at all, so a zvol is the only option — the same one Proxmox uses.
+const swapZvolName = ZFSPoolName + "/swap"
+
+// createSwap lays down swap in whichever form the root filesystem supports.
+func createSwap(cfg DiskConfig) error {
+	if cfg.FS.IsZFS() {
+		return createSwapZvol()
+	}
+	return createSwapFile()
+}
+
+// createSwapZvol creates the swap volume on a ZFS root.
+//
+// The properties are not tuning preferences. A zvol swapping under memory
+// pressure can deadlock against the ARC, and these are the settings that make
+// it survivable: page-sized blocks so a swap-out is one record, no data
+// caching so swap pages are never copied into the ARC, and sync writes so a
+// page is on disk before the kernel frees it.
+func createSwapZvol() error {
+	size, err := swapSize(mountRoot)
+	if err != nil {
+		slog.Warn("swap: cannot size swap volume, continuing without one", "err", err)
+		return nil
+	}
+	if size == 0 {
+		slog.Warn("swap: pool too small for a useful swap volume, continuing without one")
+		return nil
+	}
+
+	if err := run("zfs", "create",
+		"-V", strconv.FormatInt(size, 10),
+		"-b", strconv.Itoa(os.Getpagesize()),
+		"-o", "logbias=throughput",
+		"-o", "sync=always",
+		"-o", "primarycache=metadata",
+		"-o", "secondarycache=none",
+		"-o", "compression=zle",
+		"-o", "com.sun:auto-snapshot=false",
+		swapZvolName,
+	); err != nil {
+		slog.Warn("swap: could not create swap volume, continuing without swap", "err", err)
+		return nil
+	}
+
+	dev := "/dev/zvol/" + swapZvolName
+	if err := waitForPath(dev, time.Now().Add(10*time.Second)); err != nil {
+		slog.Warn("swap: zvol device node never appeared, continuing without swap", "err", err)
+		return nil
+	}
+	if err := run("mkswap", "-f", dev); err != nil {
+		slog.Warn("swap: mkswap failed, continuing without swap", "err", err)
+		return nil
+	}
+	slog.Info("swap: created", "zvol", swapZvolName, "bytes", size)
+	return nil
+}
+
+func createSwapFile() error {
+	size, err := swapSize(mountRoot)
+	if err != nil {
+		slog.Warn("swap: cannot size swap file, continuing without one", "err", err)
+		return nil
+	}
+	if size == 0 {
+		slog.Warn("swap: disk too small for a useful swap file, continuing without one",
+			"min_bytes", swapMinBytes)
+		return nil
+	}
+
+	path := filepath.Join(mountRoot, swapFileName)
+	// fallocate rather than dd: on ext4 it reserves real extents, so mkswap and
+	// swapon accept it, and a 32 GiB file costs no write time during install.
+	if err := run("fallocate", "-l", strconv.FormatInt(size, 10), path); err != nil {
+		slog.Warn("swap: fallocate failed, continuing without swap", "err", err)
+		_ = os.Remove(path)
+		return nil
+	}
+	// mkswap refuses a world-readable file, and its contents are process memory.
+	if err := os.Chmod(path, 0o600); err != nil {
+		slog.Warn("swap: chmod failed, continuing without swap", "err", err)
+		_ = os.Remove(path)
+		return nil
+	}
+	if err := run("mkswap", path); err != nil {
+		slog.Warn("swap: mkswap failed, continuing without swap", "err", err)
+		_ = os.Remove(path)
+		return nil
+	}
+	slog.Info("swap: created", "path", "/"+swapFileName, "bytes", size)
+	return nil
+}
+
+// swapSize returns the swap file size for the filesystem mounted at root, or 0
+// when the disk cannot spare a useful amount. SPINIFEX_SWAP_SIZE overrides the
+// calculation; 0 disables swap entirely.
+//
+// RAM drives the size and the disk only caps it, so a small test VM stays cheap
+// on disk while a real host gets enough to carry a large import.
+func swapSize(root string) (int64, error) {
+	if v := strings.TrimSpace(os.Getenv("SPINIFEX_SWAP_SIZE")); v != "" {
+		size, err := parseSize(v)
+		if err != nil {
+			return 0, fmt.Errorf("SPINIFEX_SWAP_SIZE: %w", err)
+		}
+		return size, nil
+	}
+
+	ram, err := totalRAM()
+	if err != nil {
+		return 0, err
+	}
+	size := ram / 2
+	if ram >= swapRAMThreshold {
+		size = swapLargeBytes
+	}
+
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(root, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", root, err)
+	}
+	// Free space, not total: the rootfs is already copied in, so this is what is
+	// genuinely left to give away.
+	free := int64(st.Bavail) * st.Bsize
+	if diskCap := free / swapDiskShare; size > diskCap {
+		size = diskCap
+	}
+	if size < swapMinBytes {
+		return 0, nil
+	}
+	return size, nil
+}
+
+// totalRAM reports installed memory in bytes.
+func totalRAM() (int64, error) {
+	var si syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&si); err != nil {
+		return 0, fmt.Errorf("sysinfo: %w", err)
+	}
+	unit := int64(si.Unit)
+	if unit == 0 {
+		unit = 1
+	}
+	return int64(si.Totalram) * unit, nil
+}
+
+// parseSize reads a plain byte count or a G/M suffixed size ("32G", "512M").
+func parseSize(s string) (int64, error) {
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "G"), strings.HasSuffix(s, "g"):
+		mult, s = 1<<30, s[:len(s)-1]
+	case strings.HasSuffix(s, "M"), strings.HasSuffix(s, "m"):
+		mult, s = 1<<20, s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative size %q", s)
+	}
+	return n * mult, nil
 }
 
 func partUUID(dev string) (string, error) {
@@ -713,18 +1024,6 @@ func partUUID(dev string) (string, error) {
 		return "", fmt.Errorf("blkid returned no UUID for %s — partition may not have a filesystem yet", dev)
 	}
 	return uuid, nil
-}
-
-// partitionPaths returns the EFI and root partition device paths for a given
-// disk. p1 is the BIOS Boot Partition (no filesystem), p2 is EFI, p3 is root.
-// Handles both /dev/sdX (→ /dev/sdX2, /dev/sdX3) and /dev/nvmeXnY
-// (→ /dev/nvmeXnYp2, /dev/nvmeXnYp3).
-func partitionPaths(disk string) (efi, root string) {
-	// NVMe devices use a 'p' separator before the partition number.
-	if len(disk) > 0 && disk[len(disk)-1] >= '0' && disk[len(disk)-1] <= '9' {
-		return disk + "p2", disk + "p3"
-	}
-	return disk + "2", disk + "3"
 }
 
 // copyGrubFont copies the unicode.pf2 GRUB font into the installed system's
@@ -836,13 +1135,31 @@ func bindChrootMounts() error {
 // Errors are logged but not returned — this is best-effort cleanup.
 func unbindChrootMounts() {
 	for _, v := range slices.Backward(chrootMountPaths) {
-		_ = run("umount", filepath.Join(mountRoot, v))
+		// Quiet: this also runs from the deferred cleanup, where nothing is
+		// mounted and three "no mount point specified" lines above a real error
+		// message are pure distraction.
+		_ = runQuiet("umount", filepath.Join(mountRoot, v))
 	}
 }
 
-func run(name string, args ...string) error {
+var run = func(name string, args ...string) error {
+	return runEnv(nil, name, args...)
+}
+
+// runQuiet is run with output discarded, for best-effort probes whose failure
+// is expected and whose stderr would otherwise look like an install fault.
+var runQuiet = func(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	return cmd.Run()
+}
+
+// runEnv is run with extra environment variables appended to the installer's own.
+var runEnv = func(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	return cmd.Run()
 }

@@ -1,0 +1,45 @@
+#!/bin/bash
+# Diversion wrapper for grub-install on a spinifex-boot-tool system.
+#
+# On ZFS root the bootloader lives on per-disk ESPs, not in /boot. A plain
+# grub-install writes a core image that tries to read the pool, which works
+# until the next OpenZFS feature flag lands and then silently does not. Worse,
+# the grub-pc and shim packages run grub-install from their own postinst, so an
+# ordinary `apt upgrade` would undo the layout with no visible error.
+#
+# Mirrors the wrapper Proxmox ships for the same reason.
+
+set -e
+
+REAL="/usr/sbin/grub-install.real"
+TOOL="/usr/sbin/spinifex-boot-tool"
+
+# Not a managed system: behave exactly as the real grub-install.
+if ! "$TOOL" status --quiet 2>/dev/null; then
+	exec "$REAL" "$@"
+fi
+
+# dpkg sets this when a maintainer script is running. The bootloader packages
+# reinstalling themselves is expected and is redirected, not refused.
+case "${DPKG_MAINTSCRIPT_PACKAGE:-}" in
+grub-* | shim-*)
+	echo "This system is managed by spinifex-boot-tool; redirecting grub-install to 'spinifex-boot-tool reinit'." >&2
+	exec "$TOOL" reinit
+	;;
+esac
+
+cat >&2 <<EOF
+E: This system's bootloader is managed by spinifex-boot-tool.
+
+Running grub-install directly would install GRUB somewhere the firmware does
+not read, and would leave the per-disk ESPs holding a stale kernel.
+
+Use instead:
+  spinifex-boot-tool refresh     re-sync kernels and grub.cfg to every ESP
+  spinifex-boot-tool reinit      reinstall GRUB on every ESP
+  spinifex-boot-tool status      list the ESPs under management
+
+To run the real grub-install anyway (you probably do not want this):
+  $REAL $*
+EOF
+exit 1

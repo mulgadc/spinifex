@@ -6,44 +6,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// WriteLANBridgeUnit installs a non-critical oneshot service that activates
-// br-lan via networkctl *after* network-online.target. br-lan has
-// ActivationPolicy=manual in its networkd .network file, so networkd creates
-// the bridge at boot but does not bring it up automatically. This service
-// triggers the activation once the WAN path is confirmed online, ensuring a
-// missing LAN cable or DHCP timeout on the secondary bridge never stalls
+// WriteBridgeUnit installs a non-critical oneshot service that activates an
+// east-west bridge (br-lan, br-vpc) via networkctl *after* network-online.target.
+// Those bridges carry ActivationPolicy=manual in their networkd .network file,
+// so networkd creates them at boot but does not bring them up automatically.
+// This service triggers the activation once the WAN path is confirmed online,
+// ensuring a missing cable or DHCP timeout on a secondary bridge never stalls
 // the management interface or firstboot.
-func WriteLANBridgeUnit(root string) error {
-	unit := `[Unit]
-Description=Spinifex LAN bridge (non-critical)
+func WriteBridgeUnit(root, bridge string) error {
+	name := "spinifex-" + strings.TrimPrefix(bridge, "br-") + "-bridge.service"
+	unit := fmt.Sprintf(`[Unit]
+Description=Spinifex %s bridge (non-critical)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/networkctl up br-lan
+ExecStart=/usr/bin/networkctl up %s
 RemainAfterExit=yes
 # Failure is non-critical — cable unplugged or switch not ready at boot.
 SuccessExitStatus=0 1
 
 [Install]
 WantedBy=multi-user.target
-`
-	unitPath := filepath.Join(root, "etc/systemd/system/spinifex-lan-bridge.service")
+`, bridge, bridge)
+	unitPath := filepath.Join(root, "etc/systemd/system", name)
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return err
 	}
-	wantsDir := filepath.Join(root, "etc/systemd/system/multi-user.target.wants")
-	if err := os.MkdirAll(wantsDir, 0o755); err != nil {
-		return err
-	}
-	link := filepath.Join(wantsDir, "spinifex-lan-bridge.service")
-	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale symlink %s: %w", link, err)
-	}
-	return os.Symlink("/etc/systemd/system/spinifex-lan-bridge.service", link)
+	return EnableUnit(root, name)
 }
 
 // WriteFirstbootUnit writes the spinifex-firstboot.service oneshot unit that

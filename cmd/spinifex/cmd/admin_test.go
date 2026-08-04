@@ -148,6 +148,48 @@ func TestSpinifexTomlTemplate_AdvertiseField(t *testing.T) {
 	assert.Contains(t, content, `advertise = "192.168.1.21"`, "off-host dial target")
 }
 
+// The gateway is the public AWS-API surface, so its listener must stay on the
+// wildcard even when --bind names a single internal plane; pinning it to BindIP
+// makes a multi-NIC node unreachable from the wan side. The internal services
+// around it still follow BindIP.
+func TestSpinifexTomlTemplate_GatewayListensOnAllPlanes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:        "hydrogen",
+		Az:          "us-west-1a",
+		Port:        "4432",
+		Region:      "us-west-1",
+		BindIP:      "10.0.0.3",
+		AdvertiseIP: "216.218.163.99",
+		AccessKey:   "AKIATEST",
+		SecretKey:   "SECRET",
+		AccountID:   "123456789012",
+		NatsToken:   "token",
+		ConfigDir:   dir,
+		OVNNBAddr:   "tcp:10.0.0.3:6641",
+		OVNSBAddr:   "tcp:10.0.0.3:6642",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `host = "0.0.0.0:9999"`, "gateway must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:9999"`, "gateway must not be pinned to the internal plane")
+	assert.Contains(t, content, `host = "10.0.0.3:4222"`, "nats stays internal")
+
+	// predastore-start.sh scrapes this into SPINIFEX_PREDASTORE_HOST, which
+	// outranks predastore.toml, so pinning it here makes S3 unreachable from the
+	// wan plane and breaks the UI, which proxies to localhost:8443.
+	assert.Contains(t, content, `host = "0.0.0.0:8443"`, "S3 must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:8443"`, "S3 must not be pinned to the internal plane")
+
+	// The daemon is cluster-internal and peers dial it by advertise address,
+	// so it stays on the bind address rather than following the public ones.
+	assert.Contains(t, content, `host = "10.0.0.3:4432"`, "daemon stays internal")
+}
+
 // Empty AdvertiseIP (e.g. loading an existing cluster pre-siv-8) must NOT
 // render an empty advertise = "" line — downstream fallback to Host kicks in.
 func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
@@ -1245,6 +1287,80 @@ func TestAMIVolumeSizeGiB(t *testing.T) {
 			if tt.bytes > 0 {
 				assert.GreaterOrEqual(t, int64(got)*giB, tt.bytes,
 					"volume must be large enough to hold the image")
+			}
+		})
+	}
+}
+
+func TestCheckJoinPreconditions(t *testing.T) {
+	writeToml := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "spinifex.toml"), []byte("# cluster\n"), 0o644); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return dir
+	}
+
+	t.Run("uninitialized node joins", func(t *testing.T) {
+		if err := checkJoinPreconditions(t.TempDir(), false); err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+
+	t.Run("initialized node is refused", func(t *testing.T) {
+		err := checkJoinPreconditions(writeToml(t), false)
+		if err == nil {
+			t.Fatal("want refusal, got nil")
+		}
+		if !strings.Contains(err.Error(), "already initialized") {
+			t.Errorf("unexpected message: %v", err)
+		}
+	})
+
+	// The guidance is the whole point of the guard: an operator must be able to
+	// tell what a forced join would destroy without reading the source.
+	t.Run("guidance names what is discarded", func(t *testing.T) {
+		for _, want := range []string{"CA certificate", "master key", "viperblock key", "--force"} {
+			if !strings.Contains(joinDiscardsIdentityMsg, want) {
+				t.Errorf("guidance missing %q", want)
+			}
+		}
+	})
+
+	t.Run("force overrides", func(t *testing.T) {
+		if err := checkJoinPreconditions(writeToml(t), true); err != nil {
+			t.Fatalf("want nil with force, got %v", err)
+		}
+	})
+}
+
+func TestJoinRetryable(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		want   bool
+	}{
+		// The primary may still be booting — bare-metal nodes cannot be
+		// sequenced, so a joiner that arrives first has to wait.
+		{"connection refused", errors.New("connection refused"), 0, true},
+		{"tls handshake failure", errors.New("tls: handshake failure"), 0, true},
+		{"timeout", errors.New("context deadline exceeded"), 0, true},
+		{"server error", nil, 500, true},
+		{"bad gateway", nil, 502, true},
+
+		// Answered and said no: retrying changes nothing, and a mistyped token
+		// must not hang a console for the whole timeout.
+		{"bad token", nil, 401, false},
+		{"duplicate node name", nil, 409, false},
+		{"bad request", nil, 400, false},
+		{"success", nil, 200, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := joinRetryable(tt.err, tt.status); got != tt.want {
+				t.Errorf("joinRetryable(%v, %d) = %v, want %v", tt.err, tt.status, got, tt.want)
 			}
 		})
 	}

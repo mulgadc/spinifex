@@ -88,7 +88,7 @@ func (v *Veth) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error) {
 	return mac, nil
 }
 
-// UplinkMode returns UplinkModeVeth (centralised NAT).
+// UplinkMode returns UplinkModeVeth.
 func (v *Veth) UplinkMode() UplinkMode { return UplinkModeVeth }
 
 // ExternalCIDR returns the IPv4 prefix on LinuxBridge (OS-assigned).

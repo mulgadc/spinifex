@@ -13,6 +13,8 @@ tags:
 resources:
   - title: "Spinifex ISO"
     url: "https://iso.mulgadc.com/spinifex.iso"
+  - title: "Multi-Node Install"
+    url: "/docs/install-multi-node"
   - title: "Balena Etcher"
     url: "https://etcher.balena.io"
   - title: "Spinifex Repository"
@@ -85,7 +87,9 @@ For network configuration, it is recommended to use automatic IP (DHCP), but thi
 
 Network interfaces will be automatically detected. In the event that none are detected, the user can manually input the name of the network interface. In the event that multiple network interfaces are detected, the installer will prompt for WAN selection first, followed by LAN.
 
-A hostname (eg `node1`) and admin password must be set, followed by the "cluster role" — whether the node is the first in a new cluster, or joining an already existing one.
+A hostname (eg `node1`) and admin password must be set.
+
+The installer does not ask about clustering. It installs and configures a standalone node — operating system, disks, hostname, network interfaces and plane addressing — and leaves Spinifex service configuration to a post-install step. This applies equally to single-node and multi-node deployments; see [Configure Spinifex](#configure-spinifex) below.
 
 Once configuration is complete, a summary of the configuration will be shown.
 
@@ -97,20 +101,38 @@ Once the USB drive is removed, press enter or wait for the auto-reboot.
 
 ### Log In
 
-The device will reboot and spend ~2-5 minutes configuring the Spinifex node. The user will then be prompted to log in. Use the following credentials for login:
+The device will reboot and briefly finalise the install — setting the hostname and bringing up the configured network interfaces — then prompt for login. Use the following credentials:
 
 - Login: `spinifex`
 - Password: Set by user during installation
 
-Both before and after login, a banner will be printed specifying important information, such as details for SSH into the node and accessing the web dashboard for further configuration of the node.
+Both before and after login, a banner will be printed specifying important information, such as details for SSH into the node and the commands needed to configure Spinifex. The web dashboard becomes available once the node has been configured and `spinifex.target` has been started.
 
 <img src="../../../.github/assets/images/banner1.png" alt="banner">
+
+### Configure Spinifex
+
+**Spinifex is now installed on this node, but not yet configured.**
+
+The ISO performs the same job as **Step 1** of the install guides — it puts Spinifex and its dependencies on the machine. The remaining steps configure OVN networking and form the cluster, and they run after installation because cluster membership determines how OVN's clustered database is brought up. That set cannot be known while the nodes are still being installed.
+
+Continue from **Step 2** of whichever guide applies:
+
+**Single node** — follow [Single-Node Install](/docs/install) from Step 2. In brief:
+
+```bash
+sudo /usr/local/share/spinifex/setup-ovn.sh --management
+sudo spx admin init --node node1 --nodes 1
+sudo systemctl start spinifex.target
+```
+
+**Multi-node cluster** — install Spinifex from the ISO on **every** server first, following this guide on each one. Once all servers are installed and reachable, follow [Multi-Node Install](/docs/install-multi-node) from Step 2. Do not configure any node until all of them are installed: the first node's `spx admin init` waits for the others to join, and the join must happen while it is waiting.
 
 ### Setup Complete
 
 **Congratulations! Spinifex is installed.**
 
-Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create a VPC, and launch your first instance.
+Once configured and started, continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create a VPC, and launch your first instance.
 
 ## Troubleshooting
 

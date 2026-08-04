@@ -37,6 +37,35 @@
 #                        the cluster; set ⇒ join it.
 #   --db-cluster-remote-addr=IP  An existing cluster DB node's IP to join. Omit
 #                        on the first (init) DB node that forms the cluster.
+#   --recreate-db        Destroy and recreate the NB/SB DBs so they can be
+#                        created in clustered format. Required when converting
+#                        a node that has already run a standalone ovn-central
+#                        (which is every node — the ovn-central package starts
+#                        one on install). DISCARDS ALL LOGICAL NETWORK STATE:
+#                        safe on a fresh node, destroys every VPC on a live one.
+#
+# Cluster Sizing — which DB topology to run:
+#
+#   Nodes  DB topology                              Tolerates
+#   1-2    standalone ovn-central on node 1         nothing
+#   3      RAFT across all 3                        1 node
+#   4+     RAFT across 3, remainder compute-only    1 node
+#
+#   Three nodes is the minimum recommended multi-server deployment.
+#
+#   NEVER run RAFT with 2 members. Quorum is a majority, so 2-of-2 tolerates
+#   zero failures — and it is strictly worse than standalone, because either
+#   node failing loses quorum rather than only node 1. Two-node deployments
+#   run standalone and accept the single point of failure.
+#
+#   Do not scale DB members past 3. RAFT write latency is bounded by the
+#   slowest member of the majority, and a 4th member buys no extra fault
+#   tolerance. Nodes beyond the third are compute-only, pointing at all three
+#   SB endpoints via the comma-separated --ovn-remote form.
+#
+#   Losing ovn-central does not stop the data plane: ovn-controller has already
+#   programmed flows into br-int, so running instances keep networking. Only
+#   control-plane change stops — new VPCs, instance launches, port bindings.
 #
 # WAN Bridge Auto-Detection:
 #   When no --wan-bridge is given, the script checks the default route interface:
@@ -90,6 +119,9 @@ ENCAP_IP=""
 # DBs run clustered; REMOTE_ADDR empty ⇒ create the cluster, set ⇒ join it.
 DB_CLUSTER_LOCAL_ADDR=""
 DB_CLUSTER_REMOTE_ADDR=""
+# Recreating the NB/SB DBs discards all logical network state, so it is opt-in.
+RECREATE_DB=false
+OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
 # NODE_NAME is left empty by default. The chassis-id pin block at Step 4
 # only runs when --node-name=NAME is explicitly given. Passing nothing
 # preserves whatever system-id already lives in OVS (gold-image UUID,
@@ -115,6 +147,7 @@ for arg in "$@"; do
         --encap-ip=*)       ENCAP_IP="${arg#*=}" ;;
         --db-cluster-local-addr=*)  DB_CLUSTER_LOCAL_ADDR="${arg#*=}" ;;
         --db-cluster-remote-addr=*) DB_CLUSTER_REMOTE_ADDR="${arg#*=}" ;;
+        --recreate-db)      RECREATE_DB=true ;;
         --node-name=*)      NODE_NAME="${arg#*=}" ;;
         --help|-h)
             sed -n '3,/^set -e/{/^set -e/!p}' "$0"
@@ -136,6 +169,11 @@ if [ -n "$DB_CLUSTER_LOCAL_ADDR" ] && [ "$MANAGEMENT" != true ]; then
 fi
 if [ -n "$DB_CLUSTER_REMOTE_ADDR" ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
     echo "ERROR: --db-cluster-remote-addr requires --db-cluster-local-addr"
+    exit 1
+fi
+if [ "$RECREATE_DB" = true ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
+    echo "ERROR: --recreate-db requires --db-cluster-local-addr (it exists to allow"
+    echo "       clustered DB creation over an existing standalone DB)"
     exit 1
 fi
 
@@ -307,6 +345,46 @@ if [ -d /etc/apparmor.d/local ]; then
 fi
 
 # --- Step 2: Enable services ---
+# ovn-ctl consults the RAFT flags only when it creates a database. The
+# ovn-central package starts a standalone ovsdb-server on install, so a
+# standalone-format DB is always already present by the time this script first
+# runs: without this check ovn-ctl serves that DB, silently ignores the cluster
+# flags, and the script reports success on a cluster that was never formed.
+ensure_clustered_db_storage() {
+    local db
+    local standalone=()
+    for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
+        if [ -f "$db" ] && ! sudo ovsdb-tool db-is-clustered "$db" 2>/dev/null; then
+            standalone+=("$db")
+        fi
+    done
+    if [ ${#standalone[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "$RECREATE_DB" != true ]; then
+        echo "ERROR: clustered DBs requested, but these are in standalone format:" >&2
+        printf '         %s\n' "${standalone[@]}" >&2
+        echo "" >&2
+        echo "  A clustered DB can only be created from scratch, so these must be" >&2
+        echo "  removed first. That DISCARDS ALL LOGICAL NETWORK STATE — every logical" >&2
+        echo "  switch, router, port and ACL, and so every VPC on this node." >&2
+        echo "" >&2
+        echo "  A freshly installed node has nothing to lose: re-run with --recreate-db." >&2
+        echo "  A node running workloads does: do not." >&2
+        exit 1
+    fi
+
+    echo "  --recreate-db: removing standalone DBs so ovn-ctl can create clustered ones"
+
+    # ovn-controller must go down with them. Left running, it reconnects to the
+    # fresh SB and re-registers under whatever system-id it started with — which
+    # on a renamed node is the old one, and that row then holds this node's encap
+    # IP so the correctly-named chassis can never commit. Step 5 restarts it.
+    sudo systemctl stop ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-central ovn-controller 2>/dev/null || true
+    sudo rm -f "${standalone[@]}"
+}
+
 echo ""
 echo "Step 2: Enabling services..."
 
@@ -318,6 +396,8 @@ if [ "$MANAGEMENT" = true ]; then
     sudo systemctl enable ovn-central
 
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        ensure_clustered_db_storage
+
         # Clustered NB/SB via native OVSDB RAFT. Both per-DB units source one
         # shared OVN_CTL_OPTS from /etc/default/ovn-central; each run_*_ovsdb
         # consumes only its own --db-{nb,sb}-* flags. RAFT ports default to NB
@@ -378,6 +458,20 @@ EOF
         echo "  Waiting for OVN NB DB... ($i/15)"
         sleep 1
     done
+
+    # Verify rather than assume: a DB that came up standalone despite the RAFT
+    # flags is the exact failure this guards against, and it stays invisible
+    # until a node goes down and the cluster turns out not to exist.
+    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
+            if ! sudo ovsdb-tool db-is-clustered "$db" 2>/dev/null; then
+                echo "ERROR: $db is not in clustered format after startup." >&2
+                echo "       The RAFT configuration did not take effect." >&2
+                exit 1
+            fi
+        done
+        echo "  DB storage:       clustered (NB + SB verified)"
+    fi
 
     # Wait for the Southbound DB to be serving before ovn-controller (Step 5)
     # dials it. On a single node ovn-controller races a fresh SB RAFT election
@@ -764,6 +858,22 @@ if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
     echo ""
     echo "Step 3d: Configuring management bridge ($MGMT_BRIDGE)..."
 
+    # --may-exist is idempotent against OVS, not against the kernel. When a
+    # Linux bridge already holds the name, OVS creates the bridge record but
+    # cannot create the internal netdev, leaving a half-built bridge whose
+    # only symptom is an error buried in `ovs-vsctl show`.
+    if ip link show "$MGMT_BRIDGE" >/dev/null 2>&1 && \
+       ! sudo ovs-vsctl br-exists "$MGMT_BRIDGE" 2>/dev/null; then
+        echo "  ERROR: '$MGMT_BRIDGE' already exists as a non-OVS link"
+        ip -d link show "$MGMT_BRIDGE" | head -2
+        echo ""
+        echo "  The management bridge must be an OVS bridge. Either:"
+        echo "    1. Point this script elsewhere:  --mgmt-bridge=<name>"
+        echo "    2. Rename the existing link (a plane bridge belongs on br-wan/br-lan/br-vpc)"
+        echo "    3. Skip mgmt provisioning entirely:  --no-mgmt-bridge"
+        exit 1
+    fi
+
     sudo ovs-vsctl --may-exist add-br "$MGMT_BRIDGE"
     sudo ovs-vsctl set Bridge "$MGMT_BRIDGE" \
         fail-mode=standalone \
@@ -846,9 +956,21 @@ fi
 # refused to start. Preserving the on-disk value is always safe — any
 # caller that needs IPsec cert identity matching pins it themselves.
 if [ -n "$NODE_NAME" ]; then
+    OLD_ID=$(sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>/dev/null | tr -d '"')
     echo "$NODE_NAME" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
     sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_NAME"
     echo "  system-id:      $NODE_NAME (pinned via --node-name)"
+
+    # A renamed chassis cannot register while the row it left behind still
+    # holds this node's encap IP: ovn-controller loops on "OVNSB commit
+    # failed" and never appears in `ovn-sbctl show`. The stale row owns no
+    # state worth keeping — ovn-controller rebuilds everything on register —
+    # but it must go before Step 5 restarts the controller under the new name.
+    if [ -n "$OLD_ID" ] && [ "$OLD_ID" != "$NODE_NAME" ]; then
+        if sudo ovn-sbctl --db="$OVN_REMOTE" --timeout=10 chassis-del "$OLD_ID" 2>/dev/null; then
+            echo "  stale chassis:  removed '$OLD_ID' (renamed to $NODE_NAME)"
+        fi
+    fi
 else
     CURRENT_ID=$(sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>/dev/null | tr -d '"')
     echo "  system-id:      ${CURRENT_ID:-<unset>} (preserved; no --node-name given)"

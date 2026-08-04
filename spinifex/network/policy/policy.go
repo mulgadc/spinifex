@@ -15,11 +15,12 @@ const (
 	NATModeUnknown NATMode = iota
 
 	// NATModeDistributed sets ExternalMAC+LogicalPort so OVN processes DNAT on
-	// the VM's own chassis. Required by UplinkModePhysical.
+	// the VM's own chassis. The gateway LRP stays link-local, so a VPC consumes
+	// no address from the external pool. Used by physical and veth uplinks.
 	NATModeDistributed
 
 	// NATModeCentralized leaves ExternalMAC/LogicalPort unset; gateway chassis
-	// owns SNAT/DNAT. Required by UplinkModeVeth.
+	// owns SNAT/DNAT and its LRP takes a real pool address.
 	NATModeCentralized
 
 	// NATModeRouted is centralised-shaped: gateway chassis SNATs the VPC CIDR
@@ -45,10 +46,11 @@ func (m NATMode) String() string {
 // NATModeUnknown so misconfiguration fails loudly at construction.
 func NATModeFromUplinkMode(m host.UplinkMode) NATMode {
 	switch m {
-	case host.UplinkModePhysical:
+	case host.UplinkModePhysical, host.UplinkModeVeth:
+		// A veth uplink carries distributed NAT fine: the Linux bridge learns the
+		// per-rule external MAC on the veth port like any other MAC. Only the
+		// host's own uplink address is bridge-owned, and NAT never touches it.
 		return NATModeDistributed
-	case host.UplinkModeVeth:
-		return NATModeCentralized
 	case host.UplinkModeRouted:
 		return NATModeRouted
 	default:

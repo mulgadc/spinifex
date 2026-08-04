@@ -98,7 +98,12 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "external", localnet.Options["network_name"])
 	_, hasNat := localnet.Options["nat-addresses"]
-	assert.False(t, hasNat, "distributed mode must NOT set nat-addresses")
+	assert.False(t, hasNat, "nat-addresses is never valid on a localnet port")
+
+	gwPort, err := m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
+	require.NoError(t, err)
+	_, hasGwNat := gwPort.Options["nat-addresses"]
+	assert.False(t, hasGwNat, "distributed mode must NOT set nat-addresses")
 
 	// Gateway LRP exists with link-local network.
 	lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
@@ -148,12 +153,46 @@ func TestAttachIGW_Centralized_AllocatesGwLrpIP(t *testing.T) {
 
 	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPortShared())
 	require.NoError(t, err)
-	assert.Equal(t, "router", localnet.Options["nat-addresses"], "centralized mode must set nat-addresses=router")
+	_, hasNat := localnet.Options["nat-addresses"]
+	assert.False(t, hasNat, "nat-addresses is never valid on a localnet port")
+
+	gwPort, err := m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
+	require.NoError(t, err)
+	assert.Equal(t, "router", gwPort.Options["nat-addresses"], "centralized mode must set nat-addresses=router on the gateway port")
 
 	lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"192.168.1.240/24"}, lrp.Networks)
 	assert.Equal(t, "192.168.1.240", lrp.ExternalIDs[gatewayIPExtIDKey])
+}
+
+// A localnet port created before NAT advertisement moved to the gateway port
+// carries a stale nat-addresses that must be cleared on the next attach.
+func TestAttachIGW_ClearsStaleLocalnetNATAddresses(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+
+	extSwitchName := topology.ExternalSwitchShared()
+	portName := topology.ExternalLocalnetPortShared()
+	_, _, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: extSwitchName})
+	require.NoError(t, err)
+	require.NoError(t, m.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
+		Name:      portName,
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external", "nat-addresses": "router"},
+	}))
+
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	localnet, err := m.GetLogicalSwitchPort(ctx, portName)
+	require.NoError(t, err)
+	_, hasNat := localnet.Options["nat-addresses"]
+	assert.False(t, hasNat, "stale nat-addresses must be cleared from the localnet port")
+	assert.Equal(t, "external", localnet.Options["network_name"], "converge must not drop network_name")
 }
 
 // The LRP address is written once at attach, so a lease re-issued on a new IP

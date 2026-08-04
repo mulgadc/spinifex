@@ -359,6 +359,8 @@ func init() {
 	adminJoinCmd.Flags().String("cluster-bind", "", "IP address to bind NATS cluster services to (e.g., 10.11.12.1 for multi-node)")
 	adminJoinCmd.Flags().String("cluster-routes", "", "NATS cluster hosts for routing specify multiple with comma (e.g., 10.11.12.1:4248,10.11.12.2:4248 for multi-node)")
 	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
+	adminJoinCmd.Flags().Bool("force", false, "Join even though this node is already initialized, discarding its own CA and master key")
+	adminJoinCmd.Flags().Duration("join-timeout", 20*time.Minute, "How long to keep retrying while the formation server is unreachable")
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
@@ -1945,6 +1947,54 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	fmt.Println()
 }
 
+// joinRetryInterval paces retries against an unreachable formation server. The
+// primary may still be booting, so this is measured in "how long until the other
+// machine finishes starting", not in fractions of a second.
+const joinRetryInterval = 5 * time.Second
+
+// joinRetryable separates a formation server that is not up yet from one that
+// has answered and said no. Bare-metal nodes cannot be sequenced reliably, so a
+// joiner racing ahead of the primary must wait rather than fail. A rejected
+// token or a duplicate node name answers the same way on every attempt, so
+// those are reported at once instead of after the whole timeout.
+func joinRetryable(err error, statusCode int) bool {
+	if err != nil {
+		// Connection refused, DNS failure, TLS handshake, timeout: the primary
+		// is not listening yet.
+		return true
+	}
+	return statusCode >= 500
+}
+
+// checkJoinPreconditions rejects a join that would silently destroy this node's
+// existing cluster identity. Joining adopts the primary's CA and master key,
+// overwriting whatever is here: correct on a freshly installed node, and on one
+// that has been in service it orphans every fragment and volume sealed under the
+// old key. runAdminInit guards the same way before re-initializing.
+func checkJoinPreconditions(configDir string, force bool) error {
+	if force {
+		return nil
+	}
+	tomlPath := filepath.Join(configDir, "spinifex.toml")
+	if !admin.FileExists(tomlPath) {
+		return nil
+	}
+	return fmt.Errorf("this node is already initialized: %s", tomlPath)
+}
+
+// joinDiscardsIdentityMsg spells out what a forced join throws away. Kept out of
+// the error string so that stays short enough to wrap in another.
+const joinDiscardsIdentityMsg = `Joining will discard this node's own cluster identity:
+  - CA certificate and key
+  - master key, and any data sealed under it
+  - viperblock key, and any volumes encrypted under it
+
+That is safe on a freshly installed node — an ISO install initializes a
+single-node cluster at first boot, and nothing has been sealed under these keys
+yet. On a node that has been in service it is unrecoverable data loss.
+
+To proceed: spx admin join --force ...`
+
 func runAdminJoin(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin join' is not running as root.")
@@ -1965,6 +2015,8 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
+	force, _ := cmd.Flags().GetBool("force")
+	joinTimeout, _ := cmd.Flags().GetDuration("join-timeout")
 
 	email, _ := cmd.Flags().GetString("email")
 	email = strings.TrimSpace(email)
@@ -2010,6 +2062,14 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	// Validate port range
 	if port < 1 || port > 65535 {
 		fmt.Fprintf(os.Stderr, "❌ Error: Port must be between 1 and 65535, got: %d\n", port)
+		os.Exit(1)
+	}
+
+	// Checked before any network call so a node that will not join says so
+	// immediately. Unlike init this exits non-zero: a node that did not join
+	// must not look like success to a provisioning script.
+	if err := checkJoinPreconditions(configDir, force); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  %v\n\n%s\n", err, joinDiscardsIdentityMsg)
 		os.Exit(1)
 	}
 
@@ -2059,19 +2119,47 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 
 	joinURL := fmt.Sprintf("https://%s/formation/join", leaderHost)
-	req, err := http.NewRequest(http.MethodPost, joinURL, bytes.NewBuffer(reqBody))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error creating join request: %v\n", err)
-		os.Exit(1)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+joinToken)
+	deadline := time.Now().Add(joinTimeout)
 
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Error connecting to formation server: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure the leader node has run 'spx admin init' and is accessible at %s\n", leaderHost)
-		os.Exit(1)
+	// A fresh body per attempt: bytes.Buffer is consumed by the first send.
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		req, reqErr := http.NewRequest(http.MethodPost, joinURL, bytes.NewBuffer(reqBody))
+		if reqErr != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error creating join request: %v\n", reqErr)
+			os.Exit(1)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+joinToken)
+
+		var doErr error
+		resp, doErr = client.Do(req)
+		statusCode := 0
+		if doErr == nil {
+			statusCode = resp.StatusCode
+		}
+		if !joinRetryable(doErr, statusCode) {
+			break
+		}
+		if doErr == nil {
+			resp.Body.Close()
+		}
+
+		if time.Now().After(deadline) {
+			if doErr != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error connecting to formation server: %v\n", doErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "❌ Formation server returned status %d\n", statusCode)
+			}
+			fmt.Fprintf(os.Stderr, "Gave up after %s (%d attempts).\n", joinTimeout, attempt)
+			fmt.Fprintf(os.Stderr, "Make sure the leader node has run 'spx admin init' and is accessible at %s\n", leaderHost)
+			os.Exit(1)
+		}
+		if attempt == 1 {
+			fmt.Printf("⏳ Formation server at %s not ready, retrying every %s (up to %s)...\n",
+				leaderHost, joinRetryInterval, joinTimeout)
+		}
+		time.Sleep(joinRetryInterval)
 	}
 
 	body, err := io.ReadAll(resp.Body)

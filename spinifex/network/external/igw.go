@@ -198,11 +198,17 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		createdLRP = true
 	}
 
+	// nat-addresses is only honoured on a router-type port; OVN silently ignores
+	// it on the localnet, which leaves EIPs unadvertised on the physical network.
+	gwPortOpts := map[string]string{"router-port": gwPortName}
+	if m.gatewayOwnsNAT() {
+		gwPortOpts["nat-addresses"] = "router"
+	}
 	if err := m.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
 		Name:      switchGWPortName,
 		Type:      "router",
 		Addresses: []string{"router"},
-		Options:   map[string]string{"router-port": gwPortName},
+		Options:   gwPortOpts,
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": spec.VPCID,
 			"spinifex:igw_id": spec.InternetGatewayID,
@@ -360,8 +366,8 @@ func (m *igwManager) gatewayLRPIP(ctx context.Context, vpcID string) string {
 }
 
 // ensureSharedExternal idempotently creates the singleton shared external switch
-// and its single localnet port. The localnet advertises router NAT addresses in
-// centralized mode so gateways behind it are reachable from the uplink.
+// and its single localnet port. NAT advertisement lives on the per-VPC gateway
+// port, not here — OVN ignores nat-addresses on a localnet port.
 func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portName string) error {
 	extSwitch := &nbdb.LogicalSwitch{
 		Name:        switchName,
@@ -370,18 +376,25 @@ func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portN
 	if _, _, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch); err != nil {
 		return fmt.Errorf("ensure shared external switch %s: %w", switchName, err)
 	}
-	if _, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
+	// Converge rather than early-return: deployments created before NAT
+	// advertisement moved to the gateway port still carry a stale nat-addresses
+	// here, and it must not survive an upgrade.
+	if existing, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
+		if _, stale := existing.Options["nat-addresses"]; !stale {
+			return nil
+		}
+		delete(existing.Options, "nat-addresses")
+		if err := m.ovn.UpdateLogicalSwitchPort(ctx, existing); err != nil {
+			return fmt.Errorf("clear stale nat-addresses on %s: %w", portName, err)
+		}
+		slog.Info("external: cleared stale nat-addresses from localnet port", "port", portName)
 		return nil
-	}
-	localnetOpts := map[string]string{"network_name": "external"}
-	if m.gatewayOwnsNAT() {
-		localnetOpts["nat-addresses"] = "router"
 	}
 	if err := m.ovn.CreateLogicalSwitchPort(ctx, switchName, &nbdb.LogicalSwitchPort{
 		Name:        portName,
 		Type:        "localnet",
 		Addresses:   []string{"unknown"},
-		Options:     localnetOpts,
+		Options:     map[string]string{"network_name": "external"},
 		ExternalIDs: map[string]string{"spinifex:role": "external-localnet"},
 	}); err != nil {
 		return fmt.Errorf("create shared localnet port %s: %w", portName, err)

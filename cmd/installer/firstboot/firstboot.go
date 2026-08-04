@@ -14,14 +14,23 @@ import (
 // Config holds the values the firstboot service needs to configure the node.
 type Config struct {
 	Hostname string
-	// EncapIP is the Geneve tunnel IP for OVN. Set to the LAN bridge IP when a
-	// dedicated LAN NIC is present, otherwise the WAN bridge IP. Empty when DHCP
-	// is used — setup-ovn.sh auto-detects the IP from the default route in that case.
+	// EncapIP is the Geneve tunnel IP for OVN, taken from the vpc plane after
+	// collapsing (vpc <- lan <- wan). Empty when that plane uses DHCP —
+	// setup-ovn.sh auto-detects the IP from the default route in that case.
 	EncapIP string
-	// ClusterRole is "init" or "join".
-	ClusterRole string
-	// JoinAddr is host:port of the primary node, only used when ClusterRole is "join".
-	JoinAddr string
+	// LANIP is the internal cluster address, taken from the lan plane after
+	// collapsing. Passed as --bind and --cluster-bind so predastore replication,
+	// the NATS mesh and OVN control traffic stay off the public interface.
+	// Empty leaves the 0.0.0.0 wildcard default, which is correct for a
+	// single-NIC node where lan folds onto wan.
+	LANIP string
+	// WANIP is the public address, taken from the wan plane. Passed as
+	// --advertise so northstar's :53 listener, the awsgw registry host and the
+	// dial target recorded for off-host clients stay on the public interface.
+	// Without it a concrete --bind is echoed back as the advertise address,
+	// which would move all three onto the internal plane. Empty when wan uses
+	// DHCP, leaving spx to auto-detect from the default route.
+	WANIP string
 	// Email is the operator email collected by the TUI or SPINIFEX_EMAIL on
 	// the headless path. Passed to `spx admin init --email=<value>` when set;
 	// omitted entirely when empty.
@@ -247,13 +256,66 @@ func buildClusterCmd(cfg Config) string {
 	if cfg.GPUPassthrough {
 		gpuFlag = " --gpu-passthrough"
 	}
-	switch cfg.ClusterRole {
-	case "join":
-		return fmt.Sprintf("spx admin join --node %s --host %s%s", cfg.Hostname, cfg.JoinAddr, emailFlag)
-	default:
-		return fmt.Sprintf("spx admin init --node %s --nodes 1%s%s", cfg.Hostname, emailFlag, gpuFlag)
+	// Without these the node takes the 0.0.0.0 wildcard default and every
+	// internal service resolves onto the auto-detected WAN address, which is
+	// exactly what the three-plane model exists to prevent.
+	bindFlags := ""
+	if cfg.LANIP != "" {
+		bindFlags = fmt.Sprintf(" --bind %s --cluster-bind %s", cfg.LANIP, cfg.LANIP)
 	}
+	// --advertise must be explicit whenever --bind is: spx echoes a concrete
+	// bind address straight back as the advertise address and never reaches its
+	// WAN auto-detection, which would silently publish the internal plane as
+	// this node's public dial target.
+	preamble := ""
+	switch {
+	case bindFlags == "":
+		// Nothing pinned, so spx auto-detects both and a guessed advertise
+		// address would only get in the way.
+	case cfg.WANIP != "":
+		bindFlags += " --advertise " + cfg.WANIP
+	default:
+		// A DHCP wan has no address at install time, but it does by the time
+		// firstboot runs, so read it off the bridge instead of shipping the
+		// bind address as the public one.
+		preamble = wanAdvertisePreamble
+		bindFlags += ` $SPX_ADVERTISE`
+	}
+
+	// Always a single-node cluster. The installer cannot form a multi-node one:
+	// cluster membership decides the OVN database topology and the join token
+	// only exists once the primary has booted, so neither is knowable while the
+	// nodes are still being installed. Multi-node is a post-install conversion,
+	// documented in the multi-node install guide.
+	cmd := fmt.Sprintf("spx admin init --node %s --nodes 1%s%s%s", cfg.Hostname, bindFlags, emailFlag, gpuFlag)
+	return preamble + cmd
 }
+
+// wanAdvertisePreamble resolves the wan plane's DHCP lease into $SPX_ADVERTISE
+// just before formation. br-wan is always the wan bridge — that plane is the one
+// role that cannot fold — so its address is the node's public identity.
+//
+// Falling through with SPX_ADVERTISE empty is deliberate: no lease means there
+// is no public address to advertise yet, and spx echoing the bind address is
+// still better than formation failing outright.
+const wanAdvertisePreamble = `# The wan plane leases its address, so it is only knowable at boot. Without this
+# spx would echo --bind back as the advertise address and publish the internal
+# plane as this node's public dial target.
+SPX_ADVERTISE=""
+echo "[firstboot] waiting for the wan plane to acquire an address..."
+for _i in $(seq 1 60); do
+    _wan_ip=$(ip -4 -o addr show br-wan scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    if [ -n "$_wan_ip" ]; then
+        SPX_ADVERTISE=" --advertise $_wan_ip"
+        echo "[firstboot] wan address $_wan_ip (${_i}s)"
+        break
+    fi
+    sleep 1
+done
+if [ -z "$SPX_ADVERTISE" ]; then
+    echo "[firstboot] warning: br-wan has no address after 60s — this node will advertise its bind address"
+fi
+`
 
 // shellEscapeSingle wraps s in single quotes with any embedded single
 // quotes escaped. Minimal — we only need this because the email value is

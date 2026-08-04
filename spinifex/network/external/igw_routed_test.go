@@ -36,9 +36,9 @@ func TestAttachIGW_Routed_AllocatesTransitIPAndInstallsSNAT(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPortShared())
+	gwPort, err := m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
 	require.NoError(t, err)
-	assert.Equal(t, "router", localnet.Options["nat-addresses"], "routed mode must set nat-addresses=router")
+	assert.Equal(t, "router", gwPort.Options["nat-addresses"], "routed mode must set nat-addresses=router on the gateway port")
 
 	lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
 	require.NoError(t, err)

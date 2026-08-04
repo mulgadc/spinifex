@@ -44,6 +44,12 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	if err != nil {
 		return nil, err
 	}
+	// The agent cannot bootstrap without this profile, so resolve it before the
+	// identifier reservation or any launch side effects.
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	if err != nil {
+		return nil, err
+	}
 	key := DBInstanceKey(req.Identifier)
 
 	// Creating the record before anything is provisioned makes the identifier
@@ -93,7 +99,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		}),
 		// The system account owns the VM, so the role is ensured there too — the
 		// gateway's agent gate requires an assumed-role session in that account.
-		IamInstanceProfileArn: ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID),
+		IamInstanceProfileArn: profileARN,
 	})
 	if err != nil {
 		return nil, err

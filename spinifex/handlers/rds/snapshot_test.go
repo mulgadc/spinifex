@@ -24,6 +24,7 @@ type snapshotHarness struct {
 	svc     *Service
 	launch  *launchHarness
 	network *fakeNetwork
+	iam     *fakeRDSEnsurer
 	snaps   *fakeSnapshots
 	agent   *stubAgent
 	nc      *nats.Conn
@@ -36,6 +37,7 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 	h := &snapshotHarness{
 		launch:  newLaunchHarness(),
 		network: newFakeNetwork(),
+		iam:     &fakeRDSEnsurer{},
 		snaps:   &fakeSnapshots{},
 		nc:      nc,
 	}
@@ -49,6 +51,7 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 		LoadCA:    newTestCA(t),
 		Launch:    h.launch.deps(),
 		Network:   h.network,
+		IAM:       testIAMProvider(h.iam),
 		Snapshots: h.snaps,
 	})
 	return h

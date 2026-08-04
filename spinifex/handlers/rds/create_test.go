@@ -15,6 +15,7 @@ import (
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,6 +121,7 @@ type createHarness struct {
 	svc     *Service
 	launch  *launchHarness
 	network *fakeNetwork
+	iam     *fakeRDSEnsurer
 	nc      *nats.Conn
 
 	// dnsChanges collects what the endpoint publish put on the bus.
@@ -133,6 +135,7 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 	h := &createHarness{
 		launch:     newLaunchHarness(),
 		network:    newFakeNetwork(),
+		iam:        &fakeRDSEnsurer{},
 		nc:         nc,
 		dnsChanges: make(chan handlers_dns.ChangeBatch, 4),
 	}
@@ -148,6 +151,7 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 		LoadCA:     newTestCA(t),
 		Launch:     h.launch.deps(),
 		Network:    h.network,
+		IAM:        testIAMProvider(h.iam),
 		BaseDomain: baseDomain,
 	})
 	return h
@@ -250,6 +254,24 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, testAccountID, entry.AccountID)
 	assert.Equal(t, testDBInstanceID, entry.DBInstanceIdentifier)
 	assert.Equal(t, int64(firstVMGeneration), entry.VMGeneration)
+
+	require.NotNil(t, h.launch.launcher.input)
+	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+}
+
+func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
+	h := newCreateHarness(t, "")
+	iamErr := errors.New("IAM store unavailable")
+	h.iam.policyErr = iamErr
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, iamErr)
+	assert.False(t, h.recordExists(t, testDBInstanceID))
+	assert.Nil(t, h.launch.launcher.input)
+	assert.Empty(t, h.launch.enis.created)
+	assert.Empty(t, h.launch.volumes.created)
 }
 
 func TestCreateDBInstance_PublishesEndpointRecord(t *testing.T) {

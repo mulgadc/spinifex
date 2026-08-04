@@ -66,6 +66,25 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 	assert.True(t, stored.Bootstrap.Consumed)
 	require.NotNil(t, stored.Bootstrap.ConsumedAt)
 	assert.Empty(t, stored.Bootstrap.MasterUserPassword)
+
+	require.NotNil(t, h.launch.launcher.input)
+	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+}
+
+func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	h.seedSnapshot(t)
+	iamErr := errors.New("IAM store unavailable")
+	h.iam.policyErr = iamErr
+
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, iamErr)
+	assert.False(t, h.instanceExists(t, testRestoredID))
+	assert.Empty(t, h.launch.volumes.created)
+	assert.Empty(t, h.launch.enis.created)
+	assert.Nil(t, h.launch.launcher.input)
 }
 
 // Everything the request left out comes from the snapshot, so a bare restore

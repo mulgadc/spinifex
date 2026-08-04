@@ -193,6 +193,22 @@ func (h *createHarness) recordExists(t *testing.T, id string) bool {
 	return found
 }
 
+func replaceInstanceRecord(t *testing.T, svc *Service, id string) DBInstanceRecord {
+	t.Helper()
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	key := DBInstanceKey(id)
+	require.NoError(t, kv.Delete(t.Context(), key))
+	replacement := DBInstanceRecord{
+		DBInstanceIdentifier: id,
+		DbiResourceID:        "db-replacement-owner",
+		InstanceID:           "i-replacement",
+		Status:               StatusCreating,
+	}
+	require.NoError(t, createJSON(t.Context(), kv, key, &replacement))
+	return replacement
+}
+
 func validCreateInput() *rds.CreateDBInstanceInput {
 	return &rds.CreateDBInstanceInput{
 		DBInstanceIdentifier: aws.String(testDBInstanceID),
@@ -370,6 +386,71 @@ func TestCreateDBInstance_FailureAfterLaunchUnwindsEveryResource(t *testing.T) {
 	assert.Contains(t, h.launch.launcher.terminated, "i-rds0001")
 	assert.Contains(t, h.launch.volumes.deleted, "vol-rdsdata01")
 	assert.Len(t, h.launch.enis.deleted, 2, "both the customer and system ENI are deleted")
+}
+
+func TestCreateDBInstance_IndexFailureWithdrawsTheRecordedLaunch(t *testing.T) {
+	h := newCreateHarness(t, "")
+	// This invalid KV key makes the instance-index write fail after recordLaunch
+	// has advanced the reservation revision.
+	h.launch.launcher.instanceID = "invalid instance id"
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+	assert.False(t, h.recordExists(t, testDBInstanceID))
+
+	h.launch.launcher.instanceID = ""
+	_, err = h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.NoError(t, err, "the failed create must release the identifier for reuse")
+}
+
+func TestCreateDBInstance_RecordLaunchDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	h := newCreateHarness(t, "")
+	var replacement DBInstanceRecord
+	h.launch.launcher.onLaunch = func() {
+		replacement = replaceInstanceRecord(t, h.svc, testDBInstanceID)
+	}
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+
+	assert.Equal(t, replacement, h.record(t, testDBInstanceID))
+}
+
+func TestCreateDBInstance_RollbackDoesNotDeleteAConcurrentReplacement(t *testing.T) {
+	h := newCreateHarness(t, "")
+	h.launch.launcher.instanceID = "invalid instance id"
+	var replacement DBInstanceRecord
+	h.launch.launcher.onTerminate = func() {
+		assert.Equal(t, "invalid instance id", h.record(t, testDBInstanceID).InstanceID,
+			"recordLaunch must finish before the replacement race")
+		replacement = replaceInstanceRecord(t, h.svc, testDBInstanceID)
+	}
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+
+	assert.Equal(t, replacement, h.record(t, testDBInstanceID))
+}
+
+func TestCreateDBInstance_RollbackFollowsSameOwnerUpdates(t *testing.T) {
+	h := newCreateHarness(t, "")
+	h.launch.launcher.instanceID = "invalid instance id"
+	h.launch.launcher.onTerminate = func() {
+		kv, err := h.svc.bucket(t.Context(), testAccountID)
+		require.NoError(t, err)
+		key := DBInstanceKey(testDBInstanceID)
+		var current DBInstanceRecord
+		rev, found, err := getJSONRevision(t.Context(), kv, key, &current)
+		require.NoError(t, err)
+		require.True(t, found)
+		current.Tags = map[string]string{"updated": "during-rollback"}
+		require.NoError(t, updateJSON(t.Context(), kv, key, rev, &current))
+	}
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+
+	assert.False(t, h.recordExists(t, testDBInstanceID))
 }
 
 // The request may not be answered with an instance whose storage is

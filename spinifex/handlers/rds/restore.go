@@ -74,7 +74,8 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	// withdrawn on any failure below.
 	key := DBInstanceKey(req.Identifier)
 	rec := newRestoredDBInstanceRecord(accountID, req, placement, parameters, snapshot)
-	if createErr := createJSON(ctx, kv, key, &rec); createErr != nil {
+	rollbackRev, createErr := createJSONRevision(ctx, kv, key, &rec)
+	if createErr != nil {
 		if errors.Is(createErr, jetstream.ErrKeyExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
 				"DB instance %s already exists", req.Identifier)
@@ -85,12 +86,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 		if err == nil {
 			return
 		}
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
-		defer cancel()
-		if delErr := kv.Delete(rbCtx, key); delErr != nil {
-			slog.WarnContext(rbCtx, "rds: rollback delete of reserved restored DB instance record failed",
-				"dbInstance", req.Identifier, "err", delErr)
-		}
+		s.rollbackDBInstanceReservation(ctx, kv, key, req.Identifier, rec.DbiResourceID, rollbackRev)
 	}()
 
 	// The datadir the restored engine comes up on. Created before the VM because
@@ -136,11 +132,12 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 		return nil, err
 	}
 
-	stored, err := s.recordLaunch(ctx, kv, key, accountID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err
 	}
+	rollbackRev = launchRev
 	if err = s.PutInstanceIndex(ctx, launched.InstanceID, InstanceIndexEntry{
 		AccountID:            accountID,
 		DBInstanceIdentifier: req.Identifier,

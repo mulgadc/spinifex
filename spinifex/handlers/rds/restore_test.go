@@ -206,6 +206,53 @@ func TestRestoreDBInstanceFromDBSnapshot_UnwindsTheVolumeAndTheRecordWhenTheLaun
 	assert.NotEmpty(t, h.launch.unwind)
 }
 
+func TestRestoreDBInstanceFromDBSnapshot_IndexFailureWithdrawsTheRecordedLaunch(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	h.seedSnapshot(t)
+	// This invalid KV key makes the instance-index write fail after recordLaunch
+	// has advanced the reservation revision.
+	h.launch.launcher.instanceID = "invalid instance id"
+
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+	require.Error(t, err)
+	assert.False(t, h.instanceExists(t, testRestoredID))
+
+	h.launch.launcher.instanceID = ""
+	_, err = h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+	require.NoError(t, err, "the failed restore must release the identifier for reuse")
+}
+
+func TestRestoreDBInstanceFromDBSnapshot_RecordLaunchDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	h.seedSnapshot(t)
+	var replacement DBInstanceRecord
+	h.launch.launcher.onLaunch = func() {
+		replacement = replaceInstanceRecord(t, h.svc, testRestoredID)
+	}
+
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+	require.Error(t, err)
+
+	assert.Equal(t, replacement, h.instance(t, testRestoredID))
+}
+
+func TestRestoreDBInstanceFromDBSnapshot_RollbackDoesNotDeleteAConcurrentReplacement(t *testing.T) {
+	h := newSnapshotHarness(t, false)
+	h.seedSnapshot(t)
+	h.launch.launcher.instanceID = "invalid instance id"
+	var replacement DBInstanceRecord
+	h.launch.launcher.onTerminate = func() {
+		assert.Equal(t, "invalid instance id", h.instance(t, testRestoredID).InstanceID,
+			"recordLaunch must finish before the replacement race")
+		replacement = replaceInstanceRecord(t, h.svc, testRestoredID)
+	}
+
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
+	require.Error(t, err)
+
+	assert.Equal(t, replacement, h.instance(t, testRestoredID))
+}
+
 func TestRestoreDBInstanceFromDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)

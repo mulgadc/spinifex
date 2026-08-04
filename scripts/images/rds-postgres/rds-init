@@ -121,7 +121,11 @@ initialise_cluster() {
     # A torn write can leave a missing PG_VERSION over intact data, and deleting
     # then would destroy it in response to the one signal that it is still there.
     _was_empty=0
-    [ -z "$(ls -A -- "${PGDATA}" 2>/dev/null)" ] && _was_empty=1
+    if _contents=$(ls -A -- "${PGDATA}" 2>/dev/null); then
+        [ -z "${_contents}" ] && _was_empty=1
+    else
+        fail "could not inspect datadir ${PGDATA}; refusing to decide whether failure cleanup is safe"
+    fi
 
     log "initialising PostgreSQL ${PG_VERSION} cluster at ${PGDATA}"
     # ICU collation, not libc: musl has no locale support, so a libc-provider

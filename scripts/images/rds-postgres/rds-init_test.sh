@@ -14,6 +14,9 @@ SCRIPT="${SCRIPT_DIR}/rds-init"
 WORK=$(mktemp -d)
 trap 'rm -rf "${WORK}"' EXIT
 
+REAL_LS=$(command -v ls)
+export REAL_LS
+
 STUBBIN="${WORK}/bin"
 mkdir -p "${STUBBIN}"
 
@@ -49,6 +52,14 @@ EOF
 cat > "${STUBBIN}/chown" <<'EOF'
 #!/bin/sh
 exit 0
+EOF
+
+# ls stub: delegates normally, but lets the datadir safety test prove that a
+# failed enumeration is not mistaken for an empty directory.
+cat > "${STUBBIN}/ls" <<'EOF'
+#!/bin/sh
+[ "${LS_FAIL:-0}" = "1" ] && exit 74
+exec "${REAL_LS}" "$@"
 EOF
 
 # su stub: `su postgres -c "cmd"` runs cmd in the harness user's shell.
@@ -160,7 +171,7 @@ reset_state() {
     : > "${INITDB_CALLS}"
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
-    unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL RDS_ALLOW_LOCAL_DATADIR || true
+    unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR || true
 }
 
 # run: invoke rds-init with every path knob pointed into the temp dir.
@@ -283,7 +294,28 @@ run_fails "post-initdb-fail"
     || pass "post-initdb-fail: datadir cleared"
 unset PG_HBA_AS_DIR
 
-# --- Case 6b: a failed initdb over a NON-empty datadir must not delete it ---
+# --- Case 6b: a failed emptiness probe must abort before initdb ---
+# No output from ls can mean either "empty" or "could not enumerate". Only a
+# successful probe may authorize cleanup of a datadir this invocation creates.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+mkdir -p "${PGDATA}"
+: > "${PGDATA}/PG_VERSION"
+echo 'customer table data' > "${PGDATA}/base-relation"
+LS_FAIL=1
+export LS_FAIL
+run_fails "datadir-probe-fail"
+unset LS_FAIL
+[ -s "${INITDB_CALLS}" ] \
+    && fail "datadir-probe-fail: initdb ran after the probe failed" \
+    || pass "datadir-probe-fail: initdb not run"
+[ -f "${PGDATA}/base-relation" ] \
+    && pass "datadir-probe-fail: pre-existing datadir preserved" \
+    || fail "datadir-probe-fail: pre-existing datadir deleted"
+grep -q 'could not inspect datadir' "${WORK}/out" \
+    && pass "datadir-probe-fail: refusal explains why" || fail "datadir-probe-fail: no refusal message"
+
+# --- Case 6c: a failed initdb over a NON-empty datadir must not delete it ---
 # A zero-length PG_VERSION over an otherwise intact datadir takes the
 # initialise path, and "directory not empty" is one way initdb then fails.
 # Clearing there would destroy customer data in response to the one signal
@@ -303,7 +335,7 @@ grep -q 'refusing to clear' "${WORK}/out" \
     && pass "initdb-fail-nonempty: refusal explains why" || fail "initdb-fail-nonempty: no refusal message"
 unset INITDB_FAIL
 
-# --- Case 6c: a failed master bootstrap leaves nothing bootable either ---
+# --- Case 6d: a failed master bootstrap leaves nothing bootable either ---
 # postgresql is in the default runlevel independently of this oneshot, so a
 # datadir kept here would start an engine whose master role has no password —
 # and the password is one-shot, so the next fetch is `attach` and cannot repair
@@ -320,7 +352,7 @@ grep -q 'stop' "${PGCTL_CALLS}" \
     && pass "bootstrap-fail: bootstrap server stopped" || fail "bootstrap-fail: bootstrap server left running"
 unset PSQL_FAIL
 
-# --- Case 6d: the bootstrap server never starts ---
+# --- Case 6e: the bootstrap server never starts ---
 # `set -e` aborts the moment pg_ctl start fails, so nothing inside
 # bootstrap_master runs. The datadir already carries PG_VERSION and a pg_hba
 # accepting scram, and the password is spent, so leaving it would attach on the
@@ -335,7 +367,7 @@ run_fails "bootstrap-nostart"
     || pass "bootstrap-nostart: datadir cleared"
 unset PGCTL_START_FAIL
 
-# --- Case 6e: a pre-existing datadir is never swept by the trap ---
+# --- Case 6f: a pre-existing datadir is never swept by the trap ---
 # The clear is scoped to a datadir this invocation created. A torn write that
 # loses PG_VERSION over intact data takes the initialise branch, and the sweep
 # must not answer that by destroying the customer's data.

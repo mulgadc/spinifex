@@ -122,7 +122,7 @@ psql "sslmode=verify-full sslrootcert=/home/ubuntu/ca.pem" \
 | `db_instance_class` | `db.t3.micro` | DB class. One of the curated `db.*` subset. |
 | `engine_version` | `18` | PostgreSQL major. `18` is the only version served. |
 | `db_name` | `appdb` | Database created at bootstrap. |
-| `db_username` | `appuser` | Master user. `postgres`, `rdsadmin` and `pg_*` are reserved. |
+| `db_username` | `appuser` | Master user. `postgres`, `rdsadmin`, `rds_superuser` and `pg_*` are reserved. |
 | `db_password` | `QuickstartS3cret1` | Master password — override it. No `/`, `"`, `@` or spaces. |
 | `allocated_storage` | `20` | Data-volume GiB. Grow-only, and a grow is stop/start. |
 

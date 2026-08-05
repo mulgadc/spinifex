@@ -503,9 +503,51 @@ func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instan
 			Device:   device,
 		},
 	}
-	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc, "ec2.cmd."+instanceID, cmd, a.timeout, accountID)
+	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
+		"ec2.cmd."+instanceID, cmd, a.timeout, accountID)
 	if err != nil {
-		return "", err
+		if !errors.Is(err, nats.ErrNoResponders) {
+			return "", err
+		}
+		stopped, lookupErr := a.isStoppedInstance(ctx, accountID, instanceID)
+		if lookupErr != nil {
+			slog.ErrorContext(ctx, "rds: classify attach no-responder",
+				"instanceId", instanceID, "volumeId", volumeID, "err", lookupErr)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		if stopped {
+			return "", errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		return "", errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	}
-	return aws.StringValue(out.Device), nil
+	if out == nil {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	attachedDevice := aws.StringValue(out.Device)
+	if attachedDevice == "" {
+		slog.ErrorContext(ctx, "rds: attach volume returned no device",
+			"instanceId", instanceID, "volumeId", volumeID)
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	return attachedDevice, nil
+}
+
+// No responder can mean either a stopped instance or an ID no node owns. The
+// shared stopped-instance lookup disambiguates those AWS errors for the caller.
+func (a *natsVolumeAttacher) isStoppedInstance(ctx context.Context, accountID, instanceID string) (bool, error) {
+	input := ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}}
+	out, err := utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, a.nc,
+		"ec2.DescribeStoppedInstances", &input, 3*time.Second, accountID)
+	if err != nil {
+		return false, err
+	}
+	if out == nil {
+		return false, errors.New("stopped-instance lookup returned no response")
+	}
+	for _, reservation := range out.Reservations {
+		if len(reservation.Instances) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }

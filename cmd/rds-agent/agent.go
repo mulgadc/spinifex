@@ -228,11 +228,21 @@ func (a *Agent) Run(ctx context.Context) error {
 const (
 	retryMin = 1 * time.Second
 	retryMax = 30 * time.Second
+
+	// With the production backoff, attempt five is about 15 seconds into the
+	// failure and still precedes the first 30-second heartbeat.
+	retryErrorAttempt = 5
 )
 
 // Never gives up on its own: an agent that stopped trying would leave the
 // control plane with no signal at all.
 func retry(ctx context.Context, what string, fn func(context.Context) error) error {
+	return retryObserved(ctx, what, fn, nil)
+}
+
+// onFailure lets boot-critical callers publish the latest error while the retry
+// remains blocked. It must not block because it runs on the retry path itself.
+func retryObserved(ctx context.Context, what string, fn func(context.Context) error, onFailure func(error)) error {
 	delay := retryMin
 	for attempt := 1; ; attempt++ {
 		err := fn(ctx)
@@ -242,7 +252,16 @@ func retry(ctx context.Context, what string, fn func(context.Context) error) err
 		if ctx.Err() != nil {
 			return fmt.Errorf("%s: %w", what, ctx.Err())
 		}
-		slog.Warn("rds-agent: "+what+" failed, retrying", "attempt", attempt, "retryIn", delay, "err", err)
+		if onFailure != nil {
+			onFailure(err)
+		}
+		if attempt >= retryErrorAttempt {
+			slog.ErrorContext(ctx, "rds-agent: "+what+" still failing, retrying",
+				"attempt", attempt, "retryIn", delay, "err", err)
+		} else {
+			slog.WarnContext(ctx, "rds-agent: "+what+" failed, retrying",
+				"attempt", attempt, "retryIn", delay, "err", err)
+		}
 
 		select {
 		case <-ctx.Done():

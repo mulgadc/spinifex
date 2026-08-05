@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
@@ -32,6 +35,25 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	states := cp.snapshotStates()
 	if len(states) != 1 || states[0].health != handlers_rds.EngineHealthHealthy {
 		t.Errorf("states = %+v, want one healthy heartbeat", states)
+	}
+}
+
+func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
+	h := newHeartbeater(newFakeControlPlane(), newEngineProbe(testProbeConfig(), staticProbe(2)), nil, 0)
+	h.setBootstrapFailure("bootstrap fetch", errors.New(strings.Repeat("界", 1000)))
+
+	failure := h.bootstrapFailure.Load()
+	if failure == nil {
+		t.Fatal("bootstrap failure was not stored")
+	}
+	if len(*failure) > maxBootstrapFailureBytes {
+		t.Errorf("bootstrap failure is %d bytes, want at most %d", len(*failure), maxBootstrapFailureBytes)
+	}
+	if !utf8.ValidString(*failure) {
+		t.Error("bootstrap failure was truncated inside a UTF-8 encoding")
+	}
+	if !strings.HasSuffix(*failure, "...") {
+		t.Errorf("bootstrap failure %q does not show that it was truncated", *failure)
 	}
 }
 

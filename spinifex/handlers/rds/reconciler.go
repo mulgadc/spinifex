@@ -274,8 +274,11 @@ func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValu
 	}
 	timeout := r.svc.bootstrapTimeout()
 	if time.Since(rec.CreatedAt) > timeout {
-		return r.transition(ctx, kv, rev, rec, StatusFailed,
-			fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout))
+		reason := fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout)
+		if rec.Agent.Message != "" {
+			reason += ": " + rec.Agent.Message
+		}
+		return r.transition(ctx, kv, rev, rec, StatusFailed, reason)
 	}
 	return nil
 }

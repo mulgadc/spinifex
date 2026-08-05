@@ -332,6 +332,33 @@ func TestRun_SendsConfiguredIdentifier(t *testing.T) {
 	}
 }
 
+func TestRun_HeartbeatIncludesBootstrapFailure(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.bootstrapErrs = []error{errors.New("403 AccessDenied: instance profile is not authorised")}
+	cp.registerOut.HeartbeatIntervalSeconds = 0
+
+	cfg := testConfig(t)
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(2)))
+	a.hb.interval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+
+	waitFor(t, func() bool {
+		for _, state := range cp.snapshotStates() {
+			if strings.Contains(state.message, "bootstrap fetch failed") &&
+				strings.Contains(state.message, "403 AccessDenied") {
+				return true
+			}
+		}
+		return false
+	}, "the bootstrap failure to reach a heartbeat")
+	cancel()
+	<-done
+}
+
 func TestRun_HeartbeatsEngineHealth(t *testing.T) {
 	cp := newFakeControlPlane()
 	cp.bootstrapOut = bootstrapOutput(nil)

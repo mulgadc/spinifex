@@ -2,6 +2,7 @@ package handlers_rds
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,11 +10,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -375,6 +379,64 @@ func (f *fakeAttacher) AttachVolume(_ context.Context, accountID, instanceID, vo
 		return "", f.err
 	}
 	return device, nil
+}
+
+func TestNATSVolumeAttacher_MapsNoResponderByInstanceState(t *testing.T) {
+	tests := []struct {
+		name        string
+		stopped     bool
+		expectedErr string
+	}{
+		{name: "unknown instance", expectedErr: awserrors.ErrorInvalidInstanceIDNotFound},
+		{name: "stopped instance", stopped: true, expectedErr: awserrors.ErrorIncorrectInstanceState},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, nc := testutil.StartTestNATS(t)
+			out := ec2.DescribeInstancesOutput{}
+			if tt.stopped {
+				out.Reservations = []*ec2.Reservation{{
+					Instances: []*ec2.Instance{{InstanceId: aws.String(testInstance)}},
+				}}
+			}
+			payload, err := json.Marshal(&out)
+			require.NoError(t, err)
+			_, err = nc.Subscribe("ec2.DescribeStoppedInstances", func(msg *nats.Msg) {
+				_ = msg.Respond(payload)
+			})
+			require.NoError(t, err)
+			require.NoError(t, nc.Flush())
+
+			attacher := NewNATSVolumeAttacher(nc)
+			_, err = attacher.AttachVolume(t.Context(), testCustomerAccount,
+				testInstance, "vol-data", dataVolumeDevice)
+			assert.EqualError(t, err, tt.expectedErr)
+		})
+	}
+}
+
+func TestNATSVolumeAttacher_StoppedLookupFailureIsInternal(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	attacher := NewNATSVolumeAttacher(nc)
+	_, err := attacher.AttachVolume(t.Context(), testCustomerAccount,
+		testInstance, "vol-data", dataVolumeDevice)
+	assert.EqualError(t, err, awserrors.ErrorServerInternal)
+}
+
+func TestNATSVolumeAttacher_RejectsAnEmptyAttachment(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	_, err := nc.Subscribe("ec2.cmd."+testInstance, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	attacher := NewNATSVolumeAttacher(nc)
+	device, err := attacher.AttachVolume(t.Context(), testCustomerAccount,
+		testInstance, "vol-data", dataVolumeDevice)
+	assert.EqualError(t, err, awserrors.ErrorServerInternal)
+	assert.Empty(t, device)
 }
 
 // launchHarness bundles the fakes so a case can reach into any of them.

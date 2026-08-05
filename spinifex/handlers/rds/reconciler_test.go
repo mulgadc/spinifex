@@ -159,7 +159,10 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 	h := newReconcileHarness(t, func(d *Deps) { d.BootstrapTimeout = time.Minute })
 	rec := healthyRecord()
-	rec.Agent = AgentState{}
+	rec.Agent = AgentState{
+		EngineHealth: EngineHealthStarting,
+		Message:      "bootstrap fetch failed: 403 AccessDenied",
+	}
 	rec.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	seedInstance(t, h.svc, rec)
 
@@ -168,6 +171,7 @@ func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusFailed, status)
 	assert.Contains(t, reason, "did not report healthy")
+	assert.Contains(t, reason, "bootstrap fetch failed: 403 AccessDenied")
 }
 
 // Inside the window a slow bootstrap is still a bootstrap: a false failed is

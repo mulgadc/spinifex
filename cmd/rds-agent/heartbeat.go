@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
-const servingParameterRecordTimeout = 15 * time.Second
+const (
+	servingParameterRecordTimeout = 15 * time.Second
+	maxBootstrapFailureBytes      = 512
+)
 
 // The beat carries the probe's result, not the agent's own liveness: an agent
 // up while the engine is down is what the recovery reconciler must see.
@@ -18,6 +23,10 @@ type heartbeater struct {
 	recorder servingParameterRecorder
 	id       identity
 	interval time.Duration
+
+	// Bootstrap and heartbeat run concurrently. Keeping the latest failure here
+	// makes a VM stuck before engine startup explain why through its next beat.
+	bootstrapFailure atomic.Pointer[string]
 }
 
 func newHeartbeater(cp controlPlane, probe *engineProbe, recorder servingParameterRecorder, interval time.Duration) *heartbeater {
@@ -35,8 +44,30 @@ func (h *heartbeater) setInterval(d time.Duration) {
 	}
 }
 
+func (h *heartbeater) setBootstrapFailure(what string, err error) {
+	message := what + " failed: " + err.Error()
+	if len(message) > maxBootstrapFailureBytes {
+		limit := maxBootstrapFailureBytes - len("...")
+		for limit > 0 && !utf8.RuneStart(message[limit]) {
+			limit--
+		}
+		message = message[:limit] + "..."
+	}
+	h.bootstrapFailure.Store(&message)
+}
+
+func (h *heartbeater) clearBootstrapFailure() {
+	h.bootstrapFailure.Store(nil)
+}
+
 func (h *heartbeater) beat(ctx context.Context) {
 	health, message := h.probe.Check(ctx)
+	if failure := h.bootstrapFailure.Load(); failure != nil {
+		if message != "" {
+			message += "; "
+		}
+		message += *failure
+	}
 	if health == handlers_rds.EngineHealthHealthy && h.recorder != nil {
 		// Checking every healthy beat also observes a restart that completed
 		// between probes. The recorder skips unchanged and pending-restart sets.

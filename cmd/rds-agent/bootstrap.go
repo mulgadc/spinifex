@@ -16,7 +16,7 @@ import (
 // for, then points the health probe at the assigned port.
 func (a *Agent) bootstrap(ctx context.Context) error {
 	var cfg *handlers_rds.GetDBBootstrapConfigOutput
-	if err := retry(ctx, "bootstrap fetch", func(ctx context.Context) error {
+	if err := retryObserved(ctx, "bootstrap fetch", func(ctx context.Context) error {
 		fetched, err := a.cp.GetBootstrapConfig(ctx, a.id)
 		if err != nil {
 			return err
@@ -26,18 +26,24 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		}
 		cfg = fetched
 		return nil
+	}, func(err error) {
+		a.hb.setBootstrapFailure("bootstrap fetch", err)
 	}); err != nil {
 		return err
 	}
+	a.hb.clearBootstrapFailure()
 
 	// Once an initialize response reaches the guest, keep retrying that same
 	// payload. Re-fetching after a local write failure returns attach because the
 	// control plane has already consumed the one-shot password.
-	if err := retry(ctx, "bootstrap handoff", func(context.Context) error {
+	if err := retryObserved(ctx, "bootstrap handoff", func(context.Context) error {
 		return a.handoffWriter(a.cfg.HandoffDir, cfg)
+	}, func(err error) {
+		a.hb.setBootstrapFailure("bootstrap handoff", err)
 	}); err != nil {
 		return err
 	}
+	a.hb.clearBootstrapFailure()
 	if cfg.Port > 0 {
 		a.probe.setPort(int(cfg.Port))
 		a.engine.setPort(int(cfg.Port))

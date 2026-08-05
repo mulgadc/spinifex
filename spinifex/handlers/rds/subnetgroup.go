@@ -308,10 +308,12 @@ func validateDBGroupName(field, name string) error {
 	case strings.EqualFold(name, "default"):
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"%s may not be \"default\", which the service reserves", field)
-	// A slash would split the name across the KV key layout's own separator, so
-	// one group's parameters would land under another's prefix.
-	case strings.ContainsAny(name, "/ \t\n"):
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s may not contain slashes or whitespace", field)
+	}
+	for _, r := range name {
+		if !isLetter(r) && !isDigit(r) && r != '-' {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"%s may contain only letters, digits and hyphens", field)
+		}
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,6 +102,27 @@ func TestRDSRequest_MalformedQueryString(t *testing.T) {
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=%zz"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
+}
+
+func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc}
+	for _, body := range []string{
+		"Action=CreateDBInstance&AllocatedStorage=abc",
+		"Action=CreateDBInstance&MultiAZ=yes",
+	} {
+		t.Run(body, func(t *testing.T) {
+			req := setupRDSRequest(body)
+			err := gw.RDS_Request(httptest.NewRecorder(), req)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+
+			w := httptest.NewRecorder()
+			gw.ErrorHandler(w, req, err)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "<Code>"+awserrors.ErrorInvalidParameterValue+"</Code>")
+		})
+	}
 }
 
 // A known action still needs a NATS connection to reach the control plane, so
@@ -215,6 +237,19 @@ func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
 	body := w.Body.String()
 	assert.Contains(t, body, "<ErrorResponse>")
 	assert.Contains(t, body, "<Code>"+awserrors.ErrorNotImplemented+"</Code>")
+}
+
+func TestRDSErrorHandler_UsesRDSUnsupportedActionWording(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+	w := httptest.NewRecorder()
+	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBCluster"),
+		errors.New(awserrors.ErrorOperationNotSupported))
+
+	body := w.Body.String()
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, body, "RDS")
+	assert.Contains(t, body, "v1")
+	assert.NotContains(t, body, "registry")
 }
 
 var errNotImplementedForTest = errors.New(awserrors.ErrorNotImplemented)

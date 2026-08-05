@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -101,6 +102,37 @@ func TestDispatch_UnknownAction(t *testing.T) {
 	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testCaller)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
+}
+
+func TestDispatch_MalformedScalarIsInvalidParameterValue(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		query  map[string]string
+	}{
+		{name: "Integer", action: "CreateDBInstance", query: map[string]string{"AllocatedStorage": "abc"}},
+		{name: "Boolean", action: "CreateDBInstance", query: map[string]string{"MultiAZ": "yes"}},
+		{name: "Timestamp", action: "DescribeEvents", query: map[string]string{"StartTime": "not-a-time"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Dispatch(t.Context(), tc.action, tc.query, nil, testCaller)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+		})
+	}
+}
+
+func TestDispatch_OversizedListIsMalformedQueryString(t *testing.T) {
+	query := make(map[string]string, 1025)
+	for i := 1; i <= 1025; i++ {
+		query["Tags.Tag."+strconv.Itoa(i)+".Key"] = "key"
+	}
+
+	_, err := Dispatch(t.Context(), "CreateDBInstance", query, nil, testCaller)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
 }
 
 // The customer actions this phase implements forward to the daemon, so they are

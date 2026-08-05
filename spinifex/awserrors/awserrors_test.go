@@ -160,6 +160,21 @@ func TestLookupErrorMessage(t *testing.T) {
 	}
 }
 
+func TestLookupErrorMessage_RDSOperationNotSupported(t *testing.T) {
+	got := LookupErrorMessage("rds", ErrorOperationNotSupported)
+	if got.HTTPCode != 400 {
+		t.Errorf("LookupErrorMessage(rds, OperationNotSupportedException).HTTPCode = %d, want 400", got.HTTPCode)
+	}
+	for _, want := range []string{"RDS", "v1"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("LookupErrorMessage(rds, OperationNotSupportedException) = %q, want %q", got.Message, want)
+		}
+	}
+	if strings.Contains(got.Message, "registry") {
+		t.Errorf("LookupErrorMessage(rds, OperationNotSupportedException) = %q, contains ECR wording", got.Message)
+	}
+}
+
 // TestLookupErrorMessage_BedrockResourceNotFound guards the second shared-code
 // collision: ResourceNotFoundException is an alias of the EKS code, so both
 // Bedrock service keys must override it rather than inherit cluster wording.

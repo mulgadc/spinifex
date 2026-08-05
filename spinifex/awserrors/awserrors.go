@@ -644,6 +644,9 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"bedrock-runtime": {
 		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
 	},
+	"rds": {
+		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
+	},
 }
 
 // bedrockResourceNotFoundMessage overrides the EKS wording ErrorLookup carries

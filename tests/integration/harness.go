@@ -119,6 +119,10 @@ type Option func(*gateway.GatewayConfig)
 // every other control-plane path (auth, routing, XML/JSON marshaling, IAM
 // policy evaluation) runs for real.
 func StartGateway(t *testing.T, opts ...Option) *Gateway {
+	return startGateway(t, suiteConformance, opts...)
+}
+
+func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option) *Gateway {
 	t.Helper()
 
 	// Every test connects into its own dynamically provisioned NATS account
@@ -174,7 +178,11 @@ func StartGateway(t *testing.T, opts ...Option) *Gateway {
 		opt(cfg)
 	}
 
-	srv := httptest.NewServer(cfg.SetupRoutes())
+	handler := cfg.SetupRoutes()
+	if collector != nil {
+		handler = conformanceMiddleware(handler, collector)
+	}
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	gw := &Gateway{

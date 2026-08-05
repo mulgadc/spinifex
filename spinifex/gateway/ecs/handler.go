@@ -14,6 +14,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"sort"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -107,6 +109,19 @@ var Actions = map[string]Handler{
 	"TagResource":         TagResource,
 	"UntagResource":       UntagResource,
 	"ListTagsForResource": ListTagsForResource,
+}
+
+// StubbedActionNames returns the Actions entries still bound to NotImplemented.
+func StubbedActionNames() []string {
+	stub := reflect.ValueOf(NotImplemented).Pointer()
+	actions := make([]string, 0)
+	for name, handler := range Actions {
+		if reflect.ValueOf(handler).Pointer() == stub {
+			actions = append(actions, name)
+		}
+	}
+	sort.Strings(actions)
+	return actions
 }
 
 // RawJSONActions encode their response with encoding/json instead of jsonutil.

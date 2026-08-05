@@ -11,6 +11,27 @@ import (
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
+type ecrInlineHandler func(*GatewayConfig, http.ResponseWriter, *http.Request) error
+
+// ecrInlineActions is the authoritative inventory of ECR operations handled
+// directly by the gateway rather than relayed through gateway_ecrapi.Actions.
+// Keeping dispatch and coverage on the same map prevents the generated
+// operation report from classifying an inline implementation as a stub.
+var ecrInlineActions = map[string]ecrInlineHandler{
+	"GetAuthorizationToken":       (*GatewayConfig).handleGetAuthorizationToken,
+	"DescribeRepositories":        (*GatewayConfig).handleDescribeRepositories,
+	"CreateRepository":            (*GatewayConfig).handleCreateRepository,
+	"DeleteRepository":            (*GatewayConfig).handleDeleteRepository,
+	"PutImageTagMutability":       (*GatewayConfig).handlePutImageTagMutability,
+	"ListImages":                  (*GatewayConfig).handleListImages,
+	"DescribeImages":              (*GatewayConfig).handleDescribeImages,
+	"BatchGetImage":               (*GatewayConfig).handleBatchGetImage,
+	"PutImage":                    (*GatewayConfig).handlePutImage,
+	"BatchDeleteImage":            (*GatewayConfig).handleBatchDeleteImage,
+	"StartLifecyclePolicyPreview": (*GatewayConfig).handleStartLifecyclePolicyPreview,
+	"GetLifecyclePolicyPreview":   (*GatewayConfig).handleGetLifecyclePolicyPreview,
+}
+
 // ecrActionFromTarget extracts the action suffix from an X-Amz-Target header.
 // Any "<Prefix>.<Action>" or bare "<Action>" form is accepted.
 func ecrActionFromTarget(target string) string {
@@ -39,58 +60,8 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	// GetAuthorizationToken mints a registry token from the SigV4 auth context;
-	// it is served inline rather than relayed onto a NATS subject.
-	if action == "GetAuthorizationToken" {
-		return gw.handleGetAuthorizationToken(w, r)
-	}
-
-	// DescribeRepositories builds repository ARNs/URIs from the gateway region
-	// and internal suffix, which the relayed Handler signature does not carry,
-	// so it is served inline like GetAuthorizationToken.
-	if action == "DescribeRepositories" {
-		return gw.handleDescribeRepositories(w, r)
-	}
-
-	// CreateRepository and DeleteRepository return the repository ARN/URI, built
-	// from the gateway region and internal suffix, so they are served inline.
-	if action == "CreateRepository" {
-		return gw.handleCreateRepository(w, r)
-	}
-	if action == "DeleteRepository" {
-		return gw.handleDeleteRepository(w, r)
-	}
-
-	// PutImageTagMutability read-modify-writes the per-account RepoMeta record
-	// over NATS, like CreateRepository, so it is served inline.
-	if action == "PutImageTagMutability" {
-		return gw.handlePutImageTagMutability(w, r)
-	}
-
-	// Image-management actions need the gateway-side predastore Store (manifest
-	// bytes) carried by the OCI Registry, which the relayed Handler signature
-	// does not reach, so they are served inline.
-	switch action {
-	case "ListImages":
-		return gw.handleListImages(w, r)
-	case "DescribeImages":
-		return gw.handleDescribeImages(w, r)
-	case "BatchGetImage":
-		return gw.handleBatchGetImage(w, r)
-	case "PutImage":
-		return gw.handlePutImage(w, r)
-	case "BatchDeleteImage":
-		return gw.handleBatchDeleteImage(w, r)
-	}
-
-	// Lifecycle-policy preview evaluates the stored/override policy against the
-	// repo's current images via the gateway-side OCI registry, which the relayed
-	// Handler signature does not reach, so they are served inline.
-	switch action {
-	case "StartLifecyclePolicyPreview":
-		return gw.handleStartLifecyclePolicyPreview(w, r)
-	case "GetLifecyclePolicyPreview":
-		return gw.handleGetLifecyclePolicyPreview(w, r)
+	if inline, ok := ecrInlineActions[action]; ok {
+		return inline(gw, w, r)
 	}
 
 	accountID, _ := r.Context().Value(ctxAccountID).(string)

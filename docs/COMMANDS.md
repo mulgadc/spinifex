@@ -900,12 +900,12 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 |---------|-------------------|---------------|--------|
 | `create-db-parameter-group` | `--db-parameter-group-name`, `--db-parameter-group-family` (postgres18), `--description`, `--tags` | — | **DONE** — names beginning with `default.` are reserved; the implicit group is `default.postgres18` |
 | `describe-db-parameter-groups` | `--db-parameter-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** — the implicit default group is always listed |
-| `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written; `immediate` on a static parameter is rejected, as AWS does |
+| `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written and propagated to attached instances; `immediate` on a static parameter is rejected, as AWS does |
 | `describe-db-parameters` | `--db-parameter-group-name`, `--source` (user, engine-default) | `--filters`, `--max-records`, `--marker` | **DONE** — 51-parameter PostgreSQL 18 catalog; memory defaults are computed per instance class and reported as literals |
 | `delete-db-parameter-group` | `--db-parameter-group-name` | — | **DONE** — refused for a default group and while any instance references it |
 | `reset-db-parameter-group` | — | all | **NOT STARTED** (`InvalidAction`) |
 
-A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
+A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Later group edits propagate to every attached instance. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
 
 ### RDS — Tags
 

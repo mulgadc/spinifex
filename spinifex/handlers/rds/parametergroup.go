@@ -178,9 +178,42 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 		}
 	}
 
+	if err := s.propagateParameterGroup(ctx, kv, accountID, name); err != nil {
+		return nil, err
+	}
+
 	slog.InfoContext(ctx, "rds: DB parameter group modified",
 		"dbParameterGroup", name, "accountId", accountID, "parameters", len(updates))
 	return &rds.DBParameterGroupNameMessage{DBParameterGroupName: aws.String(name)}, nil
+}
+
+// Applies the complete effective set to every instance currently attached to
+// the group. Each record is re-read before the command so a concurrent detach
+// or delete does not receive parameters for a group it no longer uses.
+func (s *Service) propagateParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID, name string) error {
+	ids, err := instancesUsingGroup(ctx, kv, func(rec *DBInstanceRecord) bool {
+		return rec.DBParameterGroupName == name
+	})
+	if err != nil {
+		return err
+	}
+
+	var failures []error
+	for _, id := range ids {
+		var rec DBInstanceRecord
+		found, err := getJSON(ctx, kv, DBInstanceKey(id), &rec)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("rds: read DB instance %s before propagating parameter group %s: %w", id, name, err))
+			continue
+		}
+		if !found || rec.DBParameterGroupName != name {
+			continue
+		}
+		if err := s.applyParameterGroup(ctx, kv, accountID, &rec, name, rec.DBInstanceClass); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // Merges catalog defaults with the group's stored overrides. The defaults are

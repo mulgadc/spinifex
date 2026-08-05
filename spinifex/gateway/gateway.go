@@ -341,7 +341,8 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	svc, err := gw.GetService(r)
-	slog.Info("Request", "service", svc, "method", r.Method, "path", r.URL.Path)
+	action, _ := r.Context().Value(ctxAction).(string)
+	slog.Info("Request", "service", svc, "action", action, "method", r.Method, "path", r.URL.Path)
 
 	if err != nil {
 		slog.Error("GetService error", "error", err)
@@ -388,10 +389,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		slog.Error("Service request error", "service", svc, "error", err)
+		slog.Error("Service request error", "service", svc, "action", action, "error", err)
 		gw.ErrorHandler(w, r, err)
 	} else {
-		slog.Info("Service request completed", "service", svc)
+		slog.Info("Service request completed", "service", svc, "action", action)
 	}
 }
 

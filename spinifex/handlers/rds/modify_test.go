@@ -605,6 +605,11 @@ func TestModifyDBInstance_FailsTheInstanceAndKeepsThePendingValues(t *testing.T)
 	require.NotNil(t, rec.PendingModifiedValues)
 	assert.Equal(t, int64(50), aws.Int64Value(rec.PendingModifiedValues.AllocatedStorage))
 	assert.Equal(t, int64(20), rec.AllocatedStorage, "the record reports the size the volume actually has")
+	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
+
+	messages := h.eventMessages(t)
+	assert.Contains(t, messages, "DB instance restarted after its storage grow failed; storage is unchanged.")
+	assert.Contains(t, messages, "the DB instance could not be modified: grow the data volume vol-rdsdata01 to 50 GiB: the volume store rejected the resize")
 }
 
 func TestModifyDBInstance_RequiresAnIdentifier(t *testing.T) {

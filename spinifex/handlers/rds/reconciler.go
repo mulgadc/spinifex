@@ -652,6 +652,10 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	}
 	slog.InfoContext(ctx, "rds reconciler: DB instance transitioned",
 		"dbInstance", rec.DBInstanceIdentifier, "from", from, "to", to, "reason", reason)
+	if from == StatusCreating && to == StatusAvailable {
+		r.svc.RecordEvent(ctx, AccountIDFromBucketName(kv.Bucket()), EventSourceTypeDBInstance,
+			rec.DBInstanceIdentifier, "DB instance is available.", EventCategoryAvailability)
+	}
 	return nil
 }
 

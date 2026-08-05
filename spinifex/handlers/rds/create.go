@@ -127,6 +127,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// gates connectivity until then.
 	s.publishDNS(ctx, accountID, stored, handlers_dns.ActionUpsert)
 
+	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, req.Identifier,
+		"DB instance created.", EventCategoryCreation)
 	slog.InfoContext(ctx, "rds: DB instance created",
 		"dbInstance", req.Identifier, "accountId", accountID, "instanceId", launched.InstanceID,
 		"endpoint", stored.EndpointAddress, "class", req.InstanceClass)

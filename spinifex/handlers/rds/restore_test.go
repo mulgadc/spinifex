@@ -159,15 +159,18 @@ func TestRestoreDBInstanceFromDBSnapshot_HonoursTheRequestedOverrides(t *testing
 	input.DBInstanceClass = aws.String("db.t3.large")
 	input.AllocatedStorage = aws.Int64(50)
 	input.Port = aws.Int64(6432)
+	input.CopyTagsToSnapshot = aws.Bool(true)
 	input.Tags = []*rds.Tag{{Key: aws.String("env"), Value: aws.String("staging")}}
 
-	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), input, testAccountID)
+	out, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), input, testAccountID)
 	require.NoError(t, err)
 
 	stored := h.instance(t, testRestoredID)
 	assert.Equal(t, "db.t3.large", stored.DBInstanceClass)
 	assert.Equal(t, int64(50), stored.AllocatedStorage)
 	assert.Equal(t, int64(6432), stored.Port)
+	assert.True(t, stored.CopyTagsToSnapshot)
+	assert.True(t, aws.BoolValue(out.DBInstance.CopyTagsToSnapshot))
 	assert.Equal(t, map[string]string{"env": "staging"}, stored.Tags)
 	assert.Equal(t, int64(50), aws.Int64Value(h.launch.volumes.created[0].Size))
 }

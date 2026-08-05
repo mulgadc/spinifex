@@ -177,7 +177,7 @@ func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
-		parameter("work_mem", "16384", ""),
+		parameter("work_mem", "16384", ApplyMethodPendingReboot),
 		parameter("shared_buffers", "65536", ApplyMethodPendingReboot),
 	), testAccountID)
 	require.NoError(t, err)
@@ -186,6 +186,8 @@ func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
 	params := describedParameters(t, h, testParameterGroup)
 	assert.Equal(t, "16384", aws.StringValue(params["work_mem"].ParameterValue))
 	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["work_mem"].Source))
+	assert.Equal(t, ApplyMethodPendingReboot, aws.StringValue(params["work_mem"].ApplyMethod),
+		"a dynamic parameter must report the customer's stored method")
 	assert.Equal(t, "65536", aws.StringValue(params["shared_buffers"].ParameterValue))
 	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["shared_buffers"].Source))
 	// Untouched parameters stay engine defaults rather than becoming user values.
@@ -288,6 +290,24 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	assert.Equal(t, ApplyMethodPendingReboot, aws.StringValue(shared.ApplyMethod))
 	assert.True(t, aws.BoolValue(shared.IsModifiable))
 	assert.NotEmpty(t, aws.StringValue(shared.AllowedValues))
+}
+
+func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T) {
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	for _, rec := range []DBParameterRecord{
+		{Name: "work_mem", Value: "16384"},
+		{Name: "shared_buffers", Value: "65536"},
+	} {
+		require.NoError(t, putJSON(t.Context(), kv, DBParameterGroupParamKey(testParameterGroup, rec.Name), &rec))
+	}
+
+	params := describedParameters(t, h, testParameterGroup)
+	assert.Equal(t, ApplyMethodImmediate, aws.StringValue(params["work_mem"].ApplyMethod))
+	assert.Equal(t, ApplyMethodPendingReboot, aws.StringValue(params["shared_buffers"].ApplyMethod))
 }
 
 func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {

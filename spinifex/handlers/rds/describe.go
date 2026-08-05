@@ -145,13 +145,17 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 		StorageType:          aws.String(rec.StorageType),
 		StorageEncrypted:     aws.Bool(rec.StorageEncrypted),
 		MasterUsername:       aws.String(rec.MasterUsername),
+		DbInstancePort:       aws.Int64(rec.Port),
 		MultiAZ:              aws.Bool(false),
 		PubliclyAccessible:   aws.Bool(false),
 		DeletionProtection:   aws.Bool(rec.DeletionProtection),
-		// Echoed, not acted on: nothing upgrades a pinned version, but a client
-		// that set it has to read back what it set.
-		AutoMinorVersionUpgrade: aws.Bool(rec.AutoMinorVersionUpgrade),
-		InstanceCreateTime:      aws.Time(rec.CreatedAt),
+		// Accepted inert settings are echoed so a client reads back what it set
+		// instead of planning a change no modify can deliver.
+		AutoMinorVersionUpgrade:    aws.Bool(rec.AutoMinorVersionUpgrade),
+		CopyTagsToSnapshot:         aws.Bool(rec.CopyTagsToSnapshot),
+		MonitoringInterval:         aws.Int64(rec.MonitoringInterval),
+		PerformanceInsightsEnabled: aws.Bool(rec.EnablePerformanceInsights),
+		InstanceCreateTime:         aws.Time(rec.CreatedAt),
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
 		TagList: tagsToAWS(rec.Tags),

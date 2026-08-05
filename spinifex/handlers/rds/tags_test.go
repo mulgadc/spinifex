@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
@@ -229,6 +230,24 @@ func TestTagActions_MissingSnapshotIsRejected(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotNotFound)
+}
+
+func TestListTagsForResource_AcceptsAnAutomatedSnapshotARN(t *testing.T) {
+	h := newCreateHarness(t, "")
+	id := AutomatedSnapshotIdentifier(testDBInstanceID, time.Date(2026, 7, 24, 3, 4, 0, 0, time.UTC))
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(id), &DBSnapshotRecord{
+		DBSnapshotIdentifier: id,
+		AccountID:            testAccountID,
+		Tags:                 map[string]string{"retention": "automated"},
+	}))
+
+	out, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
+		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, id)),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, awsTags("retention", "automated"), out.TagList)
 }
 
 func TestTagActions_ForeignAccountARNIsRejected(t *testing.T) {

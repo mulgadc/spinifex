@@ -291,13 +291,13 @@ func ListDBParameterGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]st
 }
 
 // The stored overrides of one parameter group, keyed by parameter name.
-func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group string) (map[string]string, error) {
+func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group string) (map[string]DBParameterRecord, error) {
 	prefix := DBParameterGroupParamsPrefix(group)
 	names, err := listNames(ctx, kv, prefix)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]string, len(names))
+	out := make(map[string]DBParameterRecord, len(names))
 	for _, name := range names {
 		var rec DBParameterRecord
 		found, err := getJSON(ctx, kv, prefix+name, &rec)
@@ -307,7 +307,7 @@ func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group 
 		// A parameter reset between the listing and this read is simply gone,
 		// which is the answer a resolve one tick later would give too.
 		if found {
-			out[name] = rec.Value
+			out[name] = rec
 		}
 	}
 	return out, nil

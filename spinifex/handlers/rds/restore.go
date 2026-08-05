@@ -240,6 +240,7 @@ func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapsh
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 
 		AutoMinorVersionUpgrade: input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
+		CopyTagsToSnapshot:      aws.BoolValue(input.CopyTagsToSnapshot),
 		BackupRetentionPeriod:   s.defaultRetentionDays(),
 
 		Tags: tagMap,

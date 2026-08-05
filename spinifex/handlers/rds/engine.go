@@ -62,15 +62,10 @@ func SupportedEngines() []string {
 	return slices.Sorted(maps.Keys(engines))
 }
 
-// An empty version takes the pin. A supplied one must name the pinned major,
-// with or without a minor, since a mismatch would silently run a version the
-// customer did not ask for.
+// An empty version takes the pin. A supplied one must name the pinned major
+// exactly, since the image does not promise any particular minor version.
 func (e Engine) ValidateVersion(version string) error {
-	v := strings.TrimSpace(version)
-	if v == "" || v == e.MajorVersion {
-		return nil
-	}
-	if major, _, ok := strings.Cut(v, "."); ok && major == e.MajorVersion {
+	if version == "" || version == e.MajorVersion {
 		return nil
 	}
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,

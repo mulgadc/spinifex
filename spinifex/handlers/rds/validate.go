@@ -52,7 +52,10 @@ type validatedCreate struct {
 	// engine version is pinned, so nothing upgrades either way. AWS defaults it
 	// to true and so does the Terraform provider, so an unset request must not
 	// read back as false.
-	AutoMinorVersionUpgrade bool
+	AutoMinorVersionUpgrade   bool
+	CopyTagsToSnapshot        bool
+	MonitoringInterval        int64
+	EnablePerformanceInsights bool
 	// Automated backup settings in force. Create assigns unnamed windows, while
 	// restore leaves them empty for lazy deterministic assignment.
 	BackupRetentionPeriod      int64
@@ -171,7 +174,10 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 		DBParameterGroupName: paramGroup,
 		DeletionProtection:   aws.BoolValue(input.DeletionProtection),
 
-		AutoMinorVersionUpgrade: input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
+		AutoMinorVersionUpgrade:   input.AutoMinorVersionUpgrade == nil || aws.BoolValue(input.AutoMinorVersionUpgrade),
+		CopyTagsToSnapshot:        aws.BoolValue(input.CopyTagsToSnapshot),
+		MonitoringInterval:        aws.Int64Value(input.MonitoringInterval),
+		EnablePerformanceInsights: aws.BoolValue(input.EnablePerformanceInsights),
 
 		BackupRetentionPeriod:      retention,
 		PreferredBackupWindow:      backupWindow,
@@ -211,7 +217,7 @@ func validateDBInstanceIdentifier(id string) error {
 // drop it. Each rejection below is a parameter whose omission would create a
 // false safety, security or availability guarantee. Parameters that are merely
 // inert — AutoMinorVersionUpgrade, Performance Insights, Enhanced Monitoring,
-// CopyTagsToSnapshot — are deliberately absent and accepted as no-ops.
+// CopyTagsToSnapshot — are accepted and echoed so clients can converge.
 func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 	if aws.BoolValue(input.MultiAZ) {
 		return unimplemented("MultiAZ", "this platform is single-AZ; a standby would not exist")
@@ -230,6 +236,12 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 	}
 	if aws.Int64Value(input.Iops) > 0 {
 		return unimplemented("Iops", "provisioned IOPS are not implemented; storage is gp3")
+	}
+	if aws.Int64Value(input.MaxAllocatedStorage) > 0 {
+		return unimplemented("MaxAllocatedStorage", "storage autoscaling is not implemented")
+	}
+	if aws.Int64Value(input.StorageThroughput) > 0 {
+		return unimplemented("StorageThroughput", "provisioned throughput is not implemented; storage is gp3")
 	}
 	if aws.StringValue(input.KmsKeyId) != "" {
 		return unimplemented("KmsKeyId", "storage is encrypted with the cluster key, not a customer-managed one")

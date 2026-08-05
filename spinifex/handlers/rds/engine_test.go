@@ -31,10 +31,10 @@ func TestEngineValidateVersion(t *testing.T) {
 	engine, err := LookupEngine("postgres")
 	require.NoError(t, err)
 
-	for _, version := range []string{"", "18", "18.1", "18.4"} {
+	for _, version := range []string{"", "18"} {
 		assert.NoError(t, engine.ValidateVersion(version), "version %q", version)
 	}
-	for _, version := range []string{"17", "16.2", "19", "latest"} {
+	for _, version := range []string{"17", "16.2", "18.1", "18.4", " 18 ", "19", "latest"} {
 		assert.Error(t, engine.ValidateVersion(version), "version %q", version)
 	}
 

@@ -354,6 +354,28 @@ assert_clean_plan() {
     return 1
 }
 
+# RDS resolves its database VM image from all three tags. Check this before
+# applying any workbook so a missing operator prerequisite does not surface as
+# provider retries during the final, most expensive example.
+require_rds_image() {
+    local image_ids
+    if ! image_ids=$(aws ec2 describe-images \
+        --filters \
+            'Name=tag:spinifex:managed-by,Values=rds' \
+            'Name=tag:engine,Values=postgres' \
+            'Name=tag:engine-version,Values=18' \
+        --query 'Images[].ImageId' --output text); then
+        log "RDS AMI preflight: describe-images failed"
+        return 1
+    fi
+    if [ -z "$image_ids" ] || [ "$image_ids" = "None" ]; then
+        log "RDS AMI preflight: spinifex-rds-postgres is not registered"
+        log "Run: spx admin images import --name spinifex-rds-postgres"
+        return 1
+    fi
+    log "RDS AMI preflight: found ${image_ids}"
+}
+
 # Pick an instance type available on this cluster. Workbooks default to
 # t3.small (Intel); on AMD-only hosts t3 isn't registered, so we query and
 # fall back to the smallest type with ≥2 vCPU / ≥1 GiB RAM (matches the
@@ -442,6 +464,7 @@ run_workbook() {
 # --- Main ---
 
 install_tofu || { log "tofu install failed"; exit 1; }
+require_rds_image || { log "required RDS AMI is unavailable"; exit 1; }
 
 INSTANCE_TYPE=$(detect_instance_type)
 if [ -z "$INSTANCE_TYPE" ] || [ "$INSTANCE_TYPE" = "None" ]; then

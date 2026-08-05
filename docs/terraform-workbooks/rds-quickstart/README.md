@@ -52,11 +52,16 @@ The database security group admits `5432` from the client security group and not
 ## Prerequisites
 
 - **Spinifex running**, with the AWS CLI configured for the `spinifex` profile (see [Installing Spinifex](/docs/install)) and OpenTofu (or Terraform) installed.
-- **The `spinifex-rds-postgres` image registered.** DB instances boot from it; it is built at `spx admin init` time.
+- **The `spinifex-rds-postgres` image registered.** DB instances boot from this system image. Import it once per cluster, then verify that all tags used by the RDS engine resolver are present:
 
   ```bash
-  aws ec2 describe-images \
-    --filters 'Name=tag:spinifex:managed-by,Values=rds' \
+  spx admin images import --name spinifex-rds-postgres
+
+  AWS_PROFILE=spinifex aws ec2 describe-images \
+    --filters \
+      'Name=tag:spinifex:managed-by,Values=rds' \
+      'Name=tag:engine,Values=postgres' \
+      'Name=tag:engine-version,Values=18' \
     --query 'Images[].[ImageId,Name]' --output text
   ```
 
@@ -148,7 +153,7 @@ aws rds delete-db-instance --db-instance-identifier rds-quickstart \
 
 ## Troubleshooting
 
-**`apply` fails resolving the DB AMI.** The `spinifex-rds-postgres` image is not registered. Re-run the `describe-images` check in Prerequisites.
+**`apply` fails resolving the DB AMI.** The `spinifex-rds-postgres` image is not registered with the required engine tags. Run `spx admin images import --name spinifex-rds-postgres`, then repeat the tagged `describe-images` check in Prerequisites before applying again.
 
 **The apply sits on `aws_db_instance.main: Still creating...`.** Several minutes is normal — a VM boot plus `initdb` plus the first healthy heartbeat. Much longer is a bootstrap that did not finish:
 

@@ -46,7 +46,7 @@ jobs:
           - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single" }
 
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.extra == 'tofu-examples' && 45 || 35 }}
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
@@ -250,6 +250,18 @@ jobs:
                rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
              done; exit \$FAIL"
+
+      - name: Import RDS PostgreSQL AMI
+        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
+            "spx admin images import --name spinifex-rds-postgres"
 
       - name: Run Tofu Workbooks
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'

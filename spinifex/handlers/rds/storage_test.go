@@ -204,6 +204,21 @@ func TestGrowInstanceStorage_ReportsTheGrowAndRestartFailures(t *testing.T) {
 	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
 }
 
+// Recovery belongs to the new lease holder after a takeover. The stale holder
+// must not restart the VM while its replacement may be retrying the grow.
+func TestGrowInstanceStorage_DoesNotRestartAfterLosingTheModifyLease(t *testing.T) {
+	h := newModifyHarness(t)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	h.storage.modifyErr = errors.New("the volume store is unavailable")
+	h.storage.onModify = func() { cancel(errModifyLeaseLost) }
+	rec := modifiableRecord()
+
+	err := h.svc.growInstanceStorage(ctx, testAccountID, &rec, 50)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the volume store is unavailable")
+	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls)
+}
+
 // Stopping the VM is what makes the volume available, so a stop that did not
 // happen must not be followed by a resize that would be rejected — or worse,
 // accepted against a volume a live guest is writing to.

@@ -77,14 +77,18 @@ func (s *Service) growInstanceStorage(ctx context.Context, accountID string, rec
 	return nil
 }
 
-// Restarts with a bounded context that survives request or lease cancellation,
-// because returning the grow error must not strand the customer's database.
+// Restarts with a bounded context that survives request cancellation. A lost
+// modify lease transfers recovery to its new holder, so the stale holder stops.
 func (s *Service) restartAfterStorageGrowFailure(
 	ctx context.Context,
 	accountID string,
 	rec *DBInstanceRecord,
 	growErr error,
 ) error {
+	if errors.Is(context.Cause(ctx), errModifyLeaseLost) {
+		return growErr
+	}
+
 	restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
 

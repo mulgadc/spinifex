@@ -13,6 +13,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"sort"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -100,6 +102,29 @@ var Actions = map[string]Handler{
 	"TagResource":                 NotImplemented,
 	"UntagResource":               NotImplemented,
 	"ListTagsForResource":         ListTagsForResource,
+}
+
+// StubbedActionNames returns the Actions entries still bound to NotImplemented.
+func StubbedActionNames() []string {
+	return actionsWithHandler(NotImplemented)
+}
+
+// UnsupportedActionNames returns actions that deliberately report the feature
+// as unsupported rather than behaving as implemented operations.
+func UnsupportedActionNames() []string {
+	return actionsWithHandler(ScanningNotSupported)
+}
+
+func actionsWithHandler(target Handler) []string {
+	want := reflect.ValueOf(target).Pointer()
+	actions := make([]string, 0)
+	for name, handler := range Actions {
+		if reflect.ValueOf(handler).Pointer() == want {
+			actions = append(actions, name)
+		}
+	}
+	sort.Strings(actions)
+	return actions
 }
 
 // WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the

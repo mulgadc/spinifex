@@ -515,7 +515,7 @@ func TestSubmitDBStateChange_RecordsParameterRollback(t *testing.T) {
 	assert.True(t, stored.ParametersRolledBack)
 	groups := projectParameterGroup(&stored)
 	require.Len(t, groups, 1)
-	assert.Equal(t, parameterApplyStatusFailed, *groups[0].ParameterApplyStatus)
+	assert.Equal(t, "failed-to-apply", *groups[0].ParameterApplyStatus)
 
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)

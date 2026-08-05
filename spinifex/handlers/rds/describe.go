@@ -241,8 +241,6 @@ func projectPendingModifiedValues(pending *PendingModifiedValues) *rds.PendingMo
 	return out
 }
 
-const parameterApplyStatusFailed = "failed-to-apply"
-
 // AWS reports a parameter group's state on the membership rather than in
 // PendingModifiedValues, and the Terraform provider reads it there: applying
 // while a modify is draining, pending-reboot while static settings await the
@@ -256,7 +254,7 @@ func projectParameterGroup(rec *DBInstanceRecord) []*rds.DBParameterGroupStatus 
 	case rec.PendingModifiedValues != nil && rec.PendingModifiedValues.DBParameterGroupName != "":
 		status = "applying"
 	case rec.ParametersRolledBack:
-		status = parameterApplyStatusFailed
+		status = "failed-to-apply"
 	case len(rec.PendingRebootParameters) > 0:
 		status = "pending-reboot"
 	}

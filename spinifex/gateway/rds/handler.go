@@ -41,7 +41,7 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
-			return nil, err
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		output, err := handler(ctx, input, nc, caller)
 		if err != nil {

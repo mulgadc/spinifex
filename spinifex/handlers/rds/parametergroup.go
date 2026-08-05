@@ -31,14 +31,14 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	name := aws.StringValue(input.DBParameterGroupName)
-	if err := validateDBGroupName("DBParameterGroupName", name); err != nil {
-		return nil, err
-	}
 	// Rejected rather than accepted-and-shadowed: a customer group under the
 	// reserved prefix would be indistinguishable from the implicit one.
 	if isDefaultParameterGroupName(name) {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"DBParameterGroupName may not begin with %q, which the service reserves", defaultParameterGroupPrefix)
+	}
+	if err := validateDBGroupName("DBParameterGroupName", name); err != nil {
+		return nil, err
 	}
 	description := aws.StringValue(input.Description)
 	if err := validateDBGroupDescription("Description", description); err != nil {

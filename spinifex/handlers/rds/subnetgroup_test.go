@@ -116,8 +116,9 @@ func TestCreateDBSubnetGroup_RejectsMalformedRequests(t *testing.T) {
 		{"NoName", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = nil }, awserrors.ErrorInvalidParameterValue},
 		{"ReservedName", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = aws.String("default") }, awserrors.ErrorInvalidParameterValue},
 		{"LeadingDigit", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = aws.String("1group") }, awserrors.ErrorInvalidParameterValue},
-		// A slash would split the name across the KV layout's own separator.
 		{"NameWithSlash", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = aws.String("db/private") }, awserrors.ErrorInvalidParameterValue},
+		{"NameWithPlus", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = aws.String("db+private") }, awserrors.ErrorInvalidParameterValue},
+		{"NameWithParentheses", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupName = aws.String("db(1)") }, awserrors.ErrorInvalidParameterValue},
 		{"NoDescription", func(in *rds.CreateDBSubnetGroupInput) { in.DBSubnetGroupDescription = nil }, awserrors.ErrorInvalidParameterValue},
 		{"NoSubnets", func(in *rds.CreateDBSubnetGroupInput) { in.SubnetIds = nil }, awserrors.ErrorInvalidParameterValue},
 		{"DuplicateSubnet", func(in *rds.CreateDBSubnetGroupInput) {

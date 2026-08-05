@@ -520,6 +520,8 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 		{"StorageEncryptedFalse", func(in *rds.CreateDBInstanceInput) { in.StorageEncrypted = aws.Bool(false) }, "StorageEncrypted"},
 		{"IAMDatabaseAuth", func(in *rds.CreateDBInstanceInput) { in.EnableIAMDatabaseAuthentication = aws.Bool(true) }, "EnableIAMDatabaseAuthentication"},
 		{"Iops", func(in *rds.CreateDBInstanceInput) { in.Iops = aws.Int64(3000) }, "Iops"},
+		{"MaxAllocatedStorage", func(in *rds.CreateDBInstanceInput) { in.MaxAllocatedStorage = aws.Int64(500) }, "MaxAllocatedStorage"},
+		{"StorageThroughput", func(in *rds.CreateDBInstanceInput) { in.StorageThroughput = aws.Int64(250) }, "StorageThroughput"},
 		{"KmsKeyId", func(in *rds.CreateDBInstanceInput) { in.KmsKeyId = aws.String("arn:aws:kms:::key/abc") }, "KmsKeyId"},
 		{"AvailabilityZone", func(in *rds.CreateDBInstanceInput) { in.AvailabilityZone = aws.String("ap-southeast-2b") }, "AvailabilityZone"},
 		{"DBSecurityGroups", func(in *rds.CreateDBInstanceInput) { in.DBSecurityGroups = aws.StringSlice([]string{"classic"}) }, "DBSecurityGroups"},
@@ -567,6 +569,7 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 			in.DBInstanceIdentifier = aws.String(strings.Repeat("a", maxDBInstanceIdentifierLen+1))
 		}, awserrors.ErrorInvalidParameterValue},
 		{"UnknownEngine", func(in *rds.CreateDBInstanceInput) { in.Engine = aws.String("mysql") }, awserrors.ErrorInvalidParameterValue},
+		{"MinorEngineVersion", func(in *rds.CreateDBInstanceInput) { in.EngineVersion = aws.String("18.4") }, awserrors.ErrorInvalidParameterValue},
 		{"UnknownClass", func(in *rds.CreateDBInstanceInput) { in.DBInstanceClass = aws.String("db.x99.mega") }, awserrors.ErrorInvalidParameterValue},
 		{"StorageBelowMinimum", func(in *rds.CreateDBInstanceInput) {
 			in.AllocatedStorage = aws.Int64(minAllocatedStorageGiB - 1)
@@ -614,6 +617,10 @@ func TestValidateCreateRequest_AcceptsInertParameters(t *testing.T) {
 	input.MonitoringInterval = aws.Int64(60)
 	input.StorageEncrypted = aws.Bool(true)
 
-	_, err := newCreateValidator().validateCreateRequest(input)
+	req, err := newCreateValidator().validateCreateRequest(input)
 	require.NoError(t, err)
+	assert.True(t, req.AutoMinorVersionUpgrade)
+	assert.True(t, req.CopyTagsToSnapshot)
+	assert.True(t, req.EnablePerformanceInsights)
+	assert.Equal(t, int64(60), req.MonitoringInterval)
 }

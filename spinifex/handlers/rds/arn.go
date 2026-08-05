@@ -70,8 +70,8 @@ const arnSegmentCount = 7
 // Region and account are checked here rather than at policy evaluation, so a
 // foreign-account reference never reaches the evaluator at all.
 func ParseARN(arn, region, accountID string) (ParsedARN, error) {
-	// The identifier cannot contain a colon, so the trailing segment SplitN
-	// leaves intact is rejected below if it holds one.
+	// SplitN leaves an automated snapshot's rds: prefix in the identifier. Other
+	// resource kinds still reject that extra separator below.
 	parts := strings.SplitN(arn, ":", arnSegmentCount)
 	if len(parts) != arnSegmentCount {
 		return ParsedARN{}, arnError(arn, "expected the form arn:aws:rds:{region}:{account}:{type}:{name}")
@@ -91,7 +91,13 @@ func ParseARN(arn, region, accountID string) (ParsedARN, error) {
 		return ParsedARN{}, arnError(arn, fmt.Sprintf("%q is not an RDS resource type", parts[5]))
 	}
 	identifier := parts[6]
-	if identifier == "" || strings.ContainsAny(identifier, ":/") {
+	malformed := identifier == "" || strings.Contains(identifier, "/")
+	if kind == ResourceKindDBSnapshot {
+		malformed = malformed || validateDBSnapshotReference(identifier) != nil
+	} else {
+		malformed = malformed || strings.Contains(identifier, ":")
+	}
+	if malformed {
 		return ParsedARN{}, arnError(arn, "the resource name is empty or malformed")
 	}
 

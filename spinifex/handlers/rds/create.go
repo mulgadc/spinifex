@@ -158,7 +158,10 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		DBParameterGroupName: req.DBParameterGroupName,
 		DeletionProtection:   req.DeletionProtection,
 
-		AutoMinorVersionUpgrade: req.AutoMinorVersionUpgrade,
+		AutoMinorVersionUpgrade:   req.AutoMinorVersionUpgrade,
+		CopyTagsToSnapshot:        req.CopyTagsToSnapshot,
+		MonitoringInterval:        req.MonitoringInterval,
+		EnablePerformanceInsights: req.EnablePerformanceInsights,
 
 		BackupRetentionPeriod:      req.BackupRetentionPeriod,
 		PreferredBackupWindow:      req.PreferredBackupWindow,

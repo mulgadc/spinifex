@@ -29,6 +29,9 @@ type modifyPlan struct {
 	SecurityGroupIDs           []string
 	DeletionProtection         *bool
 	AutoMinorVersionUpgrade    *bool
+	CopyTagsToSnapshot         *bool
+	MonitoringInterval         *int64
+	EnablePerformanceInsights  *bool
 	BackupRetentionPeriod      *int64
 	PreferredBackupWindow      string
 	PreferredMaintenanceWindow string
@@ -54,7 +57,8 @@ func (p *modifyPlan) disruptive() bool {
 // deferred must not report a configuration change that has not happened.
 func (p *modifyPlan) immediate() bool {
 	return p.MasterUserPassword != "" || p.SecurityGroupIDs != nil || p.DeletionProtection != nil ||
-		p.AutoMinorVersionUpgrade != nil || p.BackupRetentionPeriod != nil ||
+		p.AutoMinorVersionUpgrade != nil || p.CopyTagsToSnapshot != nil ||
+		p.MonitoringInterval != nil || p.EnablePerformanceInsights != nil || p.BackupRetentionPeriod != nil ||
 		p.PreferredBackupWindow != "" || p.PreferredMaintenanceWindow != ""
 }
 
@@ -139,7 +143,11 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id,
 			"Modification recorded; it will be applied during the next maintenance window, and the database will be unavailable while it is.",
 			EventCategoryConfigurationChange, EventCategoryNotification)
-		return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+		stored, _, err := s.getDBInstance(ctx, kv, id)
+		if err != nil {
+			return nil, err
+		}
+		return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(stored)}, nil
 	}
 
 	moved, kv, err := s.beginTransition(ctx, accountID, id, StatusModifying, StatusAvailable, StatusFailed)
@@ -223,6 +231,15 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	// next describe contradicts, and the client re-sends it forever.
 	if input.AutoMinorVersionUpgrade != nil && aws.BoolValue(input.AutoMinorVersionUpgrade) != rec.AutoMinorVersionUpgrade {
 		plan.AutoMinorVersionUpgrade = input.AutoMinorVersionUpgrade
+	}
+	if input.CopyTagsToSnapshot != nil && aws.BoolValue(input.CopyTagsToSnapshot) != rec.CopyTagsToSnapshot {
+		plan.CopyTagsToSnapshot = input.CopyTagsToSnapshot
+	}
+	if input.MonitoringInterval != nil && aws.Int64Value(input.MonitoringInterval) != rec.MonitoringInterval {
+		plan.MonitoringInterval = input.MonitoringInterval
+	}
+	if input.EnablePerformanceInsights != nil && aws.BoolValue(input.EnablePerformanceInsights) != rec.EnablePerformanceInsights {
+		plan.EnablePerformanceInsights = input.EnablePerformanceInsights
 	}
 	if err := s.planBackupSettings(input, rec, plan); err != nil {
 		return nil, err
@@ -337,6 +354,15 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 		}
 		if plan.AutoMinorVersionUpgrade != nil {
 			stored.AutoMinorVersionUpgrade = *plan.AutoMinorVersionUpgrade
+		}
+		if plan.CopyTagsToSnapshot != nil {
+			stored.CopyTagsToSnapshot = *plan.CopyTagsToSnapshot
+		}
+		if plan.MonitoringInterval != nil {
+			stored.MonitoringInterval = *plan.MonitoringInterval
+		}
+		if plan.EnablePerformanceInsights != nil {
+			stored.EnablePerformanceInsights = *plan.EnablePerformanceInsights
 		}
 		if plan.BackupRetentionPeriod != nil {
 			stored.BackupRetentionPeriod = *plan.BackupRetentionPeriod

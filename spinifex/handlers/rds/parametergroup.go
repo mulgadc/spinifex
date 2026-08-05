@@ -222,14 +222,15 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	out := &rds.DescribeDBParametersOutput{}
 	for _, param := range CatalogParameterNames() {
 		spec, _ := LookupParameter(param)
-		value, isOverride := overrides[param]
+		override, isOverride := overrides[param]
+		value := override.Value
 		if !isOverride {
 			value = spec.DefaultAt(memoryMiB)
 		}
 		if source != "" && source != parameterSource(isOverride) {
 			continue
 		}
-		out.Parameters = append(out.Parameters, projectParameter(spec, value, isOverride))
+		out.Parameters = append(out.Parameters, projectParameter(spec, value, override.ApplyMethod, isOverride))
 	}
 	return out, nil
 }
@@ -421,7 +422,7 @@ func parameterSource(isOverride bool) string {
 
 // A computed default is reported as engine-default with its literal value, never
 // as the formula that produced it.
-func projectParameter(spec ParameterSpec, value string, isOverride bool) *rds.Parameter {
+func projectParameter(spec ParameterSpec, value, storedApplyMethod string, isOverride bool) *rds.Parameter {
 	out := &rds.Parameter{
 		ParameterName:  aws.String(spec.Name),
 		ParameterValue: aws.String(value),
@@ -434,9 +435,11 @@ func projectParameter(spec ParameterSpec, value string, isOverride bool) *rds.Pa
 	if allowed := spec.AllowedValues(); allowed != "" {
 		out.AllowedValues = aws.String(allowed)
 	}
-	// AWS reports the method a change to this parameter would take, which for a
-	// static setting is the only one it can take.
-	if spec.ApplyType == ApplyTypeStatic {
+	// An override reports the method the customer stored. The fallback preserves
+	// defaults and records written before ApplyMethod was persisted.
+	if storedApplyMethod != "" {
+		out.ApplyMethod = aws.String(storedApplyMethod)
+	} else if spec.ApplyType == ApplyTypeStatic {
 		out.ApplyMethod = aws.String(ApplyMethodPendingReboot)
 	} else {
 		out.ApplyMethod = aws.String(ApplyMethodImmediate)
@@ -468,5 +471,9 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyVa
 	if err != nil {
 		return nil, err
 	}
-	return ResolveEffectiveParameters(instanceClass, overrides)
+	values := make(map[string]string, len(overrides))
+	for name, override := range overrides {
+		values[name] = override.Value
+	}
+	return ResolveEffectiveParameters(instanceClass, values)
 }

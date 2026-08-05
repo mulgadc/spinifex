@@ -2,6 +2,7 @@ package handlers_rds
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
@@ -11,19 +12,22 @@ import (
 // Every ARN the builders mint must parse back into the parts it was built
 // from, so a resource named by a describe is addressable by a tag action.
 func TestParseARN_RoundTripsEveryResourceType(t *testing.T) {
+	automated := AutomatedSnapshotIdentifier("orders-db", time.Date(2026, 7, 24, 3, 4, 0, 0, time.UTC))
 	cases := []struct {
+		name       string
 		kind       ResourceKind
 		identifier string
 		arn        string
 	}{
-		{ResourceKindDBInstance, "orders-db", DBInstanceARN(testRegion, testAccountID, "orders-db")},
-		{ResourceKindDBSnapshot, "orders-db-2026-07-24", DBSnapshotARN(testRegion, testAccountID, "orders-db-2026-07-24")},
-		{ResourceKindDBSubnetGroup, "prod-db-subnets", DBSubnetGroupARN(testRegion, testAccountID, "prod-db-subnets")},
-		{ResourceKindDBParameterGroup, "postgres16-tuned", DBParameterGroupARN(testRegion, testAccountID, "postgres16-tuned")},
+		{"instance", ResourceKindDBInstance, "orders-db", DBInstanceARN(testRegion, testAccountID, "orders-db")},
+		{"manual snapshot", ResourceKindDBSnapshot, "orders-db-2026-07-24", DBSnapshotARN(testRegion, testAccountID, "orders-db-2026-07-24")},
+		{"automated snapshot", ResourceKindDBSnapshot, automated, DBSnapshotARN(testRegion, testAccountID, automated)},
+		{"subnet group", ResourceKindDBSubnetGroup, "prod-db-subnets", DBSubnetGroupARN(testRegion, testAccountID, "prod-db-subnets")},
+		{"parameter group", ResourceKindDBParameterGroup, "postgres16-tuned", DBParameterGroupARN(testRegion, testAccountID, "postgres16-tuned")},
 	}
 
 	for _, tc := range cases {
-		t.Run(string(tc.kind), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := ParseARN(tc.arn, testRegion, testAccountID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.kind, parsed.Kind)
@@ -44,6 +48,9 @@ func TestParseARN_RejectsMalformedAndForeignARNs(t *testing.T) {
 		{"slash delimited", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db/orders-db"},
 		{"truncated", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db"},
 		{"extra segment", DBInstanceARN(testRegion, testAccountID, "orders-db") + ":extra"},
+		{"snapshot with a foreign namespace", DBSnapshotARN(testRegion, testAccountID, "other:orders-db")},
+		{"snapshot with two embedded colons", DBSnapshotARN(testRegion, testAccountID, "rds:orders-db:extra")},
+		{"snapshot with a slash", DBSnapshotARN(testRegion, testAccountID, "rds:orders/db")},
 		{"empty identifier", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db:"},
 		{"another service", "arn:aws:ec2:" + testRegion + ":" + testAccountID + ":db:orders-db"},
 		{"another partition", "arn:aws-cn:rds:" + testRegion + ":" + testAccountID + ":db:orders-db"},

@@ -83,6 +83,9 @@ func TestAPIMatrix(t *testing.T) {
 			{"MultiAZ", func(in *rds.CreateDBInstanceInput) { in.MultiAZ = aws.Bool(true) }},
 			{"StorageEncryptedFalse", func(in *rds.CreateDBInstanceInput) { in.StorageEncrypted = aws.Bool(false) }},
 			{"EngineVersionOtherThanThePin", func(in *rds.CreateDBInstanceInput) { in.EngineVersion = aws.String("16.4") }},
+			{"MinorEngineVersion", func(in *rds.CreateDBInstanceInput) { in.EngineVersion = aws.String("18.4") }},
+			{"MaxAllocatedStorage", func(in *rds.CreateDBInstanceInput) { in.MaxAllocatedStorage = aws.Int64(100) }},
+			{"StorageThroughput", func(in *rds.CreateDBInstanceInput) { in.StorageThroughput = aws.Int64(250) }},
 			{"IAMDatabaseAuthentication", func(in *rds.CreateDBInstanceInput) {
 				in.EnableIAMDatabaseAuthentication = aws.Bool(true)
 			}},
@@ -242,19 +245,26 @@ func TestAPIMatrix(t *testing.T) {
 	require.NotNil(t, created.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, probeID) })
 
-	// An inert parameter is accepted and then reported honestly,
-	// so a customer reading the instance back is never told a feature is on when
-	// nothing implements it.
-	t.Run("InertParametersAreAcceptedAndReportedOff", func(t *testing.T) {
+	// Accepted inert parameters are echoed so Terraform does not plan changes no
+	// modify can deliver.
+	t.Run("InertParametersAreAcceptedAndEchoed", func(t *testing.T) {
 		instance := created.DBInstance
-		// The exception, echoed rather than reported off: nothing upgrades a pinned
-		// version, but the provider's schema defaults it to true, so a false
-		// read-back would leave every default configuration with an uncleanable diff.
-		assert.True(t, aws.BoolValue(instance.AutoMinorVersionUpgrade),
-			"a client that set it has to read back what it set")
+		assert.True(t, aws.BoolValue(instance.AutoMinorVersionUpgrade))
+		assert.True(t, aws.BoolValue(instance.PerformanceInsightsEnabled))
+		assert.Equal(t, int64(60), aws.Int64Value(instance.MonitoringInterval))
+		assert.True(t, aws.BoolValue(instance.CopyTagsToSnapshot))
+
+		_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
+			DBInstanceIdentifier:      aws.String(probeID),
+			EnablePerformanceInsights: aws.Bool(false),
+			MonitoringInterval:        aws.Int64(0),
+			CopyTagsToSnapshot:        aws.Bool(false),
+		})
+		require.NoError(t, err)
+		instance, err = harness.DescribeDBInstance(f.AWS, probeID)
+		require.NoError(t, err)
 		assert.False(t, aws.BoolValue(instance.PerformanceInsightsEnabled))
-		assert.Zero(t, aws.Int64Value(instance.MonitoringInterval),
-			"enhanced monitoring is not implemented, so no interval is in effect")
+		assert.Zero(t, aws.Int64Value(instance.MonitoringInterval))
 		assert.False(t, aws.BoolValue(instance.CopyTagsToSnapshot))
 	})
 

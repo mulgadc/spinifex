@@ -156,6 +156,45 @@ func TestDescribeDBInstances_EchoesAutoMinorVersionUpgrade(t *testing.T) {
 	assert.False(t, aws.BoolValue(out.DBInstances[0].AutoMinorVersionUpgrade))
 }
 
+func TestDescribeDBInstances_EchoesAcceptedInertSettings(t *testing.T) {
+	h := newCreateHarness(t, "")
+	input := validCreateInput()
+	input.CopyTagsToSnapshot = aws.Bool(true)
+	input.EnablePerformanceInsights = aws.Bool(true)
+	input.MonitoringInterval = aws.Int64(60)
+
+	_, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	rec := h.record(t, testDBInstanceID)
+	assert.True(t, rec.CopyTagsToSnapshot)
+	assert.True(t, rec.EnablePerformanceInsights)
+	assert.Equal(t, int64(60), rec.MonitoringInterval)
+
+	out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(testDBInstanceID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBInstances, 1)
+	assert.True(t, aws.BoolValue(out.DBInstances[0].CopyTagsToSnapshot))
+	assert.True(t, aws.BoolValue(out.DBInstances[0].PerformanceInsightsEnabled))
+	assert.Equal(t, int64(60), aws.Int64Value(out.DBInstances[0].MonitoringInterval))
+}
+
+func TestDescribeDBInstances_EchoesOmittedInertSettingsAsDisabled(t *testing.T) {
+	h := newCreateHarness(t, "")
+	seedCreated(t, h, testDBInstanceID)
+
+	out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(testDBInstanceID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBInstances, 1)
+	assert.False(t, aws.BoolValue(out.DBInstances[0].CopyTagsToSnapshot))
+	assert.False(t, aws.BoolValue(out.DBInstances[0].PerformanceInsightsEnabled))
+	assert.Zero(t, aws.Int64Value(out.DBInstances[0].MonitoringInterval))
+}
+
 // A filter nobody implemented is refused rather than dropped: dropping it
 // returns exactly the rows the caller asked to exclude.
 func TestDescribeDBInstances_RejectsAnUnrecognizedFilter(t *testing.T) {
@@ -208,6 +247,7 @@ func TestProjectDBInstance_OmitsAnUnsettledEndpoint(t *testing.T) {
 		Port:                 5432,
 	})
 	assert.Nil(t, instance.Endpoint)
+	assert.Equal(t, int64(5432), aws.Int64Value(instance.DbInstancePort))
 	assert.Nil(t, instance.DBName, "a request that named no database has none, not an empty one")
 	assert.Nil(t, h.svc.projectDBInstance(nil))
 }

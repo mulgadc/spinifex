@@ -120,6 +120,10 @@ func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
 	in := modifyInput()
 	in.MasterUserPassword = aws.String("N3w-Sup3rSecret!")
 	in.DeletionProtection = aws.Bool(true)
+	in.AutoMinorVersionUpgrade = aws.Bool(true)
+	in.CopyTagsToSnapshot = aws.Bool(true)
+	in.MonitoringInterval = aws.Int64(60)
+	in.EnablePerformanceInsights = aws.Bool(true)
 	in.BackupRetentionPeriod = aws.Int64(7)
 	in.PreferredBackupWindow = aws.String("03:00-04:00")
 	in.PreferredMaintenanceWindow = aws.String("sun:05:00-sun:06:00")
@@ -138,11 +142,18 @@ func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
 
 	rec := h.record(t)
 	assert.True(t, rec.DeletionProtection)
+	assert.True(t, rec.AutoMinorVersionUpgrade)
+	assert.True(t, rec.CopyTagsToSnapshot)
+	assert.Equal(t, int64(60), rec.MonitoringInterval)
+	assert.True(t, rec.EnablePerformanceInsights)
 	assert.Equal(t, int64(7), rec.BackupRetentionPeriod)
 	assert.Equal(t, "03:00-04:00", rec.PreferredBackupWindow)
 	assert.Equal(t, "sun:05:00-sun:06:00", rec.PreferredMaintenanceWindow)
 	assert.NotNil(t, rec.MasterPasswordUpdatedAt)
 	assert.Nil(t, rec.PendingModifiedValues)
+	assert.True(t, aws.BoolValue(out.DBInstance.CopyTagsToSnapshot))
+	assert.Equal(t, int64(60), aws.Int64Value(out.DBInstance.MonitoringInterval))
+	assert.True(t, aws.BoolValue(out.DBInstance.PerformanceInsightsEnabled))
 }
 
 // Only the fact of the rotation is recorded. A password that reached KV
@@ -406,15 +417,19 @@ func TestModifyDBInstance_DefersADisruptiveChangeToTheMaintenanceWindow(t *testi
 	in := modifyInput()
 	in.AllocatedStorage = aws.Int64(50)
 	in.DBInstanceClass = aws.String("db.m5.large")
+	in.CopyTagsToSnapshot = aws.Bool(true)
 	out, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
 	require.NoError(t, err)
 
 	assert.Equal(t, string(StatusAvailable), aws.StringValue(out.DBInstance.DBInstanceStatus))
+	assert.True(t, aws.BoolValue(out.DBInstance.CopyTagsToSnapshot),
+		"the response must include immediate fields applied alongside a deferred change")
 	assert.Empty(t, h.cmdr.calls)
 	assert.Empty(t, h.storage.modified)
 	assert.Empty(t, h.launch.launcher.terminated)
 
 	rec := h.record(t)
+	assert.True(t, rec.CopyTagsToSnapshot)
 	require.NotNil(t, rec.PendingModifiedValues)
 	assert.Equal(t, int64(50), aws.Int64Value(rec.PendingModifiedValues.AllocatedStorage))
 	assert.Equal(t, "db.m5.large", rec.PendingModifiedValues.DBInstanceClass)

@@ -31,11 +31,12 @@ type DBInstanceRecord struct {
 	// Blocks DeleteDBInstance outright. Settable at create and modify.
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
 
-	// Inert — the engine version is pinned, so nothing upgrades either way.
-	// Recorded anyway because a describe that does not echo it back reads as
-	// false against a Terraform schema that defaults it to true, and the plan
-	// then never settles on a change no modify can deliver.
-	AutoMinorVersionUpgrade bool `json:"autoMinorVersionUpgrade"`
+	// Accepted inert settings are recorded so describe echoes what the client set.
+	// Dropping them would leave Terraform planning changes no modify can deliver.
+	AutoMinorVersionUpgrade   bool  `json:"autoMinorVersionUpgrade"`
+	CopyTagsToSnapshot        bool  `json:"copyTagsToSnapshot"`
+	MonitoringInterval        int64 `json:"monitoringInterval"`
+	EnablePerformanceInsights bool  `json:"enablePerformanceInsights"`
 
 	// The backup policy in force. Both windows are stored in AWS's canonical text
 	// so a describe reads back the string a later modify compares against; an

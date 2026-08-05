@@ -133,10 +133,9 @@ func TestLifecycle(t *testing.T) {
 		assert.NotEqual(t, before, after, "pg_postmaster_start_time() did not move, so the engine never restarted")
 	})
 
-	// A static parameter reaches a running instance only through a modify that
-	// moves the instance onto a group, not through a modify of the group it
-	// already holds: the group write pushes nothing at an instance.
-	t.Run("AStaticParameterWaitsForARebootAndThenApplies", func(t *testing.T) {
+	// A deferred attachment is drained by the maintenance window. The static
+	// parameter it installs then remains pending until a separate reboot.
+	t.Run("ADeferredGroupAttachmentWaitsForItsWindow", func(t *testing.T) {
 		createParameterGroupWithStatic(t, f, paramGroup)
 
 		harness.Step(t, "Moving %q onto %q, deferred to the maintenance window", id, paramGroup)

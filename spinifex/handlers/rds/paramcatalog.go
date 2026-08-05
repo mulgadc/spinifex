@@ -605,25 +605,63 @@ func validateParameterValue(name, value string) (ParameterSpec, error) {
 const maxStringParameterBytes = 1024
 
 func validateStringParameter(spec ParameterSpec, value, trimmed string) error {
-	if len(value) > maxStringParameterBytes {
+	if len(trimmed) > maxStringParameterBytes {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s exceeds the maximum length of %d bytes", spec.Name, maxStringParameterBytes)
 	}
-	if strings.HasSuffix(value, `\`) {
+	if strings.HasSuffix(trimmed, `\`) {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s cannot end with a backslash", spec.Name)
 	}
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+	if strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s cannot contain control characters", spec.Name)
 	}
-	if spec.Name == "timezone" {
+	switch spec.Name {
+	case "timezone":
+		if strings.EqualFold(trimmed, "Local") {
+			return invalidTimezone(value)
+		}
 		if _, err := time.LoadLocation(trimmed); err != nil {
+			return invalidTimezone(value)
+		}
+	case "datestyle":
+		if !validDateStyle(trimmed) {
 			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"parameter timezone does not accept %q; use an IANA time zone name such as UTC or Australia/Sydney", value)
+				"parameter datestyle does not accept %q; use one output style (ISO, SQL, Postgres, German) and one date order (MDY, DMY, YMD)", value)
 		}
 	}
 	return nil
+}
+
+func invalidTimezone(value string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"parameter timezone does not accept %q; use an IANA time zone name such as UTC or Australia/Sydney", value)
+}
+
+func validDateStyle(value string) bool {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > 2 {
+		return false
+	}
+	seenStyle, seenOrder := false, false
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "iso", "sql", "postgres", "german":
+			if seenStyle {
+				return false
+			}
+			seenStyle = true
+		case "mdy", "dmy", "ymd":
+			if seenOrder {
+				return false
+			}
+			seenOrder = true
+		default:
+			return false
+		}
+	}
+	return seenStyle || seenOrder
 }
 
 // PostgreSQL's own boolean spellings, so a config a customer copied from the

@@ -102,8 +102,16 @@ func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
 		{"Empty", "work_mem", "", "empty value"},
 		{"StringControlCharacter", "timezone", "UTC\nwork_mem", "control characters"},
 		{"StringTrailingBackslash", "datestyle", `ISO\`, "end with a backslash"},
+		{"NormalizedTrailingBackslash", "datestyle", "ISO\\   ", "end with a backslash"},
 		{"StringTooLong", "datestyle", strings.Repeat("x", maxStringParameterBytes+1), "maximum length"},
 		{"UnknownTimezone", "timezone", "Not/A_Real_Zone", "does not accept"},
+		{"GoLocalTimezone", "timezone", "Local", "does not accept"},
+		{"CaseInsensitiveLocalTimezone", "timezone", "lOcAl", "does not accept"},
+		{"UnknownDateStyle", "datestyle", "garbage", "does not accept"},
+		{"DuplicateDateStyles", "datestyle", "ISO, SQL", "does not accept"},
+		{"DuplicateDateOrders", "datestyle", "MDY, DMY", "does not accept"},
+		{"EmptyDateStylePart", "datestyle", "ISO,", "does not accept"},
+		{"TooManyDateStyleParts", "datestyle", "ISO, MDY, DMY", "does not accept"},
 		// AWS accepts these; passing one through would be a startup failure rather
 		// than an API error.
 		{"Formula", "shared_buffers", "{DBInstanceClassMemory/32768}", "is a formula"},
@@ -117,6 +125,28 @@ func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
 				"the code has to survive resolution or the client sees a 500")
 			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateParameterValue_AcceptsPostgresStringValues(t *testing.T) {
+	cases := []struct {
+		name, param, value string
+	}{
+		{"UTC", "timezone", "UTC"},
+		{"GMT", "timezone", "GMT"},
+		{"IANAZone", "timezone", "Australia/Sydney"},
+		{"DateStyleOnly", "datestyle", "ISO"},
+		{"DateOrderOnly", "datestyle", "YMD"},
+		{"StyleAndOrder", "datestyle", "ISO, MDY"},
+		{"CaseInsensitive", "datestyle", "gErMaN, dMy"},
+		{"NormalizedWhitespace", "datestyle", "  SQL, DMY  \n"},
+		{"NormalizedLength", "datestyle", strings.Repeat(" ", maxStringParameterBytes+1) + "ISO"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateParameterValue(tc.param, tc.value)
+			assert.NoError(t, err)
 		})
 	}
 }

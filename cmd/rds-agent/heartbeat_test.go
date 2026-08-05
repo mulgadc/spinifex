@@ -35,7 +35,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	}
 }
 
-func TestHeartbeater_RecordsEachServingTransition(t *testing.T) {
+func TestHeartbeater_ChecksServingParametersOnEveryHealthyProbe(t *testing.T) {
 	code := 0
 	cfg := testProbeConfig()
 	probe := newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
@@ -51,8 +51,8 @@ func TestHeartbeater_RecordsEachServingTransition(t *testing.T) {
 	code = 0
 	h.beat(context.Background())
 
-	if recorder.calls != 2 {
-		t.Errorf("record calls = %d, want one per serving transition", recorder.calls)
+	if recorder.calls != 3 {
+		t.Errorf("record calls = %d, want one per healthy probe", recorder.calls)
 	}
 }
 
@@ -62,7 +62,7 @@ type countingServingRecorder struct {
 
 var _ servingParameterRecorder = (*countingServingRecorder)(nil)
 
-func (r *countingServingRecorder) RecordServingParameters() error {
+func (r *countingServingRecorder) RecordServingParameters(context.Context) error {
 	r.calls++
 	return nil
 }

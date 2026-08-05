@@ -111,6 +111,20 @@ func modifyInput() *rds.ModifyDBInstanceInput {
 	return &rds.ModifyDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}
 }
 
+const largeMemoryParameterGroup = "large-memory"
+
+func createLargeMemoryParameterGroup(t *testing.T, h *modifyHarness) {
+	t.Helper()
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(largeMemoryParameterGroup), testAccountID)
+	require.NoError(t, err)
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(largeMemoryParameterGroup, &rds.Parameter{
+		ParameterName:  aws.String("shared_buffers"),
+		ParameterValue: aws.String("500000"),
+		ApplyMethod:    aws.String(ApplyMethodPendingReboot),
+	}), testAccountID)
+	require.NoError(t, err)
+}
+
 // None of these interrupts service, so AWS applies them as soon as possible and
 // so does this — ApplyImmediately is not what gates them.
 func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
@@ -336,6 +350,66 @@ func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorDBParameterGroupNotFound)
 	assert.Nil(t, h.record(t).PendingModifiedValues)
+}
+
+func TestModifyDBInstance_RejectsAnIncompatibleParameterGroupBeforeMutation(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	seedInstance(t, h.svc, modifiableRecord())
+
+	in := modifyInput()
+	in.DBParameterGroupName = aws.String(largeMemoryParameterGroup)
+	in.DeletionProtection = aws.Bool(true)
+	in.ApplyImmediately = aws.Bool(true)
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	stored := h.record(t)
+	assert.Equal(t, StatusAvailable, stored.Status)
+	assert.Equal(t, testDefaultGroup, stored.DBParameterGroupName)
+	assert.False(t, stored.DeletionProtection)
+	assert.Nil(t, stored.PendingModifiedValues)
+	assert.Empty(t, h.agent.received())
+}
+
+func TestModifyDBInstance_ValidatesClassChangeAgainstCurrentGroup(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	rec := modifiableRecord()
+	rec.DBInstanceClass = "db.m5.xlarge"
+	rec.DBParameterGroupName = largeMemoryParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	in := modifyInput()
+	in.DBInstanceClass = aws.String("db.t3.medium")
+	in.DeletionProtection = aws.Bool(true)
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	stored := h.record(t)
+	assert.Equal(t, StatusAvailable, stored.Status)
+	assert.Equal(t, "db.m5.xlarge", stored.DBInstanceClass)
+	assert.False(t, stored.DeletionProtection)
+	assert.Nil(t, stored.PendingModifiedValues)
+}
+
+func TestModifyDBInstance_ValidatesSimultaneousGroupAndClassAgainstTargets(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	seedInstance(t, h.svc, modifiableRecord())
+
+	in := modifyInput()
+	in.DBParameterGroupName = aws.String(largeMemoryParameterGroup)
+	in.DBInstanceClass = aws.String("db.m5.xlarge")
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.NoError(t, err)
+	stored := h.record(t)
+	require.NotNil(t, stored.PendingModifiedValues)
+	assert.Equal(t, largeMemoryParameterGroup, stored.PendingModifiedValues.DBParameterGroupName)
+	assert.Equal(t, "db.m5.xlarge", stored.PendingModifiedValues.DBInstanceClass)
 }
 
 // These fields are stored rather than acted on, but a value outside AWS's

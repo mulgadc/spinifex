@@ -300,25 +300,43 @@ func (r *reloadFailingRunner) run(ctx context.Context, c command) (string, error
 }
 
 // A failed instance cannot reload through psql. Its corrected, parser-checked
-// include must remain installed for the restart that repairs it.
-func TestPostgresEngine_ApplyParametersKeepsARepairSetWhileEngineIsDown(t *testing.T) {
+// include must start the service and remain installed as the serving set.
+func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
-	engine.probe = stubProbe(t, 2, nil)
+	codes := []int{2, 2, 0}
+	probeCall := 0
+	cfg := testProbeConfig()
+	engine.probe = newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+		code := codes[min(probeCall, len(codes)-1)]
+		probeCall++
+		return code, nil
+	})
+	engine.repairTimeout = 100 * time.Millisecond
+	engine.repairPoll = time.Millisecond
 	params := []handlers_rds.Parameter{
 		{Name: "shared_buffers", Value: "32768"},
 		{Name: "work_mem", Value: "8192"},
 	}
 
-	pending, err := engine.ApplyParameters(context.Background(), params)
+	pending, err := engine.ApplyParameters(t.Context(), params)
 	if err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
-	if !slices.Equal(pending, []string{"shared_buffers", "work_mem"}) {
-		t.Errorf("pending = %v, want every installed setting", pending)
+	if len(pending) != 0 {
+		t.Errorf("pending = %v, want the restarted engine's actual pending set", pending)
 	}
-	if len(runner.calls) != 1 || !slices.Contains(runner.calls[0].Args, "-C") {
-		t.Errorf("calls = %+v, want only the offline config check", runner.calls)
+	if len(runner.calls) != 3 {
+		t.Fatalf("calls = %+v, want config check, service restart and pending read", runner.calls)
+	}
+	if !slices.Contains(runner.calls[0].Args, "-C") {
+		t.Errorf("first call = %+v, want the offline config check", runner.calls[0])
+	}
+	if !slices.Equal(runner.calls[1].Args, []string{"postgresql", "restart"}) {
+		t.Errorf("second call args = %v, want the service restart", runner.calls[1].Args)
+	}
+	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
+		t.Errorf("third call = %+v, want the pending-restart read", runner.calls[2])
 	}
 	installed, err := os.ReadFile(engine.parametersPath())
 	if err != nil {
@@ -326,6 +344,26 @@ func TestPostgresEngine_ApplyParametersKeepsARepairSetWhileEngineIsDown(t *testi
 	}
 	if !strings.Contains(string(installed), "work_mem = '8192'") {
 		t.Errorf("installed parameters = %q, want the repair set retained", installed)
+	}
+}
+
+func TestPostgresEngine_ApplyParametersKeepsRepairSetWhenRestartTimesOut(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+	engine.probe = stubProbe(t, 2, nil)
+	engine.repairTimeout = 10 * time.Millisecond
+	engine.repairPoll = time.Millisecond
+
+	_, err := engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{{Name: "work_mem", Value: "8192"}})
+	if err == nil || !strings.Contains(err.Error(), "wait for the engine") {
+		t.Fatalf("ApplyParameters error = %v, want the repair wait failure", err)
+	}
+	installed, readErr := os.ReadFile(engine.parametersPath())
+	if readErr != nil {
+		t.Fatalf("read installed parameters: %v", readErr)
+	}
+	if !strings.Contains(string(installed), "work_mem = '8192'") {
+		t.Errorf("installed parameters = %q, want the checked repair set retained", installed)
 	}
 }
 

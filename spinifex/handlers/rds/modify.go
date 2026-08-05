@@ -205,17 +205,28 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		plan.InstanceClass, plan.InstanceType = class, instanceType
 	}
 
-	// Resolved against KV here rather than at apply time, so a group that does
-	// not exist is rejected before the instance is moved into modifying.
 	if group := aws.StringValue(input.DBParameterGroupName); group != "" && group != rec.DBParameterGroupName {
+		plan.ParameterGroup = group
+	}
+
+	// Resolve the complete target pair before anything is persisted. Apply-time
+	// resolution remains necessary because a deferred group's values can change.
+	if plan.InstanceClass != "" || plan.ParameterGroup != "" {
+		targetClass := rec.DBInstanceClass
+		if plan.InstanceClass != "" {
+			targetClass = plan.InstanceClass
+		}
+		targetGroup := rec.DBParameterGroupName
+		if plan.ParameterGroup != "" {
+			targetGroup = plan.ParameterGroup
+		}
 		kv, err := s.bucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if _, _, err := getDBParameterGroup(ctx, kv, accountID, group); err != nil {
+		if _, err := s.resolveGroupParameters(ctx, kv, accountID, targetGroup, targetClass); err != nil {
 			return nil, err
 		}
-		plan.ParameterGroup = group
 	}
 
 	groups, err := s.planSecurityGroups(ctx, accountID, rec, aws.StringValueSlice(input.VpcSecurityGroupIds))

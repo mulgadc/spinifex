@@ -49,7 +49,7 @@ func (g *paramGuard) Run(ctx context.Context) {
 		return
 	}
 
-	restored, err := g.engine.RestoreLastKnownGoodParameters()
+	restored, err := g.engine.RestoreLastKnownGoodParameters(ctx)
 	if err != nil {
 		slog.Error("rds-agent: could not restore the last known good parameters", "err", err)
 		return

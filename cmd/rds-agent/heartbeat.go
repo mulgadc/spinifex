@@ -8,6 +8,8 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
+const servingParameterRecordTimeout = 15 * time.Second
+
 // The beat carries the probe's result, not the agent's own liveness: an agent
 // up while the engine is down is what the recovery reconciler must see.
 type heartbeater struct {
@@ -16,7 +18,6 @@ type heartbeater struct {
 	recorder servingParameterRecorder
 	id       identity
 	interval time.Duration
-	serving  bool
 }
 
 func newHeartbeater(cp controlPlane, probe *engineProbe, recorder servingParameterRecorder, interval time.Duration) *heartbeater {
@@ -36,13 +37,14 @@ func (h *heartbeater) setInterval(d time.Duration) {
 
 func (h *heartbeater) beat(ctx context.Context) {
 	health, message := h.probe.Check(ctx)
-	if health != handlers_rds.EngineHealthHealthy {
-		h.serving = false
-	} else if !h.serving && h.recorder != nil {
-		if err := h.recorder.RecordServingParameters(); err != nil {
+	if health == handlers_rds.EngineHealthHealthy && h.recorder != nil {
+		// Checking every healthy beat also observes a restart that completed
+		// between probes. The recorder skips unchanged and pending-restart sets.
+		recordCtx, cancel := context.WithTimeout(ctx, servingParameterRecordTimeout)
+		err := h.recorder.RecordServingParameters(recordCtx)
+		cancel()
+		if err != nil {
 			slog.Warn("rds-agent: recording the serving parameters failed", "err", err)
-		} else {
-			h.serving = true
 		}
 	}
 

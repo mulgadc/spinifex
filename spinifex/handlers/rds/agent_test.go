@@ -496,6 +496,38 @@ func TestSubmitDBStateChange_PersistsOnChangeAndOnFloor(t *testing.T) {
 	assert.NotNil(t, rec.Agent.LastSeen)
 }
 
+func TestSubmitDBStateChange_RecordsParameterRollback(t *testing.T) {
+	svc := newTestService(t)
+	rec := defaultRecord()
+	rec.DBParameterGroupName = "customer-params"
+	seedInstance(t, svc, rec)
+
+	out, err := svc.SubmitDBStateChange(t.Context(), &SubmitDBStateChangeInput{
+		DBInstanceIdentifier: testDBID,
+		InstanceID:           testInstance,
+		EngineHealth:         EngineHealthUnhealthy,
+		Message:              ParameterRollbackMessage,
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, out.Persisted)
+
+	stored, _ := readRecord(t, svc)
+	assert.True(t, stored.ParametersRolledBack)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", *groups[0].ParameterApplyStatus)
+
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var ring eventRing
+	found, err := getJSON(t.Context(), kv, EventRingKey(EventSourceTypeDBInstance, testDBID), &ring)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, ring.Events, 1)
+	assert.Contains(t, ring.Events[0].Categories, EventCategoryConfigurationChange)
+	assert.Contains(t, ring.Events[0].Categories, EventCategoryFailure)
+}
+
 // In-memory liveness is fresher than the record between persists, which is what
 // lets the reconciler judge staleness without reading KV every tick.
 func TestSubmitDBStateChange_LastSeenTracksUnpersistedBeats(t *testing.T) {

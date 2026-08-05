@@ -131,6 +131,9 @@ type DBInstanceRecord struct {
 	// Static parameters written to the engine's config but not yet in effect.
 	// Cleared by the reboot that applies them.
 	PendingRebootParameters []string `json:"pendingRebootParameters,omitempty"`
+	// Set when the guest rolls back a parameter set that prevented startup.
+	// Cleared only after a corrected set installs successfully.
+	ParametersRolledBack bool `json:"parametersRolledBack,omitempty"`
 
 	// Inline rather than a separate key space, so the record delete that ends the
 	// instance also ends its tags.

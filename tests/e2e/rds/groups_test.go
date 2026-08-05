@@ -124,6 +124,32 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 		})
 	})
 
+	t.Run("CreateRejectsAClassFatalOverride", func(t *testing.T) {
+		_, err := f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String("shared_buffers"),
+				ParameterValue: aws.String("131072"),
+			}},
+		})
+		require.NoError(t, err, "store the catalog-valid large-class value")
+
+		in := validCreateInput(id + "-unsafe")
+		in.DBSubnetGroupName = aws.String(subnetGroup)
+		in.DBParameterGroupName = aws.String(paramGroup)
+		expectCreateRefused(t, f, f.AWS, "InvalidParameterValue", in)
+
+		// Put the group back within the micro ceiling for the serving-path test.
+		_, err = f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String("shared_buffers"),
+				ParameterValue: aws.String("32768"),
+			}},
+		})
+		require.NoError(t, err, "restore the micro-sized shared_buffers value")
+	})
+
 	harness.Phase(t, "Creating DB instance %q against both groups", id)
 	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
 		in.DBSubnetGroupName = aws.String(subnetGroup)

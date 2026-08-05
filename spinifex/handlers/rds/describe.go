@@ -253,6 +253,8 @@ func projectParameterGroup(rec *DBInstanceRecord) []*rds.DBParameterGroupStatus 
 	switch {
 	case rec.PendingModifiedValues != nil && rec.PendingModifiedValues.DBParameterGroupName != "":
 		status = "applying"
+	case rec.ParametersRolledBack:
+		status = "failed-to-apply"
 	case len(rec.PendingRebootParameters) > 0:
 		status = "pending-reboot"
 	}

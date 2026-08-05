@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -96,6 +98,14 @@ func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T)
 	assert.Equal(t, StatusAvailable, status)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{testInstance}, h.state.calls)
+
+	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{
+		SourceType:       aws.String(EventSourceTypeDBInstance),
+		SourceIdentifier: aws.String(testDBID),
+	})
+	require.Len(t, events, 1)
+	assert.Equal(t, "DB instance is available.", aws.StringValue(events[0].Message))
+	assert.Equal(t, []string{EventCategoryAvailability}, aws.StringValueSlice(events[0].EventCategories))
 }
 
 // Both halves must hold. A healthy beat from a VM that is not running means the

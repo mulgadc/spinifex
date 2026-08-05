@@ -59,6 +59,28 @@ func TestCreateDescribe(t *testing.T) {
 		assert.Equal(t, int64(5432), aws.Int64Value(instance.Endpoint.Port))
 	})
 
+	t.Run("RecordsCreationAndAvailabilityEvents", func(t *testing.T) {
+		requireAvailable(t, instance)
+		out, err := f.AWS.RDS.DescribeEvents(&rds.DescribeEventsInput{
+			SourceType:       aws.String("db-instance"),
+			SourceIdentifier: aws.String(id),
+			Duration:         aws.Int64(1440),
+		})
+		require.NoError(t, err, "describe-events")
+		require.NotEmpty(t, out.Events, "a freshly created instance must have an event history")
+
+		eventsByMessage := make(map[string]*rds.Event, len(out.Events))
+		for _, event := range out.Events {
+			eventsByMessage[aws.StringValue(event.Message)] = event
+		}
+		createdEvent := eventsByMessage["DB instance created."]
+		require.NotNil(t, createdEvent)
+		assert.Contains(t, aws.StringValueSlice(createdEvent.EventCategories), "creation")
+		availableEvent := eventsByMessage["DB instance is available."]
+		require.NotNil(t, availableEvent)
+		assert.Contains(t, aws.StringValueSlice(availableEvent.EventCategories), "availability")
+	})
+
 	t.Run("AppearsInTheFleetListing", func(t *testing.T) {
 		requireAvailable(t, instance)
 		list, err := f.AWS.RDS.DescribeDBInstances(&rds.DescribeDBInstancesInput{})

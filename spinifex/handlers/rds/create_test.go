@@ -253,6 +253,14 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, "Sup3rSecret!", rec.Bootstrap.MasterUserPassword)
 	assert.False(t, rec.Bootstrap.Consumed)
 
+	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{
+		SourceType:       aws.String(EventSourceTypeDBInstance),
+		SourceIdentifier: aws.String(testDBInstanceID),
+	})
+	require.Len(t, events, 1)
+	assert.Equal(t, "DB instance created.", aws.StringValue(events[0].Message))
+	assert.Equal(t, []string{EventCategoryCreation}, aws.StringValueSlice(events[0].EventCategories))
+
 	// The placement is the account's default VPC and its lowest-sorted subnet,
 	// with the VPC's default security group when the request names none.
 	assert.Equal(t, testDefaultVPC, rec.VpcID)

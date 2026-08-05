@@ -642,6 +642,12 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	}
 	from := rec.Status
 	rec.Status = to
+	if from == StatusCreating {
+		// A healthy engine proves the initial format completed; a failed create
+		// is no longer an active initialization either. Never retain a reusable
+		// grant after leaving the create operation.
+		rec.FormatAuthorized = false
+	}
 	rec.FailureReason = reason
 	rec.UpdatedAt = time.Now().UTC()
 

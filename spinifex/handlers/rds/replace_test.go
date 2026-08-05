@@ -140,6 +140,7 @@ func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
 func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 	h := newModifyHarness(t)
 	seed := modifiableRecord()
+	seed.FormatAuthorized = true
 	beat := time.Now().UTC()
 	seed.Agent = AgentState{InstanceID: testInstance, EngineHealth: EngineHealthHealthy, LastSeen: &beat}
 	rec := seedReplaceable(t, h, seed)
@@ -159,11 +160,14 @@ func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 	assert.Equal(t, seed.ENIPrivateIP, stored.ENIPrivateIP)
 	assert.Equal(t, seed.DNSName, stored.DNSName)
 	assert.Equal(t, testDataVolume, stored.DataVolumeID)
+	assert.Equal(t, "volrdsdata01", stored.DataVolumeSerial)
+	assert.False(t, stored.FormatAuthorized, "replacement must revoke an initial-create grant")
 
 	// The caller's copy is kept in step, so its own record write cannot
 	// resurrect the old VM's identity on top of this one.
 	assert.Equal(t, testReplacementInstance, rec.InstanceID)
 	assert.Equal(t, int64(1), rec.VMGeneration)
+	assert.False(t, rec.FormatAuthorized)
 }
 
 // A grow riding a class change takes the only window in which nothing holds the

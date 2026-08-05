@@ -310,7 +310,9 @@ func (h *lifecycleHarness) events(t *testing.T) []Event {
 // checkpointed cluster rather than a crash it has to replay.
 func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 	h := newLifecycleHarness(t, false)
-	seedInstance(t, h.svc, availableRecord())
+	rec := availableRecord()
+	rec.FormatAuthorized = true
+	seedInstance(t, h.svc, rec)
 
 	out, err := h.svc.RebootDBInstance(t.Context(),
 		&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
@@ -324,7 +326,9 @@ func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 	// Reported as rebooting, not available: the engine has to come back and say
 	// so before the reconciler calls it that.
 	assert.Equal(t, string(StatusRebooting), aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, StatusRebooting, h.record(t).Status)
+	stored := h.record(t)
+	assert.Equal(t, StatusRebooting, stored.Status)
+	assert.False(t, stored.FormatAuthorized, "reboot must revoke create-time formatting")
 }
 
 // The static parameters are already in the engine's config, so the restart
@@ -470,7 +474,9 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 // so a start comes back on the same datadir at the same address.
 func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 	h := newLifecycleHarness(t, false)
-	seedInstance(t, h.svc, availableRecord())
+	seed := availableRecord()
+	seed.FormatAuthorized = true
+	seedInstance(t, h.svc, seed)
 
 	_, err := h.svc.StopDBInstance(t.Context(),
 		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
@@ -482,6 +488,7 @@ func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 	rec := h.record(t)
 	assert.Equal(t, "vol-rdsdata01", rec.DataVolumeID)
 	assert.Equal(t, "eni-cust01", rec.ENIID)
+	assert.False(t, rec.FormatAuthorized, "stop must leave no grant for a later start")
 }
 
 // A pre-stop snapshot is a later phase's. Accepting it here would report a
@@ -503,6 +510,7 @@ func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusStopped
+	rec.FormatAuthorized = true
 	seedInstance(t, h.svc, rec)
 
 	out, err := h.svc.StartDBInstance(t.Context(),
@@ -511,7 +519,9 @@ func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
 
 	assert.Equal(t, []string{"start:" + testInstance}, h.cmdr.calls)
 	assert.Equal(t, string(StatusStarting), aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, StatusStarting, h.record(t).Status)
+	stored := h.record(t)
+	assert.Equal(t, StatusStarting, stored.Status)
+	assert.False(t, stored.FormatAuthorized, "start must never restore format permission")
 }
 
 // A node restart drops the VM from memory, so the start relaunches it from the

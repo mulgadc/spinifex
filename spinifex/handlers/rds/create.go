@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -104,7 +105,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 
 	// The launch already unwound everything on failure, so from here the resources
 	// exist and the record has to catch up with them.
-	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched, true)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err
@@ -183,7 +184,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 // The endpoint is settled here because the ENI IP — and so the vanity name — is
 // only known now.
 func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID,
-	expectedResourceID string, launched *LaunchOutput) (*DBInstanceRecord, uint64, error) {
+	expectedResourceID string, launched *LaunchOutput, initialCreate bool) (*DBInstanceRecord, uint64, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
 	if err != nil {
@@ -195,6 +196,10 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	if rec.DbiResourceID != expectedResourceID {
 		return nil, 0, fmt.Errorf("rds: DB instance reservation %s changed ownership during launch", key)
 	}
+	if launched.DataVolumeID == "" || launched.DataVolumeSerial == "" ||
+		launched.DataVolumeSerial != vm.VolumeSerial(launched.DataVolumeID) {
+		return nil, 0, fmt.Errorf("rds: DB instance launch %s returned invalid data volume identity", key)
+	}
 
 	rec.InstanceID = launched.InstanceID
 	rec.VMGeneration = firstVMGeneration
@@ -202,6 +207,11 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	rec.ENIID = launched.CustomerENIID
 	rec.ENIPrivateIP = launched.CustomerENIIP
 	rec.DataVolumeID = launched.DataVolumeID
+	rec.DataVolumeSerial = launched.DataVolumeSerial
+	// Formatting is a create-only grant bound to this launch's exact fresh
+	// volume and first VM generation. Restore and every existing-volume launch
+	// pass false and cannot infer permission from an empty filesystem.
+	rec.FormatAuthorized = initialCreate && launched.CreatedDataVolume && rec.VMGeneration == firstVMGeneration
 	// Only a launch that made the volume can report its encryption; a restore
 	// attaches one it created itself, whose encryption the record already carries.
 	if launched.CreatedDataVolume {

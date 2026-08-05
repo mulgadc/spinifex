@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -35,8 +36,10 @@ const (
 
 	// Stamped on the engine AMIs by their image manifest; an EngineVersion
 	// request resolves against these.
-	engineTagKey        = "engine"
-	engineVersionTagKey = "engine-version"
+	engineTagKey             = "engine"
+	engineVersionTagKey      = "engine-version"
+	dataVolumeContractTagKey = "rds-data-volume-contract"
+	dataVolumeContractV1     = "format-auth-v1"
 
 	attachRequestTimeout = 30 * time.Second
 
@@ -121,10 +124,11 @@ type LaunchOutput struct {
 	InstanceID string
 	// The system ENI is disposable — a replace makes a new one. The customer
 	// ENI is the stable endpoint: its IP is the DNS target and survives.
-	SystemENIID   string
-	CustomerENIID string
-	CustomerENIIP string
-	DataVolumeID  string
+	SystemENIID      string
+	CustomerENIID    string
+	CustomerENIIP    string
+	DataVolumeID     string
+	DataVolumeSerial string
 	// The volume's own reported state, not an echo of the request, so
 	// DescribeDBInstances reports encryption the way EC2 does. Meaningful only
 	// when this launch created the volume; a replace or restore attaches one
@@ -299,6 +303,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		CustomerENIID:       customerENI.id,
 		CustomerENIIP:       customerENI.ip,
 		DataVolumeID:        volumeID,
+		DataVolumeSerial:    vm.VolumeSerial(volumeID),
 		DataVolumeEncrypted: volumeEncrypted,
 		CreatedDataVolume:   in.ExistingDataVolume == "",
 		Unwind:              unwind,
@@ -422,6 +427,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 	filters := []*ec2.Filter{
 		{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByRDS})},
 		{Name: aws.String("tag:" + engineTagKey), Values: aws.StringSlice([]string{engine})},
+		{Name: aws.String("tag:" + dataVolumeContractTagKey), Values: aws.StringSlice([]string{dataVolumeContractV1})},
 	}
 	if version != "" {
 		filters = append(filters, &ec2.Filter{

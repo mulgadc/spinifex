@@ -6,6 +6,22 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestVolumeSerial(t *testing.T) {
+	tests := []struct {
+		volumeID string
+		want     string
+	}{
+		{volumeID: "vol-0123456789abcdef0", want: "vol0123456789abcdef0"},
+		{volumeID: "vol-many-dashes-here", want: "volmanydasheshere"},
+		{volumeID: "", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.volumeID, func(t *testing.T) {
+			assert.Equal(t, tc.want, VolumeSerial(tc.volumeID))
+		})
+	}
+}
+
 func TestIsMMIO(t *testing.T) {
 	tests := []struct {
 		machineType string

@@ -83,9 +83,13 @@ type DBInstanceRecord struct {
 	InstanceID string `json:"instanceId,omitempty"`
 	// Increments on every replace, so a superseded VM's agent is
 	// distinguishable from the current one.
-	VMGeneration int64  `json:"vmGeneration,omitempty"`
-	DataVolumeID string `json:"dataVolumeId,omitempty"`
-	ENIID        string `json:"eniId,omitempty"`
+	VMGeneration     int64  `json:"vmGeneration,omitempty"`
+	DataVolumeID     string `json:"dataVolumeId,omitempty"`
+	DataVolumeSerial string `json:"dataVolumeSerial,omitempty"`
+	// True only while the initial create may format its exact fresh volume.
+	// Every later boot path clears it before the guest can fetch a handoff.
+	FormatAuthorized bool   `json:"formatAuthorized,omitempty"`
+	ENIID            string `json:"eniId,omitempty"`
 	// Disposable: a replace mints a new one, unlike the customer ENI.
 	SystemENIID string `json:"systemEniId,omitempty"`
 	// Stable across VM replace, so it serves as both the fallback endpoint and

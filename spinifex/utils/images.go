@@ -507,7 +507,10 @@ var AvailableImages = map[string]Images{
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
 		BootMode:     "bios",
-		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18"},
+		Tags: map[string]string{
+			"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18",
+			"rds-data-volume-contract": "format-auth-v1",
+		},
 	},
 }
 

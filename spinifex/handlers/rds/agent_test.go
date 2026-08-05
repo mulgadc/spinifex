@@ -113,9 +113,13 @@ func readRecord(t *testing.T, svc *Service) (DBInstanceRecord, string) {
 
 func TestGetDBBootstrapConfig_InitializeThenAttach(t *testing.T) {
 	svc := newTestService(t)
-	seedInstance(t, svc, defaultRecord())
+	rec := defaultRecord()
+	rec.VMGeneration = 1
+	rec.DataVolumeID = "vol-data-01"
+	rec.DataVolumeSerial = "voldata01"
+	seedInstance(t, svc, rec)
 	ctx := context.Background()
-	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance, VMGeneration: 1}
 
 	first, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
 	require.NoError(t, err)
@@ -128,6 +132,10 @@ func TestGetDBBootstrapConfig_InitializeThenAttach(t *testing.T) {
 	assert.Equal(t, int64(5432), first.Port)
 	assert.Equal(t, "orders", first.DBName)
 	assert.Equal(t, []Parameter{{Name: "shared_buffers", Value: "128MB"}}, first.Parameters)
+	assert.Equal(t, "vol-data-01", first.DataVolumeID)
+	assert.Equal(t, "voldata01", first.DataVolumeSerial)
+	assert.Equal(t, int64(1), first.VMGeneration)
+	assert.False(t, first.FormatAuthorized)
 
 	for i := range 3 {
 		next, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
@@ -137,6 +145,55 @@ func TestGetDBBootstrapConfig_InitializeThenAttach(t *testing.T) {
 		assert.Equal(t, int64(5432), next.Port)
 		assert.Equal(t, "orders", next.DBName)
 		assert.Equal(t, first.Parameters, next.Parameters)
+	}
+}
+
+func TestGetDBBootstrapConfig_FormatGrantRequiresExactCurrentIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		generation int64
+		mutate     func(*DBInstanceRecord)
+		wantGrant  bool
+		wantErr    bool
+	}{
+		{name: "matching current generation", generation: 1, wantGrant: true},
+		{name: "stale generation", generation: 2, wantErr: true},
+		{name: "generation omitted by old gateway", wantErr: true},
+		{name: "serial does not match volume", generation: 1, mutate: func(rec *DBInstanceRecord) {
+			rec.DataVolumeSerial = "volwrong"
+		}, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService(t)
+			rec := defaultRecord()
+			rec.VMGeneration = 1
+			rec.DataVolumeID = "vol-data-01"
+			rec.DataVolumeSerial = "voldata01"
+			rec.FormatAuthorized = true
+			if tc.mutate != nil {
+				tc.mutate(&rec)
+			}
+			seedInstance(t, svc, rec)
+
+			out, err := svc.GetDBBootstrapConfig(t.Context(), &GetDBBootstrapConfigInput{
+				DBInstanceIdentifier: testDBID,
+				InstanceID:           testInstance,
+				VMGeneration:         tc.generation,
+			}, testAccountID)
+			if tc.wantErr {
+				require.Error(t, err)
+				stored, _ := readRecord(t, svc)
+				assert.False(t, stored.Bootstrap.Consumed, "a rejected caller must not consume the one-shot password")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantGrant, out.FormatAuthorized)
+			assert.Equal(t, rec.DataVolumeID, out.DataVolumeID)
+			assert.Equal(t, rec.DataVolumeSerial, out.DataVolumeSerial)
+			assert.Equal(t, rec.VMGeneration, out.VMGeneration)
+		})
 	}
 }
 

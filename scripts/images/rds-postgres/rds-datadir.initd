@@ -1,14 +1,24 @@
 #!/sbin/openrc-run
 # rds-datadir — boot oneshot that discovers the hot-plugged data volume, formats
-# it if new, and mounts it at the datadir mount point. First of the three RDS
-# services, since rds-init's initdb targets a datadir this must mount. Ordered
-# with `before`, not a dependency, so a missing volume fails visibly.
+# it if authorized, and mounts it at the datadir mount point. It runs after the
+# agent has written the authenticated handoff and before anything can use the
+# PostgreSQL datadir. Soft ordering keeps a failed boot visible on the console.
 
 description="Spinifex RDS data volume mount"
 
+AGENT_ENV="/etc/spinifex-rds/agent.env"
+
 depend() {
-    before rds-agent rds-init postgresql
-    after localmount
+    after localmount rds-agent
+    before rds-init postgresql
+}
+
+start_pre() {
+    if [ -f "${AGENT_ENV}" ]; then
+        # shellcheck disable=SC1090
+        . "${AGENT_ENV}"
+        export RDS_HANDOFF_DIR RDS_DATA_MOUNT
+    fi
 }
 
 start() {

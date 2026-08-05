@@ -28,6 +28,7 @@ type agentIdentity struct {
 	AccountID            string
 	DBInstanceIdentifier string
 	InstanceID           string
+	VMGeneration         int64
 }
 
 // requestedID, from the request body, is only ever used to reject a mismatch —
@@ -63,6 +64,7 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 		AccountID:            entry.AccountID,
 		DBInstanceIdentifier: entry.DBInstanceIdentifier,
 		InstanceID:           caller.SessionName,
+		VMGeneration:         entry.VMGeneration,
 	}, nil
 }
 
@@ -153,6 +155,7 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 	return handlers_rds.NewNATSService(nc).GetDBBootstrapConfig(ctx, &handlers_rds.GetDBBootstrapConfigInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
+		VMGeneration:         id.VMGeneration,
 	}, id.AccountID)
 }
 

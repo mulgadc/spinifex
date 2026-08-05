@@ -13,6 +13,8 @@
 #       RDS_MASTER_PASSWORD=<present only when RDS_MODE=initialize>
 #       RDS_DB_NAME=<initial database; optional, as on AWS>
 #       RDS_PORT=<listen port; defaults to 5432>
+#       RDS_DATA_VOLUME_ID / RDS_DATA_VOLUME_SERIAL=<expected volume identity>
+#       RDS_VM_GENERATION / RDS_FORMAT_AUTHORIZED=<create-only format grant>
 #   /run/spinifex-rds/parameters.conf  0600  resolved parameter-group values in
 #                                            postgresql.conf syntax
 #   /run/spinifex-rds/server.crt       0600  serving cert, cluster-CA-signed

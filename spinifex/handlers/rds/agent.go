@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
 // Bootstrap modes returned by GetDBBootstrapConfig. Initialize is the first
@@ -60,6 +61,7 @@ type SubmitDBStateChangeOutput struct {
 type GetDBBootstrapConfigInput struct {
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	InstanceID           string `json:"instanceId"`
+	VMGeneration         int64  `json:"vmGeneration"`
 }
 
 // Everything rds-init needs to bootstrap or attach. The serving cert and key
@@ -73,6 +75,11 @@ type GetDBBootstrapConfigOutput struct {
 	MasterUsername       string  `json:"masterUsername" locationName:"MasterUsername"`
 	MasterUserPassword   *string `json:"masterUserPassword,omitempty" locationName:"MasterUserPassword"`
 	Port                 int64   `json:"port" locationName:"Port"`
+
+	DataVolumeID     string `json:"dataVolumeId,omitempty" locationName:"DataVolumeId" xml:"DataVolumeId"`
+	DataVolumeSerial string `json:"dataVolumeSerial,omitempty" locationName:"DataVolumeSerial" xml:"DataVolumeSerial"`
+	VMGeneration     int64  `json:"vmGeneration,omitempty" locationName:"VMGeneration" xml:"VMGeneration"`
+	FormatAuthorized bool   `json:"formatAuthorized" locationName:"FormatAuthorized" xml:"FormatAuthorized"`
 
 	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member" xml:"Parameters>member"`
 
@@ -284,6 +291,29 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		if !found {
 			return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
 		}
+		if rec.InstanceID == "" || input.InstanceID != rec.InstanceID {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
+
+		generationMatches := input.VMGeneration > 0 && input.VMGeneration == rec.VMGeneration
+		// An old gateway may omit the generation for an existing record. It may
+		// still serve attach material, but it must not consume or expose a live
+		// create grant until the caller is bound to the current generation.
+		if rec.FormatAuthorized && !generationMatches {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
+		serial := rec.DataVolumeSerial
+		if serial == "" && rec.DataVolumeID != "" {
+			// Backward-compatible identity for records written before the serial
+			// field existed. Missing authorization remains false.
+			serial = vm.VolumeSerial(rec.DataVolumeID)
+		}
+		authoritativeSerial := vm.VolumeSerial(rec.DataVolumeID)
+		grantIdentityValid := generationMatches && rec.DataVolumeID != "" &&
+			rec.DataVolumeSerial != "" && rec.DataVolumeSerial == authoritativeSerial
+		if rec.FormatAuthorized && !grantIdentityValid {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
 
 		out := &GetDBBootstrapConfigOutput{
 			Mode:                 BootstrapModeAttach,
@@ -293,6 +323,10 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 			DBName:               rec.DBName,
 			MasterUsername:       rec.MasterUsername,
 			Port:                 rec.Port,
+			DataVolumeID:         rec.DataVolumeID,
+			DataVolumeSerial:     serial,
+			VMGeneration:         rec.VMGeneration,
+			FormatAuthorized:     rec.FormatAuthorized && grantIdentityValid,
 			Parameters:           rec.Bootstrap.ResolvedParameters,
 		}
 

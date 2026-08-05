@@ -236,7 +236,7 @@ assert_nginx_webserver() {
 # from the workbook's client VM over SSH — which is also what proves the
 # security-group rule admitting :5432 from the client group is enforced.
 assert_rds_quickstart() {
-    local ip key endpoint
+    local ip key endpoint query_output
     ip=$(tofu output -raw client_public_ip)
     endpoint=$(tofu output -raw db_address)
     key="$(pwd)/rds-quickstart-client.pem"
@@ -249,27 +249,35 @@ assert_rds_quickstart() {
         return 1
     }
 
-    # cloud-init installs postgresql-client on first boot, so psql appears after
-    # sshd does. 300s covers an apt-get on a cold mirror.
+    # cloud-init installs psql and writes .pgpass after sshd starts. Bound the
+    # wait so a stalled guest still produces diagnostics within the cell budget.
     if ! ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
-        'for _ in $(seq 1 60); do command -v psql >/dev/null && exit 0; sleep 5; done; exit 1'; then
-        log "  rds-quickstart: psql never installed on the client (cloud-init stalled?)"
+        'timeout 300 cloud-init status --wait >/dev/null && command -v psql >/dev/null && test -s "$HOME/.pgpass"'; then
+        log "  rds-quickstart: client bootstrap incomplete after 300s"
         ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
             'cloud-init status --long; sudo tail -n 40 /var/log/cloud-init-output.log' 2>&1 | \
             sed "s|^|    |" || true
         return 1
     fi
 
-    # A round-trip rather than a bare connect: a SELECT 1 would pass against an
-    # engine that cannot write, which is the half of a bootstrap most likely to
-    # be wrong. Run under a login shell so /etc/profile.d supplies PGHOST — an
-    # ssh command runs a non-login shell, which sources none of it.
-    printf '%s\n' \
+    # A round-trip rather than a bare connect also proves the engine can write.
+    # Use a login shell so /etc/profile.d supplies the PostgreSQL connection.
+    if ! query_output=$(printf '%s\n' \
         "CREATE TABLE IF NOT EXISTS smoke (id int primary key, note text);" \
         "INSERT INTO smoke VALUES (1, 'nightly') ON CONFLICT (id) DO UPDATE SET note = 'nightly';" \
         "SELECT note FROM smoke WHERE id = 1;" |
         ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
-            'bash -lc "psql -v ON_ERROR_STOP=1 -tA"' 2>&1 | tail -1 | grep -q '^nightly$'
+            'bash -lc "psql -v ON_ERROR_STOP=1 -tA"' 2>&1); then
+        log "  rds-quickstart: SQL round-trip failed"
+        printf '%s\n' "$query_output" | sed 's|^|    |'
+        return 1
+    fi
+
+    if [ "$(printf '%s\n' "$query_output" | tail -1)" != "nightly" ]; then
+        log "  rds-quickstart: SQL round-trip returned an unexpected result"
+        printf '%s\n' "$query_output" | sed 's|^|    |'
+        return 1
+    fi
 }
 
 # dump_s3_webapp_guest SSHes into the webapp instance and tails cloud-init's

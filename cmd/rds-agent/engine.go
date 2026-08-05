@@ -49,6 +49,13 @@ type parameterRecovery interface {
 	Restart(ctx context.Context) error
 }
 
+// Records the parameter file only after the probe observes the postmaster
+// serving it. This is separate from apply, where static values are installed
+// but not adopted until a later restart.
+type servingParameterRecorder interface {
+	RecordServingParameters() error
+}
+
 // One child process. Env replaces the agent's own environment rather than
 // extending it, so a secret placed here reaches only the process that needs it.
 type command struct {
@@ -117,6 +124,7 @@ type postgresEngine struct {
 	pgData    string
 	socketDir string
 	osUser    string
+	probe     *engineProbe
 	// Set from the bootstrap config, on a different goroutine than the commands
 	// that read it.
 	port atomic.Int64
@@ -127,9 +135,13 @@ type postgresEngine struct {
 	held *quiesceHold
 }
 
-var _ engineOps = (*postgresEngine)(nil)
+var (
+	_ engineOps                = (*postgresEngine)(nil)
+	_ parameterRecovery        = (*postgresEngine)(nil)
+	_ servingParameterRecorder = (*postgresEngine)(nil)
+)
 
-func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner) *postgresEngine {
+func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	e := &postgresEngine{
 		run:       run,
 		startSess: startSess,
@@ -139,6 +151,7 @@ func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner) *
 		pgData:    cfg.PGData,
 		socketDir: cfg.SocketDir,
 		osUser:    cfg.PGUser,
+		probe:     probe,
 	}
 	e.port.Store(int64(cfg.EnginePort))
 	return e
@@ -197,22 +210,23 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 	// the datadir's own include_dir. The window that leaves is closed from both
 	// ends: the rollback below, and the last-known-good restore the agent runs at
 	// boot when the engine does not come up.
-	previous, restore, err := e.installParameters(params)
+	_, restore, err := e.installParameters(params)
 	if err != nil {
 		return nil, err
 	}
 	if err := e.checkConfig(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("the engine rejected the parameter set: %w", err), restore())
 	}
-	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
-		return nil, errors.Join(fmt.Errorf("reload the engine configuration: %w", err), restore())
+	if state, _ := e.probe.state(ctx); state != engineServing {
+		return parameterNames(params), nil
 	}
-
-	// Recorded only once the engine has both parsed and adopted it, so the
-	// rollback target is a set that is known to work rather than the last one
-	// written.
-	if err := e.recordLastKnownGood(previous); err != nil {
-		return nil, err
+	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
+		// The engine may have gone down after the first probe. In that case the
+		// new, parser-checked file is the repair set for its next start.
+		if state, _ := e.probe.state(ctx); state != engineServing {
+			return parameterNames(params), nil
+		}
+		return nil, errors.Join(fmt.Errorf("reload the engine configuration: %w", err), restore())
 	}
 
 	// Read after the reload: a setting only becomes pending_restart once the
@@ -228,6 +242,14 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 		}
 	}
 	return pending, nil
+}
+
+func parameterNames(params []handlers_rds.Parameter) []string {
+	names := make([]string, 0, len(params))
+	for _, param := range params {
+		names = append(names, param.Name)
+	}
+	return names
 }
 
 func (e *postgresEngine) parametersPath() string {
@@ -265,16 +287,13 @@ func (e *postgresEngine) installParameters(params []handlers_rds.Parameter) (pre
 	}, nil
 }
 
-// Keeps the rollback target in step with what the engine is actually running.
-// The first apply of an instance's life has no predecessor, so the freshly
-// accepted set becomes the target instead.
-func (e *postgresEngine) recordLastKnownGood(previous []byte) error {
-	content := previous
-	if content == nil {
-		var err error
-		if content, err = os.ReadFile(e.parametersPath()); err != nil {
-			return fmt.Errorf("read the accepted parameters: %w", err)
-		}
+// Snapshots the include only after the probe observes the engine serving. A
+// static-only apply cannot move this target until a restart proves the new set
+// can start and serve.
+func (e *postgresEngine) RecordServingParameters() error {
+	content, err := os.ReadFile(e.parametersPath())
+	if err != nil {
+		return fmt.Errorf("read the serving parameters: %w", err)
 	}
 	return e.writeEngineFile(e.lastGoodPath(), content)
 }

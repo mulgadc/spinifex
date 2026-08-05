@@ -153,7 +153,7 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 		t.Fatalf("resolve the current user: %v", err)
 	}
 	cfg.PGUser = current.Username
-	return newPostgresEngine(cfg, run, nil)
+	return newPostgresEngine(cfg, run, nil, newEngineProbe(cfg, staticProbe(0)))
 }
 
 // The password reaches psql through the environment and is re-quoted there,
@@ -276,12 +276,56 @@ func TestPostgresEngine_ApplyParametersInstallsAndReloads(t *testing.T) {
 // A reload that failed leaves the engine on its old values, so reporting the
 // apply as successful would tell the customer a change took effect that did not.
 func TestPostgresEngine_ApplyParametersSurfacesAFailedReload(t *testing.T) {
-	runner := &recordingRunner{err: errors.New("could not connect to server")}
+	runner := &reloadFailingRunner{reloadErr: errors.New("reload was rejected")}
 	engine := newTestEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
 		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a failing reload")
+	}
+}
+
+type reloadFailingRunner struct {
+	recordingRunner
+
+	reloadErr error
+}
+
+func (r *reloadFailingRunner) run(ctx context.Context, c command) (string, error) {
+	if strings.Contains(c.Stdin, "pg_reload_conf") {
+		r.calls = append(r.calls, c)
+		return "", r.reloadErr
+	}
+	return r.recordingRunner.run(ctx, c)
+}
+
+// A failed instance cannot reload through psql. Its corrected, parser-checked
+// include must remain installed for the restart that repairs it.
+func TestPostgresEngine_ApplyParametersKeepsARepairSetWhileEngineIsDown(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+	engine.probe = stubProbe(t, 2, nil)
+	params := []handlers_rds.Parameter{
+		{Name: "shared_buffers", Value: "32768"},
+		{Name: "work_mem", Value: "8192"},
+	}
+
+	pending, err := engine.ApplyParameters(context.Background(), params)
+	if err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if !slices.Equal(pending, []string{"shared_buffers", "work_mem"}) {
+		t.Errorf("pending = %v, want every installed setting", pending)
+	}
+	if len(runner.calls) != 1 || !slices.Contains(runner.calls[0].Args, "-C") {
+		t.Errorf("calls = %+v, want only the offline config check", runner.calls)
+	}
+	installed, err := os.ReadFile(engine.parametersPath())
+	if err != nil {
+		t.Fatalf("read installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "work_mem = '8192'") {
+		t.Errorf("installed parameters = %q, want the repair set retained", installed)
 	}
 }
 

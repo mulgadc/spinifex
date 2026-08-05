@@ -94,11 +94,16 @@ func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
 		{"NotAnInteger", "max_connections", "many", "takes an integer"},
 		{"BelowRange", "max_connections", "1", "outside its allowed range"},
 		{"AboveRange", "max_connections", "500000", "outside its allowed range"},
+		{"WALBelowTwoSegments", "min_wal_size", "16", "outside its allowed range"},
 		{"NotAReal", "checkpoint_completion_target", "high", "takes a number"},
 		{"RealOutOfRange", "checkpoint_completion_target", "2", "outside its allowed range"},
 		{"NotABoolean", "autovacuum", "maybe", "takes a boolean"},
 		{"NotInEnum", "log_statement", "everything", "does not accept"},
 		{"Empty", "work_mem", "", "empty value"},
+		{"StringControlCharacter", "timezone", "UTC\nwork_mem", "control characters"},
+		{"StringTrailingBackslash", "datestyle", `ISO\`, "end with a backslash"},
+		{"StringTooLong", "datestyle", strings.Repeat("x", maxStringParameterBytes+1), "maximum length"},
+		{"UnknownTimezone", "timezone", "Not/A_Real_Zone", "does not accept"},
 		// AWS accepts these; passing one through would be a startup failure rather
 		// than an API error.
 		{"Formula", "shared_buffers", "{DBInstanceClassMemory/32768}", "is a formula"},
@@ -163,6 +168,81 @@ func TestResolveEffectiveParameters_RevalidatesStoredOverrides(t *testing.T) {
 	_, err := ResolveEffectiveParameters("db.t3.medium", map[string]string{"max_connections": "999999"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "max_connections")
+}
+
+func TestResolveEffectiveParameters_BoundsSizeDerivedOverridesToTheClass(t *testing.T) {
+	tests := []struct {
+		name, value string
+	}{
+		{name: "shared_buffers", value: "131072"},
+		{name: "effective_cache_size", value: "262144"},
+		{name: "max_connections", value: "1000"},
+		{name: "maintenance_work_mem", value: "1048576"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResolveEffectiveParameters("db.t3.micro", map[string]string{tt.name: tt.value})
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+			assert.Contains(t, err.Error(), "db.t3.micro")
+			assert.Contains(t, err.Error(), tt.value)
+			assert.Contains(t, err.Error(), "ceiling")
+
+			_, err = ResolveEffectiveParameters("db.m5.xlarge", map[string]string{tt.name: tt.value})
+			assert.NoError(t, err, "the same literal should fit the larger class")
+		})
+	}
+}
+
+func TestResolveEffectiveParameters_RejectsFatalCombinations(t *testing.T) {
+	tests := []struct {
+		name      string
+		overrides map[string]string
+		want      string
+	}{
+		{
+			name:      "minimal WAL with senders",
+			overrides: map[string]string{"wal_level": "minimal"},
+			want:      "max_wal_senders and max_replication_slots",
+		},
+		{
+			name: "reserved connections consume every slot",
+			overrides: map[string]string{
+				"max_connections": "20", "superuser_reserved_connections": "20",
+			},
+			want: "must be less than max_connections",
+		},
+		{
+			name:      "too many server processes",
+			overrides: map[string]string{"max_worker_processes": "262143"},
+			want:      "too many server processes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResolveEffectiveParameters("db.m5.xlarge", tt.overrides)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestResolveEffectiveParameters_AcceptsMinimalWALWithoutReplication(t *testing.T) {
+	_, err := ResolveEffectiveParameters("db.t3.micro", map[string]string{
+		"wal_level": "minimal", "max_wal_senders": "0", "max_replication_slots": "0",
+	})
+	require.NoError(t, err)
+}
+
+func TestParameterCatalog_Postgres18ApplyTypesAndBuiltCompressionMethods(t *testing.T) {
+	autovacuumWorkers, _ := LookupParameter("autovacuum_max_workers")
+	assert.Equal(t, ApplyTypeDynamic, autovacuumWorkers.ApplyType)
+
+	walCompression, _ := LookupParameter("wal_compression")
+	assert.ElementsMatch(t, []string{"off", "pglz", "lz4", "zstd", "on"}, walCompression.Enum)
 }
 
 func TestResolveEffectiveParameters_RejectsAnUnknownClass(t *testing.T) {

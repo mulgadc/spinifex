@@ -169,10 +169,10 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 		EngineVersion:        cfg.EngineVersion,
 	}
 	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
-	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner)
-	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
+	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner, probe)
+	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
-	a.guard = newParamGuard(a.engine, probe)
+	a.guard = newParamGuard(a.engine, probe, cp)
 	return a
 }
 
@@ -201,7 +201,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.register(ctx); err != nil {
 		return err
 	}
-	a.hb.id, a.cmd.id = a.id, a.id
+	a.hb.id, a.cmd.id, a.guard.id = a.id, a.id, a.id
 
 	// Beating before the bootstrap keeps a stuck boot visible as a live VM with
 	// a down engine rather than as silence.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // How long the engine is given to come up after a boot before the installed
@@ -29,12 +31,14 @@ const parameterRollbackPoll = 10 * time.Second
 type paramGuard struct {
 	engine parameterRecovery
 	probe  *engineProbe
+	cp     controlPlane
+	id     identity
 	after  time.Duration
 	poll   time.Duration
 }
 
-func newParamGuard(engine parameterRecovery, probe *engineProbe) *paramGuard {
-	return &paramGuard{engine: engine, probe: probe, after: parameterRollbackAfter, poll: parameterRollbackPoll}
+func newParamGuard(engine parameterRecovery, probe *engineProbe, cp controlPlane) *paramGuard {
+	return &paramGuard{engine: engine, probe: probe, cp: cp, after: parameterRollbackAfter, poll: parameterRollbackPoll}
 }
 
 // Runs once per agent lifetime: a rollback that did not bring the engine back
@@ -51,14 +55,17 @@ func (g *paramGuard) Run(ctx context.Context) {
 		return
 	}
 	if !restored {
-		// The engine is already running the set it last accepted, so whatever is
-		// keeping it down is not the parameters.
-		slog.Warn("rds-agent: engine is down but its parameters are the last accepted set; not rolling back")
+		slog.Warn("rds-agent: engine is down but no different last accepted parameter set is available; not rolling back")
 		return
 	}
 
-	slog.Error("rds-agent: engine did not start after a parameter change; rolled back to the last accepted set",
-		"after", g.after)
+	message := handlers_rds.ParameterRollbackMessage
+	slog.Error("rds-agent: "+message, "after", g.after)
+	if g.cp != nil {
+		if _, err := g.cp.SubmitState(ctx, g.id, handlers_rds.EngineHealthUnhealthy, message); err != nil {
+			slog.Error("rds-agent: reporting the parameter rollback failed", "err", err)
+		}
+	}
 	if err := g.engine.Restart(ctx); err != nil {
 		slog.Error("rds-agent: restart after the parameter rollback failed", "err", err)
 	}

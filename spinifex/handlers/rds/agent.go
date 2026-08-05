@@ -103,6 +103,11 @@ type CommandReply struct {
 const (
 	CommandStatusSucceeded = "succeeded"
 	CommandStatusFailed    = "failed"
+
+	// ParameterRollbackMessage is sent before the guest restarts on the last
+	// serving parameter set. The control plane keeps the group out of in-sync
+	// until a later apply succeeds.
+	ParameterRollbackMessage = "engine did not start after a parameter change; rolled back to the last accepted set"
 )
 
 // Idempotent: re-registering is the normal case after an agent restart and
@@ -164,7 +169,8 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 			"unknown engine health %q", input.EngineHealth)
 	}
 
-	beat, persist := s.noteBeat(accountID, input.DBInstanceIdentifier, input.EngineHealth, input.Message, false)
+	parameterRollback := input.Message == ParameterRollbackMessage
+	beat, persist := s.noteBeat(accountID, input.DBInstanceIdentifier, input.EngineHealth, input.Message, parameterRollback)
 	out := &SubmitDBStateChangeOutput{
 		Acknowledged:             true,
 		HeartbeatIntervalSeconds: int64(HeartbeatInterval.Seconds()),
@@ -192,6 +198,10 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 	rec.Agent.InstanceID = input.InstanceID
 	rec.Agent.EngineHealth = input.EngineHealth
 	rec.Agent.Message = input.Message
+	newParameterRollback := parameterRollback && !rec.ParametersRolledBack
+	if parameterRollback {
+		rec.ParametersRolledBack = true
+	}
 	if input.EngineVersion != "" {
 		rec.Agent.EngineVersion = input.EngineVersion
 	}
@@ -205,6 +215,11 @@ func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateC
 		return nil, err
 	}
 	out.Persisted = true
+	if newParameterRollback {
+		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+			"The database engine rejected its pending parameters and restarted on the last accepted set.",
+			EventCategoryConfigurationChange, EventCategoryFailure)
+	}
 	return out, nil
 }
 

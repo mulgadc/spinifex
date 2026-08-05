@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+	_ "time/tzdata"
+	"unicode"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -64,6 +67,9 @@ type ParameterSpec struct {
 	// Evaluated against the class's memory. The result is a literal, so the
 	// customer-facing API never sees a formula.
 	DefaultFor func(memoryMiB int64) string
+	// The generous class-specific ceiling for a size-derived parameter. It
+	// prevents a large-class literal from making a smaller guest unbootable.
+	MaxFor func(memoryMiB int64) int64
 
 	// Inclusive bounds for integer and real parameters. Both zero means
 	// unbounded below and above.
@@ -87,6 +93,7 @@ var parameterCatalog = buildParameterCatalog(
 		Name: "max_connections", DataType: paramTypeInteger, ApplyType: ApplyTypeStatic,
 		IsModifiable: true, Min: 6, Max: 5000,
 		DefaultFor:  maxConnectionsFor,
+		MaxFor:      maxConnectionsCeilingFor,
 		Description: "Maximum number of concurrent connections to the database server.",
 	},
 	ParameterSpec{
@@ -121,12 +128,14 @@ var parameterCatalog = buildParameterCatalog(
 		Name: "shared_buffers", DataType: paramTypeInteger, ApplyType: ApplyTypeStatic,
 		IsModifiable: true, Min: 16, Max: 4194304, Unit: "8kB",
 		DefaultFor:  sharedBuffersFor,
+		MaxFor:      sharedBuffersCeilingFor,
 		Description: "Shared memory buffers the server uses, in 8 kB blocks.",
 	},
 	ParameterSpec{
 		Name: "effective_cache_size", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Min: 1, Max: 4194304, Unit: "8kB",
 		DefaultFor:  effectiveCacheSizeFor,
+		MaxFor:      effectiveCacheSizeCeilingFor,
 		Description: "Planner assumption about the disk cache available to one query, in 8 kB blocks.",
 	},
 	// Per sort or hash rather than per connection, so RDS leaves it a literal
@@ -141,6 +150,7 @@ var parameterCatalog = buildParameterCatalog(
 		Name: "maintenance_work_mem", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Min: 1024, Max: 2147483647, Unit: "kB",
 		DefaultFor:  maintenanceWorkMemFor,
+		MaxFor:      maintenanceWorkMemCeilingFor,
 		Description: "Memory a VACUUM, CREATE INDEX or ALTER TABLE ADD FOREIGN KEY may use, in kB.",
 	},
 	ParameterSpec{
@@ -183,19 +193,23 @@ var parameterCatalog = buildParameterCatalog(
 		IsModifiable: true, Enum: []string{"off", "local", "remote_write", "on", "remote_apply"}, Default: "on",
 		Description: "How much WAL processing must complete before a commit returns.",
 	},
+	// Alpine's PostgreSQL 18 package is built with both optional compression
+	// libraries, so every engine method is safe to expose.
 	ParameterSpec{
 		Name: "wal_compression", DataType: paramTypeEnum, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Enum: []string{"off", "pglz", "lz4", "zstd", "on"}, Default: "off",
 		Description: "Compression method for full-page images written to the WAL.",
 	},
+	// The image uses PostgreSQL's 16 MiB WAL segments; both size settings must
+	// hold at least two segments or startup rejects the configuration.
 	ParameterSpec{
 		Name: "max_wal_size", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Min: 2, Max: 2097151, Default: "1024", Unit: "MB",
+		IsModifiable: true, Min: 32, Max: 2097151, Default: "1024", Unit: "MB",
 		Description: "WAL size that triggers a checkpoint, in MB.",
 	},
 	ParameterSpec{
 		Name: "min_wal_size", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Min: 2, Max: 2097151, Default: "80", Unit: "MB",
+		IsModifiable: true, Min: 32, Max: 2097151, Default: "80", Unit: "MB",
 		Description: "WAL size below which old segments are recycled rather than removed, in MB.",
 	},
 	ParameterSpec{
@@ -231,8 +245,10 @@ var parameterCatalog = buildParameterCatalog(
 		IsModifiable: true, Default: "on",
 		Description: "Whether the autovacuum launcher runs.",
 	},
+	// PostgreSQL 18 moved this setting to SIGHUP; worker slot allocation is now
+	// controlled separately by the postmaster-only autovacuum_worker_slots.
 	ParameterSpec{
-		Name: "autovacuum_max_workers", DataType: paramTypeInteger, ApplyType: ApplyTypeStatic,
+		Name: "autovacuum_max_workers", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Min: 1, Max: 262143, Default: "3",
 		Description: "Maximum autovacuum worker processes running at once.",
 	},
@@ -402,6 +418,26 @@ func maintenanceWorkMemFor(memoryMiB int64) string {
 	return strconv.FormatInt(clampInt64(memoryMiB*mibToBytes/63963136*1024, 16384, 2097152), 10)
 }
 
+// Class ceilings deliberately leave substantial headroom above the defaults.
+// They prevent obviously impossible large-class literals without prescribing
+// production tuning for values the guest can support.
+func sharedBuffersCeilingFor(memoryMiB int64) int64 {
+	return clampInt64(memoryMiB*1024/8*3/4, 16, 4194304)
+}
+
+func effectiveCacheSizeCeilingFor(memoryMiB int64) int64 {
+	return clampInt64(memoryMiB*1024/8, 1, 4194304)
+}
+
+func maxConnectionsCeilingFor(memoryMiB int64) int64 {
+	defaults := clampInt64(memoryMiB*mibToBytes/9531392, 20, 5000)
+	return clampInt64(defaults*4, 20, 5000)
+}
+
+func maintenanceWorkMemCeilingFor(memoryMiB int64) int64 {
+	return clampInt64(memoryMiB*1024/2, 16384, 2147483647)
+}
+
 func clampInt64(v, lo, hi int64) int64 {
 	return min(max(v, lo), hi)
 }
@@ -418,6 +454,8 @@ func buildParameterCatalog(specs ...ParameterSpec) map[string]ParameterSpec {
 			panic("rds: parameter catalog entry " + spec.Name + " has no default")
 		case spec.Default != "" && spec.DefaultFor != nil:
 			panic("rds: parameter catalog entry " + spec.Name + " has both a literal and a computed default")
+		case (spec.DefaultFor == nil) != (spec.MaxFor == nil):
+			panic("rds: parameter catalog entry " + spec.Name + " must pair its computed default and class ceiling")
 		}
 		if _, exists := out[spec.Name]; exists {
 			panic("rds: parameter catalog entry " + spec.Name + " is duplicated")
@@ -556,8 +594,36 @@ func validateParameterValue(name, value string) (ParameterSpec, error) {
 			return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
 		}
+	case paramTypeString:
+		if err := validateStringParameter(spec, value, trimmed); err != nil {
+			return ParameterSpec{}, err
+		}
 	}
 	return spec, nil
+}
+
+const maxStringParameterBytes = 1024
+
+func validateStringParameter(spec ParameterSpec, value, trimmed string) error {
+	if len(value) > maxStringParameterBytes {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s exceeds the maximum length of %d bytes", spec.Name, maxStringParameterBytes)
+	}
+	if strings.HasSuffix(value, `\`) {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s cannot end with a backslash", spec.Name)
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s cannot contain control characters", spec.Name)
+	}
+	if spec.Name == "timezone" {
+		if _, err := time.LoadLocation(trimmed); err != nil {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"parameter timezone does not accept %q; use an IANA time zone name such as UTC or Australia/Sydney", value)
+		}
+	}
+	return nil
 }
 
 // PostgreSQL's own boolean spellings, so a config a customer copied from the
@@ -602,9 +668,93 @@ func ResolveEffectiveParameters(instanceClass string, overrides map[string]strin
 			if _, err := validateParameterValue(name, override); err != nil {
 				return nil, err
 			}
+			if err := validateClassParameterValue(instanceClass, memoryMiB, spec, override); err != nil {
+				return nil, err
+			}
 			value = override
 		}
 		resolved = append(resolved, Parameter{Name: name, Value: value})
 	}
+	if err := validateParameterCombinations(resolved); err != nil {
+		return nil, err
+	}
 	return resolved, nil
+}
+
+func validateClassParameterValue(instanceClass string, memoryMiB int64, spec ParameterSpec, value string) error {
+	if spec.MaxFor == nil {
+		return nil
+	}
+	requested, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return typeError(spec, value, "an integer")
+	}
+	ceiling := spec.MaxFor(memoryMiB)
+	if requested > ceiling {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"the value %q of parameter %s is too large for DB instance class %s; the class ceiling is %d",
+			value, spec.Name, instanceClass, ceiling)
+	}
+	return nil
+}
+
+func validateParameterCombinations(params []Parameter) error {
+	values := make(map[string]string, len(params))
+	for _, param := range params {
+		values[param.Name] = strings.ToLower(strings.TrimSpace(param.Value))
+	}
+
+	maxWALSenders, err := resolvedInteger(values, "max_wal_senders")
+	if err != nil {
+		return err
+	}
+	maxReplicationSlots, err := resolvedInteger(values, "max_replication_slots")
+	if err != nil {
+		return err
+	}
+	if values["wal_level"] == "minimal" && (maxWALSenders != 0 || maxReplicationSlots != 0) {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"wal_level minimal requires max_wal_senders and max_replication_slots both to be 0")
+	}
+	maxConnections, err := resolvedInteger(values, "max_connections")
+	if err != nil {
+		return err
+	}
+	reservedConnections, err := resolvedInteger(values, "superuser_reserved_connections")
+	if err != nil {
+		return err
+	}
+	if reservedConnections >= maxConnections {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"superuser_reserved_connections must be less than max_connections")
+	}
+	maxWorkerProcesses, err := resolvedInteger(values, "max_worker_processes")
+	if err != nil {
+		return err
+	}
+	const (
+		postgres18MaxBackends           = 262143
+		postgres18AutovacuumWorkerSlots = 16
+		postgres18SpecialWorkerProcs    = 2
+	)
+	backends := maxConnections + postgres18AutovacuumWorkerSlots + maxWorkerProcesses + maxWALSenders + postgres18SpecialWorkerProcs
+	if backends > postgres18MaxBackends {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"max_connections, max_worker_processes and max_wal_senders reserve too many server processes")
+	}
+	return nil
+}
+
+func resolvedInteger(values map[string]string, name string) (int64, error) {
+	value, ok := values[name]
+	if !ok {
+		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
+			"resolved parameter set is missing %s", name)
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
+			"resolved parameter %s has invalid integer value %q", name, value)
+	}
+	return n, nil
 }

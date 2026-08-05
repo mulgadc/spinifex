@@ -13,15 +13,17 @@ import (
 type heartbeater struct {
 	cp       controlPlane
 	probe    *engineProbe
+	recorder servingParameterRecorder
 	id       identity
 	interval time.Duration
+	serving  bool
 }
 
-func newHeartbeater(cp controlPlane, probe *engineProbe, interval time.Duration) *heartbeater {
+func newHeartbeater(cp controlPlane, probe *engineProbe, recorder servingParameterRecorder, interval time.Duration) *heartbeater {
 	if interval <= 0 {
 		interval = handlers_rds.HeartbeatInterval
 	}
-	return &heartbeater{cp: cp, probe: probe, interval: interval}
+	return &heartbeater{cp: cp, probe: probe, recorder: recorder, interval: interval}
 }
 
 // Called before Run starts and from Run's own goroutine after, so the interval
@@ -34,6 +36,15 @@ func (h *heartbeater) setInterval(d time.Duration) {
 
 func (h *heartbeater) beat(ctx context.Context) {
 	health, message := h.probe.Check(ctx)
+	if health != handlers_rds.EngineHealthHealthy {
+		h.serving = false
+	} else if !h.serving && h.recorder != nil {
+		if err := h.recorder.RecordServingParameters(); err != nil {
+			slog.Warn("rds-agent: recording the serving parameters failed", "err", err)
+		} else {
+			h.serving = true
+		}
+	}
 
 	out, err := h.cp.SubmitState(ctx, h.id, health, message)
 	if err != nil {

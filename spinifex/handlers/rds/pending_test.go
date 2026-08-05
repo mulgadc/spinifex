@@ -371,6 +371,7 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 	// What the old group had set, carried on the record as the engine's current
 	// values; the new group sets nothing.
 	rec.Bootstrap.ResolvedParameters = []Parameter{{Name: "work_mem", Value: "262144"}}
+	rec.ParametersRolledBack = true
 	seedInstance(t, h.svc, rec)
 
 	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
@@ -384,6 +385,7 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 	workMem, _ := LookupParameter("work_mem")
 	assert.Equal(t, workMem.Default, applied["work_mem"],
 		"the old group's value should have reverted to the catalog default")
+	assert.False(t, h.record(t).ParametersRolledBack, "a successful corrected apply clears the rollback state")
 }
 
 func parameterValue(params []Parameter, name string) string {

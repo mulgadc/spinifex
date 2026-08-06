@@ -173,9 +173,13 @@ func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver 
 	return gateway_bedrock.DenyAllAccessResolver
 }
 
-// bedrockEndpointResolver returns an EndpointResolver over the configured
-// pinned self-host endpoints (gw.BedrockEndpoints). A nil/empty map resolves
-// nothing, so self-host models return ModelNotReady until configured.
+// bedrockEndpointResolver returns the registry-backed resolver when one is
+// configured, which resolves gw.BedrockEndpoints ahead of the registry itself.
+// Without it only the pinned endpoints resolve, so a model that was never
+// pinned returns ModelNotReady rather than launching.
 func (gw *GatewayConfig) bedrockEndpointResolver() gateway_bedrock.EndpointResolver {
+	if gw.BedrockEndpointResolver != nil {
+		return gw.BedrockEndpointResolver
+	}
 	return gateway_bedrock.NewStaticEndpointResolver(gw.BedrockEndpoints)
 }

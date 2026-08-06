@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -124,7 +126,7 @@ func TestDrainVolume_AttachedRoutesToHostingNode(t *testing.T) {
 	seedVolumeAttachment(t, store, "vol-attached", "in-use", drainInstanceID)
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-attached"))
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-attached", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-attached", "", "", testAccountID))
 
 	command := awaitDrainCommand(t, got)
 	assert.True(t, command.Attributes.DrainVolume)
@@ -141,7 +143,7 @@ func TestDrainVolume_AttachedToStoppedInstanceTakesStoppedPath(t *testing.T) {
 	svc, store, _ := setupDrainService(t)
 	seedVolumeAttachment(t, store, "vol-no-host", "in-use", drainInstanceID)
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-no-host", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-no-host", "", "", testAccountID))
 }
 
 // A host that still holds the instance but reports it not running has nothing
@@ -156,7 +158,7 @@ func TestDrainVolume_NotRunningAckTakesStoppedPath(t *testing.T) {
 	require.NoError(t, err)
 	got := drainResponder(t, nc, drainInstanceID, ack)
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-not-running", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-not-running", "", "", testAccountID))
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }
 
@@ -168,7 +170,7 @@ func TestDrainVolume_AttachedWithFailedAckFails(t *testing.T) {
 	drainResponder(t, nc, drainInstanceID,
 		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"drain failed"}`))
 
-	err := svc.drainVolume(context.Background(), "vol-drain-err", viperblock.VolumeMetadata{}, testAccountID)
+	err := svc.drainVolume(context.Background(), "vol-drain-err", "", "", testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "drain failed")
 }
@@ -179,7 +181,7 @@ func TestDrainVolume_AttachedWithUnexpectedAckFails(t *testing.T) {
 	seedVolumeAttachment(t, store, "vol-odd-ack", "in-use", drainInstanceID)
 	drainResponder(t, nc, drainInstanceID, []byte(`{}`))
 
-	err := svc.drainVolume(context.Background(), "vol-odd-ack", viperblock.VolumeMetadata{}, testAccountID)
+	err := svc.drainVolume(context.Background(), "vol-odd-ack", "", "", testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected ack")
 }
@@ -200,7 +202,7 @@ func TestDrainVolume_AvailableDoesNotDialLocalSocket(t *testing.T) {
 	svc.natsConn = nil
 
 	requireReturnsWithin(t, 2*time.Second, func() error {
-		return svc.drainVolume(context.Background(), "vol-available", viperblock.VolumeMetadata{}, testAccountID)
+		return svc.drainVolume(context.Background(), "vol-available", "", "", testAccountID)
 	})
 }
 
@@ -211,7 +213,7 @@ func TestDrainVolume_InUseWithoutInstanceTakesStoppedPath(t *testing.T) {
 	seedVolumeAttachment(t, store, "vol-no-instance", "in-use", "")
 	svc.natsConn = nil
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-no-instance", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-no-instance", "", "", testAccountID))
 }
 
 // When the volume is served by this node the socket is local, so the drain
@@ -225,7 +227,7 @@ func TestDrainVolume_LocalSocketShortCircuits(t *testing.T) {
 	// drainInstanceID, so a routed command would fail.
 	svc.natsConn = nil
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-local", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-local", "", "", testAccountID))
 }
 
 // A socket that answers without acking means this node does serve the volume
@@ -237,7 +239,7 @@ func TestDrainVolume_LocalSocketErrorAckFailsWithoutRouting(t *testing.T) {
 	testutil.StartDrainSocket(t, svc.config.DataDir, "vol-local-err", "ERR\n")
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-local-err"))
 
-	err := svc.drainVolume(context.Background(), "vol-local-err", viperblock.VolumeMetadata{}, testAccountID)
+	err := svc.drainVolume(context.Background(), "vol-local-err", "", "", testAccountID)
 	require.Error(t, err)
 
 	assert.Empty(t, got, "a local drain that failed must not be re-issued to the host node")
@@ -252,7 +254,7 @@ func TestDrainVolume_StateJSONOverridesConfigJSON(t *testing.T) {
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-stale-config"))
 
 	stale := viperblock.VolumeMetadata{State: "available"}
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-stale-config", stale, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-stale-config", stale.State, stale.AttachedInstance, testAccountID))
 
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }
@@ -264,7 +266,7 @@ func TestDrainVolume_FallsBackToConfigJSONWhenNoStateObject(t *testing.T) {
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-legacy"))
 
 	legacy := viperblock.VolumeMetadata{State: "in-use", AttachedInstance: drainInstanceID}
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-legacy", legacy, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-legacy", legacy.State, legacy.AttachedInstance, testAccountID))
 
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }
@@ -277,7 +279,7 @@ func TestDrainVolume_MetadataOnlySkipsDrain(t *testing.T) {
 	svc.config.Predastore.Host = ""
 	svc.natsConn = nil
 
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-meta-only", viperblock.VolumeMetadata{}, testAccountID))
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-meta-only", "", "", testAccountID))
 }
 
 // CreateSnapshot drains before it reads the checkpoint. The snapshot itself
@@ -313,4 +315,65 @@ func TestCreateSnapshot_UndrainableAttachedVolumeFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
+}
+
+// putProviderVolume seeds both the control-plane document CreateSnapshot's
+// provider branch reads for attachment state, and the provider's own record,
+// mirroring what CreateVolume's provider branch leaves behind.
+func putProviderVolume(t *testing.T, svc *SnapshotServiceImpl, provider ebsprovider.EBSProvider, volumeID, state, instanceID string) {
+	t.Helper()
+	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 4,
+		State: state, AttachedInstance: instanceID, AvailabilityZone: "us-east-1a",
+		ProviderHandle: "memory://volume/" + volumeID,
+	}))
+	_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 4 * 1024 * 1024 * 1024},
+		AvailabilityZone: "us-east-1a",
+	})
+	require.NoError(t, err)
+}
+
+// The provider branch used to skip the drain entirely, silently snapshotting a
+// stale checkpoint of an attached, actively-written volume. It must drain the
+// same way the legacy branch does.
+func TestCreateSnapshot_Provider_DrainsAttachedVolume(t *testing.T) {
+	svc, _, nc := setupDrainService(t)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+	putProviderVolume(t, svc, provider, "vol-provider-drain", "in-use", drainInstanceID)
+
+	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-provider-drain"))
+
+	_, err := svc.CreateSnapshot(context.Background(),
+		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-provider-drain")}, testAccountID)
+	require.NoError(t, err)
+
+	command := awaitDrainCommand(t, got)
+	assert.True(t, command.Attributes.DrainVolume)
+	assert.Equal(t, "vol-provider-drain", command.DrainVolumeData.VolumeID)
+}
+
+// A provider-branch snapshot whose drain fails must fail closed rather than
+// return a snapshot of stale data: the provider must never be asked to
+// snapshot, and no snapshot metadata may be left behind.
+func TestCreateSnapshot_Provider_UndrainableAttachedVolumeFails(t *testing.T) {
+	svc, _, nc := setupDrainService(t)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+	putProviderVolume(t, svc, provider, "vol-provider-nodrain", "in-use", drainInstanceID)
+
+	got := drainResponder(t, nc, drainInstanceID,
+		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"drain failed"}`))
+
+	_, err := svc.CreateSnapshot(context.Background(),
+		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-provider-nodrain")}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
+
+	out, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Snapshots, "a failed drain must not leave a snapshot behind")
 }

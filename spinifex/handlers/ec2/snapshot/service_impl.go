@@ -239,6 +239,15 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		if volume.CapacityGiB == 0 {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+
+		// Flush the writes buffered by whichever node serves the volume, so the
+		// provider reads a current checkpoint. An attached volume that cannot be
+		// drained fails here rather than silently snapshotting stale data.
+		if err := s.drainVolume(ctx, volumeID, volume.State, volume.AttachedInstance, accountID); err != nil {
+			slog.ErrorContext(ctx, "CreateSnapshot: drain failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+
 		created, err := s.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
 			Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: volume.ProviderHandle,
 		})
@@ -315,7 +324,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	// live checkpoint this snapshot is about to read is current. An attached
 	// volume that cannot be drained fails here rather than silently producing a
 	// snapshot of an older checkpoint.
-	if err := s.drainVolume(ctx, volumeID, volumeConfig.VolumeMetadata, accountID); err != nil {
+	if err := s.drainVolume(ctx, volumeID, volumeConfig.VolumeMetadata.State, volumeConfig.VolumeMetadata.AttachedInstance, accountID); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot: drain failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -419,8 +428,8 @@ func DrainVolumeSocket(dataDir, volumeID string) error {
 
 // drainVolume flushes the volume's in-flight writes to S3 before the snapshot
 // reads the live checkpoint from there.
-func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, meta viperblock.VolumeMetadata, accountID string) error {
-	return DrainVolume(ctx, s.config, s.store, s.natsConn, volumeID, meta, accountID)
+func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, fallbackState, fallbackInstance string, accountID string) error {
+	return DrainVolume(ctx, s.config, s.store, s.natsConn, volumeID, fallbackState, fallbackInstance, accountID)
 }
 
 // DrainVolume flushes the volume's in-flight writes to S3 before a live
@@ -434,14 +443,14 @@ func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, 
 // volume's attachment record, never from whether the socket happens to be
 // local: an attached volume is being written to right now, and reading its
 // checkpoint without draining silently captures an older one.
-func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, volumeID string, meta viperblock.VolumeMetadata, accountID string) error {
+func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn, volumeID string, fallbackState, fallbackInstance string, accountID string) error {
 	// A metadata-only snapshot never reads the live checkpoint, so there is
 	// nothing for a drain to make current.
 	if cfg == nil || cfg.Predastore.Host == "" {
 		return nil
 	}
 
-	state, instanceID, err := volumeAttachment(ctx, store, cfg.Predastore.Bucket, volumeID, meta)
+	state, instanceID, err := volumeAttachment(ctx, store, cfg.Predastore.Bucket, volumeID, fallbackState, fallbackInstance)
 	if err != nil {
 		return err
 	}
@@ -476,10 +485,11 @@ func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.Obje
 }
 
 // volumeAttachment returns the volume's authoritative state and attached
-// instance. state.json is control-plane-owned and authoritative; the copy in
-// config.json (passed in as meta) is rewritten by the live NBD plugin from its
-// stale in-memory state and is only used for volumes predating the split.
-func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket, volumeID string, meta viperblock.VolumeMetadata) (state, instanceID string, err error) {
+// instance. state.json is control-plane-owned and authoritative; the fallback
+// pair (passed in from the caller's own volume record) is rewritten by the
+// live NBD plugin from its stale in-memory state and is only used for volumes
+// predating the split.
+func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket, volumeID string, fallbackState, fallbackInstance string) (state, instanceID string, err error) {
 	rec, found, err := volumestate.Read(ctx, store, bucket, volumeID)
 	if err != nil {
 		return "", "", fmt.Errorf("read volume state for %s: %w", volumeID, err)
@@ -487,7 +497,7 @@ func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket
 	if found {
 		return rec.State, rec.AttachedInstance, nil
 	}
-	return meta.State, meta.AttachedInstance, nil
+	return fallbackState, fallbackInstance, nil
 }
 
 // drainOnHostNode issues the drain on the node hosting instanceID. Only that

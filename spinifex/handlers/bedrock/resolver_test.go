@@ -239,3 +239,108 @@ func TestDynamicEndpointResolver_ConcurrentColdCallsCollapse(t *testing.T) {
 	assert.Equal(t, int64(1), svc.describeCalls.Load())
 	assert.Equal(t, int64(1), svc.ensureCalls.Load())
 }
+
+// The default is the whole cold-start contract: no wait, no extra describe,
+// a retryable answer straight back to the caller.
+func TestDynamicEndpointResolver_ColdStartWaitDefaultsToNoWait(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0)
+
+	started := time.Now()
+	_, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Less(t, time.Since(started), 100*time.Millisecond, "a cold call must not be held")
+	assert.Equal(t, int64(1), svc.describeCalls.Load(), "no polling describe at the default")
+}
+
+// With a wait configured, a launch that lands inside the budget is served on
+// the original call rather than a retry.
+func TestDynamicEndpointResolver_ColdStartWaitResolvesWhenReady(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(5*time.Second))
+
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		svc.setRecord(readyRecord("http://10.0.0.20:8000"))
+	}()
+
+	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "http://10.0.0.20:8000", baseURL)
+}
+
+// A launch slower than the budget still gets the retryable answer, and the
+// budget is what bounds the hold.
+func TestDynamicEndpointResolver_ColdStartWaitGivesUpAtTheBudget(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(600*time.Millisecond))
+
+	started := time.Now()
+	_, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.GreaterOrEqual(t, time.Since(started), 500*time.Millisecond)
+	assert.Less(t, time.Since(started), 3*time.Second)
+}
+
+// A client that disconnects mid-wait releases the goroutine without turning
+// its own departure into a server error; the launch it triggered carries on.
+func TestDynamicEndpointResolver_ColdStartWaitStopsOnClientCancel(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	_, ok, err := r.Endpoint(ctx, resolverTestModel)
+
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Less(t, time.Since(started), 5*time.Second)
+	assert.Equal(t, int64(1), svc.ensureCalls.Load())
+}
+
+// A burst of cold callers shares one wait, not one describe loop each.
+func TestDynamicEndpointResolver_ColdStartWaitIsSharedAcrossCallers(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(3*time.Second))
+
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		svc.setRecord(readyRecord("http://10.0.0.30:8000"))
+	}()
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+			assert.NoError(t, err)
+			assert.True(t, ok)
+			assert.Equal(t, "http://10.0.0.30:8000", baseURL)
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(1), svc.ensureCalls.Load(), "one launch, however many callers waited on it")
+	assert.Less(t, svc.describeCalls.Load(), int64(8), "the poll is shared, not repeated per caller")
+}
+
+// DRAINING has no launch to wait for: nothing relaunches on its own, so the
+// answer is immediate even with a wait configured.
+func TestDynamicEndpointResolver_ColdStartWaitSkipsDraining(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateDraining}}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
+
+	started := time.Now()
+	_, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Less(t, time.Since(started), time.Second)
+}

@@ -47,6 +47,9 @@ type ServiceDeps struct {
 	PollInterval time.Duration
 	// Replicas sizes the bedrock-endpoints KV bucket on first create.
 	Replicas int
+	// MinResidency protects a freshly READY endpoint from eviction; zero takes
+	// defaultMinResidency.
+	MinResidency time.Duration
 }
 
 // Service is the daemon-side, KV-backed handler set for the serving-endpoint
@@ -110,6 +113,13 @@ func (s *Service) pollInterval() time.Duration {
 	return readinessPollInterval
 }
 
+func (s *Service) minResidency() time.Duration {
+	if s.deps.MinResidency > 0 {
+		return s.deps.MinResidency
+	}
+	return defaultMinResidency
+}
+
 func (s *Service) httpClient() *http.Client {
 	if s.deps.HTTPClient != nil {
 		return s.deps.HTTPClient
@@ -161,7 +171,15 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	}
 
 	if err := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); err != nil {
-		return nil, err
+		// No free device. A GPU held by a model nobody is calling is not a
+		// reason to refuse this one, so make room and re-check — but return the
+		// original refusal, unchanged, when nothing can be given up.
+		if !s.evictForCapacity(ctx, kv, in.ModelID, spec.MinVRAMMiB) {
+			return nil, err
+		}
+		if retryErr := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); retryErr != nil {
+			return nil, retryErr
+		}
 	}
 	if err := validateTransition(StateAbsent, StateStarting); err != nil {
 		return nil, err
@@ -203,6 +221,49 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	})
 
 	return &EnsureEndpointOutput{Endpoint: rec}, nil
+}
+
+// evictForCapacity stops the least recently used evictable endpoint so a
+// pending launch can have its device, reporting whether one was stopped. The
+// eviction goes through Delete, so the device is released by the same
+// DRAINING -> terminate -> release path an operator delete takes rather than
+// being taken from underneath a running process.
+//
+// wantModelID is excluded defensively: a caller that reached the capacity
+// check has no endpoint of its own to evict, and stopping one to launch it
+// again would be a no-op at best.
+//
+// Delete takes the per-key mutex for the victim while Ensure holds it for
+// wantModelID. The two can never be the same key, so the locks are disjoint.
+func (s *Service) evictForCapacity(ctx context.Context, kv jetstream.KeyValue, wantModelID string, minVRAMMiB int) bool {
+	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "bedrock: list endpoints for eviction failed", "model", wantModelID, "err", err)
+		return false
+	}
+	candidates := make([]EndpointRecord, 0, len(recs))
+	for _, rec := range recs {
+		if rec.ModelID != wantModelID {
+			candidates = append(candidates, rec)
+		}
+	}
+
+	victim, found := selectEvictable(candidates, s.deps.NodeID, s.minResidency(), time.Now().UTC())
+	if !found {
+		slog.InfoContext(ctx, "bedrock: no free GPU and nothing evictable",
+			"model", wantModelID, "minVRAMMiB", minVRAMMiB, "endpoints", len(recs))
+		return false
+	}
+
+	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
+		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
+		"idleSince", lastActive(victim))
+	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, utils.GlobalAccountID); err != nil {
+		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
+			"evicting", victim.ModelID, "for", wantModelID, "err", err)
+		return false
+	}
+	return true
 }
 
 // runLaunch performs the slow launch + readiness probe and writes the

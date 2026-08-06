@@ -86,6 +86,15 @@ chmod 0755 /usr/local/sbin/vllm-serve
 
 systemctl enable vllm-serve.service
 
+# Without this the failure is a runtime one, minutes into a GPU cold start:
+# FlashInfer JIT-builds its sampling module, finds no nvcc, and the endpoint
+# never reaches READY.
+UNIT=/etc/systemd/system/vllm-serve.service
+grep -q '^Environment=VLLM_USE_FLASHINFER_SAMPLER=0$' "${UNIT}" || {
+    echo "ERROR: ${UNIT} does not disable the FlashInfer sampler; this image ships no CUDA toolkit for its JIT" >&2
+    exit 1
+}
+
 # Assert the MERGED result, not the file's presence: the pin already existed at
 # a 90- prefix in the EKS image and did nothing there, shadowed by 90_dpkg.cfg.
 # read_conf_with_confd is the same function cloud-init calls at boot.

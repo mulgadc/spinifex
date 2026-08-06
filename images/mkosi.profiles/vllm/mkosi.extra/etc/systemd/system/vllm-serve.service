@@ -11,6 +11,10 @@ Description=vLLM OpenAI-compatible serving runtime (Bedrock self-host)
 # correctness fix — await_env_file already covers a handoff that is not there
 # yet — it just avoids burning that whole wait on every cold start.
 After=mulga-ebs-byid.service cloud-config.service
+# A start failure no retry can fix restarts forever otherwise, burying its own
+# first traceback under identical copies on the only console an operator has.
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=exec
@@ -21,6 +25,10 @@ Type=exec
 # sources /etc/conf.d/vllm-serve itself, in a shell it owns, to sidestep the
 # whole class of failure.
 ExecStart=/usr/local/sbin/vllm-serve
+# FlashInfer JIT-compiles its sampling module on first use and needs nvcc for
+# it. vLLM's native top-k/top-p sampler is the same operation with no CUDA
+# toolchain at runtime, which a serving appliance has no reason to carry.
+Environment=VLLM_USE_FLASHINFER_SAMPLER=0
 Restart=on-failure
 RestartSec=5
 # Headless appliance: the serial console is the only view of cold start

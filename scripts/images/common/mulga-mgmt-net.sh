@@ -58,7 +58,10 @@ dhcp_oneshot() {
     if command -v udhcpc >/dev/null 2>&1 && [ -x /usr/share/udhcpc/default.script ]; then
         udhcpc -i "$iface" -f -q -n -t 8 -T 2 >/dev/null 2>&1
     elif command -v dhcpcd >/dev/null 2>&1; then
-        dhcpcd -q -t 20 "$iface" >/dev/null 2>&1
+        # -q is only quiet; -1 is what exits, and -p keeps the address on the
+        # way out. A surviving daemon owns the control socket, so cloud-init's
+        # own dhcpcd is forwarded to it and never writes the pid file it waits on.
+        dhcpcd -q -1 -p -t 20 "$iface" >/dev/null 2>&1
     else
         echo "[mulga-mgmt-net] no DHCP client (udhcpc/dhcpcd) for $iface" >&2
         return 1

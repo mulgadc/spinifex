@@ -11,7 +11,15 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SCRIPT="${SCRIPT_DIR}/mulga-mgmt-net.sh"
 WORK=$(mktemp -d)
-trap 'rm -rf "${WORK}"' EXIT
+# Reaps the stub's simulated daemons too, so a failing run does not strand
+# background processes on the test host.
+cleanup() {
+    if [ -s "${WORK}/daemons" ]; then
+        while read -r pid _; do kill "${pid}" 2>/dev/null || true; done < "${WORK}/daemons"
+    fi
+    rm -rf "${WORK}"
+}
+trap cleanup EXIT
 
 STUBBIN="${WORK}/bin"
 mkdir -p "${STUBBIN}"
@@ -86,6 +94,26 @@ for a in "$@"; do
     prev="${a}"
 done
 [ -n "${iface}" ] || { for a in "$@"; do iface="${a}"; done; }
+
+# Both clients keep running unless told to exit, and the flag that does it is
+# per-client: dhcpcd needs -1 (-q is only quiet), udhcpc needs -q. Leaving a
+# live process behind is what the real client does, so the stub does it too.
+oneshot=no
+case "$(basename "$0")" in
+    dhcpcd) case " $* " in *" -1 "*) oneshot=yes ;; esac ;;
+    udhcpc) case " $* " in *" -q "*) oneshot=yes ;; esac ;;
+esac
+if [ "${oneshot}" = no ]; then
+    sleep 30 &
+    echo "$! $(basename "$0")" >> "${DAEMONS}"
+fi
+
+# dhcpcd de-configures the interface on exit unless -p, so a one-shot without
+# it hands back a link with no address at all.
+if [ "$(basename "$0")" = dhcpcd ] && [ "${oneshot}" = yes ]; then
+    case " $* " in *" -p "*) ;; *) exit 0 ;; esac
+fi
+
 echo "${iface}" >> "${LEASED}"
 # What a real lease installs, and the reason the policy exists at all: OVN serves
 # the subnet's router IP as the gateway, which is what the return path needs.
@@ -157,10 +185,11 @@ DEFAULTS="${WORK}/defaults";  export DEFAULTS
 LEASED="${WORK}/leased";      export LEASED
 TABLES="${WORK}/tables";      export TABLES
 RULES="${WORK}/rules";        export RULES
+DAEMONS="${WORK}/daemons";    export DAEMONS
 
 reset_state() {
     : > "${IP_CALLS}"; : > "${DEFAULTS}"; : > "${LEASED}"
-    : > "${TABLES}"; : > "${RULES}"
+    : > "${TABLES}"; : > "${RULES}"; : > "${DAEMONS}"
 }
 
 called()      { grep -qF "$1" "${IP_CALLS}"; }
@@ -169,6 +198,9 @@ leased()      { grep -q "^$1\$" "${LEASED}"; }
 # A route in policy table $1 for destination $2, and its full command in $3.
 has_route()   { grep -q "^$1 $2 .*$3" "${TABLES}"; }
 rule_count()  { grep -c "^$1 " "${RULES}"; }
+# Reports which client was left running, not just that one was: the two
+# branches fail for different reasons and the flag that fixes them differs.
+survivors()   { [ -s "${DAEMONS}" ] && { echo "surviving DHCP clients: $(cat "${DAEMONS}")"; return 0; }; return 1; }
 
 # --- The setup pass -------------------------------------------------------
 
@@ -193,6 +225,8 @@ want 'called "ip route replace 169.254.169.254/32 via 10.251.185.1 dev eth0"' \
 # it are never touched, which is how the bounded route-delete loop's trailing
 # test escaped review.
 want 'grep -q "configured eth2" "${WORK}/setup.out"' "setup reaches every NIC in the blob"
+
+wantnot 'survivors' "setup leaves no DHCP client running on any NIC"
 
 # --- The customer ENI's return path ---------------------------------------
 
@@ -220,6 +254,26 @@ if ! sh "${SCRIPT}" > "${WORK}/setup2.out" 2>&1; then
 fi
 want '[ "$(rule_count 101)" -eq 1 ]' "a repeated setup pass leaves exactly one rule"
 want '[ "$(grep -c "^101 " "${TABLES}")" -eq 2 ]' "a repeated setup pass leaves exactly two routes in the table"
+
+# --- The dhcpcd fallback --------------------------------------------------
+
+# Forced by removing udhcpc from PATH rather than left to whether the host has
+# /usr/share/udhcpc/default.script: every Ubuntu image takes this branch, and it
+# is the one that stranded a daemon on the data NIC and cost cloud-init 300s.
+FALLBACKBIN="${WORK}/fallback-bin"
+mkdir -p "${FALLBACKBIN}"
+cp "${STUBBIN}/ip" "${STUBBIN}/dhcpcd" "${FALLBACKBIN}/"
+chmod +x "${FALLBACKBIN}"/*
+
+reset_state
+if ! PATH="${FALLBACKBIN}:/usr/bin:/bin" sh "${SCRIPT}" > "${WORK}/fallback.out" 2>&1; then
+    fail "dhcpcd fallback pass exited non-zero"
+    cat "${WORK}/fallback.out"
+fi
+
+wantnot 'survivors' "the dhcpcd fallback leaves no daemon on the data NIC"
+want 'leased eth0' "the dhcpcd fallback still leaves the interface addressed after it exits"
+want 'called "dhcp -q -1 -p -t 20 eth0"' "the dhcpcd fallback is invoked one-shot and persistent"
 
 # --- The enforce pass -----------------------------------------------------
 

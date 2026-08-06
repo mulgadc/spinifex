@@ -693,7 +693,7 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 	// predating e.g. a guest-triggered GPT rewrite (growpart on first boot). An
 	// attached volume that cannot be drained fails here rather than silently
 	// producing an image from a stale checkpoint.
-	if err := handlers_ec2_snapshot.DrainVolume(context.Background(), s.config, s.store, s.natsConn, volumeID, volConfig.VolumeMetadata, accountID); err != nil {
+	if err := handlers_ec2_snapshot.DrainVolume(context.Background(), s.config, s.store, s.natsConn, volumeID, volConfig.VolumeMetadata.State, volConfig.VolumeMetadata.AttachedInstance, accountID); err != nil {
 		slog.Error("snapshotRunningVolume: drain failed", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}

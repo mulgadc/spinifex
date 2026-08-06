@@ -6,6 +6,7 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -47,6 +48,7 @@ type Capabilities struct {
 	OnlineExpansion         bool `json:"online_expansion"`
 	SparseExtentReporting   bool `json:"sparse_extent_reporting"`
 	CrashConsistentSnapshot bool `json:"crash_consistent_snapshot"`
+	VolumeSeeding           bool `json:"volume_seeding"`
 }
 
 type GetCapabilitiesRequest struct{ Versioned }
@@ -83,6 +85,11 @@ type Volume struct {
 	ProviderData     json.RawMessage `json:"provider_data,omitempty"`
 }
 
+// MaxSeedBytes bounds CreateVolumeRequest.SeedData. JSON encodes a []byte as
+// base64, inflating it by 4/3, so this leaves the encoded request comfortably
+// inside the 1MB NATS max_payload the cluster runs with.
+const MaxSeedBytes = 640 * 1024
+
 type CreateVolumeRequest struct {
 	Versioned
 
@@ -92,6 +99,21 @@ type CreateVolumeRequest struct {
 	SourceSnapshotID string          `json:"source_snapshot_id,omitempty"`
 	SourceVolumeID   string          `json:"source_volume_id,omitempty"`
 	Parameters       json.RawMessage `json:"parameters,omitempty"`
+
+	// SeedData is written at offset 0 of a newly created volume. It exists so
+	// the caller can supply host-local bytes, such as a firmware VARS template
+	// whose layout must match the launching node, without shipping a path.
+	SeedData []byte `json:"seed_data,omitempty"`
+}
+
+// ValidateSeedData rejects a seed the NATS transport cannot carry, so an
+// oversized firmware template fails with an actionable error at the caller
+// rather than as a truncated or refused publish.
+func ValidateSeedData(seed []byte) error {
+	if len(seed) > MaxSeedBytes {
+		return fmt.Errorf("%w: seed data is %d bytes, limit is %d", ErrInvalidArgument, len(seed), MaxSeedBytes)
+	}
+	return nil
 }
 
 type CreateVolumeResponse struct {

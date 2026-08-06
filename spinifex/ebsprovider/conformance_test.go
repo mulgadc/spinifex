@@ -7,6 +7,7 @@ package ebsprovider
 // contract rather than against each other's structs.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ var conformanceCapabilities = Capabilities{
 	OnlineExpansion:         false,
 	SparseExtentReporting:   false,
 	CrashConsistentSnapshot: true,
+	VolumeSeeding:           true,
 }
 
 func TestMemoryProviderConformance(t *testing.T) {
@@ -97,6 +99,41 @@ func runConformanceSuite(t *testing.T, newProvider func(t *testing.T) EBSProvide
 				VolumeID: "vol-noversion", CapacityRange: CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.ErrorIs(t, err, ErrUnsupportedVersion)
+		})
+
+		t.Run("seeded volume is created", func(t *testing.T) {
+			provider := newProvider(t)
+			vol, err := provider.CreateVolume(context.Background(), CreateVolumeRequest{
+				Versioned: NewVersioned(), VolumeID: "vol-seeded",
+				CapacityRange: CapacityRange{RequiredBytes: 4096},
+				SeedData:      bytes.Repeat([]byte{0xAB}, 4096),
+			})
+			require.NoError(t, err)
+			require.NotNil(t, vol)
+			assert.Equal(t, int64(4096), vol.CapacityBytes)
+		})
+
+		// A seed above MaxSeedBytes must fail as invalid_argument rather than
+		// reaching the transport, where NATS would refuse the oversized publish
+		// with an error that says nothing about firmware.
+		t.Run("invalid_argument on oversized seed", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CreateVolume(context.Background(), CreateVolumeRequest{
+				Versioned: NewVersioned(), VolumeID: "vol-seed-toobig",
+				CapacityRange: CapacityRange{RequiredBytes: 1 << 30},
+				SeedData:      make([]byte, MaxSeedBytes+1),
+			})
+			require.ErrorIs(t, err, ErrInvalidArgument)
+		})
+
+		t.Run("invalid_argument when seed exceeds capacity", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CreateVolume(context.Background(), CreateVolumeRequest{
+				Versioned: NewVersioned(), VolumeID: "vol-seed-overcap",
+				CapacityRange: CapacityRange{RequiredBytes: 512},
+				SeedData:      make([]byte, 4096),
+			})
+			require.ErrorIs(t, err, ErrInvalidArgument)
 		})
 	})
 

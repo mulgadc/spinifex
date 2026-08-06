@@ -1223,6 +1223,47 @@ func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// A provider-managed clone records its source snapshot only in ebsmetadata, so
+// the legacy config.json scan cannot see it. Deleting the snapshot underneath
+// one would strip chunks the clone still reads.
+func TestDeleteSnapshot_Provider_BlockedByCloneRecordedInMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+
+	require.NoError(t, svc.metadata.PutVolume(ctx, ebsmetadata.Volume{
+		VolumeID: "vol-source", TenantID: testAccountID, CapacityGiB: 4,
+		State: "available", AvailabilityZone: "us-east-1a", ProviderHandle: "memory://volume/vol-source",
+	}))
+	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-source",
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4 * 1024 * 1024 * 1024}, AvailabilityZone: "us-east-1a",
+	})
+	require.NoError(t, err)
+
+	snapshot, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-source")}, testAccountID)
+	require.NoError(t, err)
+	snapshotID := aws.StringValue(snapshot.SnapshotId)
+
+	// The clone exists only as a control-plane document, as CreateVolume's
+	// provider branch writes it.
+	require.NoError(t, svc.metadata.PutVolume(ctx, ebsmetadata.Volume{
+		VolumeID: "vol-clone", TenantID: testAccountID, CapacityGiB: 4, State: "available",
+		AvailabilityZone: "us-east-1a", SnapshotID: snapshotID, ProviderHandle: "memory://volume/vol-clone",
+	}))
+
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse)
+
+	// Once the clone is gone the snapshot is deletable again.
+	require.NoError(t, svc.metadata.DeleteVolume(ctx, "vol-clone"))
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, testAccountID)
+	require.NoError(t, err)
+}
+
 // snapshotMetadataFailingObjectStore fails PutObject for any snapshot
 // metadata.json write and records the last such key, so a test can recover
 // the randomly generated snapshot ID CreateSnapshot attempted to persist.

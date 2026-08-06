@@ -102,3 +102,49 @@ func TestListVolumes_NotConfigured(t *testing.T) {
 	_, err = empty.ListVolumes(context.Background())
 	require.Error(t, err)
 }
+
+// TestListAMIs_Empty mirrors TestListVolumes_Empty: an AMI-less store lists
+// as an empty slice, not an error.
+func TestListAMIs_Empty(t *testing.T) {
+	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
+	amis, err := store.ListAMIs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, amis)
+}
+
+// TestListAMIs_ReturnsAllStoredAMIs mirrors TestListVolumes_ReturnsAllStoredVolumes.
+func TestListAMIs_ReturnsAllStoredAMIs(t *testing.T) {
+	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
+	ctx := context.Background()
+
+	want := []AMI{
+		{ImageID: "ami-1", Name: "one", VolumeSizeGiB: 8},
+		{ImageID: "ami-2", Name: "two", VolumeSizeGiB: 16},
+	}
+	for _, a := range want {
+		require.NoError(t, store.PutAMI(ctx, a))
+	}
+
+	got, err := store.ListAMIs(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, len(want))
+
+	gotSizes := make(map[string]uint64, len(got))
+	for _, a := range got {
+		gotSizes[a.ImageID] = a.VolumeSizeGiB
+	}
+	for _, a := range want {
+		assert.Equal(t, a.VolumeSizeGiB, gotSizes[a.ImageID])
+	}
+}
+
+// TestListAMIs_NotConfigured mirrors TestListVolumes_NotConfigured.
+func TestListAMIs_NotConfigured(t *testing.T) {
+	var store *Store
+	_, err := store.ListAMIs(context.Background())
+	require.Error(t, err)
+
+	empty := &Store{}
+	_, err = empty.ListAMIs(context.Background())
+	require.Error(t, err)
+}

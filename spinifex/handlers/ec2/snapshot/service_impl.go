@@ -244,7 +244,8 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 			SnapshotID: snapshotID, VolumeID: volumeID,
 			VolumeSize: utils.SafeUint64ToInt64(volume.CapacityGiB),
 			State:      string(created.State), Progress: "100%", StartTime: now,
-			OwnerID: accountID, AvailabilityZone: volume.AvailabilityZone,
+			Encrypted: volume.Encrypted,
+			OwnerID:   accountID, AvailabilityZone: volume.AvailabilityZone,
 			Tags:           utils.ExtractTags(input.TagSpecifications, "snapshot"),
 			ProviderHandle: created.Handle,
 		}
@@ -747,6 +748,22 @@ func snapshotMatchesFilters(cfg *SnapshotConfig, filters map[string][]string) bo
 
 // snapshotInUseByVolumes checks if any volume was created from the given snapshot.
 func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (bool, error) {
+	// Provider-managed clones record their source in ebsmetadata and write no
+	// config.json, so the legacy scan below cannot see them. Missing one here
+	// would let a delete strip the chunks a live clone still reads.
+	if s.provider != nil {
+		volumes, err := s.metadata.ListVolumes(ctx)
+		if err != nil {
+			return false, fmt.Errorf("snapshotInUseByVolumes: failed to list volumes: %w", err)
+		}
+		for _, volume := range volumes {
+			if volume.SnapshotID == snapshotID {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
 	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.config.Predastore.Bucket),
 		Prefix:    aws.String("vol-"),

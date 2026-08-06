@@ -14,24 +14,45 @@ const SchemaVersion uint16 = 1
 // Volume is the control-plane record used for EC2 Describe/Modify/attachment
 // operations. ProviderHandle is opaque and is never decoded by the API layer.
 type Volume struct {
-	SchemaVersion       uint16            `json:"schema_version"`
-	VolumeID            string            `json:"volume_id"`
-	VolumeName          string            `json:"volume_name,omitempty"`
-	TenantID            string            `json:"tenant_id"`
-	CapacityGiB         uint64            `json:"capacity_gib"`
-	State               string            `json:"state"`
-	CreatedAt           time.Time         `json:"created_at"`
-	AttachedAt          time.Time         `json:"attached_at,omitzero"`
-	AvailabilityZone    string            `json:"availability_zone"`
-	AttachedInstance    string            `json:"attached_instance,omitempty"`
-	DeviceName          string            `json:"device_name,omitempty"`
-	VolumeType          string            `json:"volume_type"`
-	IOPS                int               `json:"iops"`
-	Throughput          int               `json:"throughput,omitempty"`
-	Tags                map[string]string `json:"tags,omitempty"`
-	SnapshotID          string            `json:"snapshot_id,omitempty"`
-	DeleteOnTermination bool              `json:"delete_on_termination,omitempty"`
-	ProviderHandle      string            `json:"provider_handle,omitempty"`
+	SchemaVersion       uint16              `json:"schema_version"`
+	VolumeID            string              `json:"volume_id"`
+	VolumeName          string              `json:"volume_name,omitempty"`
+	TenantID            string              `json:"tenant_id"`
+	CapacityGiB         uint64              `json:"capacity_gib"`
+	State               string              `json:"state"`
+	CreatedAt           time.Time           `json:"created_at"`
+	AttachedAt          time.Time           `json:"attached_at,omitzero"`
+	AvailabilityZone    string              `json:"availability_zone"`
+	AttachedInstance    string              `json:"attached_instance,omitempty"`
+	DeviceName          string              `json:"device_name,omitempty"`
+	VolumeType          string              `json:"volume_type"`
+	IOPS                int                 `json:"iops"`
+	Throughput          int                 `json:"throughput,omitempty"`
+	Tags                map[string]string   `json:"tags,omitempty"`
+	SnapshotID          string              `json:"snapshot_id,omitempty"`
+	DeleteOnTermination bool                `json:"delete_on_termination,omitempty"`
+	Encrypted           bool                `json:"encrypted,omitempty"`
+	ProviderHandle      string              `json:"provider_handle,omitempty"`
+	Modification        *VolumeModification `json:"modification,omitempty"`
+}
+
+// VolumeModification is the control-plane record of a completed or in-flight
+// ModifyVolume operation, read back by DescribeVolumesModifications. It owns
+// its own fields rather than reusing viperblock.VolumeModification: this
+// package must stay free of viperblock types. VolumeID is deliberately not
+// duplicated here — callers have it from the owning Volume.
+type VolumeModification struct {
+	ModificationState  string    `json:"modification_state"`
+	Progress           int64     `json:"progress"`
+	StatusMessage      string    `json:"status_message,omitempty"`
+	OriginalSize       int64     `json:"original_size"`
+	OriginalIOPS       int64     `json:"original_iops"`
+	OriginalVolumeType string    `json:"original_volume_type"`
+	TargetSize         int64     `json:"target_size"`
+	TargetIOPS         int64     `json:"target_iops"`
+	TargetVolumeType   string    `json:"target_volume_type"`
+	StartTime          time.Time `json:"start_time"`
+	EndTime            time.Time `json:"end_time,omitzero"`
 }
 
 // AMI is the control-plane record used for EC2 image operations.

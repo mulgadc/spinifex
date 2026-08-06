@@ -235,10 +235,20 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		if created == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		// The control plane cannot see how a real provider encrypts its volumes,
+		// but viperblock is (currently) the only provider and this shared config
+		// knob is the same one the legacy path uses to derive Encrypted below.
+		mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+		if err != nil {
+			slog.ErrorContext(ctx, "CreateVolume: failed to load encryption key", "volumeId", volumeID, "err", err)
+			_ = s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: created.Handle})
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 		if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
 			VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(ebsprovider.VolumeStateAvailable),
 			CreatedAt: now, AvailabilityZone: *input.AvailabilityZone, VolumeType: volumeType,
 			IOPS: iops, Throughput: throughput, SnapshotID: snapshotID, Tags: tags, ProviderHandle: created.Handle,
+			Encrypted: mkey != nil,
 		}); err != nil {
 			slog.ErrorContext(ctx, "CreateVolume: failed to persist provider metadata", "volumeId", volumeID, "err", err)
 			_ = s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: created.Handle})
@@ -246,7 +256,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		}
 		return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
 			State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
-			Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(false),
+			Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(mkey != nil),
 			Tags: utils.MapToEC2Tags(tags)}, nil
 	}
 
@@ -613,6 +623,10 @@ func (s *VolumeServiceImpl) DescribeVolumeStatus(ctx context.Context, input *ec2
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	if s.provider != nil {
+		return s.describeVolumeStatusProvider(ctx, input, accountID, parsedFilters)
+	}
+
 	var statusItems []*ec2.VolumeStatusItem
 
 	// Fast path: if specific volume IDs are requested, fetch them directly
@@ -749,6 +763,75 @@ func (s *VolumeServiceImpl) getVolumeStatusByID(ctx context.Context, volumeID st
 	}, result.tenantID, nil
 }
 
+// describeVolumeStatusProvider is DescribeVolumeStatus' provider-path branch.
+// It was found to be missing entirely during the ebsmetadata gap survey:
+// without it, both the fast path (getVolumeStatusByID reads config.json) and
+// the slow path (listAllVolumeIDs's legacy S3 prefix scan) return nothing
+// for provider-managed volumes.
+func (s *VolumeServiceImpl) describeVolumeStatusProvider(ctx context.Context, input *ec2.DescribeVolumeStatusInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeVolumeStatusOutput, error) {
+	metas, err := s.metadata.ListVolumes(ctx)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	byID := make(map[string]ebsmetadata.Volume, len(metas))
+	for _, meta := range metas {
+		byID[meta.VolumeID] = meta
+	}
+
+	var statusItems []*ec2.VolumeStatusItem
+
+	if len(input.VolumeIds) > 0 {
+		for _, vid := range input.VolumeIds {
+			if vid == nil {
+				continue
+			}
+			meta, ok := byID[*vid]
+			if !ok || meta.TenantID != accountID {
+				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			}
+			item := providerVolumeStatusItem(meta)
+			if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
+				continue
+			}
+			statusItems = append(statusItems, item)
+		}
+		slog.InfoContext(ctx, "DescribeVolumeStatus completed", "count", len(statusItems))
+		return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
+	}
+
+	for _, meta := range metas {
+		if meta.TenantID != accountID {
+			continue
+		}
+		item := providerVolumeStatusItem(meta)
+		if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
+			continue
+		}
+		statusItems = append(statusItems, item)
+	}
+
+	slog.InfoContext(ctx, "DescribeVolumeStatus completed", "count", len(statusItems))
+	return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
+}
+
+// providerVolumeStatusItem builds a static-health VolumeStatusItem from
+// ebsmetadata, mirroring getVolumeStatusByID's legacy-path shape.
+func providerVolumeStatusItem(meta ebsmetadata.Volume) *ec2.VolumeStatusItem {
+	return &ec2.VolumeStatusItem{
+		VolumeId:         aws.String(meta.VolumeID),
+		AvailabilityZone: aws.String(meta.AvailabilityZone),
+		VolumeStatus: &ec2.VolumeStatusInfo{
+			Status: aws.String("ok"),
+			Details: []*ec2.VolumeStatusDetails{
+				{Name: aws.String("io-enabled"), Status: aws.String("passed")},
+				{Name: aws.String("io-performance"), Status: aws.String("not-applicable")},
+			},
+		},
+		Actions: []*ec2.VolumeStatusAction{},
+		Events:  []*ec2.VolumeStatusEvent{},
+	}
+}
+
 // volumeModificationTimeFormat is the AWS-CLI compatible RFC3339-ish format
 // used both for response serialisation and for filter equality on time fields.
 // Round-tripping a value through this format and back into a filter must match.
@@ -783,6 +866,35 @@ func vbModificationToEC2(m *viperblock.VolumeModification) *ec2.VolumeModificati
 		OriginalVolumeType: aws.String(m.OriginalVolumeType),
 		TargetSize:         aws.Int64(m.TargetSize),
 		TargetIops:         aws.Int64(m.TargetIops),
+		TargetVolumeType:   aws.String(m.TargetVolumeType),
+		StartTime:          aws.Time(m.StartTime),
+	}
+	if !m.EndTime.IsZero() {
+		out.EndTime = aws.Time(m.EndTime)
+	}
+	if m.StatusMessage != "" {
+		out.StatusMessage = aws.String(m.StatusMessage)
+	}
+	return out
+}
+
+// ebsModificationToEC2 converts a persisted ebsmetadata.VolumeModification
+// (the provider-path equivalent of vbModificationToEC2) into the AWS SDK
+// shape. volumeID comes from the owning ebsmetadata.Volume, since
+// VolumeModification does not duplicate it.
+func ebsModificationToEC2(volumeID string, m *ebsmetadata.VolumeModification) *ec2.VolumeModification {
+	if m == nil {
+		return nil
+	}
+	out := &ec2.VolumeModification{
+		VolumeId:           aws.String(volumeID),
+		ModificationState:  aws.String(m.ModificationState),
+		Progress:           aws.Int64(m.Progress),
+		OriginalSize:       aws.Int64(m.OriginalSize),
+		OriginalIops:       aws.Int64(m.OriginalIOPS),
+		OriginalVolumeType: aws.String(m.OriginalVolumeType),
+		TargetSize:         aws.Int64(m.TargetSize),
+		TargetIops:         aws.Int64(m.TargetIOPS),
 		TargetVolumeType:   aws.String(m.TargetVolumeType),
 		StartTime:          aws.Time(m.StartTime),
 	}
@@ -869,6 +981,10 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	if s.provider != nil {
+		return s.describeVolumesModificationsProvider(ctx, input, accountID, parsedFilters)
+	}
+
 	var modifications []*ec2.VolumeModification
 
 	// Fast path: specific volume IDs requested.
@@ -940,6 +1056,66 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 	}, nil
 }
 
+// describeVolumesModificationsProvider is DescribeVolumesModifications' provider-path
+// branch, reading modifications from ebsmetadata rather than {volumeID}/config.json.
+func (s *VolumeServiceImpl) describeVolumesModificationsProvider(ctx context.Context, input *ec2.DescribeVolumesModificationsInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeVolumesModificationsOutput, error) {
+	var modifications []*ec2.VolumeModification
+
+	if len(input.VolumeIds) > 0 {
+		results := s.fetchVolumeModificationsByIDs(ctx, input.VolumeIds, accountID)
+		for i, vid := range input.VolumeIds {
+			if vid == nil {
+				continue
+			}
+			if results[i].err != nil {
+				slog.ErrorContext(ctx, "DescribeVolumesModifications volume not found", "volumeId", *vid, "err", results[i].err)
+				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			}
+		}
+		for _, r := range results {
+			if r.modification == nil {
+				continue
+			}
+			if len(parsedFilters) > 0 && !volumeModificationMatchesFilters(r.modification, parsedFilters) {
+				continue
+			}
+			modifications = append(modifications, r.modification)
+		}
+		slog.InfoContext(ctx, "DescribeVolumesModifications completed", "count", len(modifications))
+		return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
+	}
+
+	metas, err := s.metadata.ListVolumes(ctx)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var volumeIDFilterValues []string
+	if parsedFilters != nil {
+		volumeIDFilterValues = parsedFilters["volume-id"]
+	}
+
+	for _, meta := range metas {
+		if meta.TenantID != accountID {
+			continue
+		}
+		if len(volumeIDFilterValues) > 0 && !filterutil.MatchesAny(volumeIDFilterValues, meta.VolumeID) {
+			continue
+		}
+		if meta.Modification == nil {
+			continue
+		}
+		mod := ebsModificationToEC2(meta.VolumeID, meta.Modification)
+		if len(parsedFilters) > 0 && !volumeModificationMatchesFilters(mod, parsedFilters) {
+			continue
+		}
+		modifications = append(modifications, mod)
+	}
+
+	slog.InfoContext(ctx, "DescribeVolumesModifications completed", "count", len(modifications))
+	return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
+}
+
 // volumeModificationResult bundles a per-ID lookup result so the fast path
 // can preserve input ordering and surface errors after the parallel fan-out.
 type volumeModificationResult struct {
@@ -961,6 +1137,15 @@ func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, v
 		wg.Add(1)
 		go func(idx int, volID string) {
 			defer wg.Done()
+			if s.provider != nil {
+				meta, err := s.metadata.GetVolume(ctx, volID)
+				if err != nil || meta.TenantID != accountID {
+					results[idx] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+					return
+				}
+				results[idx] = volumeModificationResult{modification: ebsModificationToEC2(meta.VolumeID, meta.Modification)}
+				return
+			}
 			cfg, err := s.GetVolumeConfig(volID)
 			if err != nil {
 				results[idx] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
@@ -978,9 +1163,23 @@ func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, v
 	return results
 }
 
-// listAllVolumeIDs lists all volume IDs from S3 by scanning bucket prefixes.
+// listAllVolumeIDs lists all volume IDs. Under the provider path, ebsmetadata
+// is the index; the legacy vol-* S3 prefix scan below cannot see
+// provider-managed volumes, which never write a {volumeID}/config.json.
 // It filters for vol-* prefixes and skips internal sub-volumes (EFI and cloud-init).
 func (s *VolumeServiceImpl) listAllVolumeIDs(ctx context.Context) ([]string, error) {
+	if s.provider != nil {
+		volumes, err := s.metadata.ListVolumes(ctx)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		ids := make([]string, 0, len(volumes))
+		for _, v := range volumes {
+			ids = append(ids, v.VolumeID)
+		}
+		return ids, nil
+	}
+
 	result, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.bucketName),
 		Delimiter: aws.String("/"),
@@ -1071,7 +1270,7 @@ func providerMetadataVolume(meta ebsmetadata.Volume) *ec2.Volume {
 	volume := &ec2.Volume{
 		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(utils.SafeUint64ToInt64(meta.CapacityGiB)),
 		State: aws.String(state), AvailabilityZone: aws.String(meta.AvailabilityZone), CreateTime: aws.Time(meta.CreatedAt),
-		VolumeType: aws.String(meta.VolumeType), Encrypted: aws.Bool(false), Iops: aws.Int64(int64(meta.IOPS)),
+		VolumeType: aws.String(meta.VolumeType), Encrypted: aws.Bool(meta.Encrypted), Iops: aws.Int64(int64(meta.IOPS)),
 		Throughput: aws.Int64(int64(meta.Throughput)), SnapshotId: aws.String(meta.SnapshotID), Tags: utils.MapToEC2Tags(meta.Tags),
 	}
 	if meta.AttachedInstance != "" {
@@ -1537,6 +1736,12 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 		if meta.AttachedInstance != "" && meta.State == "in-use" {
 			return nil, errors.New(awserrors.ErrorIncorrectState)
 		}
+		originalType := meta.VolumeType
+		if originalType == "" {
+			originalType = "gp3"
+		}
+		originalIOPS := int64(meta.IOPS)
+
 		expanded, err := s.provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{
 			Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
 			CapacityRange: ebsprovider.CapacityRange{RequiredBytes: *input.Size * 1024 * 1024 * 1024},
@@ -1551,14 +1756,31 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 		if input.Iops != nil {
 			meta.IOPS = int(*input.Iops)
 		}
+		targetType := meta.VolumeType
+		if targetType == "" {
+			targetType = "gp3"
+		}
+
+		// Persist the modification record on the volume document so a subsequent
+		// DescribeVolumesModifications can read it back (ebsmetadata has no
+		// config.json equivalent to fall back to under the provider path).
+		now := time.Now()
+		meta.Modification = &ebsmetadata.VolumeModification{
+			ModificationState:  "completed",
+			Progress:           100,
+			OriginalSize:       originalSize,
+			OriginalIOPS:       originalIOPS,
+			OriginalVolumeType: originalType,
+			TargetSize:         utils.SafeUint64ToInt64(meta.CapacityGiB),
+			TargetIOPS:         int64(meta.IOPS),
+			TargetVolumeType:   targetType,
+			StartTime:          now,
+			EndTime:            now,
+		}
 		if err := s.metadata.PutVolume(ctx, meta); err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		now := time.Now()
-		modification := &ec2.VolumeModification{VolumeId: aws.String(volumeID), ModificationState: aws.String("completed"),
-			Progress: aws.Int64(100), OriginalSize: aws.Int64(originalSize), TargetSize: input.Size,
-			StartTime: aws.Time(now), EndTime: aws.Time(now)}
-		return &ec2.ModifyVolumeOutput{VolumeModification: modification}, nil
+		return &ec2.ModifyVolumeOutput{VolumeModification: ebsModificationToEC2(volumeID, meta.Modification)}, nil
 	}
 
 	cfg, err := s.getVolumeConfig(ctx, volumeID)
@@ -1914,6 +2136,12 @@ func (s *VolumeServiceImpl) mirrorVolumeTags(ctx context.Context, resources []*s
 		if res == nil || !strings.HasPrefix(*res, "vol-") {
 			continue
 		}
+		if s.provider != nil {
+			if err := s.mirrorProviderVolumeTags(ctx, *res, accountID, mut); err != nil {
+				return err
+			}
+			continue
+		}
 		cfg, _, err := s.getBaseVolumeConfigAndEncryption(ctx, *res)
 		if err != nil {
 			if err.Error() == awserrors.ErrorInvalidVolumeNotFound {
@@ -1942,4 +2170,29 @@ func (s *VolumeServiceImpl) mirrorVolumeTags(ctx context.Context, resources []*s
 		}
 	}
 	return nil
+}
+
+// mirrorProviderVolumeTags is mirrorVolumeTags' provider-path branch: it
+// read-modify-writes the ebsmetadata.Volume's Tags field directly, since a
+// provider-managed volume has no tags.json for DescribeVolumes to overlay.
+func (s *VolumeServiceImpl) mirrorProviderVolumeTags(ctx context.Context, volumeID, accountID string, mut func(map[string]string)) error {
+	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil
+		}
+		return err
+	}
+	if meta.TenantID != accountID {
+		slog.Debug("mirrorProviderVolumeTags: skipping volume not owned by caller", "volumeId", volumeID)
+		return nil
+	}
+
+	tags := meta.Tags
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	mut(tags)
+	meta.Tags = tags
+	return s.metadata.PutVolume(ctx, meta)
 }

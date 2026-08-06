@@ -498,6 +498,9 @@ func (s *Service) AcknowledgeDBBootstrap(ctx context.Context, input *Acknowledge
 		stored.Bootstrap.State = BootstrapStateAcknowledged
 		stored.Bootstrap.AcknowledgedAt = &now
 		stored.Bootstrap.MasterUserPassword = ""
+		// A daemon that could not read the payload marked this instance before
+		// another one served it, so the stale verdict goes with the ciphertext.
+		stored.Bootstrap.FailureReason = ""
 	}); err != nil {
 		return nil, err
 	}

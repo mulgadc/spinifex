@@ -248,10 +248,17 @@ func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstrea
 	defer cancel()
 
 	// Before the record, so a failure below cannot leave ciphertext behind with
-	// nothing naming it. A create that never staged one deletes nothing.
-	if err := deleteBootstrapPayload(rbCtx, kv, identifier); err != nil {
+	// nothing naming it. Retried like the record delete: a payload left staged is
+	// ciphertext at rest that nothing else reclaims.
+	var payloadErr error
+	for range rollbackDeleteAttempts {
+		if payloadErr = deleteBootstrapPayload(rbCtx, kv, identifier); payloadErr == nil {
+			break
+		}
+	}
+	if payloadErr != nil {
 		slog.WarnContext(rbCtx, "rds: rollback delete of the staged bootstrap payload failed",
-			"dbInstance", identifier, "err", err)
+			"dbInstance", identifier, "err", payloadErr)
 	}
 
 	var rollbackErr error

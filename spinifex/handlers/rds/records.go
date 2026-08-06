@@ -232,10 +232,13 @@ type BootstrapState struct {
 	// Kept after acknowledgement so a duplicate acknowledgement, whose payload
 	// key is already gone, is still answerable.
 	PayloadID string `json:"payloadId,omitempty"`
-	// One of the BootstrapState* values above. Advisory: resolveBootstrapState
-	// reads the payload key first.
+	// One of the BootstrapState* values above.
 	State          string     `json:"state,omitempty"`
 	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
+	// Why the initial bootstrap cannot complete. Owned by this protocol rather
+	// than by the record's FailureReason, which the status machine clears on
+	// every transition and would overwrite exactly when the create times out.
+	FailureReason string `json:"failureReason,omitempty"`
 	// Already evaluated against the instance class, so the agent receives
 	// literals and never a formula.
 	ResolvedParameters []Parameter `json:"resolvedParameters,omitempty"`

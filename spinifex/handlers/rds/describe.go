@@ -198,12 +198,28 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 	// failed instance carries is reported the one place a human-readable status
 	// message fits. Absent while the instance is healthy, as AWS leaves it.
 	if rec.FailureReason != "" {
-		out.StatusInfos = []*rds.DBInstanceStatusInfo{{
+		out.StatusInfos = append(out.StatusInfos, &rds.DBInstanceStatusInfo{
 			StatusType: aws.String("instance"),
 			Status:     aws.String(string(rec.Status)),
 			Normal:     aws.Bool(false),
 			Message:    aws.String(rec.FailureReason),
-		}}
+		})
+	}
+	// Reported separately because the status machine owns the field above and
+	// clears it on every transition, which would drop the one message naming an
+	// instance that has to be recreated. Only the abnormal states: a payload
+	// still pending on a serving engine, and one that can no longer be applied.
+	if state := resolveBootstrapState(rec); state == BootstrapStateUnrecoverable ||
+		(state == BootstrapStatePending && rec.Status == StatusAvailable) {
+		info := &rds.DBInstanceStatusInfo{
+			StatusType: aws.String("bootstrap"),
+			Status:     aws.String(state),
+			Normal:     aws.Bool(false),
+		}
+		if rec.Bootstrap.FailureReason != "" {
+			info.Message = aws.String(rec.Bootstrap.FailureReason)
+		}
+		out.StatusInfos = append(out.StatusInfos, info)
 	}
 	out.PendingModifiedValues = projectPendingModifiedValues(rec.PendingModifiedValues)
 	out.DBParameterGroups = projectParameterGroup(rec)

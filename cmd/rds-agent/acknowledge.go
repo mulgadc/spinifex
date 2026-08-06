@@ -3,11 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mulgadc/spinifex/internal/rdsgw"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // The completion receipt rds-init writes once the master role is durably
@@ -47,6 +52,12 @@ func (a *Agent) acknowledgeBootstrap(ctx context.Context) error {
 	if err := retryObserved(ctx, "bootstrap receipt", func(context.Context) error {
 		return a.checkBootstrapReceipt(pending)
 	}, func(err error) {
+		// An absent receipt is the expected state for the whole initdb window,
+		// so reporting it would put a failure on every healthy create's beat and
+		// then into the reason a timed-out create records.
+		if errors.Is(err, fs.ErrNotExist) {
+			return
+		}
 		a.hb.setBootstrapFailure("bootstrap receipt", err)
 	}); err != nil {
 		return err
@@ -54,11 +65,19 @@ func (a *Agent) acknowledgeBootstrap(ctx context.Context) error {
 	a.hb.clearBootstrapFailure()
 
 	if err := retryObserved(ctx, "bootstrap acknowledgement", func(ctx context.Context) error {
-		return a.cp.AcknowledgeBootstrap(ctx, a.id, pending)
+		return terminalOnDenial(a.cp.AcknowledgeBootstrap(ctx, a.id, pending))
 	}, func(err error) {
 		a.hb.setBootstrapFailure("bootstrap acknowledgement", err)
 	}); err != nil {
-		return err
+		if !errors.Is(err, errRetryTerminal) {
+			return err
+		}
+		// The staged payload will never be delivered to this VM, and blocking the
+		// command poller and the parameter guard on that would leave a serving
+		// database no one can administer. The reason rides the heartbeat instead.
+		slog.ErrorContext(ctx, "rds-agent: the initial bootstrap cannot be acknowledged",
+			"payloadId", pending.payloadID, "err", err)
+		return nil
 	}
 	a.hb.clearBootstrapFailure()
 
@@ -72,6 +91,21 @@ func (a *Agent) acknowledgeBootstrap(ctx context.Context) error {
 	}
 	slog.InfoContext(ctx, "rds-agent: initial bootstrap acknowledged", "payloadId", pending.payloadID)
 	return nil
+}
+
+// The control plane resolved these from its own record — a superseded
+// generation, a payload it never staged, a data volume that is not this
+// instance's. Asking again cannot change any of them.
+func terminalOnDenial(err error) error {
+	var apiErr *rdsgw.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	switch apiErr.Code {
+	case awserrors.ErrorAccessDenied, awserrors.ErrorInvalidParameterValue:
+		return fmt.Errorf("%w: %w", errRetryTerminal, err)
+	}
+	return err
 }
 
 // A receipt naming another payload or another DB instance is treated as absent.

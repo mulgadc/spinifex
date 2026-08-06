@@ -115,7 +115,10 @@ func (s *Service) writeBootstrapPayload(ctx context.Context, kv jetstream.KeyVal
 		CreatedAt:         time.Now().UTC(),
 		EncryptedPayload:  ciphertext,
 	}
-	if err := createJSON(ctx, kv, BootstrapPayloadKey(rec.DBInstanceIdentifier), envelope); err != nil {
+	// Put rather than create: the caller has already won the record reservation
+	// for this identifier, so a key still sitting here is an orphan from a
+	// rolled-back create and must not make the identifier unusable forever.
+	if err := putJSON(ctx, kv, BootstrapPayloadKey(rec.DBInstanceIdentifier), envelope); err != nil {
 		return "", fmt.Errorf("rds bootstrap: stage the payload for %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	return payloadID, nil
@@ -152,18 +155,17 @@ func bootstrapPending(ctx context.Context, kv jetstream.KeyValue, dbInstanceIden
 	return envelope != nil, err
 }
 
-// The payload key first, the record second. A record whose payload is gone and
-// which carries none of the markers below never had one staged.
-func resolveBootstrapState(rec *DBInstanceRecord, payloadPresent bool) string {
+// The record's own view, for the read paths that must not pay a second KV round
+// trip per instance to answer it. Every writer of the payload key sets State in
+// the same operation, so this trails the key only between those two writes; a
+// caller deciding whether a payload may be served reads the key via
+// bootstrapPending instead.
+func resolveBootstrapState(rec *DBInstanceRecord) string {
 	switch {
-	case payloadPresent:
-		return BootstrapStatePending
-	case rec.Bootstrap.AcknowledgedAt != nil:
-		return BootstrapStateAcknowledged
+	case rec.Bootstrap.State != "":
+		return rec.Bootstrap.State
 	case rec.Bootstrap.Consumed:
 		return BootstrapStateLegacyConsumed
-	case rec.Bootstrap.State == BootstrapStateUnrecoverable:
-		return BootstrapStateUnrecoverable
 	default:
 		return BootstrapStateNone
 	}
@@ -224,13 +226,14 @@ func (s *Service) markBootstrapUnrecoverable(ctx context.Context, kv jetstream.K
 	accountID, dbInstanceIdentifier, reason string) error {
 	changed := false
 	if err := s.updateInstance(ctx, kv, dbInstanceIdentifier, func(stored *DBInstanceRecord) {
-		if stored.Bootstrap.State == BootstrapStateUnrecoverable && stored.Bootstrap.MasterUserPassword == "" {
+		if stored.Bootstrap.State == BootstrapStateUnrecoverable &&
+			stored.Bootstrap.MasterUserPassword == "" && stored.Bootstrap.FailureReason == reason {
 			return
 		}
 		changed = true
 		stored.Bootstrap.MasterUserPassword = ""
 		stored.Bootstrap.State = BootstrapStateUnrecoverable
-		stored.FailureReason = reason
+		stored.Bootstrap.FailureReason = reason
 	}); err != nil {
 		return fmt.Errorf("rds bootstrap: mark %s unrecoverable: %w", dbInstanceIdentifier, err)
 	}
@@ -256,7 +259,15 @@ func (s *Service) discardPendingBootstrap(ctx context.Context, kv jetstream.KeyV
 	if err := deleteBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier); err != nil {
 		return err
 	}
-	rec.Bootstrap.State = BootstrapStateUnrecoverable
+	// A serving instance already applied its master role, so its payload was
+	// staged only because the acknowledgement never landed. Withdrawing it costs
+	// nothing and must not read as a database the customer has to recreate.
+	if rec.Status == StatusAvailable {
+		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+			"The staged initial credentials were withdrawn when this DB instance's VM was replaced; the engine is serving and had already applied them.",
+			EventCategoryNotification)
+		return nil
+	}
 	return s.markBootstrapUnrecoverable(ctx, kv, accountID, rec.DBInstanceIdentifier,
-		"the VM was replaced before the initial bootstrap completed; delete and recreate the DB instance")
+		"the staged initial credentials were bound to a VM generation this DB instance no longer has; delete and recreate it")
 }

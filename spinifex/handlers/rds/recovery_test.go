@@ -386,5 +386,6 @@ func TestProjectDBInstance_ReportsTheFailureReason(t *testing.T) {
 
 	rec.Status = StatusAvailable
 	rec.FailureReason = ""
+	rec.Bootstrap.State = BootstrapStateAcknowledged
 	assert.Empty(t, svc.projectDBInstance(&rec).StatusInfos, "a healthy instance carries no status info, as AWS leaves it")
 }

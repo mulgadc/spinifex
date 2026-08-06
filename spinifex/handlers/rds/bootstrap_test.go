@@ -345,7 +345,7 @@ func TestGetDBBootstrapConfig_LegacyConsumedRecordAttaches(t *testing.T) {
 	assert.Nil(t, out.MasterUserPassword)
 
 	stored, _ := readRecord(t, svc)
-	assert.Equal(t, BootstrapStateLegacyConsumed, resolveBootstrapState(&stored, false))
+	assert.Equal(t, BootstrapStateLegacyConsumed, resolveBootstrapState(&stored))
 	assert.Empty(t, stored.FailureReason, "an instance that is serving is not a failure")
 }
 
@@ -366,8 +366,8 @@ func TestGetDBBootstrapConfig_LegacyPlaintextIsScrubbedIdempotently(t *testing.T
 
 		stored, raw := readRecord(t, svc)
 		assert.NotContains(t, raw, "beta-plaintext-pw")
-		assert.Equal(t, BootstrapStateUnrecoverable, resolveBootstrapState(&stored, false))
-		assert.Contains(t, stored.FailureReason, "delete and recreate")
+		assert.Equal(t, BootstrapStateUnrecoverable, resolveBootstrapState(&stored))
+		assert.Contains(t, stored.Bootstrap.FailureReason, "delete and recreate")
 	}
 }
 
@@ -387,7 +387,7 @@ func TestGetDBBootstrapConfig_UnreadablePayloadAttachesAndReportsWhy(t *testing.
 
 	stored, _ := readRecord(t, svc)
 	assert.Equal(t, BootstrapStateUnrecoverable, stored.Bootstrap.State)
-	assert.Contains(t, stored.FailureReason, "cannot be read by the control plane")
+	assert.Contains(t, stored.Bootstrap.FailureReason, "cannot be read by the control plane")
 }
 
 func TestCreateDBInstance_StagesThePasswordEncrypted(t *testing.T) {
@@ -454,7 +454,7 @@ func TestRestoredRecord_IsBornWithoutAStagedBootstrap(t *testing.T) {
 	assert.Nil(t, out.MasterUserPassword)
 
 	stored, _ := readRecord(t, svc)
-	assert.Equal(t, BootstrapStateNone, resolveBootstrapState(&stored, false))
+	assert.Equal(t, BootstrapStateNone, resolveBootstrapState(&stored))
 	require.Error(t, acknowledge(t, svc, "bp-anything"))
 }
 
@@ -498,18 +498,149 @@ func TestModifyDBInstance_RejectsADisruptiveChangeWhileTheBootstrapIsStaged(t *t
 // The safety net for a generation bump reaching a staged payload through any
 // path. The payload is never rebound: rebinding would move where the failure
 // surfaces rather than make the replacement work.
+//
+// Only a VM that never finished its initial bootstrap is a database the customer
+// has to recreate. A serving one applied its master role and merely never
+// acknowledged, so withdrawing its payload must not read as a failure.
 func TestReplaceInstanceVM_DiscardsAStagedBootstrap(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    Status
+		wantState string
+	}{
+		{name: "a create that never bootstrapped", status: StatusFailed,
+			wantState: BootstrapStateUnrecoverable},
+		{name: "a serving instance that never acknowledged", status: StatusAvailable,
+			wantState: BootstrapStatePending},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newModifyHarness(t)
+			seed := modifiableRecord()
+			seed.Status = tc.status
+			rec := seedReplaceable(t, h, seed)
+			stagePayload(t, h.svc, &rec)
+
+			require.NoError(t, h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec,
+				replaceInput{Reason: "a class change"}))
+
+			envelope, _ := storedPayload(t, h.svc, testDBID)
+			assert.Nil(t, envelope, "a bumped generation must not leave a payload nobody can use")
+
+			after, _ := readRecord(t, h.svc)
+			assert.Equal(t, tc.wantState, after.Bootstrap.State)
+			if tc.wantState == BootstrapStateUnrecoverable {
+				assert.Contains(t, after.Bootstrap.FailureReason, "delete and recreate")
+				return
+			}
+			assert.Empty(t, after.Bootstrap.FailureReason,
+				"a serving database must not be reported as one to recreate")
+		})
+	}
+}
+
+// A rollback that could not remove the payload key must not make the identifier
+// unusable: the create that follows owns the reservation, so the orphan it finds
+// is its own to overwrite.
+func TestCreateDBInstance_StagesOverAnOrphanedPayload(t *testing.T) {
+	svc := newTestService(t)
+	rec := defaultRecord()
+	orphaned := seedPending(t, svc, rec)
+
+	restaged := stagePayload(t, svc, &rec)
+
+	assert.NotEqual(t, orphaned, restaged)
+	envelope, _ := storedPayload(t, svc, testDBID)
+	require.NotNil(t, envelope)
+	assert.Equal(t, restaged, envelope.PayloadID, "the live create's payload must be the one a fetch replays")
+}
+
+// The reason for an unrecoverable bootstrap is owned by this protocol, not by
+// the record's FailureReason: the status machine clears that on every
+// transition, which is exactly what a timed-out create does next.
+func TestMarkBootstrapUnrecoverable_ReasonSurvivesAStatusTransition(t *testing.T) {
 	h := newModifyHarness(t)
-	rec := seedReplaceable(t, h, modifiableRecord())
-	stagePayload(t, h.svc, &rec)
+	rec := modifiableRecord()
+	rec.Status = StatusCreating
+	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec,
-		replaceInput{Reason: "a class change"}))
+	require.NoError(t, h.svc.markBootstrapUnrecoverable(t.Context(), h.kv(t), testAccountID, testDBID,
+		"the staged bootstrap payload cannot be read; delete and recreate the DB instance"))
+	marked, rev, err := h.svc.getDBInstance(t.Context(), h.kv(t), testDBID)
+	require.NoError(t, err)
+	require.NoError(t, h.rec.transition(t.Context(), h.kv(t), rev, marked, StatusFailed,
+		"the database engine did not report healthy within 15m of creation"))
 
-	envelope, _ := storedPayload(t, h.svc, testDBID)
-	assert.Nil(t, envelope, "a bumped generation must not leave a payload nobody can use")
+	stored := h.record(t)
+	assert.Contains(t, stored.Bootstrap.FailureReason, "delete and recreate",
+		"the only message naming an instance that must be recreated has to outlive the timeout")
+	assert.Contains(t, stored.FailureReason, "did not report healthy")
+}
 
-	after, _ := readRecord(t, h.svc)
-	assert.Equal(t, BootstrapStateUnrecoverable, after.Bootstrap.State)
-	assert.Contains(t, after.FailureReason, "delete and recreate")
+// Both reasons reach the customer, and an instance still holding staged
+// credentials while it serves is visible without a second call.
+func TestProjectDBInstance_ReportsTheBootstrapState(t *testing.T) {
+	svc := NewService(nil, testRegion)
+	rec := defaultRecord()
+	rec.Status = StatusAvailable
+	rec.Bootstrap.State = BootstrapStateUnrecoverable
+	rec.Bootstrap.FailureReason = "the staged bootstrap payload cannot be read by the control plane"
+
+	infos := svc.projectDBInstance(&rec).StatusInfos
+
+	require.Len(t, infos, 1)
+	assert.Equal(t, "bootstrap", aws.StringValue(infos[0].StatusType))
+	assert.Equal(t, BootstrapStateUnrecoverable, aws.StringValue(infos[0].Status))
+	assert.False(t, aws.BoolValue(infos[0].Normal))
+	assert.Equal(t, rec.Bootstrap.FailureReason, aws.StringValue(infos[0].Message))
+
+	rec.Bootstrap.State = BootstrapStatePending
+	rec.Bootstrap.FailureReason = ""
+	pending := svc.projectDBInstance(&rec).StatusInfos
+	require.Len(t, pending, 1, "a serving engine that never confirmed its credentials is reported")
+	assert.Equal(t, BootstrapStatePending, aws.StringValue(pending[0].Status))
+
+	rec.Status = StatusCreating
+	assert.Empty(t, svc.projectDBInstance(&rec).StatusInfos,
+		"a create still in flight is pending by definition and needs no status info")
+}
+
+// The gate exists for a create that never bootstrapped, whose replacement VM
+// could never format its data volume. A serving instance with a payload staged
+// merely never acknowledged, so refusing its class change would be telling the
+// customer to destroy a working database.
+func TestModifyDBInstance_PendingBootstrapGateIsScopedToFailed(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  Status
+		wantErr bool
+	}{
+		{name: "a create that never bootstrapped", status: StatusFailed, wantErr: true},
+		{name: "a serving instance that never acknowledged", status: StatusAvailable},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newModifyHarness(t)
+			rec := modifiableRecord()
+			rec.Status = tc.status
+			seedReplaceable(t, h, rec)
+			stagePayload(t, h.svc, &rec)
+
+			in := modifyInput()
+			in.DBInstanceClass = aws.String("db.m5.large")
+			_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceInvalidState)
+				assert.Contains(t, err.Error(), "delete and recreate")
+				return
+			}
+			require.NoError(t, err)
+			envelope, _ := storedPayload(t, h.svc, testDBID)
+			assert.NotNil(t, envelope, "an accepted modify must leave the payload replayable")
+		})
+	}
 }

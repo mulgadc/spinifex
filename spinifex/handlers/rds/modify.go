@@ -111,12 +111,14 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 			"DB instance %s is %s; the requested modification requires it to be %s", id, rec.Status, StatusAvailable)
 	}
-	// A disruptive modify is legal from failed, so a create that timed out with
-	// its bootstrap still staged can reach here. The replacement VM would lose
-	// the data-volume format grant, which only the initial create can hold, so it
-	// could never come up whatever the password did. Refusing at the API beats
-	// accepting a request that provably yields a broken VM.
-	if plan.disruptive() {
+	// Only from failed. A create that timed out with its bootstrap still staged
+	// never formatted its data volume, and the replacement VM would lose the
+	// format grant that only the initial create can hold, so it could never come
+	// up whatever the password did. An available instance is serving, so a staged
+	// payload there means only that the acknowledgement never landed — refusing
+	// its class change would be telling the customer to destroy a working
+	// database.
+	if plan.disruptive() && rec.Status == StatusFailed {
 		pending, err := bootstrapPending(ctx, kv, id)
 		if err != nil {
 			return nil, err

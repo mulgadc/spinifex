@@ -16,6 +16,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -737,4 +738,70 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(body)
+}
+
+// AccessDenied is decided by the control plane's own record, so no retry can
+// change it. Looping on one would leave the command poller and the parameter
+// guard unstarted for the life of a VM whose engine is serving normally.
+func TestAcknowledgeBootstrap_StopsOnATerminalDenial(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.ackErrs = []error{&rdsgw.APIError{
+		Action: "AcknowledgeDBBootstrap", StatusCode: 403,
+		Code:    awserrors.ErrorAccessDenied,
+		Message: "bootstrap payload bp-x at generation 1 does not match the current state",
+	}}
+	cfg := testConfig(t)
+	cfg.DataMount = t.TempDir()
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a.id = identity{DBInstanceIdentifier: "db-resolved"}
+	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
+	writeReceipt(t, a, testPayloadID, "db-resolved")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := a.acknowledgeBootstrap(ctx); err != nil {
+		t.Fatalf("acknowledgeBootstrap = %v, want nil so the stateful loops still start", err)
+	}
+	if n := len(cp.ackRequests()); n != 1 {
+		t.Errorf("acknowledgements = %d, want 1 attempt and no retry", n)
+	}
+	if a.hb.bootstrapFailure.Load() == nil {
+		t.Error("a terminal denial must still reach the operator through the heartbeat")
+	}
+	if _, err := os.Stat(a.receiptPath()); err != nil {
+		t.Error("a denied acknowledgement must leave the receipt for a later attempt")
+	}
+}
+
+// rds-init runs after this agent, so the receipt is absent for the whole initdb
+// window. Reporting that would put a failure on every healthy create's beat, and
+// then into the reason a create that timed out for some other cause records.
+func TestAcknowledgeBootstrap_DoesNotReportAnAbsentReceiptAsAFailure(t *testing.T) {
+	cp := newFakeControlPlane()
+	cfg := testConfig(t)
+	cfg.DataMount = t.TempDir()
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a.id = identity{DBInstanceIdentifier: "db-resolved"}
+	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := a.acknowledgeBootstrap(ctx); err == nil {
+		t.Fatal("acknowledgeBootstrap returned nil, want it still waiting for rds-init")
+	}
+	if got := a.hb.bootstrapFailure.Load(); got != nil {
+		t.Errorf("bootstrap failure = %q, want none while the receipt has simply not been written", *got)
+	}
+
+	// A receipt that exists but names another instance is a real mismatch and is
+	// reported, which is what separates the two cases.
+	writeReceipt(t, a, testPayloadID, "db-the-snapshot-source")
+	mismatch, cancelMismatch := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancelMismatch()
+	if err := a.acknowledgeBootstrap(mismatch); err == nil {
+		t.Fatal("a foreign receipt must not be acknowledged")
+	}
+	if a.hb.bootstrapFailure.Load() == nil {
+		t.Error("a receipt naming another instance must be reported")
+	}
 }

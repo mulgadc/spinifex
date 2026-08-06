@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -342,6 +343,11 @@ const (
 	retryErrorAttempt = 5
 )
 
+// Wrapping an error in this stops retryObserved. For the failures the control
+// plane decides from its own record, no retry can change the answer, and looping
+// on one only keeps the caller blocked.
+var errRetryTerminal = errors.New("terminal failure")
+
 // Never gives up on its own: an agent that stopped trying would leave the
 // control plane with no signal at all.
 func retry(ctx context.Context, what string, fn func(context.Context) error) error {
@@ -362,6 +368,10 @@ func retryObserved(ctx context.Context, what string, fn func(context.Context) er
 		}
 		if onFailure != nil {
 			onFailure(err)
+		}
+		if errors.Is(err, errRetryTerminal) {
+			slog.ErrorContext(ctx, "rds-agent: "+what+" failed terminally, not retrying", "err", err)
+			return fmt.Errorf("%s: %w", what, err)
 		}
 		if attempt >= retryErrorAttempt {
 			slog.ErrorContext(ctx, "rds-agent: "+what+" still failing, retrying",

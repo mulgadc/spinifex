@@ -78,10 +78,12 @@ func init() {
 }
 
 const (
-	// defaultEndpointWaitTimeout is deliberately generous: the cold start this
-	// waits on has never been measured, so a tight default would report a
-	// timeout for what is really a slow first launch.
-	defaultEndpointWaitTimeout = 15 * time.Minute
+	// defaultEndpointWaitTimeout must stay comfortably above the daemon's own
+	// readiness bound. The daemon starts its clock once the VM is launched,
+	// which is up to a minute after this one starts, so an equal value expires
+	// here first and reports a bare client timeout instead of the daemon's
+	// abort, which says why the launch actually failed.
+	defaultEndpointWaitTimeout = 20 * time.Minute
 	// endpointPollInterval trades responsiveness against KV read volume. A
 	// cold start is minutes, so seconds of granularity is plenty.
 	endpointPollInterval = 2 * time.Second

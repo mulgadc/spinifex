@@ -153,6 +153,7 @@ type Daemon struct {
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
 	bedrockService        *handlers_bedrock.Service
+	bedrockReaper         *handlers_bedrock.Reaper
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
@@ -1691,11 +1692,23 @@ func (d *Daemon) startCluster() error {
 		d.rdsReconciler.Run(d.ctx)
 	})
 
-	// Bedrock serving-endpoint lifecycle: no reconciler yet (no idle-reclaim or
-	// health sweep), just the request-driven
-	// ensure/describe/list/delete surface RDS-style, constructed synchronously
-	// since it touches no JetStream KV until its first request.
+	// Bedrock serving-endpoint lifecycle: the request-driven
+	// ensure/describe/list/delete surface, constructed synchronously since it
+	// touches no JetStream KV until its first request.
 	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())
+
+	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
+	// and hands an idle GPU back; every node keeps serving the API. Without it a
+	// launched model owns its device until an operator deletes the endpoint.
+	d.bedrockReaper = handlers_bedrock.NewReaper(d.bedrockService, d.node, handlers_bedrock.ReaperDeps{})
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Bedrock reaper goroutine panicked", "recover", r)
+			}
+		}()
+		d.bedrockReaper.Run(d.ctx)
+	})
 
 	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
 	// (which degrades to "feature disabled" without a master key) there is no

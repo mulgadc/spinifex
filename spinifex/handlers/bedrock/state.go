@@ -74,8 +74,23 @@ type EndpointRecord struct {
 	CreatedAt time.Time `json:"created_at,omitzero"`
 	ReadyAt   time.Time `json:"ready_at,omitzero"`
 
-	// Pinned exempts this endpoint from the (not-yet-built) idle-reclaim sweep.
+	// Pinned exempts this endpoint from the idle-reclaim sweep and from eviction.
 	Pinned bool `json:"pinned,omitempty"`
+
+	// The reaper's last observation of this endpoint. Persisted rather than kept
+	// in the reaper's memory because an eviction decision runs on whichever
+	// replica the queue group picked, not necessarily the reaper's leader, and
+	// because a leader change must not reset the idle clock or the failure count.
+	//
+	// LastActiveAt is the last sweep at which the endpoint was observed serving,
+	// seeded from ReadyAt; it is the LRU ordering key. InFlight and SuccessTotal
+	// are the last successful scrape's queue depth and completed-request count,
+	// the latter being idleness's "unchanged since the previous tick" comparison
+	// point. ScrapeFailures counts consecutive failed scrapes.
+	LastActiveAt   time.Time `json:"last_active_at,omitzero"`
+	InFlight       int       `json:"in_flight,omitempty"`
+	SuccessTotal   float64   `json:"success_total,omitempty"`
+	ScrapeFailures int       `json:"scrape_failures,omitempty"`
 
 	// Generation increments on every write and is the CAS single-flight token:
 	// a concurrent Ensure that lost the local-mutex race re-reads the record and

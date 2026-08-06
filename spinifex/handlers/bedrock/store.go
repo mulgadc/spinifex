@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -22,6 +23,24 @@ const KVBucketEndpoints = "bedrock-endpoints"
 // KVBucketEndpointsHistory pins one revision per key: a superseded state is
 // not meaningful to retain, only the current one CAS-guards against races.
 const KVBucketEndpointsHistory = 1
+
+// KVBucketLeader holds the reaper's leader lease. Its TTL is what makes the
+// lease self-healing: a leader that dies without releasing it is replaced
+// within one TTL rather than never.
+const (
+	KVBucketLeader    = "bedrock-leader"
+	KVBucketLeaderTTL = 60 * time.Second
+	leaderKey         = "reaper"
+)
+
+// GetOrCreateLeaderBucket returns the reaper's TTL-backed leader bucket.
+func GetOrCreateLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
+	kv, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, KVBucketLeader, 1, KVBucketLeaderTTL)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: create leader KV bucket: %w", err)
+	}
+	return kv, nil
+}
 
 // EndpointKey returns the KV key for accountID's modelID endpoint record.
 // Model IDs contain ':' (e.g. "meta.llama3-2-1b-instruct-v1:0"), which NATS

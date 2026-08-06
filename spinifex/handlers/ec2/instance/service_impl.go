@@ -1710,7 +1710,7 @@ func (s *InstanceServiceImpl) cloneAMIToVolume(ctx context.Context, input *ec2.R
 // prepareEFIVolume creates the per-VM EFI variable store, sized exactly to the
 // firmware VARS template (pflash requires byte-exact size) and seeded from it.
 // arch is "x86_64" | "arm64".
-func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
+func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
 	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
 	if err != nil {
 		slog.ErrorContext(ctx, "UEFI firmware not installed on this host", "arch", arch, "err", err)
@@ -1727,7 +1727,65 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId stri
 	}
 	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
-	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
+	efiVolumeName := fmt.Sprintf("%s-efi", volumeID)
+	if s.ebsProvider != nil {
+		err = s.createEFIVolumeViaProvider(ctx, efiVolumeName, template)
+	} else {
+		err = s.createEFIVolumeViaEngine(ctx, efiVolumeName, volumeConfig, varsSize, template)
+	}
+	if err != nil {
+		return err
+	}
+
+	instance.EBSRequests.Mu.Lock()
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
+		Name: efiVolumeName,
+		Boot: false,
+		EFI:  true,
+	})
+	instance.EBSRequests.Mu.Unlock()
+
+	return nil
+}
+
+// createEFIVolumeViaProvider allocates the EFI variable store through the
+// provider, seeding it with this node's firmware VARS template. The bytes
+// travel with the request so the region matches the firmware that will run.
+func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, efiVolumeName string, template []byte) error {
+	slog.InfoContext(ctx, "Creating EFI variable store via EBS provider", "name", efiVolumeName, "seedBytes", len(template))
+
+	// The store is internal to the launch, never attachable and filtered out of
+	// DescribeVolumes, so it gets no ebsmetadata document the way a root volume
+	// does. Its lifecycle is the root volume's DeleteVolume.
+	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+		Versioned:        ebsprovider.NewVersioned(),
+		VolumeID:         efiVolumeName,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(len(template))},
+		AvailabilityZone: s.config.AZ,
+		SeedData:         template,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Provider EFI volume creation failed", "name", efiVolumeName, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if created == nil {
+		slog.ErrorContext(ctx, "Provider returned no volume for the EFI variable store", "name", efiVolumeName)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// pflash rejects a VARS region that is not byte-exact, so a provider that
+	// rounded the capacity up to a GiB boundary yields a guest that cannot boot.
+	if created.CapacityBytes != int64(len(template)) {
+		slog.ErrorContext(ctx, "Provider EFI volume capacity does not match the VARS template",
+			"name", efiVolumeName, "wantBytes", len(template), "gotBytes", created.CapacityBytes)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
+// createEFIVolumeViaEngine is the pre-provider path, building a control-plane
+// viperblock engine to seed the store. It goes away with the legacy branch.
+func (s *InstanceServiceImpl) createEFIVolumeViaEngine(ctx context.Context, efiVolumeName string, volumeConfig viperblock.VolumeConfig, varsSize int64, template []byte) error {
 	efiVolumeConfig := volumeConfig
 	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
 	// Zero SizeGiB prevents viperblock from rounding the EFI volume size
@@ -1797,14 +1855,6 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, imageId stri
 	if err := efiVb.RemoveLocalFiles(); err != nil {
 		slog.ErrorContext(ctx, "Failed to remove local files", "err", err)
 	}
-
-	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
-		Name: efiVb.VolumeName,
-		Boot: false,
-		EFI:  true,
-	})
-	instance.EBSRequests.Mu.Unlock()
 
 	return nil
 }

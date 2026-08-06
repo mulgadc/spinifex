@@ -10,13 +10,11 @@
 # only way to reach the database is from inside the VPC, which is what the
 # client instance here is for.
 #
-# The client and the DB subnet group deliberately share ONE subnet. In v1 the
-# endpoint is reachable from clients on the endpoint ENI's own subnet only: the
-# DB VM carries its default route on a platform-side interface and the customer
-# ENI is pure ingress, so a reply to a client in another subnet is never routed
-# back. A subnet group spanning several subnets places the endpoint in one of
-# them and leaves clients in the others unable to connect. On AWS you would use
-# two private subnets here instead.
+# Two subnets: the client sits in a public one, because it needs an
+# internet-gateway route to apt-get a psql, and the database in a private one
+# with no route off the VPC at all. The endpoint is reachable from any subnet of
+# the VPC, so the tier that talks to the database does not have to share the
+# subnet the endpoint ENI landed in.
 #
 # Usage:
 #   cd spinifex/docs/terraform-workbooks/rds-quickstart
@@ -169,7 +167,7 @@ data "aws_ami" "ubuntu" {
 }
 
 # ---------------------------------------------------------------------------
-# VPC — one subnet, shared by the client and the DB subnet group
+# VPC — a public client subnet and a private DB subnet
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc" "main" {
@@ -190,18 +188,29 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-# Public only in the sense that it has an internet-gateway route, which the
-# client needs to apt-get a psql. The endpoint ENI in it is given no public
-# address, and PubliclyAccessible=true is rejected, so the database is not
-# exposed by sharing the subnet.
-resource "aws_subnet" "main" {
+# Public: an internet-gateway route and a public address on launch, which is how
+# the client reaches apt and how you SSH to it.
+resource "aws_subnet" "client" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.60.1.0/24"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "${var.name}-subnet"
+    Name = "${var.name}-client-subnet"
+  }
+}
+
+# Private: no association, so it stays on the main route table create-vpc writes,
+# which routes inside the VPC and nowhere else. The endpoint ENI lands here.
+resource "aws_subnet" "db" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.60.2.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = false
+
+  tags = {
+    Name = "${var.name}-db-subnet"
   }
 }
 
@@ -218,8 +227,8 @@ resource "aws_route_table" "public" {
   }
 }
 
-resource "aws_route_table_association" "main" {
-  subnet_id      = aws_subnet.main.id
+resource "aws_route_table_association" "client" {
+  subnet_id      = aws_subnet.client.id
   route_table_id = aws_route_table.public.id
 }
 
@@ -288,7 +297,7 @@ resource "aws_security_group" "db" {
 resource "aws_db_subnet_group" "main" {
   name        = "${var.name}-subnets"
   description = "RDS quickstart DB subnets"
-  subnet_ids  = [aws_subnet.main.id]
+  subnet_ids  = [aws_subnet.db.id]
 
   tags = {
     Name = "${var.name}-subnets"
@@ -356,7 +365,8 @@ resource "aws_db_instance" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# Client VM — psql inside the VPC, which is the only place the endpoint exists
+# Client VM — psql inside the VPC, which is the only place the endpoint exists,
+# from the client subnet rather than the endpoint's own
 # ---------------------------------------------------------------------------
 
 resource "tls_private_key" "client" {
@@ -377,7 +387,7 @@ resource "local_file" "client_pem" {
 resource "aws_instance" "client" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
-  subnet_id              = aws_subnet.main.id
+  subnet_id              = aws_subnet.client.id
   vpc_security_group_ids = [aws_security_group.client.id]
   key_name               = aws_key_pair.client.key_name
 

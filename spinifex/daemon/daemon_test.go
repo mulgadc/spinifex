@@ -4501,3 +4501,49 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		})
 	}
 }
+
+// --- configureEBSProvider ---
+
+func newEBSProviderTestDaemon(provider string) *Daemon {
+	return &Daemon{
+		config:          &config.Config{EBS: config.EBSConfig{Provider: provider}},
+		natsConn:        &nats.Conn{},
+		instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
+		imageService:    &handlers_ec2_image.ImageServiceImpl{},
+		snapshotService: &handlers_ec2_snapshot.SnapshotServiceImpl{},
+		volumeService:   &handlers_ec2_volume.VolumeServiceImpl{},
+	}
+}
+
+func TestConfigureEBSProvider_UnsetLeavesProviderNil(t *testing.T) {
+	d := newEBSProviderTestDaemon("")
+	require.NoError(t, d.configureEBSProvider())
+
+	assert.Nil(t, d.ebsProvider)
+	assert.Nil(t, d.instanceService.EBSProvider())
+	assert.Nil(t, d.imageService.EBSProvider())
+	assert.Nil(t, d.snapshotService.EBSProvider())
+	assert.Nil(t, d.volumeService.EBSProvider())
+}
+
+func TestConfigureEBSProvider_EmbeddedLeavesProviderNil(t *testing.T) {
+	d := newEBSProviderTestDaemon(config.EBSProviderEmbedded)
+	require.NoError(t, d.configureEBSProvider())
+
+	assert.Nil(t, d.ebsProvider)
+	assert.Nil(t, d.instanceService.EBSProvider())
+	assert.Nil(t, d.imageService.EBSProvider())
+	assert.Nil(t, d.snapshotService.EBSProvider())
+	assert.Nil(t, d.volumeService.EBSProvider())
+}
+
+func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testing.T) {
+	d := newEBSProviderTestDaemon(config.EBSProviderViperblockd)
+	require.NoError(t, d.configureEBSProvider())
+
+	require.NotNil(t, d.ebsProvider, "daemon must retain the provider it constructed")
+	assert.Same(t, d.ebsProvider, d.instanceService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.imageService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.snapshotService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.volumeService.EBSProvider())
+}

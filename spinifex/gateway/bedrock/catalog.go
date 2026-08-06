@@ -55,8 +55,12 @@ type catalogEntry struct {
 	PriceKnown                    bool     // provider entries only; self-host is always known-zero
 }
 
-// catalog is the static Phase-1 model set: one self-hosted open model and one
+// catalog is the static model set: two self-hosted open models and one
 // Anthropic-direct model. Later phases extend this list.
+//
+// Both self-host entries are Meta models on purpose: self-host InvokeModel
+// dispatch picks llamaInvokeAdapter for every self-host entry, so a model of
+// another family would be served with Llama's native request schema.
 var catalog = []catalogEntry{
 	{
 		ModelID:                    "meta.llama3-2-1b-instruct-v1:0",
@@ -73,6 +77,25 @@ var catalog = []catalogEntry{
 		MinVRAMMiB:   5120,
 		InstanceType: "g5.xlarge",
 		VLLMArgs:     []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.6"},
+	},
+	{
+		ModelID:                    "meta.llama3-2-3b-instruct-v1:0",
+		ModelName:                  "Llama 3.2 3B Instruct",
+		ProviderName:               "Meta",
+		Provider:                   tierSelfHost,
+		InputModalities:            []string{"TEXT"},
+		OutputModalities:           []string{"TEXT"},
+		ResponseStreamingSupported: false,
+		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		// 3.21B params at bf16 is roughly 6124 MiB of weights, so on an 8188 MiB
+		// card the budget is tight: --enforce-eager skips CUDA graph capture to
+		// free several hundred MiB, and max-model-len is half the 1B entry's.
+		MinVRAMMiB:   7168,
+		InstanceType: "g5.xlarge",
+		VLLMArgs: []string{
+			"--dtype=bfloat16", "--max-model-len=4096", "--gpu-memory-utilization=0.92",
+			"--max-num-seqs=8", "--enforce-eager",
+		},
 	},
 	{
 		ModelID:                    "anthropic.claude-3-5-sonnet-20240620-v1:0",

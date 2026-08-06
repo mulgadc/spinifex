@@ -718,3 +718,73 @@ func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Nil(t, resp.Error)
 }
+
+// TestProviderHandlers_CreateVolume_SeedValidation covers the guards that must
+// reject a seed before any engine is built. The bound exists because a []byte
+// is base64-encoded into the JSON request and has to clear NATS max_payload.
+func TestProviderHandlers_CreateVolume_SeedValidation(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	requestError := func(t *testing.T, body []byte) *ebsprovider.ProviderError {
+		t.Helper()
+		msg := requestProvider(t, nc, ebsprovider.CreateVolumeSubject, body)
+		var resp ebsprovider.CreateVolumeResponse
+		require.NoError(t, json.Unmarshal(msg.Data, &resp))
+		require.NotNil(t, resp.Error)
+		require.Nil(t, resp.Volume)
+		return resp.Error
+	}
+
+	t.Run("seed above MaxSeedBytes is invalid_argument", func(t *testing.T) {
+		err := requestError(t, marshalRequest(t, map[string]any{
+			"schema_version": ebsprovider.SchemaVersion,
+			"volume_id":      "vol-seedtoobig0001",
+			"capacity_range": map[string]any{"required_bytes": int64(bytesPerGiB)},
+			"seed_data":      make([]byte, ebsprovider.MaxSeedBytes+1),
+		}))
+		assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, err.Code)
+	})
+
+	t.Run("seed larger than capacity is invalid_argument", func(t *testing.T) {
+		err := requestError(t, marshalRequest(t, map[string]any{
+			"schema_version": ebsprovider.SchemaVersion,
+			"volume_id":      "vol-seedovercap001",
+			"capacity_range": map[string]any{"required_bytes": 512},
+			"seed_data":      make([]byte, 4096),
+		}))
+		assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, err.Code)
+	})
+
+	// A snapshot clone already fills the volume, so seeding on top of one would
+	// overwrite the cloned image rather than initialise a blank volume.
+	t.Run("seed with a source snapshot is invalid_argument", func(t *testing.T) {
+		err := requestError(t, marshalRequest(t, map[string]any{
+			"schema_version":     ebsprovider.SchemaVersion,
+			"volume_id":          "vol-seedwithsnap01",
+			"capacity_range":     map[string]any{"required_bytes": int64(bytesPerGiB)},
+			"source_snapshot_id": "snap-0000000000001",
+			"source_volume_id":   "vol-source00000001",
+			"seed_data":          make([]byte, 16),
+		}))
+		assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, err.Code)
+	})
+}
+
+// The EFI variable store depends on CreateVolume writing a seed, so the daemon
+// must advertise that capability; a caller branching on it would otherwise fall
+// back to building its own engine.
+func TestProviderHandlers_Capabilities_AdvertisesVolumeSeeding(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	msg := requestProvider(t, nc, ebsprovider.CapabilitiesSubject, marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+	}))
+	var resp ebsprovider.GetCapabilitiesResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	assert.True(t, resp.Capabilities.VolumeSeeding)
+}

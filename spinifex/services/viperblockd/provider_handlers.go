@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	vbtypes "github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
@@ -167,6 +168,10 @@ func handleProviderCapabilities(msg *nats.Msg) {
 			// depending on a guest-coordinated quiesce.
 			CopyOnWriteClone:        true,
 			CrashConsistentSnapshot: true,
+			// CreateVolume can write a caller-supplied seed at offset 0 in the
+			// engine it already builds, which is how an EFI variable store gets
+			// its firmware VARS template without a control-plane engine.
+			VolumeSeeding: true,
 			// ExpandVolume refuses a volume that is mounted with a live VB
 			// (see handleExpandVolume), and there is no API surfacing which
 			// extents are sparse.
@@ -230,6 +235,19 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("source_volume_id is required with source_snapshot_id")})
 		return
 	}
+	if err := ebsprovider.ValidateSeedData(req.SeedData); err != nil {
+		slog.Error("ebs.provider.volume.create: seed data rejected", "volume", req.VolumeID, "err", err)
+		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
+		return
+	}
+	if int64(len(req.SeedData)) > req.CapacityRange.RequiredBytes {
+		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data is larger than the requested capacity")})
+		return
+	}
+	if len(req.SeedData) > 0 && req.SourceSnapshotID != "" {
+		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data cannot be combined with a source snapshot")})
+		return
+	}
 
 	existing, err := describeVolumeEngine(cfg, req.VolumeID)
 	switch {
@@ -275,13 +293,19 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("backend init: %v", err)})
 		return
 	}
-	if err := vb.SaveState(); err != nil {
+	if len(req.SeedData) > 0 {
+		if err := seedVolume(vb, req.SeedData); err != nil {
+			slog.Error("ebs.provider.volume.create: seed failed", "volume", req.VolumeID, "bytes", len(req.SeedData), "err", err)
+			respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("seed volume: %v", err)})
+			return
+		}
+	} else if err := vb.SaveState(); err != nil {
 		slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
 		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
 		return
 	}
 
-	slog.Info("ebs.provider.volume.create: created", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes)
+	slog.Info("ebs.provider.volume.create: created", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes, "seedBytes", len(req.SeedData))
 	respondJSON(msg, ebsprovider.CreateVolumeResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Volume: &ebsprovider.Volume{
@@ -291,6 +315,37 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 			Handle:        volumeHandle(req.VolumeID),
 		},
 	})
+}
+
+// seedVolume writes seed at offset 0 of a freshly created volume. Only
+// CreateVolume calls it, and only when the existence check above found no
+// volume, so it can never overwrite bytes a guest has already written.
+func seedVolume(vb *viperblock.VB, seed []byte) error {
+	var err error
+	if vb.UseShardedWAL {
+		err = vb.OpenShardedWAL()
+	} else {
+		err = vb.OpenWAL(&vb.WAL, fmt.Sprintf("%s/%s", vb.WAL.BaseDir, vbtypes.GetFilePath(vbtypes.FileTypeWALChunk, vb.WAL.WallNum.Load(), vb.GetVolume())))
+	}
+	if err != nil {
+		return fmt.Errorf("open WAL: %w", err)
+	}
+	if err := vb.OpenWAL(&vb.BlockToObjectWAL, fmt.Sprintf("%s/%s", vb.WAL.BaseDir, vbtypes.GetFilePath(vbtypes.FileTypeWALBlock, vb.BlockToObjectWAL.WallNum.Load(), vb.GetVolume()))); err != nil {
+		return fmt.Errorf("open block WAL: %w", err)
+	}
+	if err := vb.WriteAt(0, seed); err != nil {
+		return fmt.Errorf("write seed: %w", err)
+	}
+
+	// Close is the durability boundary, not Flush: a partially persisted seed
+	// leaves the caller believing bytes it never got are on the volume.
+	if err := vb.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	if err := vb.RemoveLocalFiles(); err != nil {
+		slog.Warn("ebs.provider.volume.create: could not remove local files after seeding", "volume", vb.GetVolume(), "err", err)
+	}
+	return nil
 }
 
 // describeVolumeEngine resolves volumeID to a provider-neutral Volume,

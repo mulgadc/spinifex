@@ -97,6 +97,9 @@ func (p *NATSProvider) CreateVolume(ctx context.Context, req CreateVolumeRequest
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
+	if err := ValidateSeedData(req.SeedData); err != nil {
+		return nil, err
+	}
 	var response CreateVolumeResponse
 	if err := p.request(ctx, CreateVolumeSubject, req, &response); err != nil {
 		return nil, err

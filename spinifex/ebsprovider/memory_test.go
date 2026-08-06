@@ -1,6 +1,7 @@
 package ebsprovider
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -223,4 +224,51 @@ func TestCloneHelpersHandleNil(t *testing.T) {
 	assert.Nil(t, cloneVolume(nil))
 	assert.Nil(t, cloneSnapshot(nil))
 	assert.Nil(t, clonePublished(nil))
+}
+
+// A provider that does not advertise VolumeSeeding must refuse a seed outright
+// rather than accepting the request and silently dropping the bytes, which
+// would leave a guest booting an EFI volume full of zeroes.
+func TestMemoryProviderSeedRequiresCapability(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	_, err := provider.CreateVolume(context.Background(), CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-seed-nocap",
+		CapacityRange: CapacityRange{RequiredBytes: 4096},
+		SeedData:      bytes.Repeat([]byte{0x01}, 16),
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestMemoryProviderSeedIsStoredOnce(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{VolumeSeeding: true})
+	ctx := context.Background()
+	seed := bytes.Repeat([]byte{0xAB}, 512)
+
+	create := CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-seed-once",
+		CapacityRange: CapacityRange{RequiredBytes: 4096}, SeedData: seed,
+	}
+	_, err := provider.CreateVolume(ctx, create)
+	require.NoError(t, err)
+
+	stored, ok := provider.SeedData("vol-seed-once")
+	require.True(t, ok)
+	assert.Equal(t, seed, stored)
+
+	// A relaunch reissues the same create. Reseeding here would overwrite an
+	// EFI variable store the guest has since written its own BootOrder into.
+	reseed := create
+	reseed.SeedData = bytes.Repeat([]byte{0xCD}, 512)
+	_, err = provider.CreateVolume(ctx, reseed)
+	require.NoError(t, err, "a repeat create must stay idempotent regardless of seed")
+
+	stored, ok = provider.SeedData("vol-seed-once")
+	require.True(t, ok)
+	assert.Equal(t, seed, stored, "an existing volume must never be reseeded")
+}
+
+func TestValidateSeedData(t *testing.T) {
+	require.NoError(t, ValidateSeedData(nil))
+	require.NoError(t, ValidateSeedData(make([]byte, MaxSeedBytes)))
+	require.ErrorIs(t, ValidateSeedData(make([]byte, MaxSeedBytes+1)), ErrInvalidArgument)
 }

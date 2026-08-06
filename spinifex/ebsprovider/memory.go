@@ -23,6 +23,7 @@ type memoryVolume struct {
 	volume           Volume
 	sourceSnapshotID string
 	parameters       []byte
+	seed             []byte
 	published        *PublishedVolume
 }
 
@@ -52,9 +53,21 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
+	if err := ValidateSeedData(req.SeedData); err != nil {
+		return nil, err
+	}
+	if len(req.SeedData) > 0 && !m.capabilities.VolumeSeeding {
+		return nil, fmt.Errorf("%w: provider does not support volume seeding", ErrInvalidArgument)
+	}
+	if int64(len(req.SeedData)) > req.CapacityRange.RequiredBytes {
+		return nil, fmt.Errorf("%w: seed data is larger than the requested capacity", ErrInvalidArgument)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// SeedData is deliberately absent from the mismatch check below: a seed
+	// applies only to a volume this call creates, so a repeated create returns
+	// the existing volume rather than overwriting bytes the guest has since set.
 	if existing := m.volumes[req.VolumeID]; existing != nil {
 		if existing.volume.CapacityBytes != req.CapacityRange.RequiredBytes ||
 			existing.volume.AvailabilityZone != req.AvailabilityZone ||
@@ -85,8 +98,21 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 		volume:           volume,
 		sourceSnapshotID: req.SourceSnapshotID,
 		parameters:       bytes.Clone(req.Parameters),
+		seed:             bytes.Clone(req.SeedData),
 	}
 	return cloneVolume(&volume), nil
+}
+
+// SeedData returns the bytes a CreateVolume call seeded the volume with, so a
+// control-plane test can assert what it asked the provider to write.
+func (m *MemoryProvider) SeedData(volumeID string) ([]byte, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	volume := m.volumes[volumeID]
+	if volume == nil {
+		return nil, false
+	}
+	return bytes.Clone(volume.seed), true
 }
 
 func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Volume, error) {

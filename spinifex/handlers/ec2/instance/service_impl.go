@@ -150,6 +150,12 @@ func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.ebsProvider = provider
 }
 
+// EBSProvider returns the injected provider boundary, or nil on the legacy
+// embedded-engine path. Primarily for composition-root tests to observe wiring.
+func (s *InstanceServiceImpl) EBSProvider() ebsprovider.EBSProvider {
+	return s.ebsProvider
+}
+
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use.
 func NewInstanceServiceImpl(
 	cfg *config.Config,

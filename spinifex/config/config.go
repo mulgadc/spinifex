@@ -100,6 +100,7 @@ type Config struct {
 	NATS       NATSConfig       `json:"NATS" mapstructure:"nats"`
 	Predastore PredastoreConfig `json:"Predastore" mapstructure:"predastore"`
 	Viperblock ViperblockConfig `json:"Viperblock" mapstructure:"viperblock"`
+	EBS        EBSConfig        `json:"EBS" mapstructure:"ebs"`
 	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
 	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
@@ -134,6 +135,33 @@ type ViperblockConfig struct {
 	// volume service. Default false when nil so existing deployments keep
 	// today's behavior until explicitly opted in.
 	GCEnabled *bool `json:"GCEnabled" mapstructure:"gc_enabled"`
+}
+
+// EBS provider selectors. Embedded is today's behavior: the control plane
+// constructs the viperblock engine in-process. Viperblockd routes EBS calls
+// to the viperblockd daemon over the versioned ebs.provider.v1.* NATS contract.
+const (
+	EBSProviderEmbedded    = "embedded"
+	EBSProviderViperblockd = "viperblockd"
+)
+
+// EBSConfig selects which provider backs EBS. Not nested under
+// ViperblockConfig: it names the provider boundary, not one provider's
+// settings, so a second provider never needs a rename.
+type EBSConfig struct {
+	// Provider is "embedded" (default) or "viperblockd" (EXPERIMENTAL): the
+	// latter persists volume metadata in ebsmetadata, not viperblock's
+	// config.json, so the leak reaper, GC and admin paths miss tenant/tag data.
+	Provider string `json:"Provider" mapstructure:"provider"`
+}
+
+// ResolvedProvider normalizes an empty Provider to EBSProviderEmbedded so
+// deployed spinifex.toml files that predate this key keep today's behavior.
+func (c EBSConfig) ResolvedProvider() string {
+	if c.Provider == "" {
+		return EBSProviderEmbedded
+	}
+	return c.Provider
 }
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.
@@ -414,9 +442,14 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
 	}
-	for nodeName := range cc.Nodes {
+	for nodeName, nodeCfg := range cc.Nodes {
 		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
+		}
+		switch nodeCfg.EBS.Provider {
+		case "", EBSProviderEmbedded, EBSProviderViperblockd:
+		default:
+			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or %q", nodeName, nodeCfg.EBS.Provider, EBSProviderEmbedded, EBSProviderViperblockd)
 		}
 	}
 

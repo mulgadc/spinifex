@@ -944,3 +944,71 @@ ovn_nb_addr = "tcp:127.0.0.1:6641"
 		assert.Contains(t, err.Error(), `dhcp_mac is only valid with source="dhcp"`)
 	})
 }
+
+func TestEBSConfig_ResolvedProvider(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty defaults to embedded", "", EBSProviderEmbedded},
+		{"embedded passes through", EBSProviderEmbedded, EBSProviderEmbedded},
+		{"viperblockd passes through", EBSProviderViperblockd, EBSProviderViperblockd},
+		{"unknown value passes through unresolved", "bogus", "bogus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := EBSConfig{Provider: tc.in}
+			assert.Equal(t, tc.want, cfg.ResolvedProvider())
+		})
+	}
+}
+
+func TestLoadConfig_EBSProvider_Valid(t *testing.T) {
+	base := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+%s
+`
+	cases := []struct {
+		name         string
+		section      string
+		wantResolved string
+	}{
+		{"unset defaults to embedded", "", EBSProviderEmbedded},
+		{"embedded explicit", "[nodes.n1.ebs]\nprovider = \"embedded\"\n", EBSProviderEmbedded},
+		{"viperblockd explicit", "[nodes.n1.ebs]\nprovider = \"viperblockd\"\n", EBSProviderViperblockd},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViper(t)
+			path := filepath.Join(t.TempDir(), "spinifex.toml")
+			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, base, tc.section), 0600))
+
+			cfg, err := LoadConfig(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantResolved, cfg.Nodes["n1"].EBS.ResolvedProvider())
+		})
+	}
+}
+
+func TestLoadConfig_EBSProvider_UnknownRejected(t *testing.T) {
+	resetViper(t)
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.ebs]
+provider = "bogus"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `provider="bogus"`)
+}

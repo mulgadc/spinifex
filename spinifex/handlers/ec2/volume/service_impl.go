@@ -79,6 +79,12 @@ func (s *VolumeServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.provider = provider
 }
 
+// EBSProvider returns the injected provider boundary, or nil on the legacy
+// embedded-engine path. Primarily for composition-root tests to observe wiring.
+func (s *VolumeServiceImpl) EBSProvider() ebsprovider.EBSProvider {
+	return s.provider
+}
+
 // NewVolumeServiceImpl creates a new daemon-side volume service.
 // snapshotKV is optional — when non-nil, DeleteVolume uses O(1) KV lookup
 // instead of scanning all snapshots in S3.

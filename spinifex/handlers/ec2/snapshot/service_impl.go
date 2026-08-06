@@ -62,6 +62,12 @@ func (s *SnapshotServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.provider = provider
 }
 
+// EBSProvider returns the injected provider boundary, or nil on the legacy
+// embedded-engine path. Primarily for composition-root tests to observe wiring.
+func (s *SnapshotServiceImpl) EBSProvider() ebsprovider.EBSProvider {
+	return s.provider
+}
+
 // SnapshotConfig represents snapshot metadata stored in S3.
 type SnapshotConfig struct {
 	SnapshotID       string            `json:"snapshot_id"`

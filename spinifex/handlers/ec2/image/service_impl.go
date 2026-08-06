@@ -57,6 +57,12 @@ func (s *ImageServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.provider = provider
 }
 
+// EBSProvider returns the injected provider boundary, or nil on the legacy
+// embedded-engine path. Primarily for composition-root tests to observe wiring.
+func (s *ImageServiceImpl) EBSProvider() ebsprovider.EBSProvider {
+	return s.provider
+}
+
 // NewImageServiceImpl creates a new daemon-side image service. natsConn is used
 // to drain a running instance's volume (routed to the node hosting it) before
 // CreateImageFromInstance reads its live checkpoint.

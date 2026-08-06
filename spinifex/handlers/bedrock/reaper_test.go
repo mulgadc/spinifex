@@ -350,3 +350,14 @@ func TestReaper_NonLeaderSweepsNothing(t *testing.T) {
 	assert.True(t, found, "a non-leader must not reap")
 	assert.Zero(t, f.transport.scrapeCount())
 }
+
+// LastActive is the one definition both the idle clock and the LRU eviction
+// order read, so they cannot drift apart.
+func TestEndpointRecord_LastActive(t *testing.T) {
+	ready := time.Now().UTC().Add(-time.Hour)
+	active := ready.Add(30 * time.Minute)
+
+	assert.Equal(t, active, EndpointRecord{ReadyAt: ready, LastActiveAt: active}.LastActive())
+	assert.Equal(t, ready, EndpointRecord{ReadyAt: ready}.LastActive(),
+		"an endpoint quiet since launch is idle since launch, not since the zero time")
+}

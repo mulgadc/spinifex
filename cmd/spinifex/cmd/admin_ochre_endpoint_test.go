@@ -365,3 +365,61 @@ func TestRunOchreEndpointDelete_ErrorExits1(t *testing.T) {
 	code := withOchreExitCapture(t, func() { runOchreEndpointDelete(&cmd, nil) })
 	require.Equal(t, 1, code)
 }
+
+// The reclaim inputs are what an operator needs to answer "why was this
+// endpoint reaped" or "why was it not", so a READY record must show them.
+func TestFormatEndpointRecord_ShowsReclaimInputs(t *testing.T) {
+	ready := time.Now().UTC().Add(-30 * time.Minute)
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID:      testModelID,
+		State:        handlers_bedrock.StateReady,
+		ReadyAt:      ready,
+		LastActiveAt: ready.Add(20 * time.Minute),
+		InFlight:     3,
+	})
+
+	require.Contains(t, out, "In flight:")
+	require.Contains(t, out, "3")
+	require.Contains(t, out, "Last active:")
+	require.Contains(t, out, "Idle for:")
+}
+
+// An endpoint quiet since launch is idle since launch, not since the zero
+// time: the fallback is what keeps the reported figure meaningful.
+func TestFormatEndpointRecord_NeverActiveFallsBackToReadyAt(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID: testModelID,
+		State:   handlers_bedrock.StateReady,
+		ReadyAt: time.Now().UTC().Add(-90 * time.Second),
+	})
+
+	require.Contains(t, out, "Idle for:")
+	require.NotContains(t, out, "0001-01-01", "an unsampled record must not report the zero time")
+	require.NotContains(t, out, "Scrape failures", "a healthy endpoint must not carry a failure row")
+}
+
+func TestFormatEndpointRecord_SurfacesPinnedAndScrapeFailures(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID:        testModelID,
+		State:          handlers_bedrock.StateReady,
+		ReadyAt:        time.Now().UTC().Add(-time.Hour),
+		Pinned:         true,
+		ScrapeFailures: 2,
+	})
+
+	require.Contains(t, out, "Pinned:")
+	require.Contains(t, out, "Scrape failures:")
+	require.Contains(t, out, "2")
+}
+
+// Only READY endpoints are swept, so reclaim rows on any other state would be
+// reporting a decision nothing is making.
+func TestFormatEndpointRecord_NoReclaimRowsWhenNotReady(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID: testModelID,
+		State:   handlers_bedrock.StateStarting,
+	})
+
+	require.NotContains(t, out, "In flight")
+	require.NotContains(t, out, "Idle for")
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
@@ -19,8 +20,11 @@ var ochreEndpointCmd = &cobra.Command{
 	Long: `Operator surface over the daemon's serving-endpoint lifecycle: request an
 endpoint for a staged model, inspect its state, and tear it down.
 
-The gateway does not yet request endpoints itself, so until it does this is
-the only way to start a serving VM.`,
+The gateway requests endpoints on its own: an invoke for a model with no
+endpoint returns ModelNotReadyException and launches one in the background,
+and the daemon reclaims an endpoint that has been idle past its TTL. These
+commands drive the same lifecycle by hand, for staging a model ahead of first
+use or taking its GPU back early.`,
 }
 
 var ochreEndpointEnsureCmd = &cobra.Command{
@@ -164,12 +168,40 @@ func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
 			rows = append(rows, [2]string{"Startup", rec.ReadyAt.Sub(rec.CreatedAt).Round(time.Second).String()})
 		}
 	}
+	rows = append(rows, reclaimRows(rec)...)
 
 	out := ""
 	for _, row := range rows {
 		out += fmt.Sprintf("%-15s %s\n", row[0]+":", row[1])
 	}
 	return out
+}
+
+// reclaimRows renders what the daemon's idle sweep last observed, so an
+// operator asking why an endpoint was or was not reclaimed can see the inputs
+// rather than infer them. Only meaningful for a READY endpoint: no other state
+// is swept.
+//
+// "Idle for" is measured from the record's LastActive, which falls back to
+// ReadyAt, so an endpoint that has been quiet since launch reads as idle since
+// launch rather than since the zero time.
+func reclaimRows(rec handlers_bedrock.EndpointRecord) [][2]string {
+	if rec.State != handlers_bedrock.StateReady {
+		return nil
+	}
+	rows := [][2]string{{"In flight", strconv.Itoa(rec.InFlight)}}
+	if since := rec.LastActive(); !since.IsZero() {
+		rows = append(rows,
+			[2]string{"Last active", since.Format(time.RFC3339)},
+			[2]string{"Idle for", time.Since(since).Round(time.Second).String()})
+	}
+	if rec.Pinned {
+		rows = append(rows, [2]string{"Pinned", "yes (never reclaimed or evicted)"})
+	}
+	if rec.ScrapeFailures > 0 {
+		rows = append(rows, [2]string{"Scrape failures", strconv.Itoa(rec.ScrapeFailures)})
+	}
+	return rows
 }
 
 // listEndpointsOutput renders 'ochre endpoint list'. Split from its Run

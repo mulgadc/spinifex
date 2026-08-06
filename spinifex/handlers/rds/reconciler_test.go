@@ -90,13 +90,20 @@ func (h *reconcileHarness) statusOf(t *testing.T, id string) (Status, string) {
 
 func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T) {
 	h := newReconcileHarness(t)
-	seedInstance(t, h.svc, healthyRecord())
+	rec := healthyRecord()
+	rec.FormatAuthorized = true
+	seedInstance(t, h.svc, rec)
 
 	require.NoError(t, h.rec.reconcileOnce(t.Context()))
 
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
 	assert.Empty(t, reason)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stored, _, err := h.svc.getDBInstance(t.Context(), kv, testDBID)
+	require.NoError(t, err)
+	assert.False(t, stored.FormatAuthorized, "a completed create must not retain a reusable grant")
 	assert.Equal(t, []string{testInstance}, h.state.calls)
 
 	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{

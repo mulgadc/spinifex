@@ -560,7 +560,9 @@ func TestModifyDBInstance_AcceptsARetryFromFailed(t *testing.T) {
 // the in-guest filesystem grow still outstanding.
 func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
 	h := newModifyHarness(t)
-	seedInstance(t, h.svc, modifiableRecord())
+	seed := modifiableRecord()
+	seed.FormatAuthorized = true
+	seedInstance(t, h.svc, seed)
 
 	in := modifyInput()
 	in.AllocatedStorage = aws.Int64(50)
@@ -580,6 +582,7 @@ func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
 	rec := h.record(t)
 	assert.Equal(t, int64(50), rec.AllocatedStorage)
 	assert.Equal(t, testInstance, rec.InstanceID, "a grow restarts the VM rather than replacing it")
+	assert.False(t, rec.FormatAuthorized, "storage grow must not carry create-time formatting into the restart")
 	require.NotNil(t, rec.PendingModifiedValues)
 	assert.True(t, rec.PendingModifiedValues.FilesystemGrowPending)
 	assert.Nil(t, rec.PendingModifiedValues.AllocatedStorage, "the volume is at its new size")

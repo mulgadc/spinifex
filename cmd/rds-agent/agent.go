@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
@@ -148,12 +151,13 @@ func setIfPresent(params url.Values, key, value string) {
 }
 
 type Agent struct {
-	cfg           config
-	id            identity
-	cp            controlPlane
-	probe         *engineProbe
-	engine        *postgresEngine
-	handoffWriter func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
+	cfg             config
+	id              identity
+	cp              controlPlane
+	probe           *engineProbe
+	engine          *postgresEngine
+	handoffWriter   func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
+	dataMountWaiter func(context.Context, string, string) error
 
 	hb    *heartbeater
 	cmd   *commander
@@ -163,12 +167,21 @@ type Agent struct {
 // Assembles from already-built parts, so tests can pass fakes; New builds the
 // production control plane and delegates here.
 func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
+	if cfg.DataMount == "" {
+		cfg.DataMount = defaultDataMount
+	}
+	if cfg.MountsFile == "" {
+		cfg.MountsFile = defaultMountsFile
+	}
 	id := identity{
 		DBInstanceIdentifier: cfg.DBInstanceIdentifier,
 		AgentVersion:         version,
 		EngineVersion:        cfg.EngineVersion,
 	}
-	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
+	a := &Agent{
+		cfg: cfg, id: id, cp: cp, probe: probe,
+		handoffWriter: writeHandoff, dataMountWaiter: waitForDataMount,
+	}
 	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner, probe)
 	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
@@ -211,7 +224,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Directives are only meaningful against a bootstrapped engine.
+	// The handoff must land before this wait: rds-datadir needs it to identify
+	// and authorize the volume. Commands and the parameter guard wait because
+	// their durable state belongs on that mount, never on the disposable boot disk.
+	if err := a.dataMountWaiter(ctx, a.cfg.MountsFile, a.cfg.DataMount); err != nil {
+		// A shutdown cancels this wait; main treats the wrapped context.Canceled
+		// as a clean stop, exactly as it does for register and bootstrap above.
+		return fmt.Errorf("wait for data mount %s: %w", a.cfg.DataMount, err)
+	}
+
+	// Directives are only meaningful against a bootstrapped, mounted engine.
 	go a.cmd.Run(ctx)
 
 	// Started after the handoff, so the window it measures covers the engine's
@@ -220,6 +242,58 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+const dataMountPollInterval = time.Second
+
+// waitForDataMount blocks the stateful agent loops until the kernel reports the
+// configured data mount. Registration, heartbeat, and bootstrap run before it.
+func waitForDataMount(ctx context.Context, mountsFile, target string) error {
+	ticker := time.NewTicker(dataMountPollInterval)
+	defer ticker.Stop()
+
+	for {
+		mounted, err := mountTableContains(mountsFile, target)
+		if err != nil {
+			slog.WarnContext(ctx, "rds-agent: could not read mount table while waiting for data volume",
+				"mountsFile", mountsFile, "dataMount", target, "err", err)
+		} else if mounted {
+			slog.InfoContext(ctx, "rds-agent: data volume mount is ready", "dataMount", target)
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func mountTableContains(path, target string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && unescapeMountField(fields[1]) == target {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// Linux mount tables encode whitespace and backslashes as octal escapes.
+func unescapeMountField(field string) string {
+	replacer := strings.NewReplacer(`\134`, `\`, `\040`, " ", `\011`, "\t", `\012`, "\n")
+	return replacer.Replace(field)
 }
 
 // Boot-retry bounds. Tight to start, since the usual cause is a control plane

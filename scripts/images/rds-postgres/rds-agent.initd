@@ -24,8 +24,8 @@ handoff_tail="${RDS_HANDOFF_TAIL:-20}"
 
 depend() {
     need net
-    before rds-init
     after localmount
+    before rds-datadir rds-init postgresql
 }
 
 start_pre() {
@@ -36,7 +36,7 @@ start_pre() {
         . "${AGENT_ENV}"
         export RDS_GATEWAY_URL RDS_GATEWAY_CA RDS_REGION RDS_DB_INSTANCE_IDENTIFIER \
             RDS_ENGINE_VERSION RDS_HANDOFF_DIR RDS_ENGINE_HOST RDS_ENGINE_PORT \
-            RDS_PG_ISREADY RDS_POLL_WAIT
+            RDS_PG_ISREADY RDS_POLL_WAIT RDS_DATA_MOUNT
     fi
 }
 

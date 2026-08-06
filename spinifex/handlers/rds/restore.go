@@ -132,7 +132,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 		return nil, err
 	}
 
-	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched, false)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err

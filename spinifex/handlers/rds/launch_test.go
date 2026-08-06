@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -585,6 +586,22 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 	assert.Equal(t, utils.GlobalAccountID, h.attacher.accountID)
 
 	assert.Equal(t, "vol-rdsdata01", out.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(out.DataVolumeID), out.DataVolumeSerial)
+	assert.True(t, out.CreatedDataVolume)
+}
+
+func TestLaunchDBInstanceVMReportsExistingVolumeIntentAndSerial(t *testing.T) {
+	h := newLaunchHarness()
+	in := testLaunchInput()
+	in.ExistingDataVolume = "vol-existing-01"
+
+	out, err := LaunchDBInstanceVM(t.Context(), h.deps(), in)
+	require.NoError(t, err)
+
+	assert.Equal(t, "vol-existing-01", out.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(out.DataVolumeID), out.DataVolumeSerial)
+	assert.False(t, out.CreatedDataVolume)
+	assert.Empty(t, h.volumes.created, "an existing-volume launch must not create a blank replacement")
 }
 
 func TestLaunchDBInstanceVMRollsBackEverythingItCreated(t *testing.T) {
@@ -701,9 +718,10 @@ func TestResolveEngineAMIMatchesOnManifestTags(t *testing.T) {
 		got[aws.StringValue(f.Name)] = aws.StringValue(f.Values[0])
 	}
 	assert.Equal(t, map[string]string{
-		"tag:" + tags.ManagedByKey: tags.ManagedByRDS,
-		"tag:engine":               "postgres",
-		"tag:engine-version":       "18",
+		"tag:" + tags.ManagedByKey:        tags.ManagedByRDS,
+		"tag:engine":                      "postgres",
+		"tag:engine-version":              "18",
+		"tag:" + dataVolumeContractTagKey: dataVolumeContractV1,
 	}, got)
 }
 

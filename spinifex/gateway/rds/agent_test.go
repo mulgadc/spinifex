@@ -53,6 +53,7 @@ func TestAuthorizeAgent_ResolvesInstanceFromIndex(t *testing.T) {
 	assert.Equal(t, testAccountID, id.AccountID, "the account comes from the index, not the caller")
 	assert.Equal(t, testDBID, id.DBInstanceIdentifier)
 	assert.Equal(t, testInstanceID, id.InstanceID)
+	assert.Equal(t, int64(1), id.VMGeneration)
 }
 
 // The agent's own credentials are minted under the system account, so the
@@ -269,6 +270,10 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 		Engine:               "postgres",
 		MasterUsername:       "postgres",
 		Port:                 5432,
+		DataVolumeID:         "vol-data-01",
+		DataVolumeSerial:     "voldata01",
+		VMGeneration:         1,
+		FormatAuthorized:     true,
 		Parameters:           []handlers_rds.Parameter{{Name: "shared_buffers", Value: "128MB"}},
 	}
 
@@ -288,6 +293,10 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 	// marshaller emits a struct's children in map order, so each element is
 	// asserted on its own rather than as an ordered pair.
 	assert.Contains(t, body, "<Port>5432</Port>")
+	assert.Contains(t, body, "<DataVolumeId>vol-data-01</DataVolumeId>")
+	assert.Contains(t, body, "<DataVolumeSerial>voldata01</DataVolumeSerial>")
+	assert.Contains(t, body, "<VMGeneration>1</VMGeneration>")
+	assert.Contains(t, body, "<FormatAuthorized>true</FormatAuthorized>")
 	assert.Contains(t, body, "<member>")
 	assert.Contains(t, body, "<Name>shared_buffers</Name>")
 	assert.Contains(t, body, "<Value>128MB</Value>")

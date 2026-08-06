@@ -108,6 +108,10 @@ func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
 	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
 	writeEnvLine(&b, "RDS_MASTER_USERNAME", cfg.MasterUsername)
+	writeEnvLine(&b, "RDS_DATA_VOLUME_ID", cfg.DataVolumeID)
+	writeEnvLine(&b, "RDS_DATA_VOLUME_SERIAL", cfg.DataVolumeSerial)
+	writeEnvLine(&b, "RDS_VM_GENERATION", strconv.FormatInt(cfg.VMGeneration, 10))
+	writeEnvLine(&b, "RDS_FORMAT_AUTHORIZED", strconv.FormatBool(cfg.FormatAuthorized))
 	// Present only in initialize mode: an attach fetch has no password to write
 	// and rds-init must not find a stale one.
 	if cfg.MasterUserPassword != nil {

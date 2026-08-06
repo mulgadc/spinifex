@@ -281,6 +281,10 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 	// so a clock left over from an earlier outage cannot shorten the grace on a
 	// fault the customer has just acted on.
 	rec.UnhealthySince = nil
+	// No lifecycle operation is an initial create. Revoke before issuing a
+	// command that can boot the guest, so an unrecognized existing volume can
+	// never inherit the create-time format grant.
+	rec.FormatAuthorized = false
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {

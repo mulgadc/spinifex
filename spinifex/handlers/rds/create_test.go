@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -248,6 +249,8 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.NotEmpty(t, rec.ENIID)
 	assert.NotEqual(t, rec.SystemENIID, rec.ENIID, "the system and customer NICs are distinct")
 	assert.Equal(t, "vol-rdsdata01", rec.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(rec.DataVolumeID), rec.DataVolumeSerial)
+	assert.True(t, rec.FormatAuthorized, "only the fresh initial-create volume may be formatted")
 	assert.True(t, rec.StorageEncrypted)
 	// The master password is staged for the one-shot bootstrap fetch, unconsumed.
 	assert.Equal(t, "Sup3rSecret!", rec.Bootstrap.MasterUserPassword)

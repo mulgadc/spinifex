@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +60,8 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 
 	stored := h.instance(t, testRestoredID)
 	assert.Equal(t, "vol-rdsdata01", stored.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(stored.DataVolumeID), stored.DataVolumeSerial)
+	assert.False(t, stored.FormatAuthorized, "snapshot-derived volumes must never receive a format grant")
 	assert.Equal(t, testSnapshotID, stored.RestoredFromDBSnapshot)
 	assert.True(t, stored.StorageEncrypted)
 

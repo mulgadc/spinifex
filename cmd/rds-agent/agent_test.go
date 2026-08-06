@@ -18,6 +18,8 @@ import (
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeControlPlane is a scriptable controlPlane. Every call records what the
@@ -171,6 +173,9 @@ func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput 
 		MasterUsername:       "master",
 		MasterUserPassword:   password,
 		Port:                 5432,
+		DataVolumeID:         "vol-data-01",
+		DataVolumeSerial:     "voldata01",
+		VMGeneration:         1,
 	}
 }
 
@@ -192,6 +197,11 @@ func runAgent(t *testing.T, a *Agent) error {
 	cancel()
 	select {
 	case err := <-done:
+		// The cancellation above is this helper's own, so Run reporting it is the
+		// expected clean stop rather than a failure, exactly as main treats it.
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not exit after cancellation")
@@ -329,6 +339,81 @@ func TestRun_SendsConfiguredIdentifier(t *testing.T) {
 	sent := cp.registerReqs[0]
 	if sent.DBInstanceIdentifier != "db-configured" || sent.EngineVersion != "18.1" {
 		t.Errorf("register sent %+v, want the configured identifier and engine version", sent)
+	}
+}
+
+func TestRun_WaitsForDataMountBeforePollingCommands(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.bootstrapOut = bootstrapOutput(nil)
+	cfg := testConfig(t)
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(2)))
+
+	waiting := make(chan struct{})
+	release := make(chan struct{})
+	a.dataMountWaiter = func(ctx context.Context, mountsFile, target string) error {
+		if mountsFile != defaultMountsFile || target != defaultDataMount {
+			t.Errorf("mount waiter got %q/%q, want configured defaults", mountsFile, target)
+		}
+		close(waiting)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+
+	select {
+	case <-waiting:
+	case <-ctx.Done():
+		t.Fatal("agent did not reach the data-mount wait after writing the handoff")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.HandoffDir, handoffEnvFile)); err != nil {
+		t.Fatalf("handoff was not present before mount wait: %v", err)
+	}
+	select {
+	case <-cp.polled:
+		t.Fatal("command poll started before the data volume was mounted")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-cp.polled:
+	case <-ctx.Done():
+		t.Fatal("command poll did not start after the data mount became ready")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestMountTableContains(t *testing.T) {
+	mounts := filepath.Join(t.TempDir(), "mounts")
+	require.NoError(t, os.WriteFile(mounts, []byte(
+		"/dev/vda1 / ext4 rw 0 0\n/dev/vdb /var/lib/postgresql ext4 rw 0 0\n"+
+			"/dev/vdc /path\\040with\\040spaces xfs rw 0 0\nmalformed\n"), 0o600))
+
+	tests := []struct {
+		target string
+		want   bool
+	}{
+		{target: "/var/lib/postgresql", want: true},
+		{target: "/path with spaces", want: true},
+		{target: "/missing", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.target, func(t *testing.T) {
+			got, err := mountTableContains(mounts, tc.target)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
 	}
 }
 

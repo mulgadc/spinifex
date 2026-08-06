@@ -593,6 +593,7 @@ func TestResolvedBackupWindow_DerivesAWindowForARecordWithoutOne(t *testing.T) {
 func TestRunMaintenanceWindow_OpensADeferredModify(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
+	rec.FormatAuthorized = true
 	rec.PreferredMaintenanceWindow = openMaintenanceWindow(time.Now().UTC())
 	rec.PendingModifiedValues = &PendingModifiedValues{
 		DBInstanceClass: "db.t3.large",
@@ -604,6 +605,7 @@ func TestRunMaintenanceWindow_OpensADeferredModify(t *testing.T) {
 
 	stored := h.instance(t, testDBID)
 	assert.Equal(t, StatusModifying, stored.Status)
+	assert.False(t, stored.FormatAuthorized, "deferred replacement must revoke formatting before its boot")
 	require.NotNil(t, stored.LastMaintenanceWindowAt)
 	require.NotNil(t, stored.TransitionStartedAt)
 	require.NotNil(t, stored.PendingModifiedValues, "the values are drained by the reconciler, not here")

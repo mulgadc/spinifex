@@ -954,6 +954,42 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (eb
 	return vblegacy.AMIToDocument(vbState.VolumeConfig.AMIMetadata), nil
 }
 
+// GetAMISourceVolumeID returns the volume whose blocks imageID's snapshot
+// references, read from the snapshot's metadata.json. Bundled system AMIs have
+// no standalone snapshot metadata; their snapshot is named after the AMI.
+func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID string) (string, error) {
+	meta, err := s.GetAMIConfig(ctx, imageID)
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ErrCorruptAMIConfig) {
+			return "", errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		}
+		slog.ErrorContext(ctx, "GetAMISourceVolumeID: failed to read AMI config", "imageId", imageID, "err", err)
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	if meta.SnapshotID == "" {
+		return "", errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+
+	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, meta.SnapshotID)
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) && meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias) {
+			return imageID, nil
+		}
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
+			return "", errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		}
+		slog.ErrorContext(ctx, "GetAMISourceVolumeID: failed to read snapshot metadata",
+			"imageId", imageID, "snapshotId", meta.SnapshotID, "err", err)
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	if snapCfg.VolumeID == "" {
+		slog.ErrorContext(ctx, "GetAMISourceVolumeID: snapshot metadata has no source volume",
+			"imageId", imageID, "snapshotId", meta.SnapshotID)
+		return "", errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+	}
+	return snapCfg.VolumeID, nil
+}
+
 // putAMIConfig writes AMI metadata to the ebsmetadata document store under
 // the provider, or to {imageID}/config.json's VBState wrapper (preserving the
 // shape GetAMIConfig's embedded path expects) on the legacy path.

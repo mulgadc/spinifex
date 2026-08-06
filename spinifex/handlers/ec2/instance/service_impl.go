@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -135,11 +136,18 @@ type InstanceServiceImpl struct {
 	tagWriter         InstanceTagWriter
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
+	ebsProvider       ebsprovider.EBSProvider
 	keyValidator      KeyPairValidator
 	eniCreator        ENICreator
 	ipAllocator       PublicIPAllocator
 	dnsBaseDomain     string
 	dnsInternalDomain string
+}
+
+// SetEBSProvider injects the provider boundary used for instance-created
+// volumes. Root-volume creation remains on the legacy path until migrated.
+func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
+	s.ebsProvider = provider
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use.

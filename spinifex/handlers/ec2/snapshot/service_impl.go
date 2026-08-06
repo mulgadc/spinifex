@@ -21,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -50,6 +52,14 @@ type SnapshotServiceImpl struct {
 	natsConn *nats.Conn
 	snapKV   jetstream.KeyValue
 	mutex    sync.RWMutex
+	metadata *ebsmetadata.Store
+	provider ebsprovider.EBSProvider
+}
+
+// SetEBSProvider injects the provider boundary for snapshot operations.
+// Legacy snapshot behavior remains until snapshot metadata is migrated.
+func (s *SnapshotServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
+	s.provider = provider
 }
 
 // SnapshotConfig represents snapshot metadata stored in S3.
@@ -65,6 +75,7 @@ type SnapshotConfig struct {
 	OwnerID          string            `json:"owner_id"`
 	AvailabilityZone string            `json:"availability_zone"`
 	Tags             map[string]string `json:"tags"`
+	ProviderHandle   string            `json:"provider_handle,omitempty"`
 }
 
 // NewSnapshotServiceImplWithNATS creates a snapshot service with JetStream KV for volume-snapshot tracking.
@@ -96,6 +107,7 @@ func NewSnapshotServiceImplWithNATS(ctx context.Context, cfg *config.Config, nat
 		store:    store,
 		natsConn: natsConn,
 		snapKV:   kv,
+		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 	}, kv, nil
 }
 
@@ -106,6 +118,7 @@ func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.Objec
 		config:   cfg,
 		store:    store,
 		natsConn: natsConn,
+		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 	}
 	if len(snapshotKV) > 0 {
 		svc.snapKV = snapshotKV[0]
@@ -206,6 +219,46 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	slog.InfoContext(ctx, "CreateSnapshot request", "volumeId", volumeID)
 
 	snapshotID := utils.GenerateResourceID("snap")
+	if s.provider != nil {
+		volume, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil || (accountID != "" && volume.TenantID != accountID) {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		if volume.CapacityGiB == 0 {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		created, err := s.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
+			Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: volume.ProviderHandle,
+		})
+		if err != nil || created == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		now := time.Now()
+		snapshotCfg := &SnapshotConfig{
+			SnapshotID: snapshotID, VolumeID: volumeID,
+			VolumeSize: utils.SafeUint64ToInt64(volume.CapacityGiB),
+			State:      string(created.State), Progress: "100%", StartTime: now,
+			OwnerID: accountID, AvailabilityZone: volume.AvailabilityZone,
+			Tags:           utils.ExtractTags(input.TagSpecifications, "snapshot"),
+			ProviderHandle: created.Handle,
+		}
+		if snapshotCfg.State == "" {
+			snapshotCfg.State = "completed"
+		}
+		if input.Description != nil {
+			snapshotCfg.Description = *input.Description
+		}
+		if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
+			_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := s.putSnapshotConfig(snapshotID, snapshotCfg); err != nil {
+			_ = s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID)
+			_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return snapshotConfigToEC2(snapshotCfg), nil
+	}
 
 	volumeConfigKey := fmt.Sprintf("%s/config.json", volumeID)
 	volumeResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
@@ -763,6 +816,11 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	if inUse {
 		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID)
 		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+	}
+	if s.provider != nil {
+		if err := s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: cfg.ProviderHandle}); err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{

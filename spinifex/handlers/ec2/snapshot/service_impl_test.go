@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -1196,4 +1198,26 @@ func TestSnapshotVolume_LoadStateFails(t *testing.T) {
 
 	err := svc.snapshotVolume("vol-lsf", "snap-lsf", 10*1024*1024*1024)
 	require.Error(t, err)
+}
+
+func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-provider", TenantID: testAccountID, CapacityGiB: 4, State: "available", AvailabilityZone: "us-east-1a", ProviderHandle: "memory://volume/vol-provider",
+	}))
+	_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-provider", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4 * 1024 * 1024 * 1024}, AvailabilityZone: "us-east-1a"})
+	require.NoError(t, err)
+
+	snapshot, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-provider")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	cfgStored, err := svc.getSnapshotConfig(aws.StringValue(snapshot.SnapshotId))
+	require.NoError(t, err)
+	assert.Equal(t, "memory://snapshot/"+aws.StringValue(snapshot.SnapshotId), cfgStored.ProviderHandle)
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: snapshot.SnapshotId}, testAccountID)
+	require.NoError(t, err)
 }

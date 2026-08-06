@@ -2,6 +2,7 @@ package awsgw
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -55,6 +56,27 @@ func TestParseBedrockEndpoints(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, parseBedrockEndpoints(tc.raw))
+		})
+	}
+}
+
+// A typo in an optional tuning knob must not stop the gateway from serving,
+// so an unusable value falls back to the fail-fast default.
+func TestParseColdStartWait(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{"unset keeps the fail-fast default", "", 0},
+		{"a duration is honoured", "45s", 45 * time.Second},
+		{"whitespace is trimmed", "  2m  ", 2 * time.Minute},
+		{"a malformed value is ignored", "45 seconds", 0},
+		{"a negative value is ignored", "-10s", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseColdStartWait(tt.raw))
 		})
 	}
 }

@@ -2,6 +2,7 @@ package handlers_bedrock
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
@@ -53,6 +54,38 @@ func checkCapacity(snapshot []gpu.PoolEntry, minVRAMMiB int) error {
 	}
 	return awserrors.Errorf(awserrors.ErrorModelNotReadyException,
 		"bedrock: no free GPU device has %d MiB of VRAM free", minVRAMMiB)
+}
+
+// defaultMinResidency is how long an endpoint is protected from eviction after
+// reaching READY. Without it two models on one device thrash each other with a
+// full cold boot per call, which serves neither. Beyond that the deployment is
+// simply under-provisioned, and the eviction rate is what says so.
+const defaultMinResidency = 5 * time.Minute
+
+// selectEvictable picks the endpoint whose GPU should be taken for a pending
+// launch: the least recently used of those safe to stop. Reports false when
+// nothing qualifies, which the caller turns back into the original capacity
+// refusal rather than an eviction.
+//
+// Evictable is deliberately narrow. A device is never yanked from a running
+// process (InFlight), a pinned endpoint is never touched, and an endpoint that
+// has not yet served out minResidency is left alone. nodeID confines the
+// choice to this node: GPU capacity is node-local, so stopping an endpoint
+// running elsewhere frees nothing here.
+func selectEvictable(recs []EndpointRecord, nodeID string, minResidency time.Duration, now time.Time) (EndpointRecord, bool) {
+	var victim EndpointRecord
+	var found bool
+	for _, rec := range recs {
+		switch {
+		case rec.State != StateReady, rec.Pinned, rec.InFlight > 0,
+			rec.NodeID != nodeID, now.Sub(rec.ReadyAt) < minResidency:
+			continue
+		}
+		if !found || lastActive(rec).Before(lastActive(victim)) {
+			victim, found = rec, true
+		}
+	}
+	return victim, found
 }
 
 // admitCapacity checks minVRAMMiB against snapshotter's current free pool.

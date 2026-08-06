@@ -331,9 +331,13 @@ func launchService(config *config.ClusterConfig) error {
 	// Bedrock self-host endpoints: OCHRE_VLLM_ENDPOINTS pins a modelId=baseURL
 	// pair to a fixed address, and anything not pinned resolves through the
 	// daemon's endpoint registry, which launches a serving VM on first use.
+	// OCHRE_COLD_START_WAIT optionally holds a cold call that long rather than
+	// returning ModelNotReadyException at once. Unset (the default) keeps the
+	// fail-fast contract: cold start is minutes, which no client retry spans.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
 	bedrockEndpointResolver := handlers_bedrock.NewDynamicEndpointResolver(
-		handlers_bedrock.NewNATSEndpointService(natsConn), bedrockEndpoints, 0)
+		handlers_bedrock.NewNATSEndpointService(natsConn), bedrockEndpoints, 0,
+		handlers_bedrock.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
@@ -550,6 +554,22 @@ func isConcreteRegistryHost(host string) bool {
 // parseBedrockEndpoints parses a comma-separated list of modelId=baseURL pairs
 // into a map for the bedrock self-host endpoint resolver. Malformed or empty
 // entries are skipped. Returns nil for empty input.
+// parseColdStartWait reads OCHRE_COLD_START_WAIT as a Go duration. An
+// unparseable or negative value is logged and ignored rather than fatal: a
+// typo in an optional tuning knob must not stop the gateway from serving.
+func parseColdStartWait(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		slog.Warn("awsgw: ignoring malformed OCHRE_COLD_START_WAIT", "value", raw, "err", err)
+		return 0
+	}
+	return d
+}
+
 func parseBedrockEndpoints(raw string) map[string]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

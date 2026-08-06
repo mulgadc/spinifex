@@ -16,6 +16,11 @@ import (
 // an address that no longer answers.
 const defaultEndpointCacheTTL = 5 * time.Second
 
+// coldStartPollInterval spaces the describes a non-zero coldStartWait makes.
+// Fine-grained next to any plausible wait, since the point of waiting at all
+// is to return the moment the endpoint answers.
+const coldStartPollInterval = 500 * time.Millisecond
+
 // DynamicEndpointResolver resolves a self-host model's base URL through the
 // daemon's endpoint registry, and asks for a launch when there is nothing to
 // resolve. It lives here rather than in gateway_bedrock because that package
@@ -25,6 +30,13 @@ type DynamicEndpointResolver struct {
 	svc    EndpointService
 	static map[string]string
 	ttl    time.Duration
+
+	// coldStartWait is how long a cold call may be held waiting for the launch
+	// it triggered. Zero — the default — returns immediately, which is the
+	// measured position: cold start is minutes, the AWS SDKs' default ~3-attempt
+	// retry does not span that, and a bounded wait only pays off when it is
+	// shorter than the client's patience and longer than the boot.
+	coldStartWait time.Duration
 
 	// group collapses concurrent resolves of one model into a single describe
 	// (and at most one ensure). The daemon deduplicates launches on its own
@@ -44,19 +56,35 @@ type cachedEndpoint struct {
 
 var _ gateway_bedrock.EndpointResolver = (*DynamicEndpointResolver)(nil)
 
+// ResolverOption adjusts a DynamicEndpointResolver at construction.
+type ResolverOption func(*DynamicEndpointResolver)
+
+// WithColdStartWait holds a cold call for up to d waiting on the launch it
+// triggered, instead of returning ModelNotReadyException straight away. The
+// deployment-level escape hatch for a model known to start fast enough that
+// waiting beats retrying; zero (the default) keeps the fail-fast contract.
+func WithColdStartWait(d time.Duration) ResolverOption {
+	return func(r *DynamicEndpointResolver) { r.coldStartWait = d }
+}
+
 // NewDynamicEndpointResolver builds a resolver over svc. Entries in static
 // (OCHRE_VLLM_ENDPOINTS) are resolved first and never reach svc, so a pinned
 // endpoint bypasses the lifecycle entirely. A zero ttl takes the default.
-func NewDynamicEndpointResolver(svc EndpointService, static map[string]string, ttl time.Duration) *DynamicEndpointResolver {
+func NewDynamicEndpointResolver(svc EndpointService, static map[string]string, ttl time.Duration,
+	opts ...ResolverOption) *DynamicEndpointResolver {
 	if ttl <= 0 {
 		ttl = defaultEndpointCacheTTL
 	}
-	return &DynamicEndpointResolver{
+	r := &DynamicEndpointResolver{
 		svc:    svc,
 		static: static,
 		ttl:    ttl,
 		cached: make(map[string]cachedEndpoint),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Endpoint returns modelID's base URL if one is serving. A model with no
@@ -97,16 +125,55 @@ func (r *DynamicEndpointResolver) resolve(ctx context.Context, modelID string) (
 		}
 		r.storeCache(modelID, out.Endpoint.BaseURL)
 		return out.Endpoint.BaseURL, nil
-	case StateStarting, StateDraining:
-		// A launch is already in flight, or a teardown is. Either way asking
-		// again changes nothing and the answer is the same: not yet.
+	case StateStarting:
+		// A launch is already in flight, so asking for another changes nothing.
+		// Waiting on it is still worth doing when the deployment asked for that.
+		return r.awaitReady(ctx, modelID)
+	case StateDraining:
+		// A teardown is in flight and nothing will relaunch on its own, so
+		// there is no readiness to wait for.
 		return "", nil
 	}
 
 	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: modelID}, utils.GlobalAccountID); err != nil {
 		return "", err
 	}
-	return "", nil
+	return r.awaitReady(ctx, modelID)
+}
+
+// awaitReady holds the caller for up to coldStartWait waiting on a launch,
+// and returns "" (not ready) the moment the budget runs out. At the default
+// of zero it does nothing at all, so the fail-fast path costs no extra
+// describe. It runs inside the singleflight, so a burst of concurrent callers
+// for one cold model shares a single wait rather than one describe loop each.
+func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, modelID string) (string, error) {
+	if r.coldStartWait <= 0 {
+		return "", nil
+	}
+	deadline := time.Now().Add(r.coldStartWait)
+	ticker := time.NewTicker(coldStartPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// The caller is gone. The launch it triggered carries on regardless,
+			// so this is not-ready rather than an error.
+			return "", nil
+		case <-ticker.C:
+		}
+		out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+		if err != nil {
+			return "", err
+		}
+		if out.Endpoint.State == StateReady && out.Endpoint.BaseURL != "" {
+			r.storeCache(modelID, out.Endpoint.BaseURL)
+			return out.Endpoint.BaseURL, nil
+		}
+		if time.Now().After(deadline) {
+			return "", nil
+		}
+	}
 }
 
 func (r *DynamicEndpointResolver) lookupCache(modelID string) (string, bool) {

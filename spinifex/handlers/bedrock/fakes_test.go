@@ -329,6 +329,14 @@ func (f *fakeInstanceLauncher) launches() []*sysinstance.SystemInstanceInput {
 	return f.requests
 }
 
+// terminations is the mutex-guarded read of terminated, for assertions made
+// while a launch goroutine may still be running.
+func (f *fakeInstanceLauncher) terminations() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.terminated)
+}
+
 func (f *fakeInstanceLauncher) TerminateSystemInstance(instanceID string) error {
 	f.mu.Lock()
 	f.terminated = append(f.terminated, instanceID)

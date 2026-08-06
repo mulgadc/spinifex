@@ -123,12 +123,18 @@ run_ok() {
     return 1
 }
 
+# A refusal must be diagnosable on the serial console, so the expected reason is
+# asserted too: a non-zero exit alone also matches a script that died silently.
+# Always returns 0; a non-zero status here would abort the suite under set -e.
 run_fails() {
     if run > "${WORK}/out" 2>&1; then
         fail "$1: expected a non-zero exit"
-        return 1
+    elif ! grep -q "\[rds-datadir\] ERROR: .*$2" "${WORK}/out"; then
+        fail "$1: refused without reporting '$2': $(cat "${WORK}/out")"
+    else
+        pass "$1: refused with a reported reason"
     fi
-    pass "$1: refused"
+    return 0
 }
 
 nothing_formatted() {
@@ -150,20 +156,33 @@ if run_ok "authorized blank exact volume"; then
     if grep -q '^RDS_FORMAT_AUTHORIZED=' "${HANDOFF}"; then fail "authorized: grant retained"; else pass "authorized: grant consumed"; fi
 fi
 
-# A lone vol* disk with the wrong serial never becomes a fallback candidate.
+# A lone vol* disk with the wrong serial never becomes a fallback candidate, and
+# the absent expected volume is reported as an attach timeout.
 reset_state
 add_disk vda
 add_disk vdb volwrong
 write_handoff vol-expected volexpected 1 true
-run_fails "serial mismatch"
+run_fails "serial mismatch" "volume vol-expected with serial volexpected was not attached"
 nothing_formatted "serial mismatch"
+
+# Selection must not depend on sysfs enumeration order: the expected disk is
+# found even when an unrelated vol* disk sorts after it.
+reset_state
+add_disk vda
+add_disk vdb volexpected
+add_disk vdc volunrelated
+write_handoff vol-expected volexpected 1 true
+if run_ok "unrelated disk sorts last"; then
+    grep -q "mkfs.ext4 .*${DEV_DIR}/vdb" "${MKFS_CALLS}" && pass "sort order: expected disk formatted" || fail "sort order: expected disk not formatted"
+    grep -q "mount -t ext4 ${DEV_DIR}/vdb ${DATA_MOUNT}" "${MOUNT_CALLS}" && pass "sort order: mounted" || fail "sort order: not mounted"
+fi
 
 # Duplicate exact serials are ambiguous even if both name generic data disks.
 reset_state
 add_disk vdb volexpected
 add_disk vdc volexpected
 write_handoff vol-expected volexpected 1 true
-run_fails "duplicate expected serial"
+run_fails "duplicate expected serial" "refusing to choose one"
 nothing_formatted "duplicate expected serial"
 
 # Existing supported filesystems mount without any grant.
@@ -180,7 +199,7 @@ done
 # Blank restore/start/replacement volumes have no grant and fail closed.
 reset_state
 add_disk vdb volexpected
-run_fails "blank without grant"
+run_fails "blank without grant" "no recognizable filesystem and this boot has no matching format authorization"
 nothing_formatted "blank without grant"
 
 # Partition tables, visible partitions, unsupported filesystems, ambiguity, and
@@ -189,24 +208,49 @@ for kind in pttable fspt unsupported ambiguous unreadable error; do
     reset_state
     add_disk vdb volexpected
     case "${kind}" in
-        pttable) printf '%s pttable gpt\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
-        fspt) printf '%s fspt ext4\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
-        unsupported) printf '%s fs btrfs\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
-        ambiguous) printf '%s ambiguous x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
-        unreadable) printf '%s unreadable x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
-        error) printf '%s error x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}" ;;
+        pttable)
+            printf '%s pttable gpt\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="carries a partition table or partitions" ;;
+        fspt)
+            printf '%s fspt ext4\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="carries a partition table or partitions" ;;
+        unsupported)
+            printf '%s fs btrfs\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="holds unsupported filesystem btrfs" ;;
+        ambiguous)
+            printf '%s ambiguous x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="ambiguous or conflicting signatures" ;;
+        unreadable)
+            printf '%s unreadable x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="refusing to classify it as blank" ;;
+        error)
+            printf '%s error x\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
+            reason="could not probe" ;;
     esac
     write_handoff vol-expected volexpected 1 true
-    run_fails "probe ${kind}"
+    run_fails "probe ${kind}" "${reason}"
     nothing_formatted "probe ${kind}"
 done
+
+# An uncreatable probe capture leaves blkid unrun, and some shells report that
+# as the blank-device exit 2. Root ignores the directory mode, so it cannot run
+# the case at all.
+if [ "$(id -u)" -ne 0 ]; then
+    reset_state
+    add_disk vdb volexpected
+    write_handoff vol-expected volexpected 1 true
+    chmod 0500 "$(dirname "${HANDOFF}")"
+    run_fails "unwritable probe capture" "could not create the probe error capture"
+    nothing_formatted "unwritable probe capture"
+    chmod 0700 "$(dirname "${HANDOFF}")"
+fi
 
 reset_state
 add_disk vdb volexpected
 add_partition vdb 1
 printf '%s fs ext4\n' "${DEV_DIR}/vdb" > "${PROBE_TABLE}"
 write_handoff vol-expected volexpected 1 true
-run_fails "sysfs partition plus filesystem"
+run_fails "sysfs partition plus filesystem" "carries a partition table or partitions"
 nothing_formatted "sysfs partition plus filesystem"
 
 # Missing identity and invalid generation cannot authorize even when true.
@@ -215,11 +259,17 @@ for field in id serial generation; do
     add_disk vdb volexpected
     write_handoff vol-expected volexpected 1 true
     case "${field}" in
-        id) sed -i "s/RDS_DATA_VOLUME_ID='vol-expected'/RDS_DATA_VOLUME_ID=''/" "${HANDOFF}" ;;
-        serial) sed -i "s/RDS_DATA_VOLUME_SERIAL='volexpected'/RDS_DATA_VOLUME_SERIAL=''/" "${HANDOFF}" ;;
-        generation) sed -i "s/RDS_VM_GENERATION='1'/RDS_VM_GENERATION='0'/" "${HANDOFF}" ;;
+        id)
+            sed -i "s/RDS_DATA_VOLUME_ID='vol-expected'/RDS_DATA_VOLUME_ID=''/" "${HANDOFF}"
+            reason="has no RDS_DATA_VOLUME_ID" ;;
+        serial)
+            sed -i "s/RDS_DATA_VOLUME_SERIAL='volexpected'/RDS_DATA_VOLUME_SERIAL=''/" "${HANDOFF}"
+            reason="has no RDS_DATA_VOLUME_SERIAL" ;;
+        generation)
+            sed -i "s/RDS_VM_GENERATION='1'/RDS_VM_GENERATION='0'/" "${HANDOFF}"
+            reason="invalid RDS_VM_GENERATION" ;;
     esac
-    run_fails "invalid ${field}"
+    run_fails "invalid ${field}" "${reason}"
     nothing_formatted "invalid ${field}"
 done
 
@@ -227,7 +277,7 @@ done
 reset_state
 add_disk vdb volexpected
 write_handoff vol-expected volexpected 1 true
-MKFS_FAIL=1 run_fails "mkfs failure"
+MKFS_FAIL=1 run_fails "mkfs failure" "mkfs.ext4 failed on"
 grep -q '^RDS_FORMAT_AUTHORIZED=' "${HANDOFF}" && pass "mkfs failure: grant retained" || fail "mkfs failure: grant lost"
 [ ! -s "${MOUNT_CALLS}" ] && pass "mkfs failure: not mounted" || fail "mkfs failure: mounted raw disk"
 
@@ -256,7 +306,7 @@ fi
 reset_state
 add_disk vdb volexpected
 printf '%s %s ext4 rw 0 0\n' "${DEV_DIR}/wrong" "${DATA_MOUNT}" >> "${MOUNTS}"
-run_fails "already mounted wrong device"
+run_fails "already mounted wrong device" "not expected device"
 nothing_formatted "already mounted wrong device"
 
 if [ "${FAILS}" -eq 0 ]; then

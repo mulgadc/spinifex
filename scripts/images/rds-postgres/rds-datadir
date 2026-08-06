@@ -41,14 +41,18 @@ mounted_source() {
     awk -v mnt="${DATA_MOUNT}" '$2 == mnt { print $1; found = 1; exit } END { exit !found }' "${MOUNTS_FILE}"
 }
 
-# Only an exact serial match is a candidate. Other vol* devices are unrelated
-# attachments and are deliberately ignored.
+# Only an exact serial match is a candidate; other vol* devices are unrelated
+# attachments and are deliberately ignored. The loop status must not depend on
+# the last device examined, or set -e would abort the caller's wait and report.
 data_disks() {
     for _p in "${SYS_BLOCK}"/*; do
         [ -r "${_p}/serial" ] || continue
         _serial=$(cat "${_p}/serial" 2>/dev/null || true)
-        [ "${_serial}" = "${RDS_DATA_VOLUME_SERIAL}" ] && basename "${_p}"
+        if [ "${_serial}" = "${RDS_DATA_VOLUME_SERIAL}" ]; then
+            basename "${_p}"
+        fi
     done
+    return 0
 }
 
 await_data_disk() {
@@ -121,6 +125,11 @@ main() {
     # be empty before it can be treated as a signature-free device.
     _probe_err="${HANDOFF_ENV}.blkid.$$"
     umask 077
+    # A redirection that cannot be created leaves blkid unrun and returns the
+    # shell's own status, which some shells report as the blank-device exit 2.
+    # `true` is a regular builtin, so the failure is catchable rather than fatal.
+    true > "${_probe_err}" ||
+        fail "could not create the probe error capture at ${_probe_err}; refusing to classify ${_dev}"
     if _probe=$(blkid -p -o export "${_dev}" 2>"${_probe_err}"); then
         _probe_rc=0
     else

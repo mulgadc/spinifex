@@ -257,7 +257,7 @@ func (s *Service) evictForCapacity(ctx context.Context, kv jetstream.KeyValue, w
 
 	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
 		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
-		"idleSince", lastActive(victim))
+		"idleSince", victim.LastActive())
 	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, utils.GlobalAccountID); err != nil {
 		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
 			"evicting", victim.ModelID, "for", wantModelID, "err", err)

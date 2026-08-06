@@ -97,3 +97,15 @@ type EndpointRecord struct {
 	// checks Generation before deciding whether a launch is still needed.
 	Generation uint64 `json:"generation"`
 }
+
+// LastActive is the instant this endpoint was last known to be doing work: the
+// last sweep that saw it serving, or when it became READY if no sweep ever
+// has. Both the idle clock and the LRU eviction order are measured from here,
+// so they cannot drift apart. The ReadyAt fallback is what stops an endpoint
+// that has been quiet since launch reading as idle since the zero time.
+func (r EndpointRecord) LastActive() time.Time {
+	if !r.LastActiveAt.IsZero() {
+		return r.LastActiveAt
+	}
+	return r.ReadyAt
+}

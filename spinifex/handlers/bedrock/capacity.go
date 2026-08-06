@@ -81,7 +81,7 @@ func selectEvictable(recs []EndpointRecord, nodeID string, minResidency time.Dur
 			rec.NodeID != nodeID, now.Sub(rec.ReadyAt) < minResidency:
 			continue
 		}
-		if !found || lastActive(rec).Before(lastActive(victim)) {
+		if !found || rec.LastActive().Before(victim.LastActive()) {
 			victim, found = rec, true
 		}
 	}

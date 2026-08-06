@@ -237,9 +237,12 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec E
 	}
 
 	if r.shouldReap(updated, now) {
+		// Seconds as a plain number, not a time.Duration: slog renders a Duration
+		// as int64 nanoseconds in JSON, which no reader parses at a glance and
+		// which reaches the metrics sink in a unit nothing charts.
 		slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"idleFor", now.Sub(lastActive(updated)).Round(time.Second))
+			"idleSeconds", int64(now.Sub(updated.LastActive()).Seconds()))
 		if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, utils.GlobalAccountID); err != nil {
 			return fmt.Errorf("reap idle endpoint: %w", err)
 		}
@@ -258,7 +261,7 @@ func (r *Reaper) shouldReap(rec EndpointRecord, now time.Time) bool {
 		return false
 	}
 	ttl := r.idleTTL()
-	return now.Sub(lastActive(rec)) >= ttl && now.Sub(rec.ReadyAt) >= ttl
+	return now.Sub(rec.LastActive()) >= ttl && now.Sub(rec.ReadyAt) >= ttl
 }
 
 // recordScrapeFailure counts an unknown sample and escalates a persistently
@@ -316,14 +319,4 @@ func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, 
 		return err
 	}
 	return nil
-}
-
-// lastActive is rec's LRU ordering key: the last sweep that saw it serving,
-// falling back to when it became READY. The fallback covers a record written
-// before its first sweep, which is a fresh endpoint, not a stale one.
-func lastActive(rec EndpointRecord) time.Time {
-	if !rec.LastActiveAt.IsZero() {
-		return rec.LastActiveAt
-	}
-	return rec.ReadyAt
 }

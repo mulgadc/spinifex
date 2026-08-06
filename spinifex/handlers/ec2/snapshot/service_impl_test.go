@@ -3,6 +3,7 @@ package handlers_ec2_snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1220,4 +1221,66 @@ func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
 	assert.Equal(t, "memory://snapshot/"+aws.StringValue(snapshot.SnapshotId), cfgStored.ProviderHandle)
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: snapshot.SnapshotId}, testAccountID)
 	require.NoError(t, err)
+}
+
+// snapshotMetadataFailingObjectStore fails PutObject for any snapshot
+// metadata.json write and records the last such key, so a test can recover
+// the randomly generated snapshot ID CreateSnapshot attempted to persist.
+type snapshotMetadataFailingObjectStore struct {
+	objectstore.ObjectStore
+
+	attemptedKey string
+}
+
+func (s *snapshotMetadataFailingObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	key := aws.StringValue(input.Key)
+	if strings.HasSuffix(key, "/metadata.json") {
+		s.attemptedKey = key
+		return nil, errors.New("simulated metadata write failure")
+	}
+	return s.ObjectStore.PutObject(ctx, input)
+}
+
+// TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure covers
+// CreateSnapshot's rollback path: when persisting the snapshot config fails
+// after the provider has already created the snapshot, CreateSnapshot must
+// delete the just-created provider snapshot rather than orphan it.
+func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
+	store := &snapshotMetadataFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore()}
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+
+	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-rollback", TenantID: testAccountID, CapacityGiB: 4, State: "available",
+		AvailabilityZone: "us-east-1a", ProviderHandle: "memory://volume/vol-rollback",
+	}))
+	_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback",
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4 * 1024 * 1024 * 1024}, AvailabilityZone: "us-east-1a",
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-rollback")}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	require.NotEmpty(t, store.attemptedKey, "the snapshot metadata write must have been attempted")
+
+	snapshotID := strings.TrimSuffix(store.attemptedKey, "/metadata.json")
+	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback"})
+	require.NoError(t, err, "the source volume must be unaffected by the snapshot rollback")
+
+	// Recreating the same snapshot ID against a different source volume only
+	// succeeds if the original snapshot no longer exists (MemoryProvider
+	// returns already_exists for a conflicting source volume on a live
+	// snapshot ID), proving the rollback actually deleted it rather than
+	// merely leaving it orphaned but reachable.
+	_, err = provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback-check", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 * 1024 * 1024 * 1024},
+	})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: "vol-rollback-check",
+	})
+	require.NoError(t, err, "rollback must have deleted the just-created provider snapshot")
 }

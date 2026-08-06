@@ -17,15 +17,23 @@ const (
 	ExpandVolumeSubject   = "ebs.provider.v1.volume.expand"
 	DeleteVolumeSubject   = "ebs.provider.v1.volume.delete"
 	DeleteSnapshotSubject = "ebs.provider.v1.snapshot.delete"
+
+	// SnapshotCreateSubjectPrefix is the wildcard prefix servers subscribe to
+	// (SnapshotCreateSubjectPrefix + "*") to catch every per-volume create
+	// subject SnapshotSubject builds.
+	SnapshotCreateSubjectPrefix = "ebs.provider.v1.snapshot.create."
 )
 
 const defaultRequestTimeout = 30 * time.Second
 
+// SnapshotSubject addresses a create by source volume so the owning node can
+// serve it. The create verb is its own token: a bare volume ID here would
+// collide with DeleteSnapshotSubject and make the wildcard unsubscribable.
 func SnapshotSubject(volumeID string) (string, error) {
 	if err := validateSubjectToken(volumeID); err != nil {
 		return "", err
 	}
-	return "ebs.provider.v1.snapshot." + volumeID, nil
+	return SnapshotCreateSubjectPrefix + volumeID, nil
 }
 
 func SnapshotCompletionSubject(snapshotID string) (string, error) {

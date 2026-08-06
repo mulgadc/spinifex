@@ -3,6 +3,7 @@ package handlers_ec2_volume
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -320,6 +321,125 @@ func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
 	assert.Error(t, err)
+}
+
+// TestDescribeVolumes_Provider_FilterAndTenantIsolation covers DescribeVolumes'
+// provider-metadata branch: a filter must narrow results, an unknown
+// requested volume ID must come back InvalidVolume.NotFound, and one
+// tenant must never see another tenant's volumes.
+func TestDescribeVolumes_Provider_FilterAndTenantIsolation(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-2")
+	require.NoError(t, err)
+
+	t.Run("tenant isolation", func(t *testing.T) {
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.Volumes, 1)
+		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
+	})
+
+	t.Run("filter match", func(t *testing.T) {
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			Filters: []*ec2.Filter{{Name: aws.String("size"), Values: []*string{aws.String("8")}}},
+		}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.Volumes, 1)
+		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
+	})
+
+	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
+		_, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-does-not-exist")}}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestModifyVolume_Provider covers ModifyVolume's provider-metadata branch:
+// a grow succeeds and persists the new capacity, a shrink is rejected
+// (grow-only), and an in-use volume is rejected regardless of size.
+func TestModifyVolume_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+
+	t.Run("grow succeeds", func(t *testing.T) {
+		out, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16)}, "acct-1")
+		require.NoError(t, err)
+		require.NotNil(t, out.VolumeModification)
+		assert.Equal(t, int64(8), aws.Int64Value(out.VolumeModification.OriginalSize))
+		assert.Equal(t, int64(16), aws.Int64Value(out.VolumeModification.TargetSize))
+
+		meta, err := svc.metadata.GetVolume(ctx, volumeID)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(16), meta.CapacityGiB)
+	})
+
+	t.Run("shrink is rejected", func(t *testing.T) {
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(8)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	})
+
+	t.Run("in-use is rejected", func(t *testing.T) {
+		require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-123", "/dev/sda1"))
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(32)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorIncorrectState)
+	})
+
+	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String("vol-does-not-exist"), Size: aws.Int64(32)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// prefixFailingObjectStore fails PutObject for any key under failPrefix and
+// records the last such key, so a test can recover a randomly generated
+// resource ID from the write CreateVolume/CreateSnapshot attempted, without
+// needing to predict utils.GenerateResourceID's output up front.
+type prefixFailingObjectStore struct {
+	objectstore.ObjectStore
+
+	failPrefix   string
+	attemptedKey string
+}
+
+func (s *prefixFailingObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	key := aws.StringValue(input.Key)
+	if strings.HasPrefix(key, s.failPrefix) {
+		s.attemptedKey = key
+		return nil, errors.New("simulated metadata write failure")
+	}
+	return s.ObjectStore.PutObject(ctx, input)
+}
+
+// TestCreateVolume_Provider_RollbackOnMetadataWriteFailure covers CreateVolume's
+// rollback path: when the control-plane metadata write fails after the
+// provider has already allocated the volume, CreateVolume must delete the
+// just-created provider volume rather than orphan it.
+func TestCreateVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
+	store := &prefixFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore(), failPrefix: "spinifex/ebsmetadata/v1/volumes/"}
+	cfg := &config.Config{AZ: "ap-southeast-2a", Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewVolumeServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a"),
+	}, "acct-1")
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	require.NotEmpty(t, store.attemptedKey, "the metadata write must have been attempted")
+
+	volumeID := strings.TrimSuffix(strings.TrimPrefix(store.attemptedKey, store.failPrefix), ".json")
+	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})
+	require.ErrorIs(t, err, ebsprovider.ErrNotFound, "rollback must delete the just-created provider volume")
 }
 
 // TestCreateVolume_BuildVBConfig_GCEnabled asserts that CreateVolume's

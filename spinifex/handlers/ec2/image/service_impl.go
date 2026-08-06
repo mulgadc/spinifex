@@ -63,6 +63,12 @@ func (s *ImageServiceImpl) EBSProvider() ebsprovider.EBSProvider {
 	return s.provider
 }
 
+// MetadataStore returns the control-plane metadata store, so the composition
+// root can wire a legacy read fallback (see ebsmetadata.Store.SetLegacyAMIFallback).
+func (s *ImageServiceImpl) MetadataStore() *ebsmetadata.Store {
+	return s.metadata
+}
+
 // NewImageServiceImpl creates a new daemon-side image service. natsConn is used
 // to drain a running instance's volume (routed to the node hosting it) before
 // CreateImageFromInstance reads its live checkpoint.

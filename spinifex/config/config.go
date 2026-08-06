@@ -150,8 +150,8 @@ const (
 // settings, so a second provider never needs a rename.
 type EBSConfig struct {
 	// Provider is "embedded" (default) or "viperblockd" (EXPERIMENTAL): the
-	// latter persists volume metadata in ebsmetadata, not viperblock's
-	// config.json, so the leak reaper, GC and admin paths miss tenant/tag data.
+	// latter persists volumes in ebsmetadata, not config.json — a one-way
+	// switch, since reverting to "embedded" cannot read ebsmetadata volumes.
 	Provider string `json:"Provider" mapstructure:"provider"`
 }
 

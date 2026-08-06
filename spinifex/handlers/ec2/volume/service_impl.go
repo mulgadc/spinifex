@@ -85,6 +85,12 @@ func (s *VolumeServiceImpl) EBSProvider() ebsprovider.EBSProvider {
 	return s.provider
 }
 
+// MetadataStore returns the control-plane metadata store, so the composition
+// root can wire a legacy read fallback (see ebsmetadata.Store.SetLegacyVolumeFallback).
+func (s *VolumeServiceImpl) MetadataStore() *ebsmetadata.Store {
+	return s.metadata
+}
+
 // NewVolumeServiceImpl creates a new daemon-side volume service.
 // snapshotKV is optional — when non-nil, DeleteVolume uses O(1) KV lookup
 // instead of scanning all snapshots in S3.

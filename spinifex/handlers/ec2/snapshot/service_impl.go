@@ -68,6 +68,12 @@ func (s *SnapshotServiceImpl) EBSProvider() ebsprovider.EBSProvider {
 	return s.provider
 }
 
+// MetadataStore returns the control-plane metadata store, so the composition
+// root can wire a legacy read fallback (see ebsmetadata.Store.SetLegacyVolumeFallback).
+func (s *SnapshotServiceImpl) MetadataStore() *ebsmetadata.Store {
+	return s.metadata
+}
+
 // SnapshotConfig represents snapshot metadata stored in S3.
 type SnapshotConfig struct {
 	SnapshotID       string            `json:"snapshot_id"`

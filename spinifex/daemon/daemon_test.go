@@ -47,6 +47,8 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -4504,19 +4506,47 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 
 // --- configureEBSProvider ---
 
-func newEBSProviderTestDaemon(provider string) *Daemon {
+// newEBSProviderTestDaemon builds a daemon with real (constructor-built, not
+// zero-valued) EBS services so configureEBSProvider's fallback wiring has a
+// non-nil metadata store to call, plus a real JetStream handle so the
+// viperblockd path's backfill migration can stamp its version. The bucket is
+// pre-stamped to TargetVersion so the migration is a no-op here — this
+// fixture tests provider wiring, not backfill correctness (covered in
+// migrate/ebsmetadatabackfill).
+func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
+	t.Helper()
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	jsManager, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	versionKV, err := kvutil.GetOrCreateBucket(ctx, jsManager.js, ebsMetadataMigrationBucket, 1)
+	require.NoError(t, err)
+	require.NoError(t, kvutil.WriteVersion(ctx, versionKV, ebsmetadatabackfill.TargetVersion))
+
+	cfg := &config.Config{
+		EBS:        config.EBSConfig{Provider: provider},
+		Predastore: config.PredastoreConfig{Bucket: "test-bucket"},
+	}
+	store := objectstore.NewMemoryObjectStore()
+
 	return &Daemon{
-		config:          &config.Config{EBS: config.EBSConfig{Provider: provider}},
-		natsConn:        &nats.Conn{},
+		ctx:             ctx,
+		config:          cfg,
+		natsConn:        nc,
+		jsManager:       jsManager,
 		instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
-		imageService:    &handlers_ec2_image.ImageServiceImpl{},
-		snapshotService: &handlers_ec2_snapshot.SnapshotServiceImpl{},
-		volumeService:   &handlers_ec2_volume.VolumeServiceImpl{},
+		imageService:    handlers_ec2_image.NewImageServiceImplWithStore(store, cfg.Predastore.Bucket),
+		snapshotService: handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc),
+		volumeService:   handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, store, nc),
 	}
 }
 
 func TestConfigureEBSProvider_UnsetLeavesProviderNil(t *testing.T) {
-	d := newEBSProviderTestDaemon("")
+	d := newEBSProviderTestDaemon(t, "")
 	require.NoError(t, d.configureEBSProvider())
 
 	assert.Nil(t, d.ebsProvider)
@@ -4527,7 +4557,7 @@ func TestConfigureEBSProvider_UnsetLeavesProviderNil(t *testing.T) {
 }
 
 func TestConfigureEBSProvider_EmbeddedLeavesProviderNil(t *testing.T) {
-	d := newEBSProviderTestDaemon(config.EBSProviderEmbedded)
+	d := newEBSProviderTestDaemon(t, config.EBSProviderEmbedded)
 	require.NoError(t, d.configureEBSProvider())
 
 	assert.Nil(t, d.ebsProvider)
@@ -4538,7 +4568,7 @@ func TestConfigureEBSProvider_EmbeddedLeavesProviderNil(t *testing.T) {
 }
 
 func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testing.T) {
-	d := newEBSProviderTestDaemon(config.EBSProviderViperblockd)
+	d := newEBSProviderTestDaemon(t, config.EBSProviderViperblockd)
 	require.NoError(t, d.configureEBSProvider())
 
 	require.NotNil(t, d.ebsProvider, "daemon must retain the provider it constructed")

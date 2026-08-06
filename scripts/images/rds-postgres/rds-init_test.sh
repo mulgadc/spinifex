@@ -127,6 +127,17 @@ cat > "${STUBBIN}/psql" <<'EOF'
 exit 0
 EOF
 
+# sync stub: a no-op, except that SYNC_KILL_PARENT signals rds-init from the
+# directory sync that follows the receipt rename. That is the one window where
+# an installed receipt and an armed sweep coexist.
+cat > "${STUBBIN}/sync" <<'EOF'
+#!/bin/sh
+if [ "${SYNC_KILL_PARENT:-0}" = "1" ] && [ -d "${1:-}" ]; then
+    kill -TERM "$(cat "${KILL_PID_FILE}")"
+fi
+exit 0
+EOF
+
 chmod +x "${STUBBIN}"/*
 PATH="${STUBBIN}:${PATH}"
 export PATH
@@ -540,6 +551,25 @@ run_fails "receipt-fail"
 grep -q 'bootstrap receipt' "${WORK}/out" \
     && pass "receipt-fail: reported rather than swallowed" || fail "receipt-fail: no failure message"
 unset RECEIPT_DIR_OVERRIDE
+
+# --- Case 6k2: a sweep between the receipt and the retired traps takes both ---
+# The receipt is installed while the traps are still armed. A receipt left behind
+# by a sweep would be read by rds-agent, acknowledged, and the control plane would
+# destroy the only copy of the password this datadir can be initialised with.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-gamma
+export PENDING PAYLOAD_ID
+write_handoff initialize 's3cr3t' appdb
+SYNC_KILL_PARENT=1
+export SYNC_KILL_PARENT
+run_signalled_fails "receipt-swept"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "receipt-swept: datadir kept after a signal mid-bootstrap" \
+    || pass "receipt-swept: datadir cleared"
+[ -e "${RECEIPT}" ] \
+    && fail "receipt-swept: receipt survived the datadir it vouches for" \
+    || pass "receipt-swept: receipt cleared with the datadir"
+unset SYNC_KILL_PARENT
 
 # --- Case 6l: pending payload, initialised datadir, no receipt -> fail closed ---
 # The datadir alone cannot separate a legacy instance that bootstrapped before

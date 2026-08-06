@@ -386,6 +386,11 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 // with no diagnostic channel, whereas an attach lets it boot, register and beat
 // so the operator sees a running-but-broken instance. The guest guard fails
 // closed on the datadir either way.
+//
+// Recording that verdict is bookkeeping, so a failure to write it is logged
+// rather than returned. Propagating it would discard an attach response this
+// call has already built and reinstate the retry loop it exists to avoid; the
+// verdict is idempotent, so the next fetch records it.
 func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValue, accountID string,
 	rec *DBInstanceRecord, generationMatches bool, out *GetDBBootstrapConfigOutput) error {
 	envelope, _, err := readBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier)
@@ -393,7 +398,11 @@ func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValu
 		return err
 	}
 	if envelope == nil {
-		return s.scrubLegacyBootstrap(ctx, kv, accountID, rec)
+		if err := s.scrubLegacyBootstrap(ctx, kv, accountID, rec); err != nil {
+			slog.ErrorContext(ctx, "rds bootstrap: a legacy plaintext password could not be scrubbed; serving attach regardless",
+				"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		}
+		return nil
 	}
 	// A superseded VM gets the same attach material as any other boot but never
 	// the staged password.
@@ -408,8 +417,12 @@ func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValu
 	if err != nil {
 		slog.ErrorContext(ctx, "rds bootstrap: the staged payload could not be opened",
 			"dbInstance", rec.DBInstanceIdentifier, "err", err)
-		return s.markBootstrapUnrecoverable(ctx, kv, accountID, rec.DBInstanceIdentifier,
-			"the staged bootstrap payload cannot be read by the control plane; delete and recreate the DB instance")
+		if err := s.markBootstrapUnrecoverable(ctx, kv, accountID, rec.DBInstanceIdentifier,
+			"the staged bootstrap payload cannot be read by the control plane; delete and recreate the DB instance"); err != nil {
+			slog.ErrorContext(ctx, "rds bootstrap: the unrecoverable verdict could not be recorded; serving attach regardless",
+				"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		}
+		return nil
 	}
 
 	password := claims.MasterPassword

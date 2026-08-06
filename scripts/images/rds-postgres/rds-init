@@ -84,6 +84,11 @@ _bootstrapped=0
 clear_unfinished_datadir() {
     [ "${_created_datadir}" = "1" ] || return 0
     [ "${_bootstrapped}" = "1" ] && return 0
+    # The receipt is installed before the traps retire, so a sweep in between
+    # would leave one vouching for a datadir that is about to be deleted. The
+    # agent would acknowledge it and the control plane would destroy the only
+    # copy of the password this instance can ever be initialised with.
+    rm -f -- "${RECEIPT_FILE}"
     if rm -rf -- "${PGDATA}" && [ ! -e "${PGDATA}" ]; then
         echo "[rds-init] ERROR: bootstrap did not complete; datadir ${PGDATA} cleared" >&2
         return 0

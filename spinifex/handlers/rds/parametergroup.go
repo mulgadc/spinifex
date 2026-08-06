@@ -118,7 +118,7 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 		if err != nil {
 			// Deleted between the listing and this read; the same answer a describe
 			// one tick later would give.
-			if strings.HasPrefix(err.Error(), awserrors.ErrorDBParameterGroupNotFound) {
+			if awserrors.IsErrorCode(err, awserrors.ErrorDBParameterGroupNotFound) {
 				continue
 			}
 			return nil, err

@@ -754,7 +754,7 @@ func init() {
 
 	for _, c := range []*cobra.Command{adminOchreAccessGrantCmd, adminOchreAccessRevokeCmd} {
 		c.Flags().String("account-id", "", "12-digit account ID to change (required)")
-		c.Flags().String("model-id", "", "Model ID to change (e.g. meta.llama3-70b-instruct-v1:0)")
+		c.Flags().String("model-id", "", "Model ID to change (e.g. meta.llama3-2-1b-instruct-v1:0)")
 		c.Flags().Bool("all-models", false, "Apply to every model in the platform catalog")
 		if err := c.MarkFlagRequired("account-id"); err != nil {
 			panic(err)
@@ -770,7 +770,7 @@ func init() {
 // ochreAccessStore connects to the cluster and returns the grant store along
 // with a cleanup that closes the connection.
 func ochreAccessStore() (*gateway_bedrock.ModelAccessStore, func(), error) {
-	cfg, nc, err := loadConfigAndConnect()
+	cfg, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
 	}
@@ -818,13 +818,15 @@ func runOchreAccessChange(cmd *cobra.Command, grant bool) {
 	models, err := ochreTargetModels(cmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 
 	store, cleanup, err := ochreAccessStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	defer cleanup()
 
@@ -839,7 +841,8 @@ func runOchreAccessChange(cmd *cobra.Command, grant bool) {
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			ochreExit(1)
+			return
 		}
 		fmt.Printf("✅ %s %s → %s\n", verb, accountID, modelID)
 	}
@@ -851,14 +854,16 @@ func runOchreAccessList(cmd *cobra.Command, _ []string) {
 	store, cleanup, err := ochreAccessStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	defer cleanup()
 
 	models, err := store.List(context.Background(), accountID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		ochreExit(1)
+		return
 	}
 	if len(models) == 0 {
 		fmt.Printf("Account %s has no model grants (it can see and invoke nothing).\n", accountID)

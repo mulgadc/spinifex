@@ -12,6 +12,14 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
+// The staged payload this boot has to acknowledge once PostgreSQL has applied
+// it. Nil on an attach boot, which makes the acknowledgement step a no-op.
+type pendingBootstrap struct {
+	payloadID    string
+	vmGeneration int64
+	dataVolumeID string
+}
+
 // Fetches the boot material and writes the handoff rds-init is blocked waiting
 // for, then points the health probe at the assigned port.
 func (a *Agent) bootstrap(ctx context.Context) error {
@@ -24,6 +32,14 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		if fetched == nil {
 			return fmt.Errorf("bootstrap fetch returned no config")
 		}
+		// A control plane that predates the encrypted payload answers initialize
+		// with nothing to initialise with. Retrying re-dials the worker queue
+		// group until an upgraded node answers, so a mixed-version fleet heals
+		// within one boot rather than needing a reboot.
+		if fetched.Mode == handlers_rds.BootstrapModeInitialize &&
+			(fetched.MasterUserPassword == nil || *fetched.MasterUserPassword == "") {
+			return fmt.Errorf("bootstrap fetch returned mode=%s with no master password", fetched.Mode)
+		}
 		cfg = fetched
 		return nil
 	}, func(err error) {
@@ -33,9 +49,8 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 	}
 	a.hb.clearBootstrapFailure()
 
-	// Once an initialize response reaches the guest, keep retrying that same
-	// payload. Re-fetching after a local write failure returns attach because the
-	// control plane has already consumed the one-shot password.
+	// The fetch mutates nothing, so a handoff that cannot be written is retried
+	// against the same staged payload rather than against an attach response.
 	if err := retryObserved(ctx, "bootstrap handoff", func(context.Context) error {
 		return a.handoffWriter(a.cfg.HandoffDir, cfg)
 	}, func(err error) {
@@ -48,10 +63,18 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		a.probe.setPort(int(cfg.Port))
 		a.engine.setPort(int(cfg.Port))
 	}
+	if cfg.BootstrapPending && cfg.PayloadID != "" {
+		a.pending = &pendingBootstrap{
+			payloadID:    cfg.PayloadID,
+			vmGeneration: cfg.VMGeneration,
+			dataVolumeID: cfg.DataVolumeID,
+		}
+	}
 	// Mode is logged but never branched on: rds-init decides whether to initdb
 	// from the state of the datadir.
 	slog.Info("rds-agent: bootstrap config delivered",
-		"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters))
+		"mode", cfg.Mode, "port", cfg.Port, "parameters", len(cfg.Parameters),
+		"bootstrapPending", cfg.BootstrapPending)
 	return nil
 }
 
@@ -107,11 +130,17 @@ func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 	var b strings.Builder
 	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
 	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
+	writeEnvLine(&b, "RDS_DB_INSTANCE_IDENTIFIER", cfg.DBInstanceIdentifier)
 	writeEnvLine(&b, "RDS_MASTER_USERNAME", cfg.MasterUsername)
 	writeEnvLine(&b, "RDS_DATA_VOLUME_ID", cfg.DataVolumeID)
 	writeEnvLine(&b, "RDS_DATA_VOLUME_SERIAL", cfg.DataVolumeSerial)
 	writeEnvLine(&b, "RDS_VM_GENERATION", strconv.FormatInt(cfg.VMGeneration, 10))
 	writeEnvLine(&b, "RDS_FORMAT_AUTHORIZED", strconv.FormatBool(cfg.FormatAuthorized))
+	// Neither needs volume access, which is why the assertion is made here: the
+	// agent runs before rds-datadir mounts the volume, so rds-init is the first
+	// component that can compare it against the completion receipt on disk.
+	writeEnvLine(&b, "RDS_BOOTSTRAP_PENDING", boolFlag(cfg.BootstrapPending))
+	writeEnvLine(&b, "RDS_PAYLOAD_ID", cfg.PayloadID)
 	// Present only in initialize mode: an attach fetch has no password to write
 	// and rds-init must not find a stale one.
 	if cfg.MasterUserPassword != nil {
@@ -124,6 +153,15 @@ func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 		writeEnvLine(&b, "RDS_PORT", strconv.FormatInt(cfg.Port, 10))
 	}
 	return b.String()
+}
+
+// rds-init compares against 1 rather than sourcing a Go boolean, so the two
+// halves of the guard cannot drift on spelling.
+func boolFlag(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func writeEnvLine(b *strings.Builder, key, value string) {

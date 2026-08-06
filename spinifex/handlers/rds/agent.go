@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -12,9 +13,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
-// Bootstrap modes returned by GetDBBootstrapConfig. Initialize is the first
-// fetch and carries the master password; attach is the same payload minus the
-// password, for a fresh VM booting against an existing datadir.
+// Bootstrap modes returned by GetDBBootstrapConfig. Initialize carries the
+// master password and is replayed for as long as the payload stays staged;
+// attach is the same payload minus the password, for a VM booting against an
+// existing datadir.
 const (
 	BootstrapModeInitialize = "initialize"
 	BootstrapModeAttach     = "attach"
@@ -83,11 +85,40 @@ type GetDBBootstrapConfigOutput struct {
 
 	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member" xml:"Parameters>member"`
 
+	// Names the staged payload this response replayed and asserts that the
+	// control plane is still waiting for it to be applied. The guest carries both
+	// into the handoff, where rds-init uses them to refuse a datadir whose master
+	// role it cannot prove.
+	PayloadID        string `json:"payloadId,omitempty" locationName:"PayloadId" xml:"PayloadId"`
+	BootstrapPending bool   `json:"bootstrapPending" locationName:"BootstrapPending" xml:"BootstrapPending"`
+
 	// Empty when no cluster CA is configured; the agent then starts the engine
 	// without TLS rather than failing to boot, since TLS is offered not enforced.
 	ServingCertificate string `json:"servingCertificate,omitempty" locationName:"ServingCertificate"`
 	ServingPrivateKey  string `json:"servingPrivateKey,omitempty" locationName:"ServingPrivateKey"`
 	CACertificate      string `json:"caCertificate,omitempty" locationName:"CACertificate"`
+}
+
+// Reports that PostgreSQL durably applied the staged master password, which is
+// the only thing that destroys the ciphertext. Distinct from SubmitDBStateChange
+// because a heartbeat is best-effort while this must be retried until confirmed
+// and denied on an identity mismatch.
+//
+// DBInstanceIdentifier and InstanceID are set by the gateway from the caller's
+// resolved identity; the rest is the guest's own assertion, checked here.
+type AcknowledgeDBBootstrapInput struct {
+	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
+	InstanceID           string `json:"instanceId"`
+	PayloadID            string `json:"payloadId"`
+	VMGeneration         int64  `json:"vmGeneration"`
+	DataVolumeID         string `json:"dataVolumeId,omitempty"`
+}
+
+// Minimal by design: the agent needs only success to decide it may remove its
+// completion receipt.
+type AcknowledgeDBBootstrapOutput struct {
+	Acknowledged   bool       `json:"acknowledged" locationName:"Acknowledged"`
+	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty" locationName:"AcknowledgedAt" type:"timestamp"`
 }
 
 // One directive delivered to an agent on its long poll. Concrete types land
@@ -270,8 +301,10 @@ func (s *Service) LastSeen(accountID, dbID string) (time.Time, bool) {
 	return live.lastSeen, true
 }
 
-// Serves boot material and, on the first call, the master password. That call
-// clears the cleartext and sets the marker in one CAS, so a replay reads attach.
+// Serves boot material and, while a payload is staged for the caller's
+// generation, replays the master password. Nothing is mutated on the way, so a
+// dropped reply, a gateway restart or a reboot before the guest applied the
+// password all recover by simply asking again.
 func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -280,96 +313,206 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 	if err != nil {
 		return nil, err
 	}
-	key := DBInstanceKey(input.DBInstanceIdentifier)
 
-	for {
-		var rec DBInstanceRecord
-		rev, found, err := getJSONRevision(ctx, kv, key, &rec)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
-		}
-		if rec.InstanceID == "" || input.InstanceID != rec.InstanceID {
-			return nil, errors.New(awserrors.ErrorAccessDenied)
-		}
-
-		generationMatches := input.VMGeneration > 0 && input.VMGeneration == rec.VMGeneration
-		// An old gateway may omit the generation for an existing record. It may
-		// still serve attach material, but it must not consume or expose a live
-		// create grant until the caller is bound to the current generation.
-		if rec.FormatAuthorized && !generationMatches {
-			return nil, errors.New(awserrors.ErrorAccessDenied)
-		}
-		serial := rec.DataVolumeSerial
-		if serial == "" && rec.DataVolumeID != "" {
-			// Backward-compatible identity for records written before the serial
-			// field existed. Missing authorization remains false.
-			serial = vm.VolumeSerial(rec.DataVolumeID)
-		}
-		authoritativeSerial := vm.VolumeSerial(rec.DataVolumeID)
-		grantIdentityValid := generationMatches && rec.DataVolumeID != "" &&
-			rec.DataVolumeSerial != "" && rec.DataVolumeSerial == authoritativeSerial
-		if rec.FormatAuthorized && !grantIdentityValid {
-			return nil, errors.New(awserrors.ErrorAccessDenied)
-		}
-
-		out := &GetDBBootstrapConfigOutput{
-			Mode:                 BootstrapModeAttach,
-			DBInstanceIdentifier: rec.DBInstanceIdentifier,
-			Engine:               rec.Engine,
-			EngineVersion:        rec.EngineVersion,
-			DBName:               rec.DBName,
-			MasterUsername:       rec.MasterUsername,
-			Port:                 rec.Port,
-			DataVolumeID:         rec.DataVolumeID,
-			DataVolumeSerial:     serial,
-			VMGeneration:         rec.VMGeneration,
-			FormatAuthorized:     rec.FormatAuthorized && grantIdentityValid,
-			Parameters:           rec.Bootstrap.ResolvedParameters,
-		}
-
-		// The cert is minted before the password is consumed, so a mint failure
-		// leaves the password in KV for the agent's retry. Consuming first would
-		// leave an instance that can never learn its master password.
-		cert, err := s.mintServingCert(&rec)
-		if err != nil {
-			return nil, err
-		}
-		if cert != nil {
-			out.ServingCertificate = cert.CertificatePEM
-			out.ServingPrivateKey = cert.PrivateKeyPEM
-			out.CACertificate = cert.caPEM
-		}
-
-		if rec.Bootstrap.Consumed {
-			return out, nil
-		}
-
-		password := rec.Bootstrap.MasterUserPassword
-		now := time.Now().UTC()
-		rec.Bootstrap.MasterUserPassword = ""
-		rec.Bootstrap.Consumed = true
-		rec.Bootstrap.ConsumedAt = &now
-		rec.UpdatedAt = now
-		if err := updateJSON(ctx, kv, key, rev, &rec); err != nil {
-			if !errors.Is(err, jetstream.ErrKeyExists) {
-				return nil, fmt.Errorf("rds bootstrap: consume master password for %s: %w",
-					input.DBInstanceIdentifier, err)
-			}
-			// A revision conflict may be an unrelated record update. Re-read and
-			// return attach only when the stored consumed marker proves another
-			// bootstrap fetch won the password.
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		out.Mode = BootstrapModeInitialize
-		out.MasterUserPassword = &password
-		return out, nil
+	var rec DBInstanceRecord
+	found, err := getJSON(ctx, kv, DBInstanceKey(input.DBInstanceIdentifier), &rec)
+	if err != nil {
+		return nil, err
 	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
+	}
+	if rec.InstanceID == "" || input.InstanceID != rec.InstanceID {
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	generationMatches := input.VMGeneration > 0 && input.VMGeneration == rec.VMGeneration
+	// An old gateway may omit the generation for an existing record. It may
+	// still serve attach material, but it must not expose a live create grant or
+	// a staged password until the caller is bound to the current generation.
+	if rec.FormatAuthorized && !generationMatches {
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+	serial := rec.DataVolumeSerial
+	if serial == "" && rec.DataVolumeID != "" {
+		// Backward-compatible identity for records written before the serial
+		// field existed. Missing authorization remains false.
+		serial = vm.VolumeSerial(rec.DataVolumeID)
+	}
+	authoritativeSerial := vm.VolumeSerial(rec.DataVolumeID)
+	grantIdentityValid := generationMatches && rec.DataVolumeID != "" &&
+		rec.DataVolumeSerial != "" && rec.DataVolumeSerial == authoritativeSerial
+	if rec.FormatAuthorized && !grantIdentityValid {
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	out := &GetDBBootstrapConfigOutput{
+		Mode:                 BootstrapModeAttach,
+		DBInstanceIdentifier: rec.DBInstanceIdentifier,
+		Engine:               rec.Engine,
+		EngineVersion:        rec.EngineVersion,
+		DBName:               rec.DBName,
+		MasterUsername:       rec.MasterUsername,
+		Port:                 rec.Port,
+		DataVolumeID:         rec.DataVolumeID,
+		DataVolumeSerial:     serial,
+		VMGeneration:         rec.VMGeneration,
+		FormatAuthorized:     rec.FormatAuthorized && grantIdentityValid,
+		Parameters:           rec.Bootstrap.ResolvedParameters,
+	}
+	// Minted per call and never persisted, so every boot — attach included —
+	// gets fresh serving material.
+	cert, err := s.mintServingCert(&rec)
+	if err != nil {
+		return nil, err
+	}
+	if cert != nil {
+		out.ServingCertificate = cert.CertificatePEM
+		out.ServingPrivateKey = cert.PrivateKeyPEM
+		out.CACertificate = cert.caPEM
+	}
+
+	if err := s.applyStagedBootstrap(ctx, kv, accountID, &rec, generationMatches, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Fills in the initialize half of the response when a payload is staged for this
+// generation, and leaves the attach response untouched otherwise.
+//
+// A payload this daemon cannot open is reported as unrecoverable and still
+// answered with attach: failing the fetch outright would leave a VM retrying
+// with no diagnostic channel, whereas an attach lets it boot, register and beat
+// so the operator sees a running-but-broken instance. The guest guard fails
+// closed on the datadir either way.
+func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValue, accountID string,
+	rec *DBInstanceRecord, generationMatches bool, out *GetDBBootstrapConfigOutput) error {
+	envelope, _, err := readBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return err
+	}
+	if envelope == nil {
+		return s.scrubLegacyBootstrap(ctx, kv, accountID, rec)
+	}
+	// A superseded VM gets the same attach material as any other boot but never
+	// the staged password.
+	if !generationMatches || envelope.BoundVMGeneration != rec.VMGeneration {
+		slog.WarnContext(ctx, "rds bootstrap: a staged payload was not served to a caller outside its bound generation",
+			"dbInstance", rec.DBInstanceIdentifier, "recordGeneration", rec.VMGeneration,
+			"boundGeneration", envelope.BoundVMGeneration)
+		return nil
+	}
+
+	claims, err := s.openBootstrapPayload(envelope, accountID, rec)
+	if err != nil {
+		slog.ErrorContext(ctx, "rds bootstrap: the staged payload could not be opened",
+			"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		return s.markBootstrapUnrecoverable(ctx, kv, accountID, rec.DBInstanceIdentifier,
+			"the staged bootstrap payload cannot be read by the control plane; delete and recreate the DB instance")
+	}
+
+	password := claims.MasterPassword
+	out.Mode = BootstrapModeInitialize
+	out.MasterUsername = claims.MasterUsername
+	out.MasterUserPassword = &password
+	out.PayloadID = claims.PayloadID
+	out.BootstrapPending = true
+	return nil
+}
+
+// Beta records staged the password as cleartext on the record itself. One that
+// was never consumed also never bootstrapped, so there is no datadir to save:
+// the password is removed on sight and the instance is marked for recreation
+// rather than left holding a secret at rest for an operator who may never act.
+func (s *Service) scrubLegacyBootstrap(ctx context.Context, kv jetstream.KeyValue,
+	accountID string, rec *DBInstanceRecord) error {
+	if rec.Bootstrap.MasterUserPassword == "" {
+		return nil
+	}
+	rec.Bootstrap.MasterUserPassword = ""
+	return s.markBootstrapUnrecoverable(ctx, kv, accountID, rec.DBInstanceIdentifier,
+		"this DB instance staged its master password before the password was encrypted at rest and never completed its initial bootstrap; delete and recreate it")
+}
+
+// Destroys the staged ciphertext once the guest has proven PostgreSQL applied
+// it. Deliberately never decrypts: a lost acknowledgement has to remain
+// deliverable even after a master.key change made the payload unreadable, so the
+// one operation that destroys key material must not depend on reading it.
+func (s *Service) AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapInput,
+	accountID string) (*AcknowledgeDBBootstrapOutput, error) {
+	if input.DBInstanceIdentifier == "" || input.PayloadID == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	rec, _, err := s.getDBInstance(ctx, kv, input.DBInstanceIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	if rec.InstanceID == "" || input.InstanceID != rec.InstanceID {
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	envelope, rev, err := readBootstrapPayload(ctx, kv, input.DBInstanceIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	if envelope == nil {
+		// The true duplicate: the first acknowledgement landed and its response
+		// was lost. The retained payload ID is the only thing left to answer it
+		// with, which is why it outlives the key it names.
+		if rec.Bootstrap.PayloadID != "" && rec.Bootstrap.PayloadID == input.PayloadID {
+			return &AcknowledgeDBBootstrapOutput{
+				Acknowledged: true, AcknowledgedAt: rec.Bootstrap.AcknowledgedAt,
+			}, nil
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+			"no bootstrap payload %s is or was staged for DB instance %s", input.PayloadID, input.DBInstanceIdentifier)
+	}
+
+	// A superseded VM must never acknowledge: it would destroy the payload the
+	// current generation is still waiting to replay.
+	if envelope.PayloadID != input.PayloadID || envelope.BoundVMGeneration != rec.VMGeneration ||
+		input.VMGeneration != rec.VMGeneration {
+		return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+			"bootstrap payload %s at generation %d does not match the current state of DB instance %s",
+			input.PayloadID, input.VMGeneration, input.DBInstanceIdentifier)
+	}
+	// An echo of what the fetch handed the guest rather than independent proof:
+	// the agent does not observe the serial of the device rds-datadir mounted.
+	// A mismatch is a platform bug worth denying on all the same.
+	if input.DataVolumeID != "" && input.DataVolumeID != rec.DataVolumeID {
+		return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+			"DB instance %s is not backed by data volume %s", input.DBInstanceIdentifier, input.DataVolumeID)
+	}
+
+	// The record first: a failure between the two leaves the payload staged and
+	// the retry converges. Deleting first would leave a state where neither the
+	// key nor the retained payload ID can answer the retry.
+	now := time.Now().UTC()
+	if err := s.updateInstance(ctx, kv, input.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		stored.Bootstrap.PayloadID = input.PayloadID
+		stored.Bootstrap.State = BootstrapStateAcknowledged
+		stored.Bootstrap.AcknowledgedAt = &now
+		stored.Bootstrap.MasterUserPassword = ""
+	}); err != nil {
+		return nil, err
+	}
+	if err := deleteBootstrapPayload(ctx, kv, input.DBInstanceIdentifier, jetstream.LastRevision(rev)); err != nil {
+		return nil, err
+	}
+
+	slog.InfoContext(ctx, "rds: initial bootstrap acknowledged",
+		"dbInstance", input.DBInstanceIdentifier, "accountId", accountID,
+		"instanceId", input.InstanceID, "payloadId", input.PayloadID)
+	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, input.DBInstanceIdentifier,
+		"The database engine confirmed the initial master credentials were applied.",
+		EventCategoryCreation, EventCategoryNotification)
+
+	return &AcknowledgeDBBootstrapOutput{Acknowledged: true, AcknowledgedAt: &now}, nil
 }
 
 type bootstrapCert struct {

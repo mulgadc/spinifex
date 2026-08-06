@@ -209,6 +209,11 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 			return fmt.Errorf("rds: delete the instance index entry for %s: %w", rec.DBInstanceIdentifier, err)
 		}
 	}
+	// Before the record, so a teardown that stops here leaves no ciphertext
+	// behind that nothing names.
+	if err := deleteBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier); err != nil {
+		return err
+	}
 	// Last: while it exists the instance is still nameable, and everything above
 	// is reachable only through it.
 	if err := kv.Delete(ctx, DBInstanceKey(rec.DBInstanceIdentifier)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {

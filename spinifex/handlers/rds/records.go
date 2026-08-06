@@ -209,18 +209,43 @@ func (r *DBInstanceRecord) GetTags() map[string]string { return r.Tags }
 
 func (r *DBInstanceRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
-// The Consumed marker scopes the master password to a single fetch, not the
-// action: replace, recovery and restore all re-fetch without one.
+// How far the initial bootstrap got. The payload key's existence is the
+// authoritative meaning of pending; these are resolved from it and are
+// diagnostics on the record.
+const (
+	BootstrapStatePending      = "pending"
+	BootstrapStateAcknowledged = "acknowledged"
+	// A beta record whose password was already spent by the consume-on-fetch
+	// protocol. A read-time interpretation, never a stored value.
+	BootstrapStateLegacyConsumed = "legacy-consumed"
+	// The master password can no longer be delivered to this datadir, so the
+	// instance has to be deleted and recreated.
+	BootstrapStateUnrecoverable = "unrecoverable"
+	// What a restored record is born as: no payload was ever staged for it.
+	BootstrapStateNone = "none"
+)
+
+// The record's view of the initial bootstrap. The master password itself lives
+// encrypted under bootstrap-payloads/{id}, never here, and that key is what a
+// fetch replays until the guest proves PostgreSQL applied it.
 type BootstrapState struct {
-	// Cleared by the same CAS that sets Consumed, so the cleartext outlives
-	// only the boot it serves.
-	MasterUserPassword string `json:"masterUserPassword,omitempty"`
-	// Only ever flips forward.
-	Consumed   bool       `json:"consumed"`
-	ConsumedAt *time.Time `json:"consumedAt,omitempty"`
+	// Kept after acknowledgement so a duplicate acknowledgement, whose payload
+	// key is already gone, is still answerable.
+	PayloadID string `json:"payloadId,omitempty"`
+	// One of the BootstrapState* values above. Advisory: resolveBootstrapState
+	// reads the payload key first.
+	State          string     `json:"state,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
 	// Already evaluated against the instance class, so the agent receives
 	// literals and never a formula.
 	ResolvedParameters []Parameter `json:"resolvedParameters,omitempty"`
+
+	// Beta consume-on-fetch fields, decoded so an existing record keeps reading
+	// as legacy-consumed and never written by this protocol. The password is
+	// scrubbed the first time a fetch sees one.
+	Consumed           bool       `json:"consumed,omitempty"`
+	ConsumedAt         *time.Time `json:"consumedAt,omitempty"`
+	MasterUserPassword string     `json:"masterUserPassword,omitempty"`
 }
 
 // Snapshot types and statuses, matching AWS. A final snapshot is manual: the

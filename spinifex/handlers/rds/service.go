@@ -23,7 +23,11 @@ type Deps struct {
 	CAKeyPath  string
 	// Overrides the file-backed CA loader in tests.
 	LoadCA CALoader
-	Launch LaunchDeps
+	// The cluster master key the staged bootstrap password is encrypted under.
+	// Mandatory: without it a create cannot stage a password at all, so it is
+	// resolved at construction rather than per operation.
+	MasterKey []byte
+	Launch    LaunchDeps
 	// Resolves the customer subnet and validates the security groups the
 	// customer ENI is created with.
 	Network networkResolver

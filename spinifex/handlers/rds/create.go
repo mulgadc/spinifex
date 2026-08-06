@@ -78,6 +78,13 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		s.rollbackDBInstanceReservation(ctx, kv, key, req.Identifier, rec.DbiResourceID, rollbackRev)
 	}()
 
+	// Staged before the launch so no VM can boot ahead of the password it needs,
+	// and bound to the first generation the record will carry. The rollback above
+	// removes it with the reservation.
+	if _, err = s.writeBootstrapPayload(ctx, kv, accountID, &rec, req.MasterPassword); err != nil {
+		return nil, err
+	}
+
 	launched, err := LaunchDBInstanceVM(ctx, s.deps.Launch, LaunchInput{
 		DBInstanceIdentifier: req.Identifier,
 		AccountID:            accountID,
@@ -138,7 +145,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 }
 
 // The record as it stands before any resource exists: everything the request
-// determined, plus the staged master password the first bootstrap fetch consumes.
+// determined. The master password is never on the record — it is staged
+// encrypted under its own key, bound to the generation set here.
 func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement, parameters []Parameter) DBInstanceRecord {
 	now := time.Now().UTC()
 	return DBInstanceRecord{
@@ -146,6 +154,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		DbiResourceID:        utils.GenerateResourceID(dbiResourceIDPrefix),
 		AccountID:            accountID,
 		Status:               StatusCreating,
+		VMGeneration:         firstVMGeneration,
 		Engine:               req.Engine.Name,
 		EngineVersion:        req.EngineVersion,
 		DBInstanceClass:      req.InstanceClass,
@@ -172,7 +181,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 
 		Tags: req.Tags,
 		Bootstrap: BootstrapState{
-			MasterUserPassword: req.MasterPassword,
+			State:              BootstrapStatePending,
 			ResolvedParameters: parameters,
 		},
 		CreatedAt: now,
@@ -237,6 +246,13 @@ func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstrea
 	key, identifier, resourceID string, rev uint64) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
+
+	// Before the record, so a failure below cannot leave ciphertext behind with
+	// nothing naming it. A create that never staged one deletes nothing.
+	if err := deleteBootstrapPayload(rbCtx, kv, identifier); err != nil {
+		slog.WarnContext(rbCtx, "rds: rollback delete of the staged bootstrap payload failed",
+			"dbInstance", identifier, "err", err)
+	}
 
 	var rollbackErr error
 	for range rollbackDeleteAttempts {

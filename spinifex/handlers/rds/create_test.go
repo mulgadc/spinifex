@@ -150,6 +150,7 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:     newTestCA(t),
+		MasterKey:  testMasterKey,
 		Launch:     h.launch.deps(),
 		Network:    h.network,
 		IAM:        testIAMProvider(h.iam),
@@ -252,9 +253,10 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, vm.VolumeSerial(rec.DataVolumeID), rec.DataVolumeSerial)
 	assert.True(t, rec.FormatAuthorized, "only the fresh initial-create volume may be formatted")
 	assert.True(t, rec.StorageEncrypted)
-	// The master password is staged for the one-shot bootstrap fetch, unconsumed.
-	assert.Equal(t, "Sup3rSecret!", rec.Bootstrap.MasterUserPassword)
-	assert.False(t, rec.Bootstrap.Consumed)
+	// The master password is staged under its own encrypted key, never on the
+	// record; TestCreateDBInstance_StagesThePasswordEncrypted covers the payload.
+	assert.Equal(t, BootstrapStatePending, rec.Bootstrap.State)
+	assert.Empty(t, rec.Bootstrap.MasterUserPassword)
 
 	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{
 		SourceType:       aws.String(EventSourceTypeDBInstance),

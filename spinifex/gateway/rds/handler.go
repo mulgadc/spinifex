@@ -121,10 +121,11 @@ var actions = map[string]actionDef{
 	// Internal agent actions, callable only by the in-guest agent's system role.
 	// They share the namespace because the agent reaches the control plane over
 	// SigV4-on-awsgw like every other in-guest agent.
-	"RegisterDBInstance":   {handler: typed(RegisterDBInstance), internal: true},
-	"SubmitDBStateChange":  {handler: typed(SubmitDBStateChange), internal: true},
-	"PollDBCommands":       {handler: typed(PollDBCommands), internal: true},
-	"GetDBBootstrapConfig": {handler: typed(GetDBBootstrapConfig), internal: true},
+	"RegisterDBInstance":     {handler: typed(RegisterDBInstance), internal: true},
+	"SubmitDBStateChange":    {handler: typed(SubmitDBStateChange), internal: true},
+	"PollDBCommands":         {handler: typed(PollDBCommands), internal: true},
+	"GetDBBootstrapConfig":   {handler: typed(GetDBBootstrapConfig), internal: true},
+	"AcknowledgeDBBootstrap": {handler: typed(AcknowledgeDBBootstrap), internal: true},
 
 	// Recognised but out of scope. Read replicas, Aurora clusters and option
 	// groups are not offered at all; point-in-time restore waits on WAL

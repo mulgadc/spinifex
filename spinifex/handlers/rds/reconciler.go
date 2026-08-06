@@ -78,11 +78,17 @@ type Reconciler struct {
 
 	mu     sync.Mutex
 	leader bool
+
+	// The payloads already reported as stuck pending. The condition persists
+	// until an operator acts, so without this the event would be re-recorded
+	// every sweep and crowd the bounded ring.
+	reportedMu      sync.Mutex
+	reportedPending map[string]string
 }
 
 // holder identifies this daemon in the lease.
 func NewReconciler(svc *Service, holder string) *Reconciler {
-	return &Reconciler{svc: svc, holder: holder}
+	return &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
 }
 
 // Drives the leadership and reconcile loop until ctx is cancelled. Intended as
@@ -242,6 +248,9 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	if err != nil || !found {
 		return err
 	}
+	if err := r.reportStalePendingBootstrap(ctx, kv, accountID, &rec); err != nil {
+		return err
+	}
 	switch rec.Status {
 	case StatusCreating:
 		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
@@ -260,6 +269,56 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	default:
 		return nil
 	}
+}
+
+// An available instance whose payload is still staged bootstrapped against an
+// agent too old to acknowledge, so the ciphertext will sit there until an
+// operator acts. Only reported: deleting the payload on the grounds that a
+// healthy engine implies a completed bootstrap is exactly the inference this
+// protocol refuses to make.
+func (r *Reconciler) reportStalePendingBootstrap(ctx context.Context, kv jetstream.KeyValue,
+	accountID string, rec *DBInstanceRecord) error {
+	key := accountID + "/" + rec.DBInstanceIdentifier
+	stale := rec.Status == StatusAvailable && time.Since(rec.CreatedAt) > r.svc.bootstrapTimeout()
+	if !stale {
+		r.forgetPendingReport(key)
+		return nil
+	}
+	envelope, _, err := readBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return err
+	}
+	if envelope == nil {
+		r.forgetPendingReport(key)
+		return nil
+	}
+	if !r.notePendingReport(key, envelope.PayloadID) {
+		return nil
+	}
+	slog.WarnContext(ctx, "rds: a staged bootstrap payload is still pending on an available DB instance",
+		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID, "payloadId", envelope.PayloadID)
+	r.svc.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+		"The database engine is serving but has not confirmed its initial master credentials were applied; the staged credentials remain stored until it does.",
+		EventCategoryNotification)
+	return nil
+}
+
+// Reports whether this payload is newly stuck, so the event is recorded once per
+// payload for as long as this node holds the lease.
+func (r *Reconciler) notePendingReport(key, payloadID string) bool {
+	r.reportedMu.Lock()
+	defer r.reportedMu.Unlock()
+	if r.reportedPending[key] == payloadID {
+		return false
+	}
+	r.reportedPending[key] = payloadID
+	return true
+}
+
+func (r *Reconciler) forgetPendingReport(key string) {
+	r.reportedMu.Lock()
+	defer r.reportedMu.Unlock()
+	delete(r.reportedPending, key)
 }
 
 func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {

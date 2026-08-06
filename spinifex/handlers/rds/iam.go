@@ -19,13 +19,14 @@ const (
 )
 
 // The agent-only actions. The gateway's principal-class gate reserves exactly
-// this set, and the role below grants exactly it — one list, so adding a fifth
+// this set, and the role below grants exactly it — one list, so adding another
 // cannot leave the gate and the grant disagreeing.
 var InternalAgentActions = []string{
 	"RegisterDBInstance",
 	"SubmitDBStateChange",
 	"PollDBCommands",
 	"GetDBBootstrapConfig",
+	"AcknowledgeDBBootstrap",
 }
 
 // Never rds:*: granting the customer surface here would let a Postgres RCE on

@@ -182,3 +182,8 @@ func (s *NATSService) GetDBBootstrapConfig(ctx context.Context, input *GetDBBoot
 	return utils.NATSRequest[GetDBBootstrapConfigOutput](ctx, s.nc,
 		SubjectGetDBBootstrapConfig, input, defaultTimeout, accountID)
 }
+
+func (s *NATSService) AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapInput, accountID string) (*AcknowledgeDBBootstrapOutput, error) {
+	return utils.NATSRequest[AcknowledgeDBBootstrapOutput](ctx, s.nc,
+		SubjectAcknowledgeDBBootstrap, input, defaultTimeout, accountID)
+}

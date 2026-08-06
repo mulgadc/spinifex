@@ -40,6 +40,7 @@ const (
 // Key-path helpers for the per-account bucket:
 //
 //	db-instances/{dbInstanceIdentifier}
+//	bootstrap-payloads/{dbInstanceIdentifier}
 //	db-snapshots/{dbSnapshotIdentifier}
 //	db-subnet-groups/{name}
 //	db-parameter-groups/{name}/meta
@@ -57,6 +58,17 @@ func DBInstancesPrefix() string {
 
 func DBInstanceKey(dbInstanceIdentifier string) string {
 	return DBInstancesPrefix() + dbInstanceIdentifier
+}
+
+// The encrypted bootstrap payload, kept out of the instance record so it has its
+// own CAS domain and so a daemon that predates it cannot drop it through a
+// read-modify-marshal of the record.
+func BootstrapPayloadsPrefix() string {
+	return "bootstrap-payloads/"
+}
+
+func BootstrapPayloadKey(dbInstanceIdentifier string) string {
+	return BootstrapPayloadsPrefix() + dbInstanceIdentifier
 }
 
 // Manual and automated snapshots share this space, distinguished by the

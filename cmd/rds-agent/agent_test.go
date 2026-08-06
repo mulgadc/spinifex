@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,12 @@ type fakeControlPlane struct {
 	bootstrapOut  *handlers_rds.GetDBBootstrapConfigOutput
 	bootstrapErrs []error
 	bootstrapReqs []identity
+	// Scripted responses ahead of bootstrapOut, so a test can answer the first
+	// fetch differently from the ones the agent retries with.
+	bootstrapQueue []*handlers_rds.GetDBBootstrapConfigOutput
+
+	ackErrs []error
+	ackReqs []pendingBootstrap
 
 	states []submittedState
 
@@ -97,7 +104,19 @@ func (f *fakeControlPlane) GetBootstrapConfig(_ context.Context, id identity) (*
 	if err := nextErr(&f.bootstrapErrs); err != nil {
 		return nil, err
 	}
+	if len(f.bootstrapQueue) > 0 {
+		out := f.bootstrapQueue[0]
+		f.bootstrapQueue = f.bootstrapQueue[1:]
+		return out, nil
+	}
 	return f.bootstrapOut, nil
+}
+
+func (f *fakeControlPlane) AcknowledgeBootstrap(_ context.Context, _ identity, pending *pendingBootstrap) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ackReqs = append(f.ackReqs, *pending)
+	return nextErr(&f.ackErrs)
 }
 
 func (f *fakeControlPlane) PollCommands(ctx context.Context, _ identity, replies []handlers_rds.CommandReply, _ time.Duration) ([]handlers_rds.Command, error) {
@@ -124,6 +143,12 @@ func (f *fakeControlPlane) PollCommands(ctx context.Context, _ identity, replies
 	// does, rather than spinning the caller's loop.
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (f *fakeControlPlane) ackRequests() []pendingBootstrap {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ackReqs)
 }
 
 func (f *fakeControlPlane) snapshotStates() []submittedState {
@@ -176,6 +201,24 @@ func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput 
 		DataVolumeID:         "vol-data-01",
 		DataVolumeSerial:     "voldata01",
 		VMGeneration:         1,
+		PayloadID:            testPayloadID,
+		BootstrapPending:     password != nil,
+	}
+}
+
+const testPayloadID = "bp-0123456789abcdef"
+
+// Writes the completion receipt rds-init leaves behind, so the acknowledgement
+// step finds what a finished initialization would have produced.
+func writeReceipt(t *testing.T, a *Agent, payloadID, dbInstanceIdentifier string) {
+	t.Helper()
+	path := a.receiptPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir receipt dir: %v", err)
+	}
+	body := fmt.Sprintf("%s=%s\n%s=%s\n", receiptPayload, payloadID, receiptDBID, dbInstanceIdentifier)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
 	}
 }
 
@@ -293,9 +336,11 @@ func TestRun_RetriesRegisterAndBootstrap(t *testing.T) {
 	}
 }
 
-func TestBootstrap_RetriesHandoffWithoutRefetchingConsumedPassword(t *testing.T) {
+// The fetch mutates nothing, so a handoff that cannot be written is retried
+// against the payload already in hand rather than costing a second fetch.
+func TestBootstrap_RetriesHandoffWithoutRefetching(t *testing.T) {
 	cp := newFakeControlPlane()
-	password := "one-shot-secret"
+	password := "staged-secret"
 	cp.bootstrapOut = bootstrapOutput(&password)
 	cfg := testConfig(t)
 	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
@@ -320,6 +365,117 @@ func TestBootstrap_RetriesHandoffWithoutRefetchingConsumedPassword(t *testing.T)
 	}
 	if writes != 2 {
 		t.Errorf("handoff writes = %d, want 2", writes)
+	}
+	if a.pending == nil || a.pending.payloadID != testPayloadID {
+		t.Errorf("pending bootstrap = %+v, want the staged payload %s", a.pending, testPayloadID)
+	}
+}
+
+// A daemon that predates the encrypted payload answers initialize with nothing
+// to initialise with. Writing that handoff would let rds-init run initdb with an
+// empty master password, so it is retried until an upgraded node answers.
+func TestBootstrap_RetriesInitializeWithNoPassword(t *testing.T) {
+	cp := newFakeControlPlane()
+	empty := ""
+	password := "staged-secret"
+	cp.bootstrapQueue = []*handlers_rds.GetDBBootstrapConfigOutput{{
+		Mode: handlers_rds.BootstrapModeInitialize, DBInstanceIdentifier: "db-resolved",
+		MasterUsername: "master", MasterUserPassword: &empty,
+	}}
+	cp.bootstrapOut = bootstrapOutput(&password)
+	cfg := testConfig(t)
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+
+	var handed []*handlers_rds.GetDBBootstrapConfigOutput
+	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
+		handed = append(handed, got)
+		return nil
+	}
+
+	if err := a.bootstrap(t.Context()); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if len(handed) != 1 {
+		t.Fatalf("handoff writes = %d, want 1 once a usable payload arrived", len(handed))
+	}
+	if handed[0].MasterUserPassword == nil || *handed[0].MasterUserPassword != password {
+		t.Error("the agent wrote a handoff for a fetch that carried no master password")
+	}
+}
+
+func TestAcknowledgeBootstrap_WaitsForTheReceiptThenRetiresIt(t *testing.T) {
+	cp := newFakeControlPlane()
+	cfg := testConfig(t)
+	cfg.DataMount = t.TempDir()
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a.id = identity{DBInstanceIdentifier: "db-resolved"}
+	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1, dataVolumeID: "vol-data-01"}
+
+	// rds-init runs after the agent registers, so the receipt is absent when the
+	// acknowledgement step first looks and appears some way into the boot.
+	if err := a.checkBootstrapReceipt(a.pending); err == nil {
+		t.Fatal("a missing receipt must not read as a completed bootstrap")
+	}
+	writeReceipt(t, a, testPayloadID, "db-resolved")
+
+	if err := a.acknowledgeBootstrap(t.Context()); err != nil {
+		t.Fatalf("acknowledgeBootstrap: %v", err)
+	}
+	if len(cp.ackRequests()) != 1 {
+		t.Fatalf("acknowledgements = %d, want 1", len(cp.ackRequests()))
+	}
+	if got := cp.ackRequests()[0]; got != *a.pending {
+		t.Errorf("acknowledged %+v, want %+v", got, *a.pending)
+	}
+	if _, err := os.Stat(a.receiptPath()); !os.IsNotExist(err) {
+		t.Error("the receipt must be removed once the record holds the audit trail")
+	}
+}
+
+// The receipt rides along in every snapshot of the data volume, so a restored
+// instance's volume carries the source instance's receipt. Acknowledging on one
+// would destroy the ciphertext this instance still needs.
+func TestAcknowledgeBootstrap_IgnoresAForeignReceipt(t *testing.T) {
+	tests := map[string]struct{ payloadID, dbID string }{
+		"another payload":  {payloadID: "bp-somebody-else", dbID: "db-resolved"},
+		"another instance": {payloadID: testPayloadID, dbID: "db-the-snapshot-source"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			cp := newFakeControlPlane()
+			cfg := testConfig(t)
+			cfg.DataMount = t.TempDir()
+			a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+			a.id = identity{DBInstanceIdentifier: "db-resolved"}
+			a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
+			writeReceipt(t, a, tc.payloadID, tc.dbID)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			if err := a.acknowledgeBootstrap(ctx); err == nil {
+				t.Fatal("acknowledgeBootstrap returned nil, want it still waiting on a real receipt")
+			}
+			if n := len(cp.ackRequests()); n != 0 {
+				t.Errorf("acknowledgements = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// An attach boot has nothing staged, so it must not go looking for a receipt the
+// datadir will never grow.
+func TestAcknowledgeBootstrap_IsANoOpOnAttach(t *testing.T) {
+	cp := newFakeControlPlane()
+	cfg := testConfig(t)
+	cfg.DataMount = t.TempDir()
+	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+
+	if err := a.acknowledgeBootstrap(t.Context()); err != nil {
+		t.Fatalf("acknowledgeBootstrap: %v", err)
+	}
+	if n := len(cp.ackRequests()); n != 0 {
+		t.Errorf("acknowledgements = %d, want 0 when nothing was staged", n)
 	}
 }
 

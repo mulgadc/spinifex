@@ -49,6 +49,7 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:    newTestCA(t),
+		MasterKey: testMasterKey,
 		Launch:    h.launch.deps(),
 		Network:   h.network,
 		IAM:       testIAMProvider(h.iam),

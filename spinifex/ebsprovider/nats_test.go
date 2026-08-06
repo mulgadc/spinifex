@@ -2,6 +2,7 @@ package ebsprovider
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -116,4 +117,178 @@ func TestNATSProviderRejectsUnsafeSubjectTokens(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	assert.NotErrorIs(t, err, nats.ErrConnectionClosed, "subject validation must happen before transport use")
+}
+
+// TestSubjectBuildersRejectUnsafeTokens tables every NATS subject-token
+// validation across the four functions that embed a caller-supplied ID in a
+// subject: empty, ".", "..", and any token containing a NATS wildcard
+// character must be rejected before a subject string is ever built.
+func TestSubjectBuildersRejectUnsafeTokens(t *testing.T) {
+	badTokens := []string{"", ".", "..", "a.b", "a*b", "a>b"}
+
+	builders := []struct {
+		name  string
+		build func(string) (string, error)
+	}{
+		{"SnapshotSubject", SnapshotSubject},
+		{"SnapshotCompletionSubject", SnapshotCompletionSubject},
+		{"PublishSubject", PublishSubject},
+		{"UnpublishSubject", UnpublishSubject},
+	}
+
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			for _, token := range badTokens {
+				t.Run(fmt.Sprintf("%q", token), func(t *testing.T) {
+					_, err := b.build(token)
+					require.ErrorIs(t, err, ErrInvalidArgument)
+				})
+			}
+			t.Run("valid token", func(t *testing.T) {
+				subject, err := b.build("node-1")
+				require.NoError(t, err)
+				assert.NotEmpty(t, subject)
+			})
+		})
+	}
+}
+
+// TestNATSProviderChecksVersionBeforeTransport confirms every EBSProvider
+// method on NATSProvider rejects an unsupported SchemaVersion via
+// checkVersion before it ever touches the connection. A nil *nats.Conn would
+// panic or return nats.ErrConnectionClosed if any method reached transport,
+// so seeing ErrUnsupportedVersion here proves the ordering.
+func TestNATSProviderChecksVersionBeforeTransport(t *testing.T) {
+	provider := NewNATSProvider(nil, time.Second)
+	ctx := t.Context()
+
+	t.Run("GetCapabilities", func(t *testing.T) {
+		_, err := provider.GetCapabilities(ctx, GetCapabilitiesRequest{})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("CreateVolume", func(t *testing.T) {
+		_, err := provider.CreateVolume(ctx, CreateVolumeRequest{VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("GetVolume", func(t *testing.T) {
+		_, err := provider.GetVolume(ctx, GetVolumeRequest{VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("ExpandVolume", func(t *testing.T) {
+		_, err := provider.ExpandVolume(ctx, ExpandVolumeRequest{VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("DeleteVolume", func(t *testing.T) {
+		err := provider.DeleteVolume(ctx, DeleteVolumeRequest{VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("CreateSnapshot", func(t *testing.T) {
+		_, err := provider.CreateSnapshot(ctx, CreateSnapshotRequest{SnapshotID: "snap-1", VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("DeleteSnapshot", func(t *testing.T) {
+		err := provider.DeleteSnapshot(ctx, DeleteSnapshotRequest{SnapshotID: "snap-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("PublishVolume", func(t *testing.T) {
+		_, err := provider.PublishVolume(ctx, PublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+	t.Run("UnpublishVolume", func(t *testing.T) {
+		err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+}
+
+// TestNewNATSProviderDefaultsTimeout covers the requestTimeout<=0 branch:
+// callers passing a zero or negative timeout get defaultRequestTimeout
+// rather than a provider that never times out.
+func TestNewNATSProviderDefaultsTimeout(t *testing.T) {
+	assert.Equal(t, defaultRequestTimeout, NewNATSProvider(nil, 0).requestTimeout)
+	assert.Equal(t, defaultRequestTimeout, NewNATSProvider(nil, -time.Second).requestTimeout)
+	assert.Equal(t, 7*time.Second, NewNATSProvider(nil, 7*time.Second).requestTimeout)
+}
+
+// TestNATSProviderGetCapabilities_TransportError covers the p.request error
+// branch (no responder on the subject) for a method that otherwise never
+// exercises it elsewhere in this suite.
+func TestNATSProviderGetCapabilities_TransportError(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	provider := NewNATSProvider(conn, 200*time.Millisecond)
+	_, err := provider.GetCapabilities(t.Context(), GetCapabilitiesRequest{Versioned: NewVersioned()})
+	require.Error(t, err)
+}
+
+// TestNATSProviderGetCapabilities_ProviderError covers responseError's
+// populated-Error branch for GetCapabilities specifically.
+func TestNATSProviderGetCapabilities_ProviderError(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	sub, err := conn.Subscribe(CapabilitiesSubject, func(msg *nats.Msg) {
+		payload, marshalErr := json.Marshal(GetCapabilitiesResponse{
+			Versioned: NewVersioned(), Error: &ProviderError{Code: ErrorCodeInternal, Message: "capabilities unavailable"},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(payload))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	provider := NewNATSProvider(conn, time.Second)
+	_, err = provider.GetCapabilities(t.Context(), GetCapabilitiesRequest{Versioned: NewVersioned()})
+	require.EqualError(t, err, "capabilities unavailable")
+}
+
+// TestNATSProviderRequest covers p.request's three error branches directly:
+// an unmarshalable input, a subject with no responder, and a responder that
+// answers with invalid JSON.
+func TestNATSProviderRequest(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	provider := NewNATSProvider(conn, 200*time.Millisecond)
+
+	t.Run("marshal error", func(t *testing.T) {
+		var out GetVolumeResponse
+		err := provider.request(t.Context(), "ebs.provider.v1.test.marshal", make(chan int), &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "encode")
+	})
+
+	t.Run("no responder", func(t *testing.T) {
+		var out GetVolumeResponse
+		err := provider.request(t.Context(), "ebs.provider.v1.test.noresponder", GetVolumeRequest{Versioned: NewVersioned()}, &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "request")
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		const subject = "ebs.provider.v1.test.baddecode"
+		sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+			require.NoError(t, msg.Respond([]byte("{not valid json")))
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+		require.NoError(t, conn.Flush())
+
+		var out GetVolumeResponse
+		err = provider.request(t.Context(), subject, GetVolumeRequest{Versioned: NewVersioned()}, &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode")
+	})
+}
+
+// TestResponseErrorRejectsZeroSchemaVersion covers responseError directly: a
+// reply carrying the zero SchemaVersion (e.g. a server that forgot to set
+// Versioned on an error path) must be rejected before its Error field is
+// ever inspected, even when that field is nil.
+func TestResponseErrorRejectsZeroSchemaVersion(t *testing.T) {
+	err := responseError(0, nil)
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	err = responseError(0, &ProviderError{Code: ErrorCodeNotFound, Message: "ignored"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion, "the version guard must win over a populated error field")
+
+	require.NoError(t, responseError(SchemaVersion, nil))
+
+	err = responseError(SchemaVersion, &ProviderError{Code: ErrorCodeVolumeInUse, Message: "in use"})
+	require.ErrorIs(t, err, ErrVolumeInUse)
 }

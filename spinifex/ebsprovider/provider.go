@@ -90,6 +90,7 @@ type CreateVolumeRequest struct {
 	CapacityRange    CapacityRange   `json:"capacity_range"`
 	AvailabilityZone string          `json:"availability_zone,omitempty"`
 	SourceSnapshotID string          `json:"source_snapshot_id,omitempty"`
+	SourceVolumeID   string          `json:"source_volume_id,omitempty"`
 	Parameters       json.RawMessage `json:"parameters,omitempty"`
 }
 

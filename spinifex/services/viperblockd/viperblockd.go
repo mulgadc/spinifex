@@ -1145,6 +1145,10 @@ func launchService(cfg *Config) (err error) {
 		return fmt.Errorf("failed to subscribe to %s: %w", mountTopic, err)
 	}
 
+	if err := registerProviderSubjects(cfg, nc); err != nil {
+		return err
+	}
+
 	// Create a channel to receive shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

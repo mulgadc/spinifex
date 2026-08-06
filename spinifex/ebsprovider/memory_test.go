@@ -108,3 +108,119 @@ func TestProviderErrorUnwrap(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, "volume disappeared", err.Error())
 }
+
+// TestMemoryProviderChecksVersionOnEveryMethod covers the checkVersion guard
+// on every one of the nine EBSProvider methods directly on MemoryProvider,
+// independent of NATSProvider's own client-side pre-check.
+func TestMemoryProviderChecksVersionOnEveryMethod(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	ctx := context.Background()
+
+	_, err := provider.GetCapabilities(ctx, GetCapabilitiesRequest{})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = provider.CreateVolume(ctx, CreateVolumeRequest{VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = provider.GetVolume(ctx, GetVolumeRequest{VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = provider.ExpandVolume(ctx, ExpandVolumeRequest{VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	err = provider.DeleteVolume(ctx, DeleteVolumeRequest{VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{SnapshotID: "snap-1", VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	err = provider.DeleteSnapshot(ctx, DeleteSnapshotRequest{SnapshotID: "snap-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = provider.PublishVolume(ctx, PublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	err = provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+	require.ErrorIs(t, err, ErrUnsupportedVersion)
+}
+
+// TestMemoryProviderCreateVolume_SourceSnapshotTooSmall covers CreateVolume's
+// snapshot-capacity guard: a volume created from a snapshot must be at least
+// as large as the snapshot it is cloned from.
+func TestMemoryProviderCreateVolume_SourceSnapshotTooSmall(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	ctx := context.Background()
+
+	_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-src", CapacityRange: CapacityRange{RequiredBytes: 4 << 30}})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-src", VolumeID: "vol-src"})
+	require.NoError(t, err)
+
+	_, err = provider.CreateVolume(ctx, CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-too-small", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}, SourceSnapshotID: "snap-src",
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+// TestMemoryProviderExpandVolume_InvalidArgument covers ExpandVolume's own
+// argument validation (empty volume ID, non-positive capacity), separate
+// from the not_found and grow-only cases covered elsewhere.
+func TestMemoryProviderExpandVolume_InvalidArgument(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	_, err := provider.ExpandVolume(context.Background(), ExpandVolumeRequest{Versioned: NewVersioned()})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+// TestMemoryProviderExpandVolume_HandleMismatchIsNotFound covers the handle
+// mismatch arm of ExpandVolume's not_found check: a stale/wrong handle must
+// be treated the same as a missing volume, not silently ignored.
+func TestMemoryProviderExpandVolume_HandleMismatchIsNotFound(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	ctx := context.Background()
+	_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-handle", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, err)
+
+	_, err = provider.ExpandVolume(ctx, ExpandVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-handle", Handle: "memory://volume/stale", CapacityRange: CapacityRange{RequiredBytes: 2 << 30},
+	})
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestMemoryProviderDeleteVolume_InvalidArgumentAndHandleMismatch covers
+// DeleteVolume's empty-ID rejection and its handle-mismatch no-op: a caller
+// deleting by a stale handle must not delete the current volume out from
+// under a newer handle.
+func TestMemoryProviderDeleteVolume_InvalidArgumentAndHandleMismatch(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	ctx := context.Background()
+
+	err := provider.DeleteVolume(ctx, DeleteVolumeRequest{Versioned: NewVersioned()})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	_, createErr := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-stale-handle", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, createErr)
+	require.NoError(t, provider.DeleteVolume(ctx, DeleteVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-stale-handle", Handle: "memory://volume/wrong"}))
+
+	// The volume must still exist: the mismatched-handle delete above must
+	// have been a no-op, not a real deletion.
+	got, err := provider.GetVolume(ctx, GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-stale-handle"})
+	require.NoError(t, err)
+	assert.Equal(t, "vol-stale-handle", got.ID)
+}
+
+// TestMemoryProviderDeleteSnapshot_InvalidArgument covers DeleteSnapshot's
+// empty-ID rejection, the one argument-validation arm no other test reaches.
+func TestMemoryProviderDeleteSnapshot_InvalidArgument(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	err := provider.DeleteSnapshot(context.Background(), DeleteSnapshotRequest{Versioned: NewVersioned()})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+// TestCloneHelpersHandleNil covers the nil-input arm of each clone helper:
+// none of MemoryProvider's current call sites pass a nil pointer, so this
+// arm is otherwise unreachable dead code from the method-level tests alone.
+func TestCloneHelpersHandleNil(t *testing.T) {
+	assert.Nil(t, cloneVolume(nil))
+	assert.Nil(t, cloneSnapshot(nil))
+	assert.Nil(t, clonePublished(nil))
+}

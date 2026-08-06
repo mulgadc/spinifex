@@ -67,13 +67,19 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 		}
 		rec.FormatAuthorized = false
 	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	// The generation this replace bumps is what the staged payload is bound to,
+	// and it is never rebound. Withdrawn before the VM is touched, so the
+	// ciphertext is gone even if the replace fails half-way.
+	if err := s.discardPendingBootstrap(ctx, kv, accountID, rec); err != nil {
+		return err
+	}
 
 	// Checkpointed first so the replacement boots on a clean datadir rather than
 	// one it has to replay a WAL over. A wedged agent degrades this rather than
 	// blocking the replace, exactly as a stop does.
-	if err := context.Cause(ctx); err != nil {
-		return err
-	}
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "replacing its VM")
 
 	oldInstanceID := rec.InstanceID

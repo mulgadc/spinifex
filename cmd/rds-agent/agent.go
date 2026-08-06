@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -33,9 +34,12 @@ type identity struct {
 type controlPlane interface {
 	Register(ctx context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error)
 	SubmitState(ctx context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error)
-	// The first call of an instance's life returns Mode=initialize with the
-	// master password; every later call returns Mode=attach without it.
+	// Returns Mode=initialize with the master password for as long as a payload
+	// staged for this VM generation is unacknowledged, and Mode=attach after.
 	GetBootstrapConfig(ctx context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error)
+	// Reports that PostgreSQL durably applied the staged password, which is what
+	// lets the control plane destroy it.
+	AcknowledgeBootstrap(ctx context.Context, id identity, pending *pendingBootstrap) error
 	PollCommands(ctx context.Context, id identity, replies []handlers_rds.CommandReply, wait time.Duration) ([]handlers_rds.Command, error)
 }
 
@@ -115,6 +119,27 @@ func (g *gatewayControlPlane) GetBootstrapConfig(ctx context.Context, id identit
 	return &out, nil
 }
 
+func (g *gatewayControlPlane) AcknowledgeBootstrap(ctx context.Context, id identity, pending *pendingBootstrap) error {
+	params := url.Values{
+		"PayloadId":    {pending.payloadID},
+		"VMGeneration": {strconv.FormatInt(pending.vmGeneration, 10)},
+	}
+	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
+	setIfPresent(params, "DataVolumeId", pending.dataVolumeID)
+
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	var out handlers_rds.AcknowledgeDBBootstrapOutput
+	if err := g.client.Call(ctx, "AcknowledgeDBBootstrap", params, &out); err != nil {
+		return err
+	}
+	if !out.Acknowledged {
+		return fmt.Errorf("the control plane did not acknowledge bootstrap payload %s", pending.payloadID)
+	}
+	return nil
+}
+
 // Declared here so the in-guest binary does not link the server side of the API.
 type pollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `xml:"Commands>member"`
@@ -158,6 +183,10 @@ type Agent struct {
 	engine          *postgresEngine
 	handoffWriter   func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
 	dataMountWaiter func(context.Context, string, string) error
+
+	// Set by bootstrap when the fetch replayed a staged payload; nil leaves the
+	// acknowledgement step a no-op, which is every attach boot.
+	pending *pendingBootstrap
 
 	hb    *heartbeater
 	cmd   *commander
@@ -231,6 +260,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		// A shutdown cancels this wait; main treats the wrapped context.Canceled
 		// as a clean stop, exactly as it does for register and bootstrap above.
 		return fmt.Errorf("wait for data mount %s: %w", a.cfg.DataMount, err)
+	}
+
+	// The receipt it waits on lives on that mount, so this cannot run any earlier.
+	// A cancelled wait is a clean stop here too.
+	if err := a.acknowledgeBootstrap(ctx); err != nil {
+		return err
 	}
 
 	// Directives are only meaningful against a bootstrapped, mounted engine.
@@ -308,6 +343,11 @@ const (
 	retryErrorAttempt = 5
 )
 
+// Wrapping an error in this stops retryObserved. For the failures the control
+// plane decides from its own record, no retry can change the answer, and looping
+// on one only keeps the caller blocked.
+var errRetryTerminal = errors.New("terminal failure")
+
 // Never gives up on its own: an agent that stopped trying would leave the
 // control plane with no signal at all.
 func retry(ctx context.Context, what string, fn func(context.Context) error) error {
@@ -328,6 +368,10 @@ func retryObserved(ctx context.Context, what string, fn func(context.Context) er
 		}
 		if onFailure != nil {
 			onFailure(err)
+		}
+		if errors.Is(err, errRetryTerminal) {
+			slog.ErrorContext(ctx, "rds-agent: "+what+" failed terminally, not retrying", "err", err)
+			return fmt.Errorf("%s: %w", what, err)
 		}
 		if attempt >= retryErrorAttempt {
 			slog.ErrorContext(ctx, "rds-agent: "+what+" still failing, retrying",

@@ -60,6 +60,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:        newTestCA(t),
+		MasterKey:     testMasterKey,
 		Launch:        h.launch.deps(),
 		Network:       h.network,
 		IAM:           testIAMProvider(h.iam),

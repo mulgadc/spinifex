@@ -35,7 +35,7 @@ done
 # shellcheck disable=SC2086
 set -- ${args}
 if [ "${dirmode}" = 1 ]; then
-    mkdir -p "$@"
+    mkdir -p "$@" || exit 1
     [ -n "${mode}" ] && chmod "${mode}" "$@"
     exit 0
 fi
@@ -127,6 +127,17 @@ cat > "${STUBBIN}/psql" <<'EOF'
 exit 0
 EOF
 
+# sync stub: a no-op, except that SYNC_KILL_PARENT signals rds-init from the
+# directory sync that follows the receipt rename. That is the one window where
+# an installed receipt and an armed sweep coexist.
+cat > "${STUBBIN}/sync" <<'EOF'
+#!/bin/sh
+if [ "${SYNC_KILL_PARENT:-0}" = "1" ] && [ -d "${1:-}" ]; then
+    kill -TERM "$(cat "${KILL_PID_FILE}")"
+fi
+exit 0
+EOF
+
 chmod +x "${STUBBIN}"/*
 PATH="${STUBBIN}:${PATH}"
 export PATH
@@ -138,6 +149,8 @@ pass() { echo "ok: $*"; }
 DATA_MOUNT="${WORK}/data"
 PGDATA="${DATA_MOUNT}/18/data"
 SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
+RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
+RECEIPT="${RECEIPT_DIR}/receipt.env"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
 KILL_PID_FILE="${WORK}/rds-init.pid"
@@ -151,14 +164,22 @@ export INITDB_CALLS PGCTL_CALLS PSQL_CALLS
 # write_handoff <mode> <password> <dbname>: lay down the bootstrap.env rds-agent
 # would have written. An empty password omits the field, as `attach` does.
 # MASTER_USER overrides the master role name, for the reserved-name cases.
+# PENDING/PAYLOAD_ID carry the control plane's "this payload is still staged"
+# assertion, which an agent predating the receipt protocol omits entirely.
 write_handoff() {
     mkdir -p "${HANDOFF}"
     {
         echo "RDS_MODE=$1"
+        echo "RDS_DB_INSTANCE_IDENTIFIER=${DB_ID:-db1}"
         echo "RDS_MASTER_USERNAME=${MASTER_USER:-mulgamaster}"
         [ -n "$2" ] && echo "RDS_MASTER_PASSWORD=$2"
         [ -n "$3" ] && echo "RDS_DB_NAME=$3"
+        [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
+        [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
+        # Last, and unconditional: an optional line failing its test would make
+        # the whole group's status non-zero and `set -e` would end the run here.
         echo "RDS_PORT=6543"
+        echo "RDS_VM_GENERATION=1"
     } > "${HANDOFF}/bootstrap.env"
 }
 
@@ -183,6 +204,7 @@ reset_state() {
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
+    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE || true
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -194,6 +216,7 @@ run_env() {
         RDS_BOOTSTRAP_DIR="${WORK}/run/rds-init" \
         RDS_LOG_DIR="${WORK}/log" \
         RDS_MOUNTS_FILE="${MOUNTS}" \
+        RDS_RECEIPT_DIR="${RECEIPT_DIR_OVERRIDE:-${RECEIPT_DIR}}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
         PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
@@ -486,6 +509,122 @@ grep -q 'did not stop' "${WORK}/out" \
     && fail "stop-fail: sentinel kept although the master role exists" \
     || pass "stop-fail: sentinel cleared"
 unset PGCTL_STOP_FAIL
+
+# --- Case 6j: a completed bootstrap leaves a receipt proving it ---
+# The receipt is what lets rds-agent tell the control plane the staged password
+# was durably applied, so the ciphertext can be destroyed. It lives outside
+# PGDATA, which the failure traps rm -rf.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-alpha DB_ID=db-alpha
+export PENDING PAYLOAD_ID DB_ID
+write_handoff initialize 's3cr3t' appdb
+if run_ok "receipt"; then
+    [ -f "${RECEIPT}" ] \
+        && pass "receipt: written on the initialize path" || fail "receipt: no receipt written"
+    grep -q '^RDS_RECEIPT_PAYLOAD_ID=bp-alpha$' "${RECEIPT}" \
+        && pass "receipt: names the payload it applied" || fail "receipt: wrong or missing payload id"
+    grep -q '^RDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-alpha$' "${RECEIPT}" \
+        && pass "receipt: names its DB instance" || fail "receipt: wrong or missing DB instance"
+    grep -q 'PASSWORD\|s3cr3t' "${RECEIPT}" \
+        && fail "receipt: carries a secret" || pass "receipt: carries no secrets"
+    case "${RECEIPT}" in
+        "${PGDATA}"/*) fail "receipt: written inside the datadir the traps clear" ;;
+        *) pass "receipt: written outside PGDATA" ;;
+    esac
+fi
+
+# --- Case 6k: a receipt that cannot be written is fatal ---
+# A successful bootstrap whose receipt never landed would bring up a healthy
+# engine while the agent blocked forever on a receipt that never appears —
+# a working database that can never take a password change or parameter reload.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-beta
+export PENDING PAYLOAD_ID
+write_handoff initialize 's3cr3t' appdb
+: > "${WORK}/not-a-dir"
+RECEIPT_DIR_OVERRIDE="${WORK}/not-a-dir/bootstrap"
+export RECEIPT_DIR_OVERRIDE
+run_fails "receipt-fail"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "receipt-fail: datadir kept although its bootstrap cannot be proven" \
+    || pass "receipt-fail: datadir cleared"
+grep -q 'bootstrap receipt' "${WORK}/out" \
+    && pass "receipt-fail: reported rather than swallowed" || fail "receipt-fail: no failure message"
+unset RECEIPT_DIR_OVERRIDE
+
+# --- Case 6k2: a sweep between the receipt and the retired traps takes both ---
+# The receipt is installed while the traps are still armed. A receipt left behind
+# by a sweep would be read by rds-agent, acknowledged, and the control plane would
+# destroy the only copy of the password this datadir can be initialised with.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-gamma
+export PENDING PAYLOAD_ID
+write_handoff initialize 's3cr3t' appdb
+SYNC_KILL_PARENT=1
+export SYNC_KILL_PARENT
+run_signalled_fails "receipt-swept"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "receipt-swept: datadir kept after a signal mid-bootstrap" \
+    || pass "receipt-swept: datadir cleared"
+[ -e "${RECEIPT}" ] \
+    && fail "receipt-swept: receipt survived the datadir it vouches for" \
+    || pass "receipt-swept: receipt cleared with the datadir"
+unset SYNC_KILL_PARENT
+
+# --- Case 6l: pending payload, initialised datadir, no receipt -> fail closed ---
+# The datadir alone cannot separate a legacy instance that bootstrapped before
+# receipts existed from one that applied the master role and crashed before the
+# receipt was durable. Only the control plane's pending flag can.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-gamma DB_ID=db-gamma
+export PENDING PAYLOAD_ID DB_ID
+write_handoff initialize 's3cr3t' appdb
+if run_ok "pending-setup"; then
+    echo 'customer table data' > "${PGDATA}/base-relation"
+    rm -f "${RECEIPT}"
+    run_fails "pending-no-receipt"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "pending-no-receipt: datadir preserved" || fail "pending-no-receipt: datadir cleared"
+    grep -q 'master role cannot be proven' "${WORK}/out" \
+        && pass "pending-no-receipt: refusal names the real reason" \
+        || fail "pending-no-receipt: no refusal message"
+    grep -q 'password is spent' "${WORK}/out" \
+        && fail "pending-no-receipt: claims the password is spent, which it is not" \
+        || pass "pending-no-receipt: does not claim a spent password"
+
+    # --- Case 6m: the same boot with a matching receipt attaches ---
+    : > "${INITDB_CALLS}"; : > "${PSQL_CALLS}"
+    mkdir -p "${RECEIPT_DIR}"
+    printf 'RDS_RECEIPT_PAYLOAD_ID=bp-gamma\nRDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-gamma\n' > "${RECEIPT}"
+    if run_ok "pending-with-receipt"; then
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "pending-with-receipt: re-ran initdb" || pass "pending-with-receipt: attached"
+    fi
+
+    # --- Case 6n: a receipt naming another instance is treated as absent ---
+    # The receipt is on the data volume, so it rides along in every snapshot of
+    # it and a restored volume carries the source instance's receipt.
+    printf 'RDS_RECEIPT_PAYLOAD_ID=bp-gamma\nRDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-somebody-else\n' > "${RECEIPT}"
+    run_fails "pending-foreign-receipt"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "pending-foreign-receipt: datadir preserved" || fail "pending-foreign-receipt: datadir cleared"
+fi
+unset PENDING PAYLOAD_ID DB_ID
+
+# --- Case 6o: no pending payload leaves the attach path unchanged ---
+# An agent predating the receipt protocol sends neither flag, and a legacy
+# instance carries no receipt. Neither may be turned into a refusal.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+if run_ok "legacy-setup"; then
+    rm -rf "${RECEIPT_DIR}"
+    : > "${INITDB_CALLS}"
+    write_handoff attach '' appdb
+    if run_ok "legacy-attach"; then
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "legacy-attach: re-ran initdb" || pass "legacy-attach: attached without a receipt"
+    fi
+fi
 
 # --- Case 7: no serving cert -> TLS off rather than a failed start ---
 reset_state

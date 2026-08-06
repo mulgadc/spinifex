@@ -13,9 +13,11 @@ const (
 	SubjectRegisterWildcard = busPrefix + "*.*.register"
 	SubjectHealthWildcard   = busPrefix + "*.*.health"
 
-	// A Layer-1 subject, not a bus one: serving bootstrap config is a
-	// control-plane read rather than reconciler↔agent traffic.
-	SubjectGetDBBootstrapConfig = "rds.GetDBBootstrapConfig"
+	// Layer-1 subjects, not bus ones: serving bootstrap config is a control-plane
+	// read, and the acknowledgement that ends it is a control-plane write, rather
+	// than reconciler↔agent traffic.
+	SubjectGetDBBootstrapConfig   = "rds.GetDBBootstrapConfig"
+	SubjectAcknowledgeDBBootstrap = "rds.AcknowledgeDBBootstrap"
 
 	// Layer-1 customer action subjects, answered by whichever daemon the queue
 	// group picks — a create does its own orchestration inline.

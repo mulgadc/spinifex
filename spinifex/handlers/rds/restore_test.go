@@ -67,8 +67,7 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 
 	// The datadir already holds the master role and its password hash, so
 	// the agent's first bootstrap fetch has to attach rather than run initdb.
-	assert.True(t, stored.Bootstrap.Consumed)
-	require.NotNil(t, stored.Bootstrap.ConsumedAt)
+	assert.Equal(t, BootstrapStateNone, stored.Bootstrap.State)
 	assert.Empty(t, stored.Bootstrap.MasterUserPassword)
 
 	require.NotNil(t, h.launch.launcher.input)

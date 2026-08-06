@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
@@ -37,7 +40,7 @@ func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
 // The control-plane deps on top of the launch primitives: where the endpoint
 // ENI is placed, the instance role the agent authenticates with, the base zone
 // the endpoint record lands in, and the VM-state lookup the reconciler needs.
-func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
+func (d *Daemon) buildRDSDeps() (handlers_rds.Deps, error) {
 	gatewayCA := ""
 	if d.config.NATS.CACert != "" {
 		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
@@ -48,9 +51,17 @@ func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
 		}
 	}
 
+	// No degraded mode: a create cannot stage a master password without it, and
+	// the fetch that replays one is answered by any node in the queue group.
+	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	if err != nil {
+		return handlers_rds.Deps{}, fmt.Errorf("load RDS master key: %w", err)
+	}
+
 	return handlers_rds.Deps{
 		CACertPath:    d.config.NATS.CACert,
 		CAKeyPath:     clusterCAKeyPath(d.config.NATS.CACert),
+		MasterKey:     masterKey,
 		Launch:        d.buildRDSLaunchDeps(),
 		Network:       d.vpcService,
 		IAM:           d.systemRoleEnsurer,
@@ -73,7 +84,7 @@ func (d *Daemon) buildRDSDeps() handlers_rds.Deps {
 			MaintenanceWindowBlock: d.config.RDS.MaintenanceWindowBlock,
 			SweepDeleteLimit:       d.config.RDS.BackupSweepDeleteLimit,
 		},
-	}
+	}, nil
 }
 
 // Fans out across every host so a DB VM is observed wherever it landed; a

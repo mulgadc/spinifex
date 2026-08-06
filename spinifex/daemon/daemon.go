@@ -1059,6 +1059,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.rdsService.SubmitDBStateChange), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectAcknowledgeDBBootstrap, handleNATSRequest(d.rdsService.AcknowledgeDBBootstrap), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.rdsService.CreateDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.rdsService.DescribeDBInstances), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectRebootDBInstance, handleNATSRequest(d.rdsService.RebootDBInstance), "spinifex-workers"},
@@ -1662,7 +1663,21 @@ func (d *Daemon) startCluster() error {
 	// RDS control plane: KV-backed agent-protocol handlers plus the customer
 	// actions. The cluster CA signs the per-instance serving certs, minted per
 	// bootstrap fetch and never persisted; ca.key sits beside the configured ca.pem.
-	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(d.buildRDSDeps())
+	//
+	// The master key is mandatory, as it is for ACM and ELBv2 above: the staged
+	// bootstrap password is encrypted under it, and the fetch is answered by
+	// whichever node the queue group picks, so a node without it would make the
+	// first boot of a DB instance fail intermittently rather than not at all.
+	d.rdsService, err = initServiceWithRetry("RDS service", func() (*handlers_rds.Service, error) {
+		deps, depsErr := d.buildRDSDeps()
+		if depsErr != nil {
+			return nil, depsErr
+		}
+		return handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(deps), nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize RDS service: %w", err)
+	}
 
 	// One leader across the cluster derives DB instance status from the agent
 	// heartbeat; every node keeps serving the API.

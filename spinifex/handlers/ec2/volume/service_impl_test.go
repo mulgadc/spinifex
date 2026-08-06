@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -397,6 +398,200 @@ func TestModifyVolume_Provider(t *testing.T) {
 	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
 		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String("vol-does-not-exist"), Size: aws.Int64(32)}, "acct-1")
 		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestModifyVolume_Provider_PersistsAndDescribesModification covers 2a/2b:
+// a ModifyVolume grow under the provider path must persist its modification
+// on the ebsmetadata.Volume document, and a subsequent
+// DescribeVolumesModifications (both the fast VolumeIds path and the slow
+// list-everything path) must be able to read it back.
+func TestModifyVolume_Provider_PersistsAndDescribesModification(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+
+	_, err = svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16), Iops: aws.Int64(4000)}, "acct-1")
+	require.NoError(t, err)
+
+	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	require.NoError(t, err)
+	require.NotNil(t, meta.Modification, "ModifyVolume must persist the modification on the ebsmetadata.Volume document")
+	assert.Equal(t, int64(8), meta.Modification.OriginalSize)
+	assert.Equal(t, int64(16), meta.Modification.TargetSize)
+	assert.Equal(t, int64(4000), meta.Modification.TargetIOPS)
+
+	t.Run("fast path", func(t *testing.T) {
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
+			VolumeIds: []*string{vol.VolumeId},
+		}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumesModifications, 1)
+		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
+		assert.Equal(t, int64(16), aws.Int64Value(out.VolumesModifications[0].TargetSize))
+	})
+
+	t.Run("slow path", func(t *testing.T) {
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumesModifications, 1)
+		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
+	})
+
+	t.Run("unmodified volume has no modification record", func(t *testing.T) {
+		other, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+		require.NoError(t, err)
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
+			VolumeIds: []*string{other.VolumeId},
+		}, "acct-1")
+		require.NoError(t, err)
+		assert.Empty(t, out.VolumesModifications)
+	})
+}
+
+// TestDescribeVolumeStatus_Provider covers the DescribeVolumeStatus provider
+// gap found during the survey: neither the fast nor the slow path had a
+// provider branch, so both silently returned nothing for provider-managed
+// volumes.
+func TestDescribeVolumeStatus_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+
+	t.Run("fast path", func(t *testing.T) {
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumeStatuses, 1)
+		assert.Equal(t, aws.StringValue(vol.VolumeId), aws.StringValue(out.VolumeStatuses[0].VolumeId))
+	})
+
+	t.Run("slow path", func(t *testing.T) {
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumeStatuses, 1)
+	})
+
+	t.Run("cross tenant is not found", func(t *testing.T) {
+		_, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-2")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestCreateVolume_Provider_EncryptedFollowsConfig covers 1b: the Encrypted
+// bit on a provider-managed volume must follow config.Viperblock.EncryptionKeyFile,
+// the same knob the legacy path uses, and must be visible via both
+// CreateVolume's response and a subsequent DescribeVolumes.
+func TestCreateVolume_Provider_EncryptedFollowsConfig(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	assert.False(t, aws.BoolValue(vol.Encrypted), "no encryption key file configured, so the volume must not report encrypted")
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.False(t, aws.BoolValue(described.Volumes[0].Encrypted))
+}
+
+// TestVolumeLeakReaper_Provider covers 2d: the reaper must read attachment
+// and tags from ebsmetadata and mark orphaned volumes there when a provider
+// is configured, and the mark must be visible via DescribeVolumes.
+func TestVolumeLeakReaper_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-gone0000000000", "/dev/sda1"))
+
+	reaper := svc.NewVolumeLeakReaper(func() (map[string]bool, error) {
+		return map[string]bool{"i-gone0000000000": true}, nil
+	})
+
+	marked, err := reaper.Sweep(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, marked)
+
+	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, meta.Tags[orphanTagKey], "the reaper must mark the provider-managed volume orphaned in ebsmetadata")
+	assert.Equal(t, "available", meta.State, "the reaper must reconcile the stale attachment")
+	assert.Empty(t, meta.AttachedInstance)
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.NotEmpty(t, filterutil.EC2TagsToMap(described.Volumes[0].Tags)[orphanTagKey],
+		"the orphan mark must be visible via DescribeVolumes, which reads ebsmetadata under the provider path")
+
+	// Idempotent: a second sweep re-marks nothing.
+	marked, err = reaper.Sweep(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, marked)
+}
+
+// TestApplyRecordTags_Provider_VisibleViaDescribeVolumes covers 2e: a tag
+// applied post-create under the provider path must be visible via
+// DescribeVolumes, which reads ebsmetadata.Volume.Tags directly (there is no
+// tags.json for it to fall back to).
+func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{vol.VolumeId},
+		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+	}, "acct-1"))
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.Equal(t, "control-plane", filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"],
+		"a tag applied post-create must be visible via DescribeVolumes under the provider path")
+
+	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
+		Resources: []*string{vol.VolumeId},
+		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+	}, "acct-1"))
+
+	described, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+	assert.False(t, hasOwnerTag, "RemoveRecordTags must remove the tag under the provider path too")
+
+	t.Run("wrong tenant is a no-op", func(t *testing.T) {
+		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+			Resources: []*string{vol.VolumeId},
+			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("intruder")}},
+		}, "acct-2"))
+		described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		require.NoError(t, err)
+		_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+		assert.False(t, hasOwnerTag, "a caller who does not own the volume must not be able to tag it")
+	})
+
+	t.Run("unknown volume is a no-op", func(t *testing.T) {
+		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+			Resources: []*string{aws.String("vol-does-not-exist")},
+			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+		}, "acct-1"))
 	})
 }
 

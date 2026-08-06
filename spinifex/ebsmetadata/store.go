@@ -85,6 +85,35 @@ func (s *Store) ListVolumes(ctx context.Context) ([]Volume, error) {
 	return volumes, nil
 }
 
+// ListAMIs returns all Spinifex-owned AMI records in the store.
+func (s *Store) ListAMIs(ctx context.Context) ([]AMI, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	result, err := s.objects.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket), Prefix: aws.String("spinifex/ebsmetadata/v1/amis/"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	amis := make([]AMI, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		if object.Key == nil {
+			continue
+		}
+		data, err := s.get(ctx, *object.Key)
+		if err != nil {
+			return nil, err
+		}
+		ami, err := UnmarshalAMI(data)
+		if err != nil {
+			return nil, err
+		}
+		amis = append(amis, ami)
+	}
+	return amis, nil
+}
+
 func (s *Store) PutAMI(ctx context.Context, ami AMI) error {
 	key, err := AMIKey(ami.ImageID)
 	if err != nil {

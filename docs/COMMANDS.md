@@ -825,8 +825,7 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 | `CNAME_DELEGATION` | operator once, then Spinifex | CNAME, stable | automatic | deferred — never selected yet (northstar cannot serve public authoritative queries); an ARN-stable delegation token is minted on every managed certificate now so this lands as a non-breaking addition |
 | `PRIVATE_CA` | nobody — no validation | none | automatic | **DONE** — issues synchronously against the tenant CA, no domain outside its name constraints |
 
-`PROVIDER_API` is selected when a DNS provider credential is configured; `MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only option for a deployment with no real, publicly delegated domain. Terraform's canonical `aws_acm_certificate` → `aws_route53_record` → `aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in every mode: where Spinifex owns the record write, no `ResourceRecord` is emitted, so `for_each` over `domain_validation_options` yields zero records and `aws_acm_certificate_validation` still blocks correctly by polling until
-`ISSUED`.
+`PROVIDER_API` is selected when a DNS provider credential is configured; `MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only option for a deployment with no real, publicly delegated domain. Terraform's canonical `aws_acm_certificate` → `aws_route53_record` → `aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in every mode: where Spinifex owns the record write, no `ResourceRecord` is emitted, so `for_each` over `domain_validation_options` yields zero records and `aws_acm_certificate_validation` still blocks correctly by polling until `ISSUED`.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|

@@ -8,7 +8,7 @@ Note: This is not needed for actually building spinifex-ui and running it. We co
 
 1. **Install Node.js using nvm**
 
-   This project uses Node.js 24.12.0 (specified in `.nvmrc`).
+This project uses Node.js 24.12.0 (specified in `.nvmrc`).
 
    ```sh
    cd frontend
@@ -23,7 +23,7 @@ Note: This is not needed for actually building spinifex-ui and running it. We co
    nvm use
    ```
 
-   The `.nvmrc` file in the project root ensures you use the correct Node.js version. Run `nvm use` whenever you enter this directory.
+The `.nvmrc` file in the project root ensures you use the correct Node.js version. Run `nvm use` whenever you enter this directory.
 
 2. **Enable Corepack**
 
@@ -45,11 +45,11 @@ Note: This is not needed for actually building spinifex-ui and running it. We co
 
 5. **Accept Certs In Browser**
 
-   If you have added the CA to your machine you do not need to do this. But if you are sshd into a spinifex machine and want to view the ui, go to [https://localhost:9999](https://localhost:9999) and [https://localhost:8443](https://localhost:8443) and accept the certificates
+If you have added the CA to your machine you do not need to do this. But if you are sshd into a spinifex machine and want to view the ui, go to [https://localhost:9999](https://localhost:9999) and [https://localhost:8443](https://localhost:8443) and accept the certificates
 
 6. **Launch Server**
 
-   For development use:
+For development use:
 
    ```sh
    cd frontend

@@ -228,10 +228,7 @@ Auto-detected encap IP: 192.168.0.249
 ...
 ```
 
-The `system-id` is the OVS-managed chassis UUID (read back from
-`/etc/openvswitch/system-id.conf`); this is the same value that appears as
-`Chassis.name` in `ovn-sbctl show`. Cross-reference with `Chassis.hostname`
-when you need the human-readable host:
+The `system-id` is the OVS-managed chassis UUID (read back from `/etc/openvswitch/system-id.conf`); this is the same value that appears as `Chassis.name` in `ovn-sbctl show`. Cross-reference with `Chassis.hostname` when you need the human-readable host:
 
 ```bash
 sudo ovn-sbctl --columns=name,hostname list Chassis

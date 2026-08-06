@@ -146,10 +146,7 @@ This registers the repo credential, creates the Argo CD `Application`, the demo 
 
 ### Step 5. Watch the Sync and Open the App
 
-The demo app and the Argo CD UI share **one ALB** (an LBC IngressGroup). On
-`:443` the app is the catch-all and `argocd.eks-gitops.spinifex.local`
-host-routes to the UI; Argo CD also gets a hostless `:8443` listener so it is
-reachable on the raw ALB IP before DNS exists. Grab the shared ALB address once:
+The demo app and the Argo CD UI share **one ALB** (an LBC IngressGroup). On `:443` the app is the catch-all and `argocd.eks-gitops.spinifex.local` host-routes to the UI; Argo CD also gets a hostless `:8443` listener so it is reachable on the raw ALB IP before DNS exists. Grab the shared ALB address once:
 
 ```bash
 # Point kubectl at the cluster first (writes ~/.kube/config) — without this every
@@ -179,25 +176,15 @@ curl -k https://"$ALB_IP"/            # app — returns the Spinifex page
 curl -k https://"$ALB_IP":8443/       # Argo CD UI
 ```
 
-The bare ALB IP serves the **app** on `:443`. Hitting `https://<ALB_IP>/` and
-expecting Argo CD gives the app instead — use `:8443` for the UI. Once northstar
-(or Route 53) resolves the hostnames to the ALB, `app.eks-gitops.spinifex.local`
-and `argocd.eks-gitops.spinifex.local` both work on `:443`. Self-signed cert —
-accept the browser warning.
+The bare ALB IP serves the **app** on `:443`. Hitting `https://<ALB_IP>/` and expecting Argo CD gives the app instead — use `:8443` for the UI. Once northstar (or Route 53) resolves the hostnames to the ALB, `app.eks-gitops.spinifex.local` and `argocd.eks-gitops.spinifex.local` both work on `:443`. Self-signed cert — accept the browser warning.
 
 The page shows the **"persisted to EBS volume"** badge and a hit counter that keeps climbing — delete the pod (`kubectl delete pod -l app=spinifex-demo`) and the count survives, proving the volume is durable.
 
 ### Step 6. Open the Argo CD UI
 
-Managing deployments through the Argo CD console is the point of this workbook, so
-the UI is exposed on the **same ALB** as the app, not behind a port-forward. The
-`workloads` module adds a `NodePort` Service in front of `argocd-server` (the addon
-ships it `ClusterIP` only) and two Ingresses in the shared group — a host-routed
-one on `:443` and a hostless one on `:8443` for raw-IP access. `argocd-server`
-serves TLS on its own port, so both use `backend-protocol: HTTPS`.
+Managing deployments through the Argo CD console is the point of this workbook, so the UI is exposed on the **same ALB** as the app, not behind a port-forward. The `workloads` module adds a `NodePort` Service in front of `argocd-server` (the addon ships it `ClusterIP` only) and two Ingresses in the shared group — a host-routed one on `:443` and a hostless one on `:8443` for raw-IP access. `argocd-server` serves TLS on its own port, so both use `backend-protocol: HTTPS`.
 
-**Get the admin credentials.** Argo CD generates a one-time `admin` password into
-a Secret on install; the username is always `admin`:
+**Get the admin credentials.** Argo CD generates a one-time `admin` password into a Secret on install; the username is always `admin`:
 
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret \
@@ -211,8 +198,7 @@ Open the UI and log in as `admin`:
 - By raw IP: `https://<ALB_IP>:8443/`
 - By DNS once wired: `https://argocd.eks-gitops.spinifex.local`
 
-The `spinifex-demo` Application shows the sync status, the resource tree, and live
-diffs against git — change a manifest in the repo and watch Argo CD reconcile it.
+The `spinifex-demo` Application shows the sync status, the resource tree, and live diffs against git — change a manifest in the repo and watch Argo CD reconcile it.
 
 If you'd rather not expose the UI at all, port-forward instead:
 
@@ -269,12 +255,7 @@ kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50
 
 Confirm the cluster carries `spinifex.io/managed-ingress = "false"` so the LBC owns ingress.
 
-If the controller logs show `FailedBuildModel ... DescribeAvailabilityZones ...
-403 ... AccessDenied`, the node role is missing the LBC permissions. The
-controller runs with the node instance-profile credentials, so the
-`${var.cluster_name}-node-lbc` policy (`aws_iam_policy.node_lbc`) must be
-attached to the node role — re-run `tofu apply` on the parent module if it was
-provisioned before that policy existed.
+If the controller logs show `FailedBuildModel ... DescribeAvailabilityZones ... 403 ... AccessDenied`, the node role is missing the LBC permissions. The controller runs with the node instance-profile credentials, so the `${var.cluster_name}-node-lbc` policy (`aws_iam_policy.node_lbc`) must be attached to the node role — re-run `tofu apply` on the parent module if it was provisioned before that policy existed.
 
 ### Provider Connection Refused
 

@@ -23,22 +23,13 @@
 
 # Spinifex: the open, AWS-compatible cloud you run yourself
 
-Spinifex, built by [Mulga](https://mulgadc.com), recreates the AWS services your
-software already uses (EC2, EBS, S3, VPC, IAM) on infrastructure you control.
-Move workloads off the hyperscalers, run AI at a fraction of the cost, or take
-the cloud to the edge, without rewriting a line. The exact build you ship to AWS,
-Spinifex serves on your own hardware: same APIs, same Terraform, same SDKs.
+Spinifex, built by [Mulga](https://mulgadc.com), recreates the AWS services your software already uses (EC2, EBS, S3, VPC, IAM) on infrastructure you control. Move workloads off the hyperscalers, run AI at a fraction of the cost, or take the cloud to the edge, without rewriting a line. The exact build you ship to AWS, Spinifex serves on your own hardware: same APIs, same Terraform, same SDKs.
 
 ## What is Spinifex?
 
-Spinifex is an open-source infrastructure platform that recreates the AWS service
-surface (EC2, EBS, S3, VPC, IAM) on bare-metal, edge, and on-premises
-environments. Run cloud-native software without a hyperscaler.
+Spinifex is an open-source infrastructure platform that recreates the AWS service surface (EC2, EBS, S3, VPC, IAM) on bare-metal, edge, and on-premises environments. Run cloud-native software without a hyperscaler.
 
-Most AWS alternatives wrap an API and call it a cloud. We rebuilt the engineering
-underneath: distributed object storage with erasure coding, block storage built
-to survive failure, and compute on bare metal. That depth is the reason your
-software runs unchanged, instead of rewritten.
+Most AWS alternatives wrap an API and call it a cloud. We rebuilt the engineering underneath: distributed object storage with erasure coding, block storage built to survive failure, and compute on bare metal. That depth is the reason your software runs unchanged, instead of rewritten.
 
 It's built for teams that need:
 
@@ -59,34 +50,23 @@ From commodity hardware up to unmodified AWS tooling, every layer is replaceable
 
 ## Three ways to deploy
 
-One AWS-compatible surface, three deployment shapes. Pick the one that matches
-your reality; the platform on top is the same.
+One AWS-compatible surface, three deployment shapes. Pick the one that matches your reality; the platform on top is the same.
 
 ### Neocloud
 
-Lift and shift onto a partner Neocloud. Move workloads off the hyperscalers and
-onto our Neocloud partner ecosystem without rewriting them. GPU capacity
-(H100 / H200 / B200), cheaper, available now. Change an endpoint, keep the
-software.
+Lift and shift onto a partner Neocloud. Move workloads off the hyperscalers and onto our Neocloud partner ecosystem without rewriting them. GPU capacity (H100 / H200 / B200), cheaper, available now. Change an endpoint, keep the software.
 
 ### On-premise
 
-Bring your own hardware and host Spinifex in your own data centre. A real
-multi-node HA cluster integrated with your storage and networking, with full
-control of stack, data, and jurisdiction. A predictable bill, no egress
-surprises, an auditable open-source core.
+Bring your own hardware and host Spinifex in your own data centre. A real multi-node HA cluster integrated with your storage and networking, with full control of stack, data, and jurisdiction. A predictable bill, no egress surprises, an auditable open-source core.
 
 ### Edge
 
-Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels,
-factories, and clinics. Compute next to the data, running through disconnection,
-on hardware you own. The same AWS APIs your software already uses.
+Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels, factories, and clinics. Compute next to the data, running through disconnection, on hardware you own. The same AWS APIs your software already uses.
 
 ## AWS compatibility
 
-Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform:
-everything you deploy on AWS deploys on Spinifex unchanged. At the edge,
-on-premise, or on a partner Neocloud.
+Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform: everything you deploy on AWS deploys on Spinifex unchanged. At the edge, on-premise, or on a partner Neocloud.
 
 | Service | What it is | Status |
 | --- | --- | --- |
@@ -102,8 +82,7 @@ on-premise, or on a partner Neocloud.
 | **RDS** | Databases | Available |
 | **Bedrock** | AI Deployment | Q3 2026 |
 
-Roadmap items ship under the same AWS API surface. Code written for AWS today keeps working the moment they land.
-[Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
+Roadmap items ship under the same AWS API surface. Code written for AWS today keeps working the moment they land. [Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 
 ## Core Components
 
@@ -139,11 +118,7 @@ Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs
   <img src=".github/assets/architecture.svg" alt="Spinifex message-driven architecture: standard AWS clients call the AWS Gateway over HTTPS with SigV4, which publishes to a NATS bus answered by stateless ec2/ebs/s3/vpc/iam daemons over local backends." width="900">
 </p>
 
-Every AWS API call is authenticated at the gateway, published to a NATS subject,
-and answered by whichever daemon claims it. Daemons are stateless: scale
-horizontally by starting more. No etcd, no Kubernetes, no external control plane.
-Just systemd units, a NATS cluster, and your hardware. Deep dive:
-**[`docs/DESIGN.md`](docs/DESIGN.md)**.
+Every AWS API call is authenticated at the gateway, published to a NATS subject, and answered by whichever daemon claims it. Daemons are stateless: scale horizontally by starting more. No etcd, no Kubernetes, no external control plane. Just systemd units, a NATS cluster, and your hardware. Deep dive: **[`docs/DESIGN.md`](docs/DESIGN.md)**.
 
 ## Key Features
 

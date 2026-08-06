@@ -1,9 +1,6 @@
 # DDIL E2E Test Harness
 
-Go-based E2E harness that exercises Spinifex and Predastore against DDIL
-(Denied, Disrupted, Intermittent, Limited) failure modes — NATS kill,
-daemon-without-NATS restart, cluster partition, degraded links, Predastore
-writes under partition, Raft under SATCOM latency.
+Go-based E2E harness that exercises Spinifex and Predastore against DDIL (Denied, Disrupted, Intermittent, Limited) failure modes — NATS kill, daemon-without-NATS restart, cluster partition, degraded links, Predastore writes under partition, Raft under SATCOM latency.
 
 ## Layout
 
@@ -15,8 +12,7 @@ tests/e2e/ddil/
 └── scenarios/              # TestScenarioA..F, build tag e2e
 ```
 
-All test and helper files use `//go:build e2e` so `go build ./...` skips them.
-Run with `-tags=e2e`.
+All test and helper files use `//go:build e2e` so `go build ./...` skips them. Run with `-tags=e2e`.
 
 ## Running
 
@@ -36,15 +32,13 @@ Run a single scenario:
 go test -tags=e2e -run TestScenarioA ./tests/e2e/ddil/scenarios/...
 ```
 
-Dry-run mode (no cluster ops; verifies SSH reachability, tool availability on
-remote nodes, and runs `TestCoverageDrift` only):
+Dry-run mode (no cluster ops; verifies SSH reachability, tool availability on remote nodes, and runs `TestCoverageDrift` only):
 
 ```bash
 DDIL_DRY_RUN=1 go test -tags=e2e ./tests/e2e/ddil/scenarios/...
 ```
 
-Quarantine listed scenarios (failures downgrade to `t.Skip` with a tagged
-reason):
+Quarantine listed scenarios (failures downgrade to `t.Skip` with a tagged reason):
 
 ```bash
 DDIL_QUARANTINED=D,F go test -tags=e2e ./tests/e2e/ddil/scenarios/...
@@ -68,7 +62,4 @@ DDIL_QUARANTINED=D,F go test -tags=e2e ./tests/e2e/ddil/scenarios/...
 
 ## Scenario status
 
-Scenario-level status (SKIPPED / ENABLED / QUARANTINED) plus profile
-validation tracking lives in [`tests/e2e/TEST_COVERAGE.md`](../TEST_COVERAGE.md).
-Scenarios begin as `t.Skip("requires <dep>")` and are flipped to real
-assertions by the hardening epics they exercise.
+Scenario-level status (SKIPPED / ENABLED / QUARANTINED) plus profile validation tracking lives in [`tests/e2e/TEST_COVERAGE.md`](../TEST_COVERAGE.md). Scenarios begin as `t.Skip("requires <dep>")` and are flipped to real assertions by the hardening epics they exercise.

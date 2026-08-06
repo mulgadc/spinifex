@@ -85,9 +85,7 @@ aws ecr describe-repositories --repository-names my-app \
   --query 'repositories[0].repositoryUri'
 ```
 
-The `repositoryUri` is the value you tag and push to — the gateway `host:9999`
-with the repository path, port included (for example `192.0.2.10:9999/my-app`).
-Use it verbatim; don't hand-build a hostname.
+The `repositoryUri` is the value you tag and push to — the gateway `host:9999` with the repository path, port included (for example `192.0.2.10:9999/my-app`). Use it verbatim; don't hand-build a hostname.
 
 ### 2. Authenticate Docker
 

@@ -97,8 +97,7 @@ bridges:
         via: 198.51.100.1
 ```
 
-Then apply with `sudo netplan apply`. VMs, once provisioned, are reachable from the host at
-`192.168.10.x`. For internet access through the host's WAN interface:
+Then apply with `sudo netplan apply`. VMs, once provisioned, are reachable from the host at `192.168.10.x`. For internet access through the host's WAN interface:
 
 ```bash
 sysctl -w net.ipv4.ip_forward=1

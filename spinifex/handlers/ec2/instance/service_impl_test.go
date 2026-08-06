@@ -2576,8 +2576,10 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
-	byID map[string]ebsmetadata.AMI
-	err  error
+	byID       map[string]ebsmetadata.AMI
+	err        error
+	sourceByID map[string]string
+	sourceErr  error
 }
 
 func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.AMI, error) {
@@ -2588,6 +2590,21 @@ func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.
 		return meta, nil
 	}
 	return ebsmetadata.AMI{}, errors.New("not found")
+}
+
+// GetAMISourceVolumeID defaults to the bundled system AMI convention, where the
+// snapshot's source volume is named after the AMI itself.
+func (f *fakeAMILoader) GetAMISourceVolumeID(_ context.Context, id string) (string, error) {
+	if f.sourceErr != nil {
+		return "", f.sourceErr
+	}
+	if volumeID, ok := f.sourceByID[id]; ok {
+		return volumeID, nil
+	}
+	if _, ok := f.byID[id]; !ok {
+		return "", errors.New("not found")
+	}
+	return id, nil
 }
 
 type fakeKeyValidator struct {

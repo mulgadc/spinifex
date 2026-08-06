@@ -35,19 +35,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const (
-	// gp3 IOPS envelope (AWS): 3000 baseline on any size, up to 500 IOPS/GiB,
-	// capped at 16000.
-	defaultGP3IOPS = 3000
-	maxGP3IOPS     = 16000
-	gp3IOPSPerGiB  = 500
-
-	// gp3 Throughput envelope (AWS): 125 MiB/s baseline, 1000 MiB/s ceiling,
-	// flat range independent of volume size.
-	defaultGP3Throughput = 125
-	maxGP3Throughput     = 1000
-)
-
 // Ensure VolumeServiceImpl implements VolumeService.
 var _ VolumeService = (*VolumeServiceImpl)(nil)
 
@@ -138,10 +125,10 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	}
 
 	// Validate volume type: only gp3 supported (or empty defaults to gp3)
-	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != "gp3" {
+	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != types.VolumeTypeGP3 {
 		return nil, errors.New(awserrors.ErrorUnknownVolumeType)
 	}
-	volumeType := "gp3"
+	volumeType := types.VolumeTypeGP3
 
 	// Validate availability zone matches this node's AZ
 	if input.AvailabilityZone == nil || *input.AvailabilityZone == "" {
@@ -199,22 +186,22 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	// Honor caller-supplied Iops for gp3, else the 3000 baseline. The ceiling is
 	// min(16000, 500*size) but never below the free baseline, so small volumes
 	// still get 3000.
-	iops := defaultGP3IOPS
+	iops := types.DefaultGP3IOPS
 	if input.Iops != nil {
 		iops = int(*input.Iops)
 	}
-	maxIOPS := min(max(int(size)*gp3IOPSPerGiB, defaultGP3IOPS), maxGP3IOPS)
-	if iops < defaultGP3IOPS || iops > maxIOPS {
+	maxIOPS := min(max(int(size)*types.GP3IOPSPerGiB, types.DefaultGP3IOPS), types.MaxGP3IOPS)
+	if iops < types.DefaultGP3IOPS || iops > maxIOPS {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	// Honor caller-supplied Throughput for gp3, else the 125 MiB/s baseline.
 	// Range is flat (125-1000), unlike Iops it does not scale with size.
-	throughput := defaultGP3Throughput
+	throughput := types.DefaultGP3Throughput
 	if input.Throughput != nil {
 		throughput = int(*input.Throughput)
 	}
-	if throughput < defaultGP3Throughput || throughput > maxGP3Throughput {
+	if throughput < types.DefaultGP3Throughput || throughput > types.MaxGP3Throughput {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -227,12 +214,16 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	// persists only provider-neutral metadata. The legacy viperblock path below
 	// remains the compatibility fallback until all callers are migrated.
 	if s.provider != nil {
+		// SourceVolumeName must travel with the snapshot ID: a clone resolves its
+		// base blocks against the source volume's prefix, and the provider rejects
+		// a snapshot source without it.
 		created, err := s.provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 			Versioned:        ebsprovider.NewVersioned(),
 			VolumeID:         volumeID,
 			CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: size * 1024 * 1024 * 1024},
 			AvailabilityZone: *input.AvailabilityZone,
 			SourceSnapshotID: snapshotID,
+			SourceVolumeID:   sourceVolumeName,
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)

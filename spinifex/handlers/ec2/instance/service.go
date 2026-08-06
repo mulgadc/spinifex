@@ -141,6 +141,11 @@ type PublicIPReleaser interface {
 // this boundary names no viperblock type whichever EBS provider is selected.
 type AMIMetaLoader interface {
 	GetAMIConfig(ctx context.Context, imageID string) (ebsmetadata.AMI, error)
+
+	// GetAMISourceVolumeID returns the volume whose blocks the AMI's snapshot
+	// references. An EBS provider needs it alongside the snapshot ID to resolve
+	// the clone's base data.
+	GetAMISourceVolumeID(ctx context.Context, imageID string) (string, error)
 }
 
 // KeyPairValidator checks that a named key pair exists for an account during

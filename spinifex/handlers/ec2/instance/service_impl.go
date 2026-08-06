@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
@@ -35,6 +36,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// bytesPerGiB converts the byte sizes the launch path works in to the GiB
+// units ebsmetadata records.
+const bytesPerGiB = 1024 * 1024 * 1024
 
 // VolumeInfo holds volume information returned from GenerateVolumes
 // for populating BlockDeviceMappings in the EC2 API response.
@@ -137,6 +142,7 @@ type InstanceServiceImpl struct {
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
 	ebsProvider       ebsprovider.EBSProvider
+	metadata          *ebsmetadata.Store
 	keyValidator      KeyPairValidator
 	eniCreator        ENICreator
 	ipAllocator       PublicIPAllocator
@@ -145,7 +151,8 @@ type InstanceServiceImpl struct {
 }
 
 // SetEBSProvider injects the provider boundary used for instance-created
-// volumes. Root-volume creation remains on the legacy path until migrated.
+// volumes. Once set, root volumes are allocated through it instead of a
+// control-plane storage engine.
 func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.ebsProvider = provider
 }
@@ -166,6 +173,12 @@ func NewInstanceServiceImpl(
 	resourceMgr InstanceTypeAllocator,
 	stoppedStore StoppedInstanceStore,
 ) *InstanceServiceImpl {
+	// cfg is nil-tolerated by the DNS resolvers below, so keep the metadata
+	// store's bucket lookup equally tolerant.
+	bucket := ""
+	if cfg != nil {
+		bucket = cfg.Predastore.Bucket
+	}
 	return &InstanceServiceImpl{
 		config:            cfg,
 		instanceTypes:     instanceTypes,
@@ -174,6 +187,7 @@ func NewInstanceServiceImpl(
 		vmMgr:             vmMgr,
 		resourceMgr:       resourceMgr,
 		stoppedStore:      stoppedStore,
+		metadata:          ebsmetadata.NewStore(store, bucket),
 		dnsBaseDomain:     handlers_dns.ResolveBaseDomain(cfg),
 		dnsInternalDomain: handlers_dns.ResolveInternalDomain(cfg),
 	}
@@ -1426,7 +1440,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	deleteOnTermination := p.deleteOnTermination
 
 	// Step 1: Create or validate root volume
-	err := s.prepareRootVolume(ctx, input, imageId, size, volumeConfig, instance, deleteOnTermination)
+	err := s.prepareRootVolume(ctx, input, imageId, size, p.iops, volumeConfig, instance, deleteOnTermination)
 	if err != nil {
 		return nil, err
 	}
@@ -1485,8 +1499,25 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 	return vb, err
 }
 
-// prepareRootVolume handles creation/cloning of the root volume.
-func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size int, volumeConfig viperblock.VolumeConfig, instance *vm.VM, deleteOnTermination bool) error {
+// prepareRootVolume handles creation/cloning of the root volume. A provider
+// owns allocation when one is injected; the embedded engine below is the
+// fallback for deployments still running without a provider.
+func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size, iops int, volumeConfig viperblock.VolumeConfig, instance *vm.VM, deleteOnTermination bool) error {
+	if s.ebsProvider != nil {
+		if err := s.createRootVolumeViaProvider(ctx, rootVolumeSpec{
+			amiID:               aws.StringValue(input.ImageId),
+			volumeID:            imageId,
+			accountID:           instance.AccountID,
+			sizeBytes:           size,
+			iops:                iops,
+			deleteOnTermination: deleteOnTermination,
+		}); err != nil {
+			return err
+		}
+		appendRootEBSRequest(instance, imageId, deleteOnTermination)
+		return nil
+	}
+
 	vb, err := s.newViperblock(imageId, size, volumeConfig)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to connect to Viperblock store", "err", err)
@@ -1519,16 +1550,115 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 		}
 	}
 
-	// Append root volume to instance
+	appendRootEBSRequest(instance, imageId, deleteOnTermination)
+
+	return nil
+}
+
+// appendRootEBSRequest records the boot volume the launcher must attach.
+func appendRootEBSRequest(instance *vm.VM, volumeID string, deleteOnTermination bool) {
 	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
-		Name:                imageId,
+		Name:                volumeID,
 		Boot:                true,
 		DeleteOnTermination: deleteOnTermination,
 	})
 	instance.EBSRequests.Mu.Unlock()
+}
 
+// rootVolumeSpec describes the boot volume a launch needs, in provider-neutral
+// terms taken from the launch request.
+type rootVolumeSpec struct {
+	amiID               string
+	volumeID            string
+	accountID           string
+	sizeBytes           int
+	iops                int
+	deleteOnTermination bool
+}
+
+// createRootVolumeViaProvider allocates the root volume through the injected
+// provider, cloning the AMI's snapshot, then records it in ebsmetadata. No
+// control-plane engine is built, so a launch never becomes a second writer.
+func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, spec rootVolumeSpec) error {
+	amiConfig, err := s.amiLoader.GetAMIConfig(ctx, spec.amiID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not load AMI config", "imageId", spec.amiID, "err", err)
+		return errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+	if amiConfig.SnapshotID == "" {
+		slog.ErrorContext(ctx, "AMI has no snapshot ID, cannot perform zero-copy clone", "imageId", spec.amiID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The provider resolves a clone's base blocks against the snapshot's source
+	// volume, so the wire contract requires both IDs together.
+	sourceVolumeID, err := s.amiLoader.GetAMISourceVolumeID(ctx, spec.amiID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not resolve AMI snapshot source volume",
+			"imageId", spec.amiID, "snapshotId", amiConfig.SnapshotID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The control plane cannot see how a provider encrypts its volumes, but this
+	// shared config knob is the same one the legacy path derives Encrypted from.
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not load encryption key for root volume", "volumeId", spec.volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "Creating root volume from AMI snapshot via EBS provider",
+		"imageId", spec.amiID, "volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "sourceVolumeId", sourceVolumeID)
+
+	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+		Versioned:        ebsprovider.NewVersioned(),
+		VolumeID:         spec.volumeID,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(spec.sizeBytes)},
+		AvailabilityZone: s.config.AZ,
+		SourceSnapshotID: amiConfig.SnapshotID,
+		SourceVolumeID:   sourceVolumeID,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Provider root volume creation failed",
+			"volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if created == nil {
+		slog.ErrorContext(ctx, "Provider returned no volume for the root volume", "volumeId", spec.volumeID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// DescribeVolumes enumerates ebsmetadata documents only, so a root volume
+	// without one is invisible and its attach-time state write fails.
+	if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
+		VolumeID: spec.volumeID, TenantID: spec.accountID,
+		CapacityGiB: utils.SafeIntToUint64(spec.sizeBytes / bytesPerGiB),
+		State:       string(ebsprovider.VolumeStateAvailable),
+		CreatedAt:   time.Now(), AvailabilityZone: s.config.AZ,
+		VolumeType: spxtypes.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
+		Throughput: spxtypes.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
+		DeleteOnTermination: spec.deleteOnTermination, Encrypted: mkey != nil,
+		ProviderHandle: created.Handle,
+	}); err != nil {
+		slog.ErrorContext(ctx, "Failed to persist root volume metadata", "volumeId", spec.volumeID, "err", err)
+		if delErr := s.ebsProvider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+			Versioned: ebsprovider.NewVersioned(), VolumeID: spec.volumeID, Handle: created.Handle,
+		}); delErr != nil {
+			slog.ErrorContext(ctx, "Failed to roll back untracked root volume", "volumeId", spec.volumeID, "err", delErr)
+		}
+		return errors.New(awserrors.ErrorServerInternal)
+	}
 	return nil
+}
+
+// rootVolumeIOPS falls back to the gp3 baseline when the launch request named
+// no Iops, so DescribeVolumes never reports a root volume as having zero.
+func rootVolumeIOPS(requested int) int {
+	if requested <= 0 {
+		return spxtypes.DefaultGP3IOPS
+	}
+	return requested
 }
 
 // cloneAMIToVolume creates a new volume from an AMI using snapshot-based

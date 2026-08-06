@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -144,32 +145,90 @@ func (f *fakeSystemVPC) DescribeInternetGateways(_ context.Context, in *ec2.Desc
 const testModelID = "meta.llama3-2-1b-instruct-v1:0"
 
 // fakeVPC is an in-memory launchVPCProvisioner: every CreateNetworkInterface
-// call returns a fresh ENI ID/IP so concurrent launches never collide.
+// call returns a fresh ENI ID/IP so concurrent launches never collide. Records
+// are retained so DescribeNetworkInterfaces can answer the describe-or-create
+// lookup the daemon port depends on for idempotence.
 type fakeVPC struct {
 	mu       sync.Mutex
 	nextID   int
 	created  []string
 	deleted  []string
 	detached []string
+	records  map[string]*ec2.NetworkInterface
 }
 
-func (f *fakeVPC) CreateNetworkInterface(_ context.Context, _ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+func (f *fakeVPC) CreateNetworkInterface(_ context.Context, in *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nextID++
 	id := f.nextID
 	eniID := fmt.Sprintf("eni-%d", id)
 	f.created = append(f.created, eniID)
-	f.mu.Unlock()
-	return &ec2.CreateNetworkInterfaceOutput{NetworkInterface: &ec2.NetworkInterface{
-		NetworkInterfaceId: aws.String(fmt.Sprintf("eni-%d", id)),
+	ni := &ec2.NetworkInterface{
+		NetworkInterfaceId: aws.String(eniID),
 		PrivateIpAddress:   aws.String(fmt.Sprintf("10.244.1.%d", id%250+1)),
 		MacAddress:         aws.String("02:00:00:00:00:01"),
-	}}, nil
+		SubnetId:           in.SubnetId,
+		Description:        in.Description,
+	}
+	if f.records == nil {
+		f.records = map[string]*ec2.NetworkInterface{}
+	}
+	f.records[eniID] = ni
+	return &ec2.CreateNetworkInterfaceOutput{NetworkInterface: ni}, nil
+}
+
+// putRecord seeds an ENI the fake did not mint, so a test can present the
+// lookup with a record it would not otherwise produce.
+func (f *fakeVPC) putRecord(eniID, subnetID, description, ip, mac string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.records == nil {
+		f.records = map[string]*ec2.NetworkInterface{}
+	}
+	f.records[eniID] = &ec2.NetworkInterface{
+		NetworkInterfaceId: aws.String(eniID),
+		SubnetId:           aws.String(subnetID),
+		Description:        aws.String(description),
+		PrivateIpAddress:   aws.String(ip),
+		MacAddress:         aws.String(mac),
+	}
+}
+
+// DescribeNetworkInterfaces honours only the subnet-id and description filters,
+// which are the two the daemon-port lookup uses (ENIs carry no tag filter).
+func (f *fakeVPC) DescribeNetworkInterfaces(_ context.Context, in *ec2.DescribeNetworkInterfacesInput, _ string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*ec2.NetworkInterface
+	for _, ni := range f.records {
+		match := true
+		for _, filter := range in.Filters {
+			var got string
+			switch aws.StringValue(filter.Name) {
+			case "subnet-id":
+				got = aws.StringValue(ni.SubnetId)
+			case "description":
+				got = aws.StringValue(ni.Description)
+			default:
+				return nil, fmt.Errorf("fakeVPC: unsupported ENI filter %q", aws.StringValue(filter.Name))
+			}
+			if !slices.Contains(aws.StringValueSlice(filter.Values), got) {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, ni)
+		}
+	}
+	return &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: out}, nil
 }
 
 func (f *fakeVPC) DeleteNetworkInterface(_ context.Context, in *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.mu.Lock()
 	f.deleted = append(f.deleted, aws.StringValue(in.NetworkInterfaceId))
+	delete(f.records, aws.StringValue(in.NetworkInterfaceId))
 	f.mu.Unlock()
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
@@ -314,6 +373,38 @@ func (s *stubRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
+// fakeHostPort records the host-side ports a launch asked for, so tests can
+// assert the daemon gets a routed presence before any VM is booted.
+type fakeHostPort struct {
+	mu      sync.Mutex
+	ensured []hostPortCall
+	failErr error
+}
+
+// hostPortCall captures the args of one EnsureVPCHostPort invocation.
+type hostPortCall struct {
+	eniID string
+	mac   string
+	addr  string
+}
+
+func (f *fakeHostPort) EnsureVPCHostPort(eniID, mac, addr string) error {
+	f.mu.Lock()
+	f.ensured = append(f.ensured, hostPortCall{eniID: eniID, mac: mac, addr: addr})
+	f.mu.Unlock()
+	return f.failErr
+}
+
+func (f *fakeHostPort) calls() []hostPortCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ensured)
+}
+
+// testNodeID names the daemon replica in tests, since a launch refuses to run
+// without one (each node owns a distinct system-VPC port).
+const testNodeID = "node-a"
+
 // launchHarness bundles every LaunchDeps fake so a test can reach into any of
 // them, mirroring handlers_rds's launchHarness.
 type launchHarness struct {
@@ -324,6 +415,7 @@ type launchHarness struct {
 	volumes  *fakeVolume
 	attacher *fakeAttacher
 	weights  fakeWeightsResolver
+	hostPort *fakeHostPort
 }
 
 func newLaunchHarness() *launchHarness {
@@ -334,6 +426,7 @@ func newLaunchHarness() *launchHarness {
 		volumes:  &fakeVolume{},
 		attacher: &fakeAttacher{},
 		weights:  fakeWeightsResolver{snapshotID: "snap-llama32-1b", resolvable: true},
+		hostPort: &fakeHostPort{},
 	}
 }
 
@@ -347,6 +440,8 @@ func (h *launchHarness) deps() LaunchDeps {
 		Volume:    h.volumes,
 		Attacher:  h.attacher,
 		Weights:   h.weights,
+		HostPort:  h.hostPort,
+		NodeID:    testNodeID,
 	}
 }
 

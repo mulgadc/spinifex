@@ -31,4 +31,14 @@ type NetworkPlumber interface {
 	// patch pair, endpoint), leaving the shared br-imds bridge in place. Idempotent,
 	// so safe for an ENI that never had a datapath installed.
 	DetachIMDSDatapath(eniID string) error
+
+	// EnsureVPCHostPort gives the host a routed presence in a managed VPC subnet
+	// by binding an ENI the daemon itself owns to an internal port on br-int.
+	// addr is CIDR notation carrying the ENI address at the SUBNET's prefix
+	// length, which is what installs the connected route for the rest of it.
+	EnsureVPCHostPort(eniID, mac, addr string) error
+
+	// RemoveVPCHostPort tears down an EnsureVPCHostPort port. Idempotent, so it
+	// is safe for an ENI that never had one.
+	RemoveVPCHostPort(eniID string) error
 }

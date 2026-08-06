@@ -70,5 +70,11 @@ func EnsureSystemVPC(ctx context.Context, deps handlers_systemvpc.Deps, cfg *con
 	if len(refs.PrivateSubnetIDs) == 0 {
 		return nil, fmt.Errorf("bedrock: system VPC %s has no private subnet to place serving VMs in", refs.VpcID)
 	}
+	// The two are built in lockstep, and callers index both by the same k to
+	// pair a subnet with its prefix length.
+	if len(refs.PrivateSubnetCIDRs) != len(refs.PrivateSubnetIDs) {
+		return nil, fmt.Errorf("bedrock: system VPC %s returned %d private subnets but %d CIDRs",
+			refs.VpcID, len(refs.PrivateSubnetIDs), len(refs.PrivateSubnetCIDRs))
+	}
 	return refs, nil
 }

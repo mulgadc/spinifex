@@ -1017,6 +1017,10 @@ func (p *scriptedNetworkPlumber) DetachIMDSDatapath(_ string) error { return nil
 
 func (p *scriptedNetworkPlumber) EnsureIMDSDatapathBridge() error { return nil }
 
+func (p *scriptedNetworkPlumber) EnsureVPCHostPort(_, _, _ string) error { return nil }
+
+func (p *scriptedNetworkPlumber) RemoveVPCHostPort(_ string) error { return nil }
+
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
 func TestStartupTimeouts(t *testing.T) {

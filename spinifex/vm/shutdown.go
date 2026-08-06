@@ -242,9 +242,15 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 
 	transitionErr := m.transitionWithPrecheck(instance, StateTerminated)
 	if transitionErr != nil && errors.Is(transitionErr, ErrInvalidTransition) {
-		// A genuine invalid/raced transition: in-memory status never reached
-		// terminated, so there is nothing durable to record yet.
-		return fmt.Errorf("transition to terminated: %w", transitionErr)
+		if m.Status(instance) != StateTerminated {
+			// A genuine invalid/raced transition: in-memory status never reached
+			// terminated, so there is nothing durable to record yet.
+			return fmt.Errorf("transition to terminated: %w", transitionErr)
+		}
+		// Another handler (typically the VM GC) finalised this instance while we
+		// were tearing it down. Its destination is the one we wanted, so fall
+		// through: everything below is idempotent.
+		transitionErr = nil
 	}
 	if transitionErr != nil {
 		// In-memory status reached terminated even though local persistence

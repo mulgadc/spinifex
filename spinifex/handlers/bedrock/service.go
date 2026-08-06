@@ -331,7 +331,9 @@ func (s *Service) List(ctx context.Context, _ *ListEndpointsInput, _ string) (*L
 // Delete moves a READY endpoint to DRAINING, tears down its VM/ENI/weights
 // volume, then deletes the record. Runs synchronously: unlike Ensure this is
 // an explicit, infrequent operator action, so there is no client-latency
-// reason to background it. An already-ABSENT endpoint is a no-op success.
+// reason to background it. An already-ABSENT endpoint is a no-op success, and
+// a DRAINING one resumes: a teardown that failed partway must be retryable,
+// or the record is stranded in a state nothing else clears.
 func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string) (*DeleteEndpointOutput, error) {
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -353,17 +355,19 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if !found {
 		return &DeleteEndpointOutput{}, nil
 	}
-	if rec.State != StateReady {
+	if rec.State != StateReady && rec.State != StateDraining {
 		return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
-			"bedrock: endpoint for %s is not READY (state=%s)", in.ModelID, rec.State)
+			"bedrock: endpoint for %s cannot be deleted (state=%s)", in.ModelID, rec.State)
 	}
-	if err := validateTransition(rec.State, StateDraining); err != nil {
-		return nil, err
-	}
-	rec.State = StateDraining
-	rec.Generation++
-	if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
-		return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
+	if rec.State == StateReady {
+		if err := validateTransition(rec.State, StateDraining); err != nil {
+			return nil, err
+		}
+		rec.State = StateDraining
+		rec.Generation++
+		if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
+			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
+		}
 	}
 
 	if err := TerminateServingVM(ctx, s.deps.Launch, rec); err != nil {

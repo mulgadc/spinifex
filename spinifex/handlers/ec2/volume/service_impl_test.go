@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -288,6 +289,37 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+
+	vol, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		Size:             aws.Int64(8),
+		AvailabilityZone: aws.String("ap-southeast-2a"),
+	}, "acct-1")
+	require.NoError(t, err)
+	require.NotNil(t, vol)
+	require.NotEmpty(t, vol.VolumeId)
+
+	metadata, err := svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	require.NoError(t, err)
+	assert.Equal(t, "acct-1", metadata.TenantID)
+	assert.Equal(t, uint64(8), metadata.CapacityGiB)
+	assert.Equal(t, "memory://volume/"+aws.StringValue(vol.VolumeId), metadata.ProviderHandle)
+	described, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.Equal(t, int64(8), aws.Int64Value(described.Volumes[0].Size))
+	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "in-use", "i-123", "/dev/sda1"))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	assert.EqualError(t, err, awserrors.ErrorVolumeInUse)
+	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "available", "", ""))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	require.NoError(t, err)
+	_, err = svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	assert.Error(t, err)
 }
 
 // TestCreateVolume_BuildVBConfig_GCEnabled asserts that CreateVolume's

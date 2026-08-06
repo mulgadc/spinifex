@@ -18,6 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -45,6 +47,14 @@ type ImageServiceImpl struct {
 	store      objectstore.ObjectStore
 	bucketName string
 	natsConn   *nats.Conn
+	metadata   *ebsmetadata.Store
+	provider   ebsprovider.EBSProvider
+}
+
+// SetEBSProvider injects the provider boundary used by the control plane.
+// Legacy AMI/snapshot paths remain in place until their metadata migration is complete.
+func (s *ImageServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
+	s.provider = provider
 }
 
 // NewImageServiceImpl creates a new daemon-side image service. natsConn is used
@@ -63,6 +73,7 @@ func NewImageServiceImpl(cfg *config.Config, natsConn *nats.Conn) *ImageServiceI
 		store:      store,
 		bucketName: cfg.Predastore.Bucket,
 		natsConn:   natsConn,
+		metadata:   ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 	}
 }
 
@@ -71,6 +82,7 @@ func NewImageServiceImplWithStore(store objectstore.ObjectStore, bucketName stri
 	return &ImageServiceImpl{
 		store:      store,
 		bucketName: bucketName,
+		metadata:   ebsmetadata.NewStore(store, bucketName),
 	}
 }
 
@@ -83,6 +95,7 @@ func NewImageServiceImplWithConfig(cfg *config.Config, store objectstore.ObjectS
 		store:      store,
 		bucketName: cfg.Predastore.Bucket,
 		natsConn:   natsConn,
+		metadata:   ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 	}
 }
 

@@ -20,6 +20,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
@@ -65,6 +67,16 @@ type VolumeServiceImpl struct {
 	bucketName string
 	natsConn   *nats.Conn
 	snapshotKV jetstream.KeyValue
+	provider   ebsprovider.EBSProvider
+	metadata   *ebsmetadata.Store
+}
+
+// SetEBSProvider injects the provider boundary used by the control plane.
+// The legacy engine path remains until the control-plane metadata migration is
+// complete; keeping the dependency optional lets tests and existing callers
+// transition without constructing a second storage engine.
+func (s *VolumeServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
+	s.provider = provider
 }
 
 // NewVolumeServiceImpl creates a new daemon-side volume service.
@@ -84,6 +96,7 @@ func NewVolumeServiceImpl(cfg *config.Config, natsConn *nats.Conn, snapshotKV je
 		bucketName: cfg.Predastore.Bucket,
 		natsConn:   natsConn,
 		snapshotKV: snapshotKV,
+		metadata:   ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 	}
 }
 
@@ -98,6 +111,7 @@ func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectS
 		store:      store,
 		bucketName: bucketName,
 		natsConn:   natsConn,
+		metadata:   ebsmetadata.NewStore(store, bucketName),
 	}
 	if len(snapshotKV) > 0 {
 		svc.snapshotKV = snapshotKV[0]
@@ -196,6 +210,39 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		"az", *input.AvailabilityZone, "snapshotId", snapshotID)
 
 	tags := utils.ExtractTags(input.TagSpecifications, "volume")
+
+	// When a provider is injected, the control plane delegates allocation and
+	// persists only provider-neutral metadata. The legacy viperblock path below
+	// remains the compatibility fallback until all callers are migrated.
+	if s.provider != nil {
+		created, err := s.provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+			Versioned:        ebsprovider.NewVersioned(),
+			VolumeID:         volumeID,
+			CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: size * 1024 * 1024 * 1024},
+			AvailabilityZone: *input.AvailabilityZone,
+			SourceSnapshotID: snapshotID,
+		})
+		if err != nil {
+			slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if created == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
+			VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(ebsprovider.VolumeStateAvailable),
+			CreatedAt: now, AvailabilityZone: *input.AvailabilityZone, VolumeType: volumeType,
+			IOPS: iops, Throughput: throughput, SnapshotID: snapshotID, Tags: tags, ProviderHandle: created.Handle,
+		}); err != nil {
+			slog.ErrorContext(ctx, "CreateVolume: failed to persist provider metadata", "volumeId", volumeID, "err", err)
+			_ = s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: created.Handle})
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
+			State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
+			Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(false),
+			Tags: utils.MapToEC2Tags(tags)}, nil
+	}
 
 	// Volume size in bytes for viperblock
 	sizeGiB := utils.SafeInt64ToUint64(size)
@@ -337,6 +384,41 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumes: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	if s.provider != nil {
+		metadata, err := s.metadata.ListVolumes(ctx)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		volumes := make([]*ec2.Volume, 0, len(metadata))
+		requested := make(map[string]bool, len(input.VolumeIds))
+		found := make(map[string]bool, len(input.VolumeIds))
+		for _, id := range input.VolumeIds {
+			if id != nil {
+				requested[*id] = true
+			}
+		}
+		for _, meta := range metadata {
+			if meta.TenantID != accountID || (len(requested) > 0 && !requested[meta.VolumeID]) {
+				continue
+			}
+			if requested[meta.VolumeID] {
+				found[meta.VolumeID] = true
+			}
+			volume := providerMetadataVolume(meta)
+			if len(parsedFilters) == 0 || volumeMatchesFilters(volume, parsedFilters) {
+				volumes = append(volumes, volume)
+			}
+		}
+		if len(input.VolumeIds) > 0 {
+			for id := range requested {
+				if !found[id] {
+					return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+				}
+			}
+		}
+		return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
 	}
 
 	var volumes []*ec2.Volume
@@ -975,6 +1057,23 @@ type volumeResult struct {
 	tenantID string
 }
 
+func providerMetadataVolume(meta ebsmetadata.Volume) *ec2.Volume {
+	state := meta.State
+	if state == "" {
+		state = "available"
+	}
+	volume := &ec2.Volume{
+		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(utils.SafeUint64ToInt64(meta.CapacityGiB)),
+		State: aws.String(state), AvailabilityZone: aws.String(meta.AvailabilityZone), CreateTime: aws.Time(meta.CreatedAt),
+		VolumeType: aws.String(meta.VolumeType), Encrypted: aws.Bool(false), Iops: aws.Int64(int64(meta.IOPS)),
+		Throughput: aws.Int64(int64(meta.Throughput)), SnapshotId: aws.String(meta.SnapshotID), Tags: utils.MapToEC2Tags(meta.Tags),
+	}
+	if meta.AttachedInstance != "" {
+		volume.Attachments = []*ec2.VolumeAttachment{{VolumeId: aws.String(meta.VolumeID), InstanceId: aws.String(meta.AttachedInstance), Device: aws.String(meta.DeviceName), State: aws.String("attached"), DeleteOnTermination: aws.Bool(meta.DeleteOnTermination), AttachTime: aws.Time(meta.AttachedAt)}}
+	}
+	return volume
+}
+
 // getVolumeByID fetches a single volume's config from S3 and builds an EC2 Volume.
 // Returns the volume and the stored TenantID for account scoping.
 func (s *VolumeServiceImpl) getVolumeByID(ctx context.Context, volumeID string) (*volumeResult, error) {
@@ -1360,6 +1459,29 @@ func (s *VolumeServiceImpl) mergeVolumeConfig(ctx context.Context, configKey str
 // getVolumeConfigAndEncryption. The config.json read here is a presence/ownership
 // gate so a missing volume still errors.
 func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance, deviceName string) error {
+	if s.provider != nil {
+		ctx := context.Background()
+		meta, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil {
+			return fmt.Errorf("failed to get provider volume metadata: %w", err)
+		}
+		if state == "" && attachedInstance == "" {
+			state = "available"
+		}
+		meta.State = state
+		meta.AttachedInstance = attachedInstance
+		meta.DeviceName = deviceName
+		if attachedInstance != "" {
+			meta.AttachedAt = time.Now()
+		} else {
+			meta.AttachedAt = time.Time{}
+		}
+		if err := s.metadata.PutVolume(ctx, meta); err != nil {
+			return fmt.Errorf("failed to write provider volume metadata: %w", err)
+		}
+		return nil
+	}
+
 	if _, err := s.GetVolumeConfig(volumeID); err != nil {
 		return fmt.Errorf("failed to get volume config for state update: %w", err)
 	}
@@ -1390,12 +1512,48 @@ func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance,
 
 // ModifyVolume modifies an EBS volume (grow-only, requires stopped instance).
 func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error) {
-	if input.VolumeId == nil || *input.VolumeId == "" {
+	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
 	}
 
 	volumeID := *input.VolumeId
 	slog.InfoContext(ctx, "ModifyVolume request", "volumeId", volumeID)
+
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil || meta.TenantID != accountID {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		originalSize := utils.SafeUint64ToInt64(meta.CapacityGiB)
+		if input.Size == nil || *input.Size <= originalSize {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		if meta.AttachedInstance != "" && meta.State == "in-use" {
+			return nil, errors.New(awserrors.ErrorIncorrectState)
+		}
+		expanded, err := s.provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{
+			Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
+			CapacityRange: ebsprovider.CapacityRange{RequiredBytes: *input.Size * 1024 * 1024 * 1024},
+		})
+		if err != nil || expanded == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		meta.CapacityGiB = utils.SafeInt64ToUint64(*input.Size)
+		if input.VolumeType != nil {
+			meta.VolumeType = *input.VolumeType
+		}
+		if input.Iops != nil {
+			meta.IOPS = int(*input.Iops)
+		}
+		if err := s.metadata.PutVolume(ctx, meta); err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		now := time.Now()
+		modification := &ec2.VolumeModification{VolumeId: aws.String(volumeID), ModificationState: aws.String("completed"),
+			Progress: aws.Int64(100), OriginalSize: aws.Int64(originalSize), TargetSize: input.Size,
+			StartTime: aws.Time(now), EndTime: aws.Time(now)}
+		return &ec2.ModifyVolumeOutput{VolumeModification: modification}, nil
+	}
 
 	cfg, err := s.getVolumeConfig(ctx, volumeID)
 	if err != nil {
@@ -1518,6 +1676,29 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 
 	volumeID := *input.VolumeId
 	slog.InfoContext(ctx, "DeleteVolume request", "volumeId", volumeID)
+
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		if meta.TenantID != accountID {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		if meta.AttachedInstance != "" || (meta.State != "available" && meta.State != "") {
+			return nil, errors.New(awserrors.ErrorVolumeInUse)
+		}
+		if err := s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+			Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
+		}); err != nil {
+			slog.ErrorContext(ctx, "DeleteVolume: provider deletion failed", "volumeId", volumeID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := s.metadata.DeleteVolume(ctx, volumeID); err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return &ec2.DeleteVolumeOutput{}, nil
+	}
 
 	// Fetch volume config to validate state. AWS-faithful: an absent volume
 	// returns InvalidVolume.NotFound (the provider tolerates it on destroy);

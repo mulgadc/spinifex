@@ -30,6 +30,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -744,6 +746,17 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	}
 
 	defer os.RemoveAll(tmpDir)
+
+	// Best-effort: also write an ebsmetadata document, so this AMI is found
+	// directly by the provider path's ListAMIs instead of only ever being
+	// decoded from config.json through the legacy fallback. config.json,
+	// written above by ImportDiskImage, remains the source of truth and the
+	// import is already complete regardless of this call's outcome.
+	node := appConfig.Nodes[appConfig.Node]
+	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), vblegacy.AMIToDocument(manifest.AMIMetadata)); err != nil {
+		slog.Warn("Could not write ebsmetadata document for imported AMI; it remains visible via the legacy fallback", "imageId", volumeId, "err", err)
+	}
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
 }

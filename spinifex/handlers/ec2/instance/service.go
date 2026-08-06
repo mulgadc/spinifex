@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 )
 
 // InstanceService defines the interface for EC2 instance operations business logic.
@@ -137,9 +137,10 @@ type PublicIPReleaser interface {
 }
 
 // AMIMetaLoader resolves an AMI ID to its metadata for ownership/validation
-// during RunInstances. Implemented by handlers/ec2/image.ImageServiceImpl.
+// during RunInstances. ImageServiceImpl converts on its embedded path, so
+// this boundary names no viperblock type whichever EBS provider is selected.
 type AMIMetaLoader interface {
-	GetAMIConfig(ctx context.Context, imageID string) (viperblock.AMIMetadata, error)
+	GetAMIConfig(ctx context.Context, imageID string) (ebsmetadata.AMI, error)
 }
 
 // KeyPairValidator checks that a named key pair exists for an account during

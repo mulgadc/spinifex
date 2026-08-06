@@ -61,6 +61,8 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -1897,6 +1899,11 @@ const ebsProviderRequestTimeout = 30 * time.Second
 // a missing responder must be reported promptly, and the check is advisory.
 const ebsProviderProbeTimeout = 2 * time.Second
 
+// ebsMetadataMigrationBucket stamps the ebsmetadata backfill's version. A KV
+// bucket rather than an object, so every node agrees on one current version
+// instead of racing a last-writer-wins stamp in Predastore.
+const ebsMetadataMigrationBucket = "spinifex-ebsmetadata-migrate"
+
 // configureEBSProvider wires a single NATSProvider into every EBS-adjacent
 // service when the operator opts into config.EBSProviderViperblockd. It is a
 // no-op for the default embedded provider, keeping that path unchanged.
@@ -1904,15 +1911,43 @@ func (d *Daemon) configureEBSProvider() error {
 	if d.config.EBS.ResolvedProvider() != config.EBSProviderViperblockd {
 		return nil
 	}
+	if err := d.runEBSMetadataBackfill(); err != nil {
+		return fmt.Errorf("ebsmetadata backfill: %w", err)
+	}
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider
 	d.instanceService.SetEBSProvider(provider)
 	d.imageService.SetEBSProvider(provider)
 	d.snapshotService.SetEBSProvider(provider)
 	d.volumeService.SetEBSProvider(provider)
+	// Reads must still work in the window before the backfill has run on every
+	// node, so decode the legacy config.json on a miss rather than reporting a
+	// volume as not-found. Drop these three calls to retire the fallback.
+	d.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
+	d.snapshotService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
+	d.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
 	slog.Info("EBS provider path active", "provider", config.EBSProviderViperblockd)
 	d.probeEBSProvider(provider)
 	return nil
+}
+
+// runEBSMetadataBackfill converts pre-provider volumes and AMIs to ebsmetadata
+// documents before the provider path starts serving reads.
+//
+// Unlike probeEBSProvider below this is fatal, not advisory: DescribeVolumes
+// enumerates only ebsmetadata documents, so a half-migrated cluster would
+// serve a fleet with invisible volumes instead of failing.
+func (d *Daemon) runEBSMetadataBackfill() error {
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		d.config.Predastore.Host, d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+
+	versionKV, err := kvutil.GetOrCreateBucket(d.ctx, d.jsManager.js, ebsMetadataMigrationBucket, 1)
+	if err != nil {
+		return fmt.Errorf("open %s KV bucket: %w", ebsMetadataMigrationBucket, err)
+	}
+
+	return migrate.DefaultRegistry.RunObject(
+		d.ctx, ebsmetadatabackfill.MigrationTarget, store, d.config.Predastore.Bucket, versionKV, ebsmetadatabackfill.TargetVersion)
 }
 
 // probeEBSProvider reports whether anything is serving the provider contract.

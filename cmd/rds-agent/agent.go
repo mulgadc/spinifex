@@ -228,9 +228,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	// and authorize the volume. Commands and the parameter guard wait because
 	// their durable state belongs on that mount, never on the disposable boot disk.
 	if err := a.dataMountWaiter(ctx, a.cfg.MountsFile, a.cfg.DataMount); err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
+		// A shutdown cancels this wait; main treats the wrapped context.Canceled
+		// as a clean stop, exactly as it does for register and bootstrap above.
 		return fmt.Errorf("wait for data mount %s: %w", a.cfg.DataMount, err)
 	}
 

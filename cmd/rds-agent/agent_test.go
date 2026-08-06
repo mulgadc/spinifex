@@ -197,6 +197,11 @@ func runAgent(t *testing.T, a *Agent) error {
 	cancel()
 	select {
 	case err := <-done:
+		// The cancellation above is this helper's own, so Run reporting it is the
+		// expected clean stop rather than a failure, exactly as main treats it.
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not exit after cancellation")

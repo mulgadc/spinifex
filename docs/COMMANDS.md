@@ -155,6 +155,7 @@ Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway do
 | `describe-instance-types` | `--filters` (capacity only) | `--instance-types`, `--max-results`, `--next-token`, `--dry-run`, other filters | **DONE** |
 | `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
 | `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
+| `get-password-data` | `--instance-id` | `--dry-run` | **DONE** |
 | `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
 | `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`/`optional`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — unmodelled values return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
@@ -338,8 +339,8 @@ KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on 
 | `delete-network-interface` | `--network-interface-id` | `--dry-run` | **DONE** |
 | `describe-network-interfaces` | `--network-interface-ids`, `--filters` (subnet-id, vpc-id, attachment.instance-id) | `--max-results`, `--dry-run` | **DONE** |
 | `modify-network-interface-attribute` | — | `--network-interface-id`, `--description`, `--groups` | **DONE** |
-| `attach-network-interface` | — | `--network-interface-id`, `--instance-id`, `--device-index` | **NOT STARTED** (internal only) |
-| `detach-network-interface` | — | `--attachment-id`, `--force` | **NOT STARTED** (internal only) |
+| `attach-network-interface` | `--network-interface-id`, `--instance-id`, `--device-index` (all required) | `--dry-run`, `--network-card-index`, `--ena-srd-specification` | **DONE** — hot-plugged into a running instance |
+| `detach-network-interface` | `--attachment-id` (required), `--force` | `--dry-run` | **DONE** |
 | `assign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses`, `--secondary-private-ip-address-count` | **NOT STARTED** |
 | `unassign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses` | **NOT STARTED** |
 
@@ -797,6 +798,8 @@ The default certificate cannot be added/removed via these calls — set it on th
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-tags` | `--resource-arns` (loadbalancer, targetgroup, listener) | — | **DONE** |
+| `add-tags` | `--resource-arns`, `--tags` | — | **DONE** |
+| `remove-tags` | `--resource-arns`, `--tag-keys` | — | **DONE** |
 
 ### ELBv2 — Not Yet Implemented
 
@@ -832,6 +835,7 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 | `import-certificate` | `--certificate`, `--private-key`, `--certificate-chain`, `--certificate-arn` (re-import) | `--tags` | **DONE** |
 | `describe-certificate` | `--certificate-arn` | — | **DONE** |
 | `list-certificates` | — | `--certificate-statuses`, `--includes`, `--max-items`, `--next-token` | **DONE** |
+| `get-certificate` | `--certificate-arn` | — | **DONE** — returns the leaf certificate and its chain |
 | `delete-certificate` | `--certificate-arn` | — | **DONE** |
 | `request-certificate` | `--domain-name`, `--subject-alternative-names`, `--tags` | `--validation-method`, `--certificate-authority-arn`, `--options`, `--idempotency-token` | **PARTIAL** — `PRIVATE_CA` issues synchronously; `PROVIDER_API`/`MANUAL_TXT` are accepted and correctly shaped but stay `PENDING_VALIDATION` until a later issuance worker lands |
 | `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | `--certificate-arn`, `--tags`/`--tag-keys` | — | **DONE** |
@@ -965,6 +969,52 @@ Recognised actions below return `OperationNotSupported`, so a client sees "not o
 | Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS | — | — | **NOT STARTED** |
 
 IAM: `AmazonRDSFullAccess` and `AmazonRDSReadOnlyAccess` are available as managed policies. They grant `rds:` verb prefixes rather than `rds:*`, because `rds:*` would also appear to grant the internal agent actions the gateway reserves for a DB VM's own role.
+
+---
+
+## ECR (Elastic Container Registry)
+
+Repository metadata is served over the AWS API on the gateway endpoint; image data moves over the OCI Distribution `/v2/` endpoint on that same host, authenticated by the bearer token `get-login-password` mints.
+
+| Command | Status |
+|---------|--------|
+| `create-repository`, `delete-repository`, `describe-repositories` | **DONE** |
+| `describe-images`, `list-images`, `batch-get-image`, `batch-delete-image`, `put-image` | **DONE** |
+| `put-image-tag-mutability` | **DONE** |
+| `get-authorization-token` | **DONE** — mints the short-lived bearer token used by `docker login` |
+| `get-repository-policy`, `set-repository-policy`, `delete-repository-policy` | **DONE** |
+| `get-lifecycle-policy`, `put-lifecycle-policy`, `delete-lifecycle-policy`, `get-lifecycle-policy-preview`, `start-lifecycle-policy-preview` | **DONE** |
+| `list-tags-for-resource` | **DONE** |
+| `tag-resource`, `untag-resource` | **NOT STARTED** (registered stub) |
+| `batch-check-layer-availability`, `initiate-layer-upload`, `upload-layer-part`, `complete-layer-upload`, `get-download-url-for-layer` | **NOT STARTED** (registered stub) — layer transfer is served by the OCI `/v2/` endpoint |
+| `describe-registry`, `get-registry-policy`, `put-registry-policy`, `put-replication-configuration`, `replicate-image` | **NOT STARTED** (registered stub) — single-registry deployment, no cross-region replication |
+| `list-repositories` | **NOT STARTED** (registered stub) — use `describe-repositories` |
+| `start-image-scan`, `describe-image-scan-findings`, `put-image-scanning-configuration`, `get-image-scanning-configuration`, `get-registry-scanning-configuration`, `put-registry-scanning-configuration`, `batch-get-repository-scanning-configuration` | **NOT STARTED** (`OperationNotSupported`) — vulnerability scanning is not offered |
+| Pull-through cache rules, repository creation templates, image replication status | **NOT STARTED** (`InvalidAction`) |
+
+---
+
+## ECS (Elastic Container Service)
+
+Clusters, services and tasks run on EC2 container instances; there is no Fargate launch type.
+
+| Command | Status |
+|---------|--------|
+| `create-cluster`, `delete-cluster`, `describe-clusters`, `list-clusters` | **DONE** |
+| `create-service`, `update-service`, `delete-service`, `describe-services`, `list-services` | **DONE** |
+| `register-task-definition`, `deregister-task-definition`, `describe-task-definition`, `list-task-definitions` | **DONE** |
+| `run-task`, `start-task`, `stop-task`, `describe-tasks`, `list-tasks` | **DONE** |
+| `register-container-instance`, `deregister-container-instance`, `describe-container-instances`, `list-container-instances`, `update-container-instances-state` | **DONE** |
+| `create-capacity-provider`, `delete-capacity-provider`, `describe-capacity-providers`, `put-cluster-capacity-providers` | **DONE** |
+| `submit-task-state-change` | **DONE** — reported by the in-guest agent |
+| `tag-resource`, `untag-resource`, `list-tags-for-resource` | **DONE** |
+| `update-cluster`, `list-account-settings`, `put-account-setting`, `list-services-by-namespace`, `list-task-definition-families` | **NOT STARTED** (registered stub) |
+| Task sets (blue/green): `create-task-set`, `update-task-set`, `delete-task-set`, `describe-task-sets`, `update-service-primary-task-set` | **NOT STARTED** (`InvalidAction`) |
+| `execute-command`, `get-task-protection`, `update-task-protection` | **NOT STARTED** (`InvalidAction`) |
+| Attributes: `put-attributes`, `delete-attributes`, `list-attributes` | **NOT STARTED** (`InvalidAction`) |
+| `update-capacity-provider`, `update-cluster-settings`, `update-container-agent` | **NOT STARTED** (`InvalidAction`) |
+| `delete-account-setting`, `put-account-setting-default`, `delete-task-definitions` | **NOT STARTED** (`InvalidAction`) |
+| `discover-poll-endpoint`, `submit-container-state-change`, `submit-attachment-state-changes` | **NOT STARTED** (`InvalidAction`) |
 
 ---
 

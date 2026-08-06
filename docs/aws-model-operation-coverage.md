@@ -12,6 +12,7 @@ Implemented means a modelled operation is registered to a real handler. Stub and
 | ecs | 2014-11-13 | 56 | 39 | 31 | 5 | 0 | 20 | 3 |
 | elasticloadbalancingv2 | 2015-12-01 | 46 | 37 | 33 | 0 | 0 | 13 | 4 |
 | iam | 2010-05-08 | 159 | 75 | 75 | 0 | 0 | 84 | 0 |
+| rds | 2014-10-31 | 162 | 40 | 24 | 0 | 12 | 126 | 4 |
 | s3 | 2006-03-01 | 99 | — | — | — | — | — | — |
 | sts | 2011-06-15 | 8 | 4 | 4 | 0 | 0 | 4 | 0 |
 
@@ -456,6 +457,80 @@ None.
 <details><summary>Registered outside the pinned model (0)</summary>
 
 None.
+
+</details>
+
+## rds
+
+Implements **24 of 162** modelled operations (14.8%).
+
+<details><summary>Implemented (24)</summary>
+
+`AddTagsToResource`, `CreateDBInstance`, `CreateDBParameterGroup`, `CreateDBSnapshot`, `CreateDBSubnetGroup`, `DeleteDBInstance`, `DeleteDBParameterGroup`, `DeleteDBSnapshot`
+
+`DeleteDBSubnetGroup`, `DescribeDBInstanceAutomatedBackups`, `DescribeDBInstances`, `DescribeDBParameterGroups`, `DescribeDBParameters`, `DescribeDBSnapshots`, `DescribeDBSubnetGroups`, `DescribeEvents`
+
+`ListTagsForResource`, `ModifyDBInstance`, `ModifyDBParameterGroup`, `RebootDBInstance`, `RemoveTagsFromResource`, `RestoreDBInstanceFromDBSnapshot`, `StartDBInstance`, `StopDBInstance`
+
+
+</details>
+
+<details><summary>Missing from dispatch (126)</summary>
+
+`AddRoleToDBCluster`, `AddRoleToDBInstance`, `AddSourceIdentifierToSubscription`, `ApplyPendingMaintenanceAction`, `AuthorizeDBSecurityGroupIngress`, `BacktrackDBCluster`, `CancelExportTask`, `CopyDBClusterParameterGroup`
+
+`CopyDBClusterSnapshot`, `CopyDBParameterGroup`, `CopyDBSnapshot`, `CopyOptionGroup`, `CreateBlueGreenDeployment`, `CreateCustomDBEngineVersion`, `CreateDBClusterEndpoint`, `CreateDBClusterParameterGroup`
+
+`CreateDBClusterSnapshot`, `CreateDBProxy`, `CreateDBProxyEndpoint`, `CreateDBSecurityGroup`, `CreateDBShardGroup`, `CreateEventSubscription`, `CreateGlobalCluster`, `CreateIntegration`
+
+`CreateTenantDatabase`, `DeleteBlueGreenDeployment`, `DeleteCustomDBEngineVersion`, `DeleteDBClusterAutomatedBackup`, `DeleteDBClusterEndpoint`, `DeleteDBClusterParameterGroup`, `DeleteDBClusterSnapshot`, `DeleteDBInstanceAutomatedBackup`
+
+`DeleteDBProxy`, `DeleteDBProxyEndpoint`, `DeleteDBSecurityGroup`, `DeleteDBShardGroup`, `DeleteEventSubscription`, `DeleteGlobalCluster`, `DeleteIntegration`, `DeleteTenantDatabase`
+
+`DeregisterDBProxyTargets`, `DescribeAccountAttributes`, `DescribeBlueGreenDeployments`, `DescribeCertificates`, `DescribeDBClusterAutomatedBackups`, `DescribeDBClusterBacktracks`, `DescribeDBClusterEndpoints`, `DescribeDBClusterParameterGroups`
+
+`DescribeDBClusterParameters`, `DescribeDBClusterSnapshotAttributes`, `DescribeDBClusterSnapshots`, `DescribeDBEngineVersions`, `DescribeDBLogFiles`, `DescribeDBProxies`, `DescribeDBProxyEndpoints`, `DescribeDBProxyTargetGroups`
+
+`DescribeDBProxyTargets`, `DescribeDBRecommendations`, `DescribeDBSecurityGroups`, `DescribeDBShardGroups`, `DescribeDBSnapshotAttributes`, `DescribeDBSnapshotTenantDatabases`, `DescribeEngineDefaultClusterParameters`, `DescribeEngineDefaultParameters`
+
+`DescribeEventCategories`, `DescribeEventSubscriptions`, `DescribeExportTasks`, `DescribeGlobalClusters`, `DescribeIntegrations`, `DescribeOptionGroupOptions`, `DescribeOrderableDBInstanceOptions`, `DescribePendingMaintenanceActions`
+
+`DescribeReservedDBInstances`, `DescribeReservedDBInstancesOfferings`, `DescribeSourceRegions`, `DescribeTenantDatabases`, `DescribeValidDBInstanceModifications`, `DisableHttpEndpoint`, `DownloadDBLogFilePortion`, `EnableHttpEndpoint`
+
+`FailoverGlobalCluster`, `ModifyActivityStream`, `ModifyCertificates`, `ModifyCurrentDBClusterCapacity`, `ModifyCustomDBEngineVersion`, `ModifyDBClusterEndpoint`, `ModifyDBClusterParameterGroup`, `ModifyDBClusterSnapshotAttribute`
+
+`ModifyDBProxy`, `ModifyDBProxyEndpoint`, `ModifyDBProxyTargetGroup`, `ModifyDBRecommendation`, `ModifyDBShardGroup`, `ModifyDBSnapshot`, `ModifyDBSnapshotAttribute`, `ModifyDBSubnetGroup`
+
+`ModifyEventSubscription`, `ModifyGlobalCluster`, `ModifyIntegration`, `ModifyTenantDatabase`, `PromoteReadReplicaDBCluster`, `PurchaseReservedDBInstancesOffering`, `RebootDBCluster`, `RebootDBShardGroup`
+
+`RegisterDBProxyTargets`, `RemoveFromGlobalCluster`, `RemoveRoleFromDBCluster`, `RemoveRoleFromDBInstance`, `RemoveSourceIdentifierFromSubscription`, `ResetDBClusterParameterGroup`, `ResetDBParameterGroup`, `RestoreDBClusterFromS3`
+
+`RestoreDBClusterFromSnapshot`, `RestoreDBClusterToPointInTime`, `RestoreDBInstanceFromS3`, `RevokeDBSecurityGroupIngress`, `StartActivityStream`, `StartDBCluster`, `StartDBInstanceAutomatedBackupsReplication`, `StartExportTask`
+
+`StopActivityStream`, `StopDBCluster`, `StopDBInstanceAutomatedBackupsReplication`, `SwitchoverBlueGreenDeployment`, `SwitchoverGlobalCluster`, `SwitchoverReadReplica`
+
+
+</details>
+
+<details><summary>Registered stubs (0)</summary>
+
+None.
+
+</details>
+
+<details><summary>Deliberately unsupported (12)</summary>
+
+`CreateDBCluster`, `CreateDBInstanceReadReplica`, `CreateOptionGroup`, `DeleteDBCluster`, `DeleteOptionGroup`, `DescribeDBClusters`, `DescribeOptionGroups`, `FailoverDBCluster`
+
+`ModifyDBCluster`, `ModifyOptionGroup`, `PromoteReadReplica`, `RestoreDBInstanceToPointInTime`
+
+
+</details>
+
+<details><summary>Registered outside the pinned model (4)</summary>
+
+`GetDBBootstrapConfig`, `PollDBCommands`, `RegisterDBInstance`, `SubmitDBStateChange`
+
 
 </details>
 

@@ -5,6 +5,7 @@ import (
 
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
+	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 )
 
 // ServiceOperationInventory describes the authoritative dispatch state for an
@@ -44,6 +45,10 @@ func AWSOperationInventory() map[string]ServiceOperationInventory {
 		},
 		"iam": {
 			Registered: mapKeys(iamActions),
+		},
+		"rds": {
+			Registered:  gateway_rds.ActionNames(),
+			Unsupported: gateway_rds.UnsupportedActionNames(),
 		},
 		"sts": {
 			Registered: mapKeys(stsActions),

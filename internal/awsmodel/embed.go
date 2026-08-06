@@ -16,6 +16,7 @@ var modelFiles = map[Service]string{
 	ECS:                    "models/apis/ecs/2014-11-13/api-2.json",
 	ElasticLoadBalancingV2: "models/apis/elasticloadbalancingv2/2015-12-01/api-2.json",
 	IAM:                    "models/apis/iam/2010-05-08/api-2.json",
+	RDS:                    "models/apis/rds/2014-10-31/api-2.json",
 	S3:                     "models/apis/s3/2006-03-01/api-2.json",
 	STS:                    "models/apis/sts/2011-06-15/api-2.json",
 }

@@ -23,6 +23,10 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 	require.NotContains(t, inventory["ecr"].Stubbed, "DescribeRepositories")
 	require.Contains(t, inventory["ecr"].Unsupported, "StartImageScan")
 
+	require.Contains(t, inventory["rds"].Registered, "CreateDBInstance")
+	require.NotContains(t, inventory["rds"].Unsupported, "CreateDBInstance")
+	require.Contains(t, inventory["rds"].Unsupported, "CreateDBCluster")
+
 	_, hasS3 := inventory["s3"]
 	require.False(t, hasS3, "S3 is delegated to Predastore, not dispatched here")
 }

@@ -29,6 +29,7 @@ const (
 	ECS                    Service = "ecs"
 	ElasticLoadBalancingV2 Service = "elasticloadbalancingv2"
 	IAM                    Service = "iam"
+	RDS                    Service = "rds"
 	S3                     Service = "s3"
 	STS                    Service = "sts"
 )

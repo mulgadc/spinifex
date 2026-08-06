@@ -212,18 +212,37 @@ test-actions:
 	@echo -e "\n....Running action tests...."
 	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
 
-# Shell suites + shellcheck for scripts/images/ helpers baked into system
-# images. Kept out of `preflight` (a dedicated CI job gates it on
-# scripts/images/** changes instead) so image-asset churn doesn't run on
-# every Go contributor's commit.
+# Shell suites + shellcheck for scripts/images/ and images/mkosi.profiles/
+# helpers baked into system images. Kept out of `preflight` (a dedicated CI
+# job gates it on scripts/images/**+images/mkosi.profiles/** changes instead)
+# so image-asset churn doesn't run on every Go contributor's commit.
+#
+# images/mkosi.profiles/ ships scripts with no .sh suffix (mkosi's own
+# mkosi.*.chroot lifecycle hooks, and wrapper binaries like vllm-serve under
+# mkosi.extra/) so a plain `-name '*.sh'` glob silently skips exactly the
+# files most worth linting. Sources there are found by shebang instead of
+# name; this also means a profile that ships no scripts at all yields an
+# empty match rather than an error.
 test-images:
 	@echo -e "\n....Running scripts/images/**/*_test.sh...."
 	@for t in $$(find scripts/images -name '*_test.sh' | sort); do \
 		echo "-- $$t"; \
 		bash "$$t" || exit 1; \
 	done
+	@echo -e "\n....Running images/mkosi.profiles/**/*_test.sh...."
+	@for t in $$(find images/mkosi.profiles -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		bash "$$t" || exit 1; \
+	done
 	@echo -e "\n....Running shellcheck over scripts/images/**/*.sh...."
 	shellcheck -S warning $$(find scripts/images -name '*.sh' | sort)
+	@echo -e "\n....Running shellcheck over images/mkosi.profiles/** shell sources...."
+	@srcs="$$(grep -rlIE '^#!/bin/(bash|sh)' images/mkosi.profiles 2>/dev/null | sort)"; \
+	if [ -n "$$srcs" ]; then \
+		shellcheck -S warning $$srcs; \
+	else \
+		echo "  (no shell sources found under images/mkosi.profiles)"; \
+	fi
 	@echo "  test-images ok"
 
 # Check that new/changed code meets coverage threshold (runs tests first)

@@ -134,6 +134,8 @@ Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway do
 | `spx admin ochre endpoint list` | — | Lists every endpoint record with its state, instance ID and base URL. |
 | `spx admin ochre endpoint delete` | `--model-id` (required) | Moves a `READY` endpoint to `DRAINING` and tears its VM down, releasing the GPU. Idempotent: an already-absent endpoint reports success. |
 
+Self-hosted models are served from the `ubuntu-26.04-vllm-serving-x86_64` system image (`spx admin images import --name ubuntu-26.04-vllm-serving-x86_64`), built by `scripts/mkosi-build.sh --image ubuntu-vllm-serving` (`gpu-nvidia` + `vllm` profiles). It carries the tags `spinifex:managed-by=bedrock` and `spinifex:bedrock-role=vllm-serving`, which is what `LaunchServingVM` filters on rather than resolving by name. The image bakes vLLM's OpenAI-compatible server into a uv-managed venv — no Docker daemon, no runtime container pull — and boots `vllm-serve.service`, which waits for cloud-init's `/etc/conf.d/vllm-serve` handoff, resolves and mounts the endpoint's cloned weights volume read-only, then execs `vllm serve` on port 8000.
+
 ### EKS Control-Plane Disaster Recovery
 
 | Command | Flags | Description |

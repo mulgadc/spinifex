@@ -9,11 +9,17 @@ import (
 
 // defaultStartupTimeout bounds how long Ensure's launch goroutine polls a
 // freshly-launched serving VM's /v1/models endpoint before giving up and
-// reverting the record to ABSENT. PROVISIONAL: chosen conservatively for a
-// small model (Llama 3.2 1B) cold-booting a microVM plus vLLM's own weight
-// load; needs correcting against a real measurement on wattle once the model
-// actually runs there.
-const defaultStartupTimeout = 5 * time.Minute
+// reverting the record to ABSENT.
+//
+// Measured once, on the only GPU available to test on: Llama 3.2 1B on an
+// RTX A1000 reached "Application startup complete" 257.6s after launch, of
+// which 20.7s was guest boot and 26.3s a cold torch.compile. The former 5min
+// left ~42s of margin on the smallest model this platform can serve, so the
+// bound is set well clear of the one data point rather than close to it. A
+// larger card and a larger model are unmeasured, and the failure mode of too
+// low a value is a healthy endpoint torn down mid-start; too high only costs
+// a stuck launch more time to give up.
+const defaultStartupTimeout = 15 * time.Minute
 
 // readinessPollInterval is the spacing between /v1/models probes. Short
 // enough that a fast-booting VM isn't held back by the poll cadence, long

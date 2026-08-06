@@ -1,0 +1,126 @@
+#!/bin/bash
+set -euo pipefail
+
+# vllm postinst — bakes vLLM's OpenAI-compatible server into a uv-managed venv
+# and enables vllm-serve.service. A venv, not a container: a runtime `docker
+# pull vllm/vllm-openai` inside a guest is known-fatal on this platform (see
+# the viperblock write-plane-throughput investigation — it stalled indefinitely
+# and drove host load to ~124), and mkosi's unprivileged user-namespace build
+# has no daemon in the builder to pull into regardless. Baking the venv here
+# instead makes first boot a pure local read.
+#
+# The .chroot suffix means mkosi has already chrooted into the image root
+# before this runs, same as gpu-nvidia's postinst.
+
+VLLM_HOME=/opt/vllm
+
+# The exact CPython version vLLM's own wheels are built and tested against.
+# Ubuntu 26.04's system interpreter is newer than that range, and pinning
+# against a distro default that moves is exactly the drift the mkosi
+# migration exists to delete — uv fetches this standalone build instead, so
+# the interpreter is a build input, not a distro accident. Bumping this is a
+# deliberate edit, done alongside checking vLLM's published wheel matrix.
+readonly VLLM_PYTHON_VERSION="3.12.8"
+
+# uv's own version, not the Python or vllm it installs. Astral's installer
+# accepts a versioned URL, so this pin is the same "build input, not a distro
+# accident" guarantee as VLLM_PYTHON_VERSION above — an unpinned `install.sh`
+# would let the installer itself drift between two builds of the same commit.
+readonly UV_VERSION="0.12.1"
+
+# The vLLM release baked into the venv. Pinned for the same reason as the
+# CPython and uv versions above: two builds of the same commit must produce
+# the same image. Bumping this is a deliberate edit, done alongside checking
+# vLLM's published wheel matrix against VLLM_PYTHON_VERSION.
+readonly VLLM_VERSION="0.26.0"
+
+PYTHON_INSTALL_DIR="${VLLM_HOME}/python"
+VENV_DIR="${VLLM_HOME}/venv"
+
+mkdir -p "${VLLM_HOME}"
+
+# uv itself is not in the Ubuntu archive, so its own installer is used rather
+# than Packages=. UV_NO_MODIFY_PATH because there is no interactive shell
+# profile in a chroot for it to edit, and UV_INSTALL_DIR pins the destination.
+UV=/usr/local/bin/uv
+curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" |
+    env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+# Checked as a path, not via `command -v`: mkosi runs this postinst with a
+# minimal PATH that need not carry /usr/local/bin, so a PATH lookup reports a
+# perfectly good install as missing. Every call below names ${UV} for the
+# same reason.
+[ -x "${UV}" ] || {
+    echo "ERROR: uv installer completed but ${UV} is not executable" >&2
+    exit 1
+}
+
+echo "[vllm] installing CPython ${VLLM_PYTHON_VERSION} via uv"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" python install "${VLLM_PYTHON_VERSION}"
+
+echo "[vllm] creating venv at ${VENV_DIR}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" venv --python "${VLLM_PYTHON_VERSION}" "${VENV_DIR}"
+
+echo "[vllm] installing vllm ${VLLM_VERSION} into ${VENV_DIR}"
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV}" pip install --python "${VENV_DIR}/bin/python" "vllm==${VLLM_VERSION}"
+
+# The one thing this script must not do silently: ship an image whose venv
+# does not actually hold what was asked for. Checked via package metadata and
+# not by running `vllm --version`, which initialises device config and dies
+# with "Failed to infer device type" in a build sandbox that has no GPU —
+# importing vllm itself is out for the same reason.
+if [ ! -x "${VENV_DIR}/bin/vllm" ]; then
+    echo "ERROR: no vllm entrypoint in the baked venv at ${VENV_DIR}" >&2
+    exit 1
+fi
+installed_vllm="$("${VENV_DIR}/bin/python" -c \
+    'import importlib.metadata as m; print(m.version("vllm"))')"
+if [ "${installed_vllm}" != "${VLLM_VERSION}" ]; then
+    echo "ERROR: venv holds vllm ${installed_vllm}, expected the pinned ${VLLM_VERSION}" >&2
+    exit 1
+fi
+echo "[vllm] verified vllm ${installed_vllm} in ${VENV_DIR}"
+
+# 0644 in git, and ExtraTrees= preserves source mode — without this the unit
+# dies with EACCES on first boot and nowhere earlier.
+chmod 0755 /usr/local/sbin/vllm-serve
+
+systemctl enable vllm-serve.service
+
+# Without this the failure is a runtime one, minutes into a GPU cold start:
+# FlashInfer JIT-builds its sampling module, finds no nvcc, and the endpoint
+# never reaches READY.
+UNIT=/etc/systemd/system/vllm-serve.service
+grep -q '^Environment=VLLM_USE_FLASHINFER_SAMPLER=0$' "${UNIT}" || {
+    echo "ERROR: ${UNIT} does not disable the FlashInfer sampler; this image ships no CUDA toolkit for its JIT" >&2
+    exit 1
+}
+
+# Assert the MERGED result, not the file's presence: the pin already existed at
+# a 90- prefix in the EKS image and did nothing there, shadowed by 90_dpkg.cfg.
+# read_conf_with_confd is the same function cloud-init calls at boot.
+command -v python3 >/dev/null || {
+    echo "ERROR: python3 missing — cannot verify the merged cloud-init datasource_list" >&2
+    exit 1
+}
+python3 - <<'PY'
+import sys
+
+try:
+    from cloudinit import util
+except ImportError as e:
+    sys.exit(f"ERROR: cloudinit python module unavailable ({e}) — cloud-init is expected to be installed by now")
+
+cfg = util.read_conf_with_confd("/etc/cloud/cloud.cfg")
+got = cfg.get("datasource_list")
+want = ["Ec2", "None"]
+if got != want:
+    sys.exit(
+        "ERROR: merged cloud-init datasource_list is "
+        f"{got!r}, expected {want!r} — the 99-spinifex-ec2-imds.cfg pin is "
+        "being shadowed by another cloud.cfg.d drop-in (check sort order: "
+        "read_conf_d() applies the directory in REVERSE, first source wins)"
+    )
+print(f"[vllm] cloud-init datasource_list assertion passed: {got!r}")
+PY
+
+echo "vllm postinst complete: CPython ${VLLM_PYTHON_VERSION} / uv ${UV_VERSION} / vllm ${VLLM_VERSION} venv baked at ${VENV_DIR}, vllm-serve.service enabled"

@@ -54,6 +54,10 @@ image_profiles() {
     case "$1" in
         ubuntu-gpu-nvidia)     echo "gpu-nvidia docker" ;;
         ubuntu-gpu-amd)        echo "gpu-amd docker" ;;
+        # docker is deliberately absent: the serving VM runs vLLM as a systemd
+        # service and never touches a Docker daemon. vllm comes second because
+        # it stacks onto the GPU driver gpu-nvidia installs.
+        ubuntu-vllm-serving)   echo "gpu-nvidia vllm" ;;
         spinifex-eks-node-gpu) echo "gpu-nvidia eks-common eks-agent" ;;
         spinifex-ecs-node-gpu) echo "gpu-nvidia ecs" ;;
         # The CPU variant is the GPU one minus gpu-nvidia. ecs pulls nothing
@@ -236,7 +240,7 @@ if [[ -n "${IMAGE}" ]]; then
     fi
     if ! expanded="$(image_profiles "${IMAGE}")"; then
         echo "mkosi-build: unknown image: ${IMAGE}" >&2
-        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd spinifex-eks-node-gpu spinifex-ecs-node-gpu spinifex-ecs-node spinifex-eks-node" >&2
+        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd ubuntu-vllm-serving spinifex-eks-node-gpu spinifex-ecs-node-gpu spinifex-ecs-node spinifex-eks-node" >&2
         exit 2
     fi
     read -r -a PROFILES <<< "${expanded}"

@@ -23,14 +23,15 @@ type invokeStreamSource interface {
 // InvokeModelWithResponseStream is the bedrock-runtime
 // InvokeModelWithResponseStream entry point used by the gateway route table.
 // Unlike the JSON-dispatch handlers it owns w directly: a pre-stream failure
-// (unknown model, unresolved credential, upstream connect error) returns an
-// awserrors code for the normal ErrorHandler envelope. Once the first frame
-// is written it always returns nil — any later failure is an in-band
-// exception event, since the HTTP status can no longer change.
+// (unknown model, ungranted model, unresolved credential, upstream connect
+// error) returns an awserrors code for the normal ErrorHandler envelope. Once
+// the first frame is written it always returns nil — any later failure is an
+// in-band exception event, since the HTTP status can no longer change.
 // requestContentType is the client's declared Content-Type, logged only.
-// resolver, endpointResolver, and recorder may be nil; NewInvokeStreamRouter
-// and the internal NoopRecorder fallback keep this call safe either way.
-func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder) error {
+// resolver, endpointResolver, recorder and access may be nil;
+// NewInvokeStreamRouter and the internal NoopRecorder fallback keep this call
+// safe either way.
+func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
@@ -39,7 +40,7 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 
 	entry, _ := lookupCatalogEntry(modelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
 
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
+	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
 	if err != nil {
 		return err
 	}

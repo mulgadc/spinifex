@@ -26,23 +26,25 @@ type bedrockRoute struct {
 // bedrockRouteHandler invokes a per-action bedrock (control-plane) gateway
 // function. params holds the regex capture groups, PathUnescape'd. resolver
 // is gw.bedrockResolver(): the configured credential store, or a no-op
-// fallback. loggingStore is gw.bedrockLoggingConfigStore().
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore) (any, error)
+// fallback. loggingStore is gw.bedrockLoggingConfigStore(). access is
+// gw.bedrockAccessResolver(): the configured grant store, or a deny-all
+// fallback.
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error)
 
 // bedrockRoutes is the dispatch table. More-specific paths must precede
 // less-specific ones with the same prefix so the regex matcher picks the
 // deeper route first.
 var bedrockRoutes = []bedrockRoute{
 	{"GET", regexp.MustCompile(`^/foundation-models$`), "ListFoundationModels",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore) (any, error) {
-			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, new(bedrock.ListFoundationModelsInput))
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error) {
+			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
 		}},
 	{"GET", regexp.MustCompile(`^/foundation-models/([^/]+)$`), "GetFoundationModel",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore) (any, error) {
-			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0])
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error) {
+			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0], access)
 		}},
 	{"PUT", regexp.MustCompile(`^/logging/modelinvocations$`), "PutModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
 			input := new(bedrock.PutModelInvocationLoggingConfigurationInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -52,11 +54,11 @@ var bedrockRoutes = []bedrockRoute{
 			return gateway_bedrock.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
 		}},
 	{"GET", regexp.MustCompile(`^/logging/modelinvocations$`), "GetModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
 			return gateway_bedrock.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
 		}},
 	{"DELETE", regexp.MustCompile(`^/logging/modelinvocations$`), "DeleteModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
 			return gateway_bedrock.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
 		}},
 }
@@ -121,7 +123,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver())
 	if err != nil {
 		return err
 	}
@@ -158,6 +160,17 @@ func (gw *GatewayConfig) bedrockRecorder() gateway_bedrock.Recorder {
 		return gw.BedrockRecorder
 	}
 	return gateway_bedrock.NoopRecorder
+}
+
+// bedrockAccessResolver returns gw.BedrockAccess as an AccessResolver, or the
+// deny-all fallback when no grant store is configured. Model access is
+// deny-by-default, so an unconfigured gateway advertises and serves no models
+// rather than all of them.
+func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver {
+	if gw.BedrockAccess != nil {
+		return gw.BedrockAccess
+	}
+	return gateway_bedrock.DenyAllAccessResolver
 }
 
 // bedrockEndpointResolver returns an EndpointResolver over the configured

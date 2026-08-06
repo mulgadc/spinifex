@@ -308,6 +308,25 @@ func launchService(config *config.ClusterConfig) error {
 	// are called from gateway/bedrock.go's fixed-arity route table.
 	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
 
+	// Bedrock model access: grants live in the bedrock-model-access KV bucket
+	// and are deny-by-default, so a fresh deployment serves no models until an
+	// operator grants them (spx admin ochre access grant).
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, len(config.Nodes))
+
+	// Deny-by-default would otherwise leave a fresh install with a catalog
+	// nobody can see, so seed the platform admin account — the operator's own
+	// account, created by spx admin init — with the full catalog on first
+	// start. Tenant accounts are unaffected and still begin with no access.
+	// Best-effort: the gateway must serve even if this fails, and because the
+	// marker is written only on success, the next start retries.
+	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), admin.DefaultAccountID(), gateway_bedrock.CatalogModelIDs()); err != nil {
+		slog.Warn("Bedrock model access: seeding admin grants failed, will retry on next start",
+			"accountID", admin.DefaultAccountID(), "err", err)
+	} else if seeded {
+		slog.Info("Bedrock model access: seeded admin account with the model catalog",
+			"accountID", admin.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
+	}
+
 	// Bedrock self-host endpoints are pinned, so their
 	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
 	// is a comma-separated list of modelId=baseURL pairs.
@@ -364,6 +383,8 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockEndpoints:     bedrockEndpoints,
 		BedrockLoggingConfig: bedrockLoggingConfig,
 		BedrockRecorder:      bedrockRecorder,
+		BedrockAccess:        bedrockAccess,
+		BedrockAccessAdmin:   bedrockAccess,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

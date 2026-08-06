@@ -1000,3 +1000,161 @@ func TestRegisterWeightsSnapshot_WriteFailureSurfaces(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "register snapshot metadata")
 }
+
+// ochreFlagCmd builds a bare command carrying the model-selection flags, so
+// the resolver can be exercised without the cluster connection the real
+// subcommands make.
+func ochreFlagCmd(t *testing.T, modelID string, allModels bool) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.Flags().String("model-id", modelID, "")
+	cmd.Flags().Bool("all-models", allModels, "")
+	return cmd
+}
+
+func TestOchreTargetModels_SingleModel(t *testing.T) {
+	models, err := ochreTargetModels(ochreFlagCmd(t, selfHostModelID, false))
+	require.NoError(t, err)
+	assert.Equal(t, []string{selfHostModelID}, models)
+}
+
+func TestOchreTargetModels_AllModels(t *testing.T) {
+	models, err := ochreTargetModels(ochreFlagCmd(t, "", true))
+	require.NoError(t, err)
+	assert.Equal(t, gateway_bedrock.CatalogModelIDs(), models)
+	assert.NotEmpty(t, models)
+}
+
+// TestOchreTargetModels_NeitherFlag pins the refusal to guess: silently
+// defaulting to the whole catalog would over-grant on a typo.
+func TestOchreTargetModels_NeitherFlag(t *testing.T) {
+	_, err := ochreTargetModels(ochreFlagCmd(t, "", false))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--model-id or --all-models")
+}
+
+func TestOchreTargetModels_BothFlags(t *testing.T) {
+	_, err := ochreTargetModels(ochreFlagCmd(t, selfHostModelID, true))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+// ochreAccessCmd builds a command carrying the access subcommands' full flag
+// set, so the grant/revoke/list runners can be driven without the cobra
+// command tree.
+func ochreAccessCmd(t *testing.T, accountID, modelID string, allModels bool) *cobra.Command {
+	t.Helper()
+	cmd := ochreFlagCmd(t, modelID, allModels)
+	cmd.Flags().String("account-id", accountID, "")
+	return cmd
+}
+
+const accessTestAccount = "000000000001"
+
+// stubAccessConnect dials a fresh connection per call, because each access
+// runner closes the connection it was handed; a single shared one would leave
+// the next runner in a sequence talking to a closed conn.
+func stubAccessConnect(t *testing.T, clientURL string) {
+	t.Helper()
+	orig := loadConfigAndConnectFn
+	t.Cleanup(func() { loadConfigAndConnectFn = orig })
+	loadConfigAndConnectFn = func() (*config.ClusterConfig, *nats.Conn, error) {
+		nc, err := nats.Connect(clientURL)
+		if err != nil {
+			return nil, nil, err
+		}
+		t.Cleanup(nc.Close)
+		return fakeClusterConfig(), nc, nil
+	}
+}
+
+// TestRunOchreAccessChange_ModelFlagFailureExits1 pins that the flag refusal
+// happens before any cluster connection: an operator who mistypes a flag gets
+// told so without a NATS dial.
+func TestRunOchreAccessChange_ModelFlagFailureExits1(t *testing.T) {
+	stubConnect(t, nil, nil, errors.New("connect must not be reached"))
+
+	cmd := ochreAccessCmd(t, accessTestAccount, "", false)
+	code := withOchreExitCapture(t, func() { runOchreAccessGrant(cmd, nil) })
+	assert.Equal(t, 1, code)
+}
+
+func TestRunOchreAccessGrant_ConnectFailureExits1(t *testing.T) {
+	stubConnect(t, nil, nil, errors.New("dial failed"))
+
+	cmd := ochreAccessCmd(t, accessTestAccount, selfHostModelID, false)
+	code := withOchreExitCapture(t, func() { runOchreAccessGrant(cmd, nil) })
+	assert.Equal(t, 1, code)
+}
+
+func TestRunOchreAccessList_ConnectFailureExits1(t *testing.T) {
+	stubConnect(t, nil, nil, errors.New("dial failed"))
+
+	cmd := ochreAccessCmd(t, accessTestAccount, "", false)
+	code := withOchreExitCapture(t, func() { runOchreAccessList(cmd, nil) })
+	assert.Equal(t, 1, code)
+}
+
+// TestRunOchreAccessGrantListRevoke drives the three runners in sequence
+// against an embedded JetStream server, so the CLI is checked against the same
+// grant store the gateway resolves against rather than a fake.
+func TestRunOchreAccessGrantListRevoke(t *testing.T) {
+	srv, _, _ := testutil.StartTestJetStream(t)
+	stubAccessConnect(t, srv.ClientURL())
+
+	grantCmd := ochreAccessCmd(t, accessTestAccount, selfHostModelID, false)
+	out := captureStdout(t, func() { runOchreAccessGrant(grantCmd, nil) })
+	assert.Contains(t, out, "Granted")
+	assert.Contains(t, out, selfHostModelID)
+
+	listCmd := ochreAccessCmd(t, accessTestAccount, "", false)
+	out = captureStdout(t, func() { runOchreAccessList(listCmd, nil) })
+	assert.Contains(t, out, selfHostModelID)
+	assert.NotContains(t, out, providerModelID, "list must show only the granted model")
+
+	revokeCmd := ochreAccessCmd(t, accessTestAccount, selfHostModelID, false)
+	out = captureStdout(t, func() { runOchreAccessRevoke(revokeCmd, nil) })
+	assert.Contains(t, out, "Revoked")
+
+	out = captureStdout(t, func() { runOchreAccessList(listCmd, nil) })
+	assert.Contains(t, out, "no model grants")
+}
+
+// TestRunOchreAccessGrant_AllModelsGrantsWholeCatalog covers the --all-models
+// fan-out, which is what provisioning uses.
+func TestRunOchreAccessGrant_AllModelsGrantsWholeCatalog(t *testing.T) {
+	srv, _, _ := testutil.StartTestJetStream(t)
+	stubAccessConnect(t, srv.ClientURL())
+
+	grantCmd := ochreAccessCmd(t, accessTestAccount, "", true)
+	captureStdout(t, func() { runOchreAccessGrant(grantCmd, nil) })
+
+	listCmd := ochreAccessCmd(t, accessTestAccount, "", false)
+	out := captureStdout(t, func() { runOchreAccessList(listCmd, nil) })
+	for _, modelID := range gateway_bedrock.CatalogModelIDs() {
+		assert.Contains(t, out, modelID)
+	}
+}
+
+// TestRunOchreAccessList_OtherAccountSeesNothing is the deny-by-default rule
+// as an operator observes it: an account nobody granted has an empty listing.
+func TestRunOchreAccessList_OtherAccountSeesNothing(t *testing.T) {
+	srv, _, _ := testutil.StartTestJetStream(t)
+	stubAccessConnect(t, srv.ClientURL())
+
+	grantCmd := ochreAccessCmd(t, accessTestAccount, selfHostModelID, false)
+	captureStdout(t, func() { runOchreAccessGrant(grantCmd, nil) })
+
+	listCmd := ochreAccessCmd(t, "000000000002", "", false)
+	out := captureStdout(t, func() { runOchreAccessList(listCmd, nil) })
+	assert.Contains(t, out, "no model grants")
+}
+
+// TestRunOchreModels_PrintsSortedCatalog checks the listing operators consult
+// before granting: every catalog ID, one per line.
+func TestRunOchreModels_PrintsSortedCatalog(t *testing.T) {
+	out := captureStdout(t, func() { runOchreModels(nil, nil) })
+	for _, modelID := range gateway_bedrock.CatalogModelIDs() {
+		assert.Contains(t, out, modelID)
+	}
+}

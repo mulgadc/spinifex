@@ -8,16 +8,20 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
 )
 
 // spinifexAdminActions lists actions that require admin account access.
 var spinifexAdminActions = map[string]bool{
-	"GetVersion":       true,
-	"GetNodes":         true,
-	"GetVMs":           true,
-	"GetStorageStatus": true,
-	"PromoteImage":     true,
+	"GetVersion":        true,
+	"GetNodes":          true,
+	"GetVMs":            true,
+	"GetStorageStatus":  true,
+	"PromoteImage":      true,
+	"GrantModelAccess":  true,
+	"RevokeModelAccess": true,
+	"ListModelAccess":   true,
 }
 
 func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request) error {
@@ -79,6 +83,34 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 			return errors.New(awserrors.ErrorMissingParameter)
 		}
 		output, err = gateway_spx.PromoteImage(ctx, gw.NATSConn, imageID, accountID)
+	case "GrantModelAccess", "RevokeModelAccess":
+		// Grants are gateway-owned KV state, like the bedrock credential store,
+		// so these need no NATS hop: the gateway writes the bucket it reads.
+		if gw.BedrockAccessAdmin == nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		targetAccount, modelID := queryArgs["AccountId"], queryArgs["ModelId"]
+		if targetAccount == "" || modelID == "" {
+			return errors.New(awserrors.ErrorMissingParameter)
+		}
+		if action == "GrantModelAccess" {
+			err = gw.BedrockAccessAdmin.Grant(ctx, targetAccount, modelID)
+		} else {
+			err = gw.BedrockAccessAdmin.Revoke(ctx, targetAccount, modelID)
+		}
+		output = gateway_bedrock.ModelAccessChange{AccountID: targetAccount, ModelID: modelID}
+	case "ListModelAccess":
+		if gw.BedrockAccessAdmin == nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		targetAccount := queryArgs["AccountId"]
+		if targetAccount == "" {
+			return errors.New(awserrors.ErrorMissingParameter)
+		}
+		var models []string
+		if models, err = gw.BedrockAccessAdmin.List(ctx, targetAccount); err == nil {
+			output = gateway_bedrock.ModelAccessList{AccountID: targetAccount, ModelIDs: models}
+		}
 	default:
 		return errors.New(awserrors.ErrorInvalidAction)
 	}

@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"context"
 	"testing"
+
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,4 +48,38 @@ func TestLookupBedrockRuntimeAction_UnknownReturnsFalse(t *testing.T) {
 	_, _, handler, ok := lookupBedrockRuntimeAction("GET", "/model/foo/converse")
 	assert.False(t, ok)
 	assert.Nil(t, handler)
+}
+
+// stubEndpointResolver stands in for the registry-backed resolver, so the
+// preference test needs no NATS connection.
+type stubEndpointResolver struct{ baseURL string }
+
+var _ gateway_bedrock.EndpointResolver = stubEndpointResolver{}
+
+func (s stubEndpointResolver) Endpoint(context.Context, string) (string, bool, error) {
+	return s.baseURL, s.baseURL != "", nil
+}
+
+// TestBedrockEndpointResolver_PrefersDynamic pins the wiring the whole
+// dynamic-resolution change hangs off: with a registry resolver configured the
+// gateway must use it, since it is the only path that can request a launch.
+func TestBedrockEndpointResolver_PrefersDynamic(t *testing.T) {
+	gw := &GatewayConfig{
+		BedrockEndpoints:        map[string]string{"m": "http://static:8000"},
+		BedrockEndpointResolver: stubEndpointResolver{baseURL: "http://dynamic:8000"},
+	}
+	baseURL, ok, err := gw.bedrockEndpointResolver().Endpoint(context.Background(), "m")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "http://dynamic:8000", baseURL)
+}
+
+// TestBedrockEndpointResolver_FallsBackToStatic keeps every gateway built
+// without a registry resolver (including the tests) on its pinned map.
+func TestBedrockEndpointResolver_FallsBackToStatic(t *testing.T) {
+	gw := &GatewayConfig{BedrockEndpoints: map[string]string{"m": "http://static:8000"}}
+	baseURL, ok, err := gw.bedrockEndpointResolver().Endpoint(context.Background(), "m")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "http://static:8000", baseURL)
 }

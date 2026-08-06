@@ -21,6 +21,7 @@ import (
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
@@ -327,10 +328,12 @@ func launchService(config *config.ClusterConfig) error {
 			"accountID", admin.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
 	}
 
-	// Bedrock self-host endpoints are pinned, so their
-	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
-	// is a comma-separated list of modelId=baseURL pairs.
+	// Bedrock self-host endpoints: OCHRE_VLLM_ENDPOINTS pins a modelId=baseURL
+	// pair to a fixed address, and anything not pinned resolves through the
+	// daemon's endpoint registry, which launches a serving VM on first use.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
+	bedrockEndpointResolver := handlers_bedrock.NewDynamicEndpointResolver(
+		handlers_bedrock.NewNATSEndpointService(natsConn), bedrockEndpoints, 0)
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
@@ -362,29 +365,30 @@ func launchService(config *config.ClusterConfig) error {
 	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
 
 	gw := gateway.GatewayConfig{
-		Debug:                nodeConfig.AWSGW.Debug,
-		DisableLogging:       false,
-		NATSConn:             natsConn,
-		Config:               nodeConfig.AWSGW.Config,
-		ExpectedNodes:        len(config.Nodes),
-		Region:               nodeConfig.Region,
-		InternalSuffix:       config.AWS.InternalSuffix,
-		RegistryPort:         registryPort,
-		RegistryHost:         registryHost,
-		AZ:                   nodeConfig.AZ,
-		IAMService:           iamService,
-		STSService:           stsService,
-		Version:              version,
-		Commit:               commit,
-		ECRRegistry:          ecrRegistry,
-		ECRTokenIssuer:       gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier:     gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials:   bedrockCredentials,
-		BedrockEndpoints:     bedrockEndpoints,
-		BedrockLoggingConfig: bedrockLoggingConfig,
-		BedrockRecorder:      bedrockRecorder,
-		BedrockAccess:        bedrockAccess,
-		BedrockAccessAdmin:   bedrockAccess,
+		Debug:                   nodeConfig.AWSGW.Debug,
+		DisableLogging:          false,
+		NATSConn:                natsConn,
+		Config:                  nodeConfig.AWSGW.Config,
+		ExpectedNodes:           len(config.Nodes),
+		Region:                  nodeConfig.Region,
+		InternalSuffix:          config.AWS.InternalSuffix,
+		RegistryPort:            registryPort,
+		RegistryHost:            registryHost,
+		AZ:                      nodeConfig.AZ,
+		IAMService:              iamService,
+		STSService:              stsService,
+		Version:                 version,
+		Commit:                  commit,
+		ECRRegistry:             ecrRegistry,
+		ECRTokenIssuer:          gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:        gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		BedrockCredentials:      bedrockCredentials,
+		BedrockEndpoints:        bedrockEndpoints,
+		BedrockEndpointResolver: bedrockEndpointResolver,
+		BedrockLoggingConfig:    bedrockLoggingConfig,
+		BedrockRecorder:         bedrockRecorder,
+		BedrockAccess:           bedrockAccess,
+		BedrockAccessAdmin:      bedrockAccess,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -87,7 +89,7 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 
 	preview := &RemovePreview{ImageID: imageID}
 
-	meta, configErr := readAMIConfig(store, bucket, imageID)
+	meta, _, configErr := readAMI(store, bucket, imageID)
 	switch {
 	case configErr == nil:
 		preview.ConfigPresent = true
@@ -170,12 +172,32 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 		volSnapRefs[s] = true
 	}
 
-	// Pass 2: volumes (vol-*/config.json) whose SnapshotID matches.
-	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "vol-") {
+	// Pass 2: volumes whose SnapshotID matches, from the union of ebsmetadata
+	// volume documents (provider-managed, no vol-<id>/config.json exists) and
+	// legacy vol-<id>/config.json — same shape as pass 3's AMI union below.
+	// Documents already carry SnapshotID, so no second read is needed for
+	// them; only IDs found solely via the legacy prefix scan fall through to
+	// readVolumeConfig, preserving the existing fail-closed-on-transport-error
+	// behavior the deletion walk depends on.
+	volDocs, err := ebsmetadata.NewStore(store, bucket).ListVolumes(context.Background())
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list ebsmetadata volumes: %w", err)
+	}
+	documentedVols := make(map[string]bool, len(volDocs))
+	for _, v := range volDocs {
+		documentedVols[v.VolumeID] = true
+		if volSnapRefs[v.SnapshotID] {
+			deps.Volumes = append(deps.Volumes, v.VolumeID)
+		}
+	}
+	legacyVolIDs, err := ebsmetadata.LegacyPrefixIDs(context.Background(), store, bucket, "vol-", "-efi", "-cloudinit")
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list legacy volume prefixes: %w", err)
+	}
+	for _, volID := range legacyVolIDs {
+		if documentedVols[volID] {
 			continue
 		}
-		volID := strings.TrimSuffix(p, "/")
 		cfg, err := readVolumeConfig(store, bucket, volID)
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, errCorruptVolumeConfig) {
@@ -188,17 +210,29 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 		}
 	}
 
-	// Pass 3: AMIs (ami-*/config.json) whose SnapshotID is a derived snap.
-	// Skip the target AMI itself.
+	// Pass 3: AMIs whose SnapshotID is a derived snap, skipping the target AMI
+	// itself. Candidates are the union of ami-* prefixes (legacy/embedded) and
+	// ebsmetadata AMI documents (provider path) — a provider-managed AMI may
+	// have no ami-<id>/ prefix at all, so the prefix scan alone would miss it.
+	amiIDs := map[string]bool{}
 	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "ami-") {
-			continue
+		if strings.HasPrefix(p, "ami-") {
+			amiIDs[strings.TrimSuffix(p, "/")] = true
 		}
-		otherAMI := strings.TrimSuffix(p, "/")
+	}
+	docAMIs, err := ebsmetadata.NewStore(store, bucket).ListAMIs(context.Background())
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list ebsmetadata AMIs: %w", err)
+	}
+	for _, a := range docAMIs {
+		amiIDs[a.ImageID] = true
+	}
+
+	for otherAMI := range amiIDs {
 		if otherAMI == imageID {
 			continue
 		}
-		meta, err := readAMIConfig(store, bucket, otherAMI)
+		meta, _, err := readAMI(store, bucket, otherAMI)
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_image.ErrCorruptAMIConfig) {
 				continue
@@ -221,7 +255,7 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, configErr := readAMIConfig(store, bucket, opts.ImageID)
+	meta, _, configErr := readAMI(store, bucket, opts.ImageID)
 	configMissing := objectstore.IsNoSuchKeyError(configErr)
 	configCorrupt := errors.Is(configErr, handlers_ec2_image.ErrCorruptAMIConfig)
 	switch {
@@ -283,6 +317,15 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 	result.ObjectsDeleted += n
 	result.BytesDeleted += b
 
+	// Step 4: best-effort drop the ebsmetadata document too. The provider
+	// path never writes config.json, so without this an ebsmetadata-only
+	// AMI's document would survive steps 1-3 and keep DescribeImages
+	// reporting an AMI whose blocks are already gone. Deleting a key that
+	// was never written is a no-op, so this is safe for legacy-only AMIs.
+	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(context.Background(), opts.ImageID); err != nil {
+		slog.Warn("RemoveSystemImage: failed to delete ebsmetadata document", "imageId", opts.ImageID, "err", err)
+	}
+
 	slog.Info("RemoveSystemImage completed",
 		"imageId", opts.ImageID,
 		"objectsDeleted", result.ObjectsDeleted,
@@ -328,6 +371,23 @@ func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viper
 		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", handlers_ec2_image.ErrCorruptAMIConfig, key, err)
 	}
 	return state.VolumeConfig.AMIMetadata, nil
+}
+
+// readAMI resolves an AMI's metadata regardless of which EBS provider wrote
+// it: an ebsmetadata document (the provider path's only representation)
+// takes precedence over readAMIConfig's legacy config.json, which the
+// provider path never writes. isDocument reports which representation was
+// found, so callers know where a write-back or delete belongs.
+func readAMI(store objectstore.ObjectStore, bucket, imageID string) (meta viperblock.AMIMetadata, isDocument bool, err error) {
+	doc, docErr := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
+	if docErr == nil {
+		return vblegacy.AMIFromDocument(doc), true, nil
+	}
+	if !objectstore.IsNoSuchKeyError(docErr) {
+		return viperblock.AMIMetadata{}, false, docErr
+	}
+	meta, err = readAMIConfig(store, bucket, imageID)
+	return meta, false, err
 }
 
 // errCorruptVolumeConfig distinguishes an unparse-able config (walk continues)

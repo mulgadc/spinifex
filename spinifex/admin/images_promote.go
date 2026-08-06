@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -49,7 +51,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, err := readAMIConfig(store, bucket, opts.ImageID)
+	meta, isDocument, err := readAMI(store, bucket, opts.ImageID)
 	switch {
 	case err == nil:
 		// ok
@@ -69,7 +71,14 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 	prev := meta.ImageOwnerAlias
 	meta.ImageOwnerAlias = SystemOwnerAlias
 
-	if err := writeAMIConfig(store, bucket, opts.ImageID, meta); err != nil {
+	// Write back to whichever representation the AMI was read from, so a
+	// provider-managed AMI never gains a legacy config.json.
+	if isDocument {
+		err = ebsmetadata.NewStore(store, bucket).PutAMI(context.Background(), vblegacy.AMIToDocument(meta))
+	} else {
+		err = writeAMIConfig(store, bucket, opts.ImageID, meta)
+	}
+	if err != nil {
 		slog.Error("PromoteSystemImage: write AMI config", "imageId", opts.ImageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -102,7 +111,7 @@ func writeAMIConfig(store objectstore.ObjectStore, bucket, imageID string, meta 
 // GetAMIMetadata reads and returns the AMIMetadata for the given image ID.
 // Returns ErrorInvalidAMIIDNotFound for missing or corrupt configs.
 func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (viperblock.AMIMetadata, error) {
-	meta, err := readAMIConfig(store, bucket, imageID)
+	meta, _, err := readAMI(store, bucket, imageID)
 	switch {
 	case err == nil:
 		return meta, nil

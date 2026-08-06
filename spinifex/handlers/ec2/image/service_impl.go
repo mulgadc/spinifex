@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
@@ -139,6 +140,10 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	if s.provider != nil {
+		return s.describeImagesProvider(ctx, input, accountID, parsedFilters)
+	}
+
 	// List all prefixes in the bucket (AMIs are stored as ami-<id>/ directories)
 	result, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.bucketName),
@@ -240,6 +245,11 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			continue
 		}
 
+		// ebsAMI is the control-plane view of the legacy AMIMetadata, used
+		// below so the ownership/visibility and block-device-mapping helpers
+		// are shared with the provider path and cannot diverge between them.
+		ebsAMI := vblegacy.AMIToDocument(amiMeta)
+
 		// Filter by ImageId if specified
 		if len(input.ImageIds) > 0 {
 			found := false
@@ -259,7 +269,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		amiOwner := amiMeta.ImageOwnerAlias
 		isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
 
-		if !callerCanReadAMI(amiMeta, accountID) {
+		if !callerCanReadAMI(ebsAMI, accountID) {
 			continue
 		}
 
@@ -323,7 +333,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 			BootMode:           aws.String(amiMeta.BootMode),
 		}
 
-		if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
+		if bdms := synthesizeRootBlockDeviceMapping(ebsAMI, encryptedAtRest); bdms != nil {
 			image.RootDeviceName = aws.String("/dev/sda1")
 			image.BlockDeviceMappings = bdms
 		}
@@ -359,6 +369,130 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 	return &ec2.DescribeImagesOutput{
 		Images: images,
 	}, nil
+}
+
+// describeImagesProvider is DescribeImages' provider-path branch: it
+// enumerates via Store.ListAMIs instead of the legacy ami-*/config.json
+// prefix scan, mirroring the volume service's DescribeVolumes/ListVolumes
+// split. The per-AMI filtering and ec2.Image construction intentionally
+// parallel the embedded loop above rather than sharing it, since the two
+// loops iterate different source types (ebsmetadata.AMI vs. a raw S3 scan).
+func (s *ImageServiceImpl) describeImagesProvider(ctx context.Context, input *ec2.DescribeImagesInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeImagesOutput, error) {
+	amis, err := s.metadata.ListAMIs(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeImages: failed to list AMIs", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	encryptedAtRest := s.clusterEncryptionEnabled()
+	var images []*ec2.Image
+
+	for _, amiMeta := range amis {
+		if amiMeta.ImageID == "" {
+			continue
+		}
+
+		if len(input.ImageIds) > 0 {
+			found := false
+			for _, filterID := range input.ImageIds {
+				if filterID != nil && *filterID == amiMeta.ImageID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		amiOwner := amiMeta.ImageOwnerAlias
+		isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
+
+		if !callerCanReadAMI(amiMeta, accountID) {
+			continue
+		}
+
+		if len(input.Owners) > 0 {
+			found := false
+			for _, owner := range input.Owners {
+				if owner == nil {
+					continue
+				}
+				switch *owner {
+				case "self":
+					if amiOwner == accountID {
+						found = true
+					}
+				default:
+					if amiOwner == *owner {
+						found = true
+					} else if isSystemAMI && *owner == utils.GlobalAccountID {
+						found = true
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		ownerID := amiOwner
+		if isSystemAMI {
+			ownerID = utils.GlobalAccountID
+		}
+
+		image := &ec2.Image{
+			ImageId:            aws.String(amiMeta.ImageID),
+			Name:               aws.String(amiMeta.Name),
+			Description:        aws.String(amiMeta.Description),
+			Architecture:       aws.String(amiMeta.Architecture),
+			PlatformDetails:    aws.String(amiMeta.PlatformDetails),
+			Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
+			CreationDate:       aws.String(amiMeta.CreationDate.Format("2006-01-02T15:04:05.000Z")),
+			RootDeviceType:     aws.String(amiMeta.RootDeviceType),
+			VirtualizationType: aws.String(amiMeta.Virtualization),
+			ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
+			OwnerId:            aws.String(ownerID),
+			Public:             aws.Bool(false),
+			State:              aws.String(amiImageState(amiMeta.State)),
+			ImageType:          aws.String("machine"),
+			Hypervisor:         aws.String("xen"),
+			BootMode:           aws.String(amiMeta.BootMode),
+		}
+
+		if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
+			image.RootDeviceName = aws.String("/dev/sda1")
+			image.BlockDeviceMappings = bdms
+		}
+
+		image.Tags = utils.MapToEC2Tags(amiMeta.Tags)
+
+		if len(parsedFilters) > 0 && !imageMatchesFilters(image, parsedFilters, amiMeta.Tags) {
+			continue
+		}
+
+		images = append(images, image)
+	}
+
+	if len(input.ImageIds) > 0 {
+		foundIDs := make(map[string]bool, len(images))
+		for _, img := range images {
+			if img.ImageId != nil {
+				foundIDs[*img.ImageId] = true
+			}
+		}
+		for _, reqID := range input.ImageIds {
+			if reqID != nil && !foundIDs[*reqID] {
+				return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+			}
+		}
+	}
+
+	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images), "provider", true)
+	return &ec2.DescribeImagesOutput{Images: images}, nil
 }
 
 // amiImageState maps AMIMetadata.State to the ec2.Image state string. An
@@ -485,7 +619,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	volumeSizeGiB := volumeConfig.VolumeMetadata.SizeGiB
 
 	// Step 3: Read source AMI config for architecture, platform, etc.
-	sourceAMI := viperblock.AMIMetadata{
+	sourceAMI := ebsmetadata.AMI{
 		Architecture:    "x86_64",
 		PlatformDetails: "Linux/UNIX",
 		Virtualization:  "hvm",
@@ -506,7 +640,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}
 
 	// Step 5: Build and store AMI config
-	meta := viperblock.AMIMetadata{
+	meta := ebsmetadata.AMI{
 		ImageID:         amiID,
 		Name:            name,
 		Description:     aws.StringValue(input.Description),
@@ -730,6 +864,19 @@ func (s *ImageServiceImpl) getVolumeConfig(ctx context.Context, volumeID string)
 // NoSuchKey is skipped (concurrent deregister race); any other read/decode
 // error is surfaced so we don't silently allow a duplicate.
 func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool, error) {
+	if s.provider != nil {
+		amis, err := s.metadata.ListAMIs(ctx)
+		if err != nil {
+			return false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
+		}
+		for _, ami := range amis {
+			if ami.Name == name {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
 	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.bucketName),
 		Prefix:    aws.String("ami-"),
@@ -779,35 +926,45 @@ func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool
 var ErrCorruptAMIConfig = errors.New("corrupt AMI config")
 
 // GetAMIConfig returns NoSuchKeyError if the AMI is missing, or an error
-// wrapping ErrCorruptAMIConfig on decode failure.
-func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (viperblock.AMIMetadata, error) {
+// wrapping ErrCorruptAMIConfig on decode failure (embedded path only — the
+// provider path's errors come from the metadata store instead).
+func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (ebsmetadata.AMI, error) {
+	if s.provider != nil {
+		return s.metadata.GetAMI(ctx, imageID)
+	}
+
 	configKey := fmt.Sprintf("%s/config.json", imageID)
 	result, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(configKey),
 	})
 	if err != nil {
-		return viperblock.AMIMetadata{}, err
+		return ebsmetadata.AMI{}, err
 	}
 	defer result.Body.Close()
 
 	body, err := io.ReadAll(result.Body)
 	if err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
+		return ebsmetadata.AMI{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
 	var vbState viperblock.VBState
 	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
+		return ebsmetadata.AMI{}, fmt.Errorf("%w: %s: %w", ErrCorruptAMIConfig, configKey, err)
 	}
-	return vbState.VolumeConfig.AMIMetadata, nil
+	return vblegacy.AMIToDocument(vbState.VolumeConfig.AMIMetadata), nil
 }
 
-// putAMIConfig writes AMI metadata to {imageID}/config.json, preserving the
-// VBState wrapper used by GetAMIConfig.
-func (s *ImageServiceImpl) putAMIConfig(ctx context.Context, imageID string, meta viperblock.AMIMetadata) error {
+// putAMIConfig writes AMI metadata to the ebsmetadata document store under
+// the provider, or to {imageID}/config.json's VBState wrapper (preserving the
+// shape GetAMIConfig's embedded path expects) on the legacy path.
+func (s *ImageServiceImpl) putAMIConfig(ctx context.Context, imageID string, meta ebsmetadata.AMI) error {
+	if s.provider != nil {
+		return s.metadata.PutAMI(ctx, meta)
+	}
+
 	state := viperblock.VBState{
 		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: meta,
+			AMIMetadata: vblegacy.AMIFromDocument(meta),
 		},
 	}
 
@@ -892,7 +1049,7 @@ func (s *ImageServiceImpl) updateAMITags(ctx context.Context, imageID, accountID
 
 // checkAMIOwnership rejects cross-account and system-AMI mutations. Empty
 // owner is ServerInternal (corrupt config) rather than a misleading 403.
-func (s *ImageServiceImpl) checkAMIOwnership(meta viperblock.AMIMetadata, accountID string) error {
+func (s *ImageServiceImpl) checkAMIOwnership(meta ebsmetadata.AMI, accountID string) error {
 	owner := meta.ImageOwnerAlias
 	if owner == "" {
 		slog.Error("checkAMIOwnership: AMI config has empty ImageOwnerAlias", "imageId", meta.ImageID)
@@ -906,7 +1063,7 @@ func (s *ImageServiceImpl) checkAMIOwnership(meta viperblock.AMIMetadata, accoun
 
 // callerCanReadAMI: empty owner is invisible (corrupt); non-account owner is
 // a system AMI visible to all; account owner is private to that account.
-func callerCanReadAMI(meta viperblock.AMIMetadata, accountID string) bool {
+func callerCanReadAMI(meta ebsmetadata.AMI, accountID string) bool {
 	owner := meta.ImageOwnerAlias
 	if owner == "" {
 		return false
@@ -920,22 +1077,22 @@ func callerCanReadAMI(meta viperblock.AMIMetadata, accountID string) bool {
 // loadAMIForMutation fetches the AMI and enforces ownership. Cross-account
 // callers see UnauthorizedOperation, not NotFound (they already know the ID).
 // No CAS: concurrent writers last-write-wins on the full struct.
-func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, accountID string) (viperblock.AMIMetadata, error) {
+func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, accountID string) (ebsmetadata.AMI, error) {
 	if !strings.HasPrefix(imageID, "ami-") {
-		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+		return ebsmetadata.AMI{}, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
 	meta, err := s.GetAMIConfig(ctx, imageID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
-			return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+			return ebsmetadata.AMI{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 		slog.Error("loadAMIForMutation: failed to read AMI config", "imageId", imageID, "err", err)
-		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorServerInternal)
+		return ebsmetadata.AMI{}, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.checkAMIOwnership(meta, accountID); err != nil {
-		return viperblock.AMIMetadata{}, err
+		return ebsmetadata.AMI{}, err
 	}
 	return meta, nil
 }
@@ -1037,7 +1194,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 
 	tags := mergeCopyImageTags(srcMeta.Tags, input.TagSpecifications, aws.BoolValue(input.CopyImageTags))
 
-	meta := viperblock.AMIMetadata{
+	meta := ebsmetadata.AMI{
 		ImageID:         newImageID,
 		Name:            name,
 		Description:     description,
@@ -1154,7 +1311,7 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
 // or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
 // (master key configured); AMI metadata carries no per-image encryption flag.
-func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata, encrypted bool) []*ec2.BlockDeviceMapping {
+func synthesizeRootBlockDeviceMapping(meta ebsmetadata.AMI, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil
 	}
@@ -1243,7 +1400,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 	tags := utils.ExtractTags(input.TagSpecifications, "image")
 
 	amiID := utils.GenerateResourceID("ami")
-	meta := viperblock.AMIMetadata{
+	meta := ebsmetadata.AMI{
 		ImageID:         amiID,
 		Name:            name,
 		Description:     description,

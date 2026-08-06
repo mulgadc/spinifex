@@ -17,6 +17,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -455,7 +456,7 @@ func TestCreateImageFromInstance_UniqueNameAllowed(t *testing.T) {
 func TestPutAMIConfig_RoundTrip(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	meta := viperblock.AMIMetadata{
+	meta := ebsmetadata.AMI{
 		ImageID:         "ami-roundtrip01",
 		Name:            "round-trip",
 		Description:     "hello",
@@ -499,7 +500,7 @@ func TestCheckAMIOwnership(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := svc.checkAMIOwnership(viperblock.AMIMetadata{ImageOwnerAlias: tt.owner}, caller)
+			err := svc.checkAMIOwnership(ebsmetadata.AMI{ImageOwnerAlias: tt.owner}, caller)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {

@@ -8,9 +8,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -380,7 +380,7 @@ func TestPrepareRunInstances_PlatformTokenDefault(t *testing.T) {
 			svc := &InstanceServiceImpl{
 				config:        &config.Config{},
 				instanceTypes: types,
-				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 					"ami-1": {ImageOwnerAlias: "acc", PlatformDetails: tc.platformDetails},
 				}},
 				resourceMgr: &fakeResourceCapacityProvider{

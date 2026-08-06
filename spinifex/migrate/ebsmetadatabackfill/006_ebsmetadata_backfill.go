@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -308,22 +309,5 @@ func LegacyAMIFromLegacyState(ctx context.Context, objects objectstore.ObjectSto
 		return ebsmetadata.AMI{}, false, fmt.Errorf("AMI %s: config.json has an empty ImageID", imageID)
 	}
 
-	return ebsmetadata.AMI{
-		ImageID:         meta.ImageID,
-		Name:            meta.Name,
-		Description:     meta.Description,
-		Architecture:    meta.Architecture,
-		PlatformDetails: meta.PlatformDetails,
-		CreationDate:    meta.CreationDate,
-		RootDeviceType:  meta.RootDeviceType,
-		Virtualization:  meta.Virtualization,
-		ImageOwnerAlias: meta.ImageOwnerAlias,
-		VolumeSizeGiB:   meta.VolumeSizeGiB,
-		SnapshotID:      meta.SnapshotID,
-		BootMode:        meta.BootMode,
-		Distro:          meta.Distro,
-		DistroFamily:    meta.DistroFamily,
-		Tags:            meta.Tags,
-		State:           meta.State,
-	}, true, nil
+	return vblegacy.AMIToDocument(meta), true, nil
 }

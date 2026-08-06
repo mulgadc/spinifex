@@ -845,7 +845,7 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 
 ## RDS (PostgreSQL)
 
-Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
+Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**, from any subnet of it rather than the endpoint ENI's own. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
 
 - **Engine:** `postgres` 18 only — `EngineVersion` accepts `18` or `18.x`, and there is no in-place upgrade.
 - **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.

@@ -27,25 +27,27 @@ resources:
 
 # Terraform: RDS Quickstart
 
-> The smallest end-to-end RDS example on Spinifex: a VPC, a DB subnet group, a parameter group, a PostgreSQL DB instance, and a client VM in the same subnet with `psql` already pointed at the endpoint.
+> The smallest end-to-end RDS example on Spinifex: a VPC with a public client subnet and a private DB subnet, a DB subnet group, a parameter group, a PostgreSQL DB instance, and a client VM with `psql` already pointed at the endpoint.
 
 ## Overview
 
 A Spinifex DB instance runs in a VM you never see. What lands in your VPC is a single **endpoint ENI** in one of the DB subnet group's subnets, so the endpoint is **always private** — there is no `publicly_accessible` mode, and a request for one is rejected. That is why this workbook builds a client VM: it is the only place from which the database can be reached.
 
-The layout is the one that shape implies:
+The layout is the one that shape implies — the tier that talks to the database in its own subnet, and the database in a subnet with no route off the VPC:
 
 ```
      IGW
       │
-   10.60.1.0/24 ──┬── client VM ──psql:5432──┐
-                  │                            ▼
-                  └─────────────────── endpoint ENI ──▶ DB VM (platform-owned)
+   client subnet 10.60.1.0/24 ──── client VM
+                                       │
+                                    psql:5432
+                                       │
+   db subnet     10.60.2.0/24 ──── endpoint ENI ──▶ DB VM (platform-owned)
 ```
 
-The client and the DB subnet group **share one subnet**, and in v1 they have to. The endpoint is reachable from clients on the endpoint ENI's own subnet only: the DB VM carries its default route on its platform-side interface, so a reply to a client in another subnet is never routed back. A subnet group spanning several subnets places the endpoint in one of them and leaves clients in the others timing out on connect. On AWS you would use two private subnets here instead.
+The endpoint is reachable from **any subnet of the VPC**, so the client does not have to share the subnet the endpoint ENI landed in — which also means a subnet group spanning several subnets works wherever the endpoint is placed within it.
 
-The shared subnet is "public" only in that it has an internet-gateway route, which the client needs to `apt-get` a psql. The endpoint ENI gets no public address and `publicly_accessible = true` is rejected, so sharing the subnet does not expose the database.
+The client subnet is public in that it has an internet-gateway route, which the client needs to `apt-get` a psql. The DB subnet has no route table association, so it stays on the main route table `create-vpc` writes: intra-VPC routing and nothing else. The endpoint ENI gets no public address and `publicly_accessible = true` is rejected either way.
 
 The database security group admits `5432` from the client security group and nothing else, which compiles to an ACL on the endpoint ENI itself — the port is deny-by-default for everything else in the VPC.
 
@@ -148,7 +150,7 @@ aws rds delete-db-instance --db-instance-identifier rds-quickstart \
 
 - **`storage_encrypted = true` is set explicitly.** Storage is always encrypted, so the instance reports `true` whether or not you asked. The provider's attribute is optional but *not* computed, so leaving it out means the read-back carries a value your configuration does not — and every subsequent `plan` shows a change on an instance nothing has touched.
 - **`instance_class` and `engine_version` are literal.** `describe-db-engine-versions` and `describe-orderable-db-instance-options` are not implemented, so the `aws_rds_engine_version` and `aws_rds_orderable_db_instance` data sources are unavailable. `aws_db_instance` needs neither.
-- **One subnet, shared.** AWS requires a DB subnet group to span two AZs. Spinifex is single-AZ — every subnet reports the same zone — so the group accepts any count, and one is what the v1 reachability rule above allows.
+- **A DB subnet group over one subnet.** AWS requires a DB subnet group to span two AZs. Spinifex is single-AZ — every subnet reports the same zone — so the group accepts any count, and a second private subnet here would buy nothing but a second CIDR.
 - **The password is written to `~/.pgpass`, not to the environment.** A `PGPASSWORD` in `/etc/profile.d` is readable by every user on the client and leaks into `ps` output.
 
 ## Troubleshooting
@@ -166,8 +168,8 @@ aws rds describe-events --source-type db-instance --source-identifier rds-quicks
 **`psql` hangs on the client.** Three causes, in the order worth checking:
 
 - cloud-init has not finished installing `postgresql-client` — check `cloud-init status --long`.
-- the client is not in the endpoint ENI's subnet. Off-subnet clients cannot reach the endpoint in v1; put them in the DB subnet group's subnet, as this workbook does.
 - the security group is not letting you through. Nothing outside the client security group can open `5432` — that is the point of the rule — so a psql from your workstation will always time out.
+- the client is outside the VPC. The endpoint exists only inside it: any subnet will do, but there is no path to it from anywhere else.
 
 **`InsufficientInstanceCapacity` on the DB instance.** The node admits a launch against live free memory. Free some, or drop to a smaller `db_instance_class`.
 

@@ -94,6 +94,16 @@ func providerSubjectCases() []providerSubjectCase {
 			"volume_id":   "vol-testsnap0001",
 			"snapshot_id": "snap-testsnap0001",
 		}},
+		// publish_volume/unpublish_volume are node-addressed; the subject
+		// below must match setupTestConfig's NodeName ("test-node").
+		{"publish_volume", "ebs.provider.v1.test-node.mount", map[string]any{
+			"volume_id": "vol-testpublish001",
+			"node_id":   "test-node",
+		}},
+		{"unpublish_volume", "ebs.provider.v1.test-node.unmount", map[string]any{
+			"volume_id": "vol-testunpublish01",
+			"node_id":   "test-node",
+		}},
 	}
 }
 
@@ -175,6 +185,30 @@ func TestProviderHandlers_InvalidVolumeName(t *testing.T) {
 			msg := requestProvider(t, nc, ebsprovider.DeleteSnapshotSubject, body)
 
 			var resp ebsprovider.DeleteSnapshotResponse
+			require.NoError(t, json.Unmarshal(msg.Data, &resp))
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
+		})
+
+		t.Run("publish_volume/"+name, func(t *testing.T) {
+			publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
+			require.NoError(t, err)
+			body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion, "volume_id": name, "node_id": cfg.NodeName})
+			msg := requestProvider(t, nc, publishSubject, body)
+
+			var resp ebsprovider.PublishVolumeResponse
+			require.NoError(t, json.Unmarshal(msg.Data, &resp))
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
+		})
+
+		t.Run("unpublish_volume/"+name, func(t *testing.T) {
+			unpublishSubject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
+			require.NoError(t, err)
+			body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion, "volume_id": name, "node_id": cfg.NodeName})
+			msg := requestProvider(t, nc, unpublishSubject, body)
+
+			var resp ebsprovider.UnpublishVolumeResponse
 			require.NoError(t, json.Unmarshal(msg.Data, &resp))
 			require.NotNil(t, resp.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
@@ -528,4 +562,159 @@ func TestProviderHandlers_DeleteVolume_MountedVolumeStopsResources(t *testing.T)
 
 	_, statErr := os.Stat(socketPath)
 	assert.True(t, os.IsNotExist(statErr), "the NBD socket file must be removed")
+}
+
+// TestProviderHandlers_PublishVolume_IdempotentRepublish covers the double-
+// writer hazard this provider boundary exists to prevent: republishing a
+// volume this node already has mounted must return the existing attachment
+// unchanged rather than mounting it a second time. The mounted-volume count
+// and PID (not just the returned URI) prove no second nbdkit was started.
+func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-pubidempotent1"
+	const existingURI = "nbd:unix:/fake/vol-pubidempotent1.sock"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name:   volumeName,
+		VB:     vb,
+		PID:    424242,
+		NBDURI: existingURI,
+	})
+
+	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"node_id":        cfg.NodeName,
+	})
+	msg := requestProvider(t, nc, publishSubject, body)
+
+	var resp ebsprovider.PublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	require.NotNil(t, resp.Published)
+	assert.Equal(t, volumeName, resp.Published.VolumeID)
+	assert.Equal(t, cfg.NodeName, resp.Published.NodeID)
+	assert.Equal(t, existingURI, resp.Published.NBDURI)
+
+	cfg.mu.Lock()
+	count := len(cfg.MountedVolumes)
+	pid := cfg.MountedVolumes[0].PID
+	cfg.mu.Unlock()
+	assert.Equal(t, 1, count, "republish of an already-mounted volume must not add a second entry")
+	assert.Equal(t, 424242, pid, "republish must not spawn a second nbdkit (PID must be unchanged)")
+}
+
+// TestProviderHandlers_PublishVolume_ReadOnlyRejected covers the ReadOnly
+// field, which has no equivalent in the nbdkit mount path (nbdkit is started
+// read-write or not at all): a read-only request must come back as an error,
+// never a silently read-write attachment.
+func TestProviderHandlers_PublishVolume_ReadOnlyRejected(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      "vol-readonlypub001",
+		"node_id":        cfg.NodeName,
+		"read_only":      true,
+	})
+	msg := requestProvider(t, nc, publishSubject, body)
+
+	var resp ebsprovider.PublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
+}
+
+// TestProviderHandlers_UnpublishVolume_RemovesMountedVolume mirrors
+// TestIntegration_EBSUnmountRequest (the legacy ebs.unmount handler's happy
+// path) but drives it through the provider subject instead, confirming the
+// shared unmountVolume extraction behaves the same way from either front.
+func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-unpubremoved01"
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name: volumeName,
+		PID:  999999, // Fake PID that doesn't exist; KillProcess must fail gracefully.
+	})
+
+	unpublishSubject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"node_id":        cfg.NodeName,
+	})
+	msg := requestProvider(t, nc, unpublishSubject, body)
+
+	var resp ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Nil(t, resp.Error)
+
+	cfg.mu.Lock()
+	remaining := cfg.MountedVolumes
+	cfg.mu.Unlock()
+	for _, v := range remaining {
+		assert.NotEqual(t, volumeName, v.Name, "unpublished volume must be removed from MountedVolumes")
+	}
+}
+
+// TestProviderHandlers_UnpublishVolume_NotFound mirrors
+// TestIntegration_EBSUnmountNonExistentVolume: unpublishing a volume this
+// node never mounted must come back not_found, matching the legacy handler's
+// NotFound flag rather than a generic internal error.
+func TestProviderHandlers_UnpublishVolume_NotFound(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	unpublishSubject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      "vol-neverpublished1",
+		"node_id":        cfg.NodeName,
+	})
+	msg := requestProvider(t, nc, unpublishSubject, body)
+
+	var resp ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeNotFound, resp.Error.Code)
+}
+
+// TestProviderHandlers_PublishUnpublish_RequireNodeName covers
+// registerProviderSubjects' NodeName gate: PublishVolume/UnpublishVolume must
+// not be registered when cfg.NodeName is empty (PublishSubject has no node to
+// address), while every other ebs.provider.v1.* subject still is.
+func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfgNoNode := setupTestConfig(t, natsURL)
+	cfgNoNode.NodeName = ""
+	ncNoNode := startProviderSubjects(t, cfgNoNode, natsURL)
+
+	_, natsURL2 := setupEmbeddedNATS(t)
+	cfgNamed := setupTestConfig(t, natsURL2)
+	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
+
+	assert.Equal(t, ncNamed.NumSubscriptions()-2, ncNoNode.NumSubscriptions(),
+		"an empty NodeName must skip exactly the publish and unpublish subscriptions")
+
+	// The other provider subjects must still work without a node name.
+	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})
+	msg := requestProvider(t, ncNoNode, ebsprovider.CapabilitiesSubject, body)
+	var resp ebsprovider.GetCapabilitiesResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Nil(t, resp.Error)
 }

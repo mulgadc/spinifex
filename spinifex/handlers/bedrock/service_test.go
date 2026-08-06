@@ -220,6 +220,33 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, awserrors.ValidErrorCodeFromError(err))
 }
 
+// TestDelete_ResumesFromDraining covers a teardown that failed partway: the
+// record is already DRAINING and its VM may be gone. Without a resume the
+// record is stranded, since nothing else moves it and the resolver treats
+// DRAINING as neither servable nor relaunchable.
+func TestDelete_ResumesFromDraining(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
+		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
+		InstanceID: "i-stranded", Generation: 2,
+	})
+	require.NoError(t, err)
+
+	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+	assert.Contains(t, h.launcher.terminated, "i-stranded", "the resume must still tear the VM down")
+}
+
 func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())

@@ -1268,6 +1268,36 @@ type volumeResult struct {
 	tenantID string
 }
 
+// providerVolumeConfig projects an ebsmetadata document onto the VolumeConfig
+// shape the daemon's attach/detach validation reads. AMIMetadata stays zero:
+// the control-plane document deliberately does not carry it.
+func providerVolumeConfig(meta ebsmetadata.Volume) *viperblock.VolumeConfig {
+	state := meta.State
+	if state == "" {
+		state = "available"
+	}
+	return &viperblock.VolumeConfig{
+		VolumeMetadata: viperblock.VolumeMetadata{
+			VolumeID:            meta.VolumeID,
+			VolumeName:          meta.VolumeName,
+			TenantID:            meta.TenantID,
+			SizeGiB:             meta.CapacityGiB,
+			State:               state,
+			CreatedAt:           meta.CreatedAt,
+			AttachedAt:          meta.AttachedAt,
+			AvailabilityZone:    meta.AvailabilityZone,
+			AttachedInstance:    meta.AttachedInstance,
+			DeviceName:          meta.DeviceName,
+			VolumeType:          meta.VolumeType,
+			IOPS:                meta.IOPS,
+			Throughput:          meta.Throughput,
+			Tags:                meta.Tags,
+			SnapshotID:          meta.SnapshotID,
+			DeleteOnTermination: meta.DeleteOnTermination,
+		},
+	}
+}
+
 func providerMetadataVolume(meta ebsmetadata.Volume) *ec2.Volume {
 	state := meta.State
 	if state == "" {
@@ -1455,6 +1485,13 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(ctx context.Context, vo
 		return nil, false, err
 	}
 
+	// Under a provider the ebsmetadata document is already authoritative for
+	// attachment state and tags, and the legacy objects overlaid below do not
+	// exist for such a volume. Overlaying them would only reintroduce drift.
+	if s.provider != nil {
+		return vc, encryptionEnabled, nil
+	}
+
 	// Overlay the control-plane-owned attachment state from state.json. The State
 	// embedded in config.json is rewritten by the live nbdkit VB (stale
 	// "available") and is not authoritative; state.json is. Absent state.json
@@ -1483,6 +1520,21 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(ctx context.Context, vo
 // getBaseVolumeConfigAndEncryption reads config.json without overlaying the
 // control-plane-owned state and tags objects.
 func (s *VolumeServiceImpl) getBaseVolumeConfigAndEncryption(ctx context.Context, volumeID string) (*viperblock.VolumeConfig, bool, error) {
+	// A provider-created volume has no config.json at all — its metadata lives
+	// in the ebsmetadata document. Reading the legacy key here is what made
+	// AttachVolume report a healthy volume as InvalidVolume.NotFound.
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil {
+			if objectstore.IsNoSuchKeyError(err) {
+				slog.WarnContext(ctx, "provider volume metadata not found", "volumeId", volumeID)
+				return nil, false, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			}
+			return nil, false, fmt.Errorf("get provider volume metadata: %w", err)
+		}
+		return providerVolumeConfig(meta), meta.Encrypted, nil
+	}
+
 	configKey := volumeID + "/config.json"
 
 	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
@@ -1491,6 +1543,9 @@ func (s *VolumeServiceImpl) getBaseVolumeConfigAndEncryption(ctx context.Context
 	})
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
+			// Named explicitly: this remap used to be silent, which cost real
+			// time diagnosing a volume that every other read reported healthy.
+			slog.WarnContext(ctx, "volume config not found", "volumeId", volumeID, "key", configKey)
 			return nil, false, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 		}
 		return nil, false, fmt.Errorf("failed to get config: %w", err)

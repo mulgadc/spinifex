@@ -31,12 +31,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -754,11 +754,25 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// import is already complete regardless of this call's outcome.
 	node := appConfig.Nodes[appConfig.Node]
 	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
-	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), vblegacy.AMIToDocument(manifest.AMIMetadata)); err != nil {
+	if err := writeImportedAMIMetadata(context.Background(), metaStore, node.Predastore.Bucket, volumeId); err != nil {
 		slog.Warn("Could not write ebsmetadata document for imported AMI; it remains visible via the legacy fallback", "imageId", volumeId, "err", err)
 	}
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+}
+
+// writeImportedAMIMetadata rebuilds the AMI document from the config.json the
+// import just wrote, since the pre-import manifest never receives fields like
+// SnapshotID. A missing config is skipped: the legacy fallback still serves it.
+func writeImportedAMIMetadata(ctx context.Context, objects objectstore.ObjectStore, bucket, imageID string) error {
+	ami, found, err := ebsmetadatabackfill.LegacyAMIFromLegacyState(ctx, objects, bucket, imageID)
+	if err != nil {
+		return fmt.Errorf("read back imported AMI config: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("imported AMI config.json not found at %s/config.json", imageID)
+	}
+	return ebsmetadata.NewStore(objects, bucket).PutAMI(ctx, ami)
 }
 
 // caBakeRunCommand installs the uploaded CA into the guest trust store across

@@ -65,6 +65,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/preflight"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1245,6 +1246,17 @@ func (d *Daemon) startLocal() error {
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
 	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
+	}
+
+	// Warn on host assets this build expects but that are missing, stale, or
+	// ungranted, so drift surfaces as a named log line rather than a later
+	// cryptic failure. Never fatal — unrelated asset problems must not ground a node.
+	for _, r := range preflight.CheckHost() {
+		if r.Status != preflight.OK {
+			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
+				"status", r.Status.String(), "detail", r.Detail,
+				"remediation", "run scripts/update-nodes.sh or make reinstall")
+		}
 	}
 
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.

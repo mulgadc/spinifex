@@ -260,6 +260,20 @@ bench:
 # `make install-microvm` explicitly the first time.
 deploy: build
 	sudo install -m 755 bin/spx /usr/local/bin/spx
+	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
+		if ! sudo /usr/local/bin/spx admin preflight; then \
+			echo ""; \
+			echo "[deploy] host-asset preflight failed: this node's helper scripts or sudoers"; \
+			echo "  grants don't match the binary just installed. Remediate with:"; \
+			echo "    scripts/update-nodes.sh   (from the mulga root)"; \
+			echo "  or:"; \
+			echo "    make reinstall"; \
+			echo "  Set SKIP_ASSET_PREFLIGHT=1 to bypass for a deliberate binary-only push."; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[deploy] SKIP_ASSET_PREFLIGHT=1 — skipping host-asset preflight"; \
+	fi
 	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
 		$(MAKE) install-microvm; \
 	else \

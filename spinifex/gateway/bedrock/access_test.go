@@ -16,8 +16,9 @@ import (
 // Naming them here keeps a catalog change to one edit per tier rather than one
 // per assertion.
 const (
-	selfHostTestModel  = "meta.llama3-2-1b-instruct-v1:0"
-	anthropicTestModel = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+	selfHostTestModel   = "meta.llama3-2-1b-instruct-v1:0"
+	selfHostTestModel3B = "meta.llama3-2-3b-instruct-v1:0"
+	anthropicTestModel  = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 )
 
 // grantSet is an AccessResolver granting exactly the model IDs it contains.

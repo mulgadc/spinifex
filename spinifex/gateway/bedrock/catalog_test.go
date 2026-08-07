@@ -3,6 +3,7 @@ package gateway_bedrock
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
@@ -227,4 +228,44 @@ func TestLookupServingSpec_UnknownModel(t *testing.T) {
 	assert.False(t, found)
 	assert.False(t, selfHost)
 	assert.Zero(t, spec)
+}
+
+func TestLookupServingSpec_SelfHost3BEntry(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec(selfHostTestModel3B)
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, selfHostTestModel3B, spec.ModelID)
+	assert.Equal(t, "g5.xlarge", spec.InstanceType)
+	assert.Equal(t, 7168, spec.MinVRAMMiB)
+	assert.Contains(t, spec.VLLMArgs, "--enforce-eager",
+		"CUDA graph capture does not fit alongside 3B of bf16 weights on an 8 GiB card")
+}
+
+// TestCatalog_SelfHostEntriesFitTheLlamaInvokeAdapter guards the assumption
+// baked into InvokeRouter: every self-host entry is dispatched to
+// llamaInvokeAdapter on tier alone, so a self-host model of another family
+// would be served with Llama's native request and response schema instead of
+// being refused. This fails the moment the catalog outgrows that dispatch.
+func TestCatalog_SelfHostEntriesFitTheLlamaInvokeAdapter(t *testing.T) {
+	for _, entry := range catalog {
+		if entry.Provider != tierSelfHost {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(entry.ModelID, "meta.llama"),
+			"self-host entry %q is not a Llama model; InvokeRouter would serve it "+
+				"through llamaInvokeAdapter with the wrong native schema", entry.ModelID)
+	}
+}
+
+// TestListFoundationModels_SelfHostGatingIsPerEntry proves weights gating
+// filters one entry at a time rather than all-or-nothing. Only measurable now
+// that two self-host entries exist and can disagree.
+func TestListFoundationModels_SelfHostGatingIsPerEntry(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{selfHostTestModel3B: true}})
+	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}},
+		grantAll{}, &bedrock.ListFoundationModelsInput{})
+	require.NoError(t, err)
+	assert.Contains(t, modelIDs(out), selfHostTestModel3B)
+	assert.NotContains(t, modelIDs(out), selfHostTestModel,
+		"a staged model must not advertise an unstaged sibling")
 }

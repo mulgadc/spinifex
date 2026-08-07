@@ -69,6 +69,26 @@ linters:
             - pkg: math/rand$
               desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
 
+        # The EC2 control plane reaches block storage through ebsprovider, not
+        # by importing the engine. viperblock.New starts a chunk uploader, so
+        # every construction is a writer against a volume viperblockd serves.
+        #
+        # The four exempted files still carry the pre-provider engine path
+        # behind a nil-provider guard. They shrink to zero when that path goes;
+        # nothing else under handlers/ may import viperblock, in any form.
+        # A types-only import counts: last time one became an engine import.
+        ec2-control-plane:
+          files:
+            - '**/spinifex/handlers/**'
+            - '!$test'
+            - '!**/spinifex/handlers/ec2/image/service_impl.go'
+            - '!**/spinifex/handlers/ec2/instance/service_impl.go'
+            - '!**/spinifex/handlers/ec2/snapshot/service_impl.go'
+            - '!**/spinifex/handlers/ec2/volume/service_impl.go'
+          deny:
+            - pkg: github.com/mulgadc/viperblock
+              desc: Use the ebsprovider.EBSProvider interface; the control plane must not construct or name viperblock types.
+
     embeddedstructfieldcheck:
       forbid-mutex: true
 

@@ -392,37 +392,42 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 	}
 
 	if s.provider != nil {
+		// Fast path: specific volume IDs requested. Fetch each document
+		// directly instead of enumerating every volume in the bucket.
+		if len(input.VolumeIds) > 0 {
+			results := s.fetchVolumesByIDsProvider(ctx, input.VolumeIds, accountID)
+			volumes := make([]*ec2.Volume, 0, len(results))
+			for _, r := range results {
+				if r.err != nil {
+					return nil, r.err
+				}
+				if r.volume == nil {
+					continue // nil VolumeIds entry
+				}
+				if len(parsedFilters) == 0 || volumeMatchesFilters(r.volume, parsedFilters) {
+					volumes = append(volumes, r.volume)
+				}
+			}
+			slog.InfoContext(ctx, "DescribeVolumes completed", "count", len(volumes))
+			return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
+		}
+
+		// Slow path: no specific IDs requested, enumerate the bucket.
 		metadata, err := s.metadata.ListVolumes(ctx)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		volumes := make([]*ec2.Volume, 0, len(metadata))
-		requested := make(map[string]bool, len(input.VolumeIds))
-		found := make(map[string]bool, len(input.VolumeIds))
-		for _, id := range input.VolumeIds {
-			if id != nil {
-				requested[*id] = true
-			}
-		}
 		for _, meta := range metadata {
-			if meta.TenantID != accountID || (len(requested) > 0 && !requested[meta.VolumeID]) {
+			if meta.TenantID != accountID {
 				continue
-			}
-			if requested[meta.VolumeID] {
-				found[meta.VolumeID] = true
 			}
 			volume := providerMetadataVolume(meta)
 			if len(parsedFilters) == 0 || volumeMatchesFilters(volume, parsedFilters) {
 				volumes = append(volumes, volume)
 			}
 		}
-		if len(input.VolumeIds) > 0 {
-			for id := range requested {
-				if !found[id] {
-					return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
-				}
-			}
-		}
+		slog.InfoContext(ctx, "DescribeVolumes completed", "count", len(volumes))
 		return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
 	}
 
@@ -1242,6 +1247,54 @@ func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*
 
 	wg.Wait()
 	return volumes
+}
+
+// providerVolumeFetchResult bundles a single volume-ID lookup result so the
+// provider fast path can preserve input ordering and surface per-ID errors
+// after the parallel fan-out, matching fetchVolumeModificationsByIDs.
+type providerVolumeFetchResult struct {
+	volume *ec2.Volume
+	err    error
+}
+
+// fetchVolumesByIDsProvider fetches each requested volume's ebsmetadata
+// document directly via GetVolume, instead of enumerating every volume in
+// the bucket via ListVolumes — the provider-path equivalent of
+// fetchVolumesByIDs. A missing document or a cross-tenant volume both
+// surface as InvalidVolume.NotFound; any other store error surfaces as
+// ErrorServerInternal. GetVolume already applies the legacy-volume fallback
+// (see ebsmetadata.Store.SetLegacyVolumeFallback), so a pre-provider volume
+// resolves here the same way it does through ListVolumes.
+func (s *VolumeServiceImpl) fetchVolumesByIDsProvider(ctx context.Context, volumeIDs []*string, accountID string) []providerVolumeFetchResult {
+	results := make([]providerVolumeFetchResult, len(volumeIDs))
+	var wg sync.WaitGroup
+
+	for i, id := range volumeIDs {
+		if id == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, volID string) {
+			defer wg.Done()
+			meta, err := s.metadata.GetVolume(ctx, volID)
+			if err != nil {
+				if objectstore.IsNoSuchKeyError(err) {
+					results[idx] = providerVolumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+				} else {
+					results[idx] = providerVolumeFetchResult{err: errors.New(awserrors.ErrorServerInternal)}
+				}
+				return
+			}
+			if meta.TenantID != accountID {
+				results[idx] = providerVolumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+				return
+			}
+			results[idx] = providerVolumeFetchResult{volume: providerMetadataVolume(meta)}
+		}(i, *id)
+	}
+
+	wg.Wait()
+	return results
 }
 
 // volumeResult bundles an ec2.Volume with the owning account's TenantID

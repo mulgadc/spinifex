@@ -9,7 +9,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -97,7 +96,7 @@ func TestPrepareEFIVolume_Provider_RegistersEBSRequest(t *testing.T) {
 	svc := providerEFIService(t, provider)
 	instance := &vm.VM{}
 
-	require.NoError(t, svc.prepareEFIVolume(context.Background(), "vol-efiprepare001", viperblock.VolumeConfig{}, instance, "x86_64"))
+	require.NoError(t, svc.prepareEFIVolume(context.Background(), "vol-efiprepare001", instance, "x86_64"))
 
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()

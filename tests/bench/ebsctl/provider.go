@@ -61,11 +61,11 @@ func requireProviderFlag(t *testing.T, reason string) string {
 	t.Helper()
 	if *flagProvider == "" {
 		t.Fatalf("cannot determine [ebs] provider from the cluster (%s); "+
-			"pass -provider=%s or -provider=%s explicitly", reason, config.EBSProviderEmbedded, config.EBSProviderViperblockd)
+			"pass -provider=%s explicitly", reason, config.EBSProviderViperblockd)
 	}
-	if *flagProvider != config.EBSProviderEmbedded && *flagProvider != config.EBSProviderViperblockd {
-		t.Fatalf("-provider=%q is not a recognised value (want %q or %q)",
-			*flagProvider, config.EBSProviderEmbedded, config.EBSProviderViperblockd)
+	if *flagProvider != config.EBSProviderViperblockd {
+		t.Fatalf("-provider=%q is not a recognised value (want %q)",
+			*flagProvider, config.EBSProviderViperblockd)
 	}
 	t.Logf("WARNING: could not detect [ebs] provider from the cluster (%s); trusting -provider=%s",
 		reason, *flagProvider)
@@ -141,7 +141,7 @@ var (
 // resolvedProviderFromTOML extracts [nodes.<node>.ebs] provider from a
 // spinifex.toml's contents, where <node> is the file's own top-level `node`
 // key (the node's name for itself). An unset provider resolves to
-// config.EBSProviderEmbedded via config.EBSConfig.ResolvedProvider, the same
+// config.EBSProviderViperblockd via config.EBSConfig.ResolvedProvider, the same
 // default the daemon itself applies — so detection never invents its own
 // notion of "default".
 func resolvedProviderFromTOML(content string) (string, error) {

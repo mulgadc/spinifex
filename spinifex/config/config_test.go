@@ -951,8 +951,8 @@ func TestEBSConfig_ResolvedProvider(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"empty defaults to embedded", "", EBSProviderEmbedded},
-		{"embedded passes through", EBSProviderEmbedded, EBSProviderEmbedded},
+		{"empty defaults to viperblockd", "", EBSProviderViperblockd},
+		{"embedded passes through unresolved", EBSProviderEmbedded, EBSProviderEmbedded},
 		{"viperblockd passes through", EBSProviderViperblockd, EBSProviderViperblockd},
 		{"unknown value passes through unresolved", "bogus", "bogus"},
 	}
@@ -977,8 +977,7 @@ region = "us-east-1"
 		section      string
 		wantResolved string
 	}{
-		{"unset defaults to embedded", "", EBSProviderEmbedded},
-		{"embedded explicit", "[nodes.n1.ebs]\nprovider = \"embedded\"\n", EBSProviderEmbedded},
+		{"unset defaults to viperblockd", "", EBSProviderViperblockd},
 		{"viperblockd explicit", "[nodes.n1.ebs]\nprovider = \"viperblockd\"\n", EBSProviderViperblockd},
 	}
 	for _, tc := range cases {
@@ -992,6 +991,29 @@ region = "us-east-1"
 			assert.Equal(t, tc.wantResolved, cfg.Nodes["n1"].EBS.ResolvedProvider())
 		})
 	}
+}
+
+// A deployed spinifex.toml that still names the removed embedded provider must
+// fail loudly at load: starting anyway would migrate the node's volumes to
+// ebsmetadata one-way without the operator having asked for it.
+func TestLoadConfig_EBSProvider_EmbeddedRejected(t *testing.T) {
+	resetViper(t)
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.ebs]
+provider = "embedded"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `provider="embedded" has been removed`)
+	assert.Contains(t, err.Error(), `viperblockd`)
 }
 
 func TestLoadConfig_EBSProvider_UnknownRejected(t *testing.T) {

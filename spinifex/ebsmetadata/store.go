@@ -224,8 +224,20 @@ outer:
 
 // ListAMIs returns every ebsmetadata AMI document, unioned with legacy AMIs
 // that have no document yet (skipped when no fallback is configured). The
-// ebsmetadata document wins where an AMI has both.
+// ebsmetadata document wins where an AMI has both. An undecodable legacy AMI
+// is skipped so one corrupt config cannot fail the whole listing.
 func (s *Store) ListAMIs(ctx context.Context) ([]AMI, error) {
+	return s.listAMIs(ctx, false)
+}
+
+// ListAMIsStrict is ListAMIs with no tolerance for an undecodable legacy AMI.
+// A caller that decides something from the absence of an AMI must fail loudly
+// rather than act on a listing it knows is short.
+func (s *Store) ListAMIsStrict(ctx context.Context) ([]AMI, error) {
+	return s.listAMIs(ctx, true)
+}
+
+func (s *Store) listAMIs(ctx context.Context, strict bool) ([]AMI, error) {
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")
 	}
@@ -252,7 +264,13 @@ func (s *Store) ListAMIs(ctx context.Context) ([]AMI, error) {
 		}
 		ami, found, err := s.legacyAMI(ctx, s.objects, s.bucket, id)
 		if err != nil {
-			slog.DebugContext(ctx, "ebsmetadata: skipping unreadable legacy AMI", "imageId", id, "err", err)
+			if strict {
+				return nil, fmt.Errorf("read legacy AMI %s: %w", id, err)
+			}
+			// An ami- prefix whose legacy config exists but cannot be decoded is
+			// a fault, not a legitimate skip: the image silently disappears from
+			// DescribeImages, so it has to stay visible at the default level.
+			slog.WarnContext(ctx, "ebsmetadata: skipping unreadable legacy AMI", "imageId", id, "err", err)
 			continue
 		}
 		if !found {

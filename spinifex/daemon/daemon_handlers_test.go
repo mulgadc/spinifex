@@ -31,10 +31,12 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -69,6 +71,7 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.snapshotService = handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
+	wireTestEBSProvider(daemon, memStore)
 	initAccountServiceForTest(t, daemon)
 
 	// Wire RunInstances deps now that image/key services exist. vpcService and
@@ -77,6 +80,21 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
 	return daemon, memStore
+}
+
+// wireTestEBSProvider mirrors configureEBSProvider for the test daemon: an
+// in-memory provider plus the legacy read fallbacks, so fixtures seeded as
+// legacy config.json still resolve.
+func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
+	provider := ebsfake.New(store, daemon.config.Predastore.Bucket)
+	daemon.ebsProvider = provider
+	daemon.instanceService.SetEBSProvider(provider)
+	daemon.imageService.SetEBSProvider(provider)
+	daemon.snapshotService.SetEBSProvider(provider)
+	daemon.volumeService.SetEBSProvider(provider)
+	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
+	daemon.snapshotService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
+	daemon.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
 }
 
 // createFullTestDaemon creates a test daemon with ALL services initialized (including
@@ -565,6 +583,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	memStore := objectstore.NewMemoryObjectStore()
 	bucket := daemon.config.Predastore.Bucket
 	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, bucket)
+	daemon.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
 	daemon.keyService = handlers_ec2_key.NewKeyServiceImplWithStore(memStore, bucket)
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
@@ -2671,23 +2690,11 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 
 	// Seed a volume in the store
 	volumeID := "vol-modify-success"
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID:   volumeID,
-				SizeGiB:    10,
-				State:      "available",
-				VolumeType: "gp3",
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+		VolumeID:   volumeID,
+		SizeGiB:    10,
+		State:      "available",
+		VolumeType: "gp3",
 	})
 
 	// Subscribe a dummy ebs.sync handler so the NATS Request doesn't time out

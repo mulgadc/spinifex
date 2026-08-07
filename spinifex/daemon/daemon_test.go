@@ -1575,9 +1575,11 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	})
 	require.NoError(t, err)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
+	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-root-attached"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1599,7 +1601,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	err = cleaner.DeleteVolumes(instance)
 	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
 
-	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	_, err = daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.Error(t, err, "the volume must actually be deleted")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
@@ -1615,7 +1617,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-root-nondot-attached"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1637,10 +1639,10 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	err := cleaner.DeleteVolumes(instance)
 	require.NoError(t, err)
 
-	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
+	assert.Equal(t, "available", meta.State)
+	assert.Empty(t, meta.AttachedInstance, "terminate must still detach it")
 }
 
 // TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDeleted
@@ -1655,7 +1657,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-data-nondot-attached"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1677,10 +1679,10 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	err := cleaner.DeleteVolumes(instance)
 	require.NoError(t, err)
 
-	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "terminate must still detach it")
+	assert.Equal(t, "available", meta.State)
+	assert.Empty(t, meta.AttachedInstance, "terminate must still detach it")
 }
 
 // TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
@@ -1709,10 +1711,12 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	})
 	require.NoError(t, err)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
+	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-root-self-heal"
 	instanceID := "i-self-heal"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1746,7 +1750,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	_, err = reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
-	_, err = daemon.volumeService.GetVolumeConfig(volumeID)
+	_, err = daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.Error(t, err, "the retried delete must actually remove the volume")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 
@@ -1773,7 +1777,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 
 	volumeID := "vol-data-self-heal"
 	instanceID := "i-self-heal-detach"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1807,10 +1811,10 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 	_, err := reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
-	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.NoError(t, err, "the volume must survive: DeleteOnTermination=false")
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "the retry must clear the stale attachment")
+	assert.Equal(t, "available", meta.State)
+	assert.Empty(t, meta.AttachedInstance, "the retry must clear the stale attachment")
 
 	remaining, err := fakeStore.ListTerminatedInstances()
 	require.NoError(t, err)
@@ -1834,7 +1838,7 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 
 	const instanceID = "i-wedged-terminate"
 	volumeID := "vol-data-wedged"
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
 		SizeGiB:          10,
@@ -1865,11 +1869,11 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, reaped, "the wedged terminate must be force-completed")
 
-	cfg, err := daemon.volumeService.GetVolumeConfig(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.Equal(t, "available", cfg.VolumeMetadata.State,
+	assert.Equal(t, "available", meta.State,
 		"the force-complete path must still detach a non-Boot DeleteOnTermination=false volume")
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance)
+	assert.Empty(t, meta.AttachedInstance)
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.
@@ -4545,26 +4549,18 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 	}
 }
 
-func TestConfigureEBSProvider_UnsetLeavesProviderNil(t *testing.T) {
+// An unset provider must still wire viperblockd everywhere: there is no
+// second provider to fall back to, so leaving it nil would silently strand
+// every EBS call on a node whose spinifex.toml predates the key.
+func TestConfigureEBSProvider_UnsetInjectsProviderEverywhere(t *testing.T) {
 	d := newEBSProviderTestDaemon(t, "")
 	require.NoError(t, d.configureEBSProvider())
 
-	assert.Nil(t, d.ebsProvider)
-	assert.Nil(t, d.instanceService.EBSProvider())
-	assert.Nil(t, d.imageService.EBSProvider())
-	assert.Nil(t, d.snapshotService.EBSProvider())
-	assert.Nil(t, d.volumeService.EBSProvider())
-}
-
-func TestConfigureEBSProvider_EmbeddedLeavesProviderNil(t *testing.T) {
-	d := newEBSProviderTestDaemon(t, config.EBSProviderEmbedded)
-	require.NoError(t, d.configureEBSProvider())
-
-	assert.Nil(t, d.ebsProvider)
-	assert.Nil(t, d.instanceService.EBSProvider())
-	assert.Nil(t, d.imageService.EBSProvider())
-	assert.Nil(t, d.snapshotService.EBSProvider())
-	assert.Nil(t, d.volumeService.EBSProvider())
+	require.NotNil(t, d.ebsProvider)
+	assert.Same(t, d.ebsProvider, d.instanceService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.imageService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.snapshotService.EBSProvider())
+	assert.Same(t, d.ebsProvider, d.volumeService.EBSProvider())
 }
 
 func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testing.T) {

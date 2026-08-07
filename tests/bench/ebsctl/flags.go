@@ -22,7 +22,7 @@ var (
 	flagIterations   = flag.Int("iterations", 50, "measured iterations per operation, per worker")
 	flagWarmup       = flag.Int("warmup", 5, "discarded warm-up iterations per operation, per worker")
 	flagConcurrency  = flag.Int("concurrency", 1, "concurrent workers per operation")
-	flagProvider     = flag.String("provider", "", "expected/fallback [ebs] provider (embedded|viperblockd); cross-checked against cluster detection when detection succeeds, required when it doesn't")
+	flagProvider     = flag.String("provider", "", "expected/fallback [ebs] provider (viperblockd); cross-checked against cluster detection when detection succeeds, required when it doesn't")
 	flagAttachDetach = flag.Bool("attach-detach", true, "include the attach/detach phase (boots and terminates one instance)")
 	flagVolumeGiB    = flag.Int64("volume-size-gib", 1, "size in GiB of every volume this benchmark creates")
 )

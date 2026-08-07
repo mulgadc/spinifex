@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -18,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -28,7 +26,9 @@ import (
 const testAccountID = "111122223333"
 const otherAccountID = "444455556666"
 
-// setupTestSnapshotService creates a snapshot service with in-memory storage for testing.
+// setupTestSnapshotService creates a snapshot service with in-memory storage,
+// an in-memory EBS provider, and the same legacy volume read fallback the
+// composition root wires, so pre-migration config.json fixtures resolve here.
 func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{
@@ -39,15 +39,20 @@ func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.
 	}
 
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	return svc, store
 }
 
 // createTestVolume creates a test volume in the mock store
 // The real S3 stores VBState (which wraps VolumeConfig), so we match that format.
-func createTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+	t.Helper()
+	seedProviderVolume(t, svc, volumeID, sizeGiB)
 	volumeState := vblegacy.VBState{
 		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: vblegacy.VolumeMetadata{
+				VolumeID:         volumeID,
 				SizeGiB:          uint64(sizeGiB),
 				AvailabilityZone: "us-east-1a",
 			},
@@ -65,13 +70,29 @@ func createTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volume
 	require.NoError(t, err)
 }
 
+// seedProviderVolume gives the service's provider a volume to snapshot. A
+// control-plane document alone is not a volume: the provider owns the blocks,
+// and CreateSnapshot fails against one it has never allocated.
+func seedProviderVolume(t *testing.T, svc *SnapshotServiceImpl, volumeID string, sizeGiB int) {
+	t.Helper()
+	if svc == nil || svc.provider == nil {
+		return
+	}
+	_, err := svc.provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(sizeGiB) * 1024 * 1024 * 1024},
+		AvailabilityZone: "us-east-1a",
+	})
+	require.NoError(t, err)
+}
+
 // TestCreateSnapshot tests creating a snapshot from a volume.
 func TestCreateSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Create a test volume first
 	volumeID := "vol-test123"
-	createTestVolume(t, store, volumeID, 100)
+	createTestVolume(t, svc, store, volumeID, 100)
 
 	// Create snapshot
 	result, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -114,27 +135,14 @@ func TestCreateSnapshot_MissingVolumeId(t *testing.T) {
 
 // TestCreateSnapshot_VolumeZeroSize tests that creating a snapshot from a volume with zero SizeGiB fails.
 func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
+	svc, _ := setupTestSnapshotService(t)
 
-	// Store a volume config with SizeGiB == 0
-	volumeState := vblegacy.VBState{
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				SizeGiB: 0,
-			},
-		},
-	}
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
+	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-zerosize", TenantID: testAccountID, CapacityGiB: 0,
+		State: "available", AvailabilityZone: "us-east-1a",
+	}))
 
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-zerosize/config.json"),
-		Body:   strings.NewReader(string(data)),
-	})
-	require.NoError(t, err)
-
-	_, err = svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-zerosize"),
 	}, testAccountID)
 	require.Error(t, err)
@@ -144,11 +152,15 @@ func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 // createEncryptedTestVolume seeds config.json as an at-rest encryption envelope
 // ({payload, authtag}) wrapping a VBState, matching what an encrypted volume
 // persists. The snapshot handler must unwrap it via StateBody, not decode raw.
-func createEncryptedTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+func createEncryptedTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+	t.Helper()
+	seedProviderVolume(t, svc, volumeID, sizeGiB)
 	inner := vblegacy.VBState{
+		BlockSize:         4096,
 		EncryptionEnabled: true,
 		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: vblegacy.VolumeMetadata{
+				VolumeID:         volumeID,
 				SizeGiB:          uint64(sizeGiB),
 				AvailabilityZone: "us-east-1a",
 			},
@@ -178,7 +190,7 @@ func TestCreateSnapshot_EncryptedVolumeEnvelope(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	volumeID := "vol-enc-snap"
-	createEncryptedTestVolume(t, store, volumeID, 100)
+	createEncryptedTestVolume(t, svc, store, volumeID, 100)
 
 	result, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String(volumeID),
@@ -196,9 +208,10 @@ func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	inner := vblegacy.VBState{
+		BlockSize:         4096,
 		EncryptionEnabled: true,
 		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{SizeGiB: 50, SnapshotID: "snap-src"},
+			VolumeMetadata: vblegacy.VolumeMetadata{VolumeID: "vol-fromsnap", SizeGiB: 50, SnapshotID: "snap-src"},
 		},
 	}
 	payload, err := json.Marshal(inner)
@@ -236,8 +249,8 @@ func TestDescribeSnapshots(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volumes
-	createTestVolume(t, store, "vol-1", 50)
-	createTestVolume(t, store, "vol-2", 100)
+	createTestVolume(t, svc, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-2", 100)
 
 	// Create multiple snapshots
 	snap1, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -293,7 +306,7 @@ func TestDescribeSnapshots_ByID(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volume
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 
 	// Create multiple snapshots
 	snap1, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -322,7 +335,7 @@ func TestDescribeSnapshots_ByID(t *testing.T) {
 // TestDescribeSnapshots_FilterNoResults).
 func TestDescribeSnapshots_NotFound(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 
 	snap1, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),
@@ -350,7 +363,7 @@ func TestDescribeSnapshots_Empty(t *testing.T) {
 func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 
 	// Account A creates a snapshot
 	snapA, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -382,7 +395,7 @@ func TestDeleteSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volume and snapshot
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),
 	}, testAccountID)
@@ -419,7 +432,7 @@ func TestDeleteSnapshot(t *testing.T) {
 func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),
 	}, testAccountID)
@@ -445,7 +458,7 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Create a test volume and snapshot
-	createTestVolume(t, store, "vol-source", 50)
+	createTestVolume(t, svc, store, "vol-source", 50)
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-source"),
 	}, testAccountID)
@@ -455,6 +468,7 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	volumeState := vblegacy.VBState{
 		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: vblegacy.VolumeMetadata{
+				VolumeID:   "vol-cloned",
 				SizeGiB:    50,
 				SnapshotID: *snap.SnapshotId,
 			},
@@ -511,11 +525,15 @@ func TestDeleteSnapshot_MissingID(t *testing.T) {
 func TestCopySnapshot_UnsupportedWithoutProvider(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),
 	}, testAccountID)
 	require.NoError(t, err)
+
+	// Drop the provider only for the copy: the source snapshot has to exist
+	// for the refusal to be about the copy rather than about the source.
+	svc.SetEBSProvider(nil)
 
 	_, err = svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
 		SourceSnapshotId: snap.SnapshotId,
@@ -534,7 +552,7 @@ func TestCopySnapshot_UnsupportedWithoutProvider(t *testing.T) {
 func TestCopySnapshot_WrongAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	createTestVolume(t, store, "vol-1", 50)
+	createTestVolume(t, svc, store, "vol-1", 50)
 	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),
 	}, testAccountID)
@@ -687,9 +705,11 @@ func TestCreateSnapshot_WritesKVEntry(t *testing.T) {
 		},
 	}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil, kv)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-kvtest"
-	createTestVolume(t, store, volumeID, 10)
+	createTestVolume(t, svc, store, volumeID, 10)
 
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String(volumeID),
@@ -719,9 +739,11 @@ func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
 		},
 	}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil, kv)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-kvdelete"
-	createTestVolume(t, store, volumeID, 10)
+	createTestVolume(t, svc, store, volumeID, 10)
 
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String(volumeID),
@@ -749,12 +771,14 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 	volumeState := vblegacy.VBState{
 		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: vblegacy.VolumeMetadata{
+				VolumeID:         volumeID,
 				SizeGiB:          100,
 				TenantID:         testAccountID,
 				AvailabilityZone: "us-east-1a",
 			},
 		},
 	}
+	seedProviderVolume(t, svc, volumeID, 100)
 	data, err := json.Marshal(volumeState)
 	require.NoError(t, err)
 	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
@@ -785,7 +809,7 @@ func TestCreateSnapshot_PrePhase4VolumeAllowed(t *testing.T) {
 
 	// Create a volume with no TenantID (pre-phase4)
 	volumeID := "vol-legacy"
-	createTestVolume(t, store, volumeID, 50)
+	createTestVolume(t, svc, store, volumeID, 50)
 
 	// Any account can snapshot — backward compatibility
 	result, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -800,7 +824,7 @@ func TestCreateSnapshot_PrePhase4VolumeAllowed(t *testing.T) {
 // createTestSnapshot creates a snapshot and returns its ID.
 func createTestSnapshot(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int, tags map[string]string) string {
 	t.Helper()
-	createTestVolume(t, store, volumeID, sizeGiB)
+	createTestVolume(t, svc, store, volumeID, sizeGiB)
 
 	tagSpecs := []*ec2.TagSpecification{}
 	if len(tags) > 0 {
@@ -1010,98 +1034,6 @@ func TestDescribeSnapshots_FilterNoFilters(t *testing.T) {
 	out, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.Snapshots, 2)
-}
-
-// TestCreateSnapshot_PredastoreInitFails exercises snapshotVolume past the nil-host guard.
-// The viperblock S3 backend fails at Init() when the test server returns 403, covering the
-// snapshotVolume body (S3Config build, LoadViperblockMasterKey, viperblock.New, Backend.Init)
-// and the CreateSnapshot error return path.
-func TestCreateSnapshot_PredastoreInitFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	cfg := &config.Config{
-		Predastore: config.PredastoreConfig{
-			Host:   srv.URL,
-			Region: "us-east-1",
-			Bucket: "test-bucket",
-		},
-	}
-	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
-	createTestVolume(t, store, "vol-initfail", 10)
-
-	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String("vol-initfail"),
-	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-// s3MockServer returns a test server that passes ListObjectsV2 (Backend.Init) but
-// returns 404 for every other request (GetObject, PutObject, etc.).
-func s3MockServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.RawQuery, "list-type=2") {
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
-				`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
-				`<Name>test-bucket</Name><KeyCount>0</KeyCount>`+
-				`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>`)
-			return
-		}
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
-			`<Error><Code>NoSuchKey</Code>`+
-			`<Message>The specified key does not exist.</Message></Error>`)
-	}))
-}
-
-func TestSnapshotVolume_EncryptionKeyLoadError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	cfg := &config.Config{
-		Predastore: config.PredastoreConfig{
-			Host:   srv.URL,
-			Region: "us-east-1",
-			Bucket: "test-bucket",
-		},
-		Viperblock: config.ViperblockConfig{
-			EncryptionKeyFile: "/nonexistent-snap-test-key.bin",
-		},
-	}
-	svc := NewSnapshotServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
-
-	err := svc.snapshotVolume("vol-enckey", "snap-enckey", 10*1024*1024*1024)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "load encryption key")
-}
-
-func TestSnapshotVolume_LoadStateFails(t *testing.T) {
-	srv := s3MockServer(t)
-	defer srv.Close()
-
-	cfg := &config.Config{
-		Predastore: config.PredastoreConfig{
-			Host:      srv.URL,
-			Region:    "us-east-1",
-			Bucket:    "test-bucket",
-			AccessKey: "test-key",
-			SecretKey: "test-secret",
-		},
-	}
-	svc := NewSnapshotServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
-
-	err := svc.snapshotVolume("vol-lsf", "snap-lsf", 10*1024*1024*1024)
-	require.Error(t, err)
 }
 
 func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {

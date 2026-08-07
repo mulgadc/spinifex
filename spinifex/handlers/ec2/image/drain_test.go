@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -42,7 +43,9 @@ func setupDrainImageService(t *testing.T) (*ImageServiceImpl, *objectstore.Memor
 			Bucket: testBucket,
 		},
 	}
-	return NewImageServiceImplWithConfig(cfg, store, nc), store, nc
+	svc := NewImageServiceImplWithConfig(cfg, store, nc)
+	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
+	return svc, store, nc
 }
 
 func seedImageVolumeAttachment(t *testing.T, store *objectstore.MemoryObjectStore, volumeID, state, instanceID string) {

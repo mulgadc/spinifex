@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
@@ -880,11 +881,21 @@ func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
 // ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to its
 // original host driver. No-op for instances without a GPU allocation or
 // when GPU passthrough is disabled.
+//
+// Holding no device is success, not failure: teardown re-drives this until it
+// reports done, and a stop that already released leaves nothing for the later
+// terminate to do. Returning an error there wedges the record forever.
 func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) error {
 	if a.d.gpuManager == nil || len(instance.GPUAttachments) == 0 {
 		return nil
 	}
-	if err := a.d.gpuManager.Release(instance.ID); err != nil {
+	err := a.d.gpuManager.Release(instance.ID)
+	switch {
+	case errors.Is(err, gpu.ErrNoGPUClaimed):
+		slog.Info("GPU already released, nothing to do",
+			"gpus", instance.GPUAttachments, "instanceId", instance.ID)
+		return nil
+	case err != nil:
 		slog.Error("Failed to release GPU on stop, device may need manual rebind",
 			"gpus", instance.GPUAttachments, "instanceId", instance.ID, "err", err)
 		return err

@@ -1,8 +1,10 @@
 package gpu
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -151,7 +153,15 @@ func TestManagerRelease_UnknownInstance(t *testing.T) {
 
 	err := m.Release("i-does-not-exist")
 	if err == nil {
-		t.Error("want error releasing unknown instance, got nil")
+		t.Fatal("want error releasing unknown instance, got nil")
+	}
+	// Matchable rather than a bare message: teardown re-drives releases and has
+	// to tell "already released" from a rebind failure without reading text.
+	if !errors.Is(err, ErrNoGPUClaimed) {
+		t.Errorf("want ErrNoGPUClaimed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "i-does-not-exist") {
+		t.Errorf("want the instance ID in the message, got %q", err)
 	}
 }
 
@@ -180,6 +190,12 @@ func TestManagerRelease_FailureMarksUnavailable(t *testing.T) {
 	err := m.Release("i-001")
 	if err == nil {
 		t.Error("want error when vfio-pci unbind fails, got nil")
+	}
+	// Must stay distinct from the benign already-released case, which callers
+	// are entitled to ignore. This one clears Available, the health signal the
+	// Bedrock capacity gate reads.
+	if errors.Is(err, ErrNoGPUClaimed) {
+		t.Errorf("a rebind failure must not report as ErrNoGPUClaimed, got %v", err)
 	}
 
 	// Pool entry must be marked unavailable so the broken GPU isn't re-offered.

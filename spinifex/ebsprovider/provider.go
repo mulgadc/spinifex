@@ -33,6 +33,7 @@ type EBSProvider interface {
 	DeleteVolume(context.Context, DeleteVolumeRequest) error
 	CreateSnapshot(context.Context, CreateSnapshotRequest) (*Snapshot, error)
 	DeleteSnapshot(context.Context, DeleteSnapshotRequest) error
+	CopySnapshot(context.Context, CopySnapshotRequest) (*Snapshot, error)
 	PublishVolume(context.Context, PublishVolumeRequest) (*PublishedVolume, error)
 	UnpublishVolume(context.Context, UnpublishVolumeRequest) error
 }
@@ -213,6 +214,26 @@ type DeleteSnapshotResponse struct {
 	Versioned
 
 	Error *ProviderError `json:"error,omitempty"`
+}
+
+// CopySnapshotRequest duplicates SourceSnapshotID under DestinationSnapshotID
+// as a second, independently addressable snapshot over the same frozen data.
+// VolumeID is the snapshot's own source volume, not a new source: the caller
+// already knows it (it is the same VolumeID the original CreateSnapshotRequest
+// carried), so the provider is not asked to resolve snapshot ownership itself.
+type CopySnapshotRequest struct {
+	Versioned
+
+	SourceSnapshotID      string `json:"source_snapshot_id"`
+	DestinationSnapshotID string `json:"destination_snapshot_id"`
+	VolumeID              string `json:"volume_id"`
+}
+
+type CopySnapshotResponse struct {
+	Versioned
+
+	Snapshot *Snapshot      `json:"snapshot,omitempty"`
+	Error    *ProviderError `json:"error,omitempty"`
 }
 
 type PublishVolumeRequest struct {

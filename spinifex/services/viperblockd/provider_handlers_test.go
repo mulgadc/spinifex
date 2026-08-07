@@ -90,6 +90,11 @@ func providerSubjectCases() []providerSubjectCase {
 		}},
 		{"delete_volume", ebsprovider.DeleteVolumeSubject, map[string]any{"volume_id": "vol-testdelete001"}},
 		{"delete_snapshot", ebsprovider.DeleteSnapshotSubject, map[string]any{"snapshot_id": "snap-testdelete01"}},
+		{"copy_snapshot", ebsprovider.CopySnapshotSubject, map[string]any{
+			"source_snapshot_id":      "snap-testcopysrc01",
+			"destination_snapshot_id": "snap-testcopydst01",
+			"volume_id":               "vol-testcopysnap01",
+		}},
 		{"create_snapshot", ebsprovider.SnapshotCreateSubjectPrefix + "vol-testsnap0001", map[string]any{
 			"volume_id":   "vol-testsnap0001",
 			"snapshot_id": "snap-testsnap0001",
@@ -185,6 +190,21 @@ func TestProviderHandlers_InvalidVolumeName(t *testing.T) {
 			msg := requestProvider(t, nc, ebsprovider.DeleteSnapshotSubject, body)
 
 			var resp ebsprovider.DeleteSnapshotResponse
+			require.NoError(t, json.Unmarshal(msg.Data, &resp))
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
+		})
+
+		t.Run("copy_snapshot/"+name, func(t *testing.T) {
+			body := marshalRequest(t, map[string]any{
+				"schema_version":          ebsprovider.SchemaVersion,
+				"source_snapshot_id":      name,
+				"destination_snapshot_id": "snap-testcopyvalid1",
+				"volume_id":               "vol-testcopyvalid01",
+			})
+			msg := requestProvider(t, nc, ebsprovider.CopySnapshotSubject, body)
+
+			var resp ebsprovider.CopySnapshotResponse
 			require.NoError(t, json.Unmarshal(msg.Data, &resp))
 			require.NotNil(t, resp.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
@@ -395,6 +415,137 @@ func TestProviderHandlers_CreateSnapshot_FullRoundTripViaNATSProvider(t *testing
 	assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
 	assert.Equal(t, "snap-roundtrip00001", snap.ID)
 	assert.Equal(t, volumeName, snap.SourceVolumeID)
+}
+
+// TestProviderHandlers_CopySnapshot_FullRoundTripViaNATSProvider drives
+// CopySnapshot through ebsprovider.NewNATSProvider against a live mounted VB
+// on the file backend: CreateSnapshot seeds a real source snapshot, then
+// CopySnapshot must produce a second, independently readable one.
+func TestProviderHandlers_CopySnapshot_FullRoundTripViaNATSProvider(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-copysnaproundtr1"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{Name: volumeName, VB: vb})
+
+	provider := ebsprovider.NewNATSProvider(nc, 10*time.Second)
+	_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: "snap-copysrc0000001",
+		VolumeID:   volumeName,
+	})
+	require.NoError(t, err)
+
+	copied, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      "snap-copysrc0000001",
+		DestinationSnapshotID: "snap-copydst0000001",
+		VolumeID:              volumeName,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, copied)
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, copied.State)
+	assert.Equal(t, "snap-copydst0000001", copied.ID)
+	assert.Equal(t, volumeName, copied.SourceVolumeID)
+	assert.NotEmpty(t, copied.Handle)
+
+	// The checkpoint really landed on the backend under the new ID: a second
+	// copy from the destination must itself succeed, proving snap-copydst is a
+	// real, independently readable snapshot rather than a synthesized answer.
+	_, err = provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      "snap-copydst0000001",
+		DestinationSnapshotID: "snap-copydst0000002",
+		VolumeID:              volumeName,
+	})
+	require.NoError(t, err)
+}
+
+// TestProviderHandlers_CopySnapshot_MissingSourceIsNotFound proves the
+// missing-source guard: copying a snapshot that was never created on the
+// volume must fail as not_found, not internal.
+func TestProviderHandlers_CopySnapshot_MissingSourceIsNotFound(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-copysnapmissing1"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{Name: volumeName, VB: vb})
+
+	provider := ebsprovider.NewNATSProvider(nc, 10*time.Second)
+	_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      "snap-nevercreated001",
+		DestinationSnapshotID: "snap-copydstmissing1",
+		VolumeID:              volumeName,
+	})
+	require.Error(t, err)
+	var providerErr *ebsprovider.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	assert.Equal(t, ebsprovider.ErrorCodeNotFound, providerErr.Code)
+}
+
+// TestProviderHandlers_CopySnapshot_ExistingDestinationIsAlreadyExists proves
+// the destination-exists guard: copying onto an ID that already has a
+// snapshot must refuse as already_exists, matching viperblock.CopySnapshotMeta
+// refusing to clobber a committed destination.
+func TestProviderHandlers_CopySnapshot_ExistingDestinationIsAlreadyExists(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-copysnapexists01"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{Name: volumeName, VB: vb})
+
+	provider := ebsprovider.NewNATSProvider(nc, 10*time.Second)
+	_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: "snap-copyexists-a001",
+		VolumeID:   volumeName,
+	})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: "snap-copyexists-b001",
+		VolumeID:   volumeName,
+	})
+	require.NoError(t, err)
+
+	_, err = provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      "snap-copyexists-a001",
+		DestinationSnapshotID: "snap-copyexists-b001",
+		VolumeID:              volumeName,
+	})
+	require.Error(t, err)
+	var providerErr *ebsprovider.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	assert.Equal(t, ebsprovider.ErrorCodeAlreadyExists, providerErr.Code)
+}
+
+// TestProviderHandlers_CopySnapshot_SameIDIsInvalidArgument proves
+// handleCopySnapshot's own source-equals-destination guard fires before any
+// engine work happens (no volume needs to be mounted for this to fail).
+func TestProviderHandlers_CopySnapshot_SameIDIsInvalidArgument(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	provider := ebsprovider.NewNATSProvider(nc, 10*time.Second)
+	_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      "snap-sameid00000001",
+		DestinationSnapshotID: "snap-sameid00000001",
+		VolumeID:              "vol-copysnapsameid01",
+	})
+	require.Error(t, err)
+	var providerErr *ebsprovider.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, providerErr.Code)
 }
 
 // TestProviderHandlers_SnapshotCreateWildcard_DoesNotCaptureDelete guards the

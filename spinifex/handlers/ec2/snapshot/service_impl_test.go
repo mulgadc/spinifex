@@ -504,36 +504,11 @@ func TestDeleteSnapshot_MissingID(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// TestCopySnapshot tests copying a snapshot.
-func TestCopySnapshot(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
-
-	// Create test volume and snapshot
-	createTestVolume(t, store, "vol-1", 50)
-	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId:    aws.String("vol-1"),
-		Description: aws.String("Original snapshot"),
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Copy snapshot
-	copyResult, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
-		SourceSnapshotId: snap.SnapshotId,
-		Description:      aws.String("Copied snapshot"),
-	}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, copyResult)
-	assert.True(t, strings.HasPrefix(*copyResult.SnapshotId, "snap-"))
-	assert.NotEqual(t, *snap.SnapshotId, *copyResult.SnapshotId)
-
-	// Verify both snapshots exist
-	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
-	require.NoError(t, err)
-	assert.Len(t, result.Snapshots, 2)
-}
-
-// TestCopySnapshot_SetsCallerAsOwner tests that copied snapshot is owned by the caller.
-func TestCopySnapshot_SetsCallerAsOwner(t *testing.T) {
+// CopySnapshot is refused: a copy needs viperblock snapshot metadata under the
+// new ID, which cannot be re-sealed from the control plane on an encrypted
+// volume. The old behaviour wrote only the control-plane config, producing a
+// snapshot that described fine and then failed at attach.
+func TestCopySnapshot_IsUnsupported(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, store, "vol-1", 50)
@@ -542,19 +517,17 @@ func TestCopySnapshot_SetsCallerAsOwner(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Copy snapshot as the same account
-	copyResult, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
+	_, err = svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
 		SourceSnapshotId: snap.SnapshotId,
+		Description:      aws.String("Copied snapshot"),
 	}, testAccountID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupportedOperation, err.Error())
 
-	// Verify copied snapshot owner is the caller
-	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
-		SnapshotIds: []*string{copyResult.SnapshotId},
-	}, testAccountID)
+	// The refusal must not leave a half-created snapshot behind.
+	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, result.Snapshots, 1)
-	assert.Equal(t, testAccountID, *result.Snapshots[0].OwnerId)
+	assert.Len(t, result.Snapshots, 1, "only the source snapshot should exist")
 }
 
 // TestCopySnapshot_WrongAccount tests that account B cannot copy account A's snapshot.
@@ -598,42 +571,6 @@ func TestCopySnapshot_MissingSourceID(t *testing.T) {
 	_, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
-}
-
-// TestCopySnapshot_PreservesTags tests that tags are copied.
-func TestCopySnapshot_PreservesTags(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
-
-	// Create test volume and snapshot with tags
-	createTestVolume(t, store, "vol-1", 50)
-	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String("vol-1"),
-		TagSpecifications: []*ec2.TagSpecification{
-			{
-				ResourceType: aws.String("snapshot"),
-				Tags: []*ec2.Tag{
-					{Key: aws.String("Environment"), Value: aws.String("test")},
-				},
-			},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Copy snapshot
-	copyResult, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
-		SourceSnapshotId: snap.SnapshotId,
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Verify copied snapshot has tags
-	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
-		SnapshotIds: []*string{copyResult.SnapshotId},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, result.Snapshots, 1)
-	assert.Len(t, result.Snapshots[0].Tags, 1)
-	assert.Equal(t, "Environment", *result.Snapshots[0].Tags[0].Key)
-	assert.Equal(t, "test", *result.Snapshots[0].Tags[0].Value)
 }
 
 // setupTestNATSKV creates a NATS JetStream test server and returns a KV bucket for testing.
@@ -801,40 +738,6 @@ func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
 	has, err := svc.volumeHasSnapshots(t.Context(), volumeID)
 	require.NoError(t, err)
 	assert.False(t, has)
-}
-
-func TestCopySnapshot_AddsKVEntry(t *testing.T) {
-	kv := setupTestNATSKV(t)
-	store := objectstore.NewMemoryObjectStore()
-	cfg := &config.Config{
-		Predastore: config.PredastoreConfig{
-			Bucket:    "test-bucket",
-			AccessKey: "test-owner-123",
-		},
-	}
-	svc := NewSnapshotServiceImplWithStore(cfg, store, nil, kv)
-
-	volumeID := "vol-kvcopy"
-	createTestVolume(t, store, volumeID, 10)
-
-	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String(volumeID),
-	}, testAccountID)
-	require.NoError(t, err)
-
-	copyResult, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
-		SourceSnapshotId: snap.SnapshotId,
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Both snapshot IDs should be in KV
-	entry, err := kv.Get(t.Context(), volumeID)
-	require.NoError(t, err)
-	var snapshots []string
-	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))
-	assert.Contains(t, snapshots, *snap.SnapshotId)
-	assert.Contains(t, snapshots, *copyResult.SnapshotId)
-	assert.Len(t, snapshots, 2)
 }
 
 // TestCreateSnapshot_CrossAccountVolumeRejected tests that snapshotting another account's volume is rejected.

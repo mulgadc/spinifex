@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -895,8 +894,11 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	return &ec2.DeleteSnapshotOutput{}, nil
 }
 
-// CopySnapshot copies a snapshot (within same region for now).
-// The copied snapshot is owned by the caller's account.
+// CopySnapshot is refused rather than served. A copy needs its own viperblock
+// snapshot metadata under the new ID, and on an encrypted volume that metadata
+// is AEAD-sealed with the snapshot ID in the AAD, so it cannot be re-sealed
+// from here. Source lookup and ownership still run first so a bad ID or a
+// foreign snapshot reports that instead.
 func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopySnapshotInput, accountID string) (*ec2.CopySnapshotOutput, error) {
 	if input == nil || input.SourceSnapshotId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -912,53 +914,16 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, err
 	}
 
-	// Verify the caller owns the source snapshot
 	if accountID != "" && sourceCfg.OwnerID != "" && sourceCfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 
-	newSnapshotID := utils.GenerateResourceID("snap")
-
-	newCfg := &SnapshotConfig{
-		SnapshotID:       newSnapshotID,
-		VolumeID:         sourceCfg.VolumeID,
-		VolumeSize:       sourceCfg.VolumeSize,
-		State:            "completed",
-		Progress:         "100%",
-		StartTime:        time.Now(),
-		Description:      sourceCfg.Description,
-		Encrypted:        sourceCfg.Encrypted,
-		OwnerID:          accountID,
-		AvailabilityZone: sourceCfg.AvailabilityZone,
-		Tags:             make(map[string]string),
-	}
-
-	if input.Description != nil {
-		newCfg.Description = *input.Description
-	}
-
-	maps.Copy(newCfg.Tags, sourceCfg.Tags)
-
-	// Track the volume→snapshot dependency in KV before persisting to S3.
-	if err := s.addSnapshotRef(ctx, sourceCfg.VolumeID, newSnapshotID); err != nil {
-		slog.ErrorContext(ctx, "CopySnapshot failed to add snapshot ref to KV", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	if err := s.putSnapshotConfig(newSnapshotID, newCfg); err != nil {
-		slog.ErrorContext(ctx, "CopySnapshot failed to write config", "snapshotId", newSnapshotID, "err", err)
-		if cleanupErr := s.removeSnapshotRefForCleanup(ctx, sourceCfg.VolumeID, newSnapshotID); cleanupErr != nil {
-			slog.Error("CopySnapshot failed to roll back snapshot reference", "snapshotId", newSnapshotID, "volumeId", sourceCfg.VolumeID, "err", cleanupErr)
-		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	slog.InfoContext(ctx, "CopySnapshot completed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID)
-
-	return &ec2.CopySnapshotOutput{
-		SnapshotId: aws.String(newSnapshotID),
-	}, nil
+	// Writing only the control-plane config produced a snapshot that described
+	// and created volumes fine, then failed at attach when viperblock could not
+	// resolve it. Refusing here fails at the call the caller can act on.
+	slog.WarnContext(ctx, "CopySnapshot is not supported", "sourceSnapshotId", sourceSnapshotID)
+	return nil, errors.New(awserrors.ErrorUnsupportedOperation)
 }
 
 // addSnapshotRef adds snapshotID to the volume's snapshot list in KV.

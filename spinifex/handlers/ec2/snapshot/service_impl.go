@@ -894,11 +894,10 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	return &ec2.DeleteSnapshotOutput{}, nil
 }
 
-// CopySnapshot is refused rather than served. A copy needs its own viperblock
-// snapshot metadata under the new ID, and on an encrypted volume that metadata
-// is AEAD-sealed with the snapshot ID in the AAD, so it cannot be re-sealed
-// from here. Source lookup and ownership still run first so a bad ID or a
-// foreign snapshot reports that instead.
+// CopySnapshot duplicates a snapshot under a new ID owned by the caller.
+// Served only through the provider: the copy needs its own snapshot metadata
+// on the backend, and on an encrypted volume that metadata is AEAD-sealed with
+// the snapshot ID in the AAD, so only the storage engine can re-seal it.
 func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopySnapshotInput, accountID string) (*ec2.CopySnapshotOutput, error) {
 	if input == nil || input.SourceSnapshotId == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -919,11 +918,63 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 
-	// Writing only the control-plane config produced a snapshot that described
-	// and created volumes fine, then failed at attach when viperblock could not
-	// resolve it. Refusing here fails at the call the caller can act on.
-	slog.WarnContext(ctx, "CopySnapshot is not supported", "sourceSnapshotId", sourceSnapshotID)
-	return nil, errors.New(awserrors.ErrorUnsupportedOperation)
+	// Without a provider the only reachable path writes the control-plane
+	// config alone. That copy described and created volumes fine, then failed
+	// at attach with no backend metadata behind the new ID, so refuse instead.
+	if s.provider == nil {
+		slog.WarnContext(ctx, "CopySnapshot is not supported without an EBS provider", "sourceSnapshotId", sourceSnapshotID)
+		return nil, errors.New(awserrors.ErrorUnsupportedOperation)
+	}
+
+	newSnapshotID := utils.GenerateResourceID("snap")
+	copied, err := s.provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      sourceSnapshotID,
+		DestinationSnapshotID: newSnapshotID,
+		VolumeID:              sourceCfg.VolumeID,
+	})
+	if err != nil || copied == nil {
+		slog.ErrorContext(ctx, "CopySnapshot: provider copy failed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	now := time.Now()
+	snapshotCfg := &SnapshotConfig{
+		SnapshotID: newSnapshotID, VolumeID: sourceCfg.VolumeID,
+		VolumeSize: sourceCfg.VolumeSize,
+		State:      string(copied.State), Progress: "100%", StartTime: now,
+		Encrypted: sourceCfg.Encrypted,
+		OwnerID:   accountID, AvailabilityZone: sourceCfg.AvailabilityZone,
+		Tags:           utils.ExtractTags(input.TagSpecifications, "snapshot"),
+		ProviderHandle: copied.Handle,
+	}
+	if snapshotCfg.State == "" {
+		snapshotCfg.State = "completed"
+	}
+	snapshotCfg.Description = sourceCfg.Description
+	if input.Description != nil {
+		snapshotCfg.Description = *input.Description
+	}
+
+	// The copy pins the same chunks as its source, so it must join the volume's
+	// snapshot list before it is visible: a copy missing from that list would
+	// let the volume be deleted out from under it.
+	if err := s.addSnapshotRef(ctx, sourceCfg.VolumeID, newSnapshotID); err != nil {
+		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: newSnapshotID, Handle: copied.Handle})
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.putSnapshotConfig(newSnapshotID, snapshotCfg); err != nil {
+		_ = s.removeSnapshotRefForCleanup(ctx, sourceCfg.VolumeID, newSnapshotID)
+		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: newSnapshotID, Handle: copied.Handle})
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "CopySnapshot completed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID)
+
+	return &ec2.CopySnapshotOutput{
+		SnapshotId: aws.String(newSnapshotID),
+		Tags:       utils.MapToEC2Tags(snapshotCfg.Tags),
+	}, nil
 }
 
 // addSnapshotRef adds snapshotID to the volume's snapshot list in KV.

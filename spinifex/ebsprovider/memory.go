@@ -209,6 +209,19 @@ func (m *MemoryProvider) CreateSnapshot(_ context.Context, req CreateSnapshotReq
 	return cloneSnapshot(snapshot), nil
 }
 
+// Snapshot reports what the provider holds under snapshotID, so a
+// control-plane test can assert a snapshot really reached the provider rather
+// than existing only as a control-plane document.
+func (m *MemoryProvider) Snapshot(snapshotID string) (*Snapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snapshot := m.snapshots[snapshotID]
+	if snapshot == nil {
+		return nil, false
+	}
+	return cloneSnapshot(snapshot), true
+}
+
 func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotRequest) error {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return err

@@ -504,11 +504,11 @@ func TestDeleteSnapshot_MissingID(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
 
-// CopySnapshot is refused: a copy needs viperblock snapshot metadata under the
-// new ID, which cannot be re-sealed from the control plane on an encrypted
-// volume. The old behaviour wrote only the control-plane config, producing a
-// snapshot that described fine and then failed at attach.
-func TestCopySnapshot_IsUnsupported(t *testing.T) {
+// Without a provider a copy would need snapshot metadata under the new ID that
+// the control plane cannot re-seal on an encrypted volume. Writing only the
+// control-plane config produced a snapshot that described fine and then failed
+// at attach, so this path refuses instead of producing one.
+func TestCopySnapshot_UnsupportedWithoutProvider(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, store, "vol-1", 50)
@@ -1227,4 +1227,141 @@ func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: "vol-rollback-check",
 	})
 	require.NoError(t, err, "rollback must have deleted the just-created provider snapshot")
+}
+
+// providerSnapshotService builds a snapshot service backed by the memory
+// provider with one volume registered, ready to snapshot.
+func providerSnapshotService(t *testing.T, volumeID string) (*SnapshotServiceImpl, *ebsprovider.MemoryProvider) {
+	t.Helper()
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 4, State: "available",
+		AvailabilityZone: "us-east-1a", ProviderHandle: "memory://volume/" + volumeID,
+	}))
+	_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 4 * 1024 * 1024 * 1024},
+		AvailabilityZone: "us-east-1a",
+	})
+	require.NoError(t, err)
+	return svc, provider
+}
+
+// The copy must exist in the provider under its own ID, not just as a
+// control-plane document. That gap is what made the previous implementation
+// describe a snapshot that failed at attach.
+func TestCopySnapshot_Provider_CreatesBackendSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc, provider := providerSnapshotService(t, "vol-copysrc")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copysrc")}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{
+		SourceSnapshotId: src.SnapshotId, Description: aws.String("copied"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.SnapshotId)
+	newID := aws.StringValue(out.SnapshotId)
+	assert.NotEqual(t, aws.StringValue(src.SnapshotId), newID)
+
+	got, ok := provider.Snapshot(newID)
+	require.True(t, ok, "the copy must exist in the provider, not only in the control plane")
+	assert.Equal(t, "vol-copysrc", got.SourceVolumeID)
+
+	stored, err := svc.getSnapshotConfig(newID)
+	require.NoError(t, err)
+	assert.Equal(t, "vol-copysrc", stored.VolumeID)
+	assert.Equal(t, "copied", stored.Description)
+	assert.Equal(t, testAccountID, stored.OwnerID)
+}
+
+// Both the copy and its source must describe. This service is built without
+// JetStream, so it covers the control-plane documents only — the snapshot-ref
+// rollback needs a KV-backed service and is not exercised here.
+func TestCopySnapshot_Provider_CopyAndSourceBothDescribe(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := providerSnapshotService(t, "vol-copyref")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copyref")}, testAccountID)
+	require.NoError(t, err)
+	out, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
+	require.NoError(t, err)
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(listed.Snapshots))
+	for _, s := range listed.Snapshots {
+		ids = append(ids, aws.StringValue(s.SnapshotId))
+	}
+	assert.Contains(t, ids, aws.StringValue(out.SnapshotId))
+	assert.Contains(t, ids, aws.StringValue(src.SnapshotId))
+}
+
+// The copy inherits the source description when the caller supplies none,
+// rather than landing with an empty one.
+func TestCopySnapshot_Provider_InheritsSourceDescription(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := providerSnapshotService(t, "vol-copydesc")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-copydesc"), Description: aws.String("original text"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
+	require.NoError(t, err)
+	stored, err := svc.getSnapshotConfig(aws.StringValue(out.SnapshotId))
+	require.NoError(t, err)
+	assert.Equal(t, "original text", stored.Description)
+}
+
+// A provider failure must leave nothing behind: no control-plane document and
+// no entry in the volume's snapshot list.
+func TestCopySnapshot_Provider_FailureLeavesNothingBehind(t *testing.T) {
+	ctx := context.Background()
+	svc, provider := providerSnapshotService(t, "vol-copyfail")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copyfail")}, testAccountID)
+	require.NoError(t, err)
+
+	svc.SetEBSProvider(&copyFailingProvider{EBSProvider: provider})
+	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, listed.Snapshots, 1, "only the source snapshot should exist")
+}
+
+// Ownership is checked before the copy runs, so another tenant's snapshot is
+// refused rather than duplicated into the caller's account.
+func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
+	ctx := context.Background()
+	svc, provider := providerSnapshotService(t, "vol-copyown")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copyown")}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, "999988887777")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
+
+	_, ok := provider.Snapshot(aws.StringValue(src.SnapshotId))
+	require.True(t, ok, "the source must survive a refused copy")
+}
+
+// copyFailingProvider fails only CopySnapshot, leaving every other operation
+// intact so the rollback path is what the test exercises.
+type copyFailingProvider struct {
+	ebsprovider.EBSProvider
+}
+
+func (p *copyFailingProvider) CopySnapshot(context.Context, ebsprovider.CopySnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, errors.New("provider copy failed")
 }

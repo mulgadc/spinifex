@@ -15,12 +15,16 @@ type gpuSnapshotter interface {
 	Snapshot() []gpu.PoolEntry
 }
 
-// checkCapacity reports whether the free pool (whole devices or MIG slices
-// with Available=true) has at least one entry with minVRAMMiB free. It is a
-// fast pre-admission check only: the deeper claim/allocate decision still
-// happens inside the shared RunInstances path when the VM actually launches,
-// so a device can still be lost to a racing launch between this check and
-// that claim — the guest fails to boot in that rare case, not silently OOMs.
+// checkCapacity reports whether the free pool (whole devices or MIG slices)
+// has at least one entry with minVRAMMiB free. It is a fast pre-admission
+// check only: the deeper claim/allocate decision still happens inside the
+// shared RunInstances path when the VM actually launches, so a device can
+// still be lost to a racing launch between this check and that claim — the
+// guest fails to boot in that rare case, not silently OOMs.
+//
+// Free means both axes the pool tracks: Available is device health, which
+// Release clears when a vfio rebind fails, while InstanceID is occupancy.
+// Claim tests both, and so must this — a claimed device keeps Available=true.
 func checkCapacity(snapshot []gpu.PoolEntry, minVRAMMiB int) error {
 	if minVRAMMiB <= 0 {
 		return fmt.Errorf("bedrock: invalid MinVRAMMiB %d", minVRAMMiB)
@@ -31,7 +35,7 @@ func checkCapacity(snapshot []gpu.PoolEntry, minVRAMMiB int) error {
 	var unknownVRAM *gpu.PoolEntry
 	for i := range snapshot {
 		entry := &snapshot[i]
-		if !entry.Available {
+		if !entry.Available || entry.InstanceID != "" {
 			continue
 		}
 		memMiB := entry.Device.MemoryMiB

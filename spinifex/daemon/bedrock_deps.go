@@ -70,7 +70,7 @@ func (d *Daemon) buildBedrockServiceDeps() handlers_bedrock.ServiceDeps {
 		Replicas: clusterSize,
 	}
 	if d.gpuManager != nil {
-		deps.GPU = &daemonGPUSnapshotter{mgr: d.gpuManager}
+		deps.GPU = &daemonGPUSnapshotter{d: d}
 	}
 	return deps
 }
@@ -78,10 +78,20 @@ func (d *Daemon) buildBedrockServiceDeps() handlers_bedrock.ServiceDeps {
 // daemonGPUSnapshotter adapts *gpu.Manager to handlers_bedrock's Snapshot-only
 // capacity-check surface, keeping the gpu package out of that handler package
 // the same way daemonGPUClaimer keeps it out of handlers_ec2_instance.
+//
+// It holds the daemon rather than the manager because applyGPUConfig swaps
+// d.gpuManager on a passthrough toggle. Capturing the pointer here would leave
+// this reading an orphaned pool that sees no claims and so admits everything.
 type daemonGPUSnapshotter struct {
-	mgr *gpu.Manager
+	d *Daemon
 }
 
 func (g *daemonGPUSnapshotter) Snapshot() []gpu.PoolEntry {
-	return g.mgr.Snapshot()
+	g.d.mu.Lock()
+	mgr := g.d.gpuManager
+	g.d.mu.Unlock()
+	if mgr == nil {
+		return nil
+	}
+	return mgr.Snapshot()
 }

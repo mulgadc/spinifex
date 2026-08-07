@@ -698,6 +698,23 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(context.Background(), volumeID)
+		if err != nil {
+			slog.Error("snapshotRunningVolume: failed to read provider volume metadata", "volumeId", volumeID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		created, err := s.provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+			Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: meta.ProviderHandle,
+		})
+		if err != nil || created == nil {
+			slog.Error("snapshotRunningVolume: provider CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("snapshotRunningVolume: snapshot created", "volumeId", volumeID, "snapshotId", snapshotID, "provider", true)
+		return nil
+	}
+
 	cfg := vbs3.S3Config{
 		VolumeName: volumeID,
 		VolumeSize: volumeSize,
@@ -771,6 +788,26 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 	}
 	volumeSize := volConfig.VolumeMetadata.SizeGiB * 1024 * 1024 * 1024
 
+	// No drain: the volume is stopped/detached, so nothing is buffered on a
+	// serving node. viperblockd's handleCreateSnapshot prefers a live mounted
+	// engine over opening a second one, so it handles the mounted case itself.
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(context.Background(), volumeID)
+		if err != nil {
+			slog.Error("snapshotStoppedVolume: failed to read provider volume metadata", "volumeId", volumeID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		created, err := s.provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+			Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: meta.ProviderHandle,
+		})
+		if err != nil || created == nil {
+			slog.Error("snapshotStoppedVolume: provider CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("snapshotStoppedVolume: snapshot created", "volumeId", volumeID, "snapshotId", snapshotID, "provider", true)
+		return nil
+	}
+
 	cfg := vbs3.S3Config{
 		VolumeName: volumeID,
 		VolumeSize: volumeSize,
@@ -837,8 +874,24 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 	return nil
 }
 
-// getVolumeConfig reads a volume's VBState config from S3.
+// getVolumeConfig reads a volume's VBState config from S3, or under a
+// provider, projects the ebsmetadata document onto the same shape. A
+// provider-created volume has no config.json at all — its metadata lives in
+// an ebsmetadata document — so reading the legacy key here made every
+// CreateImage from such a volume fail, the same NotFound bug AttachVolume had
+// before its volume-config read was fixed.
 func (s *ImageServiceImpl) getVolumeConfig(ctx context.Context, volumeID string) (*viperblock.VolumeConfig, error) {
+	if s.provider != nil {
+		meta, err := s.metadata.GetVolume(ctx, volumeID)
+		if err != nil {
+			if objectstore.IsNoSuchKeyError(err) {
+				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			}
+			return nil, fmt.Errorf("get provider volume metadata: %w", err)
+		}
+		return providerImageVolumeConfig(meta), nil
+	}
+
 	configKey := fmt.Sprintf("%s/config.json", volumeID)
 	result, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -858,6 +911,38 @@ func (s *ImageServiceImpl) getVolumeConfig(ctx context.Context, volumeID string)
 		return nil, err
 	}
 	return &vbState.VolumeConfig, nil
+}
+
+// providerImageVolumeConfig projects an ebsmetadata document onto the
+// VolumeConfig shape getVolumeConfig's embedded path returns, mirroring
+// handlers/ec2/volume's providerVolumeConfig so the two projections cannot
+// drift. AMIMetadata stays zero: the control-plane document deliberately does
+// not carry it.
+func providerImageVolumeConfig(meta ebsmetadata.Volume) *viperblock.VolumeConfig {
+	state := meta.State
+	if state == "" {
+		state = "available"
+	}
+	return &viperblock.VolumeConfig{
+		VolumeMetadata: viperblock.VolumeMetadata{
+			VolumeID:            meta.VolumeID,
+			VolumeName:          meta.VolumeName,
+			TenantID:            meta.TenantID,
+			SizeGiB:             meta.CapacityGiB,
+			State:               state,
+			CreatedAt:           meta.CreatedAt,
+			AttachedAt:          meta.AttachedAt,
+			AvailabilityZone:    meta.AvailabilityZone,
+			AttachedInstance:    meta.AttachedInstance,
+			DeviceName:          meta.DeviceName,
+			VolumeType:          meta.VolumeType,
+			IOPS:                meta.IOPS,
+			Throughput:          meta.Throughput,
+			Tags:                meta.Tags,
+			SnapshotID:          meta.SnapshotID,
+			DeleteOnTermination: meta.DeleteOnTermination,
+		},
+	}
 }
 
 // amiNameExists checks if any existing AMI already uses the given name.

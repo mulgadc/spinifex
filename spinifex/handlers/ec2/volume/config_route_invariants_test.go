@@ -8,9 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,13 +18,13 @@ import (
 // seedUnencryptedConfig writes a plain (EncryptionEnabled=false) full VBState.
 func seedUnencryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
 	t.Helper()
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName: volumeID,
 		VolumeSize: 10 * 1024 * 1024 * 1024,
 		BlockSize:  4096,
 		SeqNum:     7,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{VolumeID: volumeID, SizeGiB: 10, State: "available"},
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{VolumeID: volumeID, SizeGiB: 10, State: "available"},
 		},
 	}
 	data, err := json.Marshal(state)

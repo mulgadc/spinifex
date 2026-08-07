@@ -19,7 +19,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,8 +252,9 @@ func TestDrainVolume_StateJSONOverridesConfigJSON(t *testing.T) {
 	seedVolumeAttachment(t, store, "vol-stale-config", "in-use", drainInstanceID)
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-stale-config"))
 
-	stale := viperblock.VolumeMetadata{State: "available"}
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-stale-config", stale.State, stale.AttachedInstance, testAccountID))
+	// "available" mirrors the stale State a live NBD plugin leaves in
+	// config.json; drainVolume must not trust it (see the test's own doc above).
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-stale-config", "available", "", testAccountID))
 
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }
@@ -265,8 +265,8 @@ func TestDrainVolume_FallsBackToConfigJSONWhenNoStateObject(t *testing.T) {
 	svc, _, nc := setupDrainService(t)
 	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-legacy"))
 
-	legacy := viperblock.VolumeMetadata{State: "in-use", AttachedInstance: drainInstanceID}
-	require.NoError(t, svc.drainVolume(context.Background(), "vol-legacy", legacy.State, legacy.AttachedInstance, testAccountID))
+	// The state/instance embedded in a legacy config.json, with no state.json to overlay it.
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-legacy", "in-use", drainInstanceID, testAccountID))
 
 	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
 }

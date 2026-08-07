@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
@@ -48,13 +49,13 @@ func TestMergeVolumeConfig_RefusesEncryptedVBState(t *testing.T) {
 	// Seed an encrypted-at-rest VBState. mergeVolumeConfig must refuse to
 	// re-marshal it because spinifex does not currently hold the master key
 	// and a tag-less rewrite would brick the volume.
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName:        volumeID,
 		VolumeSize:        1024 * 1024 * 1024,
 		BlockSize:         4096,
 		EncryptionEnabled: true,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				VolumeID: volumeID,
 				SizeGiB:  1,
 			},

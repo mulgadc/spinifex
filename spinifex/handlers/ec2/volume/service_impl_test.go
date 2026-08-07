@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -928,9 +929,9 @@ func setupTestVolumeKV(t *testing.T) jetstream.KeyValue {
 
 func createVolumeInStore(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
 	t.Helper()
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				VolumeID: volumeID,
 				SizeGiB:  10,
 				State:    "available",
@@ -1004,10 +1005,10 @@ func TestDeleteVolume_ErrorWhenKVNil(t *testing.T) {
 }
 
 // createVolumeInStoreWithMeta seeds a volume config.json with custom metadata.
-func createVolumeInStoreWithMeta(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata) {
+func createVolumeInStoreWithMeta(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta vblegacy.VolumeMetadata) {
 	t.Helper()
-	wrapper := volumeConfigWrapper{
-		VolumeConfig: viperblock.VolumeConfig{
+	wrapper := vblegacy.ConfigWrapper{
+		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: meta,
 		},
 	}
@@ -1024,14 +1025,14 @@ func createVolumeInStoreWithMeta(t *testing.T, store *objectstore.MemoryObjectSt
 
 // createVolumeInStoreWithVBState seeds a volume config.json as a full VBState
 // (with BlockSize > 0) so that mergeVolumeConfig preserves VBState fields.
-func createVolumeInStoreWithVBState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata, blockSize uint32, seqNum uint64) {
+func createVolumeInStoreWithVBState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta vblegacy.VolumeMetadata, blockSize uint32, seqNum uint64) {
 	t.Helper()
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName: volumeID,
 		VolumeSize: meta.SizeGiB * 1024 * 1024 * 1024,
 		BlockSize:  blockSize,
 		SeqNum:     seqNum,
-		VolumeConfig: viperblock.VolumeConfig{
+		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: meta,
 		},
 	}
@@ -1053,7 +1054,7 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	now := time.Now()
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID:            "vol-full",
 		SizeGiB:             20,
 		State:               "in-use",
@@ -1071,12 +1072,12 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 	}
 	// Seed as a full VBState with EncryptionEnabled=true so getVolumeByID
 	// reports Encrypted via the authoritative VBState.EncryptionEnabled path.
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName:        "vol-full",
 		VolumeSize:        meta.SizeGiB * 1024 * 1024 * 1024,
 		BlockSize:         4096,
 		EncryptionEnabled: true,
-		VolumeConfig:      viperblock.VolumeConfig{VolumeMetadata: meta},
+		VolumeConfig:      vblegacy.VolumeConfig{VolumeMetadata: meta},
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
@@ -1117,7 +1118,7 @@ func TestGetVolumeByID_AttachmentDetached(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID:         "vol-detach",
 		SizeGiB:          10,
 		State:            "available",
@@ -1137,7 +1138,7 @@ func TestGetVolumeByID_DefaultStateAndType(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID: "vol-defaults",
 		SizeGiB:  5,
 		State:    "",
@@ -1178,7 +1179,7 @@ func TestGetVolumeByID_EmptyVolumeID(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID: "",
 		SizeGiB:  10,
 	}
@@ -1193,7 +1194,7 @@ func TestGetVolumeByID_ZeroSize(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID: "vol-zerosize",
 		SizeGiB:  0,
 	}
@@ -1220,7 +1221,7 @@ func TestDescribeVolumes_NilInput(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Seed one volume so slow path has something to find
-	createVolumeInStoreWithMeta(t, store, "vol-nil1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-nil1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-nil1", SizeGiB: 10, State: "available",
 	})
 
@@ -1243,7 +1244,7 @@ func TestDescribeVolumes_SlowPath_MultipleVolumes(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-a", "vol-b", "vol-c"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
+		createVolumeInStoreWithMeta(t, store, id, vblegacy.VolumeMetadata{
 			VolumeID: id, SizeGiB: 10, State: "available",
 		})
 	}
@@ -1258,7 +1259,7 @@ func TestDescribeVolumes_FastPath_SpecificIDs(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-x", "vol-y", "vol-z"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
+		createVolumeInStoreWithMeta(t, store, id, vblegacy.VolumeMetadata{
 			VolumeID: id, SizeGiB: 10, State: "available",
 		})
 	}
@@ -1281,7 +1282,7 @@ func TestDescribeVolumes_FastPath_MixedExistingAndMissing(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-exists", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-exists", vblegacy.VolumeMetadata{
 		VolumeID: "vol-exists", SizeGiB: 10, State: "available",
 	})
 
@@ -1297,7 +1298,7 @@ func TestDescribeVolumes_FastPath_NilVolumeID(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-ok", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-ok", vblegacy.VolumeMetadata{
 		VolumeID: "vol-ok", SizeGiB: 10, State: "available",
 	})
 
@@ -1315,10 +1316,10 @@ func TestDescribeVolumes_AccountScoping_SlowPath(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Create volumes for two different accounts
-	createVolumeInStoreWithMeta(t, store, "vol-acctA", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-acctA", vblegacy.VolumeMetadata{
 		VolumeID: "vol-acctA", SizeGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-acctB", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-acctB", vblegacy.VolumeMetadata{
 		VolumeID: "vol-acctB", SizeGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
@@ -1347,10 +1348,10 @@ func TestDescribeVolumes_AccountScoping_FastPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-mine", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-mine", vblegacy.VolumeMetadata{
 		VolumeID: "vol-mine", SizeGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-other", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-other", vblegacy.VolumeMetadata{
 		VolumeID: "vol-other", SizeGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
@@ -1375,7 +1376,7 @@ func TestDeleteVolume_AccountScoping(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = setupTestVolumeKV(t)
 
-	createVolumeInStoreWithMeta(t, store, "vol-owned", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-owned", vblegacy.VolumeMetadata{
 		VolumeID: "vol-owned", SizeGiB: 10, State: "available", TenantID: "111111111111",
 	})
 
@@ -1397,7 +1398,7 @@ func TestModifyVolume_AccountScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-modify", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-modify", vblegacy.VolumeMetadata{
 		VolumeID: "vol-modify", SizeGiB: 10, State: "available", TenantID: "111111111111",
 	})
 
@@ -1422,10 +1423,10 @@ func TestDescribeVolumeStatus_AccountScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-statusA", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-statusA", vblegacy.VolumeMetadata{
 		VolumeID: "vol-statusA", SizeGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-statusB", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-statusB", vblegacy.VolumeMetadata{
 		VolumeID: "vol-statusB", SizeGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
@@ -1495,7 +1496,7 @@ func TestModifyVolume_ShrinkRejected(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-shrink", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-shrink", vblegacy.VolumeMetadata{
 		VolumeID: "vol-shrink", SizeGiB: 10, State: "available",
 	})
 
@@ -1511,7 +1512,7 @@ func TestModifyVolume_SameSizeRejected(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-same", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-same", vblegacy.VolumeMetadata{
 		VolumeID: "vol-same", SizeGiB: 10, State: "available",
 	})
 
@@ -1527,7 +1528,7 @@ func TestModifyVolume_AttachedInUse(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-inuse", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-inuse",
 		SizeGiB:          10,
 		State:            "in-use",
@@ -1546,7 +1547,7 @@ func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-grow", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-grow", vblegacy.VolumeMetadata{
 		VolumeID:   "vol-grow",
 		SizeGiB:    10,
 		State:      "available",
@@ -1577,7 +1578,7 @@ func TestModifyVolume_ModifyTypeAndIOPS(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-typemod", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-typemod", vblegacy.VolumeMetadata{
 		VolumeID:   "vol-typemod",
 		SizeGiB:    10,
 		State:      "available",
@@ -1605,7 +1606,7 @@ func TestModifyVolume_AvailableWithAttachment(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Volume attached but state is "available" (stopped instance) -- allowed
-	createVolumeInStoreWithMeta(t, store, "vol-stopinst", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-stopinst", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-stopinst",
 		SizeGiB:          10,
 		State:            "available",
@@ -1626,7 +1627,7 @@ func TestUpdateVolumeState_AttachVolume(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-attach", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-attach", vblegacy.VolumeMetadata{
 		VolumeID: "vol-attach", SizeGiB: 10, State: "available",
 	})
 
@@ -1645,7 +1646,7 @@ func TestUpdateVolumeState_DetachVolume(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-detach2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-detach2", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-detach2",
 		SizeGiB:          10,
 		State:            "in-use",
@@ -1675,7 +1676,7 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := vblegacy.VolumeMetadata{
 		VolumeID: "vol-vbstate", SizeGiB: 10, State: "available",
 	}
 	createVolumeInStoreWithVBState(t, store, "vol-vbstate", meta, 4096, 5)
@@ -1695,7 +1696,7 @@ func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
 	body, err := io.ReadAll(getResult.Body)
 	require.NoError(t, err)
 
-	var state viperblock.VBState
+	var state vblegacy.VBState
 	require.NoError(t, json.Unmarshal(body, &state))
 
 	assert.Equal(t, uint32(4096), state.BlockSize)
@@ -1781,7 +1782,7 @@ func TestDeleteVolume_VolumeInUse(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	createVolumeInStoreWithMeta(t, store, "vol-busy", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-busy", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-busy",
 		SizeGiB:          10,
 		State:            "in-use",
@@ -1804,7 +1805,7 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 	// State != "available" triggers the check even without "in-use"
 	// Actually: the code checks `State != "available" || AttachedInstance != ""`
 	// So having AttachedInstance set while state is "available" still triggers VolumeInUse
-	createVolumeInStoreWithMeta(t, store, "vol-attached", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-attached", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-attached",
 		SizeGiB:          10,
 		State:            "available",
@@ -1826,7 +1827,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 
 	// Drift: a detach/terminate left State empty with no attachment. The volume
 	// is not in use and must be deletable, not VolumeInUse.
-	createVolumeInStoreWithMeta(t, store, "vol-drift", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-drift", vblegacy.VolumeMetadata{
 		VolumeID: "vol-drift",
 		SizeGiB:  10,
 		State:    "",
@@ -1853,7 +1854,7 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-stopped-root"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, volumeID, vblegacy.VolumeMetadata{
 		VolumeID:         volumeID,
 		SizeGiB:          10,
 		State:            "available",
@@ -1880,7 +1881,7 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-snapshotted-root"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, volumeID, vblegacy.VolumeMetadata{
 		VolumeID:         volumeID,
 		SizeGiB:          10,
 		State:            "available",
@@ -1963,7 +1964,7 @@ func TestDeleteVolume_WithNATSNotification(t *testing.T) {
 	svc.natsConn = nc
 
 	volumeID := "vol-natsok"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, volumeID, vblegacy.VolumeMetadata{
 		VolumeID: volumeID, SizeGiB: 10, State: "available",
 	})
 
@@ -1990,7 +1991,7 @@ func TestDescribeVolumeStatus_SlowPath_WithVolumes(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-s1", "vol-s2"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
+		createVolumeInStoreWithMeta(t, store, id, vblegacy.VolumeMetadata{
 			VolumeID:         id,
 			SizeGiB:          10,
 			State:            "available",
@@ -2013,7 +2014,7 @@ func TestDescribeVolumeStatus_FastPath_WithVolumes(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-status1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-status1", vblegacy.VolumeMetadata{
 		VolumeID:         "vol-status1",
 		SizeGiB:          10,
 		State:            "in-use",
@@ -2034,11 +2035,11 @@ func TestDescribeVolumes_SlowPath_SkipsBrokenConfig(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Good volume
-	createVolumeInStoreWithMeta(t, store, "vol-good", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-good", vblegacy.VolumeMetadata{
 		VolumeID: "vol-good", SizeGiB: 10, State: "available",
 	})
 	// Bad volume: zero size triggers error in getVolumeByID
-	createVolumeInStoreWithMeta(t, store, "vol-bad", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-bad", vblegacy.VolumeMetadata{
 		VolumeID: "vol-bad", SizeGiB: 0,
 	})
 
@@ -2053,10 +2054,10 @@ func TestDescribeVolumeStatus_SlowPath_SkipsBrokenConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-ok", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-ok", vblegacy.VolumeMetadata{
 		VolumeID: "vol-ok", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-broken", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-broken", vblegacy.VolumeMetadata{
 		VolumeID: "vol-broken", SizeGiB: 0,
 	})
 
@@ -2092,7 +2093,7 @@ func TestDeleteVolume_NATSErrorResponse(t *testing.T) {
 	svc.natsConn = nc
 
 	volumeID := "vol-natserr"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, volumeID, vblegacy.VolumeMetadata{
 		VolumeID: volumeID, SizeGiB: 10, State: "available",
 	})
 
@@ -2139,7 +2140,7 @@ func TestDeleteVolume_NATSTimeout(t *testing.T) {
 	svc.natsConn = nc
 
 	volumeID := "vol-natstimeout"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, volumeID, vblegacy.VolumeMetadata{
 		VolumeID: volumeID, SizeGiB: 10, State: "available",
 	})
 
@@ -2156,10 +2157,10 @@ func TestDescribeVolumes_FilterByStatus(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-avail", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-avail", vblegacy.VolumeMetadata{
 		VolumeID: "vol-avail", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-inuse", vblegacy.VolumeMetadata{
 		VolumeID: "vol-inuse", SizeGiB: 20, State: "in-use", TenantID: "acct1",
 	})
 
@@ -2177,10 +2178,10 @@ func TestDescribeVolumes_FilterByVolumeType(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-gp3", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-gp3", vblegacy.VolumeMetadata{
 		VolumeID: "vol-gp3", SizeGiB: 10, State: "available", VolumeType: "gp3", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-io1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-io1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-io1", SizeGiB: 10, State: "available", VolumeType: "io1", TenantID: "acct1",
 	})
 
@@ -2198,10 +2199,10 @@ func TestDescribeVolumes_FilterBySize(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-small", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-small", vblegacy.VolumeMetadata{
 		VolumeID: "vol-small", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-big", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-big", vblegacy.VolumeMetadata{
 		VolumeID: "vol-big", SizeGiB: 100, State: "available", TenantID: "acct1",
 	})
 
@@ -2219,11 +2220,11 @@ func TestDescribeVolumes_FilterByAttachmentInstanceId(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-att", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-att", vblegacy.VolumeMetadata{
 		VolumeID: "vol-att", SizeGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-free", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-free", vblegacy.VolumeMetadata{
 		VolumeID: "vol-free", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
 
@@ -2241,11 +2242,11 @@ func TestDescribeVolumes_FilterByAttachmentDevice(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-nbd0", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-nbd0", vblegacy.VolumeMetadata{
 		VolumeID: "vol-nbd0", SizeGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-nbd1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-nbd1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-nbd1", SizeGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd1", TenantID: "acct1",
 	})
@@ -2264,11 +2265,11 @@ func TestDescribeVolumes_FilterByAZ(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-az1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-az1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-az1", SizeGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-az2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-az2", vblegacy.VolumeMetadata{
 		VolumeID: "vol-az2", SizeGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2b", TenantID: "acct1",
 	})
@@ -2287,14 +2288,14 @@ func TestDescribeVolumes_FilterMultipleValues_OR(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-avail", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-avail", vblegacy.VolumeMetadata{
 		VolumeID: "vol-avail", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-inuse", vblegacy.VolumeMetadata{
 		VolumeID: "vol-inuse", SizeGiB: 10, State: "in-use",
 		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-del", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-del", vblegacy.VolumeMetadata{
 		VolumeID: "vol-del", SizeGiB: 10, State: "deleted", TenantID: "acct1",
 	})
 
@@ -2311,11 +2312,11 @@ func TestDescribeVolumes_FilterMultipleFilters_AND(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-match", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-match", vblegacy.VolumeMetadata{
 		VolumeID: "vol-match", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-nomatch", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-nomatch", vblegacy.VolumeMetadata{
 		VolumeID: "vol-nomatch", SizeGiB: 10, State: "in-use",
 		VolumeType: "gp3", AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
@@ -2348,7 +2349,7 @@ func TestDescribeVolumes_FilterNoResults(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-one", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-one", vblegacy.VolumeMetadata{
 		VolumeID: "vol-one", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
 
@@ -2365,10 +2366,10 @@ func TestDescribeVolumes_FilterNoFilters(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-a", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-a", vblegacy.VolumeMetadata{
 		VolumeID: "vol-a", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-b", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-b", vblegacy.VolumeMetadata{
 		VolumeID: "vol-b", SizeGiB: 20, State: "available", TenantID: "acct1",
 	})
 
@@ -2381,11 +2382,11 @@ func TestDescribeVolumes_FilterWildcard(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-az1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-az1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-az1", SizeGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-az2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-az2", vblegacy.VolumeMetadata{
 		VolumeID: "vol-az2", SizeGiB: 10, State: "available",
 		AvailabilityZone: "us-east-1a", TenantID: "acct1",
 	})
@@ -2404,11 +2405,11 @@ func TestDescribeVolumes_FilterByTag(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-tagged", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-tagged", vblegacy.VolumeMetadata{
 		VolumeID: "vol-tagged", SizeGiB: 10, State: "available", TenantID: "acct1",
 		Tags: map[string]string{"Environment": "prod"},
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-untagged", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-untagged", vblegacy.VolumeMetadata{
 		VolumeID: "vol-untagged", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
 
@@ -2426,10 +2427,10 @@ func TestDescribeVolumes_FilterWithVolumeIds(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-a", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-a", vblegacy.VolumeMetadata{
 		VolumeID: "vol-a", SizeGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-b", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-b", vblegacy.VolumeMetadata{
 		VolumeID: "vol-b", SizeGiB: 10, State: "in-use",
 		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
@@ -2450,10 +2451,10 @@ func TestDescribeVolumeStatus_FilterByVolumeId(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vs1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vs1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vs1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vs2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vs2", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vs2", SizeGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2471,7 +2472,7 @@ func TestDescribeVolumeStatus_FilterByStatus(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vss1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vss1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vss1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2497,7 +2498,7 @@ func TestDescribeVolumeStatus_FilterByAZ(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsaz", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsaz", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsaz", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2522,13 +2523,13 @@ func TestDescribeVolumeStatus_FilterMultipleValues_OR(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsor1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsor1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsor1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsor2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsor2", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsor2", SizeGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsor3", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsor3", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsor3", SizeGiB: 30, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2545,7 +2546,7 @@ func TestDescribeVolumeStatus_FilterMultipleFilters_AND(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsand", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsand", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsand", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2586,7 +2587,7 @@ func TestDescribeVolumeStatus_FilterWildcard(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vswild", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vswild", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vswild", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2603,7 +2604,7 @@ func TestDescribeVolumeStatus_FilterNoResults(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsnr", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsnr", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsnr", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
@@ -2620,10 +2621,10 @@ func TestDescribeVolumeStatus_FilterWithVolumeIds(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsf1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsf1", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsf1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsf2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-vsf2", vblegacy.VolumeMetadata{
 		VolumeID: "vol-vsf2", SizeGiB: 20, State: "available", AvailabilityZone: "us-east-1a",
 	})
 
@@ -2648,7 +2649,7 @@ func TestDescribeVolumesModifications_RoundTrip(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-rt", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-rt", vblegacy.VolumeMetadata{
 		VolumeID: "vol-rt", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
@@ -2686,7 +2687,7 @@ func TestDescribeVolumesModifications_OverwriteSemantics(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-ow", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-ow", vblegacy.VolumeMetadata{
 		VolumeID: "vol-ow", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
@@ -2718,7 +2719,7 @@ func TestDescribeVolumesModifications_CrossTenantFastPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-tenantA", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-tenantA", vblegacy.VolumeMetadata{
 		VolumeID: "vol-tenantA", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
@@ -2741,15 +2742,15 @@ func TestDescribeVolumesModifications_SlowPathScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-modA", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-modA", vblegacy.VolumeMetadata{
 		VolumeID: "vol-modA", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-unmodA", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-unmodA", vblegacy.VolumeMetadata{
 		VolumeID: "vol-unmodA", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-modB", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-modB", vblegacy.VolumeMetadata{
 		VolumeID: "vol-modB", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "222222222222",
 	})
@@ -2776,11 +2777,11 @@ func TestDescribeVolumesModifications_FilterMatching(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-fa", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-fa", vblegacy.VolumeMetadata{
 		VolumeID: "vol-fa", SizeGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-fb", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, store, "vol-fb", vblegacy.VolumeMetadata{
 		VolumeID: "vol-fb", SizeGiB: 50, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})

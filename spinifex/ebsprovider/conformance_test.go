@@ -289,6 +289,99 @@ func runConformanceSuite(t *testing.T, newProvider func(t *testing.T) EBSProvide
 		})
 	})
 
+	t.Run("CopySnapshot", func(t *testing.T) {
+		t.Run("success", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-src", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-src", VolumeID: "vol-copysnap-src"})
+			require.NoError(t, err)
+
+			copied, err := provider.CopySnapshot(ctx, CopySnapshotRequest{
+				Versioned: NewVersioned(), SourceSnapshotID: "snap-copysnap-src", DestinationSnapshotID: "snap-copysnap-dst", VolumeID: "vol-copysnap-src",
+			})
+			require.NoError(t, err)
+			require.NotNil(t, copied)
+			assert.Equal(t, "snap-copysnap-dst", copied.ID)
+			assert.Equal(t, "vol-copysnap-src", copied.SourceVolumeID)
+			assert.Equal(t, SnapshotStateCompleted, copied.State)
+			assert.NotEmpty(t, copied.Handle)
+
+			// The destination is a real, independently addressable snapshot.
+			require.NoError(t, provider.DeleteSnapshot(ctx, DeleteSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-src"}))
+			require.NoError(t, provider.DeleteSnapshot(ctx, DeleteSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-dst"}))
+		})
+
+		t.Run("not_found on absent source snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-nosrc", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CopySnapshot(ctx, CopySnapshotRequest{
+				Versioned: NewVersioned(), SourceSnapshotID: "snap-copysnap-missing", DestinationSnapshotID: "snap-copysnap-missing-dst", VolumeID: "vol-copysnap-nosrc",
+			})
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+
+		t.Run("already_exists on conflicting destination", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-conflict", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-a", VolumeID: "vol-copysnap-conflict"})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-b", VolumeID: "vol-copysnap-conflict"})
+			require.NoError(t, err)
+			_, err = provider.CopySnapshot(ctx, CopySnapshotRequest{
+				Versioned: NewVersioned(), SourceSnapshotID: "snap-copysnap-a", DestinationSnapshotID: "snap-copysnap-b", VolumeID: "vol-copysnap-conflict",
+			})
+			require.ErrorIs(t, err, ErrAlreadyExists)
+		})
+
+		t.Run("invalid_argument on missing ids", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CopySnapshot(context.Background(), CopySnapshotRequest{Versioned: NewVersioned()})
+			require.ErrorIs(t, err, ErrInvalidArgument)
+		})
+
+		t.Run("invalid_argument when source and destination match", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-same", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-same", VolumeID: "vol-copysnap-same"})
+			require.NoError(t, err)
+			_, err = provider.CopySnapshot(ctx, CopySnapshotRequest{
+				Versioned: NewVersioned(), SourceSnapshotID: "snap-copysnap-same", DestinationSnapshotID: "snap-copysnap-same", VolumeID: "vol-copysnap-same",
+			})
+			require.ErrorIs(t, err, ErrInvalidArgument)
+		})
+
+		t.Run("invalid_argument when volume id does not own the source snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-owner", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-copysnap-foreign", CapacityRange: CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-copysnap-owned", VolumeID: "vol-copysnap-owner"})
+			require.NoError(t, err)
+			_, err = provider.CopySnapshot(ctx, CopySnapshotRequest{
+				Versioned: NewVersioned(), SourceSnapshotID: "snap-copysnap-owned", DestinationSnapshotID: "snap-copysnap-owned-dst", VolumeID: "vol-copysnap-foreign",
+			})
+			require.ErrorIs(t, err, ErrInvalidArgument)
+		})
+
+		t.Run("unsupported_version", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CopySnapshot(context.Background(), CopySnapshotRequest{
+				SourceSnapshotID: "snap-a", DestinationSnapshotID: "snap-b", VolumeID: "vol-a",
+			})
+			require.ErrorIs(t, err, ErrUnsupportedVersion)
+		})
+	})
+
 	t.Run("PublishVolume", func(t *testing.T) {
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
@@ -475,6 +568,20 @@ func startConformanceServer(t *testing.T, conn *nats.Conn, backing EBSProvider) 
 			return
 		}
 		conformanceRespond(t, msg, CreateSnapshotResponse{Versioned: NewVersioned(), Snapshot: snap})
+	})
+
+	subscribe(CopySnapshotSubject, func(msg *nats.Msg) {
+		var req CopySnapshotRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			conformanceRespond(t, msg, CopySnapshotResponse{Versioned: NewVersioned(), Error: conformanceProviderError(err)})
+			return
+		}
+		snap, err := backing.CopySnapshot(ctx, req)
+		if err != nil {
+			conformanceRespond(t, msg, CopySnapshotResponse{Versioned: NewVersioned(), Error: conformanceProviderError(err)})
+			return
+		}
+		conformanceRespond(t, msg, CopySnapshotResponse{Versioned: NewVersioned(), Snapshot: snap})
 	})
 
 	// Publish/Unpublish subjects carry the node ID as their own token; the

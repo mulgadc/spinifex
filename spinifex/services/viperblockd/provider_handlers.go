@@ -60,6 +60,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		{ebsprovider.ExpandVolumeSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
 		{ebsprovider.DeleteVolumeSubject, func(msg *nats.Msg) { handleDeleteVolume(cfg, msg) }},
 		{ebsprovider.DeleteSnapshotSubject, func(msg *nats.Msg) { handleDeleteSnapshot(cfg, msg) }},
+		{ebsprovider.CopySnapshotSubject, func(msg *nats.Msg) { handleCopySnapshot(cfg, msg) }},
 	}
 	for _, s := range subs {
 		if _, err := nc.QueueSubscribe(s.subject, "spinifex-workers", s.handler); err != nil {
@@ -126,6 +127,12 @@ func volumeInUseError(format string, args ...any) *ebsprovider.ProviderError {
 func internalError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: fmt.Sprintf(format, args...)}
 }
+
+// errSnapshotDestinationExists lets handleCopySnapshot map a pre-existing
+// destination to ErrorCodeAlreadyExists without string-matching
+// viperblock.CopySnapshotMeta's error text, which carries no sentinel of
+// its own.
+var errSnapshotDestinationExists = errors.New("snapshot destination already exists")
 
 // volumeHandle and snapshotHandle produce the opaque handle strings this
 // provider returns, mirroring memory.go's "memory://..." convention so
@@ -622,6 +629,109 @@ func handleDeleteSnapshot(cfg *Config, msg *nats.Msg) {
 
 	slog.Info("ebs.provider.snapshot.delete: deleted", "snapshot", req.SnapshotID)
 	respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned()})
+}
+
+// handleCopySnapshot serves ebs.provider.v1.snapshot.copy. Unlike
+// handleCreateSnapshot, this is a plain synchronous request: duplicating a
+// snapshot's metadata is a couple of small object writes, not a
+// flush-drain-upload sequence slow enough to warrant the accept-then-publish
+// pattern.
+func handleCopySnapshot(cfg *Config, msg *nats.Msg) {
+	var req ebsprovider.CopySnapshotRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		slog.Error("ebs.provider.snapshot.copy: bad request", "err", err)
+		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		return
+	}
+	if req.SchemaVersion != ebsprovider.SchemaVersion {
+		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		return
+	}
+	if !validVolumeName(req.SourceSnapshotID) || !validVolumeName(req.DestinationSnapshotID) || !validVolumeName(req.VolumeID) {
+		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid source snapshot, destination snapshot, or volume id")})
+		return
+	}
+	if req.SourceSnapshotID == req.DestinationSnapshotID {
+		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("destination snapshot %q must differ from the source", req.DestinationSnapshotID)})
+		return
+	}
+
+	snapshot, err := copySnapshotOnVolume(cfg, req.VolumeID, req.SourceSnapshotID, req.DestinationSnapshotID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errSnapshotDestinationExists):
+			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("snapshot %s already exists", req.DestinationSnapshotID)})
+		case errors.Is(err, viperblock.ErrStateNotFound), errors.Is(err, os.ErrNotExist):
+			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("source snapshot %s not found on volume %s", req.SourceSnapshotID, req.VolumeID)})
+		default:
+			slog.Error("ebs.provider.snapshot.copy: failed", "volume", req.VolumeID, "source", req.SourceSnapshotID, "destination", req.DestinationSnapshotID, "err", err)
+			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("copy snapshot: %v", err)})
+		}
+		return
+	}
+
+	slog.Info("ebs.provider.snapshot.copy: copied", "volume", req.VolumeID, "source", req.SourceSnapshotID, "destination", req.DestinationSnapshotID)
+	respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Snapshot: snapshot})
+}
+
+// snapshotConfigExists probes whether snapshotID's config object is already
+// on the backend, the same check viperblock.CopySnapshotMeta makes
+// internally before it writes. Doing it here first lets the handler surface
+// a precise already_exists error instead of a generic internal one.
+func snapshotConfigExists(vb *viperblock.VB, snapshotID string) (bool, error) {
+	if _, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("probe destination snapshot %s: %w", snapshotID, err)
+	}
+	return false, nil
+}
+
+// copySnapshotOnVolume duplicates srcSnapshotID as dstSnapshotID by opening
+// (or reusing) a VB on volumeID and calling viperblock.CopySnapshotMeta,
+// which requires the VB to be opened over the snapshot's own source volume.
+// Mirrors snapshotVolumeEngine: prefer the already-mounted VB over opening a
+// second engine on the same volume, which would be a second writer.
+func copySnapshotOnVolume(cfg *Config, volumeID, srcSnapshotID, dstSnapshotID string) (*ebsprovider.Snapshot, error) {
+	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
+		return copySnapshotMetaWithVB(mv.VB, volumeID, srcSnapshotID, dstSnapshotID)
+	}
+
+	vb, err := openVolumeVB(cfg, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	}()
+	return copySnapshotMetaWithVB(vb, volumeID, srcSnapshotID, dstSnapshotID)
+}
+
+// copySnapshotMetaWithVB runs the destination-exists probe and the actual
+// copy against an already-resolved VB, shared by copySnapshotOnVolume's
+// mounted and freshly-opened branches.
+func copySnapshotMetaWithVB(vb *viperblock.VB, volumeID, srcSnapshotID, dstSnapshotID string) (*ebsprovider.Snapshot, error) {
+	exists, err := snapshotConfigExists(vb, dstSnapshotID)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, errSnapshotDestinationExists
+	}
+
+	dst, err := vb.CopySnapshotMeta(srcSnapshotID, dstSnapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("copy snapshot meta: %w", err)
+	}
+	return &ebsprovider.Snapshot{
+		ID:             dstSnapshotID,
+		SourceVolumeID: volumeID,
+		SizeBytes:      utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+		CreatedAt:      dst.CreatedAt.UTC(),
+		State:          ebsprovider.SnapshotStateCompleted,
+		Handle:         snapshotHandle(dstSnapshotID),
+	}, nil
 }
 
 func handleCreateSnapshot(cfg *Config, nc *nats.Conn, msg *nats.Msg) {

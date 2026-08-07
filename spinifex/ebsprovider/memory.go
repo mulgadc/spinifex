@@ -226,6 +226,46 @@ func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotReq
 	return nil
 }
 
+// CopySnapshot duplicates SourceSnapshotID under DestinationSnapshotID.
+// Mirrors viperblock.CopySnapshotMeta's contract: it refuses an existing
+// destination, an empty or equal ID pair, and a snapshot that does not
+// belong to VolumeID (the caller's claimed source volume).
+func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest) (*Snapshot, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if req.SourceSnapshotID == "" || req.DestinationSnapshotID == "" || req.VolumeID == "" {
+		return nil, fmt.Errorf("%w: source snapshot, destination snapshot, and volume IDs are required", ErrInvalidArgument)
+	}
+	if req.SourceSnapshotID == req.DestinationSnapshotID {
+		return nil, fmt.Errorf("%w: destination snapshot must differ from the source", ErrInvalidArgument)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.snapshots[req.SourceSnapshotID]
+	if src == nil {
+		return nil, fmt.Errorf("%w: snapshot %s", ErrNotFound, req.SourceSnapshotID)
+	}
+	if src.SourceVolumeID != req.VolumeID {
+		return nil, fmt.Errorf("%w: snapshot %s belongs to volume %s, not %s", ErrInvalidArgument, req.SourceSnapshotID, src.SourceVolumeID, req.VolumeID)
+	}
+	if existing := m.snapshots[req.DestinationSnapshotID]; existing != nil {
+		return nil, fmt.Errorf("%w: snapshot %s", ErrAlreadyExists, req.DestinationSnapshotID)
+	}
+
+	dst := &Snapshot{
+		ID:             req.DestinationSnapshotID,
+		SourceVolumeID: src.SourceVolumeID,
+		SizeBytes:      src.SizeBytes,
+		CreatedAt:      m.now().UTC(),
+		State:          SnapshotStateCompleted,
+		Handle:         "memory://snapshot/" + req.DestinationSnapshotID,
+	}
+	m.snapshots[req.DestinationSnapshotID] = dst
+	return cloneSnapshot(dst), nil
+}
+
 func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err

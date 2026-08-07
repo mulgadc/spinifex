@@ -17,6 +17,7 @@ const (
 	ExpandVolumeSubject   = "ebs.provider.v1.volume.expand"
 	DeleteVolumeSubject   = "ebs.provider.v1.volume.delete"
 	DeleteSnapshotSubject = "ebs.provider.v1.snapshot.delete"
+	CopySnapshotSubject   = "ebs.provider.v1.snapshot.copy"
 
 	// SnapshotCreateSubjectPrefix is the wildcard prefix servers subscribe to
 	// (SnapshotCreateSubjectPrefix + "*") to catch every per-volume create
@@ -229,6 +230,27 @@ func (p *NATSProvider) DeleteSnapshot(ctx context.Context, req DeleteSnapshotReq
 		return err
 	}
 	return responseError(response.SchemaVersion, response.Error)
+}
+
+// CopySnapshot is a plain synchronous request/reply, unlike CreateSnapshot's
+// accept-then-publish pattern: duplicating a snapshot's metadata is a couple
+// of small object writes with no flush/upload step slow enough to warrant a
+// completion subject.
+func (p *NATSProvider) CopySnapshot(ctx context.Context, req CopySnapshotRequest) (*Snapshot, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	var response CopySnapshotResponse
+	if err := p.request(ctx, CopySnapshotSubject, req, &response); err != nil {
+		return nil, err
+	}
+	if err := responseError(response.SchemaVersion, response.Error); err != nil {
+		return nil, err
+	}
+	if response.Snapshot == nil {
+		return nil, fmt.Errorf("ebs.snapshot.copy returned no snapshot")
+	}
+	return response.Snapshot, nil
 }
 
 func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {

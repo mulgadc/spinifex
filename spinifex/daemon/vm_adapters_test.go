@@ -368,15 +368,22 @@ func TestReleaseGPU_NoAddresses_NoOp(t *testing.T) {
 	a.ReleaseGPU(instance)
 }
 
-// ReleaseGPU logs a warning when the manager returns an error (instance not claimed).
-func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
+// TestReleaseGPU_AlreadyReleased_IsSuccess pins the fix for a teardown record
+// that could never complete. A stop releases the GPU, so the later terminate
+// finds no claim; reporting that as failure left the gpu teardown mark stuck
+// short of done, so the record was never purged and the GC re-drove it every
+// two minutes indefinitely, failing identically each time.
+func TestReleaseGPU_AlreadyReleased_IsSuccess(t *testing.T) {
 	mgr := gpu.NewManager(nil)
 	d := &Daemon{gpuManager: mgr}
 	a := newInstanceCleanerAdapter(d)
-	// GPU address set but no claim registered — Release returns an error.
+	// GPU address set but no claim registered — the shape a re-driven release
+	// sees once the work is already done.
 	instance := &vm.VM{ID: "i-unclaimed", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:03:00.0"}}}
-	// Must not panic; the error is logged as a warning.
-	a.ReleaseGPU(instance)
+
+	require.NoError(t, a.ReleaseGPU(instance), "an already-released GPU must not fail teardown")
+	// Idempotent under repetition, which is what the reaper does to it.
+	require.NoError(t, a.ReleaseGPU(instance))
 }
 
 // --- RemoveFromSpotRequest ---

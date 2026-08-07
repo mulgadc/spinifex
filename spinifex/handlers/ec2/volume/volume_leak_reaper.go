@@ -66,24 +66,11 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		default:
 		}
 
-		// Provider-managed volumes have no config.json to read: their
-		// attachment and tags live in ebsmetadata instead.
-		var attachedInstance string
-		var tags map[string]string
-		var sizeGiB uint64
-		if r.svc.provider != nil {
-			meta, err := r.svc.metadata.GetVolume(ctx, id)
-			if err != nil {
-				continue
-			}
-			attachedInstance, tags, sizeGiB = meta.AttachedInstance, meta.Tags, meta.CapacityGiB
-		} else {
-			cfg, err := r.svc.getVolumeConfig(ctx, id)
-			if err != nil {
-				continue
-			}
-			attachedInstance, tags, sizeGiB = cfg.VolumeMetadata.AttachedInstance, cfg.VolumeMetadata.Tags, cfg.VolumeMetadata.SizeGiB
+		meta, err := r.svc.metadata.GetVolume(ctx, id)
+		if err != nil {
+			continue
 		}
+		attachedInstance, tags, sizeGiB := meta.AttachedInstance, meta.Tags, meta.CapacityGiB
 
 		if attachedInstance == "" || !leaked[attachedInstance] {
 			continue
@@ -114,9 +101,8 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 }
 
 // markVolumeOrphaned tags the volume as orphaned. tags is the volume's
-// current, already-authoritative tag set (control-plane tags.json on the
-// legacy path, ebsmetadata.Volume.Tags on the provider path); the volume's
-// data and state remain untouched either way.
+// current, already-authoritative tag set; the volume's data and state remain
+// untouched.
 func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, tags map[string]string, attachedInstance string) error {
 	if tags == nil {
 		tags = make(map[string]string)
@@ -124,13 +110,10 @@ func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID str
 	tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
 	tags[orphanInstanceTagKey] = attachedInstance
 
-	if s.provider != nil {
-		meta, err := s.metadata.GetVolume(ctx, volumeID)
-		if err != nil {
-			return err
-		}
-		meta.Tags = tags
-		return s.metadata.PutVolume(ctx, meta)
+	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	if err != nil {
+		return err
 	}
-	return s.putVolumeTags(ctx, volumeID, tags)
+	meta.Tags = tags
+	return s.metadata.PutVolume(ctx, meta)
 }

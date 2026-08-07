@@ -3,7 +3,6 @@ package handlers_ec2_image
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,10 +28,14 @@ import (
 const testBucket = "test-bucket"
 const testAccountID = "000000000001"
 
-// setupTestImageService creates an image service with in-memory storage for testing.
+// setupTestImageService creates an image service with in-memory storage for
+// testing. It wires the same legacy read fallbacks the composition root does,
+// so fixtures written as pre-migration config.json objects resolve here.
 func setupTestImageService(t *testing.T) (*ImageServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := NewImageServiceImplWithStore(store, testBucket)
+	svc.metadata.SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
+	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	return svc, store
 }
 
@@ -40,7 +44,8 @@ func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, 
 	volumeState := vblegacy.VBState{
 		VolumeConfig: vblegacy.VolumeConfig{
 			VolumeMetadata: vblegacy.VolumeMetadata{
-				SizeGiB: uint64(sizeGiB),
+				VolumeID: volumeID,
+				SizeGiB:  uint64(sizeGiB),
 			},
 		},
 	}
@@ -292,21 +297,20 @@ func TestDescribeImages_StateProjection(t *testing.T) {
 	}
 }
 
-func TestGetVolumeConfig(t *testing.T) {
+func TestGetVolumeMetadata(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	createTestVolumeConfig(t, store, "vol-abc123", 20)
 
-	cfg, err := svc.getVolumeConfig(context.Background(), "vol-abc123")
+	meta, err := svc.getVolumeMetadata(context.Background(), "vol-abc123")
 	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	assert.Equal(t, uint64(20), cfg.VolumeMetadata.SizeGiB)
+	assert.Equal(t, uint64(20), meta.CapacityGiB)
 }
 
-func TestGetVolumeConfig_NotFound(t *testing.T) {
+func TestGetVolumeMetadata_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.getVolumeConfig(context.Background(), "vol-nonexistent")
+	_, err := svc.getVolumeMetadata(context.Background(), "vol-nonexistent")
 	require.Error(t, err)
 }
 
@@ -738,17 +742,15 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	assert.Empty(t, result.Images)
 }
 
-// TestDescribeImages_ConfigFaultCounting covers a config.json that
-// exists but can't be fetched/read/parsed must be promoted to WARN and counted
-// as unreadable so it stays visible at INFO, while a genuinely absent
-// config.json (a non-AMI directory) stays silent at DEBUG and uncounted, and a
-// healthy prefix is unaffected either way.
+// TestDescribeImages_ConfigFaultCounting covers a config.json that exists but
+// can't be fetched/read/parsed being promoted to WARN so it stays visible at
+// the default level, while a genuinely absent config.json (a non-AMI
+// directory) stays silent, and a healthy prefix is unaffected either way.
 func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 	tests := []struct {
 		name           string
 		setup          func(t *testing.T, store *objectstore.MemoryObjectStore)
 		wantImageCount int
-		wantUnreadable int
 		wantWarnLogged bool
 	}{
 		{
@@ -762,7 +764,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 				require.NoError(t, err)
 			},
 			wantImageCount: 0,
-			wantUnreadable: 1,
 			wantWarnLogged: true,
 		},
 		{
@@ -778,7 +779,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 				require.NoError(t, err)
 			},
 			wantImageCount: 0,
-			wantUnreadable: 0,
 			wantWarnLogged: false,
 		},
 		{
@@ -787,7 +787,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 				createTestAMIConfigWithOwner(t, store, "ami-healthy1", "healthy-ami", testAccountID)
 			},
 			wantImageCount: 1,
-			wantUnreadable: 0,
 			wantWarnLogged: false,
 		},
 	}
@@ -808,8 +807,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 			assert.Len(t, out.Images, tt.wantImageCount)
 
 			logs := buf.String()
-			assert.Contains(t, logs, "prefixesExamined=1", "the single ami-* prefix must be counted as examined")
-			assert.Contains(t, logs, fmt.Sprintf("unreadableConfigs=%d", tt.wantUnreadable))
 
 			if tt.wantWarnLogged {
 				assert.Contains(t, logs, "level=WARN",
@@ -916,7 +913,7 @@ func TestGetAMIConfig_InvalidJSON(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestGetVolumeConfig_InvalidJSON(t *testing.T) {
+func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
@@ -926,7 +923,7 @@ func TestGetVolumeConfig_InvalidJSON(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = svc.getVolumeConfig(context.Background(), "vol-badjson")
+	_, err = svc.getVolumeMetadata(context.Background(), "vol-badjson")
 	assert.Error(t, err)
 }
 

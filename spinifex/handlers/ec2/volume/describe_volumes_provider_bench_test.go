@@ -90,7 +90,7 @@ func BenchmarkDescribeVolumes_Provider_ListAndFilter(b *testing.B) {
 					if meta.TenantID != "acct-bench" || meta.VolumeID != targetID {
 						continue
 					}
-					found = providerMetadataVolume(meta)
+					found = metadataVolumeToEC2(meta)
 				}
 				if found == nil {
 					b.Fatalf("volume %s not found", targetID)

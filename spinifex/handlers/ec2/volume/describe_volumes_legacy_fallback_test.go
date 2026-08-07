@@ -20,6 +20,13 @@ import (
 // pre-provider embedded engine leaves behind — no ebsmetadata document.
 func seedLegacyVolumeConfig(t *testing.T, svc *VolumeServiceImpl, volumeID, accountID string) {
 	t.Helper()
+	seedLegacyVolumeConfigWithTags(t, svc, volumeID, accountID, nil)
+}
+
+// seedLegacyVolumeConfigWithTags is seedLegacyVolumeConfig with tags embedded
+// in config.json, the shape a volume tagged at create time left behind.
+func seedLegacyVolumeConfigWithTags(t *testing.T, svc *VolumeServiceImpl, volumeID, accountID string, tags map[string]string) {
+	t.Helper()
 	state := vblegacy.VBState{
 		VolumeName: volumeID,
 		VolumeSize: 8 * 1024 * 1024 * 1024,
@@ -32,6 +39,7 @@ func seedLegacyVolumeConfig(t *testing.T, svc *VolumeServiceImpl, volumeID, acco
 				State:            "available",
 				AvailabilityZone: "ap-southeast-2a",
 				VolumeType:       "gp3",
+				Tags:             tags,
 			},
 		},
 	}
@@ -74,6 +82,7 @@ func TestDescribeVolumes_Provider_SeesLegacyOnlyVolume(t *testing.T) {
 func TestDescribeVolumes_Provider_WithoutFallback_MissesLegacyOnlyVolume(t *testing.T) {
 	svc := newTestVolumeService("ap-southeast-2a")
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	svc.metadata.SetLegacyVolumeFallback(nil)
 
 	seedLegacyVolumeConfig(t, svc, "vol-legacy0000002", "acct-legacy")
 

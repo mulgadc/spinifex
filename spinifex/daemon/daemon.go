@@ -139,8 +139,7 @@ type Daemon struct {
 	keyService        *handlers_ec2_key.KeyServiceImpl
 	imageService      *handlers_ec2_image.ImageServiceImpl
 	volumeService     *handlers_ec2_volume.VolumeServiceImpl
-	// ebsProvider is non-nil only when config.EBSProviderViperblockd is
-	// selected; nil keeps every service on its legacy embedded-engine path.
+	// ebsProvider is the sole EBS backend, set once during startup.
 	ebsProvider           ebsprovider.EBSProvider
 	accountService        *handlers_ec2_account.AccountSettingsServiceImpl
 	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
@@ -1905,12 +1904,8 @@ const ebsProviderProbeTimeout = 2 * time.Second
 const ebsMetadataMigrationBucket = "spinifex-ebsmetadata-migrate"
 
 // configureEBSProvider wires a single NATSProvider into every EBS-adjacent
-// service when the operator opts into config.EBSProviderViperblockd. It is a
-// no-op for the default embedded provider, keeping that path unchanged.
+// service. viperblockd is the only provider, so this always runs.
 func (d *Daemon) configureEBSProvider() error {
-	if d.config.EBS.ResolvedProvider() != config.EBSProviderViperblockd {
-		return nil
-	}
 	if err := d.runEBSMetadataBackfill(); err != nil {
 		return fmt.Errorf("ebsmetadata backfill: %w", err)
 	}

@@ -68,30 +68,30 @@ func seedProviderVolume(t *testing.T, svc *ImageServiceImpl, provider ebsprovide
 	return doc
 }
 
-// TestGetVolumeConfig_Provider_ResolvesProviderCreatedVolume is the
+// TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume is the
 // regression guard for the whole change: a provider-created volume has no
 // {volumeID}/config.json, so reading the legacy key made every CreateImage
 // from such a volume fail with NoSuchKey, the same bug AttachVolume had
 // before its volume-config read was fixed.
-func TestGetVolumeConfig_Provider_ResolvesProviderCreatedVolume(t *testing.T) {
+func TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-provider001", 10)
 
-	cfg, err := svc.getVolumeConfig(context.Background(), doc.VolumeID)
+	meta, err := svc.getVolumeMetadata(context.Background(), doc.VolumeID)
 	require.NoError(t, err, "a provider-created volume with no config.json must resolve")
-	assert.Equal(t, doc.VolumeID, cfg.VolumeMetadata.VolumeID)
-	assert.Equal(t, testAccountID, cfg.VolumeMetadata.TenantID)
-	assert.Equal(t, uint64(10), cfg.VolumeMetadata.SizeGiB)
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Equal(t, providerSnapshotAZ, cfg.VolumeMetadata.AvailabilityZone)
+	assert.Equal(t, doc.VolumeID, meta.VolumeID)
+	assert.Equal(t, testAccountID, meta.TenantID)
+	assert.Equal(t, uint64(10), meta.CapacityGiB)
+	assert.Equal(t, "available", meta.State)
+	assert.Equal(t, providerSnapshotAZ, meta.AvailabilityZone)
 }
 
-// TestGetVolumeConfig_Provider_UnknownVolumeIsNotFound locks that a missing
+// TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound locks that a missing
 // ebsmetadata document maps to InvalidVolume.NotFound, not a generic error.
-func TestGetVolumeConfig_Provider_UnknownVolumeIsNotFound(t *testing.T) {
+func TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound(t *testing.T) {
 	svc, _, _ := setupProviderSnapshotImageService(t)
 
-	_, err := svc.getVolumeConfig(context.Background(), "vol-does-not-exist")
+	_, err := svc.getVolumeMetadata(context.Background(), "vol-does-not-exist")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }

@@ -23,7 +23,7 @@ type RunMeta struct {
 	// -ldflags override was available.
 	GitSHA string `json:"git_sha"`
 	// Provider is the [ebs] provider value determined to be in effect on the
-	// cluster for this run: "embedded" or "viperblockd".
+	// cluster for this run: "viperblockd".
 	Provider string `json:"ebs_provider"`
 	// ProviderSource records how Provider was determined: "cluster-local-config",
 	// "cluster-ssh", or "flag" (operator-supplied, cluster detection failed).

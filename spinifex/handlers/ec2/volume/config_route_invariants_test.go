@@ -37,13 +37,13 @@ func seedUnencryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, v
 	require.NoError(t, err)
 }
 
-// TestUpdateVolumeState_WritesStateJSONNotConfig locks the single-writer
+// TestUpdateVolumeState_WritesDocumentNotConfig locks the single-writer
 // contract: the live nbdkit VB owns config.json and rewrites it from its stale
 // in-memory State on every SaveState, so the control plane MUST persist
-// attachment state to the separate state.json object and leave config.json
-// byte-for-byte untouched. Writing State into config.json out-of-band is
-// silently clobbered under write load (the EKS-worker root-volume flip).
-func TestUpdateVolumeState_WritesStateJSONNotConfig(t *testing.T) {
+// attachment state to its own document and leave config.json byte-for-byte
+// untouched. Writing State into config.json out-of-band is silently clobbered
+// under write load (the EKS-worker root-volume flip).
+func TestUpdateVolumeState_WritesDocumentNotConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
@@ -57,10 +57,11 @@ func TestUpdateVolumeState_WritesStateJSONNotConfig(t *testing.T) {
 	assert.Equal(t, string(before), string(after),
 		"UpdateVolumeState must not write config.json; the live VB owns it")
 
-	rec := getStoredState(t, store, volumeID)
-	assert.Equal(t, "in-use", rec.State)
-	assert.Equal(t, "i-abc", rec.AttachedInstance)
-	assert.Equal(t, "/dev/nbd0", rec.DeviceName)
+	meta, err := svc.GetVolumeMetadata(volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", meta.State)
+	assert.Equal(t, "i-abc", meta.AttachedInstance)
+	assert.Equal(t, "/dev/nbd0", meta.DeviceName)
 }
 
 // TestUpdateVolumeState_EncryptedConfigUntouched locks the corruption-safety
@@ -81,54 +82,46 @@ func TestUpdateVolumeState_EncryptedConfigUntouched(t *testing.T) {
 	after := getStoredConfig(t, store, volumeID)
 	assert.Equal(t, string(before), string(after),
 		"UpdateVolumeState must not rewrite the sealed config.json (AES-GCM nonce reuse)")
-	assert.Equal(t, "in-use", getStoredState(t, store, volumeID).State)
+
+	meta, err := svc.GetVolumeMetadata(volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", meta.State)
 }
 
-// TestGetVolumeConfig_OverlaysStateJSON locks the read side: the authoritative
-// attachment state is state.json, which MUST override the (stale) State the live
-// VB persisted into config.json.
-func TestGetVolumeConfig_OverlaysStateJSON(t *testing.T) {
+// TestGetVolumeMetadata_OverlaysStateJSON locks the read side for a volume that
+// predates the control-plane document: the authoritative attachment state is
+// state.json, which MUST override the (stale) State the live VB persisted into
+// config.json.
+func TestGetVolumeMetadata_OverlaysStateJSON(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	volumeID := "vol-overlay"
 	seedUnencryptedConfig(t, store, volumeID) // config.json State == "available"
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-overlay", "/dev/nbd0"))
+	require.NoError(t, volumestate.Write(context.Background(), store, "test-bucket", volumeID, volumestate.Record{
+		State: "in-use", AttachedInstance: "i-overlay", DeviceName: "/dev/nbd0",
+	}))
 
-	cfg, err := svc.GetVolumeConfig(volumeID)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.Equal(t, "in-use", cfg.VolumeMetadata.State,
+	assert.Equal(t, "in-use", meta.State,
 		"state.json must override the stale State in config.json")
-	assert.Equal(t, "i-overlay", cfg.VolumeMetadata.AttachedInstance)
-	assert.Equal(t, "/dev/nbd0", cfg.VolumeMetadata.DeviceName)
+	assert.Equal(t, "i-overlay", meta.AttachedInstance)
+	assert.Equal(t, "/dev/nbd0", meta.DeviceName)
 }
 
-// TestGetVolumeConfig_FallsBackWhenNoStateJSON locks the migration path: a volume
-// predating the state.json split has no state.json, so the State embedded in
-// config.json is used unchanged.
-func TestGetVolumeConfig_FallsBackWhenNoStateJSON(t *testing.T) {
+// TestGetVolumeMetadata_FallsBackWhenNoStateJSON locks the migration path: a
+// volume predating the state.json split has no state.json, so the State
+// embedded in config.json is used unchanged.
+func TestGetVolumeMetadata_FallsBackWhenNoStateJSON(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	volumeID := "vol-legacy"
 	seedUnencryptedConfig(t, store, volumeID) // State == "available", no state.json
 
-	cfg, err := svc.GetVolumeConfig(volumeID)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.Equal(t, "available", cfg.VolumeMetadata.State,
+	assert.Equal(t, "available", meta.State,
 		"absent state.json must fall back to the State embedded in config.json")
-}
-
-// getStoredState reads and decodes the raw state.json from the memory store.
-func getStoredState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) volumestate.Record {
-	t.Helper()
-	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/state.json"),
-	})
-	require.NoError(t, err)
-	defer res.Body.Close()
-	var rec volumestate.Record
-	require.NoError(t, json.NewDecoder(res.Body).Decode(&rec))
-	return rec
 }

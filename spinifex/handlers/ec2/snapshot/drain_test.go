@@ -282,41 +282,6 @@ func TestDrainVolume_MetadataOnlySkipsDrain(t *testing.T) {
 	require.NoError(t, svc.drainVolume(context.Background(), "vol-meta-only", "", "", testAccountID))
 }
 
-// CreateSnapshot drains before it reads the checkpoint. The snapshot itself
-// then fails against the rejecting Predastore stub; what is asserted here is
-// that the drain was routed to the volume's host first.
-func TestCreateSnapshot_DrainsAttachedVolume(t *testing.T) {
-	svc, store, nc := setupDrainService(t)
-	createTestVolume(t, store, "vol-snap-drain", 10)
-	seedVolumeAttachment(t, store, "vol-snap-drain", "in-use", drainInstanceID)
-	got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-snap-drain"))
-
-	_, err := svc.CreateSnapshot(context.Background(),
-		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-snap-drain")}, testAccountID)
-	require.Error(t, err)
-
-	command := awaitDrainCommand(t, got)
-	assert.True(t, command.Attributes.DrainVolume)
-	assert.Equal(t, "vol-snap-drain", command.DrainVolumeData.VolumeID)
-}
-
-// An attached volume whose host reports the drain failed fails the snapshot: a
-// retryable error is strictly better than a successful snapshot of stale data.
-func TestCreateSnapshot_UndrainableAttachedVolumeFails(t *testing.T) {
-	svc, store, nc := setupDrainService(t)
-	createTestVolume(t, store, "vol-snap-nodrain", 10)
-	seedVolumeAttachment(t, store, "vol-snap-nodrain", "in-use", drainInstanceID)
-	got := drainResponder(t, nc, drainInstanceID,
-		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"drain failed"}`))
-
-	_, err := svc.CreateSnapshot(context.Background(),
-		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-snap-nodrain")}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-
-	assert.True(t, awaitDrainCommand(t, got).Attributes.DrainVolume)
-}
-
 // putProviderVolume seeds both the control-plane document CreateSnapshot's
 // provider branch reads for attachment state, and the provider's own record,
 // mirroring what CreateVolume's provider branch leaves behind.

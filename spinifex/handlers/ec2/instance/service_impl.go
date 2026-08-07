@@ -30,9 +30,6 @@ import (
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/types"
-	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1420,27 +1417,13 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	// Capture attach time for the root volume
 	attachTime := time.Now()
 
-	volumeConfig := viperblock.VolumeConfig{
-		VolumeMetadata: viperblock.VolumeMetadata{
-			VolumeID:            p.imageId,
-			SizeGiB:             utils.SafeIntToUint64(p.size / 1024 / 1024 / 1024),
-			CreatedAt:           attachTime,
-			DeviceName:          p.deviceName,
-			VolumeType:          p.volumeType,
-			IOPS:                p.iops,
-			SnapshotID:          p.snapshotId,
-			DeleteOnTermination: p.deleteOnTermination,
-			TenantID:            instance.AccountID,
-		},
-	}
-
 	size := p.size
 	imageId := p.imageId
 	deviceName := p.deviceName
 	deleteOnTermination := p.deleteOnTermination
 
 	// Step 1: Create or validate root volume
-	err := s.prepareRootVolume(ctx, input, imageId, size, p.iops, volumeConfig, instance, deleteOnTermination)
+	err := s.prepareRootVolume(ctx, input, imageId, size, p.iops, instance, deleteOnTermination)
 	if err != nil {
 		return nil, err
 	}
@@ -1449,7 +1432,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	// guests must not allocate an orphan VARS volume).
 	if instance.BootMode == "uefi" || instance.BootMode == "uefi-preferred" {
 		arch := instanceArchitecture(s.instanceTypes[*input.InstanceType])
-		err = s.prepareEFIVolume(ctx, imageId, volumeConfig, instance, arch)
+		err = s.prepareEFIVolume(ctx, imageId, instance, arch)
 		if err != nil {
 			return nil, err
 		}
@@ -1468,90 +1451,24 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	return volumeInfos, nil
 }
 
-// newViperblock creates a viperblock instance with the service's S3/Predastore credentials.
-func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeConfig viperblock.VolumeConfig) (*viperblock.VB, error) {
-	cfg := s3.S3Config{
-		VolumeName: volumeName,
-		VolumeSize: utils.SafeIntToUint64(size),
-		Bucket:     s.config.Predastore.Bucket,
-		Region:     s.config.Predastore.Region,
-		AccessKey:  s.config.Predastore.AccessKey,
-		SecretKey:  s.config.Predastore.SecretKey,
-		Host:       s.config.Predastore.Host,
-	}
-
-	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
-	if err != nil {
-		return nil, err
-	}
-
-	vbconfig := viperblock.VB{
-		VolumeName:        volumeName,
-		VolumeSize:        utils.SafeIntToUint64(size),
-		BaseDir:           s.config.WalDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig:      volumeConfig,
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-	}
-
-	vb, err := viperblock.New(&vbconfig, "s3", cfg)
-	return vb, err
-}
-
-// prepareRootVolume handles creation/cloning of the root volume. A provider
-// owns allocation when one is injected; the embedded engine below is the
-// fallback for deployments still running without a provider.
-func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size, iops int, volumeConfig viperblock.VolumeConfig, instance *vm.VM, deleteOnTermination bool) error {
-	if s.ebsProvider != nil {
-		if err := s.createRootVolumeViaProvider(ctx, rootVolumeSpec{
-			amiID:               aws.StringValue(input.ImageId),
-			volumeID:            imageId,
-			accountID:           instance.AccountID,
-			sizeBytes:           size,
-			iops:                iops,
-			deleteOnTermination: deleteOnTermination,
-		}); err != nil {
-			return err
-		}
-		appendRootEBSRequest(instance, imageId, deleteOnTermination)
-		return nil
-	}
-
-	vb, err := s.newViperblock(imageId, size, volumeConfig)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to connect to Viperblock store", "err", err)
+// prepareRootVolume allocates the root volume through the EBS provider and
+// records the boot volume the launcher must attach.
+func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size, iops int, instance *vm.VM, deleteOnTermination bool) error {
+	if s.ebsProvider == nil {
+		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareRootVolume")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
-	}()
-
-	// Initialize the backend
-	err = vb.Backend.Init()
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to initialize backend", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
+	if err := s.createRootVolumeViaProvider(ctx, rootVolumeSpec{
+		amiID:               aws.StringValue(input.ImageId),
+		volumeID:            imageId,
+		accountID:           instance.AccountID,
+		sizeBytes:           size,
+		iops:                iops,
+		deleteOnTermination: deleteOnTermination,
+	}); err != nil {
+		return err
 	}
-
-	// Only os.ErrNotExist means "clone from AMI"; any other error must abort.
-	// Treating a tamper/mismatch as missing would overwrite live volume state.
-	_, err = vb.LoadStateRequest("")
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.ErrorContext(ctx, "Failed to load root volume state from backend",
-			"imageId", imageId, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if err != nil {
-		slog.InfoContext(ctx, "Volume does not yet exist, creating from AMI ...")
-		if err = s.cloneAMIToVolume(ctx, input, vb); err != nil {
-			return err
-		}
-	}
-
 	appendRootEBSRequest(instance, imageId, deleteOnTermination)
-
 	return nil
 }
 
@@ -1661,56 +1578,10 @@ func rootVolumeIOPS(requested int) int {
 	return requested
 }
 
-// cloneAMIToVolume creates a new volume from an AMI using snapshot-based
-// zero-copy cloning. The destination volume points at the AMI's frozen block
-// map and reads on-demand from the AMI's chunks (copy-on-write).
-func (s *InstanceServiceImpl) cloneAMIToVolume(ctx context.Context, input *ec2.RunInstancesInput, destVb *viperblock.VB) error {
-	amiConfig, err := s.amiLoader.GetAMIConfig(ctx, *input.ImageId)
-	if err != nil {
-		slog.ErrorContext(ctx, "Could not load AMI config", "imageId", *input.ImageId, "err", err)
-		return errors.New(awserrors.ErrorInvalidAMIIDNotFound)
-	}
-
-	snapshotID := amiConfig.SnapshotID
-	if snapshotID == "" {
-		slog.ErrorContext(ctx, "AMI has no snapshot ID, cannot perform zero-copy clone", "imageId", *input.ImageId)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	slog.InfoContext(ctx, "Cloning AMI via snapshot", "imageId", *input.ImageId, "snapshotID", snapshotID)
-
-	// Set up destination volume from the snapshot (zero-copy)
-	err = destVb.OpenFromSnapshot(snapshotID)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to open from snapshot", "snapshotID", snapshotID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Persist the snapshot relationship to the backend
-	err = destVb.SaveState()
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to save state", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = destVb.SaveBlockState()
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to save block state", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	err = destVb.RemoveLocalFiles()
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to remove local files", "err", err)
-	}
-
-	return nil
-}
-
 // prepareEFIVolume creates the per-VM EFI variable store, sized exactly to the
 // firmware VARS template (pflash requires byte-exact size) and seeded from it.
 // arch is "x86_64" | "arm64".
-func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
+func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID string, instance *vm.VM, arch string) error {
 	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
 	if err != nil {
 		slog.ErrorContext(ctx, "UEFI firmware not installed on this host", "arch", arch, "err", err)
@@ -1728,12 +1599,11 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID str
 	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
 	efiVolumeName := fmt.Sprintf("%s-efi", volumeID)
-	if s.ebsProvider != nil {
-		err = s.createEFIVolumeViaProvider(ctx, efiVolumeName, template)
-	} else {
-		err = s.createEFIVolumeViaEngine(ctx, efiVolumeName, volumeConfig, varsSize, template)
+	if s.ebsProvider == nil {
+		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareEFIVolume")
+		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if err != nil {
+	if err := s.createEFIVolumeViaProvider(ctx, efiVolumeName, template); err != nil {
 		return err
 	}
 
@@ -1780,82 +1650,6 @@ func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, ef
 			"name", efiVolumeName, "wantBytes", len(template), "gotBytes", created.CapacityBytes)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	return nil
-}
-
-// createEFIVolumeViaEngine is the pre-provider path, building a control-plane
-// viperblock engine to seed the store. It goes away with the legacy branch.
-func (s *InstanceServiceImpl) createEFIVolumeViaEngine(ctx context.Context, efiVolumeName string, volumeConfig viperblock.VolumeConfig, varsSize int64, template []byte) error {
-	efiVolumeConfig := volumeConfig
-	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
-	// Zero SizeGiB prevents viperblock from rounding the EFI volume size
-	// up to GiB boundaries; pflash rejects any size beyond the VARS region.
-	efiVolumeConfig.VolumeMetadata.SizeGiB = 0
-
-	efiVb, err := s.newViperblock(efiVolumeName, int(varsSize), efiVolumeConfig)
-	if err != nil {
-		slog.ErrorContext(ctx, "Could not create EFI viperblock", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	// newViperblock starts the chunk uploader and WAL syncer goroutines
-	// unconditionally, so every return path below must release them, not
-	// just the happy path Close() at the bottom of this function.
-	defer func() {
-		efiVb.StopChunkUploader()
-		efiVb.StopWALSyncer()
-	}()
-
-	slog.DebugContext(ctx, "Initializing EFI Viperblock store backend")
-	if err := efiVb.Backend.Init(); err != nil {
-		slog.ErrorContext(ctx, "Failed to initialize EFI Viperblock store backend", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Only os.ErrNotExist means "seed from template"; other errors must abort.
-	// Treating a transient failure as missing would clobber guest-set BootOrder.
-	_, loadErr := efiVb.LoadStateRequest("")
-	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-		slog.ErrorContext(ctx, "Failed to load EFI volume state from backend", "name", efiVolumeName, "err", loadErr)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if loadErr != nil {
-		slog.InfoContext(ctx, "EFI volume does not yet exist, seeding from firmware VARS template", "name", efiVolumeName)
-
-		var walErr error
-		if efiVb.UseShardedWAL {
-			walErr = efiVb.OpenShardedWAL()
-		} else {
-			walErr = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
-		}
-		if walErr != nil {
-			slog.ErrorContext(ctx, "Failed to load WAL", "err", walErr)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		if err := efiVb.OpenWAL(&efiVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, efiVb.BlockToObjectWAL.WallNum.Load(), efiVb.GetVolume()))); err != nil {
-			slog.ErrorContext(ctx, "Failed to load block WAL", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		if err := efiVb.WriteAt(0, template); err != nil {
-			slog.ErrorContext(ctx, "Failed to seed EFI volume with VARS template", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		if err := efiVb.Flush(); err != nil {
-			slog.ErrorContext(ctx, "Failed to flush EFI volume", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	// Close is the durability boundary; a partial VARS write causes pflash to refuse launch.
-	if err := efiVb.Close(); err != nil {
-		slog.ErrorContext(ctx, "Failed to close EFI Viperblock store", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if err := efiVb.RemoveLocalFiles(); err != nil {
-		slog.ErrorContext(ctx, "Failed to remove local files", "err", err)
-	}
-
 	return nil
 }
 

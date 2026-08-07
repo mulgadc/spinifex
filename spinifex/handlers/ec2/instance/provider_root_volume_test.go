@@ -16,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -79,7 +78,7 @@ func rootVolumeAMILoader() *fakeAMILoader {
 
 // TestPrepareRootVolume_Provider_CreatesFromAMISnapshot locks that an injected
 // provider owns root-volume creation: the volume is cloned from the AMI's
-// snapshot and no control-plane viperblock engine is constructed.
+// snapshot rather than copied block-by-block by the control plane.
 func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -90,7 +89,7 @@ func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 	instance := &vm.VM{AccountID: testRootAccount}
 	input := &ec2.RunInstancesInput{ImageId: aws.String("ami-1")}
 	err := svc.prepareRootVolume(context.Background(), input, "vol-root", testRootVolumeBytes, 0,
-		viperblock.VolumeConfig{}, instance, false)
+		instance, false)
 	require.NoError(t, err)
 
 	created, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{
@@ -118,7 +117,7 @@ func TestPrepareRootVolume_Provider_WritesMetadataDocument(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.NoError(t, err)
 
 	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), "vol-root")
@@ -152,7 +151,7 @@ func TestPrepareRootVolume_Provider_HonoursRequestedIOPS(t *testing.T) {
 	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), store)
 
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 5000, viperblock.VolumeConfig{}, &vm.VM{AccountID: testRootAccount}, true)
+		"vol-root", testRootVolumeBytes, 5000, &vm.VM{AccountID: testRootAccount}, true)
 	require.NoError(t, err)
 
 	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), "vol-root")
@@ -191,7 +190,7 @@ func TestPrepareRootVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T)
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests, "a failed launch must not claim a boot volume")
@@ -216,7 +215,7 @@ func TestPrepareRootVolume_Provider_RepeatIsIdempotent(t *testing.T) {
 	for range 2 {
 		instance := &vm.VM{AccountID: testRootAccount}
 		err := svc.prepareRootVolume(context.Background(), input, "vol-root", testRootVolumeBytes, 0,
-			viperblock.VolumeConfig{}, instance, true)
+			instance, true)
 		require.NoError(t, err)
 		require.Len(t, instance.EBSRequests.Requests, 1)
 	}
@@ -234,7 +233,7 @@ func TestPrepareRootVolume_Provider_AMIWithoutSnapshotFails(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests, "a failed launch must not claim a boot volume")
@@ -255,7 +254,7 @@ func TestPrepareRootVolume_Provider_UnknownAMIFails(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-gone")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)
@@ -276,7 +275,7 @@ func TestPrepareRootVolume_Provider_SourceVolumeUnresolvableFails(t *testing.T) 
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)
@@ -301,7 +300,7 @@ func TestPrepareRootVolume_Provider_CreateFailureIsFatal(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, viperblock.VolumeConfig{}, instance, true)
+		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)

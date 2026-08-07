@@ -2492,7 +2492,7 @@ func (raceVolumeMounter) UnmountOne(spxtypes.EBSRequest) error { return nil }
 // TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
 // the double-start bug this claim closes: two nodes (or a forwarded call
 // racing a local fallback) could both observe the same stopped instance as
-// claimable and both launch it onto the same viperblock volume. It fires two
+// claimable and both launch it onto the same EBS volume. It fires two
 // concurrent StartStoppedInstance calls at the same stopped instance id and
 // asserts the atomic claim lets exactly one of them proceed past it —
 // reaching resourceMgr.Allocate / vmMgr.Insert / vmMgr.Run — while the other

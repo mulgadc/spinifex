@@ -16,10 +16,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,9 +45,9 @@ func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.
 // createTestVolume creates a test volume in the mock store
 // The real S3 stores VBState (which wraps VolumeConfig), so we match that format.
 func createTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB:          uint64(sizeGiB),
 				AvailabilityZone: "us-east-1a",
 			},
@@ -117,9 +117,9 @@ func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	// Store a volume config with SizeGiB == 0
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB: 0,
 			},
 		},
@@ -145,10 +145,10 @@ func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 // ({payload, authtag}) wrapping a VBState, matching what an encrypted volume
 // persists. The snapshot handler must unwrap it via StateBody, not decode raw.
 func createEncryptedTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
-	inner := viperblock.VBState{
+	inner := vblegacy.VBState{
 		EncryptionEnabled: true,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB:          uint64(sizeGiB),
 				AvailabilityZone: "us-east-1a",
 			},
@@ -195,10 +195,10 @@ func TestCreateSnapshot_EncryptedVolumeEnvelope(t *testing.T) {
 func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	inner := viperblock.VBState{
+	inner := vblegacy.VBState{
 		EncryptionEnabled: true,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{SizeGiB: 50, SnapshotID: "snap-src"},
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{SizeGiB: 50, SnapshotID: "snap-src"},
 		},
 	}
 	payload, err := json.Marshal(inner)
@@ -452,9 +452,9 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a volume that references this snapshot (simulates CreateVolume from snapshot)
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB:    50,
 				SnapshotID: *snap.SnapshotId,
 			},
@@ -746,9 +746,9 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 
 	// Create a volume owned by testAccountID (via TenantID)
 	volumeID := "vol-owned-by-alpha"
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB:          100,
 				TenantID:         testAccountID,
 				AvailabilityZone: "us-east-1a",

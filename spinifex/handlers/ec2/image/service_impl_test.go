@@ -18,9 +18,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,9 +37,9 @@ func setupTestImageService(t *testing.T) (*ImageServiceImpl, *objectstore.Memory
 
 // createTestVolumeConfig creates a test volume config in the mock store.
 func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+	volumeState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				SizeGiB: uint64(sizeGiB),
 			},
 		},
@@ -58,9 +58,9 @@ func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, 
 
 // createTestAMIConfig creates a test AMI config in the mock store.
 func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID:         imageID,
 				Name:            "test-ami",
 				Architecture:    "x86_64",
@@ -87,9 +87,9 @@ func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, ima
 // Owner defaults to testAccountID so the AMI is visible to the default caller —
 // an empty ImageOwnerAlias would be filtered out as a corrupt config.
 func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID:         imageID,
 				Name:            name,
 				Architecture:    "x86_64",
@@ -115,9 +115,9 @@ func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectSt
 
 // createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner.
 func createTestAMIConfigWithOwner(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID:         imageID,
 				Name:            name,
 				Architecture:    "x86_64",
@@ -212,7 +212,7 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 func TestDescribeImages_BootModeProjection(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-uefi001",
 		Name:            "uefi-image",
 		Architecture:    "x86_64",
@@ -223,7 +223,7 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 		BootMode:        "uefi",
 	})
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-legacy001",
 		Name:            "legacy-image",
 		Architecture:    "x86_64",
@@ -270,7 +270,7 @@ func TestDescribeImages_StateProjection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, store := setupTestImageService(t)
 
-			createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+			createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 				ImageID:         "ami-state001",
 				Name:            "state-image",
 				Architecture:    "x86_64",
@@ -595,9 +595,9 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	snapID := "snap-keep001"
 
 	// AMI pointing at a snapshot
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID:         amiID,
 				Name:            "with-snapshot",
 				SnapshotID:      snapID,
@@ -826,9 +826,9 @@ func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// AMI config with empty ImageID
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID: "",
 				Name:    "empty-id-ami",
 			},
@@ -852,9 +852,9 @@ func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {
 func TestDescribeImages_WithTags(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
+			AMIMetadata: vblegacy.AMIMetadata{
 				ImageID:         "ami-tagged123",
 				Name:            "tagged-ami",
 				Architecture:    "x86_64",
@@ -980,13 +980,13 @@ func TestAmiNameExists_InvalidJSON(t *testing.T) {
 // createTestAMIConfigFull creates an AMI with all metadata fields for filter testing.
 // Owner defaults to testAccountID when the caller leaves ImageOwnerAlias empty —
 // an empty owner would be filtered out as corrupt.
-func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore, meta viperblock.AMIMetadata) {
+func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore, meta vblegacy.AMIMetadata) {
 	t.Helper()
 	if meta.ImageOwnerAlias == "" {
 		meta.ImageOwnerAlias = testAccountID
 	}
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{
 			AMIMetadata: meta,
 		},
 	}
@@ -1050,11 +1050,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "architecture",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-x86", Name: "x86-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-arm", Name: "arm-img", Architecture: "arm64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1067,12 +1067,12 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "tag",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-tagged", Name: "tagged-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 					Tags: map[string]string{"Environment": "prod"},
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-untagged", Name: "untagged-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1105,11 +1105,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "virtualization type",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-hvm", Name: "hvm-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-pv", Name: "pv-img", Architecture: "x86_64",
 					Virtualization: "paravirtual", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1122,11 +1122,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "root device type",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-ebs", Name: "ebs-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 					ImageID: "ami-is", Name: "is-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "instance-store", VolumeSizeGiB: 8,
 				})
@@ -1175,11 +1175,11 @@ func TestDescribeImages_FilterMultipleValues_OR(t *testing.T) {
 
 func TestDescribeImages_FilterMultipleNames_AND(t *testing.T) {
 	svc, store := setupTestImageService(t)
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 		ImageID: "ami-match", Name: "debian-13", Architecture: "x86_64",
 		RootDeviceType: "ebs", VolumeSizeGiB: 8,
 	})
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, vblegacy.AMIMetadata{
 		ImageID: "ami-nomatch", Name: "debian-13", Architecture: "arm64",
 		RootDeviceType: "ebs", VolumeSizeGiB: 8,
 	})
@@ -1635,7 +1635,7 @@ func readSnapshotConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore,
 // putTestAMIConfigWithSnapshot seeds an AMI config that carries a real
 // SnapshotID — distinct from createTestAMIConfigWithOwner which sets no
 // snapshot and would be treated as orphaned by CopyImage.
-func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string, meta viperblock.AMIMetadata) {
+func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string, meta vblegacy.AMIMetadata) {
 	t.Helper()
 	meta.ImageID = imageID
 	meta.Name = name
@@ -1656,8 +1656,8 @@ func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectS
 	if meta.VolumeSizeGiB == 0 {
 		meta.VolumeSizeGiB = 8
 	}
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{AMIMetadata: meta},
+	amiState := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{AMIMetadata: meta},
 	}
 	data, err := json.Marshal(amiState)
 	require.NoError(t, err)
@@ -1692,7 +1692,7 @@ func seedCopyableAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID
 	})
 	require.NoError(t, err)
 
-	putTestAMIConfigWithSnapshot(t, store, imageID, name, owner, snapshotID, viperblock.AMIMetadata{
+	putTestAMIConfigWithSnapshot(t, store, imageID, name, owner, snapshotID, vblegacy.AMIMetadata{
 		VolumeSizeGiB: uint64(sizeGiB),
 		Description:   "source desc",
 	})
@@ -1759,7 +1759,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	require.NoError(t, err)
 
 	// Source AMI with non-default fields that must propagate.
-	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", viperblock.AMIMetadata{
+	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", vblegacy.AMIMetadata{
 		Architecture:    "arm64",
 		PlatformDetails: "Linux/UNIX (arm64)",
 		Virtualization:  "hvm",
@@ -1837,7 +1837,7 @@ func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 	// Seed only the AMI config, no snap-xxx/metadata.json object — matches the
 	// on-disk layout produced by `spx admin images import`.
 	putTestAMIConfigWithSnapshot(t, store, "ami-bundled01", "alpine-bundled",
-		"system", "snap-ami-bundled01", viperblock.AMIMetadata{
+		"system", "snap-ami-bundled01", vblegacy.AMIMetadata{
 			VolumeSizeGiB: 8,
 			Description:   "bundled source",
 		})
@@ -1895,7 +1895,7 @@ func TestCopyImage_OrphanedSource_MissingSnapshot(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// AMI config points at a snapshot that doesn't exist on S3.
-	putTestAMIConfigWithSnapshot(t, store, "ami-orphan", "orphan", testAccountID, "snap-ghost", viperblock.AMIMetadata{})
+	putTestAMIConfigWithSnapshot(t, store, "ami-orphan", "orphan", testAccountID, "snap-ghost", vblegacy.AMIMetadata{})
 
 	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-orphan", "orphan-copy"), testAccountID)
 	require.Error(t, err)
@@ -2071,10 +2071,10 @@ func TestCopyImage_MissingRequiredFields(t *testing.T) {
 
 // --- Image attribute tests ---
 
-func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore, meta viperblock.AMIMetadata) {
+func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore, meta vblegacy.AMIMetadata) {
 	t.Helper()
-	state := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{AMIMetadata: meta},
+	state := vblegacy.VBState{
+		VolumeConfig: vblegacy.VolumeConfig{AMIMetadata: meta},
 	}
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
@@ -2091,7 +2091,7 @@ func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore,
 func TestDescribeImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-desc01",
 		Name:            "desc-ami",
 		Description:     "the stored description",
@@ -2120,7 +2120,7 @@ func TestDescribeImageAttribute_Description(t *testing.T) {
 func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-bdm01",
 		Name:            "bdm-ami",
 		SnapshotID:      "snap-bdm01",
@@ -2184,7 +2184,7 @@ func TestDescribeImageAttribute_NotFound(t *testing.T) {
 func TestDescribeImageAttribute_CrossAccountHidesExistence(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-cross01",
 		Name:            "cross-ami",
 		Description:     "secret",
@@ -2203,7 +2203,7 @@ func TestDescribeImageAttribute_CrossAccountHidesExistence(t *testing.T) {
 func TestDescribeImageAttribute_SystemAMIReadable(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-sys01",
 		Name:            "system-ami",
 		Description:     "baked-in",
@@ -2241,7 +2241,7 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 func TestModifyImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-mod01",
 		Name:            "mod-ami",
 		Description:     "old",
@@ -2274,7 +2274,7 @@ func TestModifyImageAttribute_Description(t *testing.T) {
 func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-modclr01",
 		Name:            "modclr-ami",
 		Description:     "will-be-cleared",
@@ -2297,7 +2297,7 @@ func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-modx01",
 		Name:            "modx-ami",
 		Description:     "dont-touch",
@@ -2322,7 +2322,7 @@ func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 func TestModifyImageAttribute_SystemAMIImmutable(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-modsys01",
 		Name:            "sys-ami",
 		Description:     "baked-in",
@@ -2386,7 +2386,7 @@ func TestModifyImageAttribute_MissingParameters(t *testing.T) {
 func TestResetImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-reset01",
 		Name:            "reset-ami",
 		Description:     "will-be-cleared",
@@ -2417,7 +2417,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 func TestResetImageAttribute_CrossAccount(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, vblegacy.AMIMetadata{
 		ImageID:         "ami-rstx01",
 		Name:            "rstx",
 		Description:     "dont-touch",

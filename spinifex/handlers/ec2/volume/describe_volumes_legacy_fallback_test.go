@@ -9,9 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,12 +20,12 @@ import (
 // pre-provider embedded engine leaves behind — no ebsmetadata document.
 func seedLegacyVolumeConfig(t *testing.T, svc *VolumeServiceImpl, volumeID, accountID string) {
 	t.Helper()
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName: volumeID,
 		VolumeSize: 8 * 1024 * 1024 * 1024,
 		BlockSize:  4096,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				VolumeID:         volumeID,
 				TenantID:         accountID,
 				SizeGiB:          8,

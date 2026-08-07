@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -46,13 +47,13 @@ func startTestNATS(t *testing.T) *nats.Conn {
 // seedEncryptedConfig writes a sealed (EncryptionEnabled=true) VBState to the store.
 func seedEncryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
 	t.Helper()
-	state := viperblock.VBState{
+	state := vblegacy.VBState{
 		VolumeName:        volumeID,
 		VolumeSize:        10 * 1024 * 1024 * 1024,
 		BlockSize:         4096,
 		EncryptionEnabled: true,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
+		VolumeConfig: vblegacy.VolumeConfig{
+			VolumeMetadata: vblegacy.VolumeMetadata{
 				VolumeID: volumeID,
 				TenantID: testVolAccountID,
 				SizeGiB:  10,
@@ -119,7 +120,7 @@ func TestPutVolumeConfig_EncryptedRoutesToQueueGroup(t *testing.T) {
 
 	// The sealed object must NOT have been rewritten out-of-band by the handler.
 	raw := getStoredConfig(t, store, volumeID)
-	var still viperblock.VBState
+	var still vblegacy.VBState
 	require.NoError(t, json.Unmarshal(viperblock.StateBody(raw), &still))
 	assert.True(t, still.EncryptionEnabled)
 }

@@ -373,7 +373,9 @@ var viperblockStartCmd = &cobra.Command{
 			encryptionKeyFile = envKey
 		}
 
-		defer initTelemetry("viperblockd", false)()
+		debug := viper.GetBool("viperblock-debug")
+
+		defer initTelemetry("viperblockd", debug)()
 
 		service, err := service.New("viperblock", &viperblockd.Config{
 			NatsHost:          nodeConfig.NATS.Host,
@@ -390,6 +392,7 @@ var viperblockStartCmd = &cobra.Command{
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
 			EncryptionKeyFile: encryptionKeyFile,
+			Debug:             debug,
 		})
 
 		if err != nil {
@@ -1299,6 +1302,10 @@ func init() {
 	viperblockCmd.PersistentFlags().String("encryption-key-file", "", "Path to the 32-byte AES-256 master key file for at-rest encryption (empty disables encryption)")
 	viper.BindEnv("viperblock-encryption-key-file", "SPINIFEX_VIPERBLOCK_ENCRYPTION_KEY_FILE")
 	viper.BindPFlag("viperblock-encryption-key-file", viperblockCmd.PersistentFlags().Lookup("encryption-key-file"))
+
+	viperblockCmd.PersistentFlags().Bool("debug", false, "Viperblock (EBS) debug logging")
+	viper.BindEnv("viperblock-debug", "SPINIFEX_VIPERBLOCK_DEBUG")
+	viper.BindPFlag("viperblock-debug", viperblockCmd.PersistentFlags().Lookup("debug"))
 
 	viperblockCmd.AddCommand(viperblockStartCmd)
 	viperblockCmd.AddCommand(viperblockStopCmd)

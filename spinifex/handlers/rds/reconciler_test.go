@@ -140,8 +140,10 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 		// A beat from a VM other than the record's current one is a superseded VM
 		// still running after a replace; it must not report the instance ready.
 		{"BeatFromASupersededVM", func(rec *DBInstanceRecord) { rec.Agent.InstanceID = "i-oldvm" }},
+		// Silent for longer than even the slack a persisted beat earns, so no
+		// source could have seen this agent recently.
 		{"StaleHeartbeat", func(rec *DBInstanceRecord) {
-			stale := time.Now().UTC().Add(-2 * HeartbeatStaleAfter)
+			stale := time.Now().UTC().Add(-2 * (HeartbeatStaleAfter + HeartbeatPersistFloor))
 			rec.Agent.LastSeen = &stale
 		}},
 	}
@@ -159,6 +161,26 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 			assert.Equal(t, StatusCreating, status)
 		})
 	}
+}
+
+// The transitional states judge freshness by the same rule as the health
+// classifier. A leader handling none of an instance's beats sees them only
+// through KV, which a healthy agent refreshes no more often than the persist
+// floor; judging that beat by the raw stale window failed a live database at the
+// transition timeout.
+func TestReconciler_CompletesACreateOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	// Older than the stale window, younger than the window plus the floor: what a
+	// perfectly healthy instance looks like to a leader that has seen no beat.
+	persisted := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Minute)
+	rec.Agent.LastSeen = &persisted
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+
+	status, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusAvailable, status)
 }
 
 // A create that never comes up has to end somewhere: the customer sees a broken

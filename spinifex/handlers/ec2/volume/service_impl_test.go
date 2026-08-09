@@ -30,7 +30,7 @@ func newTestVolumeService(az string) *VolumeServiceImpl {
 		Predastore: config.PredastoreConfig{
 			Bucket:    "test-bucket",
 			Region:    "ap-southeast-2",
-			Host:      "localhost:9000",
+			Host:      fakeS3Host,
 			AccessKey: "testkey",
 			SecretKey: "testsecret",
 		},
@@ -397,7 +397,7 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 		Predastore: config.PredastoreConfig{
 			Bucket:    "test-bucket",
 			Region:    "ap-southeast-2",
-			Host:      "localhost:9000",
+			Host:      fakeS3Host,
 			AccessKey: "testkey",
 			SecretKey: "testsecret",
 		},

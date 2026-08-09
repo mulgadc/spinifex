@@ -654,43 +654,21 @@ func transitionStarted(rec *DBInstanceRecord) time.Time {
 	return rec.UpdatedAt
 }
 
-// Both halves must hold: a healthy heartbeat from the record's *current* VM,
-// and that VM actually running. A stale beat from a superseded VM would
-// otherwise report a replaced instance as ready. Beats at or before since are
-// ignored, which is how a restart is told from the engine it restarted.
+// Both halves must hold: a fresh healthy heartbeat from the record's *current*
+// VM, and that VM actually running. A stale beat from a superseded VM would
+// otherwise report a replaced instance as ready. The observation is the same one
+// the health classifier forms, so freshness is judged by one rule package-wide.
 func (r *Reconciler) engineReady(ctx context.Context, accountID string, rec *DBInstanceRecord, since time.Time) (bool, error) {
-	if rec.Agent.EngineHealth != EngineHealthHealthy || rec.InstanceID == "" ||
-		rec.Agent.InstanceID != rec.InstanceID {
+	obs := r.observeAgent(accountID, rec)
+	if !obs.engineHealthy || !obs.heartbeatFresh {
 		return false, nil
 	}
-	if !r.heartbeatFresh(accountID, rec, since) {
+	// A beat at or before since came from the engine the restart replaced, so it
+	// says nothing about the one that took its place.
+	if !since.IsZero() && !obs.lastSeen.After(since) {
 		return false, nil
 	}
-	if r.svc.deps.InstanceState == nil {
-		return true, nil
-	}
-	state, err := r.svc.deps.InstanceState.InstanceState(ctx, rec.InstanceID, accountID)
-	if err != nil {
-		return false, fmt.Errorf("resolve VM state for %s: %w", rec.InstanceID, err)
-	}
-	return state == instanceStateRunning, nil
-}
-
-// The in-memory beat is fresher than the persisted one but only this node sees
-// it, so a leader that has seen no beat falls back to the record — which trails
-// the truth by at most the persist floor.
-func (r *Reconciler) heartbeatFresh(accountID string, rec *DBInstanceRecord, since time.Time) bool {
-	lastSeen, ok := r.svc.LastSeen(accountID, rec.DBInstanceIdentifier)
-	if !ok {
-		if rec.Agent.LastSeen == nil {
-			return false
-		}
-		lastSeen = *rec.Agent.LastSeen
-	}
-	if !since.IsZero() && !lastSeen.After(since) {
-		return false
-	}
-	return time.Since(lastSeen) <= HeartbeatStaleAfter
+	return r.vmRunning(ctx, accountID, rec)
 }
 
 // A CAS write, so a transition raced by an agent report or a lifecycle op is

@@ -637,6 +637,21 @@ func TestReconciler_CompletesARestartOnAHeartbeatFromTheRestartedEngine(t *testi
 	}
 }
 
+// The beat that ends a restart usually reaches the leader through KV, where it
+// is at most a persist floor behind the engine. Judging it by the raw stale
+// window left a database that came back cleanly rebooting until it timed out.
+func TestReconciler_CompletesARestartOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	// Older than the stale window, younger than the window plus the floor, and
+	// still after the transition it proves finished.
+	persisted := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Minute)
+	seedInstance(t, h.svc, restartingRecord(StatusRebooting, persisted.Add(-time.Second), persisted))
+
+	require.NoError(t, NewReconciler(h.svc, "node-a").reconcileOnce(t.Context()))
+
+	assert.Equal(t, StatusAvailable, h.record(t).Status)
+}
+
 // The VM keeps its instance ID across a restart, so a beat sent before the
 // transition began would otherwise report the reboot as finished the instant it
 // started.

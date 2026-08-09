@@ -233,12 +233,25 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new viperblock: %w", err)
 	}
+
+	// New starts the chunk uploader and WAL syncer, so a failure below must
+	// release them: the caller gets no handle to stop them with.
+	opened := false
+	defer func() {
+		if !opened {
+			vb.StopChunkUploader()
+			vb.StopWALSyncer()
+		}
+	}()
+
 	if err := vb.Backend.Init(); err != nil {
 		return nil, fmt.Errorf("backend init: %w", err)
 	}
 	if err := loadStateWithRetry(vb, volumeName); err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
+
+	opened = true
 	return vb, nil
 }
 

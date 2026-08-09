@@ -322,16 +322,66 @@ stop_bootstrap_server() {
     as_pg "'${PG_BIN}/pg_ctl' --pgdata='${PGDATA}' --wait --timeout=60 --mode=fast stop"
 }
 
+# Prepended to every bootstrap script. psql interpolates the password into the
+# ALTER ROLE before the server sees it, and these three are what would then write
+# it to the log: log_min_error_statement does so on any failure at its own
+# default. All are SUSET and set for this session only, so nothing the customer
+# puts in the parameter group overrides them.
+BOOTSTRAP_LOG_GUARD="SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = 'panic';"
+
+# Replaces every occurrence of the secret with a placeholder. Parameter
+# expansion rather than sed, whose script would carry the secret in an argv any
+# process on the guest can read.
+redact_stream() {
+    _secret="$1"
+    while IFS= read -r _line || [ -n "${_line}" ]; do
+        _out=""
+        while [ -n "${_secret}" ]; do
+            case "${_line}" in
+                *"${_secret}"*)
+                    _out="${_out}${_line%%"${_secret}"*}[REDACTED]"
+                    _line="${_line#*"${_secret}"}"
+                    ;;
+                *) break ;;
+            esac
+        done
+        printf '%s\n' "${_out}${_line}"
+    done
+}
+
 # Identifiers and the password ride the environment and are re-quoted by psql,
-# never reaching a shell word or argv.
+# never reaching a shell word or argv. Both streams are redacted before they
+# reach the caller: psql echoes the statement it failed on, and the initd sends
+# everything here to /dev/console, which the host captures off ttyS0.
 psql_bootstrap() {
-    RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
-    RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
-    RDS_DB_NAME="${RDS_DB_NAME}" \
-    RDS_GROUP_ROLE="${MASTER_GROUP_ROLE}" \
-        "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
-            -v ON_ERROR_STOP=1 \
-            -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f -
+    # A pipeline's status is its last command's and POSIX sh has no pipefail, so
+    # psql's own status leaves the subshell through the filesystem.
+    _status_file="${BOOTSTRAP_DIR}/psql.status"
+    rm -f "${_status_file}"
+    {
+        _psql_rc=0
+        { printf '%s\n' "${BOOTSTRAP_LOG_GUARD}"; cat; } |
+            RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
+            RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
+            RDS_DB_NAME="${RDS_DB_NAME}" \
+            RDS_GROUP_ROLE="${MASTER_GROUP_ROLE}" \
+                "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
+                    -v ON_ERROR_STOP=1 \
+                    -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f - ||
+            _psql_rc=$?
+        printf '%s\n' "${_psql_rc}" > "${_status_file}"
+    } 2>&1 | redact_stream "${RDS_MASTER_PASSWORD}"
+
+    # A missing status file means the subshell died before psql was reached,
+    # which is a failed bootstrap and not a silent success.
+    _rc=1
+    if [ -f "${_status_file}" ]; then
+        _rc=$(cat "${_status_file}")
+        rm -f "${_status_file}"
+    fi
+    return "${_rc}"
 }
 
 # Runs on a freshly initialised cluster only.

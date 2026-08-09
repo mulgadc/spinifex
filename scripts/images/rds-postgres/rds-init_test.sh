@@ -122,8 +122,13 @@ cat > "${STUBBIN}/psql" <<'EOF'
     cat
 } >> "${PSQL_CALLS}"
 # ON_ERROR_STOP makes a real psql exit non-zero on any SQL failure; the stub
-# reproduces that so the master-bootstrap failure path is exercisable.
-[ "${PSQL_FAIL:-0}" = "1" ] && exit 3
+# reproduces that, and with it the echo of the failing statement — password and
+# all — that the redaction filter exists to catch.
+if [ "${PSQL_FAIL:-0}" = "1" ]; then
+    echo "psql:<stdin>:7: ERROR: syntax error at or near \"${RDS_MASTER_PASSWORD:-}\"" >&2
+    echo "psql:<stdin>:7: STATEMENT: ALTER ROLE \"m\" WITH LOGIN PASSWORD '${RDS_MASTER_PASSWORD:-}';" >&2
+    exit 3
+fi
 exit 0
 EOF
 
@@ -189,9 +194,10 @@ write_tls() {
     echo "KEY" > "${HANDOFF}/server.key"
 }
 
+# write_parameters [setting]: the resolved parameter group rds-agent hands over.
 write_parameters() {
     mkdir -p "${HANDOFF}"
-    echo "shared_buffers = 128MB" > "${HANDOFF}/parameters.conf"
+    echo "${1:-shared_buffers = 128MB}" > "${HANDOFF}/parameters.conf"
 }
 
 # reset_state clears everything the previous case left behind: a fresh datadir,
@@ -324,6 +330,65 @@ if run_ok "attach"; then
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "attach: TLS survives a handoff without a new cert" || fail "attach: TLS turned off"
 fi
+
+# --- Case 3a: a parameter group cannot log the master password ---
+# The customer's parameters are installed before the master role is applied and
+# the bootstrap postmaster does not override config_file, so log_statement = all
+# is live for the ALTER ROLE carrying the password. The guard is session-local
+# and SUSET, so it holds whatever the parameter group says.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters "log_statement = all"
+if run_ok "log-guard"; then
+    grep -q '^log_statement = all' "${PGDATA}/conf.d/10-rds-parameters.conf" \
+        && pass "log-guard: the customer's logging parameter is installed" \
+        || fail "log-guard: the parameter group was not installed, so this is not the reported case"
+    for setting in "SET log_statement = 'none';" \
+        "SET log_min_duration_statement = -1;" \
+        "SET log_min_error_statement = 'panic';"; do
+        grep -qF "${setting}" "${PSQL_CALLS}" \
+            && pass "log-guard: ${setting}" || fail "log-guard: psql never received ${setting}"
+    done
+    # Every bootstrap session carries the guard, so a statement added to the
+    # bootstrap later cannot end up outside it.
+    # `grep -c` exits non-zero on no match, which `set -e` would turn into an
+    # aborted run in place of a reported failure.
+    guard_count=$(grep -cF "SET log_statement = 'none';" "${PSQL_CALLS}" || true)
+    psql_count=$(grep -c '^--- psql ' "${PSQL_CALLS}" || true)
+    [ "${guard_count}" = "${psql_count}" ] \
+        && pass "log-guard: all ${psql_count} bootstrap sessions guarded" \
+        || fail "log-guard: ${guard_count} of ${psql_count} bootstrap sessions guarded"
+    guard_line=$(grep -nF "SET log_statement = 'none';" "${PSQL_CALLS}" | head -n 1 | cut -d: -f1)
+    alter_line=$(grep -n 'ALTER ROLE' "${PSQL_CALLS}" | head -n 1 | cut -d: -f1)
+    { [ -n "${alter_line}" ] && [ "${guard_line}" -lt "${alter_line}" ]; } \
+        && pass "log-guard: the guard precedes the ALTER ROLE" \
+        || fail "log-guard: the guard does not precede the ALTER ROLE"
+fi
+
+# --- Case 3b: a failing psql must not echo the password to the console ---
+# rds-init.initd sends this script's output to /dev/console, which the host
+# captures off ttyS0, and psql under ON_ERROR_STOP echoes the statement it
+# failed on. The redaction must not swallow the failure: the datadir is cleared
+# exactly as in case 6d.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters
+PSQL_FAIL=1
+export PSQL_FAIL
+run_fails "console-redaction"
+grep -q 's3cr3t' "${WORK}/out" \
+    && fail "console-redaction: the console capture carries the master password" \
+    || pass "console-redaction: no password on the console"
+grep -q '\[REDACTED\]' "${WORK}/out" \
+    && pass "console-redaction: the redaction is marked" \
+    || fail "console-redaction: psql's stderr never reached the console"
+grep -q 'ERROR: syntax error' "${WORK}/out" \
+    && pass "console-redaction: the diagnostic itself survives" \
+    || fail "console-redaction: the redaction swallowed the diagnostic"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "console-redaction: datadir kept after a failed master bootstrap" \
+    || pass "console-redaction: the failure still propagates"
+unset PSQL_FAIL
 
 # --- Case 4: an empty datadir in attach mode means the data volume is missing ---
 reset_state

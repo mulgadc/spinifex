@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -89,6 +92,23 @@ func explodingMaterializer(t *testing.T) weightsMaterializer {
 		t.Fatal("materialize called on a path that must refuse before materialising")
 		return "", nil
 	}
+}
+
+// explodingSnapshotChecker fails the test immediately if invoked, standing
+// in for weightsSnapshotChecker on paths that must never need to consult
+// snapshot liveness: a different source URI, or refusal before the
+// idempotency branch is even reached.
+func explodingSnapshotChecker(t *testing.T) weightsSnapshotChecker {
+	t.Helper()
+	return func(context.Context, string) (bool, error) {
+		t.Fatal("checkSnapshotLive called on a path that must not need it")
+		return false, nil
+	}
+}
+
+// fixedSnapshotChecker always reports live, unconditionally.
+func fixedSnapshotChecker(live bool) weightsSnapshotChecker {
+	return func(context.Context, string) (bool, error) { return live, nil }
 }
 
 func TestParseWeightsS3URI_ValidWithTrailingSlash(t *testing.T) {
@@ -264,15 +284,16 @@ func TestDownloadWeightsPrefix_FlattensToBasename(t *testing.T) {
 }
 
 // TestRunStageWeights_IdempotentReStageIsNoop covers the no-op path: staging
-// the same --s3-uri a second time must not touch the object store or
-// materialize anything at all, and must report the existing snapshot.
+// the same --s3-uri a second time, with the recorded snapshot still live,
+// must not touch the object store or materialize anything at all, and must
+// report the existing snapshot.
 func TestRunStageWeights_IdempotentReStageIsNoop(t *testing.T) {
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 
 	msg, err := runStageWeights(ctx, explodingObjectStore{t: t}, weightsStore, t.TempDir(),
-		selfHostModelID, "s3://models/llama-3.2-1b/", explodingMaterializer(t))
+		selfHostModelID, "s3://models/llama-3.2-1b/", explodingMaterializer(t), fixedSnapshotChecker(true))
 
 	require.NoError(t, err)
 	assert.Contains(t, msg, "already staged")
@@ -283,6 +304,59 @@ func TestRunStageWeights_IdempotentReStageIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "snap-0001", entry.SnapshotID)
+}
+
+// TestRunStageWeights_SelfHealsWhenSnapshotGone covers the same --s3-uri
+// re-stage when the recorded snapshot no longer exists (host rebuild, volume
+// GC): stage must not short-circuit on the stale KV record. It must
+// re-materialise, write the new snapshot, and name the missing snapshot it
+// replaced -- distinctly from the different-source-URI replace wording --
+// so an operator never has to run 'weights remove' first.
+func TestRunStageWeights_SelfHealsWhenSnapshotGone(t *testing.T) {
+	weightsStore := newWeightsStoreForTest(t)
+	ctx := context.Background()
+	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-missing"))
+
+	store := objectstore.NewMemoryObjectStore()
+	seedCompleteWeightsPrefix(t, store, "models", "llama-3.2-1b/")
+
+	materializeCalled := false
+	materialize := func(context.Context, string, int64) (string, error) {
+		materializeCalled = true
+		return "snap-healed", nil
+	}
+
+	msg, err := runStageWeights(ctx, store, weightsStore, t.TempDir(),
+		selfHostModelID, "s3://models/llama-3.2-1b/", materialize, fixedSnapshotChecker(false))
+
+	require.NoError(t, err)
+	assert.True(t, materializeCalled, "self-heal must re-materialize rather than short-circuit")
+	assert.Contains(t, msg, "MISSING")
+	assert.Contains(t, msg, "snap-missing")
+	assert.Contains(t, msg, "snap-healed")
+
+	entry, ok, err := weightsStore.GetWeights(ctx, selfHostModelID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "snap-healed", entry.SnapshotID, "PutWeights must record the new snapshot")
+}
+
+// TestRunStageWeights_LiveCheckErrorSurfaces covers the checker's own error
+// path: a real liveness-check failure (as opposed to a definitive not-found)
+// must be returned rather than guessed at either way.
+func TestRunStageWeights_LiveCheckErrorSurfaces(t *testing.T) {
+	weightsStore := newWeightsStoreForTest(t)
+	ctx := context.Background()
+	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
+
+	checkErr := errors.New("predastore unreachable")
+	checker := func(context.Context, string) (bool, error) { return false, checkErr }
+
+	_, err := runStageWeights(ctx, explodingObjectStore{t: t}, weightsStore, t.TempDir(),
+		selfHostModelID, "s3://models/llama-3.2-1b/", explodingMaterializer(t), checker)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, checkErr)
 }
 
 // TestRunStageWeights_ReStageDifferentSourceReplacesAndReportsPrevious
@@ -300,7 +374,7 @@ func TestRunStageWeights_ReStageDifferentSourceReplacesAndReportsPrevious(t *tes
 	materialize := func(context.Context, string, int64) (string, error) { return "snap-new", nil }
 
 	msg, err := runStageWeights(ctx, store, weightsStore, t.TempDir(),
-		selfHostModelID, "s3://models/llama-3.2-1b-new/", materialize)
+		selfHostModelID, "s3://models/llama-3.2-1b-new/", materialize, explodingSnapshotChecker(t))
 
 	require.NoError(t, err)
 	assert.Contains(t, msg, "snap-new")
@@ -320,7 +394,7 @@ func TestRunStageWeights_UnknownModelIDRefused(t *testing.T) {
 	weightsStore := newWeightsStoreForTest(t)
 
 	_, err := runStageWeights(context.Background(), explodingObjectStore{t: t}, weightsStore, t.TempDir(),
-		"not-a-real-model", "s3://models/llama-3.2-1b/", explodingMaterializer(t))
+		"not-a-real-model", "s3://models/llama-3.2-1b/", explodingMaterializer(t), explodingSnapshotChecker(t))
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "unknown model ID")
@@ -339,7 +413,7 @@ func TestRunStageWeights_ProviderModelIDRefused(t *testing.T) {
 	weightsStore := newWeightsStoreForTest(t)
 
 	_, err := runStageWeights(context.Background(), explodingObjectStore{t: t}, weightsStore, t.TempDir(),
-		providerModelID, "s3://models/claude/", explodingMaterializer(t))
+		providerModelID, "s3://models/claude/", explodingMaterializer(t), explodingSnapshotChecker(t))
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "provider-served")
@@ -360,7 +434,7 @@ func TestRunStageWeights_MissingRequiredFilesRefusedBeforeMaterializing(t *testi
 	putObject(t, store, "models", "incomplete/README.md", []byte("nothing useful"))
 
 	_, err := runStageWeights(context.Background(), store, weightsStore, t.TempDir(),
-		selfHostModelID, "s3://models/incomplete/", explodingMaterializer(t))
+		selfHostModelID, "s3://models/incomplete/", explodingMaterializer(t), explodingSnapshotChecker(t))
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "missing required file")
@@ -374,7 +448,7 @@ func TestRunStageWeights_MissingRequiredFilesRefusedBeforeMaterializing(t *testi
 func TestListWeightsOutput_NoModelsStaged(t *testing.T) {
 	weightsStore := newWeightsStoreForTest(t)
 
-	out, err := listWeightsOutput(context.Background(), weightsStore)
+	out, err := listWeightsOutput(context.Background(), weightsStore, explodingSnapshotChecker(t))
 	require.NoError(t, err)
 	assert.Equal(t, "No models staged.", out)
 }
@@ -388,7 +462,7 @@ func TestListWeightsOutput_ListsSeveralStagedModels(t *testing.T) {
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 	require.NoError(t, weightsStore.PutWeights(ctx, "amazon.titan-text-lite-v1", "s3://models/titan-text-lite/", "snap-0002"))
 
-	out, err := listWeightsOutput(ctx, weightsStore)
+	out, err := listWeightsOutput(ctx, weightsStore, fixedSnapshotChecker(true))
 	require.NoError(t, err)
 	assert.Contains(t, out, selfHostModelID)
 	assert.Contains(t, out, "s3://models/llama-3.2-1b/")
@@ -396,6 +470,38 @@ func TestListWeightsOutput_ListsSeveralStagedModels(t *testing.T) {
 	assert.Contains(t, out, "amazon.titan-text-lite-v1")
 	assert.Contains(t, out, "s3://models/titan-text-lite/")
 	assert.Contains(t, out, "snap-0002")
+}
+
+// TestListWeightsOutput_MarksDanglingEntry covers the annotation this bug is
+// about: an entry whose snapshot is gone must be marked dangling, distinctly
+// from a live entry, so an operator sees at a glance which staged models can
+// actually serve.
+func TestListWeightsOutput_MarksDanglingEntry(t *testing.T) {
+	weightsStore := newWeightsStoreForTest(t)
+	ctx := context.Background()
+	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-live"))
+	require.NoError(t, weightsStore.PutWeights(ctx, "amazon.titan-text-lite-v1", "s3://models/titan-text-lite/", "snap-gone"))
+
+	checker := func(_ context.Context, snapshotID string) (bool, error) {
+		return snapshotID != "snap-gone", nil
+	}
+
+	out, err := listWeightsOutput(ctx, weightsStore, checker)
+	require.NoError(t, err)
+
+	var liveLine, danglingLine string
+	for line := range strings.SplitSeq(out, "\n") {
+		switch {
+		case strings.Contains(line, "snap-live"):
+			liveLine = line
+		case strings.Contains(line, "snap-gone"):
+			danglingLine = line
+		}
+	}
+	require.NotEmpty(t, liveLine, "live entry must appear in output")
+	require.NotEmpty(t, danglingLine, "dangling entry must appear in output")
+	assert.NotContains(t, liveLine, weightsStatusDangling, "a live snapshot must not be marked dangling")
+	assert.Contains(t, danglingLine, weightsStatusDangling, "a missing snapshot must be marked dangling")
 }
 
 // TestRemoveWeights_RoundTrip covers remove: it returns the dropped entry,
@@ -643,12 +749,36 @@ func TestRunOchreWeightsList_ConnectFailureExits1(t *testing.T) {
 	assert.Equal(t, 1, code)
 }
 
+// notFoundPredastoreServer answers every request with a 404 NoSuchKey S3
+// error, so a weightsSnapshotChecker built against it deterministically
+// reports a snapshot as gone without needing a real predastore.
+func notFoundPredastoreServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
+			`<Error><Code>NoSuchKey</Code>`+
+			`<Message>The specified key does not exist.</Message></Error>`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // TestRunOchreWeightsList_PrintsStagedModels drives the real Run function
 // end to end: it must print what a separately-constructed WeightsStore
-// against the same embedded JetStream server sees.
+// against the same embedded JetStream server sees, and mark the entry
+// dangling since the mock predastore below has no such snapshot.
 func TestRunOchreWeightsList_PrintsStagedModels(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
-	stubConnect(t, fakeClusterConfig(), nc, nil)
+	srv := notFoundPredastoreServer(t)
+	cfg := &config.ClusterConfig{
+		Node: "node1",
+		Nodes: map[string]config.Config{
+			"node1": {Predastore: config.PredastoreConfig{Host: srv.URL, Region: "us-east-1", Bucket: "test-bucket", AccessKey: "test", SecretKey: "test"}},
+		},
+	}
+	stubConnect(t, cfg, nc, nil)
 
 	seedStore := gateway_bedrock.NewWeightsStore(js, 1)
 	require.NoError(t, seedStore.PutWeights(context.Background(), selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -656,6 +786,7 @@ func TestRunOchreWeightsList_PrintsStagedModels(t *testing.T) {
 	out := captureStdout(t, func() { runOchreWeightsList(nil, nil) })
 	assert.Contains(t, out, selfHostModelID)
 	assert.Contains(t, out, "snap-0001")
+	assert.Contains(t, out, weightsStatusDangling, "snapshot absent from the mock predastore must be marked dangling")
 }
 
 // TestRunOchreWeightsList_PrintsNoModelsStaged covers the empty case through

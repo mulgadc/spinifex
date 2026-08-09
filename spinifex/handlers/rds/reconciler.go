@@ -659,8 +659,13 @@ func transitionStarted(rec *DBInstanceRecord) time.Time {
 // otherwise report a replaced instance as ready. The observation is the same one
 // the health classifier forms, so freshness is judged by one rule package-wide.
 func (r *Reconciler) engineReady(ctx context.Context, accountID string, rec *DBInstanceRecord, since time.Time) (bool, error) {
-	obs := r.observeAgent(accountID, rec, since)
+	obs := r.observeAgent(accountID, rec)
 	if !obs.engineHealthy || !obs.heartbeatFresh {
+		return false, nil
+	}
+	// A beat at or before since came from the engine the restart replaced, so it
+	// says nothing about the one that took its place.
+	if !since.IsZero() && !obs.lastSeen.After(since) {
 		return false, nil
 	}
 	return r.vmRunning(ctx, accountID, rec)

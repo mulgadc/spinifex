@@ -74,7 +74,7 @@ func classifyHealth(obs healthObservation) healthVerdict {
 // Restart=on-failure and EC2's VM auto-restart provide underneath. v1.0 does no
 // repair of its own.
 func (r *Reconciler) reconcileHealth(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
-	obs := r.observeAgent(accountID, rec, time.Time{})
+	obs := r.observeAgent(accountID, rec)
 
 	// The VM lookup is a fleet-wide describe fan-out, so it is issued only where
 	// its answer could change something. A healthy instance with nothing recorded
@@ -172,18 +172,15 @@ func failureReason(obs healthObservation) string {
 		time.Since(obs.lastSeen).Round(time.Second))
 }
 
-// The agent half of the observation, read without touching the fleet. Beats at
-// or before since are not fresh, which is how a restart is told from the engine
-// it restarted; a zero since accepts any beat inside the staleness bound.
-func (r *Reconciler) observeAgent(accountID string, rec *DBInstanceRecord, since time.Time) healthObservation {
+// The agent half of the observation, read without touching the fleet.
+func (r *Reconciler) observeAgent(accountID string, rec *DBInstanceRecord) healthObservation {
 	lastSeen, bound := r.lastHeartbeat(accountID, rec)
 	return healthObservation{
 		status: rec.Status,
 		engineHealthy: rec.Agent.EngineHealth == EngineHealthHealthy && rec.InstanceID != "" &&
 			rec.Agent.InstanceID == rec.InstanceID,
-		heartbeatFresh: !lastSeen.IsZero() && time.Since(lastSeen) <= bound &&
-			(since.IsZero() || lastSeen.After(since)),
-		lastSeen: lastSeen,
+		heartbeatFresh: !lastSeen.IsZero() && time.Since(lastSeen) <= bound,
+		lastSeen:       lastSeen,
 	}
 }
 

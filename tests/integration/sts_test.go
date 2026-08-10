@@ -178,21 +178,8 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	requireAWSErrorCode(t, err, "AccessDenied")
 
 	// GetSessionToken is user-only: an assumed-role (ASIA) session must NOT
-	// be able to mint a user session. Grant the action first, so the denial
-	// comes from the handler's principal-type rule rather than the empty
-	// identity policy the gate would otherwise reject on.
-	gstPolicyOut, err := iamCli.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String("sts-role-get-session-token"),
-		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetSessionToken","Resource":"*"}]}`),
-	})
-	require.NoError(t, err, "create-policy (get-session-token)")
-
-	_, err = iamCli.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName:  aws.String(stsRoleName),
-		PolicyArn: gstPolicyOut.Policy.Arn,
-	})
-	require.NoError(t, err, "attach-role-policy (get-session-token)")
-
+	// be able to mint a user session. The action carries no identity-policy
+	// gate, so the denial comes from the handler's principal-type rule.
 	_, err = sessionCli.STS.GetSessionToken(&sts.GetSessionTokenInput{})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -400,13 +387,11 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 
 	// Attached managed policies are subordinate entities: DeleteRole rejects
 	// with DeleteConflict until they are detached.
-	for _, arn := range []*string{gstPolicyOut.Policy.Arn, chainPolicyOut.Policy.Arn} {
-		_, err = iamCli.DetachRolePolicy(&iam.DetachRolePolicyInput{
-			RoleName:  aws.String(stsRoleName),
-			PolicyArn: arn,
-		})
-		require.NoError(t, err, "detach-role-policy")
-	}
+	_, err = iamCli.DetachRolePolicy(&iam.DetachRolePolicyInput{
+		RoleName:  aws.String(stsRoleName),
+		PolicyArn: chainPolicyOut.Policy.Arn,
+	})
+	require.NoError(t, err, "detach-role-policy (chain)")
 
 	_, err = iamCli.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(stsRoleName)})
 	require.NoError(t, err, "delete-role")

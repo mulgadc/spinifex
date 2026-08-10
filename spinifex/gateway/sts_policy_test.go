@@ -142,13 +142,53 @@ func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
 	})
 }
 
-func TestSTSRequest_GetSessionToken_DeniedByIdentityPolicy(t *testing.T) {
+// TestSTSRequest_AssumeRole_PathPrefixCannotWidenGrant pins the gate to the
+// same role the handler resolves. Roles are keyed by account and name, so a
+// caller-supplied path must not make a scoped grant match a different role.
+func TestSTSRequest_AssumeRole_PathPrefixCannotWidenGrant(t *testing.T) {
 	svc := stsIdentityPolicy(
-		stsStatement("Allow", "sts:*", "*"),
-		stsStatement("Deny", "sts:GetSessionToken", "*"),
+		stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/app-*"),
 	)
-	resp := stsPolicyRequest(t, svc, nil, "Action=GetSessionToken&DurationSeconds=3600")
-	assertAccessDenied(t, resp)
+
+	t.Run("path prefix does not reach another role", func(t *testing.T) {
+		resp := stsPolicyRequest(t, svc, nil,
+			"Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/app-x/admin&RoleSessionName=s1")
+		assertAccessDenied(t, resp)
+	})
+
+	t.Run("path is ignored on a granted role", func(t *testing.T) {
+		resp := stsPolicyRequest(t, svc, &flexMockSTSService{},
+			"Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/team/app-worker&RoleSessionName=s1")
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("malformed ARN rejected before evaluation", func(t *testing.T) {
+		resp := stsPolicyRequest(t, svc, nil, "Action=AssumeRole&RoleArn=not-an-arn&RoleSessionName=s1")
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		assert.Contains(t, string(b), "ValidationError")
+	})
+}
+
+// TestSTSRequest_GetSessionToken_NotGated pins the AWS contract: it is an
+// authentication operation requiring no permission, so an explicit Deny on the
+// identity policy does not stop it reaching the handler.
+func TestSTSRequest_GetSessionToken_NotGated(t *testing.T) {
+	svc := stsIdentityPolicy(stsStatement("Deny", "sts:*", "*"))
+
+	called := false
+	stsSvc := &flexMockSTSService{
+		getSessionTokenFn: func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+			called = true
+			return &sts.GetSessionTokenOutput{
+				Credentials: &sts.Credentials{AccessKeyId: aws.String("ASIAEXAMPLE123")},
+			}, nil
+		},
+	}
+
+	resp := stsPolicyRequest(t, svc, stsSvc, "Action=GetSessionToken&DurationSeconds=3600")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, called)
 }
 
 // TestSTSRequest_GetCallerIdentity_NotGated pins the AWS contract: the action

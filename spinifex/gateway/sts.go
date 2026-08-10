@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
@@ -76,12 +77,29 @@ var anonymousSTSActions = map[string]bool{
 	"AssumeRoleWithWebIdentity": true,
 }
 
-// stsPolicyGatedActions lists the credential-minting actions that require a
-// pass on the caller's identity policy. GetCallerIdentity is undeniable by AWS
-// contract, and AssumeRoleWithWebIdentity has no identity to evaluate.
+// stsPolicyGatedActions lists the actions requiring a pass on the caller's
+// identity policy. GetCallerIdentity and GetSessionToken are authentication
+// operations AWS requires no permission for; web identity has none to evaluate.
 var stsPolicyGatedActions = map[string]bool{
-	"AssumeRole":      true,
-	"GetSessionToken": true,
+	"AssumeRole": true,
+}
+
+// stsPolicyResource returns the ARN a gated action is evaluated against.
+// AssumeRole is rebuilt from the parsed account and role name so the gate
+// scopes to the role the handler resolves, not the caller's raw spelling.
+func stsPolicyResource(action string, queryArgs map[string]string) (string, error) {
+	roleARN := queryArgs["RoleArn"]
+	if action != "AssumeRole" || roleARN == "" {
+		return "*", nil
+	}
+	// Roles are keyed by account and name, so the path a caller writes into the
+	// ARN is not part of the role's identity and must not widen the match.
+	accountID, roleName, err := auth.ParseRoleARN(roleARN)
+	if err != nil {
+		slog.Debug("STS: unparseable RoleArn", "err", err)
+		return "", errors.New(awserrors.ErrorValidationError)
+	}
+	return fmt.Sprintf("arn:aws:iam::%s:role/%s", accountID, roleName), nil
 }
 
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
@@ -116,12 +134,12 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 	}
 
 	// The identity policy is the first of two gates: the handler still applies
-	// its own rule (role trust policy, principal type). AssumeRole is scoped to
-	// the target role so a policy can grant one role without granting all.
+	// the role's trust policy. AssumeRole is scoped to the target role so a
+	// policy can grant one role without granting all.
 	if stsPolicyGatedActions[action] {
-		resource := "*"
-		if roleARN := queryArgs["RoleArn"]; action == "AssumeRole" && roleARN != "" {
-			resource = roleARN
+		resource, rerr := stsPolicyResource(action, queryArgs)
+		if rerr != nil {
+			return rerr
 		}
 		if err := gw.checkPolicyResource(r, "sts", action, resource); err != nil {
 			return err

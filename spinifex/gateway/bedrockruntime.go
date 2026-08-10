@@ -140,10 +140,10 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.
 	if action == "ConverseStream" {
-		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver())
+		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
 	}
 	if action == "InvokeModelWithResponseStream" {
-		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver())
+		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())

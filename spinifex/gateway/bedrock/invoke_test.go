@@ -92,7 +92,7 @@ func TestInvokeStreamRouter_SelfHostSuccess(t *testing.T) {
 	defer ts.Close()
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
-	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{})
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil)
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`))
 	require.NoError(t, err)
@@ -103,21 +103,21 @@ func TestInvokeStreamRouter_SelfHostSuccess(t *testing.T) {
 }
 
 func TestInvokeStreamRouter_UnknownModelReturnsResourceNotFound(t *testing.T) {
-	rt := NewInvokeStreamRouter(nil, nil, grantAll{})
+	rt := NewInvokeStreamRouter(nil, nil, grantAll{}, nil)
 	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "does.not-exist-v1:0", []byte(`{}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
 
 func TestInvokeStreamRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
-	rt := NewInvokeStreamRouter(stubCredentialResolver{ok: false}, nil, grantAll{})
+	rt := NewInvokeStreamRouter(stubCredentialResolver{ok: false}, nil, grantAll{}, nil)
 	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDeniedException, err.Error())
 }
 
 func TestInvokeStreamRouter_SelfHostNoEndpointReturnsModelNotReady(t *testing.T) {
-	rt := NewInvokeStreamRouter(nil, nil, grantAll{})
+	rt := NewInvokeStreamRouter(nil, nil, grantAll{}, nil)
 	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())

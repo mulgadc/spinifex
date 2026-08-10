@@ -190,9 +190,18 @@ func converseStreamToConverseInput(input *bedrockruntime.ConverseStreamInput) *b
 }
 
 // ConverseStream routes modelID to its provider via the catalog, exactly like
-// Converse, then requires the resolved provider to also implement
-// ConverseStreamProvider.
+// Converse — including the same translate-before-resolve treatment of a PT
+// ARN via rt.provisioned — then requires the resolved provider to also
+// implement ConverseStreamProvider.
 func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
+	// Translate before resolve, exactly like Converse: a PT ARN is swapped
+	// for the commitment's own (account, foundation model) before catalog
+	// lookup and endpoint resolution act on it.
+	ptAccountID, modelID, err := resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, err
@@ -201,7 +210,11 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
-		p = newVLLMProvider(rt.endpointResolver)
+		if ptAccountID != "" {
+			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			p = newVLLMProvider(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:

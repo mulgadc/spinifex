@@ -16,13 +16,44 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// nbdClientVolumeBytes is small enough for a full nbdcopy round trip to be
-// quick and large enough to span many qcow2 clusters.
-const nbdClientVolumeBytes = 64 << 20
+// defaultNBDVolumeBytes is small enough for a full nbdcopy round trip to be
+// quick and large enough to span many allocation units.
+const defaultNBDVolumeBytes int64 = 64 << 20
+
+const defaultNBDNodeID = "node-a"
+
+const defaultNBDVolumePrefix = "vol-nbd"
+
+// reconnectTimeout bounds how long an export may refuse a reconnecting
+// client while it finishes tearing the previous connection down.
+const reconnectTimeout = 2 * time.Minute
+
+// NBDClientConfig adapts the suite to where it runs. An in-process provider
+// needs none of it; a live cluster needs its own node name, and unique
+// volume IDs so a rerun does not collide with a previous run's leftovers.
+type NBDClientConfig struct {
+	NodeID       string
+	VolumePrefix string
+	VolumeBytes  int64
+}
+
+func (c NBDClientConfig) withDefaults() NBDClientConfig {
+	if c.NodeID == "" {
+		c.NodeID = defaultNBDNodeID
+	}
+	if c.VolumePrefix == "" {
+		c.VolumePrefix = defaultNBDVolumePrefix
+	}
+	if c.VolumeBytes == 0 {
+		c.VolumeBytes = defaultNBDVolumeBytes
+	}
+	return c
+}
 
 // nbdExport is the subset of `nbdinfo --json` this suite asserts on.
 type nbdExport struct {
@@ -48,6 +79,20 @@ func assertNBDURI(t *testing.T, nbdURI string) {
 		"published NBD URI %q is not an NBD URI", nbdURI)
 }
 
+// dialURI normalises whatever form a provider published into one libnbd will
+// dial, so a provider emitting the legacy syntax still gets its export
+// tested rather than every subtest failing on the same string.
+func dialURI(t *testing.T, nbdURI string) string {
+	t.Helper()
+	serverType, socketPath, host, port, err := utils.ParseNBDURI(nbdURI)
+	require.NoErrorf(t, err, "parse published NBD URI %q", nbdURI)
+
+	if serverType == "unix" {
+		return utils.FormatNBDSocketURI(socketPath)
+	}
+	return utils.FormatNBDTCPURI(host, port)
+}
+
 // RequireNBDTools skips when libnbd's client tools are absent, so a host
 // that cannot run an external NBD client does not report a false pass.
 func RequireNBDTools(t *testing.T) {
@@ -64,11 +109,38 @@ func nbdInfo(t *testing.T, uri string) nbdExport {
 	t.Helper()
 	out, err := exec.CommandContext(context.Background(), "nbdinfo", "--json", uri).CombinedOutput()
 	require.NoErrorf(t, err, "nbdinfo %s: %s", uri, out)
+	t.Logf("nbdinfo %s:\n%s", uri, out)
 
 	var parsed nbdInfoOutput
 	require.NoError(t, json.Unmarshal(out, &parsed))
 	require.Lenf(t, parsed.Exports, 1, "expected exactly one export from %s", uri)
 	return parsed.Exports[0]
+}
+
+// nbdInfoRetry retries nbdinfo until the export accepts it, reporting how
+// many attempts and how long it took. Each attempt is a real connection, so
+// polling with a cheaper probe would only re-trigger whatever refused it.
+func nbdInfoRetry(t *testing.T, uri string) (nbdExport, int, time.Duration) {
+	t.Helper()
+	start := time.Now()
+	deadline := start.Add(reconnectTimeout)
+
+	var lastOut []byte
+	for attempt := 1; ; attempt++ {
+		out, err := exec.CommandContext(context.Background(), "nbdinfo", "--json", uri).CombinedOutput()
+		if err == nil {
+			var parsed nbdInfoOutput
+			require.NoError(t, json.Unmarshal(out, &parsed))
+			require.Lenf(t, parsed.Exports, 1, "expected exactly one export from %s", uri)
+			return parsed.Exports[0], attempt, time.Since(start)
+		}
+		lastOut = out
+		if time.Now().After(deadline) {
+			require.FailNowf(t, "export never accepted a reconnection",
+				"after %s and %d attempts: %s", reconnectTimeout, attempt, lastOut)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // nbdReachable reports whether nbdinfo can still connect, for asserting that
@@ -77,22 +149,23 @@ func nbdReachable(uri string) bool {
 	return exec.CommandContext(context.Background(), "nbdinfo", "--size", uri).Run() == nil
 }
 
-// publishForNBD creates a volume of nbdClientVolumeBytes and publishes it,
-// returning the export the provider says to connect to.
-func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, volumeID string, readOnly bool) *ebsprovider.PublishedVolume {
+// publishForNBD creates and publishes a volume, registering cleanup so a run
+// against a real cluster does not leave volumes behind.
+func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClientConfig, volumeID string, readOnly bool) *ebsprovider.PublishedVolume {
 	t.Helper()
 	ctx := context.Background()
 	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 		Versioned:     ebsprovider.NewVersioned(),
 		VolumeID:      volumeID,
-		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: nbdClientVolumeBytes},
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: cfg.VolumeBytes},
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { cleanupVolume(t, provider, cfg, volumeID) })
 
 	pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(),
 		VolumeID:  volumeID,
-		NodeID:    nbdClientNodeID,
+		NodeID:    cfg.NodeID,
 		ReadOnly:  readOnly,
 	})
 	require.NoError(t, err)
@@ -100,44 +173,91 @@ func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, volumeID stri
 	return pub
 }
 
-const nbdClientNodeID = "node-a"
+// cleanupVolume unpublishes and deletes best-effort: cleanup runs after the
+// assertions and must never turn a passing test red.
+func cleanupVolume(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClientConfig, volumeID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.NodeID,
+	}); err != nil {
+		t.Logf("cleanup: unpublish %s: %v", volumeID, err)
+	}
+	if err := provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+	}); err != nil {
+		t.Logf("cleanup: delete %s: %v", volumeID, err)
+	}
+}
 
 // RunNBDClientSuite drives a provider's published export with libnbd's
 // client tools. newProvider must return a provider that serves real NBD;
 // the in-memory reference implementation does not qualify.
 func RunNBDClientSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider) {
-	RequireNBDTools(t)
+	RunNBDClientSuiteWithConfig(t, newProvider, NBDClientConfig{})
+}
 
-	t.Run("published URI is connectable by a standard NBD client", func(t *testing.T) {
+// RunNBDClientSuiteWithConfig is RunNBDClientSuite against a named node with
+// caller-chosen volume IDs, for driving a real daemon over a live cluster.
+func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider, cfg NBDClientConfig) {
+	RequireNBDTools(t)
+	cfg = cfg.withDefaults()
+
+	t.Run("published URI is a standard NBD URI", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, "vol-nbd-connect", false)
-		export := nbdInfo(t, pub.NBDURI)
-		assert.Equal(t, int64(nbdClientVolumeBytes), export.Size)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-uri", false)
+		assertNBDURI(t, pub.NBDURI)
+	})
+
+	t.Run("export is connectable by a standard NBD client", func(t *testing.T) {
+		provider := newProvider(t)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-connect", false)
+		export := nbdInfo(t, dialURI(t, pub.NBDURI))
+		assert.Equal(t, cfg.VolumeBytes, export.Size)
 	})
 
 	t.Run("export advertises usable block size constraints", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, "vol-nbd-blocksize", false)
-		export := nbdInfo(t, pub.NBDURI)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-blocksize", false)
+		export := nbdInfo(t, dialURI(t, pub.NBDURI))
 
-		assert.Positive(t, export.BlockSizeMinimum)
+		require.Positivef(t, export.BlockSizeMinimum,
+			"export advertises no minimum block size, so a client cannot know how to align its requests")
 		assert.GreaterOrEqual(t, export.BlockSizePreferred, export.BlockSizeMinimum)
-		assert.Zero(t, nbdClientVolumeBytes%export.BlockSizeMinimum,
+		assert.Zero(t, cfg.VolumeBytes%export.BlockSizeMinimum,
 			"export size must be a whole number of minimum blocks")
+	})
+
+	// A guest that reboots, or any client that drops, reconnects to the same
+	// export. Publication is what holds the volume, not any one connection.
+	t.Run("export accepts a client reconnecting after the first disconnects", func(t *testing.T) {
+		provider := newProvider(t)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-reconnect", false)
+		uri := dialURI(t, pub.NBDURI)
+
+		first := nbdInfo(t, uri)
+
+		second, attempts, elapsed := nbdInfoRetry(t, uri)
+		t.Logf("reconnect accepted on attempt %d after %s", attempts, elapsed.Round(10*time.Millisecond))
+		assert.Equalf(t, 1, attempts,
+			"reconnect was refused for %s after the first client disconnected; a client that does not retry sees a hard failure", elapsed.Round(10*time.Millisecond))
+		assert.Equal(t, first.Size, second.Size)
 	})
 
 	t.Run("data written by an external client reads back byte for byte", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, "vol-nbd-roundtrip", false)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-roundtrip", false)
 
 		dir := t.TempDir()
 		in := filepath.Join(dir, "in.bin")
 		out := filepath.Join(dir, "out.bin")
-		want := patternBytes(nbdClientVolumeBytes)
+		want := patternBytes(int(cfg.VolumeBytes))
 		require.NoError(t, os.WriteFile(in, want, 0o600))
 
-		runNBDCopy(t, in, pub.NBDURI)
-		runNBDCopy(t, pub.NBDURI, out)
+		uri := dialURI(t, pub.NBDURI)
+		runNBDCopy(t, in, uri)
+		runNBDCopy(t, uri, out)
 
 		got, err := os.ReadFile(out)
 		require.NoError(t, err)
@@ -147,23 +267,25 @@ func RunNBDClientSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.
 
 	t.Run("read-only publish is advertised as read-only", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, "vol-nbd-readonly", true)
-		export := nbdInfo(t, pub.NBDURI)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-readonly", true)
+		export := nbdInfo(t, dialURI(t, pub.NBDURI))
 		assert.True(t, export.ReadOnly, "a volume published ReadOnly must set the NBD read-only transmission flag")
 	})
 
 	t.Run("unpublish tears the export down", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, "vol-nbd-unpublish", false)
-		require.True(t, nbdReachable(pub.NBDURI), "export should be reachable before unpublish")
+		volumeID := cfg.VolumePrefix + "-unpublish"
+		pub := publishForNBD(t, provider, cfg, volumeID, false)
+		uri := dialURI(t, pub.NBDURI)
+		require.True(t, nbdReachable(uri), "export should be reachable before unpublish")
 
 		require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{
 			Versioned: ebsprovider.NewVersioned(),
-			VolumeID:  "vol-nbd-unpublish",
-			NodeID:    nbdClientNodeID,
+			VolumeID:  volumeID,
+			NodeID:    cfg.NodeID,
 		}))
 
-		assert.Eventually(t, func() bool { return !nbdReachable(pub.NBDURI) }, 10*time.Second, 100*time.Millisecond,
+		assert.Eventually(t, func() bool { return !nbdReachable(uri) }, 30*time.Second, 250*time.Millisecond,
 			"export still answers after UnpublishVolume")
 	})
 }
@@ -171,7 +293,9 @@ func RunNBDClientSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.
 // runNBDCopy copies between a local file and an NBD URI in either direction.
 func runNBDCopy(t *testing.T, src, dst string) {
 	t.Helper()
-	out, err := exec.CommandContext(context.Background(), "nbdcopy", src, dst).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "nbdcopy", src, dst).CombinedOutput()
 	require.NoErrorf(t, err, "nbdcopy %s %s: %s", src, dst, out)
 }
 

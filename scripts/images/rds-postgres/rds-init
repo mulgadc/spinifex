@@ -138,6 +138,15 @@ load_handoff() {
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
     esac
 
+    # redact_stream is line-oriented, so a password spanning a line boundary
+    # would match neither half and reach /dev/console in the clear. The control
+    # plane rejects one; refusing here too keeps that an asserted property of
+    # the handoff rather than a silent dependency on another service.
+    case "${RDS_MASTER_PASSWORD}" in
+        *'
+'*) fail "the master password in the bootstrap config spans more than one line; the control plane should have rejected it" ;;
+    esac
+
     log "bootstrap config loaded (mode=${RDS_MODE:-unset}, port=${RDS_PORT})"
 }
 
@@ -357,7 +366,8 @@ redact_stream() {
 # everything here to /dev/console, which the host captures off ttyS0.
 psql_bootstrap() {
     # A pipeline's status is its last command's and POSIX sh has no pipefail, so
-    # psql's own status leaves the subshell through the filesystem.
+    # psql's own status leaves the subshell through the filesystem. The guard
+    # shifts psql's <stdin> line numbers by the number of lines it adds.
     _status_file="${BOOTSTRAP_DIR}/psql.status"
     rm -f "${_status_file}"
     {
@@ -374,14 +384,28 @@ psql_bootstrap() {
         printf '%s\n' "${_psql_rc}" > "${_status_file}"
     } 2>&1 | redact_stream "${RDS_MASTER_PASSWORD}"
 
-    # A missing status file means the subshell died before psql was reached,
-    # which is a failed bootstrap and not a silent success.
-    _rc=1
+    # Every way of not recovering psql's status is a failed bootstrap rather
+    # than a silent success, and each says so in its own words: blaming psql for
+    # a status file that could not be written would send an operator looking at
+    # a PostgreSQL that did exactly what it was asked.
+    #
+    # A torn write leaves the file created but empty, so the value is checked
+    # before it is returned: `return ""` is fatal in the guest's ash, and would
+    # kill rds-init here — past the sweep, before the diagnostics.
+    _psql_status=1
     if [ -f "${_status_file}" ]; then
-        _rc=$(cat "${_status_file}")
+        _psql_status=$(cat "${_status_file}" 2>/dev/null) || _psql_status=""
+        case "${_psql_status}" in
+            '' | *[!0-9]*)
+                echo "[rds-init] ERROR: psql ran but its exit status could not be read back from ${_status_file} (got '${_psql_status}'); treating the bootstrap as failed" >&2
+                _psql_status=1
+                ;;
+        esac
         rm -f "${_status_file}"
+    else
+        echo "[rds-init] ERROR: psql ran but its exit status was never recorded at ${_status_file}; treating the bootstrap as failed" >&2
     fi
-    return "${_rc}"
+    return "${_psql_status}"
 }
 
 # Runs on a freshly initialised cluster only.

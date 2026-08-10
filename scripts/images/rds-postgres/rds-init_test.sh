@@ -15,7 +15,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "${WORK}"' EXIT
 
 REAL_LS=$(command -v ls)
-export REAL_LS
+REAL_CAT=$(command -v cat)
+export REAL_LS REAL_CAT
 
 STUBBIN="${WORK}/bin"
 mkdir -p "${STUBBIN}"
@@ -129,7 +130,32 @@ if [ "${PSQL_FAIL:-0}" = "1" ]; then
     echo "psql:<stdin>:7: STATEMENT: ALTER ROLE \"m\" WITH LOGIN PASSWORD '${RDS_MASTER_PASSWORD:-}';" >&2
     exit 3
 fi
+# PSQL_STATUS_CORRUPT=absent: psql succeeds, but rds-init cannot create the
+# status file it recovers psql's exit code through — the shape a read-only or
+# full /run gives it. -h is the bootstrap directory the status file lives in.
+if [ "${PSQL_STATUS_CORRUPT:-}" = "absent" ]; then
+    while [ $# -gt 0 ]; do
+        [ "$1" = "-h" ] && mkdir -p "$2/psql.status" && break
+        shift
+    done
+fi
 exit 0
+EOF
+
+# cat stub: delegates normally, but lets the read-back of psql's exit status
+# return what a torn write or an I/O error would. rds-init's other use of cat
+# takes no argument (it reads the bootstrap script from stdin) and is untouched.
+cat > "${STUBBIN}/cat" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    *psql.status)
+        case "${PSQL_STATUS_CORRUPT:-}" in
+            empty) exit 0 ;;
+            garbage) echo "not-a-number"; exit 0 ;;
+        esac
+        ;;
+esac
+exec "${REAL_CAT}" "$@"
 EOF
 
 # sync stub: a no-op, except that SYNC_KILL_PARENT signals rds-init from the
@@ -177,7 +203,10 @@ write_handoff() {
         echo "RDS_MODE=$1"
         echo "RDS_DB_INSTANCE_IDENTIFIER=${DB_ID:-db1}"
         echo "RDS_MASTER_USERNAME=${MASTER_USER:-mulgamaster}"
-        [ -n "$2" ] && echo "RDS_MASTER_PASSWORD=$2"
+        # Single-quoted as rds-agent's shellQuote writes it, which is what lets a
+        # password carrying shell metacharacters — or a newline — survive the
+        # handoff intact and reach the checks that exist for it.
+        [ -n "$2" ] && echo "RDS_MASTER_PASSWORD='$2'"
         [ -n "$3" ] && echo "RDS_DB_NAME=$3"
         [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
         [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
@@ -210,7 +239,7 @@ reset_state() {
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
-    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE || true
+    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT || true
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -389,6 +418,63 @@ grep -q 'ERROR: syntax error' "${WORK}/out" \
     && fail "console-redaction: datadir kept after a failed master bootstrap" \
     || pass "console-redaction: the failure still propagates"
 unset PSQL_FAIL
+
+# --- Case 3c: psql's status must cross the redaction pipeline or fail closed ---
+# The status file is how psql's exit code leaves the subshell, POSIX sh having
+# no pipefail. A torn write leaves it created but empty, and `return ""` is
+# fatal in the guest's ash: rds-init would die past the datadir sweep and before
+# any diagnostic, leaving a trust-authenticated postmaster on a deleted datadir.
+for corruption in empty garbage; do
+    reset_state
+    write_handoff initialize 's3cr3t' appdb
+    PSQL_STATUS_CORRUPT="${corruption}"
+    export PSQL_STATUS_CORRUPT
+    run_fails "psql-status-${corruption}"
+    grep -q 'exit status could not be read back' "${WORK}/out" \
+        && pass "psql-status-${corruption}: names the unreadable status rather than blaming psql" \
+        || fail "psql-status-${corruption}: no diagnostic naming the status file"
+    grep -q 'Illegal number\|numeric argument required' "${WORK}/out" \
+        && fail "psql-status-${corruption}: an unvalidated status reached return" \
+        || pass "psql-status-${corruption}: nothing unvalidated reached return"
+    [ -e "${PGDATA}/PG_VERSION" ] \
+        && fail "psql-status-${corruption}: datadir kept after an unrecoverable status" \
+        || pass "psql-status-${corruption}: datadir cleared"
+    grep -q 'stop' "${PGCTL_CALLS}" \
+        && pass "psql-status-${corruption}: bootstrap server stopped" \
+        || fail "psql-status-${corruption}: bootstrap server left holding the datadir"
+    unset PSQL_STATUS_CORRUPT
+done
+
+# --- Case 3d: a status file that could never be written is not psql's fault ---
+# The write can fail outright — a read-only or full /run — while psql itself
+# succeeded. Failing closed is right, but the operator must not be sent to a
+# PostgreSQL that did exactly what it was asked.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PSQL_STATUS_CORRUPT=absent
+export PSQL_STATUS_CORRUPT
+run_fails "psql-status-absent"
+grep -q 'exit status was never recorded' "${WORK}/out" \
+    && pass "psql-status-absent: names the missing status file" \
+    || fail "psql-status-absent: no diagnostic distinguishing it from a psql failure"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "psql-status-absent: datadir kept" || pass "psql-status-absent: datadir cleared"
+unset PSQL_STATUS_CORRUPT
+
+# --- Case 3e: a multi-line master password is refused before it is spent ---
+# redact_stream is line-oriented, so a password spanning a line boundary matches
+# neither half and reaches /dev/console in the clear. The control plane rejects
+# one; this is the guest asserting that rather than trusting it.
+reset_state
+write_handoff initialize 'top
+secret' appdb
+run_fails "multiline-password"
+[ -s "${INITDB_CALLS}" ] \
+    && fail "multiline-password: initdb ran before the password was refused" \
+    || pass "multiline-password: refused before initdb spent it"
+grep -q 'spans more than one line' "${WORK}/out" \
+    && pass "multiline-password: refusal names the reason" \
+    || fail "multiline-password: no refusal message"
 
 # --- Case 4: an empty datadir in attach mode means the data volume is missing ---
 reset_state

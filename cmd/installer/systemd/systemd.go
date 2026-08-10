@@ -68,6 +68,8 @@ ExecStopPost=/bin/sh -c 'if [ "$EXIT_STATUS" != "0" ]; then printf "\n*** Spinif
 # ovn-central startup cannot wedge multi-user.target and keep getty from
 # ever reaching the login prompt.
 TimeoutStartSec=300s
+# Install diagnostics land in the journal, which persists for the life of the
+# node — nothing this script runs may print secrets to stdout or stderr.
 StandardOutput=journal
 StandardError=journal
 

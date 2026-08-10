@@ -137,14 +137,14 @@ func TestRouter_Converse_UnknownOrForeignGuardrailReturnsResourceNotFound(t *tes
 
 	_, err := rt.Converse(ctx, grCallerAccount, modelID, guardedConverseInput("hello", aws.String("does-not-exist"), false))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("converse-foreign"))
 	require.NoError(t, err)
 
 	_, err = rt.Converse(ctx, grOtherCaller, modelID, guardedConverseInput("hello", createOut.GuardrailId, false))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	assert.Equal(t, int32(0), hits.Load(), "an unresolvable guardrail must fail closed before the backend is ever reached")
 }
@@ -261,7 +261,7 @@ func TestConverseStream_UnknownOrForeignGuardrailReturnsResourceNotFoundPreHeade
 
 	err = ConverseStream(ctx, rec, grCallerAccount, modelID, body, nil, nil, nil, grantAll{}, nil, store)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 	// A pre-stream failure must not have written anything.
 	assert.Equal(t, 0, rec.Body.Len())
 }
@@ -507,14 +507,14 @@ func TestInvokeRouter_UnknownOrForeignGuardrailReturnsResourceNotFound(t *testin
 
 	_, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), "does-not-exist", guardrailDraftVersion)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-foreign"))
 	require.NoError(t, err)
 
 	_, _, err = rt.InvokeModel(ctx, grOtherCaller, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	assert.Equal(t, int32(0), hits.Load(), "an unresolvable guardrail must fail closed before the backend is ever reached")
 }

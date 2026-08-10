@@ -761,6 +761,28 @@ func TestGetService(t *testing.T) {
 			path:    "/model/meta.llama3-70b-instruct-v1:0/invoke",
 			wantSvc: "bedrock-runtime",
 		},
+		{
+			// ApplyGuardrail is a data-plane op registered under the singular
+			// /guardrail/ path, distinct from the plural control-plane CRUD.
+			name:    "bedrock scope on ApplyGuardrail path resolves to bedrock-runtime",
+			ctxVal:  "bedrock",
+			path:    "/guardrail/gr-abc123/version/1/apply",
+			wantSvc: "bedrock-runtime",
+		},
+		{
+			// CreateGuardrail is control-plane CRUD under the plural /guardrails
+			// path, which must not be captured by the singular /guardrail/ check.
+			name:    "bedrock scope on CreateGuardrail path stays bedrock",
+			ctxVal:  "bedrock",
+			path:    "/guardrails",
+			wantSvc: "bedrock",
+		},
+		{
+			name:    "bedrock scope on GetGuardrail path stays bedrock",
+			ctxVal:  "bedrock",
+			path:    "/guardrails/gr-abc123",
+			wantSvc: "bedrock",
+		},
 	}
 
 	for _, tc := range tests {

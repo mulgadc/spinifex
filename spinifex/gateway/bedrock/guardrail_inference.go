@@ -2,7 +2,6 @@ package gateway_bedrock
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // enforceGuardrail is the single resolve->load->filter path Converse and
@@ -18,7 +16,7 @@ import (
 // unresolvable or foreign guardrail fails closed: ResourceNotFoundException.
 func enforceGuardrail(ctx context.Context, store *GuardrailStore, accountID, ident, version, source string, texts []string) (blocked bool, blockedMessage string, redactedTexts []string, assessments []*bedrockruntime.GuardrailAssessment, err error) {
 	if store == nil || ident == "" {
-		return false, "", texts, nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return false, "", texts, nil, errGuardrailNotFound(ident, "")
 	}
 	id, err := resolveGuardrailID(ident, store.region, accountID)
 	if err != nil {
@@ -34,14 +32,14 @@ func enforceGuardrail(ctx context.Context, store *GuardrailStore, accountID, ide
 		return false, "", texts, nil, err
 	}
 	if !found {
-		return false, "", texts, nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return false, "", texts, nil, errGuardrailNotFound(id, "")
 	}
 
 	view := rec.guardrailView
 	if version != "" && version != guardrailDraftVersion {
 		snap, ok := rec.Versions[version]
 		if !ok {
-			return false, "", texts, nil, errors.New(awserrors.ErrorResourceNotFoundException)
+			return false, "", texts, nil, errGuardrailNotFound(id, version)
 		}
 		view = snap.guardrailView
 	}

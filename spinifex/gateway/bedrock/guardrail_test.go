@@ -144,11 +144,11 @@ func TestGetGuardrail_NotFound(t *testing.T) {
 
 	_, err = GetGuardrail(ctx, grOtherCaller, store, &bedrock.GetGuardrailInput{GuardrailIdentifier: out.GuardrailId})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	_, err = GetGuardrail(ctx, grCallerAccount, store, &bedrock.GetGuardrailInput{GuardrailIdentifier: aws.String("does-not-exist")})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }
 
 // TestCreateGuardrailVersion_SnapshotsImmutably is the plan's core version
@@ -222,7 +222,7 @@ func TestGetGuardrail_VersionField(t *testing.T) {
 		GuardrailVersion:    aws.String("1"),
 	})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }
 
 // TestListGuardrails_AccountScoped is the plan's explicit isolation
@@ -318,7 +318,7 @@ func TestUpdateGuardrail_NotFound(t *testing.T) {
 		BlockedOutputsMessaging: aws.String("z"),
 	})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }
 
 // TestDeleteGuardrail_VersionDeletesOnlyThatSnapshot covers Delete's
@@ -346,7 +346,7 @@ func TestDeleteGuardrail_VersionDeletesOnlyThatSnapshot(t *testing.T) {
 		GuardrailVersion:    aws.String("1"),
 	})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	// Version "2" and the DRAFT both survive.
 	_, err = GetGuardrail(ctx, grCallerAccount, store, &bedrock.GetGuardrailInput{
@@ -412,7 +412,7 @@ func TestDeleteGuardrail_WholeGuardrailAndAbsentIsNoop(t *testing.T) {
 
 	_, err = GetGuardrail(ctx, grCallerAccount, store, &bedrock.GetGuardrailInput{GuardrailIdentifier: createOut.GuardrailId})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	// Deleting the already-absent guardrail again is a no-op success.
 	_, err = DeleteGuardrail(ctx, grCallerAccount, store, &bedrock.DeleteGuardrailInput{GuardrailIdentifier: aws.String("never-created")})
@@ -427,7 +427,7 @@ func TestCreateGuardrailVersion_NotFound(t *testing.T) {
 
 	_, err := CreateGuardrailVersion(ctx, grCallerAccount, store, &bedrock.CreateGuardrailVersionInput{GuardrailIdentifier: aws.String("does-not-exist")})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }
 
 // TestGuardrailID_ResolvesBareOrARN covers the shape every guardrail op's

@@ -316,14 +316,14 @@ func TestApplyGuardrail_UnknownOrForeignGuardrail(t *testing.T) {
 
 	_, err := ApplyGuardrail(ctx, grCallerAccount, store, applyGuardrailInput(aws.String("does-not-exist"), guardrailDraftVersion, bedrockruntime.GuardrailContentSourceInput, "hello"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 
 	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("apply-guardrail-foreign"))
 	require.NoError(t, err)
 
 	_, err = ApplyGuardrail(ctx, grOtherCaller, store, applyGuardrailInput(createOut.GuardrailId, guardrailDraftVersion, bedrockruntime.GuardrailContentSourceInput, "hello"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }
 
 // TestApplyGuardrail_VersionResolution covers version handling: DRAFT
@@ -368,5 +368,5 @@ func TestApplyGuardrail_VersionResolution(t *testing.T) {
 	// An unknown numbered version is not-found.
 	_, err = ApplyGuardrail(ctx, grCallerAccount, store, applyGuardrailInput(createOut.GuardrailId, "99", bedrockruntime.GuardrailContentSourceInput, "hello"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
 }

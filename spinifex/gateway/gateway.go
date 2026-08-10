@@ -427,10 +427,10 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	// bedrock and bedrock-runtime share the SigV4 signing name "bedrock", so the
 	// credential scope alone cannot tell the control plane from the data plane —
 	// AWS separates them by endpoint hostname, but the gateway serves one
-	// endpoint. The request path is the discriminator: /model/... is exclusive to
-	// the data plane (Converse/InvokeModel and their streaming variants), so a
-	// "bedrock"-scoped call to it is really bedrock-runtime.
-	if svc == "bedrock" && strings.HasPrefix(r.URL.Path, "/model/") {
+	// endpoint. The request path is the discriminator: /model/... and singular
+	// /guardrail/... are exclusive to the data plane; control-plane guardrail
+	// CRUD uses the plural /guardrails, so the prefixes never collide.
+	if svc == "bedrock" && (strings.HasPrefix(r.URL.Path, "/model/") || strings.HasPrefix(r.URL.Path, "/guardrail/")) {
 		svc = "bedrock-runtime"
 	}
 	if !supportedServices[svc] {

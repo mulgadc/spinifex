@@ -135,6 +135,16 @@ func getGuardrailRecord(ctx context.Context, kv jetstream.KeyValue, accountID, i
 	return rec, found, err
 }
 
+// errGuardrailNotFound reports a guardrail-specific ResourceNotFoundException.
+// awserrors' default wording for that code ("could not resolve the foundation
+// model") is misleading when the missing resource is a guardrail, not a model.
+func errGuardrailNotFound(id, version string) error {
+	if version == "" {
+		return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "guardrail %q not found", id)
+	}
+	return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "guardrail %q version %q not found", id, version)
+}
+
 // getGuardrailRecordRevision is getGuardrailRecord with the KV revision
 // surfaced too, for a CAS write.
 func getGuardrailRecordRevision(ctx context.Context, kv jetstream.KeyValue, key string) (GuardrailRecord, uint64, bool, error) {
@@ -389,7 +399,7 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, errGuardrailNotFound(id, "")
 	}
 
 	version := aws.StringValue(input.GuardrailVersion)
@@ -399,7 +409,7 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 
 	snap, ok := rec.Versions[version]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, errGuardrailNotFound(id, version)
 	}
 	return guardrailViewToGetOutput(rec.ARN, id, bedrock.GuardrailStatusReady, snap.Version, snap.guardrailView), nil
 }
@@ -487,7 +497,7 @@ func UpdateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, errGuardrailNotFound(id, "")
 	}
 
 	rec.Name = aws.StringValue(input.Name)
@@ -582,7 +592,7 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, errGuardrailNotFound(id, "")
 	}
 
 	rec.NextVersion++
@@ -623,7 +633,7 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, errGuardrailNotFound(id, "")
 	}
 
 	view := rec.guardrailView
@@ -631,7 +641,7 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 	if version != guardrailDraftVersion {
 		snap, ok := rec.Versions[version]
 		if !ok {
-			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+			return nil, errGuardrailNotFound(id, version)
 		}
 		view = snap.guardrailView
 	}

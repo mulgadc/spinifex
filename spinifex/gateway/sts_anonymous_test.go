@@ -57,7 +57,6 @@ func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
 		STSService: &flexMockSTSService{
 			assumeWebIdentityFn: func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
 				t.Fatal("signed request must not reach the anonymous STS dispatcher")
@@ -80,7 +79,7 @@ func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
 
 // TestAnonymousSTSArgs_Classification covers the body-peek helper for anonymous action detection.
 func TestAnonymousSTSArgs_Classification(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true}
 
 	t.Run("anonymous action recognised, body restored", func(t *testing.T) {
 		const body = "Action=AssumeRoleWithWebIdentity&WebIdentityToken=tok"

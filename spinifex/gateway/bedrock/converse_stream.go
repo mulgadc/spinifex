@@ -99,8 +99,9 @@ type converseStreamSource interface {
 // credential, upstream connect error) returns an awserrors code for the normal
 // ErrorHandler envelope. Once the first frame is written it always returns
 // nil — any later failure is an in-band exception event, since the HTTP
-// status can no longer change.
-func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) error {
+// status can no longer change. provisioned may be nil, disabling PT ARN
+// acceptance (any PT ARN then reads as an unknown modelId).
+func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
@@ -114,9 +115,13 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}
 
-	entry, _ := lookupCatalogEntry(modelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
+	// Resolved here too (Router.ConverseStream below resolves it again for
+	// routing) purely so entry's Provider tag reflects a PT ARN's target
+	// model, not the raw ARN, for the InvocationRecord's Backend field.
+	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
+	entry, _ := lookupCatalogEntry(recordModelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
 
-	src, err := NewRouter(resolver, endpointResolver, recorder, access).ConverseStream(ctx, accountID, modelID, input)
+	src, err := NewRouter(resolver, endpointResolver, recorder, access, provisioned).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}

@@ -191,6 +191,36 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	assert.Empty(t, f.harness.launcher.terminated)
 }
 
+// TestReaper_ShouldReap_SkipsRecordCreatedPinnedViaEnsure is .7.7's exemption
+// guarded against a regression from the new pinned-create path: a record
+// Ensure actually wrote with Pinned:true (not just hand-set on a struct) must
+// still fail shouldReap once idle past the TTL, while an identical unpinned
+// one is reapable.
+func TestReaper_ShouldReap_SkipsRecordCreatedPinnedViaEnsure(t *testing.T) {
+	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Minute})
+
+	_, err := f.svc.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	desc, err := f.svc.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	pinned := desc.Endpoint
+	require.True(t, pinned.Pinned)
+
+	now := time.Now().UTC()
+	pinned.ReadyAt = now.Add(-time.Hour)
+	pinned.LastActiveAt = now.Add(-time.Hour)
+
+	unpinned := pinned
+	unpinned.Pinned = false
+
+	assert.False(t, f.reaper.shouldReap(pinned, now), "the endpoint Ensure created pinned must never be reaped")
+	assert.True(t, f.reaper.shouldReap(unpinned, now), "an identical unpinned record must still be reapable")
+}
+
 // A busy endpoint's LastActiveAt is refreshed rather than left to age out,
 // which is both what stops the reap and what orders eviction later.
 func TestReaper_BusyEndpointStampsLastActive(t *testing.T) {

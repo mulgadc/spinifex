@@ -60,6 +60,10 @@ func (s stubEndpointResolver) Endpoint(context.Context, string) (string, bool, e
 	return s.baseURL, s.baseURL != "", nil
 }
 
+func (s stubEndpointResolver) EndpointForAccount(ctx context.Context, _, modelID string) (string, bool, error) {
+	return s.Endpoint(ctx, modelID)
+}
+
 // TestBedrockEndpointResolver_PrefersDynamic pins the wiring the whole
 // dynamic-resolution change hangs off: with a registry resolver configured the
 // gateway must use it, since it is the only path that can request a launch.

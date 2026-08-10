@@ -35,13 +35,17 @@ type Router struct {
 	endpointResolver EndpointResolver
 	recorder         Recorder
 	access           AccessResolver
+	// provisioned resolves a provisioned-throughput ARN's commitment.
+	// Nil (a Router built without one) means Converse rejects any PT ARN as
+	// ResourceNotFoundException rather than a bare modelId's usual denial.
+	provisioned *ProvisionedStore
 }
 
 // NewRouter constructs a Router. A nil resolver, endpointResolver, or recorder
 // falls back to a no-op implementation, and a nil access falls back to denying
 // every model, so a Router is always safe to use even before the real stores
-// are wired in.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) *Router {
+// are wired in. A nil provisioned disables PT ARN acceptance.
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -54,7 +58,7 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
@@ -102,6 +106,17 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		})
 	}()
 
+	// Translate before resolve: a PT ARN is swapped for the commitment's own
+	// (account, foundation model) here, before catalog lookup, access grant,
+	// and endpoint resolution all act on it. Assigns the named err, so the
+	// deferred closure records a rejected PT ARN the same as any other
+	// failed invocation.
+	var ptAccountID string
+	ptAccountID, modelID, err = resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
 	// Assigns the named err, so the deferred closure records a denied
 	// invocation the same as any other failed one.
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
@@ -113,7 +128,11 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
-		p = newVLLMProvider(rt.endpointResolver)
+		if ptAccountID != "" {
+			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			p = newVLLMProvider(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
@@ -142,10 +161,11 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 }
 
 // Converse is the bedrock-runtime Converse entry point used by the gateway
-// route table. resolver, endpointResolver, recorder and access may be nil;
-// NewRouter supplies no-op (and, for access, deny-all) fallbacks.
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver, recorder, access).Converse(ctx, accountID, modelID, input)
+// route table. resolver, endpointResolver, recorder, access and provisioned
+// may be nil; NewRouter supplies no-op (and, for access, deny-all; for
+// provisioned, PT-ARN-rejecting) fallbacks.
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, recorder, access, provisioned).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may
@@ -170,9 +190,18 @@ func converseStreamToConverseInput(input *bedrockruntime.ConverseStreamInput) *b
 }
 
 // ConverseStream routes modelID to its provider via the catalog, exactly like
-// Converse, then requires the resolved provider to also implement
-// ConverseStreamProvider.
+// Converse — including the same translate-before-resolve treatment of a PT
+// ARN via rt.provisioned — then requires the resolved provider to also
+// implement ConverseStreamProvider.
 func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
+	// Translate before resolve, exactly like Converse: a PT ARN is swapped
+	// for the commitment's own (account, foundation model) before catalog
+	// lookup and endpoint resolution act on it.
+	ptAccountID, modelID, err := resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, err
@@ -181,7 +210,11 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
-		p = newVLLMProvider(rt.endpointResolver)
+		if ptAccountID != "" {
+			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			p = newVLLMProvider(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:

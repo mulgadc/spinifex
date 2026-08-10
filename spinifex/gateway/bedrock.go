@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
@@ -28,23 +29,23 @@ type bedrockRoute struct {
 // is gw.bedrockResolver(): the configured credential store, or a no-op
 // fallback. loggingStore is gw.bedrockLoggingConfigStore(). access is
 // gw.bedrockAccessResolver(): the configured grant store, or a deny-all
-// fallback.
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error)
+// fallback. provisioned is gw.bedrockProvisionedStore().
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error)
 
 // bedrockRoutes is the dispatch table. More-specific paths must precede
 // less-specific ones with the same prefix so the regex matcher picks the
 // deeper route first.
 var bedrockRoutes = []bedrockRoute{
 	{"GET", regexp.MustCompile(`^/foundation-models$`), "ListFoundationModels",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
 			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
 		}},
 	{"GET", regexp.MustCompile(`^/foundation-models/([^/]+)$`), "GetFoundationModel",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
 			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0], access)
 		}},
 	{"PUT", regexp.MustCompile(`^/logging/modelinvocations$`), "PutModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
 			input := new(bedrock.PutModelInvocationLoggingConfigurationInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -54,12 +55,45 @@ var bedrockRoutes = []bedrockRoute{
 			return gateway_bedrock.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
 		}},
 	{"GET", regexp.MustCompile(`^/logging/modelinvocations$`), "GetModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
 			return gateway_bedrock.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
 		}},
 	{"DELETE", regexp.MustCompile(`^/logging/modelinvocations$`), "DeleteModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
 			return gateway_bedrock.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
+		}},
+	{"POST", regexp.MustCompile(`^/provisioned-model-throughput$`), "CreateProvisionedModelThroughput",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+			input := new(bedrock.CreateProvisionedModelThroughputInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			return gateway_bedrock.CreateProvisionedModelThroughput(ctx, acct, provisioned, input)
+		}},
+	{"GET", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "GetProvisionedModelThroughput",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+			return gateway_bedrock.GetProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.GetProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
+		}},
+	{"GET", regexp.MustCompile(`^/provisioned-model-throughputs$`), "ListProvisionedModelThroughputs",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+			return gateway_bedrock.ListProvisionedModelThroughputs(ctx, acct, provisioned, new(bedrock.ListProvisionedModelThroughputsInput))
+		}},
+	{"PATCH", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "UpdateProvisionedModelThroughput",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+			input := new(bedrock.UpdateProvisionedModelThroughputInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.ProvisionedModelId = aws.String(p[0])
+			return gateway_bedrock.UpdateProvisionedModelThroughput(ctx, acct, provisioned, input)
+		}},
+	{"DELETE", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "DeleteProvisionedModelThroughput",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+			return gateway_bedrock.DeleteProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.DeleteProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
 		}},
 }
 
@@ -123,7 +157,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
 	if err != nil {
 		return err
 	}
@@ -171,6 +205,18 @@ func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver 
 		return gw.BedrockAccess
 	}
 	return gateway_bedrock.DenyAllAccessResolver
+}
+
+// bedrockProvisionedStore returns gw.BedrockProvisioned, or a store backed by
+// no JetStream client when unconfigured. Reads/writes then fail with an error
+// (no JetStream to open a KV bucket against) rather than panicking, which is
+// acceptable for unit tests of unrelated routes that never reach a
+// provisioned-throughput handler.
+func (gw *GatewayConfig) bedrockProvisionedStore() *gateway_bedrock.ProvisionedStore {
+	if gw.BedrockProvisioned != nil {
+		return gw.BedrockProvisioned
+	}
+	return gateway_bedrock.NewProvisionedStore(nil, 1, gw.Region, nil)
 }
 
 // bedrockEndpointResolver returns the registry-backed resolver when one is

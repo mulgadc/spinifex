@@ -1,6 +1,7 @@
 package handlers_bedrock
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -171,6 +172,41 @@ func TestEvictForCapacity_NeverEvictsTheRequester(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, s.evictForCapacity(t.Context(), kv, testModelID, 5120))
 	assert.Empty(t, h.launcher.terminations())
+}
+
+// TestSelectEvictable_SkipsRecordCreatedPinnedViaEnsure is .7.7's exemption
+// guarded against a regression from the new pinned-create path: a record
+// Ensure actually wrote with Pinned:true (not just hand-set on a struct) must
+// still be invisible to selectEvictable, while an identical unpinned one is
+// picked.
+func TestSelectEvictable_SkipsRecordCreatedPinnedViaEnsure(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	pinned := desc.Endpoint
+	require.True(t, pinned.Pinned)
+
+	now := time.Now().UTC()
+	stale := now.Add(-time.Hour)
+	pinned.ReadyAt = stale.Add(-time.Hour)
+	pinned.LastActiveAt = stale
+
+	unpinned := pinned
+	unpinned.ModelID = "other.model-v1:0"
+	unpinned.Pinned = false
+
+	victim, found := selectEvictable([]EndpointRecord{pinned, unpinned}, s.deps.NodeID, 5*time.Minute, now)
+
+	require.True(t, found)
+	assert.Equal(t, unpinned.ModelID, victim.ModelID, "the endpoint Ensure created pinned must never be the victim")
 }
 
 // seedReadyEndpoint writes a READY record directly, which is the only way to

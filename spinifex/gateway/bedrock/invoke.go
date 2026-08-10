@@ -26,13 +26,17 @@ type InvokeRouter struct {
 	endpointResolver EndpointResolver
 	recorder         Recorder
 	access           AccessResolver
+	// provisioned resolves a provisioned-throughput ARN's commitment. Nil
+	// means InvokeModel rejects any PT ARN as ResourceNotFoundException
+	// rather than a bare modelId's usual denial.
+	provisioned *ProvisionedStore
 }
 
 // NewInvokeRouter constructs an InvokeRouter. A nil resolver, endpointResolver,
 // or recorder falls back to a no-op implementation, and a nil access falls back
 // to denying every model, so an InvokeRouter is always safe to use even before
-// the real stores are wired in.
-func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) *InvokeRouter {
+// the real stores are wired in. A nil provisioned disables PT ARN acceptance.
+func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) *InvokeRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -45,7 +49,7 @@ func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResol
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access}
+	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned}
 }
 
 // InvokeModel routes modelID to its family adapter via the catalog. Unknown
@@ -76,6 +80,17 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 		})
 	}()
 
+	// Translate before resolve: a PT ARN is swapped for the commitment's own
+	// (account, foundation model) here, before catalog lookup, access grant,
+	// and endpoint resolution all act on it. Assigns the named err, so the
+	// deferred closure records a rejected PT ARN the same as any other
+	// failed invocation.
+	var ptAccountID string
+	ptAccountID, modelID, err = resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, "", err
+	}
+
 	// Assigns the named err, so the deferred closure records a denied
 	// invocation the same as any other failed one.
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
@@ -87,7 +102,11 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	var a InvokeAdapter
 	switch {
 	case entry.Provider == tierSelfHost:
-		a = newLlamaInvokeAdapter(rt.endpointResolver)
+		if ptAccountID != "" {
+			a = newLlamaInvokeAdapterForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			a = newLlamaInvokeAdapter(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
@@ -116,10 +135,11 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 }
 
 // InvokeModel is the bedrock-runtime InvokeModel entry point used by the
-// gateway route table. resolver, endpointResolver, recorder and access may be
-// nil; NewInvokeRouter supplies no-op (and, for access, deny-all) fallbacks.
-func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver) ([]byte, string, error) {
-	return NewInvokeRouter(resolver, endpointResolver, recorder, access).InvokeModel(ctx, accountID, modelID, body)
+// gateway route table. resolver, endpointResolver, recorder, access and
+// provisioned may be nil; NewInvokeRouter supplies no-op (and, for access,
+// deny-all; for provisioned, PT-ARN-rejecting) fallbacks.
+func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) ([]byte, string, error) {
+	return NewInvokeRouter(resolver, endpointResolver, recorder, access, provisioned).InvokeModel(ctx, accountID, modelID, body)
 }
 
 // InvokeStreamAdapter is the optional streaming capability an InvokeAdapter
@@ -137,13 +157,18 @@ type InvokeStreamRouter struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
 	access           AccessResolver
+	// provisioned resolves a provisioned-throughput ARN's commitment. Nil
+	// means InvokeModelWithResponseStream rejects any PT ARN as
+	// ResourceNotFoundException, mirroring InvokeRouter.
+	provisioned *ProvisionedStore
 }
 
 // NewInvokeStreamRouter constructs an InvokeStreamRouter. A nil resolver or
 // endpointResolver falls back to a resolver/resolver that finds nothing, and a
 // nil access falls back to denying every model, so an InvokeStreamRouter is
-// always safe to use even before the real stores are wired in.
-func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver) *InvokeStreamRouter {
+// always safe to use even before the real stores are wired in. A nil
+// provisioned disables PT ARN acceptance.
+func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver, provisioned *ProvisionedStore) *InvokeStreamRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -153,13 +178,20 @@ func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver Endpoin
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access}
+	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access, provisioned: provisioned}
 }
 
 // InvokeModelWithResponseStream routes modelID to its family adapter via the
-// catalog, exactly like InvokeRouter.InvokeModel, then requires the resolved
-// adapter to also implement InvokeStreamAdapter.
+// catalog, exactly like InvokeRouter.InvokeModel — including the same
+// translate-before-resolve treatment of a PT ARN via rt.provisioned — then
+// requires the resolved adapter to also implement InvokeStreamAdapter.
 func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context, accountID, modelID string, body []byte) (invokeStreamSource, error) {
+	// Translate before resolve, exactly like InvokeRouter.InvokeModel.
+	ptAccountID, modelID, err := resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, err
@@ -168,7 +200,11 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 	var a InvokeAdapter
 	switch {
 	case entry.Provider == tierSelfHost:
-		a = newLlamaInvokeAdapter(rt.endpointResolver)
+		if ptAccountID != "" {
+			a = newLlamaInvokeAdapterForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			a = newLlamaInvokeAdapter(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:

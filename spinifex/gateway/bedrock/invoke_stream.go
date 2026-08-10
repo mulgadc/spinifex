@@ -30,17 +30,22 @@ type invokeStreamSource interface {
 // requestContentType is the client's declared Content-Type, logged only.
 // resolver, endpointResolver, recorder and access may be nil;
 // NewInvokeStreamRouter and the internal NoopRecorder fallback keep this call
-// safe either way.
-func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver) error {
+// safe either way. provisioned may be nil, disabling PT ARN acceptance (any
+// PT ARN then reads as an unknown modelId).
+func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
 	requestID := uuid.NewString()
 	start := time.Now()
 
-	entry, _ := lookupCatalogEntry(modelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
+	// Resolved here too (InvokeStreamRouter below resolves it again for
+	// routing) purely so entry's Provider tag reflects a PT ARN's target
+	// model, not the raw ARN, for the InvocationRecord's Backend field.
+	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
+	entry, _ := lookupCatalogEntry(recordModelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
 
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
+	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access, provisioned).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
 	if err != nil {
 		return err
 	}

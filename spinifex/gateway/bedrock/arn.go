@@ -87,6 +87,70 @@ func looksLikeProvisionedModelARN(modelID string) bool {
 	return strings.HasPrefix(modelID, "arn:") && strings.Contains(modelID, ":"+provisionedModelResourceType+"/")
 }
 
+// guardrailResourceType is the ARN resource-type segment for a guardrail.
+const guardrailResourceType = "guardrail"
+
+// FormatGuardrailARN builds the ARN a CreateGuardrail call returns and every
+// other guardrail op accepts back in place of a raw id.
+func FormatGuardrailARN(region, accountID, id string) string {
+	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, guardrailResourceType, id)
+}
+
+// ParsedGuardrailARN is a guardrail ARN split into the parts a caller acts on.
+type ParsedGuardrailARN struct {
+	Region    string
+	AccountID string
+	ID        string
+}
+
+// guardrailARNSegmentCount is the number of colon-separated segments in
+// arn:aws:bedrock:{region}:{accountID}:guardrail/{id}.
+const guardrailARNSegmentCount = 6
+
+// ParseGuardrailARN parses a guardrail ARN and validates it belongs to the
+// caller: wrong partition/service/resource-type, a foreign region or account,
+// or a malformed id are all rejected here, mirroring ParseProvisionedModelARN.
+func ParseGuardrailARN(arn, region, accountID string) (ParsedGuardrailARN, error) {
+	parts := strings.SplitN(arn, ":", guardrailARNSegmentCount)
+	if len(parts) != guardrailARNSegmentCount {
+		return ParsedGuardrailARN{}, guardrailARNError(arn, "expected the form arn:aws:bedrock:{region}:{account}:guardrail/{id}")
+	}
+	if parts[0] != "arn" || parts[1] != "aws" || parts[2] != "bedrock" {
+		return ParsedGuardrailARN{}, guardrailARNError(arn, "only arn:aws:bedrock resources are addressable here")
+	}
+	if parts[3] != region {
+		return ParsedGuardrailARN{}, guardrailARNError(arn, fmt.Sprintf("region %q does not match this endpoint's region %q", parts[3], region))
+	}
+	if parts[4] != accountID {
+		return ParsedGuardrailARN{}, guardrailARNError(arn, "the resource belongs to another account")
+	}
+
+	resourceType, id, ok := strings.Cut(parts[5], "/")
+	if !ok || resourceType != guardrailResourceType || id == "" || strings.ContainsAny(id, ":/") {
+		return ParsedGuardrailARN{}, guardrailARNError(arn, "the resource name is empty or malformed")
+	}
+
+	return ParsedGuardrailARN{Region: parts[3], AccountID: parts[4], ID: id}, nil
+}
+
+// resolveGuardrailID accepts either a bare id or a full ARN (the shape every
+// guardrail op's GuardrailIdentifier field allows) and returns the bare id,
+// validating region/account ownership when an ARN is given.
+func resolveGuardrailID(idOrARN, region, accountID string) (string, error) {
+	if !strings.HasPrefix(idOrARN, "arn:") {
+		return idOrARN, nil
+	}
+	parsed, err := ParseGuardrailARN(idOrARN, region, accountID)
+	if err != nil {
+		return "", err
+	}
+	return parsed.ID, nil
+}
+
+func guardrailARNError(arn, why string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid guardrail ARN: %s", arn, why)
+}
+
 // resolveInferenceTarget translates modelID into the (accountID, modelID)
 // pair the rest of the inference path — catalog lookup, access grant, and
 // endpoint resolution — must act on. A bare modelId (or any ARN that is not

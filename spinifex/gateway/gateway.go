@@ -151,6 +151,10 @@ type GatewayConfig struct {
 	// drives the pinned endpoint underneath each one. Nil falls back to an
 	// unconfigured store, under which reads/writes error rather than panic.
 	BedrockProvisioned *gateway_bedrock.ProvisionedStore
+	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
+	// and friends). Nil falls back to an unconfigured store, under which
+	// reads/writes error rather than panic.
+	BedrockGuardrails *gateway_bedrock.GuardrailStore
 }
 
 var supportedServices = map[string]bool{

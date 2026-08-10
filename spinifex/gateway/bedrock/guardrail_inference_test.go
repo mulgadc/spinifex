@@ -382,6 +382,331 @@ func TestGuardrailStreamSource_TraceEnabledSurfacesAssessment(t *testing.T) {
 	assert.NotEmpty(t, metadata.Metadata.Trace.Guardrail.OutputAssessments)
 }
 
+// countingLlamaCompletionsServer answers every request with a fixed
+// non-streaming Llama /v1/completions response carrying text, and a counter
+// of how many requests it actually received.
+func countingLlamaCompletionsServer(t *testing.T, text string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [{"text": "` + text + `", "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+	return ts, &hits
+}
+
+func TestInvokeRouter_GuardrailInputBlock_Llama_SkipsBackend(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-input-block-llama"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts, hits := countingLlamaCompletionsServer(t, "hi")
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store)
+
+	respBody, contentType, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"this has a badword in it"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), hits.Load(), "the backend must never be called on an INPUT block")
+	assert.Equal(t, "application/json", contentType)
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(respBody, &out))
+	assert.Equal(t, "Your input violates our policy.", out.Generation)
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, out.StopReason)
+}
+
+// TestInvokeRouter_GuardrailInputBlock_Anthropic_SkipsBackend proves the
+// INPUT check runs -- and short-circuits -- before the Anthropic adapter's
+// InvokeModel ever opens a connection: no local server is needed at all,
+// since a blocked request must never reach the network.
+func TestInvokeRouter_GuardrailInputBlock_Anthropic_SkipsBackend(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-input-block-anthropic"))
+	require.NoError(t, err)
+
+	modelID := "anthropic.claude-3-5-sonnet-20240620-v1:0"
+	rt := NewInvokeRouter(stubCredentialResolver{key: "sk-test", ok: true}, nil, nil, grantAll{}, nil, store)
+
+	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"this has a badword in it"}]}]}`)
+	respBody, contentType, err := rt.InvokeModel(ctx, grCallerAccount, modelID, body, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+	assert.Equal(t, "application/json", contentType)
+
+	texts, ok := extractAnthropicCompletionTexts(respBody)
+	require.True(t, ok)
+	assert.Equal(t, []string{"Your input violates our policy."}, texts)
+}
+
+func TestInvokeRouter_GuardrailOutputBlock_Llama(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-output-block-llama"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts, _ := countingLlamaCompletionsServer(t, "this has a badword in it")
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store)
+
+	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(respBody, &out))
+	assert.Equal(t, "The model response violates our policy.", out.Generation)
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, out.StopReason)
+}
+
+func TestInvokeRouter_GuardrailOutputAnonymize_Llama(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-output-anonymize-llama"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts, _ := countingLlamaCompletionsServer(t, "contact jane@example.com for support")
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store)
+
+	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(respBody, &out))
+	assert.Equal(t, "contact {EMAIL} for support", out.Generation)
+	// Redaction alone (no block) leaves the backend's own stop reason intact.
+	assert.Equal(t, "stop", out.StopReason)
+}
+
+func TestInvokeRouter_NoGuardrailHeader_Regression(t *testing.T) {
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts, hits := countingLlamaCompletionsServer(t, "hi there")
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
+
+	respBody, _, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), hits.Load())
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(respBody, &out))
+	assert.Equal(t, "hi there", out.Generation)
+}
+
+func TestInvokeRouter_UnknownOrForeignGuardrailReturnsResourceNotFound(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts, hits := countingLlamaCompletionsServer(t, "hi")
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store)
+
+	_, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), "does-not-exist", guardrailDraftVersion)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-foreign"))
+	require.NoError(t, err)
+
+	_, _, err = rt.InvokeModel(ctx, grOtherCaller, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+
+	assert.Equal(t, int32(0), hits.Load(), "an unresolvable guardrail must fail closed before the backend is ever reached")
+}
+
+// llamaBadwordStreamFixture is a canned OpenAI /v1/completions streaming SSE
+// body whose accumulated text trips the "badword" blocklist entry.
+const llamaBadwordStreamFixture = `data: {"choices":[{"text":"this has a ","finish_reason":null}]}
+
+data: {"choices":[{"text":"badword in it","finish_reason":null}]}
+
+data: {"choices":[{"text":"","finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":6,"completion_tokens":2}}
+
+data: [DONE]
+
+`
+
+// llamaAnonymizeStreamFixture is llamaBadwordStreamFixture's sibling whose
+// accumulated text trips the email PII ANONYMIZE entry instead.
+const llamaAnonymizeStreamFixture = `data: {"choices":[{"text":"contact jane@","finish_reason":null}]}
+
+data: {"choices":[{"text":"example.com for support","finish_reason":null}]}
+
+data: {"choices":[{"text":"","finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":6,"completion_tokens":2}}
+
+data: [DONE]
+
+`
+
+func TestInvokeStreamRouter_GuardrailInputBlock_SkipsBackend(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-input-block"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaCompletionsStreamFixture))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store)
+
+	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"this has a badword in it"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+	chunks := drainInvokeStream(t, src)
+	assert.Equal(t, int32(0), hits.Load(), "the backend stream must never be started on an INPUT block")
+	require.Len(t, chunks, 2)
+
+	var delta llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &delta))
+	assert.Equal(t, "Your input violates our policy.", delta.Generation)
+
+	var final llamaInvokeStreamFinalChunk
+	require.NoError(t, json.Unmarshal(chunks[1], &final))
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, final.StopReason)
+}
+
+func TestInvokeStreamRouter_GuardrailOutputBlock_Buffered(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-output-block"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaBadwordStreamFixture))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store)
+
+	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 2, "the raw deltas must collapse into exactly one guarded delta + final chunk")
+
+	var delta llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &delta))
+	assert.Equal(t, "The model response violates our policy.", delta.Generation)
+
+	var final llamaInvokeStreamFinalChunk
+	require.NoError(t, json.Unmarshal(chunks[1], &final))
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, final.StopReason)
+}
+
+func TestInvokeStreamRouter_GuardrailOutputAnonymize_Buffered(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-output-anonymize"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaAnonymizeStreamFixture))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store)
+
+	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.NoError(t, err)
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 2)
+
+	var delta llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &delta))
+	assert.Equal(t, "contact {EMAIL} for support", delta.Generation)
+
+	var final llamaInvokeStreamFinalChunk
+	require.NoError(t, json.Unmarshal(chunks[1], &final))
+	// Redaction alone leaves the model's own stop reason intact.
+	assert.Equal(t, "stop", final.StopReason)
+}
+
+func TestInvokeStreamRouter_NoGuardrailHeader_Regression(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaCompletionsStreamFixture))
+	}))
+	defer ts.Close()
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, nil)
+
+	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.NoError(t, err)
+	chunks := drainInvokeStream(t, src)
+	require.Len(t, chunks, 3)
+
+	var delta llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &delta))
+	assert.Equal(t, "Hello", delta.Generation)
+}
+
+// TestExtractAnthropicPromptTexts_SystemAndUserOnly covers the pieces
+// extractInvokePromptTexts reads for the Anthropic family: the system prompt
+// plus every user message's text blocks, skipping assistant turns.
+func TestExtractAnthropicPromptTexts_SystemAndUserOnly(t *testing.T) {
+	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":100,"system":"be nice","messages":[{"role":"user","content":[{"type":"text","text":"hello there"}]},{"role":"assistant","content":[{"type":"text","text":"ignored"}]}]}`)
+	texts, ok := extractAnthropicPromptTexts(body)
+	require.True(t, ok)
+	assert.Equal(t, []string{"be nice", "hello there"}, texts)
+}
+
+// TestAnthropicCompletionGuardrailHelpers_PreserveUnrelatedFields drives the
+// OUTPUT-side Anthropic helpers directly (no live network double exists for
+// the Anthropic family at Router level, mirroring the rest of this package's
+// InvokeAdapter-level Anthropic coverage): redaction and a wholesale block
+// must both leave id/model/usage untouched.
+func TestAnthropicCompletionGuardrailHelpers_PreserveUnrelatedFields(t *testing.T) {
+	respBody := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-sonnet-20240620","content":[{"type":"text","text":"contact jane@example.com for support"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`)
+
+	texts, ok := extractAnthropicCompletionTexts(respBody)
+	require.True(t, ok)
+	assert.Equal(t, []string{"contact jane@example.com for support"}, texts)
+
+	redacted, err := setAnthropicCompletionTexts(respBody, []string{"contact {EMAIL} for support"})
+	require.NoError(t, err)
+	texts, ok = extractAnthropicCompletionTexts(redacted)
+	require.True(t, ok)
+	assert.Equal(t, []string{"contact {EMAIL} for support"}, texts)
+	assert.Contains(t, string(redacted), `"msg_1"`)
+	assert.Contains(t, string(redacted), `"input_tokens":1`)
+
+	blocked, err := replaceAnthropicCompletion(respBody, "The model response violates our policy.")
+	require.NoError(t, err)
+	texts, ok = extractAnthropicCompletionTexts(blocked)
+	require.True(t, ok)
+	assert.Equal(t, []string{"The model response violates our policy."}, texts)
+	assert.Contains(t, string(blocked), bedrockruntime.StopReasonGuardrailIntervened)
+	assert.Contains(t, string(blocked), `"msg_1"`)
+
+	inputBlocked, err := buildAnthropicBlockedResponse("anthropic.claude-3-5-sonnet-20240620-v1:0", "Your input violates our policy.")
+	require.NoError(t, err)
+	texts, ok = extractAnthropicCompletionTexts(inputBlocked)
+	require.True(t, ok)
+	assert.Equal(t, []string{"Your input violates our policy."}, texts)
+}
+
 func TestGuardrailStreamSource_TraceDisabledOmitsAssessment(t *testing.T) {
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()

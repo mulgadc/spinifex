@@ -121,9 +121,9 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_ProvisionedThroughputA
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store)
+	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store, nil)
 
-	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`))
+	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
 	chunks := drainInvokeStream(t, src)
 	assert.NotEmpty(t, chunks)
@@ -142,9 +142,9 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_BareModelID_StillUsesG
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store)
+	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store, nil)
 
-	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`))
+	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
 	drainInvokeStream(t, src)
 
@@ -160,8 +160,8 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_ProvisionedThroughputA
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	arn := FormatProvisionedModelARN(ptTestRegion, ptCallerAccount, "does-not-exist")
 
-	rt := NewInvokeStreamRouter(nil, &spyEndpointResolver{}, grantAll{}, store)
-	_, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`))
+	rt := NewInvokeStreamRouter(nil, &spyEndpointResolver{}, grantAll{}, store, nil)
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 }
@@ -174,9 +174,9 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_ProvisionedThroughputA
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: "http://unused:8000"}
-	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store)
+	rt := NewInvokeStreamRouter(nil, spy, grantAll{}, store, nil)
 
-	_, err := rt.InvokeModelWithResponseStream(context.Background(), ptOtherCaller, arn, []byte(`{"prompt":"hello"}`))
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), ptOtherCaller, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 	assert.Empty(t, spy.endpointForAccountCalls, "a foreign-account ARN must never reach endpoint resolution")

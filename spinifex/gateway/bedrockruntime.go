@@ -16,6 +16,13 @@ import (
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
+// InvokeModel/InvokeModelWithResponseStream carry their guardrail selection
+// as headers rather than body fields (unlike Converse's GuardrailConfig).
+const (
+	bedrockGuardrailIdentifierHeader = "X-Amzn-Bedrock-Guardrailidentifier"
+	bedrockGuardrailVersionHeader    = "X-Amzn-Bedrock-Guardrailversion"
+)
+
 // bedrockRuntimeRoute maps one HTTP method + path regex to an AWS action and handler.
 type bedrockRuntimeRoute struct {
 	method  string
@@ -139,7 +146,9 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// InvokeModel returns provider-native bytes, not a struct WriteJSONResponse
 	// could marshal, so it writes its own response body directly.
 	if action == "InvokeModel" {
-		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
+		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
+		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
+		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore())
 		if err != nil {
 			return err
 		}
@@ -157,7 +166,9 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
 	}
 	if action == "InvokeModelWithResponseStream" {
-		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
+		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
+		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
+		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore())
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())

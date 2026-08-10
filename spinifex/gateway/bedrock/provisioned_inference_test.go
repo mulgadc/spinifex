@@ -169,9 +169,9 @@ func TestInvokeRouter_InvokeModel_ProvisionedThroughputARN_ResolvesPinnedEndpoin
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store)
+	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil)
 
-	respBody, contentType, err := rt.InvokeModel(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`))
+	respBody, contentType, err := rt.InvokeModel(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "application/json", contentType)
 
@@ -197,9 +197,9 @@ func TestInvokeRouter_InvokeModel_BareModelID_StillUsesGlobalShorthand(t *testin
 
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store)
+	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil)
 
-	_, _, err := rt.InvokeModel(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`))
+	_, _, err := rt.InvokeModel(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
 
 	require.Len(t, spy.endpointCalls, 1)

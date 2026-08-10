@@ -200,7 +200,7 @@ func TestContract_InvokeModelWithResponseStream_SelfHost_RealSDKConsumerDecodesF
 		if !assert.NoError(t, err) {
 			return
 		}
-		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"), nil, grantAll{}, nil)
+		err = InvokeModelWithResponseStream(r.Context(), w, "000000000001", m[1], body, nil, endpoints, r.Header.Get("Content-Type"), nil, grantAll{}, nil, "", "", nil)
 		assert.NoError(t, err)
 	})
 

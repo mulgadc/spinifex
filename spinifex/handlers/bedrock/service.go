@@ -387,13 +387,15 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 	return &DescribeEndpointOutput{Endpoint: rec}, nil
 }
 
-// List returns every endpoint record in the shared endpoints bucket.
+// List returns every endpoint record in the shared endpoints bucket, across
+// every account: an operator listing must see a pinned, account-scoped
+// endpoint alongside the shared platform ones, not just the latter.
 func (s *Service) List(ctx context.Context, _ *ListEndpointsInput, _ string) (*ListEndpointsOutput, error) {
 	kv, err := s.bucket(ctx)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+	recs, err := ListAllEndpoints(ctx, kv)
 	if err != nil {
 		return nil, err
 	}

@@ -350,3 +350,40 @@ func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 	require.Len(t, out.Endpoints, 1)
 	assert.Equal(t, testModelID, out.Endpoints[0].ModelID)
 }
+
+// TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned is Bug 2's core
+// regression guard: a pinned, account-scoped endpoint must appear in List
+// alongside the shared GlobalAccountID one, carrying its own AccountID and
+// Pinned — an operator listing must not key on GlobalAccountID only.
+func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+
+	pinnedModelID := "meta.llama3-2-3b-instruct-v1:0"
+	_, err = s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: pinnedModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	out, err := s.List(t.Context(), &ListEndpointsInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, out.Endpoints, 2)
+
+	byModel := map[string]EndpointRecord{}
+	for _, e := range out.Endpoints {
+		byModel[e.ModelID] = e
+	}
+	global, ok := byModel[testModelID]
+	require.True(t, ok, "the shared GlobalAccountID endpoint must still list unchanged")
+	assert.Equal(t, utils.GlobalAccountID, global.AccountID)
+	assert.False(t, global.Pinned)
+
+	pinned, ok := byModel[pinnedModelID]
+	require.True(t, ok, "a pinned, account-scoped endpoint must appear in List")
+	assert.Equal(t, testAccountID, pinned.AccountID)
+	assert.True(t, pinned.Pinned)
+}

@@ -1943,7 +1943,8 @@ const ebsProviderProbeTimeout = 2 * time.Second
 const ebsMetadataMigrationBucket = "spinifex-ebsmetadata-migrate"
 
 // configureEBSProvider wires a single NATSProvider into every EBS-adjacent
-// service. viperblockd is the only provider, so this always runs.
+// service. The control plane never constructs a provider implementation
+// itself, so this always runs regardless of which daemon answers on the wire.
 func (d *Daemon) configureEBSProvider() error {
 	if err := d.runEBSMetadataBackfill(); err != nil {
 		return fmt.Errorf("ebsmetadata backfill: %w", err)
@@ -1960,7 +1961,7 @@ func (d *Daemon) configureEBSProvider() error {
 	d.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	d.snapshotService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	d.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
-	slog.Info("EBS provider path active", "provider", config.EBSProviderViperblockd)
+	slog.Info("EBS provider path active", "provider", d.config.EBS.ResolvedProvider())
 	d.probeEBSProvider(provider)
 	return nil
 }
@@ -1997,10 +1998,10 @@ func (d *Daemon) probeEBSProvider(provider ebsprovider.EBSProvider) {
 	capabilities, err := provider.GetCapabilities(ctx, ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
 	if err != nil {
 		slog.Warn("EBS provider did not answer the capability probe; EBS calls will fail until it does",
-			"provider", config.EBSProviderViperblockd, "err", err)
+			"provider", d.config.EBS.ResolvedProvider(), "err", err)
 		return
 	}
-	slog.Info("EBS provider reachable", "provider", config.EBSProviderViperblockd,
+	slog.Info("EBS provider reachable", "provider", d.config.EBS.ResolvedProvider(),
 		"capabilities", capabilities.Capabilities)
 }
 

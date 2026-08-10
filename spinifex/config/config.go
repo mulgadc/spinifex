@@ -138,25 +138,27 @@ type ViperblockConfig struct {
 }
 
 // EBS provider selectors. Viperblockd routes EBS calls to the viperblockd
-// daemon over the versioned ebs.provider.v1.* NATS contract and is the only
-// provider. Embedded named the removed in-process engine and survives solely
-// so a config that still selects it can be rejected by name.
+// daemon and qemunbd to the qemunbdd daemon, both over the versioned
+// ebs.provider.v1.* NATS contract. Embedded named the removed in-process
+// engine and survives solely so a config that still selects it can be
+// rejected by name.
 const (
 	EBSProviderEmbedded    = "embedded"
 	EBSProviderViperblockd = "viperblockd"
+	EBSProviderQEMUNBD     = "qemunbd"
 )
 
 // EBSConfig selects which provider backs EBS. Not nested under
 // ViperblockConfig: it names the provider boundary, not one provider's
 // settings, so a second provider never needs a rename.
 type EBSConfig struct {
-	// Provider is "viperblockd", the only supported value, and may be left
-	// unset. Volumes are persisted in ebsmetadata.
+	// Provider is "viperblockd" or "qemunbd" and may be left unset. Volumes
+	// are persisted in ebsmetadata.
 	Provider string `json:"Provider" mapstructure:"provider"`
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
-// the only provider.
+// the default provider.
 func (c EBSConfig) ResolvedProvider() string {
 	if c.Provider == "" {
 		return EBSProviderViperblockd
@@ -447,14 +449,14 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
 		}
 		switch nodeCfg.EBS.Provider {
-		case "", EBSProviderViperblockd:
+		case "", EBSProviderViperblockd, EBSProviderQEMUNBD:
 		case EBSProviderEmbedded:
 			// Refuse rather than silently upgrade: the embedded engine is gone,
 			// and starting anyway would migrate this node's volumes to
 			// ebsmetadata one-way without the operator ever asking for it.
 			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q has been removed; set provider = %q or remove the key (this is a one-way switch: volumes move to ebsmetadata)", nodeName, EBSProviderEmbedded, EBSProviderViperblockd)
 		default:
-			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd)
+			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or %q, or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd, EBSProviderQEMUNBD)
 		}
 	}
 

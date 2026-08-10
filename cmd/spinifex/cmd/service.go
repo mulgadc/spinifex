@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
@@ -439,6 +440,111 @@ var viperblockStatusCmd = &cobra.Command{
 	Short: "Get status of the viperblock service",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("Viperblock service status: ...")
+	},
+}
+
+var qemunbdCmd = &cobra.Command{
+	Use:   "qemunbd",
+	Short: "Manage the qemunbd service",
+}
+
+// Repeat for qemunbd. It answers the same ebs.provider.v1.* subjects as
+// viperblock, so the two must never run against the same NATS cluster
+// together.
+var qemunbdStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the qemunbd service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Starting qemunbd service...")
+
+		cfgFile := viper.GetString("config")
+
+		if cfgFile == "" {
+			fmt.Println("Config file is not set")
+			return
+		}
+
+		fmt.Println("Loading config from:", cfgFile)
+
+		clusterConfig, err := config.LoadConfig(cfgFile)
+		if err != nil {
+			fmt.Println("Error loading config file:", err)
+			return
+		}
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
+
+		natsHost := viper.GetString("nats-host")
+
+		if natsHost != "" {
+			fmt.Println("Overwriting natsHost:", natsHost)
+			nodeConfig.NATS.Host = natsHost
+		}
+
+		baseDir := viper.GetString("base-dir")
+		if baseDir != "" {
+			fmt.Println("Overwriting base-dir:", baseDir)
+			nodeConfig.Predastore.BaseDir = baseDir
+		}
+
+		// Apply changes back to cluster config
+		clusterConfig.Nodes[clusterConfig.Node] = nodeConfig
+
+		debug := viper.GetBool("qemunbd-debug")
+
+		defer initTelemetry("qemunbdd", debug)()
+
+		service, err := service.New("qemunbd", &qemunbdd.Config{
+			NatsHost:   nodeConfig.NATS.Host,
+			NatsToken:  nodeConfig.NATS.ACL.Token,
+			NatsCACert: nodeConfig.NATS.CACert,
+			BaseDir:    nodeConfig.Predastore.BaseDir,
+			NodeName:   clusterConfig.Node,
+			Debug:      debug,
+		})
+
+		if err != nil {
+			fmt.Println("Error starting qemunbd service:", err)
+			return
+		}
+
+		_, err = service.Start()
+
+		if err != nil {
+			fmt.Println("Error starting qemunbd service:", err)
+			return
+		}
+
+		fmt.Println("qemunbd service started")
+	},
+}
+
+var qemunbdStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the qemunbd service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Stopping qemunbd service...")
+
+		service, err := service.New("qemunbd", &qemunbdd.Config{})
+
+		if err != nil {
+			fmt.Println("Error stopping qemunbd service:", err)
+			return
+		}
+
+		if err = service.Stop(); err != nil {
+			fmt.Println("Error stopping qemunbd service:", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("qemunbd service stopped")
+	},
+}
+
+var qemunbdStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Get status of the qemunbd service",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("qemunbd service status: ...")
 	},
 }
 
@@ -1310,6 +1416,16 @@ func init() {
 	viperblockCmd.AddCommand(viperblockStartCmd)
 	viperblockCmd.AddCommand(viperblockStopCmd)
 	viperblockCmd.AddCommand(viperblockStatusCmd)
+
+	serviceCmd.AddCommand(qemunbdCmd)
+
+	qemunbdCmd.PersistentFlags().Bool("debug", false, "qemunbd (EBS) debug logging")
+	viper.BindEnv("qemunbd-debug", "SPINIFEX_QEMUNBD_DEBUG")
+	viper.BindPFlag("qemunbd-debug", qemunbdCmd.PersistentFlags().Lookup("debug"))
+
+	qemunbdCmd.AddCommand(qemunbdStartCmd)
+	qemunbdCmd.AddCommand(qemunbdStopCmd)
+	qemunbdCmd.AddCommand(qemunbdStatusCmd)
 
 	// Nats
 	serviceCmd.AddCommand(natsCmd)

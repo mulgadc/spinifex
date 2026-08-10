@@ -954,6 +954,7 @@ func TestEBSConfig_ResolvedProvider(t *testing.T) {
 		{"empty defaults to viperblockd", "", EBSProviderViperblockd},
 		{"embedded passes through unresolved", EBSProviderEmbedded, EBSProviderEmbedded},
 		{"viperblockd passes through", EBSProviderViperblockd, EBSProviderViperblockd},
+		{"qemunbd passes through", EBSProviderQEMUNBD, EBSProviderQEMUNBD},
 		{"unknown value passes through unresolved", "bogus", "bogus"},
 	}
 	for _, tc := range cases {
@@ -979,6 +980,7 @@ region = "us-east-1"
 	}{
 		{"unset defaults to viperblockd", "", EBSProviderViperblockd},
 		{"viperblockd explicit", "[nodes.n1.ebs]\nprovider = \"viperblockd\"\n", EBSProviderViperblockd},
+		{"qemunbd explicit", "[nodes.n1.ebs]\nprovider = \"qemunbd\"\n", EBSProviderQEMUNBD},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

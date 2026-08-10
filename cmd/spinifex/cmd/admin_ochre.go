@@ -398,6 +398,11 @@ func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, 
 // which needs a live environment (see materializeWeightsVolume).
 type weightsMaterializer func(ctx context.Context, downloadDir string, contentBytes int64) (snapshotID string, err error)
 
+// weightsSnapshotChecker reports whether snapshotID still exists in the
+// snapshot store, so runStageWeights can tell a healthy KV record from one
+// whose snapshot was lost to a host rebuild or volume GC.
+type weightsSnapshotChecker func(ctx context.Context, snapshotID string) (bool, error)
+
 // runStageWeights holds 'ochre weights stage' decision and side-effect logic:
 // catalog validation, S3 URI parsing, idempotency/replacement detection
 // against the existing KV record, prefix validation, download, materialisation
@@ -405,7 +410,7 @@ type weightsMaterializer func(ctx context.Context, downloadDir string, contentBy
 // dependency of its own, so tests drive it directly against a fake object
 // store, a real WeightsStore backed by an embedded JetStream server, and a
 // fake materializer.
-func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *gateway_bedrock.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer) (string, error) {
+func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *gateway_bedrock.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer, checkSnapshotLive weightsSnapshotChecker) (string, error) {
 	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
 		if !found {
 			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
@@ -423,8 +428,18 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 	if err != nil {
 		return "", err
 	}
+	var replacingMissingSnapshot bool
 	if hadPrevious && existing.SourceURI == sourceURI {
-		return fmt.Sprintf("%s is already staged from %s (snapshot %s); nothing to do.", modelID, sourceURI, existing.SnapshotID), nil
+		live, err := checkSnapshotLive(ctx, existing.SnapshotID)
+		if err != nil {
+			return "", err
+		}
+		if live {
+			return fmt.Sprintf("%s is already staged from %s (snapshot %s); nothing to do.", modelID, sourceURI, existing.SnapshotID), nil
+		}
+		// The KV record is otherwise up to date; only its snapshot is gone, so
+		// fall through and self-heal rather than making the operator run remove.
+		replacingMissingSnapshot = true
 	}
 
 	fmt.Printf("Validating %s ...\n", sourceURI)
@@ -458,6 +473,10 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 		return "", err
 	}
 
+	if replacingMissingSnapshot {
+		return fmt.Sprintf("✅ Staged %s from %s (snapshot %s). Replaced MISSING snapshot %s -- it was no longer present in the snapshot store.",
+			modelID, sourceURI, snapshotID, existing.SnapshotID), nil
+	}
 	if hadPrevious {
 		return fmt.Sprintf("✅ Staged %s from %s (snapshot %s). Replaced previous snapshot %s -- reclaim it separately if no longer needed.",
 			modelID, sourceURI, snapshotID, existing.SnapshotID), nil
@@ -558,6 +577,23 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 	return snapshotID, nil
 }
 
+// newWeightsSnapshotChecker is the real weightsSnapshotChecker: it reads the
+// EC2 control plane's metadata.json for snapshotID from the node's
+// predastore bucket -- the same record registerWeightsSnapshot writes at
+// stage time -- and treats a missing object as gone. Any other read failure
+// is a real error, not a signal to guess the snapshot's existence.
+func newWeightsSnapshotChecker(store objectstore.ObjectStore, bucket string) weightsSnapshotChecker {
+	return func(_ context.Context, snapshotID string) (bool, error) {
+		if _, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, bucket, snapshotID); err != nil {
+			if objectstore.IsNoSuchKeyError(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}
+}
+
 // loadConfigAndConnectFn and ochreExit indirect the two effects that make
 // the ochre weights Run functions otherwise untestable: a live NATS
 // connection and a process-terminating exit. Tests substitute both -- a fake
@@ -603,8 +639,9 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 	materialize := func(_ context.Context, downloadDir string, contentBytes int64) (string, error) {
 		return materializeWeightsVolume(node, downloadDir, contentBytes, mkey)
 	}
+	checkSnapshotLive := newWeightsSnapshotChecker(store, node.Predastore.Bucket)
 
-	msg, err := runStageWeights(context.Background(), store, weightsStore, tmpDirFlag, modelID, s3URI, materialize)
+	msg, err := runStageWeights(context.Background(), store, weightsStore, tmpDirFlag, modelID, s3URI, materialize, checkSnapshotLive)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)
@@ -613,11 +650,21 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 	fmt.Println(msg)
 }
 
+// weightsStatusLive and weightsStatusDangling are the STATUS column values
+// listWeightsOutput renders, so a dangling row (KV record present, snapshot
+// gone) reads distinctly from a healthy one at a glance.
+const (
+	weightsStatusLive     = "OK"
+	weightsStatusDangling = "DANGLING (snapshot missing)"
+)
+
 // listWeightsOutput renders 'ochre weights list': a friendly message when
-// nothing is staged, else a MODEL ID / SOURCE URI / SNAPSHOT ID table. Split
-// out from runOchreWeightsList so it is testable against a real WeightsStore
-// without a NATS connection.
-func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore) (string, error) {
+// nothing is staged, else a MODEL ID / SOURCE URI / SNAPSHOT ID / STATUS
+// table. checkSnapshotLive marks a row dangling when its KV record survives
+// but the snapshot it names does not, so an operator sees at a glance which
+// staged models can actually serve. Split out from runOchreWeightsList so it
+// is testable against a real WeightsStore without a NATS connection.
+func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore, checkSnapshotLive weightsSnapshotChecker) (string, error) {
 	entries, err := weightsStore.ListWeights(ctx)
 	if err != nil {
 		return "", err
@@ -626,9 +673,17 @@ func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.Weight
 		return "No models staged.", nil
 	}
 
-	tableData := pterm.TableData{{"MODEL ID", "SOURCE URI", "SNAPSHOT ID"}}
+	tableData := pterm.TableData{{"MODEL ID", "SOURCE URI", "SNAPSHOT ID", "STATUS"}}
 	for _, e := range entries {
-		tableData = append(tableData, []string{e.ModelID, e.SourceURI, e.SnapshotID})
+		live, err := checkSnapshotLive(ctx, e.SnapshotID)
+		if err != nil {
+			return "", err
+		}
+		status := weightsStatusLive
+		if !live {
+			status = weightsStatusDangling
+		}
+		tableData = append(tableData, []string{e.ModelID, e.SourceURI, e.SnapshotID, status})
 	}
 	return pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Srender()
 }
@@ -641,6 +696,7 @@ func runOchreWeightsList(_ *cobra.Command, _ []string) {
 		return
 	}
 	defer nc.Close()
+	node := appConfig.Nodes[appConfig.Node]
 
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -649,8 +705,10 @@ func runOchreWeightsList(_ *cobra.Command, _ []string) {
 		return
 	}
 	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+	checkSnapshotLive := newWeightsSnapshotChecker(store, node.Predastore.Bucket)
 
-	out, err := listWeightsOutput(context.Background(), weightsStore)
+	out, err := listWeightsOutput(context.Background(), weightsStore, checkSnapshotLive)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		ochreExit(1)

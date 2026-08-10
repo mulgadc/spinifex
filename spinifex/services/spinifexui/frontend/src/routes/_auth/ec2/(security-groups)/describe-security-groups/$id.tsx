@@ -264,12 +264,14 @@ interface RuleSource {
 
 function ruleSources(rule: IpPermission): RuleSource[] {
   return [
-    ...(rule.IpRanges ?? []).map(
-      (range): RuleSource => ({ kind: "cidr", value: range.CidrIp ?? "" }),
-    ),
-    ...(rule.UserIdGroupPairs ?? []).map(
-      (pair): RuleSource => ({ kind: "group", value: pair.GroupId ?? "" }),
-    ),
+    ...(rule.IpRanges ?? []).map((range): RuleSource => ({
+      kind: "cidr",
+      value: range.CidrIp ?? "",
+    })),
+    ...(rule.UserIdGroupPairs ?? []).map((pair): RuleSource => ({
+      kind: "group",
+      value: pair.GroupId ?? "",
+    })),
   ]
 }
 

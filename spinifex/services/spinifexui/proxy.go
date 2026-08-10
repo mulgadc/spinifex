@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -30,7 +31,9 @@ func newProxyTransport(caCertPath string) (*http.Transport, error) {
 	}
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
-			RootCAs: pool,
+			RootCAs:          pool,
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
 		},
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,

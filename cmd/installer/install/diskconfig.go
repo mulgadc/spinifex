@@ -82,6 +82,45 @@ func ParseFSType(s string) (FSType, error) {
 	return f, nil
 }
 
+// DiskRole is the purpose a selected drive serves on an ext4 install. A ZFS
+// pool carries every workload on one set of members, so roles do not apply
+// there — the topology already spans all the disks.
+type DiskRole string
+
+const (
+	RoleOS         DiskRole = "os"
+	RoleSpinifex   DiskRole = "spinifex"
+	RolePredastore DiskRole = "predastore"
+)
+
+// AllDiskRoles is canonical order, outermost mountpoint first. Mounting, fstab
+// emission and rsync protect filters all walk it forwards; teardown walks it
+// back, because predastore nests inside spinifex.
+var AllDiskRoles = []DiskRole{RoleOS, RoleSpinifex, RolePredastore}
+
+// roleMountpoints is where each role lands on the installed system. A role left
+// unassigned simply stays on the filesystem above it.
+var roleMountpoints = map[DiskRole]string{
+	RoleOS:         "/",
+	RoleSpinifex:   "/var/lib/spinifex",
+	RolePredastore: "/var/lib/spinifex/predastore",
+}
+
+// Label is the role name as shown in the UI and written to partition labels.
+func (r DiskRole) Label() string { return string(r) }
+
+// Mountpoint is the role's path on the installed system.
+func (r DiskRole) Mountpoint() string { return roleMountpoints[r] }
+
+// RoleMount binds one drive to one role.
+type RoleMount struct {
+	Role DiskRole
+	Disk Disk
+}
+
+// Mountpoint is where this drive's filesystem is mounted on the target.
+func (r RoleMount) Mountpoint() string { return r.Role.Mountpoint() }
+
 // ZFSOpts are the advanced tunables. A zero value means "use the computed
 // default", which is why Ashift and ARCMaxMiB are plain ints — 0 is not legal
 // for either, so it is unambiguous as a sentinel.
@@ -94,14 +133,81 @@ type ZFSOpts struct {
 }
 
 // DiskConfig is the storage half of the installer's configuration. Disks is
-// ordered and the order is significant: RAID10 pairs members two at a time.
+// ordered and the order is significant: RAID10 pairs members two at a time, and
+// on ext4 the first entry is the OS drive.
 type DiskConfig struct {
 	FS    FSType
 	Disks []Disk
 	ZFS   ZFSOpts
+
+	// Roles assigns ext4 drives to mountpoints, in AllDiskRoles order. Empty
+	// means a single-disk install with everything on the root filesystem.
+	Roles []RoleMount
 }
 
-// Primary is the first selected disk — the whole target in ext4 mode, and the
+// WithRoles returns a copy with ext4 drive roles assigned and Disks rebuilt
+// from them in canonical order, so the list of drives to erase and the list of
+// roles cannot drift apart — there is one place a drive can be named, not two.
+func (d DiskConfig) WithRoles(roles []RoleMount) DiskConfig {
+	d.Roles, d.Disks = nil, nil
+	add := func(rm RoleMount) {
+		d.Roles = append(d.Roles, rm)
+		d.Disks = append(d.Disks, rm.Disk)
+	}
+	for _, want := range AllDiskRoles {
+		for _, rm := range roles {
+			if rm.Role == want {
+				add(rm)
+			}
+		}
+	}
+	// Anything with an unknown or duplicate role is kept so Validate can name
+	// it, rather than being dropped into a silently smaller selection.
+	for _, rm := range roles {
+		if _, known := roleMountpoints[rm.Role]; !known {
+			add(rm)
+		}
+	}
+	return d
+}
+
+// RolesForDisks assigns roles positionally, which is the default the UI offers:
+// first disk picked is the OS, second is spinifex, third is predastore.
+func RolesForDisks(disks []Disk) []RoleMount {
+	out := make([]RoleMount, 0, len(disks))
+	for i, disk := range disks {
+		var role DiskRole
+		if i < len(AllDiskRoles) {
+			role = AllDiskRoles[i]
+		}
+		out = append(out, RoleMount{Role: role, Disk: disk})
+	}
+	return out
+}
+
+// DataMounts is every role except the OS drive, shallowest mountpoint first.
+// This is the traversal every stage of the install shares.
+func (d DiskConfig) DataMounts() []RoleMount {
+	var out []RoleMount
+	for _, rm := range d.Roles {
+		if rm.Role != RoleOS {
+			out = append(out, rm)
+		}
+	}
+	return out
+}
+
+// bootDisks are the drives a bootloader is installed to. Every ZFS member gets
+// its own ESP; on ext4 only the OS drive does, because a data drive holding a
+// bootloader that nothing points at is a trap during recovery.
+func (d DiskConfig) bootDisks() []Disk {
+	if d.FS.IsZFS() || len(d.Disks) == 0 {
+		return d.Disks
+	}
+	return d.Disks[:1]
+}
+
+// Primary is the first selected disk — the OS drive in ext4 mode, and the
 // disk shown in single-disk summaries.
 func (d DiskConfig) Primary() Disk {
 	if len(d.Disks) == 0 {
@@ -222,9 +328,8 @@ func (d DiskConfig) Validate() error {
 	if len(d.Disks) == 0 {
 		return fmt.Errorf("%s: select at least one disk", d.FS.Label())
 	}
-	if !d.FS.IsZFS() && len(d.Disks) > 1 {
-		return fmt.Errorf("%s: supports a single disk only, %d selected — choose a zfs mode to use them all",
-			d.FS.Label(), len(d.Disks))
+	if err := d.validateRoles(); err != nil {
+		return err
 	}
 	if n := len(d.Disks); n < d.FS.MinDisks() {
 		return fmt.Errorf("%s: needs at least %d disks, %d selected", d.FS.Label(), d.FS.MinDisks(), n)
@@ -243,19 +348,64 @@ func (d DiskConfig) Validate() error {
 		if disk.LiveMedia {
 			return fmt.Errorf("%s is the installer's own boot media and cannot be erased", disk.Path)
 		}
-		// GRUB's i386-pc target cannot read a 4Kn drive, so on legacy BIOS the
-		// installed system would have no reachable bootloader.
-		if !bootedEFI() && disk.LogicalBlockSize == 4096 {
-			return fmt.Errorf("%s is a 4Kn drive (4096-byte sectors) and this machine booted in legacy BIOS mode — booting from it is not supported; enable UEFI in firmware",
-				disk.Path)
-		}
 		if disk.Bytes < minRootBytes {
 			return fmt.Errorf("%s is too small (%s, need at least %dGiB)",
 				disk.Path, disk.SizeHuman(), minRootBytes>>30)
 		}
 	}
 
+	// GRUB's i386-pc target cannot read a 4Kn drive, so on legacy BIOS a drive
+	// holding a bootloader would leave the installed system unreachable. Only
+	// boot drives are constrained: a data role is never booted from.
+	for _, disk := range d.bootDisks() {
+		if !bootedEFI() && disk.LogicalBlockSize == 4096 {
+			return fmt.Errorf("%s is a 4Kn drive (4096-byte sectors) and this machine booted in legacy BIOS mode — booting from it is not supported; enable UEFI in firmware",
+				disk.Path)
+		}
+	}
+
 	return d.validateSizes()
+}
+
+// validateRoles checks the ext4 role assignment. Roles are the only way to use
+// more than one disk without ZFS, so a multi-disk selection without them is
+// rejected rather than quietly installed onto the first drive.
+func (d DiskConfig) validateRoles() error {
+	if d.FS.IsZFS() {
+		if len(d.Roles) > 0 {
+			return fmt.Errorf("%s: drive roles apply to ext4 only — a pool spans every member already", d.FS.Label())
+		}
+		return nil
+	}
+	if len(d.Roles) == 0 {
+		if len(d.Disks) > 1 {
+			return fmt.Errorf("%s: %d disks selected but no roles assigned — assign os, spinifex and predastore, or choose a zfs mode",
+				d.FS.Label(), len(d.Disks))
+		}
+		return nil
+	}
+	if len(d.Roles) > len(AllDiskRoles) {
+		return fmt.Errorf("%s: at most %d disks, %d selected — the roles are os, spinifex and predastore",
+			d.FS.Label(), len(AllDiskRoles), len(d.Roles))
+	}
+
+	seen := map[DiskRole]bool{}
+	for _, rm := range d.Roles {
+		if _, ok := roleMountpoints[rm.Role]; !ok {
+			return fmt.Errorf("%s has no role assigned — every selected disk needs one", rm.Disk.Path)
+		}
+		if seen[rm.Role] {
+			return fmt.Errorf("two disks are assigned the %s role", rm.Role)
+		}
+		seen[rm.Role] = true
+	}
+	if !seen[RoleOS] {
+		return fmt.Errorf("%s: no disk assigned the os role — one disk must hold the operating system", d.FS.Label())
+	}
+	if len(d.Roles) != len(d.Disks) {
+		return fmt.Errorf("internal: %d roles for %d disks", len(d.Roles), len(d.Disks))
+	}
+	return nil
 }
 
 // minRootBytes matches Proxmox's hard floor for a root disk.
@@ -314,5 +464,20 @@ func (d DiskConfig) Warnings() []string {
 	if d.FS.IsZFS() && d.FS != FSZFSRAID0 && d.Buildable() && d.Tolerated() == 0 {
 		out = append(out, "this topology stores no redundancy")
 	}
+	// A three-drive role layout looks like an array and is not one: each drive
+	// is an independent point of failure, so the node loses whatever sat on it.
+	if len(d.DataMounts()) > 0 {
+		out = append(out, "role-assigned drives store no redundancy — losing any one drive loses what it held")
+	}
+	for _, rm := range d.DataMounts() {
+		if rm.Role == RolePredastore && rm.Disk.Bytes < smallPredastoreBytes {
+			out = append(out, fmt.Sprintf("%s is small for object storage (%s) — predastore will fill quickly",
+				rm.Disk.Path, rm.Disk.SizeHuman()))
+		}
+	}
 	return out
 }
+
+// smallPredastoreBytes is where a dedicated object-store drive stops being
+// worth the drive. Advisory only: the install is legal below it.
+const smallPredastoreBytes = 64 << 30

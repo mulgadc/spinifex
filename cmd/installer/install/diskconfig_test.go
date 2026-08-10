@@ -20,7 +20,7 @@ func TestDiskConfigValidate(t *testing.T) {
 
 		{"no filesystem chosen", DiskConfig{Disks: disks(1, 40)}, "no filesystem selected"},
 		{"no disks", DiskConfig{FS: FSZFSRAIDZ1}, "select at least one disk"},
-		{"ext4 cannot span disks", DiskConfig{FS: FSExt4, Disks: disks(2, 40)}, "single disk only"},
+		{"ext4 spans disks only with roles", DiskConfig{FS: FSExt4, Disks: disks(2, 40)}, "no roles assigned"},
 		{"raidz1 needs three", DiskConfig{FS: FSZFSRAIDZ1, Disks: disks(2, 40)}, "at least 3 disks"},
 		{"raidz2 needs four", DiskConfig{FS: FSZFSRAIDZ2, Disks: disks(3, 40)}, "at least 4 disks"},
 		{"raidz3 needs five", DiskConfig{FS: FSZFSRAIDZ3, Disks: disks(4, 40)}, "at least 5 disks"},

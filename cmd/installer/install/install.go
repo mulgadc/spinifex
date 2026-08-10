@@ -61,6 +61,7 @@ func Run(cfg *Config) error {
 	}
 	steps = append(steps,
 		step{"copy rootfs", func() error { return copyRootfs(cfg.Storage) }},
+		step{"verify role layout", func() error { return verifyRoleLayout(cfg.Storage) }},
 		step{"create swap", func() error { return createSwap(cfg.Storage) }},
 		step{"write fstab", func() error { return writeFstab(cfg.Storage) }},
 		step{"install spinifex", func() error { return installSpinifex(cfg) }},
@@ -84,7 +85,7 @@ func Run(cfg *Config) error {
 	return reboot()
 }
 
-// ext4RootSteps formats and mounts a single-disk ext4 root.
+// ext4RootSteps formats and mounts the ext4 root and any role filesystems.
 func ext4RootSteps(cfg *Config) []step {
 	return []step{
 		{"format partitions", func() error { return formatPartitions(cfg.Storage) }},
@@ -124,15 +125,36 @@ func cleanupTarget(cfg DiskConfig) {
 		exportPool()
 		return
 	}
+	// Deepest first: predastore nests inside spinifex, and unmounting the outer
+	// filesystem fails with EBUSY while the inner one is still attached.
+	for _, rm := range slices.Backward(cfg.DataMounts()) {
+		_ = runQuiet("umount", targetPath(rm.Mountpoint()))
+	}
 	_ = runQuiet("umount", efiPart())
 	_ = runQuiet("umount", mountRoot)
+}
+
+// targetPath maps a path on the installed system to its location under the
+// install mount root.
+func targetPath(mountpoint string) string {
+	return filepath.Join(mountRoot, strings.TrimPrefix(mountpoint, "/"))
 }
 
 func formatPartitions(cfg DiskConfig) error {
 	if err := formatESPs(cfg); err != nil {
 		return err
 	}
-	return run("mkfs.ext4", "-F", cfg.Primary().PartitionPath(rootPartNum))
+	if err := run("mkfs.ext4", "-F", cfg.Primary().PartitionPath(rootPartNum)); err != nil {
+		return err
+	}
+	for _, rm := range cfg.DataMounts() {
+		// Labelled with the role so `lsblk -f` identifies each drive on a
+		// console that has no access to the installer log.
+		if err := run("mkfs.ext4", "-F", "-L", rm.Role.Label(), rm.Disk.PartitionPath(dataPartNum)); err != nil {
+			return fmt.Errorf("format %s (%s): %w", rm.Disk.Path, rm.Role, err)
+		}
+	}
+	return nil
 }
 
 func mountPartitions(cfg DiskConfig) error {
@@ -146,7 +168,36 @@ func mountPartitions(cfg DiskConfig) error {
 	if err := os.MkdirAll(efiPart(), 0o755); err != nil {
 		return err
 	}
-	return run("mount", d.PartitionPath(espPartNum), efiPart())
+	if err := run("mount", d.PartitionPath(espPartNum), efiPart()); err != nil {
+		return err
+	}
+	// Role filesystems are mounted here, before the rootfs copy, so rsync lays
+	// each tree down on its own drive with the ownership setup.sh gave it at
+	// ISO build time. Mounting afterwards hides those trees and loses it.
+	for _, rm := range cfg.DataMounts() {
+		target := targetPath(rm.Mountpoint())
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		if err := run("mount", rm.Disk.PartitionPath(dataPartNum), target); err != nil {
+			return fmt.Errorf("mount %s at %s: %w", rm.Disk.Path, rm.Mountpoint(), err)
+		}
+	}
+	return nil
+}
+
+// mountProtectFilters stops rsync's --delete from acting across a mount
+// boundary. Every mountpoint the installer created before the copy needs one,
+// whether it is a ZFS dataset or a role filesystem.
+func mountProtectFilters(cfg DiskConfig) []string {
+	if cfg.FS.IsZFS() {
+		return datasetProtectFilters(cfg)
+	}
+	var out []string
+	for _, rm := range cfg.DataMounts() {
+		out = append(out, "--filter=P "+rm.Mountpoint())
+	}
+	return out
 }
 
 // copyRootfs copies the live squashfs environment onto the target disk using
@@ -171,7 +222,7 @@ func copyRootfs(cfg DiskConfig) error {
 		"--exclude=/lost+found",
 		"--exclude=/boot/efi",
 	}
-	args = append(args, datasetProtectFilters(cfg)...)
+	args = append(args, mountProtectFilters(cfg)...)
 	args = append(args, "/", mountRoot+"/")
 	if err := run("rsync", args...); err != nil {
 		return err
@@ -211,6 +262,71 @@ func copyRootfs(cfg DiskConfig) error {
 		}
 	}
 	return nil
+}
+
+// verifyRoleLayout asserts the rootfs copy landed on the role drives rather
+// than on top of them. A mount that happened in the wrong order produces a node
+// that boots, starts every service, and has each one writing to an empty
+// directory on the wrong drive — healthy-looking and silently wrong.
+func verifyRoleLayout(cfg DiskConfig) error {
+	for _, rm := range cfg.DataMounts() {
+		target := targetPath(rm.Mountpoint())
+		dev, err := deviceOf(target)
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", rm.Mountpoint(), err)
+		}
+		parentDev, err := deviceOf(filepath.Dir(target))
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", rm.Mountpoint(), err)
+		}
+		if dev == parentDev {
+			return fmt.Errorf("%s is not a separate filesystem — %s was not mounted before the rootfs copy",
+				rm.Mountpoint(), rm.Disk.Path)
+		}
+		if err := matchesLiveOwnership(target, rm.Mountpoint()); err != nil {
+			return err
+		}
+		// Logged so the layout is recoverable from the install log alone, which
+		// on a headless node is the only record of where each workload landed.
+		slog.Info("role mounted", "role", rm.Role, "mountpoint", rm.Mountpoint(), "disk", rm.Disk.Path)
+	}
+	return nil
+}
+
+// matchesLiveOwnership compares a copied directory against the live rootfs,
+// which is where setup.sh set every service owner at ISO build time. Comparing
+// rather than hardcoding uids keeps this correct as services are added.
+func matchesLiveOwnership(target, source string) error {
+	src, err := os.Stat(source)
+	if err != nil {
+		// Nothing to compare against; the mount check above still holds.
+		slog.Warn("skipping ownership check, path absent in live environment", "path", source, "err", err)
+		return nil
+	}
+	dst, err := os.Stat(target)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", source, err)
+	}
+	srcSt, dstSt := src.Sys().(*syscall.Stat_t), dst.Sys().(*syscall.Stat_t)
+	if srcSt.Uid != dstSt.Uid || srcSt.Gid != dstSt.Gid || src.Mode().Perm() != dst.Mode().Perm() {
+		return fmt.Errorf("%s copied as %d:%d %o, expected %d:%d %o — the drive was mounted after the rootfs copy",
+			source, dstSt.Uid, dstSt.Gid, dst.Mode().Perm(), srcSt.Uid, srcSt.Gid, src.Mode().Perm())
+	}
+	return nil
+}
+
+// deviceOf returns the filesystem a path lives on, for distinguishing a real
+// mount from a directory of the same name.
+func deviceOf(path string) (uint64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s: no stat information", path)
+	}
+	return st.Dev, nil
 }
 
 func installSpinifex(cfg *Config) error {
@@ -808,6 +924,18 @@ func writeFstab(cfg DiskConfig) error {
 		}
 		fstab += fmt.Sprintf("UUID=%s / ext4 errors=remount-ro 0 1\nUUID=%s /boot/efi vfat umask=0077 0 1\n",
 			rootUUID, efiUUID)
+
+		// Shallowest first, so `mount -a` in a rescue shell works top-down.
+		// Deliberately no nofail: a missing data drive must stop the boot for
+		// an admin, not let predastore write objects onto the OS drive while
+		// every service reports healthy. fsck pass 2 keeps root first.
+		for _, rm := range cfg.DataMounts() {
+			uuid, err := partUUID(rm.Disk.PartitionPath(dataPartNum))
+			if err != nil {
+				return fmt.Errorf("get %s UUID: %w", rm.Role, err)
+			}
+			fstab += fmt.Sprintf("UUID=%s %s ext4 errors=remount-ro 0 2\n", uuid, rm.Mountpoint())
+		}
 	}
 
 	// Only claim the swap the previous step actually produced; systemd fails the
@@ -1014,7 +1142,9 @@ func parseSize(s string) (int64, error) {
 	return n * mult, nil
 }
 
-func partUUID(dev string) (string, error) {
+// partUUID reads a partition's filesystem UUID. A variable so fstab generation
+// can be tested without real block devices.
+var partUUID = func(dev string) (string, error) {
 	out, err := exec.Command("blkid", "-s", "UUID", "-o", "value", dev).Output()
 	if err != nil {
 		return "", fmt.Errorf("blkid %s: %w", dev, err)

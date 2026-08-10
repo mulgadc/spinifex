@@ -47,9 +47,13 @@ type model struct {
 	//
 	// selected holds indexes into disks in the order they were picked, which is
 	// what pairs members for RAID10 — so it is a slice, not a set.
+	//
+	// roleOf runs parallel to selected and holds the ext4 drive role, so the
+	// two are edited together and cannot drift.
 	disks         []install.Disk
 	storageCursor int
 	selected      []int
+	roleOf        []install.DiskRole
 	fsCursor      int
 	zfsCursor     int
 	zfs           install.ZFSOpts
@@ -173,11 +177,14 @@ func newModel(disks []install.Disk, nics []netprobe.NIC) model {
 	}
 
 	// The first non-live, non-removable disk is preselected so a single-disk
-	// machine needs no storage input at all.
+	// machine needs no storage input at all. It takes the os role, since on ext4
+	// a selected disk with no role is not a valid configuration.
 	var preselected []int
+	var preselectedRoles []install.DiskRole
 	for i, d := range disks {
 		if !d.LiveMedia && !d.Removable {
 			preselected = []int{i}
+			preselectedRoles = []install.DiskRole{install.RoleOS}
 			break
 		}
 	}
@@ -186,6 +193,7 @@ func newModel(disks []install.Disk, nics []netprobe.NIC) model {
 		screen:               screenWelcome,
 		disks:                disks,
 		selected:             preselected,
+		roleOf:               preselectedRoles,
 		nics:                 nics,
 		eraseInput:           eraseIn,
 		roles:                roles,
@@ -439,11 +447,22 @@ func (m model) fsType() install.FSType { return install.AllFSTypes[m.fsCursor] }
 // storage assembles the disk configuration from the current selection.
 func (m model) storage() install.DiskConfig {
 	cfg := install.DiskConfig{FS: m.fsType(), ZFS: m.zfs}
-	for _, i := range m.selected {
-		if i < len(m.disks) {
-			cfg.Disks = append(cfg.Disks, m.disks[i])
+	if cfg.FS.IsZFS() {
+		for _, i := range m.selected {
+			if i < len(m.disks) {
+				cfg.Disks = append(cfg.Disks, m.disks[i])
+			}
 		}
+		return cfg
 	}
+	roles := make([]install.RoleMount, 0, len(m.selected))
+	for si, i := range m.selected {
+		if i >= len(m.disks) || si >= len(m.roleOf) {
+			continue
+		}
+		roles = append(roles, install.RoleMount{Role: m.roleOf[si], Disk: m.disks[i]})
+	}
+	cfg = cfg.WithRoles(roles)
 	return cfg
 }
 
@@ -479,6 +498,10 @@ func (m model) handleDiskKey(key string) (tea.Model, tea.Cmd) {
 			m.zfsCursor = 0
 			m.screen = screenZFSOptions
 		}
+	case "r":
+		if !m.fsType().IsZFS() && m.storageCursor != fsRow {
+			m = m.cycleRole(slices.Index(m.selected, m.storageCursor-1))
+		}
 	case "esc":
 		m.validationErr = ""
 		m.screen = screenWelcome
@@ -502,12 +525,45 @@ func (m model) handleDiskKey(key string) (tea.Model, tea.Cmd) {
 // array with the version bubbletea still holds.
 func (m model) toggleDisk(i int) model {
 	sel := slices.Clone(m.selected)
+	roles := slices.Clone(m.roleOf)
 	if at := slices.Index(sel, i); at >= 0 {
 		sel = slices.Delete(sel, at, at+1)
+		roles = slices.Delete(roles, at, at+1)
 	} else {
 		sel = append(sel, i)
+		roles = append(roles, freeRole(roles))
 	}
 	m.selected = sel
+	m.roleOf = roles
+	m.validationErr = ""
+	return m
+}
+
+// freeRole is the first role no selected disk holds yet, so picking disks in
+// order produces the usual layout without touching the role key at all.
+func freeRole(taken []install.DiskRole) install.DiskRole {
+	for _, r := range install.AllDiskRoles {
+		if !slices.Contains(taken, r) {
+			return r
+		}
+	}
+	return ""
+}
+
+// cycleRole moves the disk at selection index si to the next role, swapping
+// with whichever disk already holds it. Swapping keeps every press legal, so
+// the operator never has to unassign one drive before reassigning another.
+func (m model) cycleRole(si int) model {
+	if si < 0 || si >= len(m.roleOf) {
+		return m
+	}
+	roles := slices.Clone(m.roleOf)
+	next := install.AllDiskRoles[(slices.Index(install.AllDiskRoles, roles[si])+1)%len(install.AllDiskRoles)]
+	if other := slices.Index(roles, next); other >= 0 {
+		roles[other] = roles[si]
+	}
+	roles[si] = next
+	m.roleOf = roles
 	m.validationErr = ""
 	return m
 }
@@ -685,7 +741,7 @@ func (m model) viewDisk(w int) string {
 	subtitle := styleMuted.Render("All data on the selected disks will be permanently erased.")
 
 	fs := m.fsType()
-	req := "single disk"
+	req := "1-3 disks, one per role"
 	if n := fs.MinDisks(); n > 1 {
 		req = fmt.Sprintf("%d+ disks, same size", n)
 	} else if fs.IsZFS() {
@@ -702,8 +758,12 @@ func (m model) viewDisk(w int) string {
 	for i, d := range m.disks {
 		marker := "[ ]"
 		if at := slices.Index(m.selected, i); at >= 0 {
-			// Numbered, not ticked: the order is what pairs mirrors.
+			// Numbered, not ticked: the order is what pairs mirrors. On ext4 the
+			// role is what matters instead, so it takes the same column.
 			marker = fmt.Sprintf("[%d]", at+1)
+			if !fs.IsZFS() && at < len(m.roleOf) {
+				marker = fmt.Sprintf("[%s]", m.roleOf[at])
+			}
 		}
 		note := d.Content
 		switch {
@@ -712,7 +772,7 @@ func (m model) viewDisk(w int) string {
 		case d.Removable:
 			note += ", removable"
 		}
-		line := fmt.Sprintf("  %s %-16s %-8s %-20s %s", marker, d.Path, d.SizeHuman(), truncate(d.Model, 20), note)
+		line := fmt.Sprintf("  %-12s %-16s %-8s %-20s %s", marker, d.Path, d.SizeHuman(), truncate(d.Model, 20), note)
 		if m.storageCursor == i+1 {
 			line = styleSelected.Render("> " + strings.TrimPrefix(line, "  "))
 		} else {
@@ -736,7 +796,7 @@ func (m model) viewDisk(w int) string {
 		rows = append(rows, styleError.Render("  "+m.validationErr))
 	}
 
-	keys := "↑/↓ to move • ←/→ filesystem • Space to select disk • Enter to continue"
+	keys := "↑/↓ to move • ←/→ filesystem • Space to select disk • R to change its role • Enter to continue"
 	if fs.IsZFS() {
 		keys = "↑/↓ to move • ←/→ filesystem • Space to select disk • A for ZFS options • Enter to continue"
 	}
@@ -761,12 +821,27 @@ func (m model) geometryPreview() string {
 		return styleMuted.Render(fmt.Sprintf("  %s %s — %d selected.",
 			cfg.FS.Label(), cfg.Requirement(), len(cfg.Disks)))
 	}
+	// A role layout has no single capacity worth quoting — what matters is
+	// which drive each workload lands on.
+	if mounts := cfg.DataMounts(); len(mounts) > 0 {
+		return styleLabel.Render("  " + roleLayoutLine(cfg))
+	}
 	line := fmt.Sprintf("  %s across %d disk(s) — %s usable",
 		cfg.FS.Label(), len(cfg.Disks), humanBytes(cfg.UsableBytes()))
 	if n := cfg.Tolerated(); n > 0 {
 		line += fmt.Sprintf(", survives %d disk failure(s)", n)
 	}
 	return styleLabel.Render(line)
+}
+
+// roleLayoutLine renders the mountpoint each drive will carry, which is the
+// only summary of a role install an operator can check at a glance.
+func roleLayoutLine(cfg install.DiskConfig) string {
+	parts := make([]string, 0, len(cfg.Roles))
+	for _, rm := range cfg.Roles {
+		parts = append(parts, fmt.Sprintf("%s → %s (%s)", rm.Mountpoint(), rm.Disk.Path, rm.Disk.SizeHuman()))
+	}
+	return strings.Join(parts, "   ")
 }
 
 func (m model) viewZFSOptions(w int) string {
@@ -793,12 +868,20 @@ func (m model) viewZFSOptions(w int) string {
 }
 
 func (m model) viewDiskConfirm(w int) string {
+	cfg := m.storage()
 	title := styleTitle.Render("Confirm Disk Erasure")
-	disk := styleLabel.Render(strings.Join(m.storage().Paths(), ", "))
+	disk := styleLabel.Render(strings.Join(cfg.Paths(), ", "))
 	msg := fmt.Sprintf("All data on %s will be permanently erased.\nType 'yes' to confirm:", disk)
 
 	var lines []string
-	lines = append(lines, title, msg, "", m.eraseInput.View())
+	lines = append(lines, title)
+	// A multi-drive ext4 layout resembles an array and is not one, so the
+	// mapping and the absence of redundancy are both stated before the erase.
+	if len(cfg.DataMounts()) > 0 {
+		lines = append(lines, styleLabel.Render(roleLayoutLine(cfg)),
+			styleWarning.Render("Each drive is independent — losing one loses everything it held."), "")
+	}
+	lines = append(lines, msg, "", m.eraseInput.View())
 	if m.validationErr != "" {
 		lines = append(lines, "", styleError.Render(m.validationErr))
 	}

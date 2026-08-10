@@ -14,6 +14,10 @@ const (
 	biosPartNum = 1
 	espPartNum  = 2
 	rootPartNum = 3
+
+	// dataPartNum is the sole partition on a role drive. Data drives carry no
+	// bootloader, so they start at 1 rather than mirroring the boot layout.
+	dataPartNum = 1
 )
 
 // GPT partition type GUIDs, by their sgdisk short code.
@@ -60,12 +64,41 @@ func partitionDisks(cfg DiskConfig) error {
 	if cfg.FS.IsZFS() {
 		ptype = typeZFS
 	}
-	for _, d := range cfg.Disks {
+	for _, d := range cfg.bootDisks() {
 		if err := partitionOne(d, ptype); err != nil {
 			return fmt.Errorf("partition %s: %w", d.Path, err)
 		}
 	}
+	for _, rm := range cfg.DataMounts() {
+		if err := partitionDataDisk(rm); err != nil {
+			return fmt.Errorf("partition %s (%s): %w", rm.Disk.Path, rm.Role, err)
+		}
+	}
 	return waitForPartitions(cfg)
+}
+
+// partitionDataDisk writes the single-partition GPT for a role drive. It gets
+// no bios_boot and no ESP: nothing installs a bootloader there, and a formatted
+// ESP no firmware entry points at only misleads whoever reads lsblk in an
+// incident.
+func partitionDataDisk(rm RoleMount) error {
+	if err := clearDisk(rm.Disk); err != nil {
+		return fmt.Errorf("clear: %w", err)
+	}
+	// Same tail reserve as a boot drive, for the same reason: a replacement of
+	// the "same" size is routinely a few thousand sectors smaller.
+	if err := run("sgdisk",
+		"-n", fmt.Sprintf("%d:1M:-%dM", dataPartNum, tailReserveMiB),
+		"-t", fmt.Sprintf("%d:%s", dataPartNum, typeLinuxFS),
+		"-c", fmt.Sprintf("%d:%s", dataPartNum, rm.Role.Label()),
+		rm.Disk.Path,
+	); err != nil {
+		return err
+	}
+	if err := run("sgdisk", "-G", rm.Disk.Path); err != nil {
+		slog.Warn("could not randomise GPT GUIDs", "disk", rm.Disk.Path, "err", err)
+	}
+	return nil
 }
 
 // partitionOne writes the GPT for a single disk.
@@ -115,7 +148,7 @@ func waitForPartitions(cfg DiskConfig) error {
 	}
 
 	deadline := time.Now().Add(15 * time.Second)
-	for _, d := range cfg.Disks {
+	for _, d := range cfg.bootDisks() {
 		wanted := []string{d.PartitionPath(espPartNum), d.PartitionPath(rootPartNum)}
 		// The pool is built from by-id paths, so their symlinks have to exist
 		// too — udev publishes them later than the kernel device node.
@@ -126,6 +159,11 @@ func waitForPartitions(cfg DiskConfig) error {
 			if err := waitForPath(part, deadline); err != nil {
 				return err
 			}
+		}
+	}
+	for _, rm := range cfg.DataMounts() {
+		if err := waitForPath(rm.Disk.PartitionPath(dataPartNum), deadline); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -146,7 +184,7 @@ func waitForPath(path string, deadline time.Time) error {
 // formatESPs makes a FAT32 filesystem on every disk's ESP. Each one is
 // independent — there is no RAID here, they are kept in step by content.
 func formatESPs(cfg DiskConfig) error {
-	for _, d := range cfg.Disks {
+	for _, d := range cfg.bootDisks() {
 		esp := d.PartitionPath(espPartNum)
 		// A distinct label per member so `lsblk -f` on a degraded machine tells
 		// the operator which disk each ESP belongs to.

@@ -13,8 +13,15 @@ const (
 // EnsureEndpointInput requests that modelID have a running (or starting)
 // serving endpoint. Idempotent: a model already STARTING or READY returns its
 // current record without launching a second VM.
+//
+// AccountID scopes the endpoint to a tenant; empty resolves to
+// utils.GlobalAccountID, the shared platform endpoint every caller used
+// before per-account endpoints existed. Pinned marks a created endpoint
+// exempt from idle reaping and eviction.
 type EnsureEndpointInput struct {
-	ModelID string `json:"model_id"`
+	ModelID   string `json:"model_id"`
+	AccountID string `json:"account_id,omitempty"`
+	Pinned    bool   `json:"pinned,omitempty"`
 }
 
 type EnsureEndpointOutput struct {
@@ -22,8 +29,10 @@ type EnsureEndpointOutput struct {
 }
 
 // DescribeEndpointInput looks up modelID's current endpoint record.
+// AccountID scopes the lookup; empty resolves to utils.GlobalAccountID.
 type DescribeEndpointInput struct {
-	ModelID string `json:"model_id"`
+	ModelID   string `json:"model_id"`
+	AccountID string `json:"account_id,omitempty"`
 }
 
 type DescribeEndpointOutput struct {
@@ -40,8 +49,10 @@ type ListEndpointsOutput struct {
 
 // DeleteEndpointInput requests a READY endpoint move to DRAINING and its VM
 // be torn down. Idempotent: an already-ABSENT endpoint returns success.
+// AccountID scopes the target; empty resolves to utils.GlobalAccountID.
 type DeleteEndpointInput struct {
-	ModelID string `json:"model_id"`
+	ModelID   string `json:"model_id"`
+	AccountID string `json:"account_id,omitempty"`
 }
 
 type DeleteEndpointOutput struct{}

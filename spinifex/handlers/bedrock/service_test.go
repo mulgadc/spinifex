@@ -247,6 +247,96 @@ func TestDelete_ResumesFromDraining(t *testing.T) {
 	assert.Contains(t, h.launcher.terminated, "i-stranded", "the resume must still tear the VM down")
 }
 
+// testAccountID is a non-Global account, distinct from utils.GlobalAccountID,
+// standing in for a real tenant across the account-scoping tests below.
+const testAccountID = "111111111111"
+
+// TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned pins down existing-caller
+// behaviour under the widened input: an Ensure that leaves AccountID and
+// Pinned at their zero values must still land under GlobalAccountID,
+// unpinned, exactly as every pre-existing caller relies on.
+func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, utils.GlobalAccountID, out.Endpoint.AccountID)
+	assert.False(t, out.Endpoint.Pinned)
+	s.WaitLaunches()
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	var rec EndpointRecord
+	found, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &rec)
+	require.NoError(t, err)
+	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
+	assert.False(t, rec.Pinned)
+}
+
+// TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned is the PT shape:
+// a real AccountID plus Pinned:true must key the record away from the shared
+// GlobalAccountID endpoint and persist Pinned on it.
+func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	assert.Equal(t, testAccountID, out.Endpoint.AccountID)
+	assert.True(t, out.Endpoint.Pinned)
+	s.WaitLaunches()
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	var rec EndpointRecord
+	found, err := getJSON(t.Context(), kv, EndpointKey(testAccountID, testModelID), &rec)
+	require.NoError(t, err)
+	require.True(t, found, "a real AccountID must key the record under that account, not Global")
+	assert.True(t, rec.Pinned)
+
+	// Nothing must have landed under the shared Global key.
+	var globalRec EndpointRecord
+	foundGlobal, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &globalRec)
+	require.NoError(t, err)
+	assert.False(t, foundGlobal)
+}
+
+// TestDescribeDelete_AccountScopedRoundTrip covers Describe/Delete resolving
+// the same account-scoped key an account-scoped Ensure wrote.
+func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, desc.Endpoint.State)
+	assert.Equal(t, testAccountID, desc.Endpoint.AccountID)
+	assert.True(t, desc.Endpoint.Pinned)
+
+	// The Global account never had an endpoint created, so it must read ABSENT.
+	globalDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, globalDesc.Endpoint.State)
+
+	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+
+	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+}
+
 func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())

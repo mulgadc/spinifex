@@ -40,7 +40,7 @@ func TestMemoryProviderLifecycleAndIdempotency(t *testing.T) {
 		Versioned: NewVersioned(), VolumeID: volume.ID, Handle: volume.Handle, NodeID: "node-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "nbd:unix:/memory/vol-1.sock", published.NBDURI)
+	assert.Equal(t, "nbd+unix:///?socket=/memory/vol-1.sock", published.NBDURI)
 
 	repeatedPublish, err := provider.PublishVolume(ctx, PublishVolumeRequest{
 		Versioned: NewVersioned(), VolumeID: volume.ID, Handle: volume.Handle, NodeID: "node-1",

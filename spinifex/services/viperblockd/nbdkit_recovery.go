@@ -22,14 +22,20 @@ import (
 // (short enough that Linux's 15-byte comm truncation never applies).
 const nbdkitComm = "nbdkit"
 
-// discoveredNbdkit is one nbdkit process found in /proc, before corroboration
-// against its pidfile. Exactly one of Socket/Port is set, matching whichever
-// transport nbd.buildArgs put on this process's argv.
+// vbPluginSuffix identifies our own plugin in a discovered argv, so an nbdkit
+// serving something else is never adopted.
+const vbPluginSuffix = "nbdkit-viperblock-plugin.so"
+
+// discoveredNbdkit is one nbdkit process found in /proc, before corroboration.
+// Exactly one of Socket/Port is set, matching whichever transport
+// nbd.buildArgs put on this process's argv.
 type discoveredNbdkit struct {
-	PID    int
-	Volume string
-	Socket string
-	Port   int
+	PID     int
+	Volume  string
+	Socket  string
+	Port    int
+	Plugin  string
+	BaseDir string
 }
 
 // scanNbdkitProcs walks procRoot for nbdkit-comm processes, parsing each
@@ -87,21 +93,33 @@ func parseNbdkitCmdline(cmdline []byte) (disc discoveredNbdkit, ok bool) {
 			i++
 		case strings.HasPrefix(arg, "volume="):
 			disc.Volume = strings.TrimPrefix(arg, "volume=")
+		case strings.HasPrefix(arg, "base_dir="):
+			disc.BaseDir = strings.TrimPrefix(arg, "base_dir=")
+		case strings.HasSuffix(arg, ".so"):
+			disc.Plugin = arg
 		}
 	}
 	return disc, disc.Volume != ""
 }
 
-// corroborateNbdkit reports whether disc's own pidfile (nbdkit-vol-<volume>.pid
-// under pidDir) names the same PID scanNbdkitProcs found. Following
-// orphan_scan.go's two-source rule, comm alone is never trusted.
-func corroborateNbdkit(pidDir string, disc discoveredNbdkit) bool {
-	name := fmt.Sprintf("nbdkit-vol-%s", disc.Volume)
-	pid, err := utils.ReadPidFileFrom(pidDir, name)
-	if err != nil {
+// corroborateNbdkit reports whether disc is this daemon's own nbdkit: our
+// plugin, our base dir, and a live endpoint. nbdkit runs with -f and never
+// writes the --pidfile it is given, so argv is the only evidence there is.
+func corroborateNbdkit(cfg *Config, disc discoveredNbdkit) bool {
+	if !strings.HasSuffix(disc.Plugin, vbPluginSuffix) {
 		return false
 	}
-	return pid == disc.PID
+	if filepath.Clean(disc.BaseDir) != filepath.Clean(cfg.BaseDir) {
+		return false
+	}
+
+	// A socket mount must still have its socket; a TCP mount leaves no
+	// filesystem trace, so the parsed port is all there is to check.
+	if disc.Socket == "" {
+		return disc.Port > 0
+	}
+	info, err := os.Stat(disc.Socket)
+	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
 // rebuildMountedVolume re-derives disc's NBD URI, builds its daemon-side VB
@@ -139,13 +157,21 @@ func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc 
 	}, nil
 }
 
-// recoverMountedVolumes discovers, corroborates (pidDir) and rebuilds
+// recoverMountedVolumes discovers, corroborates and rebuilds
 // cfg.MountedVolumes from procRoot's surviving nbdkit processes. Never
 // signals/kills/starts a process; failures are logged and skipped.
-func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, procRoot, pidDir string) {
+func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, procRoot string) {
 	for _, disc := range scanNbdkitProcs(procRoot) {
-		if !corroborateNbdkit(pidDir, disc) {
-			slog.Warn("recovery: nbdkit process not corroborated by its pidfile, skipping",
+		if !corroborateNbdkit(cfg, disc) {
+			slog.Warn("recovery: nbdkit process is not this daemon's, skipping",
+				"pid", disc.PID, "volume", disc.Volume, "base_dir", disc.BaseDir, "plugin", disc.Plugin)
+			continue
+		}
+
+		// Two live nbdkits for one volume is the double-mount hazard itself:
+		// adopt the first and leave the second visible in the log.
+		if _, ok := findMountedVolume(cfg, disc.Volume); ok {
+			slog.Warn("recovery: volume already recovered from another nbdkit process, skipping",
 				"pid", disc.PID, "volume", disc.Volume)
 			continue
 		}

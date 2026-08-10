@@ -1,12 +1,14 @@
 package viperblockd
 
 // Tests for startup recovery: rebuilding cfg.MountedVolumes from nbdkit
-// processes that survived a restart, exercised against fabricated
-// proc/pidfile directories rather than the real host /proc.
+// processes that survived a restart, exercised against a fabricated proc
+// directory rather than the real host /proc.
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +17,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,26 +24,36 @@ import (
 
 // nbdkitArgv builds a realistic nbdkit argv (matching nbd.buildArgs' shape)
 // for volume, using either socket or port depending on which is non-zero.
-func nbdkitArgv(pidFile, socket string, port int, volume string) []string {
-	args := []string{"-f", "--pidfile", pidFile}
+// The --pidfile is present but never written, exactly as nbdkit -f leaves it.
+func nbdkitArgv(baseDir, socket string, port int, volume string) []string {
+	args := []string{"-f", "--pidfile", "/tmp/nbdkit-vol-" + volume + ".pid"}
 	if socket != "" {
 		args = append(args, "--unix", socket)
 	} else {
 		args = append(args, "-p", strconv.Itoa(port))
 	}
 	args = append(args,
-		"/plugins/nbdkit-viperblock-plugin.so",
+		"/plugins/"+vbPluginSuffix,
 		"size=1073741824",
 		"volume="+volume,
 		"bucket=test-bucket",
 		"region=us-east-1",
-		"base_dir=/tmp/vb",
+		"base_dir="+baseDir,
 		"host=https://s3.mock.local",
 		"cache_size=0",
 		"shardwal=false",
 		"gc_enabled=false",
 	)
 	return args
+}
+
+// listenUnix creates a real listening socket at path, so corroboration's
+// "the socket this argv names still exists" check has something to find.
+func listenUnix(t *testing.T, path string) {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
 }
 
 // writeProcFixture creates procRoot/<pid>/{comm,cmdline}, mimicking what the
@@ -58,7 +69,7 @@ func writeProcFixture(t *testing.T, procRoot string, pid int, comm string, argv 
 // --- argv parsing ---
 
 func TestParseNbdkitCmdline_SocketTransport(t *testing.T) {
-	argv := nbdkitArgv("/run/spinifex/nbdkit-vol-vol-argv001.pid", "/run/spinifex/nbd/vol-argv001.sock", 0, "vol-argv001")
+	argv := nbdkitArgv("/var/lib/vb", "/run/spinifex/nbd/vol-argv001.sock", 0, "vol-argv001")
 	cmdline := []byte(strings.Join(argv, "\x00") + "\x00")
 
 	disc, ok := parseNbdkitCmdline(cmdline)
@@ -66,10 +77,12 @@ func TestParseNbdkitCmdline_SocketTransport(t *testing.T) {
 	assert.Equal(t, "vol-argv001", disc.Volume)
 	assert.Equal(t, "/run/spinifex/nbd/vol-argv001.sock", disc.Socket)
 	assert.Zero(t, disc.Port)
+	assert.Equal(t, "/var/lib/vb", disc.BaseDir)
+	assert.Equal(t, "/plugins/"+vbPluginSuffix, disc.Plugin)
 }
 
 func TestParseNbdkitCmdline_TCPTransport(t *testing.T) {
-	argv := nbdkitArgv("/run/spinifex/nbdkit-vol-vol-argv002.pid", "", 10812, "vol-argv002")
+	argv := nbdkitArgv("/var/lib/vb", "", 10812, "vol-argv002")
 	cmdline := []byte(strings.Join(argv, "\x00") + "\x00")
 
 	disc, ok := parseNbdkitCmdline(cmdline)
@@ -92,12 +105,12 @@ func TestScanNbdkitProcs_OnlyMatchesNbdkitComm(t *testing.T) {
 	procRoot := t.TempDir()
 
 	writeProcFixture(t, procRoot, 100, "nbdkit",
-		nbdkitArgv("/run/spinifex/nbdkit-vol-vol-scan001.pid", "/run/spinifex/nbd/vol-scan001.sock", 0, "vol-scan001"))
+		nbdkitArgv("/var/lib/vb", "/run/spinifex/nbd/vol-scan001.sock", 0, "vol-scan001"))
 
 	// Same volume=<id> shape on argv, but comm is not nbdkit: scanNbdkitProcs
 	// must reject this on comm alone, proving cmdline content is not enough.
 	writeProcFixture(t, procRoot, 200, "bash",
-		nbdkitArgv("/run/spinifex/nbdkit-vol-vol-scan002.pid", "/run/spinifex/nbd/vol-scan002.sock", 0, "vol-scan002"))
+		nbdkitArgv("/var/lib/vb", "/run/spinifex/nbd/vol-scan002.sock", 0, "vol-scan002"))
 
 	found := scanNbdkitProcs(procRoot)
 	require.Len(t, found, 1, "only the nbdkit-comm process may be discovered")
@@ -106,31 +119,54 @@ func TestScanNbdkitProcs_OnlyMatchesNbdkitComm(t *testing.T) {
 	assert.Equal(t, "/run/spinifex/nbd/vol-scan001.sock", found[0].Socket)
 }
 
-// --- pidfile corroboration ---
+// --- corroboration ---
 
-func TestCorroborateNbdkit_MatchingPidfileAccepted(t *testing.T) {
-	pidDir := t.TempDir()
-	require.NoError(t, utils.WritePidFileTo(pidDir, "nbdkit-vol-vol-corrob001", 4242))
+// corroborationFixture returns a Config and a discovery that agree on every
+// checked field, with a real socket in place, so each test below can spoil
+// exactly one of them and attribute the rejection to that field.
+func corroborationFixture(t *testing.T) (*Config, discoveredNbdkit) {
+	t.Helper()
+	baseDir := t.TempDir()
+	socket := filepath.Join(t.TempDir(), "vol-corrob.sock")
+	listenUnix(t, socket)
 
-	disc := discoveredNbdkit{PID: 4242, Volume: "vol-corrob001"}
-	assert.True(t, corroborateNbdkit(pidDir, disc))
+	return &Config{BaseDir: baseDir}, discoveredNbdkit{
+		PID:     4242,
+		Volume:  "vol-corrob001",
+		Socket:  socket,
+		Plugin:  "/plugins/" + vbPluginSuffix,
+		BaseDir: baseDir,
+	}
 }
 
-func TestCorroborateNbdkit_DisagreeingPidfileRejected(t *testing.T) {
-	pidDir := t.TempDir()
-	require.NoError(t, utils.WritePidFileTo(pidDir, "nbdkit-vol-vol-corrob002", 9999))
-
-	// /proc says 4242, but the volume's own pidfile names a different PID: a
-	// stale pidfile from an earlier process must not vouch for this one.
-	disc := discoveredNbdkit{PID: 4242, Volume: "vol-corrob002"}
-	assert.False(t, corroborateNbdkit(pidDir, disc))
+func TestCorroborateNbdkit_OurPluginAndBaseDirAccepted(t *testing.T) {
+	cfg, disc := corroborationFixture(t)
+	assert.True(t, corroborateNbdkit(cfg, disc))
 }
 
-func TestCorroborateNbdkit_MissingPidfileRejected(t *testing.T) {
-	pidDir := t.TempDir()
+func TestCorroborateNbdkit_ForeignPluginRejected(t *testing.T) {
+	cfg, disc := corroborationFixture(t)
+	disc.Plugin = "/usr/lib/nbdkit/plugins/nbdkit-file-plugin.so"
+	assert.False(t, corroborateNbdkit(cfg, disc), "an nbdkit serving someone else's plugin is not ours to adopt")
+}
 
-	disc := discoveredNbdkit{PID: 4242, Volume: "vol-corrob003"}
-	assert.False(t, corroborateNbdkit(pidDir, disc))
+func TestCorroborateNbdkit_ForeignBaseDirRejected(t *testing.T) {
+	cfg, disc := corroborationFixture(t)
+	disc.BaseDir = filepath.Join(t.TempDir(), "other")
+	assert.False(t, corroborateNbdkit(cfg, disc), "an nbdkit for a different data dir belongs to a different daemon")
+}
+
+func TestCorroborateNbdkit_MissingSocketRejected(t *testing.T) {
+	cfg, disc := corroborationFixture(t)
+	disc.Socket = filepath.Join(t.TempDir(), "gone.sock")
+	assert.False(t, corroborateNbdkit(cfg, disc), "a socket mount whose socket is gone is not still serving")
+}
+
+func TestCorroborateNbdkit_TCPMountAcceptedOnPort(t *testing.T) {
+	cfg, disc := corroborationFixture(t)
+	disc.Socket = ""
+	disc.Port = 10812
+	assert.True(t, corroborateNbdkit(cfg, disc), "a TCP mount leaves no filesystem trace, so the port is all there is")
 }
 
 // --- -efi cache sizing shared with mountVolume ---
@@ -146,7 +182,7 @@ func TestRebuildMountedVolume_EFIVolumeDisablesCache(t *testing.T) {
 
 	logs := captureLogs(t)
 
-	disc := discoveredNbdkit{PID: 4242, Volume: "vol-efirecov001-efi", Socket: "/run/spinifex/nbd/vol-efirecov001-efi.sock"}
+	disc := discoveredNbdkit{PID: 4242, Volume: "vol-efirecov001-efi", Socket: filepath.Join(t.TempDir(), "efi.sock")}
 	_, err := rebuildMountedVolume(context.Background(), cfg, nc, disc)
 	require.Error(t, err, "the fast-failing backend must fail construction, or this test proves nothing about which path it took")
 
@@ -183,15 +219,13 @@ func TestRecoverMountedVolumes_DiscoverableMount_ResolvesAndSkipsReopen(t *testi
 	const dstSnapshotID = "snap-recoverabledst1"
 
 	procRoot := t.TempDir()
-	pidDir := t.TempDir()
 	const pid = 424242
-	const socket = "/run/spinifex/nbd/vol-recoverable001.sock"
+	socket := filepath.Join(t.TempDir(), "vol-recoverable001.sock")
+	listenUnix(t, socket)
 
-	writeProcFixture(t, procRoot, pid, "nbdkit",
-		nbdkitArgv(filepath.Join(pidDir, "nbdkit-vol-"+volumeName+".pid"), socket, 0, volumeName))
-	require.NoError(t, utils.WritePidFileTo(pidDir, "nbdkit-vol-"+volumeName, pid))
+	writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
 
-	recoverMountedVolumes(context.Background(), cfg, nc, procRoot, pidDir)
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
 	mv, ok := findMountedVolume(cfg, volumeName)
 	require.True(t, ok, "recovery must register the surviving nbdkit process in MountedVolumes")
@@ -244,8 +278,8 @@ func TestRecoverMountedVolumes_DiscoverableMount_ResolvesAndSkipsReopen(t *testi
 }
 
 // TestRecoverMountedVolumes_UncorroboratedProcessSkipped proves recovery
-// leaves MountedVolumes empty when a discovered nbdkit process has no
-// pidfile vouching for it, rather than trusting /proc's comm alone.
+// leaves MountedVolumes empty for an nbdkit belonging to a different daemon,
+// rather than adopting anything whose comm and volume= argument look right.
 func TestRecoverMountedVolumes_UncorroboratedProcessSkipped(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
@@ -254,13 +288,45 @@ func TestRecoverMountedVolumes_UncorroboratedProcessSkipped(t *testing.T) {
 
 	const volumeName = "vol-uncorroborated1"
 	procRoot := t.TempDir()
-	pidDir := t.TempDir() // deliberately left empty: no pidfile at all
+	socket := filepath.Join(t.TempDir(), "vol-uncorroborated1.sock")
+	listenUnix(t, socket)
 
 	writeProcFixture(t, procRoot, 55555, "nbdkit",
-		nbdkitArgv(filepath.Join(pidDir, "nbdkit-vol-"+volumeName+".pid"), "/run/spinifex/nbd/vol-uncorroborated1.sock", 0, volumeName))
+		nbdkitArgv(filepath.Join(t.TempDir(), "someone-elses-data-dir"), socket, 0, volumeName))
 
-	recoverMountedVolumes(context.Background(), cfg, nc, procRoot, pidDir)
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
 	_, ok := findMountedVolume(cfg, volumeName)
-	assert.False(t, ok, "a process with no corroborating pidfile must never be adopted into MountedVolumes")
+	assert.False(t, ok, "an nbdkit serving another daemon's base dir must never be adopted into MountedVolumes")
+}
+
+// TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce proves two live nbdkits
+// for one volume — the double-mount hazard itself — yield a single registry
+// entry rather than two conflicting ones.
+func TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.constructVB = fileBackedConstructVB(t)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-duplicatemount1"
+	procRoot := t.TempDir()
+	socketDir := t.TempDir()
+
+	for i, pid := range []int{6001, 6002} {
+		socket := filepath.Join(socketDir, fmt.Sprintf("dup-%d.sock", i))
+		listenUnix(t, socket)
+		writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
+	}
+
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
+
+	count := 0
+	for _, mv := range cfg.MountedVolumes {
+		if mv.Name == volumeName {
+			count++
+			t.Cleanup(func() { mv.VB.StopWALSyncer() })
+		}
+	}
+	assert.Equal(t, 1, count, "two nbdkits for one volume must produce one registry entry, not two")
 }

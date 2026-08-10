@@ -523,7 +523,7 @@ func launchService(cfg *Config) (err error) {
 	// Rebuild MountedVolumes from any nbdkit processes that survived a
 	// restart before the daemon accepts a single request, so a handler can
 	// never race recovery and open a second engine against a live volume.
-	recoverMountedVolumes(context.Background(), cfg, nc, "/proc", utils.RuntimeDir())
+	recoverMountedVolumes(context.Background(), cfg, nc, "/proc")
 
 	if cfg.NodeName != "" {
 		slog.Info("Waiting for EBS events", "node", cfg.NodeName)

@@ -20,7 +20,7 @@ func setupECSRequest(target, body string) *http.Request {
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "ecs")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	return req.WithContext(ctx)
+	return withTestIdentity(req.WithContext(ctx))
 }
 
 func TestECSActionFromTarget(t *testing.T) {
@@ -62,14 +62,14 @@ func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
 }
 
 func TestECSRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECS_Request(httptest.NewRecorder(), setupECSRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECSRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECS_Request(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
 	require.Error(t, err)
@@ -78,7 +78,7 @@ func TestECSRequest_UnknownAction(t *testing.T) {
 
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECS_Request(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
 	require.Error(t, err)
@@ -90,10 +90,12 @@ func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 func TestECSRequest_MissingAccountID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
-	req = req.WithContext(context.WithValue(req.Context(), ctxService, "ecs"))
+	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
 
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	// Account-less requests are rejected by the policy gate, which runs ahead of
+	// the handler's own account guard.
 	err := gw.ECS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

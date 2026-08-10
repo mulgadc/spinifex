@@ -162,6 +162,8 @@ func setupIAMRequestHandler(svc handlers_iam.IAMService) http.Handler {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "iam")
 		ctx = context.WithValue(ctx, ctxAccountID, "000000000000")
+		ctx = context.WithValue(ctx, ctxIdentity, "root")
+		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -287,6 +289,8 @@ func TestIAMRequest_NilService(t *testing.T) {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "iam")
 		ctx = context.WithValue(ctx, ctxAccountID, "000000000000")
+		ctx = context.WithValue(ctx, ctxIdentity, "root")
+		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -330,7 +334,7 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")
-		r = r.WithContext(ctx)
+		r = withTestIdentity(r.WithContext(ctx))
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
 		}

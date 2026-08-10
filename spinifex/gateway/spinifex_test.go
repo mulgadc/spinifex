@@ -21,6 +21,7 @@ func spinifexRequest(t *testing.T, gw *GatewayConfig, action, accountID, identit
 	ctx = context.WithValue(ctx, ctxAccountID, accountID)
 	ctx = context.WithValue(ctx, ctxIdentity, identity)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -38,6 +39,7 @@ func TestSpinifex_GetVersion_Admin(t *testing.T) {
 		DisableLogging: true,
 		Version:        "v0.5.0-43-gae1deb5",
 		Commit:         "ae1deb5",
+		IAMService:     allowAllIAMService(),
 	}
 	w := spinifexRequest(t, gw, "GetVersion", admin.DefaultAccountID(), "admin")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -50,6 +52,7 @@ func TestSpinifex_GetVersion_NonAdmin_Denied(t *testing.T) {
 		DisableLogging: true,
 		Version:        "v0.5.0",
 		Commit:         "abc123",
+		IAMService:     allowAllIAMService(),
 	}
 	w := spinifexRequest(t, gw, "GetVersion", "000000000002", "alice")
 	require.Equal(t, http.StatusForbidden, w.Code)
@@ -57,28 +60,28 @@ func TestSpinifex_GetVersion_NonAdmin_Denied(t *testing.T) {
 }
 
 func TestSpinifex_GetNodes_NonAdmin_Denied(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := spinifexRequest(t, gw, "GetNodes", "000000000002", "alice")
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), awserrors.ErrorAccessDenied)
 }
 
 func TestSpinifex_GetVMs_NonAdmin_Denied(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := spinifexRequest(t, gw, "GetVMs", "000000000002", "alice")
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), awserrors.ErrorAccessDenied)
 }
 
 func TestSpinifex_InvalidAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := spinifexRequest(t, gw, "DoesNotExist", admin.DefaultAccountID(), "admin")
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), awserrors.ErrorInvalidAction)
 }
 
 func TestSpinifex_MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := context.WithValue(req.Context(), ctxService, "spinifex")
 	ctx = context.WithValue(ctx, ctxAccountID, admin.DefaultAccountID())
@@ -92,22 +95,25 @@ func TestSpinifex_MissingAction(t *testing.T) {
 }
 
 func TestSpinifex_NoAccountID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	body := "Action=GetVersion"
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "spinifex")
-	req = req.WithContext(ctx)
+	req = withTestIdentity(req.WithContext(ctx))
 
 	w := httptest.NewRecorder()
+	// Account-less requests are rejected by the policy gate, which runs ahead of
+	// the handler's own account guard.
 	err := gw.Spinifex_Request(w, req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 func TestSpinifex_GetNodes_NoNATS(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nil,
+		IAMService:     allowAllIAMService(),
 	}
 	w := spinifexRequest(t, gw, "GetNodes", admin.DefaultAccountID(), "admin")
 	require.Equal(t, http.StatusForbidden, w.Code)

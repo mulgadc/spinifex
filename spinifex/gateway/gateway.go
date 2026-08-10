@@ -447,9 +447,10 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 }
 
 // checkPolicyResource evaluates IAM policies against a specific resource ARN.
-// Root users bypass evaluation. Nil IAMService, or a request with no SigV4
-// auth context, allows (pre-IAM compatibility). Used by EC2 paths that
-// enforce iam:PassRole before attaching an instance profile.
+// Root users bypass evaluation. A nil IAMService is a server fault and an
+// unauthenticated request is denied — neither can reach a gated handler through
+// the route tree. Used by EC2 paths that enforce iam:PassRole before attaching
+// an instance profile.
 func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
 	// point with its resolved action, so telemetry enrichment lives here
@@ -458,15 +459,14 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 	recordResolvedAction(r.Context(), service, action)
 
 	if gw.IAMService == nil {
-		slog.Warn("checkPolicy: IAM service not available, skipping policy check",
-			"service", service, "action", action)
-		return nil
+		slog.Error("checkPolicy: IAM service not available", "service", service, "action", action)
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
 	identityVal := r.Context().Value(ctxIdentity)
 	if identityVal == nil {
-		// No auth context — pre-IAM compatibility
-		return nil
+		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
+		return errors.New(awserrors.ErrorAccessDenied)
 	}
 	identity, ok := identityVal.(string)
 	if !ok {
@@ -474,9 +474,9 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 	if identity == "" {
-		// Pre-IAM compatibility: an authenticated request with no identity name
-		// predates per-principal policy enforcement.
-		return nil
+		slog.Warn("checkPolicy: authenticated request carries no identity name",
+			"service", service, "action", action)
+		return errors.New(awserrors.ErrorAccessDenied)
 	}
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
@@ -506,9 +506,7 @@ func mustCtxString(r *http.Request, key contextKey) string {
 // enforcement: given an already-resolved principal (from SigV4 or, for /v2/*
 // ECR requests, a freshly rehydrated token identity), it resolves the
 // principal's current policies and evaluates iamAction against resource.
-// Unlike checkPolicyResource, a nil IAMService fails closed here — callers
-// that want pre-IAM-compatibility bypass behavior must check for that before
-// calling in, exactly as checkPolicyResource does.
+// A nil IAMService fails closed here, matching checkPolicyResource.
 func (gw *GatewayConfig) evaluatePrincipalPolicy(principal principalContext, iamAction, resource string) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)

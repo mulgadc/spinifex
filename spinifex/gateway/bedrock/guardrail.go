@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -596,4 +597,72 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 	}
 
 	return &bedrock.CreateGuardrailVersionOutput{GuardrailId: aws.String(id), Version: aws.String(version)}, nil
+}
+
+// ApplyGuardrail runs the guardrail engine over input.Content for
+// input.Source, honouring input.GuardrailVersion (DRAFT or a numbered
+// snapshot), and returns the aws-sdk-go bedrockruntime shape the runtime op
+// hands back to the caller. Unknown/foreign guardrail or version both report
+// ResourceNotFoundException, the same as the control-plane ops.
+func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore, input *bedrockruntime.ApplyGuardrailInput) (*bedrockruntime.ApplyGuardrailOutput, error) {
+	if input == nil || aws.StringValue(input.GuardrailIdentifier) == "" ||
+		aws.StringValue(input.GuardrailVersion) == "" || aws.StringValue(input.Source) == "" {
+		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	kv, err := store.bucket(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rec, found, err := getGuardrailRecord(ctx, kv, accountID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+
+	view := rec.guardrailView
+	version := aws.StringValue(input.GuardrailVersion)
+	if version != guardrailDraftVersion {
+		snap, ok := rec.Versions[version]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		}
+		view = snap.guardrailView
+	}
+
+	texts := make([]string, 0, len(input.Content))
+	for _, c := range input.Content {
+		if c == nil || c.Text == nil {
+			continue
+		}
+		texts = append(texts, aws.StringValue(c.Text.Text))
+	}
+
+	action, assessments, outputTexts, usage := applyGuardrailPolicies(view, texts, aws.StringValue(input.Source))
+
+	outputs := make([]*bedrockruntime.GuardrailOutputContent, 0, len(outputTexts))
+	if action == bedrockruntime.GuardrailActionGuardrailIntervened {
+		message := view.BlockedInputMessaging
+		if aws.StringValue(input.Source) == bedrockruntime.GuardrailContentSourceOutput {
+			message = view.BlockedOutputsMessaging
+		}
+		outputs = append(outputs, &bedrockruntime.GuardrailOutputContent{Text: aws.String(message)})
+	} else {
+		for _, t := range outputTexts {
+			outputs = append(outputs, &bedrockruntime.GuardrailOutputContent{Text: aws.String(t)})
+		}
+	}
+
+	return &bedrockruntime.ApplyGuardrailOutput{
+		Action:      aws.String(action),
+		Assessments: assessments,
+		Outputs:     outputs,
+		Usage:       usage,
+	}, nil
 }

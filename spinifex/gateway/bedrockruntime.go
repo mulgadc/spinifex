@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
@@ -29,15 +30,16 @@ type bedrockRuntimeRoute struct {
 // gw.bedrockEndpointResolver() over the configured pinned self-host
 // endpoints; recorder is gw.bedrockRecorder() (invocation recorder or no-op);
 // access is gw.bedrockAccessResolver() (grant store or deny-all); provisioned
-// is gw.bedrockProvisionedStore(), consulted when modelId is a PT ARN.
-type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error)
+// is gw.bedrockProvisionedStore(), consulted when modelId is a PT ARN;
+// guardrails is gw.bedrockGuardrailStore().
+type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error)
 
 // bedrockRuntimeRoutes is the dispatch table. InvokeModel has no handler
 // function here: BedrockRuntime_Request special-cases its action to bypass
 // the JSON-marshaling dispatch below, since its response is raw bytes.
 var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse$`), "Converse",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			input := new(bedrockruntime.ConverseInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -49,6 +51,18 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke$`), "InvokeModel", nil},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse-stream$`), "ConverseStream", nil},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke-with-response-stream$`), "InvokeModelWithResponseStream", nil},
+	{"POST", regexp.MustCompile(`^/guardrail/([^/]+)/version/([^/]+)/apply$`), "ApplyGuardrail",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ gateway_bedrock.EndpointResolver, _ gateway_bedrock.Recorder, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrockruntime.ApplyGuardrailInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.GuardrailIdentifier = aws.String(p[0])
+			input.GuardrailVersion = aws.String(p[1])
+			return gateway_bedrock.ApplyGuardrail(ctx, acct, guardrails, input)
+		}},
 }
 
 // lookupBedrockRuntimeAction matches method+path against bedrockRuntimeRoutes,
@@ -146,7 +160,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
 	if err != nil {
 		return err
 	}

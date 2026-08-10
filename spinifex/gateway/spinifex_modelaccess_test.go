@@ -29,6 +29,7 @@ func spinifexAccessRequest(t *testing.T, gw *GatewayConfig, action, accountID st
 	ctx = context.WithValue(ctx, ctxAccountID, accountID)
 	ctx = context.WithValue(ctx, ctxIdentity, "admin")
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -48,6 +49,7 @@ func accessGateway(t *testing.T) *GatewayConfig {
 	return &GatewayConfig{
 		DisableLogging:     true,
 		BedrockAccessAdmin: gateway_bedrock.NewModelAccessStore(js, 1),
+		IAMService:         allowAllIAMService(),
 	}
 }
 
@@ -116,7 +118,7 @@ func TestSpinifex_ModelAccess_MissingParameters(t *testing.T) {
 // TestSpinifex_ModelAccess_NoStoreIsServerError covers a gateway built without
 // a grant store: the admin actions refuse rather than panicking on nil.
 func TestSpinifex_ModelAccess_NoStoreIsServerError(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	adminAccount := admin.DefaultAccountID()
 
 	for _, action := range []string{"GrantModelAccess", "RevokeModelAccess", "ListModelAccess"} {

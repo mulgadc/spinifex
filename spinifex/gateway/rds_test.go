@@ -23,7 +23,7 @@ func setupRDSRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "rds")
 	ctx = context.WithValue(ctx, ctxAccountID, rdsTestAccountID)
-	return req.WithContext(ctx)
+	return withTestIdentity(req.WithContext(ctx))
 }
 
 // A signed customer request: an IAM user with a resolvable identity, which is
@@ -83,14 +83,14 @@ func newRDSGatewayWithResolver(
 }
 
 func TestRDSRequest_MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest(""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestRDSRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=FakeAction"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
@@ -98,7 +98,7 @@ func TestRDSRequest_UnknownAction(t *testing.T) {
 
 // A malformed percent-encoding is a client error, not an internal one.
 func TestRDSRequest_MalformedQueryString(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=%zz"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
@@ -106,7 +106,7 @@ func TestRDSRequest_MalformedQueryString(t *testing.T) {
 
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
 	for _, body := range []string{
 		"Action=CreateDBInstance&AllocatedStorage=abc",
 		"Action=CreateDBInstance&MultiAZ=yes",
@@ -128,7 +128,7 @@ func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 // A known action still needs a NATS connection to reach the control plane, so
 // the disconnected case must fail rather than answer from the gateway alone.
 func TestRDSRequest_NoNATSConn(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=DescribeDBInstances"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
@@ -217,20 +217,24 @@ func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 }
 
-// An authenticated request with no resolvable identity predates per-principal
-// enforcement and keeps its documented allow, rather than newly failing closed.
-func TestRDSRequest_NoIdentityKeepsPreIAMAllow(t *testing.T) {
-	gw, probe := newRDSPolicyGateway(nil) // no policies: an evaluated request would be denied
-	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=DescribeDBInstances"))
+// A request with no resolvable identity is denied outright: there is no
+// principal to evaluate, so the gate refuses before consulting any policy.
+func TestRDSRequest_NoIdentityDenied(t *testing.T) {
+	gw, probe := newRDSPolicyGateway(nil)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeDBInstances"))
+	ctx := context.WithValue(req.Context(), ctxService, "rds")
+	ctx = context.WithValue(ctx, ctxAccountID, rdsTestAccountID)
+
+	err := gw.RDS_Request(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 	assert.Zero(t, probe.consulted, "a request with no identity must not be evaluated at all")
 }
 
 // RDS errors must use the IAM-style <ErrorResponse> envelope: the aws-sdk-go
 // query unmarshaler rejects the EC2 <Response><Errors> shape for this service.
 func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBInstance"), errNotImplementedForTest)
 
@@ -240,7 +244,7 @@ func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
 }
 
 func TestRDSErrorHandler_UsesRDSUnsupportedActionWording(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBCluster"),
 		errors.New(awserrors.ErrorOperationNotSupported))

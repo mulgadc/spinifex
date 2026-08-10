@@ -53,14 +53,14 @@ func TestECRActionsMap_CoreActionsRegistered(t *testing.T) {
 }
 
 func TestECRRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECR_Request(httptest.NewRecorder(), setupECRRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECRRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECR_Request(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.MadeUpAction", "{}"))
 	require.Error(t, err)
@@ -71,7 +71,7 @@ func TestECRRequest_UnknownAction(t *testing.T) {
 // handler lands. The repo/image actions are now served inline, so
 // ListRepositories stands in as a still-stubbed action.
 func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECR_Request(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListRepositories", "{}"))
 	require.Error(t, err)
@@ -79,7 +79,7 @@ func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 }
 
 func TestOCIRegistry_VersionCheck(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)
 
@@ -91,7 +91,7 @@ func TestOCIRegistry_VersionCheck(t *testing.T) {
 }
 
 func TestOCIRegistry_StubReturns501(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)
 

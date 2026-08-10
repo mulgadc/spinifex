@@ -23,7 +23,7 @@ import (
 func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	reg := gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewMemoryMetaStore(), ecrTestAccount)
-	return &GatewayConfig{ECRRegistry: reg, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true}
+	return &GatewayConfig{ECRRegistry: reg, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true, IAMService: allowAllIAMService()}
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
@@ -233,7 +233,7 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	assert.Equal(t, "ServerInternal", err.Error())
 
 	// Nil registry -> ServerInternal.
-	bare := &GatewayConfig{DisableLogging: true}
+	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err = bare.handleListImages(httptest.NewRecorder(), imageReq(t, `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())

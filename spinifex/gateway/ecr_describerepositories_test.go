@@ -55,6 +55,7 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	}
 	return &GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
+		IAMService: allowAllIAMService(),
 	}
 }
 

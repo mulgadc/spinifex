@@ -74,10 +74,10 @@ func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { re
 
 // newBedrockRequestGateway builds a GatewayConfig with a real NATS connection
 // (satisfying Bedrock_Request/BedrockRuntime_Request's nil-check only — no
-// NATS subject handling is required for these routes), no IAMService (so
-// checkPolicy is a no-op), BedrockEndpoints pinned at the given vLLM stub, and
-// every model granted — access is deny-by-default, so without a resolver these
-// routes would all return before reaching the code under test.
+// NATS subject handling is required for these routes), an allow-everything
+// IAMService so the policy gate passes, BedrockEndpoints pinned at the given
+// vLLM stub, and every model granted — access is deny-by-default, so without a
+// resolver these routes would all return before reaching the code under test.
 // ListFoundationModels/GetFoundationModel read the weights resolver through a
 // package-level setter rather than a GatewayConfig field, so it is installed
 // here and reset on cleanup.
@@ -89,6 +89,7 @@ func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 	return &GatewayConfig{
 		NATSConn:       nc,
 		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
 		BedrockEndpoints: map[string]string{
 			bedrockTestLlamaModelID: vllmURL,
 		},
@@ -99,6 +100,8 @@ func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 func bedrockRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxAccountID, bedrockTestAccount)
+	ctx = context.WithValue(ctx, ctxIdentity, "alice")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 
@@ -206,15 +209,17 @@ func TestBedrockRequest_UnknownRouteReturnsInvalidAction(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
 
-func TestBedrockRequest_MissingAccountIDReturnsServerInternal(t *testing.T) {
+func TestBedrockRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
 
-	req := httptest.NewRequest(http.MethodGet, "/foundation-models", nil)
+	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/foundation-models", nil))
 	w := httptest.NewRecorder()
+	// Account-less requests are rejected by the policy gate, which runs ahead of
+	// the handler's own account guard.
 	err := gw.Bedrock_Request(w, req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 func TestBedrockRuntimeRequest_Converse(t *testing.T) {
@@ -266,15 +271,17 @@ func TestBedrockRuntimeRequest_InvokeModel(t *testing.T) {
 	}`, w.Body.String())
 }
 
-func TestBedrockRuntimeRequest_MissingAccountIDReturnsServerInternal(t *testing.T) {
+func TestBedrockRuntimeRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
 
-	req := httptest.NewRequest(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/converse", strings.NewReader("{}"))
+	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/converse", strings.NewReader("{}")))
 	w := httptest.NewRecorder()
+	// Account-less requests are rejected by the policy gate, which runs ahead of
+	// the handler's own account guard.
 	err := gw.BedrockRuntime_Request(w, req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 // newVLLMStreamStub stands up an httptest server answering the OpenAI

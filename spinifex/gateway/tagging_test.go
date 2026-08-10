@@ -19,7 +19,7 @@ func setupTaggingRequest(target, body string) *http.Request {
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "tagging")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	return req.WithContext(ctx)
+	return withTestIdentity(req.WithContext(ctx))
 }
 
 func TestTaggingActionFromTarget(t *testing.T) {
@@ -40,7 +40,7 @@ func TestTaggingActionsMap_AllActionsRegistered(t *testing.T) {
 }
 
 func TestTaggingRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
 	err := gw.Tagging_Request(w, setupTaggingRequest("", ""))
 	require.Error(t, err)
@@ -48,7 +48,7 @@ func TestTaggingRequest_MissingTarget(t *testing.T) {
 }
 
 func TestTaggingRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
 	err := gw.Tagging_Request(w, setupTaggingRequest("ResourceGroupsTaggingAPI_20170126.TagResources", "{}"))
 	require.Error(t, err)
@@ -58,7 +58,7 @@ func TestTaggingRequest_UnknownAction(t *testing.T) {
 // A known action with no NATS connection passes routing + policy and fails at
 // the NATS-availability guard.
 func TestTaggingRequest_KnownActionNoNATS(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
 	err := gw.Tagging_Request(w, setupTaggingRequest("ResourceGroupsTaggingAPI_20170126.GetResources", "{}"))
 	require.Error(t, err)

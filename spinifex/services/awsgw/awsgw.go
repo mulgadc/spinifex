@@ -350,6 +350,11 @@ func launchService(config *config.ClusterConfig) error {
 	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, len(config.Nodes), nodeConfig.Region,
 		handlers_bedrock.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
 
+	// Bedrock guardrails: control-plane CRUD only at this stage — the record
+	// stores the full policy config so a later stage's filter engine and
+	// inference enforcement can read it back, but nothing enforces it yet.
+	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, len(config.Nodes), nodeConfig.Region)
+
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
 	// deliveryConsumer to any account with a configured destination bucket
@@ -405,6 +410,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAccess:           bedrockAccess,
 		BedrockAccessAdmin:      bedrockAccess,
 		BedrockProvisioned:      bedrockProvisioned,
+		BedrockGuardrails:       bedrockGuardrails,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

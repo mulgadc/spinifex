@@ -29,23 +29,24 @@ type bedrockRoute struct {
 // is gw.bedrockResolver(): the configured credential store, or a no-op
 // fallback. loggingStore is gw.bedrockLoggingConfigStore(). access is
 // gw.bedrockAccessResolver(): the configured grant store, or a deny-all
-// fallback. provisioned is gw.bedrockProvisionedStore().
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error)
+// fallback. provisioned is gw.bedrockProvisionedStore(). guardrails is
+// gw.bedrockGuardrailStore().
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error)
 
 // bedrockRoutes is the dispatch table. More-specific paths must precede
 // less-specific ones with the same prefix so the regex matcher picks the
 // deeper route first.
 var bedrockRoutes = []bedrockRoute{
 	{"GET", regexp.MustCompile(`^/foundation-models$`), "ListFoundationModels",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
 		}},
 	{"GET", regexp.MustCompile(`^/foundation-models/([^/]+)$`), "GetFoundationModel",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0], access)
 		}},
 	{"PUT", regexp.MustCompile(`^/logging/modelinvocations$`), "PutModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			input := new(bedrock.PutModelInvocationLoggingConfigurationInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -55,15 +56,15 @@ var bedrockRoutes = []bedrockRoute{
 			return gateway_bedrock.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
 		}},
 	{"GET", regexp.MustCompile(`^/logging/modelinvocations$`), "GetModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
 		}},
 	{"DELETE", regexp.MustCompile(`^/logging/modelinvocations$`), "DeleteModelInvocationLoggingConfiguration",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
 		}},
 	{"POST", regexp.MustCompile(`^/provisioned-model-throughput$`), "CreateProvisionedModelThroughput",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			input := new(bedrock.CreateProvisionedModelThroughputInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -73,15 +74,15 @@ var bedrockRoutes = []bedrockRoute{
 			return gateway_bedrock.CreateProvisionedModelThroughput(ctx, acct, provisioned, input)
 		}},
 	{"GET", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "GetProvisionedModelThroughput",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.GetProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.GetProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
 		}},
 	{"GET", regexp.MustCompile(`^/provisioned-model-throughputs$`), "ListProvisionedModelThroughputs",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.ListProvisionedModelThroughputs(ctx, acct, provisioned, new(bedrock.ListProvisionedModelThroughputsInput))
 		}},
 	{"PATCH", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "UpdateProvisionedModelThroughput",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			input := new(bedrock.UpdateProvisionedModelThroughputInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -92,8 +93,66 @@ var bedrockRoutes = []bedrockRoute{
 			return gateway_bedrock.UpdateProvisionedModelThroughput(ctx, acct, provisioned, input)
 		}},
 	{"DELETE", regexp.MustCompile(`^/provisioned-model-throughput/([^/]+)$`), "DeleteProvisionedModelThroughput",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
 			return gateway_bedrock.DeleteProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.DeleteProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
+		}},
+	{"POST", regexp.MustCompile(`^/guardrails$`), "CreateGuardrail",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrock.CreateGuardrailInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			return gateway_bedrock.CreateGuardrail(ctx, acct, guardrails, input)
+		}},
+	{"GET", regexp.MustCompile(`^/guardrails/([^/]+)$`), "GetGuardrail",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrock.GetGuardrailInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.GuardrailIdentifier = aws.String(p[0])
+			return gateway_bedrock.GetGuardrail(ctx, acct, guardrails, input)
+		}},
+	{"GET", regexp.MustCompile(`^/guardrails$`), "ListGuardrails",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			return gateway_bedrock.ListGuardrails(ctx, acct, guardrails, new(bedrock.ListGuardrailsInput))
+		}},
+	{"PUT", regexp.MustCompile(`^/guardrails/([^/]+)$`), "UpdateGuardrail",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrock.UpdateGuardrailInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.GuardrailIdentifier = aws.String(p[0])
+			return gateway_bedrock.UpdateGuardrail(ctx, acct, guardrails, input)
+		}},
+	{"DELETE", regexp.MustCompile(`^/guardrails/([^/]+)$`), "DeleteGuardrail",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrock.DeleteGuardrailInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.GuardrailIdentifier = aws.String(p[0])
+			return gateway_bedrock.DeleteGuardrail(ctx, acct, guardrails, input)
+		}},
+	{"POST", regexp.MustCompile(`^/guardrails/([^/]+)$`), "CreateGuardrailVersion",
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+			input := new(bedrock.CreateGuardrailVersionInput)
+			if len(b) > 0 {
+				if err := json.Unmarshal(b, input); err != nil {
+					return nil, errors.New(awserrors.ErrorValidationException)
+				}
+			}
+			input.GuardrailIdentifier = aws.String(p[0])
+			return gateway_bedrock.CreateGuardrailVersion(ctx, acct, guardrails, input)
 		}},
 }
 
@@ -157,7 +216,26 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore())
+	// Some REST-JSON actions carry their non-path inputs as singular query
+	// params with an empty body (e.g. GetGuardrail's guardrailVersion arrives
+	// as GET /guardrails/{id}?guardrailVersion=1). Only folds when the body is
+	// empty so it never shadows a real payload, mirroring lookupEKSAction's
+	// own query fold for its (repeated-value) tagKeys case.
+	if len(body) == 0 {
+		if q := r.URL.Query(); len(q) > 0 {
+			flat := make(map[string]string, len(q))
+			for k, v := range q {
+				if len(v) > 0 {
+					flat[k] = v[0]
+				}
+			}
+			if qb, err := json.Marshal(flat); err == nil {
+				body = qb
+			}
+		}
+	}
+
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
 	if err != nil {
 		return err
 	}
@@ -217,6 +295,18 @@ func (gw *GatewayConfig) bedrockProvisionedStore() *gateway_bedrock.ProvisionedS
 		return gw.BedrockProvisioned
 	}
 	return gateway_bedrock.NewProvisionedStore(nil, 1, gw.Region, nil)
+}
+
+// bedrockGuardrailStore returns gw.BedrockGuardrails, or a store backed by no
+// JetStream client when unconfigured. Reads/writes then fail with an error
+// (no JetStream to open a KV bucket against) rather than panicking, which is
+// acceptable for unit tests of unrelated routes that never reach a guardrail
+// handler.
+func (gw *GatewayConfig) bedrockGuardrailStore() *gateway_bedrock.GuardrailStore {
+	if gw.BedrockGuardrails != nil {
+		return gw.BedrockGuardrails
+	}
+	return gateway_bedrock.NewGuardrailStore(nil, 1, gw.Region)
 }
 
 // bedrockEndpointResolver returns the registry-backed resolver when one is

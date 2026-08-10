@@ -39,13 +39,16 @@ type Router struct {
 	// Nil (a Router built without one) means Converse rejects any PT ARN as
 	// ResourceNotFoundException rather than a bare modelId's usual denial.
 	provisioned *ProvisionedStore
+	// guardrails resolves a Converse request's GuardrailConfig. Nil fails
+	// closed on any GuardrailConfig (ResourceNotFoundException) rather than
+	// proceeding unguarded; a request with none is unaffected either way.
+	guardrails *GuardrailStore
 }
 
-// NewRouter constructs a Router. A nil resolver, endpointResolver, or recorder
-// falls back to a no-op implementation, and a nil access falls back to denying
-// every model, so a Router is always safe to use even before the real stores
-// are wired in. A nil provisioned disables PT ARN acceptance.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) *Router {
+// NewRouter constructs a Router. A nil resolver, endpointResolver, or
+// recorder falls back to a no-op, and a nil access denies every model, so a
+// Router is always safe to use even before the real stores are wired in.
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -58,7 +61,7 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
@@ -156,16 +159,58 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		return nil, err
 	}
 
+	// An INPUT block returns early with a guarded ConverseOutput, never
+	// reaching p.Converse; inputAssessments survives past the INPUT branch
+	// so a Trace at the end can report both INPUT and OUTPUT halves.
+	var inputAssessments []*bedrockruntime.GuardrailAssessment
+	gc := input.GuardrailConfig
+	if gc != nil {
+		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+		var blockedIn bool
+		var messageIn string
+		blockedIn, messageIn, _, inputAssessments, err = enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+			bedrockruntime.GuardrailContentSourceInput, converseGuardrailTexts(input))
+		if err != nil {
+			return nil, err
+		}
+		if blockedIn {
+			out = blockedConverseOutput(messageIn, time.Since(start))
+			if aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled {
+				out.Trace = converseGuardrailTrace(ident, inputAssessments, nil)
+			}
+			return out, nil
+		}
+	}
+
 	out, err = p.Converse(ctx, modelID, input)
-	return out, err
+	if err != nil || gc == nil {
+		return out, err
+	}
+
+	ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+	blockedOut, messageOut, redacted, outputAssessments, gerr := enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+		bedrockruntime.GuardrailContentSourceOutput, converseOutputTexts(out))
+	if gerr != nil {
+		err = gerr
+		return nil, err
+	}
+	if blockedOut {
+		out.Output.Message.Content = []*bedrockruntime.ContentBlock{{Text: aws.String(messageOut)}}
+		out.StopReason = aws.String(bedrockruntime.StopReasonGuardrailIntervened)
+	} else {
+		setConverseOutputTexts(out, redacted)
+	}
+	if aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled {
+		out.Trace = converseGuardrailTrace(ident, inputAssessments, outputAssessments)
+	}
+	return out, nil
 }
 
 // Converse is the bedrock-runtime Converse entry point used by the gateway
-// route table. resolver, endpointResolver, recorder, access and provisioned
-// may be nil; NewRouter supplies no-op (and, for access, deny-all; for
-// provisioned, PT-ARN-rejecting) fallbacks.
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver, recorder, access, provisioned).Converse(ctx, accountID, modelID, input)
+// route table. All dependency params may be nil; NewRouter supplies safe
+// fallbacks (deny-all access, PT-ARN- and GuardrailConfig-rejecting).
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may

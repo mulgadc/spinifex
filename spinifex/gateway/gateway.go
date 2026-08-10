@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/pkg/iampolicy"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
@@ -637,9 +638,14 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 	if args, ok := r.Context().Value(ctxQueryArgs).(map[string]string); ok {
 		return args, nil
 	}
-	body, err := io.ReadAll(r.Body)
+	// Same cap as the signed path: this fallback only runs when the context
+	// carries no pre-parsed args, so the body has not been bounded upstream.
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
 	}
 	return ParseAWSQueryArgs(string(body))
 }

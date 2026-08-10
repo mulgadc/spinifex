@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+
+	"github.com/mulgadc/predastore/pkg/sigv4"
 )
 
 // anonymousSTSInterceptor routes unsigned IRSA bootstrap actions
@@ -31,8 +33,15 @@ func (gw *GatewayConfig) anonymousSTSInterceptor(next http.Handler) http.Handler
 // anonymousSTSArgs peeks the request body, parses query args, and reports
 // whether the Action is permitted without SigV4. Non-anonymous requests pass through unchanged.
 func (gw *GatewayConfig) anonymousSTSArgs(r *http.Request) (map[string]string, bool) {
-	body, err := io.ReadAll(r.Body)
+	// This runs ahead of SigV4, so an unauthenticated client controls the
+	// allocation. Read one byte past the cap to detect an oversized body and
+	// hand it back to the normal chain unread rather than dispatching it.
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
 	if err != nil {
+		return nil, false
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
 		return nil, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))

@@ -178,7 +178,21 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	requireAWSErrorCode(t, err, "AccessDenied")
 
 	// GetSessionToken is user-only: an assumed-role (ASIA) session must NOT
-	// be able to mint a user session.
+	// be able to mint a user session. Grant the action first, so the denial
+	// comes from the handler's principal-type rule rather than the empty
+	// identity policy the gate would otherwise reject on.
+	gstPolicyOut, err := iamCli.CreatePolicy(&iam.CreatePolicyInput{
+		PolicyName:     aws.String("sts-role-get-session-token"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetSessionToken","Resource":"*"}]}`),
+	})
+	require.NoError(t, err, "create-policy (get-session-token)")
+
+	_, err = iamCli.AttachRolePolicy(&iam.AttachRolePolicyInput{
+		RoleName:  aws.String(stsRoleName),
+		PolicyArn: gstPolicyOut.Policy.Arn,
+	})
+	require.NoError(t, err, "attach-role-policy (get-session-token)")
+
 	_, err = sessionCli.STS.GetSessionToken(&sts.GetSessionTokenInput{})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -282,6 +296,24 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	require.NoError(t, err, "create-role (chain)")
 	chainedRoleARN := aws.StringValue(chainCreateOut.Role.Arn)
 
+	// Chaining needs both gates: the target's trust policy admits the source
+	// role, and the source role's own identity policy grants sts:AssumeRole on
+	// it. Scoped to the target ARN, so it also covers the resource-scoped gate.
+	chainPolicyOut, err := iamCli.CreatePolicy(&iam.CreatePolicyInput{
+		PolicyName: aws.String("sts-chain-assume"),
+		PolicyDocument: aws.String(fmt.Sprintf(
+			`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":%q}]}`,
+			chainedRoleARN,
+		)),
+	})
+	require.NoError(t, err, "create-policy (chain)")
+
+	_, err = iamCli.AttachRolePolicy(&iam.AttachRolePolicyInput{
+		RoleName:  aws.String(stsRoleName),
+		PolicyArn: chainPolicyOut.Policy.Arn,
+	})
+	require.NoError(t, err, "attach-role-policy (chain)")
+
 	chainOut, err := sessionCli.STS.AssumeRole(&sts.AssumeRoleInput{
 		RoleArn:         aws.String(chainedRoleARN),
 		RoleSessionName: aws.String(stsSessionNameChain),
@@ -365,6 +397,17 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	// is unaffected by trust-policy references in either direction.
 	_, err = iamCli.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(stsRoleNameChain)})
 	require.NoError(t, err, "delete-role (chain)")
+
+	// Attached managed policies are subordinate entities: DeleteRole rejects
+	// with DeleteConflict until they are detached.
+	for _, arn := range []*string{gstPolicyOut.Policy.Arn, chainPolicyOut.Policy.Arn} {
+		_, err = iamCli.DetachRolePolicy(&iam.DetachRolePolicyInput{
+			RoleName:  aws.String(stsRoleName),
+			PolicyArn: arn,
+		})
+		require.NoError(t, err, "detach-role-policy")
+	}
+
 	_, err = iamCli.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(stsRoleName)})
 	require.NoError(t, err, "delete-role")
 }

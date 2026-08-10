@@ -138,9 +138,11 @@ func buildConfig() (*install.Config, error) {
 
 // resolveStorage builds the disk configuration from the kernel cmdline.
 //
-//	SPINIFEX_FS     ext4 (default) or one of the zfs-* topologies
-//	SPINIFEX_DISKS  explicit ordered member list, required for multi-disk pools
-//	SPINIFEX_DISK   single-disk selector, as before
+//	SPINIFEX_FS               ext4 (default) or one of the zfs-* topologies
+//	SPINIFEX_DISKS            explicit ordered member list, required for multi-disk pools
+//	SPINIFEX_DISK             the OS disk, as before
+//	SPINIFEX_DISK_SPINIFEX    ext4 only: dedicated disk for /var/lib/spinifex
+//	SPINIFEX_DISK_PREDASTORE  ext4 only: dedicated disk for /var/lib/spinifex/predastore
 func resolveStorage() (install.DiskConfig, error) {
 	cfg := install.DiskConfig{FS: install.FSExt4}
 	if v := strings.TrimSpace(os.Getenv("SPINIFEX_FS")); v != "" {
@@ -171,6 +173,9 @@ func resolveStorage() (install.DiskConfig, error) {
 		cfg.Disks = []install.Disk{d}
 	}
 
+	if err := applyDiskRoles(&cfg); err != nil {
+		return cfg, err
+	}
 	if cfg.ZFS, err = parseZFSOpts(); err != nil {
 		return cfg, err
 	}
@@ -179,6 +184,51 @@ func resolveStorage() (install.DiskConfig, error) {
 	}
 	slog.Info("autoinstall: storage selected", "fs", cfg.FS, "disks", cfg.Paths())
 	return cfg, nil
+}
+
+// roleVars maps each optional data role to the variable that assigns it. The OS
+// role is not here: it always comes from SPINIFEX_DISK.
+var roleVars = []struct {
+	role install.DiskRole
+	env  string
+}{
+	{install.RoleSpinifex, "SPINIFEX_DISK_SPINIFEX"},
+	{install.RolePredastore, "SPINIFEX_DISK_PREDASTORE"},
+}
+
+// applyDiskRoles attaches dedicated data drives to an ext4 install. Roles are
+// always set on ext4, even with no extra drives, so the OS assignment is
+// explicit rather than implied by position.
+func applyDiskRoles(cfg *install.DiskConfig) error {
+	if cfg.FS.IsZFS() {
+		for _, rv := range roleVars {
+			if strings.TrimSpace(os.Getenv(rv.env)) != "" {
+				return fmt.Errorf("%s applies to ext4 only — %s spans every member already", rv.env, cfg.FS.Label())
+			}
+		}
+		return nil
+	}
+	if len(cfg.Disks) != 1 {
+		return fmt.Errorf("ext4 takes one OS disk, %d given — set SPINIFEX_DISK, and SPINIFEX_DISK_SPINIFEX or SPINIFEX_DISK_PREDASTORE for dedicated drives",
+			len(cfg.Disks))
+	}
+
+	roles := []install.RoleMount{{Role: install.RoleOS, Disk: cfg.Disks[0]}}
+	for _, rv := range roleVars {
+		spec := strings.TrimSpace(os.Getenv(rv.env))
+		if spec == "" {
+			continue
+		}
+		// Resolved with the same fail-closed selector as the OS disk, so an
+		// ambiguous value lists the candidates rather than picking one.
+		d, err := resolveDisk(spec)
+		if err != nil {
+			return fmt.Errorf("%s: %w", rv.env, err)
+		}
+		roles = append(roles, install.RoleMount{Role: rv.role, Disk: d})
+	}
+	*cfg = cfg.WithRoles(roles)
+	return nil
 }
 
 // parseZFSOpts reads the advanced pool tunables. Every one is optional; unset

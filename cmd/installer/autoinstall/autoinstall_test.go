@@ -436,10 +436,53 @@ func TestResolveStorage(t *testing.T) {
 			wantErr: `"vdz" is not an available disk`,
 		},
 		{
-			name:    "member list that fails validation",
+			name:    "member list is for pools, not ext4 roles",
 			disks:   four,
 			env:     map[string]string{"SPINIFEX_DISKS": "vdb,vdc"},
-			wantErr: "supports a single disk only",
+			wantErr: "ext4 takes one OS disk",
+		},
+		{
+			name:  "dedicated role drives, os first",
+			disks: four,
+			env: map[string]string{
+				"SPINIFEX_DISK":            "vdb",
+				"SPINIFEX_DISK_SPINIFEX":   "vdc",
+				"SPINIFEX_DISK_PREDASTORE": "vdd",
+			},
+			wantFS:    install.FSExt4,
+			wantPaths: []string{"/dev/vdb", "/dev/vdc", "/dev/vdd"},
+		},
+		{
+			// The two-drive layout: predastore gets its own disk while
+			// /var/lib/spinifex stays on the root filesystem.
+			name:      "predastore alone",
+			disks:     four,
+			env:       map[string]string{"SPINIFEX_DISK": "vdb", "SPINIFEX_DISK_PREDASTORE": "vdc"},
+			wantFS:    install.FSExt4,
+			wantPaths: []string{"/dev/vdb", "/dev/vdc"},
+		},
+		{
+			name:  "role drive on a pool",
+			disks: four,
+			env: map[string]string{
+				"SPINIFEX_FS": "zfs-raid1", "SPINIFEX_DISKS": "vdb,vdc",
+				"SPINIFEX_DISK_SPINIFEX": "vdd",
+			},
+			wantErr: "SPINIFEX_DISK_SPINIFEX applies to ext4 only",
+		},
+		{
+			name:    "role drive that is not present",
+			disks:   four[:1],
+			env:     map[string]string{"SPINIFEX_DISK": "vdb", "SPINIFEX_DISK_PREDASTORE": "vdz"},
+			wantErr: "SPINIFEX_DISK_PREDASTORE",
+		},
+		{
+			// Two roles cannot share a drive; the disk is erased once and the
+			// second mount would land on top of the first.
+			name:    "role drive repeats the os disk",
+			disks:   four,
+			env:     map[string]string{"SPINIFEX_DISK": "vdb", "SPINIFEX_DISK_SPINIFEX": "vdb"},
+			wantErr: "selected more than once",
 		},
 		{
 			name:    "bad zfs tunable",

@@ -88,6 +88,13 @@ type MountedVolume struct {
 	PID       int
 	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
 	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
+
+	// OwnerSubs are the plain (non-queue-group) ebs.provider.v1.owner.{Name}.*
+	// subscriptions registered while this volume is mounted, so
+	// snapshot/expand/describe requests reach this node directly instead of a
+	// random spinifex-workers member. Registered in mountVolume, dropped
+	// alongside ConfigSub whenever this entry leaves cfg.MountedVolumes.
+	OwnerSubs []*nats.Subscription
 }
 type Config struct {
 	ConfigPath     string

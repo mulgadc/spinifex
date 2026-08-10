@@ -3,6 +3,7 @@ package ebsprovider
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -274,6 +275,94 @@ func TestNATSProviderRequest(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "decode")
 	})
+}
+
+// TestNATSProviderOwnerFirst_RoutesToOwnerSubject proves the owner subject
+// is tried first: only a responder on GetVolumeOwnerSubject exists (no
+// GetVolumeSubject responder at all), so a successful reply proves the
+// request never needed the queue-group subject.
+func TestNATSProviderOwnerFirst_RoutesToOwnerSubject(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+
+	ownerSubject, err := GetVolumeOwnerSubject("vol-ownerroute001")
+	require.NoError(t, err)
+	ownerSub, err := conn.Subscribe(ownerSubject, func(msg *nats.Msg) {
+		payload, marshalErr := json.Marshal(GetVolumeResponse{
+			Versioned: NewVersioned(), Volume: &Volume{ID: "vol-ownerroute001", Handle: "owner-handle"},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(payload))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ownerSub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	provider := NewNATSProvider(conn, time.Second)
+	volume, err := provider.GetVolume(t.Context(), GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-ownerroute001"})
+	require.NoError(t, err)
+	assert.Equal(t, "owner-handle", volume.Handle, "the owner subject's own responder must have answered")
+}
+
+// TestNATSProviderOwnerFirst_NoRespondersFallsBackToQueueSubject proves the
+// one condition allowed to trigger a fallback: no responder at all on the
+// owner subject. Only GetVolumeSubject (the queue-group subject) has a
+// responder here, so success proves the fallback fired.
+func TestNATSProviderOwnerFirst_NoRespondersFallsBackToQueueSubject(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+
+	queueSub, err := conn.Subscribe(GetVolumeSubject, func(msg *nats.Msg) {
+		payload, marshalErr := json.Marshal(GetVolumeResponse{
+			Versioned: NewVersioned(), Volume: &Volume{ID: "vol-ownerfallback1", Handle: "queue-handle"},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(payload))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queueSub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	provider := NewNATSProvider(conn, time.Second)
+	volume, err := provider.GetVolume(t.Context(), GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-ownerfallback1"})
+	require.NoError(t, err)
+	assert.Equal(t, "queue-handle", volume.Handle, "no owner responder must fall back to the queue-group subject")
+}
+
+// TestNATSProviderOwnerFirst_NonNoRespondersDoesNotFallBack is the dangerous
+// case requestOwnerFirst exists to avoid: an owner subject that has a
+// responder but never replies produces a timeout, not nats.ErrNoResponders,
+// and must NOT fall back to the queue subject — a queue fallback here could
+// run the same operation (e.g. a snapshot) a second time while the owner is
+// still mid-flight. A responsive queue-subject responder is present so a
+// wrongful fallback would succeed silently instead of failing loudly.
+func TestNATSProviderOwnerFirst_NonNoRespondersDoesNotFallBack(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+
+	ownerSubject, err := GetVolumeOwnerSubject("vol-nofallback001")
+	require.NoError(t, err)
+	ownerSub, err := conn.Subscribe(ownerSubject, func(msg *nats.Msg) {
+		// Deliberately never responds, forcing the client to time out.
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ownerSub.Unsubscribe() })
+
+	var queueHits atomic.Int32
+	queueSub, err := conn.Subscribe(GetVolumeSubject, func(msg *nats.Msg) {
+		queueHits.Add(1)
+		payload, marshalErr := json.Marshal(GetVolumeResponse{
+			Versioned: NewVersioned(), Volume: &Volume{ID: "vol-nofallback001", Handle: "queue-handle"},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(payload))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queueSub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	provider := NewNATSProvider(conn, 200*time.Millisecond)
+	_, err = provider.GetVolume(t.Context(), GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-nofallback001"})
+	require.Error(t, err, "the owner responder never replies, so this must time out")
+	require.NotErrorIs(t, err, nats.ErrNoResponders, "a timeout must never be mistaken for no responders")
+	assert.Equal(t, int32(0), queueHits.Load(), "a timeout must never fall back to the queue-group subject")
 }
 
 // TestResponseErrorRejectsZeroSchemaVersion covers responseError directly: a

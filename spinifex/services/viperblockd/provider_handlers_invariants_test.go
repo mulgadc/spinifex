@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -171,6 +172,68 @@ func TestProviderHandlers_CreateSnapshot_UnmountedVolumeOpensEngine(t *testing.T
 
 	assert.Equal(t, 1, volumeOpenCount(logs.String(), volumeName),
 		"snapshot create on an unmounted volume must construct exactly one engine")
+}
+
+// TestProviderHandlers_SnapshotPath_DifferentNodeConfigDoesNotOpenEngine puts
+// the mount on cfgOwner, reachable only by owner subject, and makes cfgOther
+// the queue group's sole member. Zero opens proves the owner subject won.
+func TestProviderHandlers_SnapshotPath_DifferentNodeConfigDoesNotOpenEngine(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	cfgOther := setupTestConfig(t, natsURL)
+	cfgOther.S3Host = fastFailingS3Host(t)
+	startProviderSubjects(t, cfgOther, natsURL)
+
+	cfgOwner := setupTestConfig(t, natsURL)
+	ncOwner, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(ncOwner.Close)
+
+	const volumeName = "vol-diffnodeowner01"
+	const srcSnapshotID = "snap-diffnodesrc001"
+	const dstSnapshotID = "snap-diffnodedst001"
+
+	vb := createTestVBWithState(t, volumeName)
+	t.Cleanup(func() {
+		vb.StopChunkUploader()
+		vb.StopWALSyncer()
+	})
+
+	ownerSubs := subscribeOwnerSubjects(context.Background(), cfgOwner, ncOwner, volumeName)
+	require.Len(t, ownerSubs, 4, "all four owner verbs must subscribe cleanly")
+	require.NoError(t, ncOwner.Flush())
+
+	cfgOwner.MountedVolumes = append(cfgOwner.MountedVolumes, MountedVolume{Name: volumeName, VB: vb, OwnerSubs: ownerSubs})
+
+	logs := captureLogs(t)
+
+	// The client connects through cfgOther's connection: with no owner
+	// routing this would have no bearing on which node answers (NATS
+	// subjects are server-wide, not connection-scoped), so this alone does
+	// not bias the result toward the fix passing.
+	ncClient, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(ncClient.Close)
+	provider := ebsprovider.NewNATSProvider(ncClient, 5*time.Second)
+
+	snap, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: srcSnapshotID,
+		VolumeID:   volumeName,
+	})
+	require.NoError(t, err, "the mounting node's owner subject must serve this, not the other node's fast-failing queue handler")
+	require.NotNil(t, snap)
+
+	_, err = provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+		Versioned:             ebsprovider.NewVersioned(),
+		SourceSnapshotID:      srcSnapshotID,
+		DestinationSnapshotID: dstSnapshotID,
+		VolumeID:              volumeName,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, volumeOpenCount(logs.String(), volumeName),
+		"a snapshot request for a volume mounted by a different node's config must never open a second engine")
 }
 
 // TestProviderHandlers_CopySnapshot_UnmountedVolumeOpensEngine is

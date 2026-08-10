@@ -3,6 +3,7 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -56,6 +57,62 @@ func UnpublishSubject(nodeID string) (string, error) {
 		return "", err
 	}
 	return "ebs.provider.v1." + nodeID + ".unmount", nil
+}
+
+// ownerSubjectPrefix is common to every owner-routed subject OwnerSubject
+// builds: ebs.provider.v1.owner.{volumeID}.{verb}.
+const ownerSubjectPrefix = "ebs.provider.v1.owner."
+
+// Owner verbs are a closed set: only these four operations have an
+// owner-routed variant, so callers use the named wrapper functions below
+// instead of a string literal at the call site.
+const (
+	verbSnapshotCreate = "snapshot.create"
+	verbSnapshotCopy   = "snapshot.copy"
+	verbVolumeExpand   = "volume.expand"
+	verbVolumeDescribe = "volume.describe"
+)
+
+// OwnerSubject addresses volumeID's mounting node directly, bypassing the
+// spinifex-workers queue group that would otherwise deliver the request to
+// a random node. verb must be one of the unexported verb constants above.
+func OwnerSubject(volumeID, verb string) (string, error) {
+	if err := validateSubjectToken(volumeID); err != nil {
+		return "", err
+	}
+	return ownerSubjectPrefix + volumeID + "." + verb, nil
+}
+
+func SnapshotCreateOwnerSubject(volumeID string) (string, error) {
+	return OwnerSubject(volumeID, verbSnapshotCreate)
+}
+
+func SnapshotCopyOwnerSubject(volumeID string) (string, error) {
+	return OwnerSubject(volumeID, verbSnapshotCopy)
+}
+
+func ExpandVolumeOwnerSubject(volumeID string) (string, error) {
+	return OwnerSubject(volumeID, verbVolumeExpand)
+}
+
+func GetVolumeOwnerSubject(volumeID string) (string, error) {
+	return OwnerSubject(volumeID, verbVolumeDescribe)
+}
+
+// ParseOwnerSubject recovers the volumeID and verb OwnerSubject encoded into
+// subject. volumeID cannot itself contain '.' (validateSubjectToken enforces
+// this), so the first '.' after ownerSubjectPrefix is always the
+// volumeID/verb boundary, even though every verb also contains one.
+func ParseOwnerSubject(subject string) (volumeID, verb string, ok bool) {
+	rest, found := strings.CutPrefix(subject, ownerSubjectPrefix)
+	if !found {
+		return "", "", false
+	}
+	volumeID, verb, found = strings.Cut(rest, ".")
+	if !found || volumeID == "" || verb == "" {
+		return "", "", false
+	}
+	return volumeID, verb, true
 }
 
 func validateSubjectToken(value string) error {
@@ -118,8 +175,12 @@ func (p *NATSProvider) GetVolume(ctx context.Context, req GetVolumeRequest) (*Vo
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
+	ownerSubject, err := GetVolumeOwnerSubject(req.VolumeID)
+	if err != nil {
+		return nil, err
+	}
 	var response GetVolumeResponse
-	if err := p.request(ctx, GetVolumeSubject, req, &response); err != nil {
+	if err := p.requestOwnerFirst(ctx, ownerSubject, GetVolumeSubject, req, &response); err != nil {
 		return nil, err
 	}
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
@@ -135,8 +196,12 @@ func (p *NATSProvider) ExpandVolume(ctx context.Context, req ExpandVolumeRequest
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
+	ownerSubject, err := ExpandVolumeOwnerSubject(req.VolumeID)
+	if err != nil {
+		return nil, err
+	}
 	var response ExpandVolumeResponse
-	if err := p.request(ctx, ExpandVolumeSubject, req, &response); err != nil {
+	if err := p.requestOwnerFirst(ctx, ownerSubject, ExpandVolumeSubject, req, &response); err != nil {
 		return nil, err
 	}
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
@@ -167,6 +232,10 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	if err != nil {
 		return nil, err
 	}
+	ownerSubject, err := SnapshotCreateOwnerSubject(req.VolumeID)
+	if err != nil {
+		return nil, err
+	}
 	completionSubject, err := SnapshotCompletionSubject(req.SnapshotID)
 	if err != nil {
 		return nil, err
@@ -185,7 +254,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	}
 
 	var accepted CreateSnapshotResponse
-	if err := p.request(ctx, requestSubject, req, &accepted); err != nil {
+	if err := p.requestOwnerFirst(ctx, ownerSubject, requestSubject, req, &accepted); err != nil {
 		return nil, err
 	}
 	if err := responseError(accepted.SchemaVersion, accepted.Error); err != nil {
@@ -240,8 +309,12 @@ func (p *NATSProvider) CopySnapshot(ctx context.Context, req CopySnapshotRequest
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
+	ownerSubject, err := SnapshotCopyOwnerSubject(req.VolumeID)
+	if err != nil {
+		return nil, err
+	}
 	var response CopySnapshotResponse
-	if err := p.request(ctx, CopySnapshotSubject, req, &response); err != nil {
+	if err := p.requestOwnerFirst(ctx, ownerSubject, CopySnapshotSubject, req, &response); err != nil {
 		return nil, err
 	}
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
@@ -307,6 +380,17 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 		return fmt.Errorf("decode %s response: %w", subject, err)
 	}
 	return nil
+}
+
+// requestOwnerFirst tries ownerSubject, falling back to queueSubject only on
+// nats.ErrNoResponders, which means nothing is mounted. A timeout must never
+// fall back: a still-running owner would have the operation run twice.
+func (p *NATSProvider) requestOwnerFirst(ctx context.Context, ownerSubject, queueSubject string, input, output any) error {
+	err := p.request(ctx, ownerSubject, input, output)
+	if err == nil || !errors.Is(err, nats.ErrNoResponders) {
+		return err
+	}
+	return p.request(ctx, queueSubject, input, output)
 }
 
 func responseError(version uint16, providerErr *ProviderError) error {

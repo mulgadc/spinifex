@@ -923,6 +923,55 @@ func TestProviderHandlers_CreateVolume_SeedValidation(t *testing.T) {
 	})
 }
 
+// TestProviderHandlers_OwnerSubscription_UnmountRemovesItAndFallsBack proves
+// the owner subscription's lifecycle: live while a volume is mounted (a raw
+// request to its owner subject gets a responder), gone once unmountVolume
+// runs (the same request comes back nats.ErrNoResponders), at which point
+// NATSProvider.GetVolume falls back to the queue-group subject and takes the
+// fresh-engine path (the fast-failing backend then fails it, proving this
+// really happened rather than silently reusing the removed VB).
+func TestProviderHandlers_OwnerSubscription_UnmountRemovesItAndFallsBack(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-ownerunmount001"
+	vb := createTestVBWithState(t, volumeName)
+
+	ownerSubs := subscribeOwnerSubjects(context.Background(), cfg, nc, volumeName)
+	require.Len(t, ownerSubs, 4, "all four owner verbs must subscribe cleanly")
+	require.NoError(t, nc.Flush())
+
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name: volumeName, VB: vb, OwnerSubs: ownerSubs,
+		// A PID that (almost certainly) does not exist: KillProcess must fail
+		// gracefully during unmountVolume rather than block or panic.
+		PID: 999999,
+	})
+
+	ownerSubject, err := ebsprovider.GetVolumeOwnerSubject(volumeName)
+	require.NoError(t, err)
+	getVolumeBody := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion, "volume_id": volumeName,
+	})
+
+	_, err = nc.Request(ownerSubject, getVolumeBody, 2*time.Second)
+	require.NoError(t, err, "owner subject must have a live responder while the volume is mounted")
+
+	_, err = unmountVolume(context.Background(), cfg, volumeName)
+	require.NoError(t, err)
+
+	_, err = nc.Request(ownerSubject, getVolumeBody, 2*time.Second)
+	require.ErrorIs(t, err, nats.ErrNoResponders, "unmount must drop the owner subscription")
+
+	cfg.S3Host = fastFailingS3Host(t)
+	provider := ebsprovider.NewNATSProvider(nc, 5*time.Second)
+	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeName,
+	})
+	require.Error(t, err, "with no owner and a broken S3 backend, the queue fallback's fresh engine must fail")
+}
+
 // The EFI variable store depends on CreateVolume writing a seed, so the daemon
 // must advertise that capability; a caller branching on it would otherwise fall
 // back to building its own engine.

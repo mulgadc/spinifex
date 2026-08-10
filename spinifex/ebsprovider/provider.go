@@ -50,6 +50,12 @@ type Capabilities struct {
 	SparseExtentReporting   bool `json:"sparse_extent_reporting"`
 	CrashConsistentSnapshot bool `json:"crash_consistent_snapshot"`
 	VolumeSeeding           bool `json:"volume_seeding"`
+
+	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
+	// and GetVolume are answered directly by a volume's mounting node over
+	// its OwnerSubject when one exists, instead of always fanning out to the
+	// spinifex-workers queue group.
+	OwnerRouting bool `json:"owner_routing"`
 }
 
 type GetCapabilitiesRequest struct{ Versioned }

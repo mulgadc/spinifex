@@ -184,6 +184,9 @@ func handleProviderCapabilities(msg *nats.Msg) {
 			// extents are sparse.
 			OnlineExpansion:       false,
 			SparseExtentReporting: false,
+			// mountVolume registers ebs.provider.v1.owner.{volumeID}.* for
+			// every mounted volume (see subscribeOwnerSubjects).
+			OwnerRouting: true,
 		},
 	})
 }
@@ -516,6 +519,7 @@ func stopMountedVolumeForDelete(cfg *Config, volumeID string) {
 			slog.Error("ebs.provider.volume.delete: failed to unsubscribe config topic", "volume", volumeID, "err", err)
 		}
 	}
+	unsubscribeOwnerSubjects(volumeID, matched.OwnerSubs)
 	if matched.VB != nil {
 		matched.VB.StopChunkUploader()
 		matched.VB.StopWALSyncer()
@@ -746,7 +750,15 @@ func handleCreateSnapshot(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 		return
 	}
 
+	// handleCreateSnapshot serves both the wildcard queue subject (volume ID
+	// is the whole suffix) and the owner subject (volume ID is the first
+	// token); try the queue shape first since it is the common case.
 	subjectVolumeID := strings.TrimPrefix(msg.Subject, ebsprovider.SnapshotCreateSubjectPrefix)
+	if subjectVolumeID == msg.Subject {
+		if ownerVolumeID, _, ok := ebsprovider.ParseOwnerSubject(msg.Subject); ok {
+			subjectVolumeID = ownerVolumeID
+		}
+	}
 	if !validVolumeName(subjectVolumeID) || subjectVolumeID != req.VolumeID {
 		slog.Error("ebs.provider.snapshot.create: subject/volume mismatch", "subject", msg.Subject, "volume", req.VolumeID)
 		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume id %q in subject does not match request volume id %q", subjectVolumeID, req.VolumeID)})
@@ -881,6 +893,58 @@ func snapshotVolumeEngine(cfg *Config, volumeID, snapshotID string) (*ebsprovide
 		State:          ebsprovider.SnapshotStateCompleted,
 		Handle:         snapshotHandle(snapshotID),
 	}, nil
+}
+
+// ownerVerbHandlers pairs each owner-routable verb's subject builder with
+// the exact handler its queue subject already dispatches to, so mounted vs.
+// unmounted routing differs only in which node answers, never in behavior.
+func ownerVerbHandlers(cfg *Config, nc *nats.Conn) []struct {
+	subjectFn func(string) (string, error)
+	handler   nats.MsgHandler
+} {
+	return []struct {
+		subjectFn func(string) (string, error)
+		handler   nats.MsgHandler
+	}{
+		{ebsprovider.SnapshotCreateOwnerSubject, func(msg *nats.Msg) { handleCreateSnapshot(cfg, nc, msg) }},
+		{ebsprovider.SnapshotCopyOwnerSubject, func(msg *nats.Msg) { handleCopySnapshot(cfg, msg) }},
+		{ebsprovider.ExpandVolumeOwnerSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
+		{ebsprovider.GetVolumeOwnerSubject, func(msg *nats.Msg) { handleGetVolume(cfg, msg) }},
+	}
+}
+
+// subscribeOwnerSubjects registers volumeName's owner subjects as plain,
+// non-queue subscriptions, so a request for a mounted volume reaches this node
+// rather than a random worker. A failure is logged and skipped, as ConfigSub is.
+func subscribeOwnerSubjects(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string) []*nats.Subscription {
+	var subs []*nats.Subscription
+	for _, o := range ownerVerbHandlers(cfg, nc) {
+		subject, err := o.subjectFn(volumeName)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to build owner subject", "volume", volumeName, "err", err)
+			continue
+		}
+		sub, err := nc.Subscribe(subject, o.handler)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to subscribe to owner subject", "subject", subject, "volume", volumeName, "err", err)
+			continue
+		}
+		subs = append(subs, sub)
+	}
+	return subs
+}
+
+// unsubscribeOwnerSubjects tears down subs, logging (not failing) any
+// individual Unsubscribe error, matching ConfigSub's teardown handling.
+func unsubscribeOwnerSubjects(volumeName string, subs []*nats.Subscription) {
+	for _, sub := range subs {
+		if sub == nil {
+			continue
+		}
+		if err := sub.Unsubscribe(); err != nil {
+			slog.Error("Failed to unsubscribe owner subject", "volume", volumeName, "err", err)
+		}
+	}
 }
 
 // mountVolume is launchService's ebs.mount body, extracted so the legacy
@@ -1130,6 +1194,11 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		slog.ErrorContext(ctx, "Failed to subscribe to volume config topic", "volume", volumeName, "err", err)
 	}
 
+	// Owner-routed subscriptions let snapshot/expand/describe requests reach
+	// this node directly while it holds the live engine, instead of the
+	// spinifex-workers queue group delivering them to a random node.
+	ownerSubs := subscribeOwnerSubjects(ctx, cfg, nc, volumeName)
+
 	cfg.mu.Lock()
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 		Name:      volumeName,
@@ -1139,6 +1208,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		PID:       pid,
 		VB:        vb,
 		ConfigSub: configSub,
+		OwnerSubs: ownerSubs,
 	})
 	cfg.mu.Unlock()
 
@@ -1187,6 +1257,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 				slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", volumeName, "err", err)
 			}
 		}
+		unsubscribeOwnerSubjects(matched.Name, matched.OwnerSubs)
 
 		// Stop background goroutines on the state-tracking VB.
 		// Actual I/O is in the nbdkit plugin process; sealVolumeVB below

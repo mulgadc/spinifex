@@ -137,6 +137,14 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 			slog.ErrorContext(ctx, "CreateVolume: snapshot not found", "snapshotId", snapshotID, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
+		// Not-found rather than access-denied so the endpoint does not confirm
+		// another account's snapshot IDs. An unset owner_id (pre-ownership
+		// snapshot) fails closed.
+		if snapMeta.OwnerID == "" || snapMeta.OwnerID != accountID {
+			slog.WarnContext(ctx, "CreateVolume: account does not own snapshot",
+				"snapshotId", snapshotID, "accountID", accountID, "ownerID", snapMeta.OwnerID)
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		}
 		sourceVolumeName = snapMeta.VolumeID
 		snapshotSizeGiB = snapMeta.VolumeSize
 	}
@@ -1620,6 +1628,7 @@ func (s *VolumeServiceImpl) deleteS3Prefix(ctx context.Context, prefix string) e
 type snapshotMetadata struct {
 	VolumeID   string `json:"volume_id"`
 	VolumeSize int64  `json:"volume_size"`
+	OwnerID    string `json:"owner_id"`
 }
 
 // getSnapshotMetadata reads snapshot metadata.json from S3 for CreateVolume.

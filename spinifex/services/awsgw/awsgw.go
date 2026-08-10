@@ -335,9 +335,20 @@ func launchService(config *config.ClusterConfig) error {
 	// returning ModelNotReadyException at once. Unset (the default) keeps the
 	// fail-fast contract: cold start is minutes, which no client retry spans.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
+	bedrockEndpointSvc := handlers_bedrock.NewNATSEndpointService(natsConn)
 	bedrockEndpointResolver := handlers_bedrock.NewDynamicEndpointResolver(
-		handlers_bedrock.NewNATSEndpointService(natsConn), bedrockEndpoints, 0,
+		bedrockEndpointSvc, bedrockEndpoints, 0,
 		handlers_bedrock.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
+
+	// Bedrock provisioned throughput: commitment metadata lives in the
+	// bedrock-provisioned KV bucket (gateway control plane), while the pinned
+	// endpoint it commits to is requested through the same NATS endpoint
+	// service the dynamic resolver above uses, via an adapter satisfying
+	// gateway_bedrock's narrow EndpointProvisioner (see provisioned_adapter.go
+	// for why the adapter, not handlers_bedrock.EndpointService, is what
+	// gateway_bedrock depends on).
+	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, len(config.Nodes), nodeConfig.Region,
+		handlers_bedrock.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
@@ -393,6 +404,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockRecorder:         bedrockRecorder,
 		BedrockAccess:           bedrockAccess,
 		BedrockAccessAdmin:      bedrockAccess,
+		BedrockProvisioned:      bedrockProvisioned,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

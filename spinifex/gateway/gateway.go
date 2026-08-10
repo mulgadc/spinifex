@@ -147,6 +147,10 @@ type GatewayConfig struct {
 	// the spinifex admin actions. Nil disables grant administration, which is
 	// how a gateway with an injected read-only resolver behaves.
 	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
+	// BedrockProvisioned persists provisioned-throughput commitments and
+	// drives the pinned endpoint underneath each one. Nil falls back to an
+	// unconfigured store, under which reads/writes error rather than panic.
+	BedrockProvisioned *gateway_bedrock.ProvisionedStore
 }
 
 var supportedServices = map[string]bool{

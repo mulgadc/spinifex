@@ -372,7 +372,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			require.NotNil(t, pub)
 			assert.Equal(t, "vol-pub-ok", pub.VolumeID)
 			assert.Equal(t, "node-1", pub.NodeID)
-			assert.NotEmpty(t, pub.NBDURI)
+			assertNBDURI(t, pub.NBDURI)
 		})
 
 		t.Run("idempotent republish to the same node", func(t *testing.T) {

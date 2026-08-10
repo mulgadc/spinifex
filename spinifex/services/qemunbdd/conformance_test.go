@@ -52,6 +52,14 @@ func TestQEMUNBDProviderConformance(t *testing.T) {
 	conformance.RunSuite(t, newQEMUProvider)
 }
 
+// TestQEMUNBDExternalNBDClient checks the half of the boundary our own Go
+// client can never check: whether the export we publish is usable by an NBD
+// client that knows nothing about this codebase.
+func TestQEMUNBDExternalNBDClient(t *testing.T) {
+	requireQEMUTools(t)
+	conformance.RunNBDClientSuite(t, newQEMUProvider)
+}
+
 // TestQEMUNBDProviderNATSConformance is the swappability claim itself: the
 // same wire contract, the same neutral server, a provider with no viperblock
 // in it, and a client that cannot tell the difference.

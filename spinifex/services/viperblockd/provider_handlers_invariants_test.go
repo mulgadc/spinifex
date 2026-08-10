@@ -49,14 +49,24 @@ func fastFailingS3Host(t *testing.T) string {
 	return srv.URL
 }
 
-// chunkUploaderFrames counts live stack frames belonging to viperblock's chunk
-// uploader. A running uploader contributes a fixed number of them, so a
-// before/after comparison detects one that was never stopped.
-func chunkUploaderFrames(t *testing.T) int {
+// stackFrameCount counts live stack frames naming starter. A running
+// background goroutine contributes a fixed number of them, so a before/after
+// comparison detects one that was never stopped.
+func stackFrameCount(t *testing.T, starter string) int {
 	t.Helper()
 	buf := make([]byte, 1<<20)
 	n := runtime.Stack(buf, true)
-	return strings.Count(string(buf[:n]), "viperblock.(*VB).StartChunkUploader")
+	return strings.Count(string(buf[:n]), starter)
+}
+
+func chunkUploaderFrames(t *testing.T) int {
+	t.Helper()
+	return stackFrameCount(t, "viperblock.(*VB).StartChunkUploader")
+}
+
+func walSyncerFrames(t *testing.T) int {
+	t.Helper()
+	return stackFrameCount(t, "viperblock.(*VB).StartWALSyncer")
 }
 
 // TestOpenVolumeVB_FailedOpenLeavesNoChunkUploader pins the release half of
@@ -75,6 +85,27 @@ func TestOpenVolumeVB_FailedOpenLeavesNoChunkUploader(t *testing.T) {
 
 	assert.Equal(t, before, chunkUploaderFrames(t),
 		"a failed open must stop the uploader viperblock.New started; the caller gets no handle to stop it with")
+}
+
+// TestConstructMountedVB_FailedOpenLeavesNoBackgroundGoroutines is the same
+// invariant for the mount/recovery constructor: it stops the uploader up
+// front, so the syncer viperblock.New started is what a late failure abandons.
+func TestConstructMountedVB_FailedOpenLeavesNoBackgroundGoroutines(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.S3Host = fastFailingS3Host(t)
+
+	beforeUploaders := chunkUploaderFrames(t)
+	beforeSyncers := walSyncerFrames(t)
+
+	vb, _, err := constructMountedVB(context.Background(), cfg, "vol-invariantcvbleak")
+	require.Error(t, err, "the fast-failing backend must fail construction, or this test proves nothing")
+	require.Nil(t, vb)
+
+	assert.Equal(t, beforeUploaders, chunkUploaderFrames(t),
+		"a failed construction must leave no chunk uploader running")
+	assert.Equal(t, beforeSyncers, walSyncerFrames(t),
+		"a failed construction must stop the WAL syncer viperblock.New started; the caller gets no handle to stop it with")
 }
 
 // TestProviderHandlers_SnapshotPath_MountedVolumeDoesNotOpenEngine drives

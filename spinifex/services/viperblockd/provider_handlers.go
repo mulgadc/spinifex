@@ -947,24 +947,10 @@ func unsubscribeOwnerSubjects(volumeName string, subs []*nats.Subscription) {
 	}
 }
 
-// mountVolume is launchService's ebs.mount body, extracted so the legacy
-// ebs.mount handler and the ebs.provider.v1.*.mount handler share one nbdkit
-// mount path instead of risking two divergent implementations of it. It
-// starts (or fails to start) nbdkit for volumeName and registers the result
-// in cfg.MountedVolumes; it does not publish a response, that stays with the
-// caller.
-func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string) (types.EBSMountResponse, error) {
-	// Clear any receipt left by a previous mount before anything else can
-	// return early, so a stale receipt can never survive into this mount.
-	clearStaleSealReceipt(cfg.BaseDir, volumeName)
-
-	_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
-		trace.WithAttributes(attribute.String("volume.id", volumeName)))
-
-	var ebsResponse types.EBSMountResponse
-	ebsResponse.Mounted = false
-	defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
-
+// constructMountedVB builds and opens the daemon-side viperblock engine: cache
+// sizing (0 for -efi), StopChunkUploader (nbdkit owns the data path),
+// Backend.Init, LoadState. Shared by mountVolume and startup recovery.
+func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, int, error) {
 	s3cfg := vbs3.S3Config{
 		VolumeName: volumeName,
 		Bucket:     cfg.Bucket,
@@ -993,12 +979,21 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	}
 
 	// Checked before the cache sizing below: viperblock.New returns a nil VB
-	// alongside its error, so calling SetCacheSize first panics the handler.
+	// alongside its error, so calling SetCacheSize first panics the caller.
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
-		ebsResponse.Error = fmt.Sprintf("Failed to connect to Viperblock store: %v", err)
-		return ebsResponse, fmt.Errorf("connect to viperblock store: %w", err)
+		return nil, 0, fmt.Errorf("connect to viperblock store: %w", err)
 	}
+
+	// New starts the chunk uploader and WAL syncer, so a failure below must
+	// release them: the caller gets no handle to stop them with.
+	opened := false
+	defer func() {
+		if !opened {
+			vb.StopChunkUploader()
+			vb.StopWALSyncer()
+		}
+	}()
 
 	// Enable 128MB cache for main volumes, disable for efi (small, rarely read)
 	// This cacheSize is passed to nbdkit plugin (separate viperblock instance)
@@ -1026,17 +1021,38 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		vb.SetDebug(true)
 	}
 
-	// Initialize the backend
-	err = vb.Backend.Init()
-
-	if err != nil {
-		ebsResponse.Error = err.Error()
-		return ebsResponse, err
+	if err := vb.Backend.Init(); err != nil {
+		return nil, 0, err
 	}
 
 	// Retry on transient backend errors so daemon recovery doesn't tip a healthy volume into cleanup.
-	err = loadStateWithRetry(vb, volumeName)
+	if err := loadStateWithRetry(vb, volumeName); err != nil {
+		return nil, 0, err
+	}
 
+	opened = true
+	return vb, nbdCacheSize, nil
+}
+
+// mountVolume is launchService's ebs.mount body, extracted so the legacy
+// ebs.mount handler and the ebs.provider.v1.*.mount handler share one nbdkit
+// mount path instead of risking two divergent implementations of it. It
+// starts (or fails to start) nbdkit for volumeName and registers the result
+// in cfg.MountedVolumes; it does not publish a response, that stays with the
+// caller.
+func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string) (types.EBSMountResponse, error) {
+	// Clear any receipt left by a previous mount before anything else can
+	// return early, so a stale receipt can never survive into this mount.
+	clearStaleSealReceipt(cfg.BaseDir, volumeName)
+
+	_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
+		trace.WithAttributes(attribute.String("volume.id", volumeName)))
+
+	var ebsResponse types.EBSMountResponse
+	ebsResponse.Mounted = false
+	defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
+
+	vb, nbdCacheSize, err := cfg.buildVB(ctx, volumeName)
 	if err != nil {
 		ebsResponse.Error = err.Error()
 		return ebsResponse, err

@@ -1,6 +1,7 @@
 package viperblockd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -143,6 +144,11 @@ type Config struct {
 	// test on where the dice land relative to the caller's deadline.
 	sealVolume func(volumeName string) error
 
+	// constructVB overrides constructMountedVB. Nil means the real
+	// construction. Tests inject a fake (e.g. file-backed) VB here to avoid
+	// standing up a real S3 backend.
+	constructVB func(ctx context.Context, volumeName string) (*viperblock.VB, int, error)
+
 	mu sync.Mutex
 }
 
@@ -153,6 +159,15 @@ func (cfg *Config) seal(volumeName string) error {
 		return cfg.sealVolume(volumeName)
 	}
 	return sealVolumeVB(cfg, volumeName)
+}
+
+// buildVB constructs volumeName's daemon-side VB, honouring a test's
+// injected constructVB if there is one.
+func (cfg *Config) buildVB(ctx context.Context, volumeName string) (*viperblock.VB, int, error) {
+	if cfg.constructVB != nil {
+		return cfg.constructVB(ctx, volumeName)
+	}
+	return constructMountedVB(ctx, cfg, volumeName)
 }
 
 type Service struct {
@@ -504,6 +519,11 @@ func launchService(cfg *Config) (err error) {
 	}
 
 	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled)
+
+	// Rebuild MountedVolumes from any nbdkit processes that survived a
+	// restart before the daemon accepts a single request, so a handler can
+	// never race recovery and open a second engine against a live volume.
+	recoverMountedVolumes(context.Background(), cfg, nc, "/proc", utils.RuntimeDir())
 
 	if cfg.NodeName != "" {
 		slog.Info("Waiting for EBS events", "node", cfg.NodeName)

@@ -22,6 +22,11 @@ import (
 // this stays at qemu-nbd's own default rather than inviting concurrent writers through the same socket.
 const nbdSharedClients = 1
 
+// maxUnixSocketPath is the kernel's sun_path limit for an AF_UNIX address.
+// A base directory deep enough to push a socket past it must fail with that
+// reason rather than with qemu-nbd's raw exit status.
+const maxUnixSocketPath = 108
+
 // capabilities is fixed: this provider offers real CoW clones and crash
 // consistent snapshots but, unlike viperblockd, cannot expand a published
 // volume or report sparse extents.
@@ -146,8 +151,11 @@ type qemuImgInfo struct {
 	BackingFilename string `json:"backing-filename"`
 }
 
+// imgInfo reads an image's metadata. --force-share is required because a
+// published volume is held under qemu-nbd's write lock, and describing a
+// volume must not depend on whether it is currently attached.
 func (p *Provider) imgInfo(ctx context.Context, path string) (*qemuImgInfo, error) {
-	out, err := p.run.Run(ctx, "qemu-img", "info", "--output=json", path)
+	out, err := p.run.Run(ctx, "qemu-img", "info", "--output=json", "--force-share", path)
 	if err != nil {
 		return nil, fmt.Errorf("inspect %s: %w", path, err)
 	}
@@ -626,6 +634,10 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	}
 
 	sockPath := p.socketPath(req.VolumeID)
+	if len(sockPath) >= maxUnixSocketPath {
+		return nil, fmt.Errorf("%w: socket path %s is %d bytes, over the %d-byte kernel limit",
+			ebsprovider.ErrInvalidArgument, sockPath, len(sockPath), maxUnixSocketPath)
+	}
 	pidPath := p.pidFilePath(req.VolumeID)
 	_ = os.Remove(sockPath)
 	_ = os.Remove(pidPath)

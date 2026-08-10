@@ -145,7 +145,7 @@ func TestCreateVolume_FromSnapshotArgv(t *testing.T) {
 	volPath := p.volumePath("vol-clone")
 	calls := fr.callsSnapshot()
 	require.Len(t, calls, 2)
-	assert.Equal(t, []string{"info", "--output=json", snapPath}, calls[0].args)
+	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[0].args)
 	assert.Equal(t, []string{"create", "-f", "qcow2", "-b", snapPath, "-F", "qcow2", volPath, "1073741824"}, calls[1].args)
 }
 
@@ -180,7 +180,7 @@ func TestCreateVolume_FromVolumeArgvAndResize(t *testing.T) {
 	calls := fr.callsSnapshot()
 	require.Len(t, calls, 3)
 	assert.Equal(t, []string{"convert", "-O", "qcow2", srcPath, dstPath}, calls[0].args)
-	assert.Equal(t, []string{"info", "--output=json", dstPath}, calls[1].args)
+	assert.Equal(t, []string{"info", "--output=json", "--force-share", dstPath}, calls[1].args)
 	assert.Equal(t, []string{"resize", dstPath, "1073741824"}, calls[2].args)
 }
 
@@ -420,7 +420,7 @@ func TestCreateSnapshot_Argv(t *testing.T) {
 	snapPath := p.snapshotPath("snap-1")
 	require.Len(t, calls, 2)
 	assert.Equal(t, []string{"convert", "-O", "qcow2", volPath, snapPath}, calls[0].args)
-	assert.Equal(t, []string{"info", "--output=json", snapPath}, calls[1].args)
+	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[1].args)
 }
 
 func TestCreateSnapshot_NotFoundSourceVolume(t *testing.T) {

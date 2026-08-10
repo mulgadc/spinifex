@@ -48,7 +48,7 @@ func TestRouter_ConverseStream_ProvisionedThroughputARN_ResolvesPinnedEndpointFo
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
 
 	src, err := rt.ConverseStream(context.Background(), ptCallerAccount, arn, converseStreamInput())
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestRouter_ConverseStream_BareModelID_StillUsesGlobalShorthand(t *testing.T
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
 
 	src, err := rt.ConverseStream(context.Background(), ptCallerAccount, selfHostTestModel, converseStreamInput())
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestRouter_ConverseStream_ProvisionedThroughputARN_UnknownCommitment(t *tes
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	arn := FormatProvisionedModelARN(ptTestRegion, ptCallerAccount, "does-not-exist")
 
-	rt := NewRouter(nil, &spyEndpointResolver{}, nil, grantAll{}, store)
+	rt := NewRouter(nil, &spyEndpointResolver{}, nil, grantAll{}, store, nil)
 	_, err := rt.ConverseStream(context.Background(), ptCallerAccount, arn, converseStreamInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
@@ -104,7 +104,7 @@ func TestRouter_ConverseStream_ProvisionedThroughputARN_ForeignAccount(t *testin
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: "http://unused:8000"}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
 
 	_, err := rt.ConverseStream(context.Background(), ptOtherCaller, arn, converseStreamInput())
 	require.Error(t, err)

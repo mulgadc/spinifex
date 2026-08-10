@@ -95,13 +95,13 @@ type converseStreamSource interface {
 
 // ConverseStream is the bedrock-runtime ConverseStream entry point used by
 // the gateway route table. Unlike the JSON-dispatch handlers it owns w
-// directly: a pre-stream failure (unknown model, ungranted model, unresolved
-// credential, upstream connect error) returns an awserrors code for the normal
-// ErrorHandler envelope. Once the first frame is written it always returns
-// nil — any later failure is an in-band exception event, since the HTTP
-// status can no longer change. provisioned may be nil, disabling PT ARN
-// acceptance (any PT ARN then reads as an unknown modelId).
-func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore) error {
+// directly: a pre-stream failure (unknown/ungranted model, unresolved
+// credential, upstream connect error, unresolvable GuardrailConfig) returns
+// an awserrors code for the normal ErrorHandler envelope; once the first
+// frame is written it always returns nil, surfacing later failures as an
+// in-band exception event instead. provisioned and guardrails may be nil,
+// which fails closed on a PT ARN or GuardrailConfig respectively.
+func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
@@ -121,7 +121,40 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
 	entry, _ := lookupCatalogEntry(recordModelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
 
-	src, err := NewRouter(resolver, endpointResolver, recorder, access, provisioned).ConverseStream(ctx, accountID, modelID, input)
+	inputJSON, jerr := json.Marshal(input)
+	if jerr != nil {
+		slog.Error("converse-stream: failed to marshal input for recording", "model", modelID, "err", jerr)
+	}
+	rc := streamRecordCtx{
+		recorder:  recorder,
+		requestID: requestID,
+		accountID: accountID,
+		backend:   entry.Provider,
+		operation: OperationConverseStream,
+		start:     start,
+		inputText: string(inputJSON),
+	}
+
+	// Guardrail INPUT check happens before the router ever resolves a
+	// backend: a request naming a guardrail that blocks the input must never
+	// open a connection to the model, self-host or Anthropic alike.
+	gc := input.GuardrailConfig
+	var inputAssessments []*bedrockruntime.GuardrailAssessment
+	traceEnabled := gc != nil && aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled
+	if gc != nil {
+		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+		blocked, message, _, assessments, err := enforceGuardrail(ctx, guardrails, accountID, ident, version,
+			bedrockruntime.GuardrailContentSourceInput, streamGuardrailTexts(input))
+		if err != nil {
+			return err
+		}
+		inputAssessments = assessments
+		if blocked {
+			return writeBlockedConverseStream(ctx, w, modelID, rc, message, traceEnabled, ident, assessments)
+		}
+	}
+
+	src, err := NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}
@@ -131,24 +164,20 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}()
 
+	// OUTPUT enforcement is buffered/SYNC: guardrailStreamSource holds every
+	// delta until its block closes rather than letting pumpConverseStream
+	// forward unassessed model text.
+	if gc != nil {
+		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+		src = newGuardrailStreamSource(src, guardrails, accountID, ident, version, traceEnabled, inputAssessments)
+	}
+
 	fw, err := newFrameWriter(w)
 	if err != nil {
 		return err
 	}
 
-	inputJSON, jerr := json.Marshal(input)
-	if jerr != nil {
-		slog.Error("converse-stream: failed to marshal input for recording", "model", modelID, "err", jerr)
-	}
-	pumpConverseStream(ctx, fw, src, modelID, streamRecordCtx{
-		recorder:  recorder,
-		requestID: requestID,
-		accountID: accountID,
-		backend:   entry.Provider,
-		operation: OperationConverseStream,
-		start:     start,
-		inputText: string(inputJSON),
-	})
+	pumpConverseStream(ctx, fw, src, modelID, rc)
 	return nil
 }
 

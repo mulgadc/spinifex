@@ -23,6 +23,11 @@ const vllmChatCompletionsPath = "/v1/chat/completions"
 // A later task backs this with the daemon's endpoint registry.
 type EndpointResolver interface {
 	Endpoint(ctx context.Context, modelID string) (baseURL string, ok bool, err error)
+	// EndpointForAccount resolves modelID's base URL scoped to accountID
+	// rather than the GlobalAccountID shorthand Endpoint uses. It is the
+	// provisioned-throughput path: a PT ARN's pinned endpoint is keyed to
+	// the commitment's own account, not the shared platform account.
+	EndpointForAccount(ctx context.Context, accountID, modelID string) (baseURL string, ok bool, err error)
 }
 
 // staticEndpointResolver is a fixed modelID->baseURL map, for tests and
@@ -40,6 +45,12 @@ func NewStaticEndpointResolver(endpoints map[string]string) EndpointResolver {
 func (s staticEndpointResolver) Endpoint(_ context.Context, modelID string) (string, bool, error) {
 	baseURL, ok := s[modelID]
 	return baseURL, ok, nil
+}
+
+// EndpointForAccount ignores accountID: a fixed config-driven map has no
+// per-account entries to scope against, so it answers exactly like Endpoint.
+func (s staticEndpointResolver) EndpointForAccount(ctx context.Context, _, modelID string) (string, bool, error) {
+	return s.Endpoint(ctx, modelID)
 }
 
 type vllmMessage struct {
@@ -110,6 +121,10 @@ func mapVLLMFinishReason(reason string) string {
 type vllmProvider struct {
 	endpointResolver EndpointResolver
 	httpClient       *http.Client
+	// account scopes endpoint resolution to a provisioned-throughput
+	// commitment's own account instead of the GlobalAccountID shorthand.
+	// Empty (newVLLMProvider's default) keeps the shorthand.
+	account string
 }
 
 var _ Provider = (*vllmProvider)(nil)
@@ -121,11 +136,31 @@ func newVLLMProvider(endpointResolver EndpointResolver) *vllmProvider {
 	}
 }
 
+// newVLLMProviderForAccount returns a vllmProvider that resolves a modelID's
+// endpoint scoped to account — a provisioned-throughput ARN's pinned
+// endpoint — instead of the GlobalAccountID shorthand newVLLMProvider uses.
+func newVLLMProviderForAccount(endpointResolver EndpointResolver, account string) *vllmProvider {
+	return &vllmProvider{
+		endpointResolver: endpointResolver,
+		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		account:          account,
+	}
+}
+
+// resolveEndpoint resolves modelID's base URL: scoped to p.account when set
+// (a PT ARN's pinned endpoint), or the GlobalAccountID shorthand otherwise.
+func (p *vllmProvider) resolveEndpoint(ctx context.Context, modelID string) (string, bool, error) {
+	if p.account != "" {
+		return p.endpointResolver.EndpointForAccount(ctx, p.account, modelID)
+	}
+	return p.endpointResolver.Endpoint(ctx, modelID)
+}
+
 // Converse resolves modelID's endpoint, translates input to an OpenAI
 // chat-completions request, calls the endpoint, and translates the response
 // back to a Bedrock ConverseOutput.
 func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
+	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("vllm: endpoint resolution failed", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
@@ -250,7 +285,7 @@ var _ ConverseStreamProvider = (*vllmProvider)(nil)
 // the trailing usage chunk), and returns a converseStreamSource that
 // reframes the SSE into the normalized Bedrock ConverseStream taxonomy.
 func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
-	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
+	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("vllm stream: endpoint resolution failed", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)

@@ -28,6 +28,15 @@ type fakeEndpointService struct {
 	describeCalls atomic.Int64
 	ensureCalls   atomic.Int64
 
+	// lastDescribeAccount/lastEnsureAccount/lastEnsurePinned capture the last
+	// call's account (the third EndpointService parameter, mirroring how
+	// ProvisionedEndpointAdapter threads it) and, for Ensure, whether it
+	// asked for a pinned endpoint — what the account-aware resolve path
+	// tests assert against.
+	lastDescribeAccount string
+	lastEnsureAccount   string
+	lastEnsurePinned    bool
+
 	// beforeDescribe runs inside Describe, so a test can hold every caller at
 	// the same point to exercise the concurrent path.
 	beforeDescribe func()
@@ -35,11 +44,14 @@ type fakeEndpointService struct {
 
 var _ EndpointService = (*fakeEndpointService)(nil)
 
-func (f *fakeEndpointService) Describe(_ context.Context, _ *DescribeEndpointInput, _ string) (*DescribeEndpointOutput, error) {
+func (f *fakeEndpointService) Describe(_ context.Context, _ *DescribeEndpointInput, accountID string) (*DescribeEndpointOutput, error) {
 	f.describeCalls.Add(1)
 	if f.beforeDescribe != nil {
 		f.beforeDescribe()
 	}
+	f.mu.Lock()
+	f.lastDescribeAccount = accountID
+	f.mu.Unlock()
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
@@ -50,8 +62,12 @@ func (f *fakeEndpointService) Describe(_ context.Context, _ *DescribeEndpointInp
 
 // Ensure records the request and moves the fake to STARTING, mirroring the
 // daemon: the reply is immediate and the launch outlives it.
-func (f *fakeEndpointService) Ensure(_ context.Context, in *EnsureEndpointInput, _ string) (*EnsureEndpointOutput, error) {
+func (f *fakeEndpointService) Ensure(_ context.Context, in *EnsureEndpointInput, accountID string) (*EnsureEndpointOutput, error) {
 	f.ensureCalls.Add(1)
+	f.mu.Lock()
+	f.lastEnsureAccount = accountID
+	f.lastEnsurePinned = in.Pinned
+	f.mu.Unlock()
 	if f.ensureErr != nil {
 		return nil, f.ensureErr
 	}
@@ -73,6 +89,24 @@ func (f *fakeEndpointService) setRecord(rec EndpointRecord) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record = rec
+}
+
+func (f *fakeEndpointService) describeAccount() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastDescribeAccount
+}
+
+func (f *fakeEndpointService) ensureAccount() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastEnsureAccount
+}
+
+func (f *fakeEndpointService) ensurePinned() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastEnsurePinned
 }
 
 func readyRecord(baseURL string) EndpointRecord {
@@ -343,4 +377,57 @@ func TestDynamicEndpointResolver_ColdStartWaitSkipsDraining(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Less(t, time.Since(started), time.Second)
+}
+
+const ptResolverAccount = "000000000001"
+
+// TestDynamicEndpointResolver_EndpointForAccount_KeysOnPassedAccount is the
+// account-aware path's whole point: a ready PT endpoint must be described
+// under the caller-supplied account, not the GlobalAccountID shorthand
+// Endpoint uses.
+func TestDynamicEndpointResolver_EndpointForAccount_KeysOnPassedAccount(t *testing.T) {
+	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:9000")}
+	r := NewDynamicEndpointResolver(svc, nil, time.Minute)
+
+	baseURL, ok, err := r.EndpointForAccount(context.Background(), ptResolverAccount, resolverTestModel)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "http://10.0.0.9:9000", baseURL)
+	assert.Equal(t, ptResolverAccount, svc.describeAccount())
+}
+
+// TestDynamicEndpointResolver_EndpointForAccount_AbsentEnsuresPinned covers
+// the launch path: an absent PT endpoint is (re-)requested under the passed
+// account with Pinned:true, mirroring how the commitment was created —
+// not the GlobalAccountID/Pinned:false shape Endpoint's own Ensure uses.
+func TestDynamicEndpointResolver_EndpointForAccount_AbsentEnsuresPinned(t *testing.T) {
+	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+	r := NewDynamicEndpointResolver(svc, nil, 0)
+
+	_, ok, err := r.EndpointForAccount(context.Background(), ptResolverAccount, resolverTestModel)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int64(1), svc.ensureCalls.Load())
+	assert.Equal(t, ptResolverAccount, svc.ensureAccount())
+	assert.True(t, svc.ensurePinned(), "a PT (re-)ensure must stay pinned")
+}
+
+// TestDynamicEndpointResolver_EndpointForAccount_DoesNotShareTheGlobalCache
+// guards against the cross-account leak the account-aware path exists to
+// avoid: caching its answer under Endpoint's shared, modelID-only cache would
+// serve a pinned endpoint's address to an unrelated bare-modelId caller.
+func TestDynamicEndpointResolver_EndpointForAccount_DoesNotShareTheGlobalCache(t *testing.T) {
+	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:9000")}
+	r := NewDynamicEndpointResolver(svc, nil, time.Minute)
+
+	_, ok, err := r.EndpointForAccount(context.Background(), ptResolverAccount, resolverTestModel)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "http://10.0.0.9:9000", baseURL)
+	assert.Equal(t, int64(2), svc.describeCalls.Load(),
+		"the account-scoped resolve must not have pre-populated Endpoint's cache")
 }

@@ -116,7 +116,10 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 
 	entry, _ := lookupCatalogEntry(modelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
 
-	src, err := NewRouter(resolver, endpointResolver, recorder, access).ConverseStream(ctx, accountID, modelID, input)
+	// ConverseStream does not accept a PT ARN (out of scope for this stage);
+	// a nil provisioned store means Router treats one as unresolvable, same
+	// as any other unknown modelId.
+	src, err := NewRouter(resolver, endpointResolver, recorder, access, nil).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}

@@ -113,7 +113,38 @@ func (r *DynamicEndpointResolver) Endpoint(ctx context.Context, modelID string) 
 // empty base URL means "not resolved", which is the only outcome a cold model
 // can have: the launch outlives this request by design.
 func (r *DynamicEndpointResolver) resolve(ctx context.Context, modelID string) (string, error) {
-	out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+	baseURL, err := r.describeAndEnsure(ctx, utils.GlobalAccountID, modelID, false)
+	if err != nil || baseURL == "" {
+		return baseURL, err
+	}
+	r.storeCache(modelID, baseURL)
+	return baseURL, nil
+}
+
+// EndpointForAccount resolves modelID's base URL scoped to accountID rather
+// than the GlobalAccountID shorthand Endpoint/resolve use — the
+// provisioned-throughput path, where the pinned endpoint is keyed to the
+// commitment's own account. It bypasses the static map and TTL cache
+// entirely: both are keyed by modelID alone for the shared shorthand, and
+// caching an account-scoped answer under that same key would leak a pinned
+// endpoint's address to (or steal a shared one from) an unrelated account.
+// A re-Ensure here keeps Pinned:true, mirroring how the commitment was
+// created.
+func (r *DynamicEndpointResolver) EndpointForAccount(ctx context.Context, accountID, modelID string) (string, bool, error) {
+	baseURL, err := r.describeAndEnsure(ctx, accountID, modelID, true)
+	if err != nil {
+		return "", false, err
+	}
+	return baseURL, baseURL != "", nil
+}
+
+// describeAndEnsure describes (accountID, modelID) and, when it is not
+// currently serving, requests one (pinned when pinned is true), then waits
+// up to coldStartWait for readiness. Shared by the GlobalAccountID shorthand
+// (resolve, which caches its own answer) and the account-aware PT path
+// (EndpointForAccount, which does not).
+func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, accountID, modelID string, pinned bool) (string, error) {
+	out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, accountID)
 	if err != nil {
 		return "", err
 	}
@@ -123,30 +154,31 @@ func (r *DynamicEndpointResolver) resolve(ctx context.Context, modelID string) (
 		if out.Endpoint.BaseURL == "" {
 			return "", nil
 		}
-		r.storeCache(modelID, out.Endpoint.BaseURL)
 		return out.Endpoint.BaseURL, nil
 	case StateStarting:
 		// A launch is already in flight, so asking for another changes nothing.
 		// Waiting on it is still worth doing when the deployment asked for that.
-		return r.awaitReady(ctx, modelID)
+		return r.awaitReady(ctx, accountID, modelID)
 	case StateDraining:
 		// A teardown is in flight and nothing will relaunch on its own, so
 		// there is no readiness to wait for.
 		return "", nil
 	}
 
-	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: modelID}, utils.GlobalAccountID); err != nil {
+	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: modelID, AccountID: accountID, Pinned: pinned}, accountID); err != nil {
 		return "", err
 	}
-	return r.awaitReady(ctx, modelID)
+	return r.awaitReady(ctx, accountID, modelID)
 }
 
 // awaitReady holds the caller for up to coldStartWait waiting on a launch,
 // and returns "" (not ready) the moment the budget runs out. At the default
 // of zero it does nothing at all, so the fail-fast path costs no extra
-// describe. It runs inside the singleflight, so a burst of concurrent callers
-// for one cold model shares a single wait rather than one describe loop each.
-func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, modelID string) (string, error) {
+// describe. For the GlobalAccountID shorthand it runs inside the
+// singleflight, so a burst of concurrent callers for one cold model shares a
+// single wait rather than one describe loop each; the account-aware path has
+// no such burst protection, matching describeAndEnsure's no-cache stance.
+func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, modelID string) (string, error) {
 	if r.coldStartWait <= 0 {
 		return "", nil
 	}
@@ -162,12 +194,11 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, modelID string
 			return "", nil
 		case <-ticker.C:
 		}
-		out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+		out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, accountID)
 		if err != nil {
 			return "", err
 		}
 		if out.Endpoint.State == StateReady && out.Endpoint.BaseURL != "" {
-			r.storeCache(modelID, out.Endpoint.BaseURL)
 			return out.Endpoint.BaseURL, nil
 		}
 		if time.Now().After(deadline) {

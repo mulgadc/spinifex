@@ -116,6 +116,10 @@ func mapLlamaStopReason(reason string) string {
 type llamaInvokeAdapter struct {
 	endpointResolver EndpointResolver
 	httpClient       *http.Client
+	// account scopes endpoint resolution to a provisioned-throughput
+	// commitment's own account instead of the GlobalAccountID shorthand.
+	// Empty (newLlamaInvokeAdapter's default) keeps the shorthand.
+	account string
 }
 
 var _ InvokeAdapter = (*llamaInvokeAdapter)(nil)
@@ -127,11 +131,32 @@ func newLlamaInvokeAdapter(endpointResolver EndpointResolver) *llamaInvokeAdapte
 	}
 }
 
+// newLlamaInvokeAdapterForAccount returns a llamaInvokeAdapter that resolves
+// a modelID's endpoint scoped to account — a provisioned-throughput ARN's
+// pinned endpoint — instead of the GlobalAccountID shorthand
+// newLlamaInvokeAdapter uses.
+func newLlamaInvokeAdapterForAccount(endpointResolver EndpointResolver, account string) *llamaInvokeAdapter {
+	return &llamaInvokeAdapter{
+		endpointResolver: endpointResolver,
+		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		account:          account,
+	}
+}
+
+// resolveEndpoint resolves modelID's base URL: scoped to a.account when set
+// (a PT ARN's pinned endpoint), or the GlobalAccountID shorthand otherwise.
+func (a *llamaInvokeAdapter) resolveEndpoint(ctx context.Context, modelID string) (string, bool, error) {
+	if a.account != "" {
+		return a.endpointResolver.EndpointForAccount(ctx, a.account, modelID)
+	}
+	return a.endpointResolver.Endpoint(ctx, modelID)
+}
+
 // InvokeModel resolves modelID's endpoint, translates the Bedrock-native
 // Llama request to an OpenAI completions request, calls the endpoint, and
 // translates the response back to the Bedrock Llama shape.
 func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, body []byte) ([]byte, string, error) {
-	baseURL, ok, err := a.endpointResolver.Endpoint(ctx, modelID)
+	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("llama invoke: endpoint resolution failed", "model", modelID, "err", err)
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
@@ -215,7 +240,7 @@ var _ InvokeStreamAdapter = (*llamaInvokeAdapter)(nil)
 // source that translates each chunk to the Bedrock-native Llama streaming
 // shape.
 func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte) (invokeStreamSource, error) {
-	baseURL, ok, err := a.endpointResolver.Endpoint(ctx, modelID)
+	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("llama invoke-stream: endpoint resolution failed", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)

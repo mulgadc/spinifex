@@ -187,7 +187,13 @@ func (e *postgresEngine) SetPassword(ctx context.Context, username, password str
 	if err := handlers_rds.EnginePostgres().ValidateUsernameNotReserved(username); err != nil {
 		return fmt.Errorf("refusing to set the password of a role the engine reserves: %w", err)
 	}
-	const sql = `\getenv master RDS_MASTER_USERNAME
+	// psql interpolates the password into the ALTER ROLE before the server sees
+	// it, and these three are what would write it to the log — the last on any
+	// failure at its own default. SUSET, so the parameter group cannot win.
+	const sql = `SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = 'panic';
+\getenv master RDS_MASTER_USERNAME
 \getenv password RDS_MASTER_PASSWORD
 ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 `

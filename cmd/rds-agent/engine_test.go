@@ -185,6 +185,40 @@ func TestPostgresEngine_SetPasswordKeepsTheSecretOutOfArgv(t *testing.T) {
 	}
 }
 
+// psql interpolates the password into the ALTER ROLE before the server sees it,
+// so a parameter group that turns statement logging on would write the rotated
+// password into a postmaster.log every snapshot then carries.
+func TestPostgresEngine_SetPasswordSilencesStatementLogging(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+
+	if err := engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("ran %d commands, want 1", len(runner.calls))
+	}
+	sql := runner.calls[0].Stdin
+	alter := strings.Index(sql, "ALTER ROLE")
+	if alter < 0 {
+		t.Fatalf("SQL %q does not alter the role", sql)
+	}
+	for _, guard := range []string{
+		"SET log_statement = 'none';",
+		"SET log_min_duration_statement = -1;",
+		"SET log_min_error_statement = 'panic';",
+	} {
+		at := strings.Index(sql, guard)
+		if at < 0 {
+			t.Errorf("SQL %q is missing %q", sql, guard)
+			continue
+		}
+		if at > alter {
+			t.Errorf("SQL %q sets %q only after the ALTER ROLE has already been logged", sql, guard)
+		}
+	}
+}
+
 // psql echoes the failing statement, which here would carry the new password
 // back into a reply the control plane records.
 func TestPostgresEngine_SetPasswordRedactsTheSecretFromAFailure(t *testing.T) {

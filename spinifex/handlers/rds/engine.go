@@ -112,8 +112,9 @@ func (e Engine) ValidateUsernameNotReserved(username string) error {
 	return nil
 }
 
-// Bounds only. The password is never inspected beyond this and never stored in
-// cleartext past the first bootstrap fetch.
+// Bounds and the printable-ASCII range AWS accepts. The password is never
+// inspected beyond this and never stored in cleartext past the first bootstrap
+// fetch.
 func ValidateMasterUserPassword(password string) error {
 	switch {
 	case password == "":
@@ -123,6 +124,13 @@ func ValidateMasterUserPassword(password string) error {
 			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)
 	}
 	for _, r := range password {
+		// A control character would also survive the bootstrap handoff and defeat
+		// the line-oriented redaction that keeps the password off the guest
+		// console, so the range is refused here rather than sanitised there.
+		if r < 0x20 || r > 0x7e {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUserPassword may only contain printable ASCII characters")
+		}
 		if r == '/' || r == '"' || r == '@' || r == ' ' {
 			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"MasterUserPassword may not contain '/', '\"', '@' or spaces")

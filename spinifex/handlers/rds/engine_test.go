@@ -86,6 +86,11 @@ func TestValidateMasterUserPassword(t *testing.T) {
 		// The characters AWS excludes, which would otherwise break a connection
 		// string or the engine's own role syntax.
 		"pass/word1", `pass"word1`, "pass@word1", "pass word1",
+		// Outside printable ASCII. A newline survives the bootstrap handoff and
+		// defeats the guest's line-oriented redaction, putting the password on
+		// the host serial console; the rest are refused as the same class.
+		"pass\nword1", "pass\rword1", "pass\tword1", "pass\x00word1", "pass\x7fword1",
+		"pässword1", "passwordé", "pass\u00a0word1",
 	} {
 		err := ValidateMasterUserPassword(password)
 		require.Error(t, err, "password %q should be rejected", password)

@@ -89,7 +89,7 @@ type stsRequestParams struct {
 
 func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	if p.iamSvc == nil {
-		p.iamSvc = &flexMockIAMService{}
+		p.iamSvc = allowAllIAMService()
 	}
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -253,7 +253,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "GetSessionTokenResult")
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
-	// Verify forwarded identity fields and that checkPolicy did not block (STS_Request runs no checkPolicy pass).
+	// Verify forwarded identity fields and that the identity-policy gate passed.
 	assert.Equal(t, utils.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)

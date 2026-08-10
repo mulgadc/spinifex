@@ -76,6 +76,14 @@ var anonymousSTSActions = map[string]bool{
 	"AssumeRoleWithWebIdentity": true,
 }
 
+// stsPolicyGatedActions lists the credential-minting actions that require a
+// pass on the caller's identity policy. GetCallerIdentity is undeniable by AWS
+// contract, and AssumeRoleWithWebIdentity has no identity to evaluate.
+var stsPolicyGatedActions = map[string]bool{
+	"AssumeRole":      true,
+	"GetSessionToken": true,
+}
+
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
 	queryArgs, err := readQueryArgs(r)
 	if err != nil {
@@ -98,15 +106,24 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	// STS actions are not gated by caller IAM policy: each action enforces its
-	// own rule in the handler (role trust policy, web-identity JWT, or the
-	// always-allowed GetCallerIdentity), so no checkPolicy pass runs here.
-
 	// Anonymous actions carry no SigV4 envelope; handler ignores the zero caller.
 	var caller stsCaller
 	if !anonymousSTSActions[action] {
 		caller, err = gw.resolveSTSCaller(r)
 		if err != nil {
+			return err
+		}
+	}
+
+	// The identity policy is the first of two gates: the handler still applies
+	// its own rule (role trust policy, principal type). AssumeRole is scoped to
+	// the target role so a policy can grant one role without granting all.
+	if stsPolicyGatedActions[action] {
+		resource := "*"
+		if roleARN := queryArgs["RoleArn"]; action == "AssumeRole" && roleARN != "" {
+			resource = roleARN
+		}
+		if err := gw.checkPolicyResource(r, "sts", action, resource); err != nil {
 			return err
 		}
 	}

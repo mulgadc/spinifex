@@ -236,7 +236,7 @@ func TestMemoryProviderSeedRequiresCapability(t *testing.T) {
 		CapacityRange: CapacityRange{RequiredBytes: 4096},
 		SeedData:      bytes.Repeat([]byte{0x01}, 16),
 	})
-	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.ErrorIs(t, err, ErrUnsupportedCapability)
 }
 
 func TestMemoryProviderSeedIsStoredOnce(t *testing.T) {

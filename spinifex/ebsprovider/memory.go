@@ -57,7 +57,7 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 		return nil, err
 	}
 	if len(req.SeedData) > 0 && !m.capabilities.VolumeSeeding {
-		return nil, fmt.Errorf("%w: provider does not support volume seeding", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: volume seeding", ErrUnsupportedCapability)
 	}
 	if int64(len(req.SeedData)) > req.CapacityRange.RequiredBytes {
 		return nil, fmt.Errorf("%w: seed data is larger than the requested capacity", ErrInvalidArgument)
@@ -285,6 +285,9 @@ func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeReque
 	}
 	if req.VolumeID == "" || req.NodeID == "" {
 		return nil, fmt.Errorf("%w: volume and node IDs are required", ErrInvalidArgument)
+	}
+	if req.ReadOnly && !m.capabilities.ReadOnlyPublish {
+		return nil, fmt.Errorf("%w: read-only publication", ErrUnsupportedCapability)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

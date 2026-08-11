@@ -11,6 +11,11 @@ var (
 	ErrNotFound           = errors.New("resource not found")
 	ErrUnsupportedVersion = errors.New("unsupported EBS provider schema version")
 	ErrVolumeInUse        = errors.New("volume is in use")
+
+	// ErrUnsupportedCapability is returned when a request asks for optional
+	// behaviour this provider does not advertise in Capabilities. It is
+	// distinct from ErrInvalidArgument: the request is well formed.
+	ErrUnsupportedCapability = errors.New("provider does not support the requested capability")
 )
 
 type ErrorCode string
@@ -21,6 +26,7 @@ const (
 	ErrorCodeNotFound           ErrorCode = "not_found"
 	ErrorCodeUnsupportedVersion ErrorCode = "unsupported_version"
 	ErrorCodeVolumeInUse        ErrorCode = "volume_in_use"
+	ErrorCodeUnsupportedCap     ErrorCode = "unsupported_capability"
 	ErrorCodeInternal           ErrorCode = "internal"
 )
 
@@ -52,6 +58,8 @@ func (e *ProviderError) Unwrap() error {
 		return ErrUnsupportedVersion
 	case ErrorCodeVolumeInUse:
 		return ErrVolumeInUse
+	case ErrorCodeUnsupportedCap:
+		return ErrUnsupportedCapability
 	default:
 		return nil
 	}

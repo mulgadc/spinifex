@@ -124,6 +124,10 @@ func volumeInUseError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: fmt.Sprintf(format, args...)}
 }
 
+func unsupportedCapabilityError(format string, args ...any) *ebsprovider.ProviderError {
+	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedCap, Message: fmt.Sprintf(format, args...)}
+}
+
 func internalError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: fmt.Sprintf(format, args...)}
 }
@@ -180,10 +184,13 @@ func handleProviderCapabilities(msg *nats.Msg) {
 			// its firmware VARS template without a control-plane engine.
 			VolumeSeeding: true,
 			// ExpandVolume refuses a volume that is mounted with a live VB
-			// (see handleExpandVolume), and there is no API surfacing which
-			// extents are sparse.
+			// (see handleExpandVolume). The nbdkit Go binding exposes no
+			// extents callback, so the export cannot report base:allocation.
 			OnlineExpansion:       false,
 			SparseExtentReporting: false,
+			// The nbdkit mount path is never started with -r, so a read-only
+			// request is refused rather than answered with a writable export.
+			ReadOnlyPublish: false,
 			// mountVolume registers ebs.provider.v1.owner.{volumeID}.* for
 			// every mounted volume (see subscribeOwnerSubjects).
 			OwnerRouting: true,
@@ -1379,12 +1386,11 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
-	// The mount path nbdkit serves has no read-only mode: nbdkit is started
-	// read-write or not at all. Rather than silently hand back a read-write
-	// attachment for a read-only request, refuse it so the caller gets a
-	// real answer.
+	// The mount path never passes nbdkit -r, so there is no read-only export
+	// to hand back. Refuse rather than silently return a writable one; the
+	// capability advertises the same fact up front.
 	if req.ReadOnly {
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("viperblockd does not support read-only attachments")})
+		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedCapabilityError("viperblockd does not support read-only attachments")})
 		return
 	}
 

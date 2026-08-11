@@ -34,8 +34,9 @@ var capabilities = ebsprovider.Capabilities{
 	CopyOnWriteClone:        true,
 	CrashConsistentSnapshot: true,
 	OnlineExpansion:         false,
-	SparseExtentReporting:   false,
+	SparseExtentReporting:   true,
 	VolumeSeeding:           true,
+	ReadOnlyPublish:         true,
 	OwnerRouting:            false,
 }
 

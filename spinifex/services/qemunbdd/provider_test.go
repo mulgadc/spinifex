@@ -675,7 +675,8 @@ func TestGetCapabilities_Fixed(t *testing.T) {
 	assert.True(t, resp.Capabilities.CopyOnWriteClone)
 	assert.True(t, resp.Capabilities.CrashConsistentSnapshot)
 	assert.True(t, resp.Capabilities.VolumeSeeding)
+	assert.True(t, resp.Capabilities.SparseExtentReporting, "qemu-nbd advertises base:allocation")
+	assert.True(t, resp.Capabilities.ReadOnlyPublish, "PublishVolume passes -r to qemu-nbd")
 	assert.False(t, resp.Capabilities.OnlineExpansion)
-	assert.False(t, resp.Capabilities.SparseExtentReporting)
 	assert.False(t, resp.Capabilities.OwnerRouting)
 }

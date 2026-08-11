@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,12 +58,13 @@ func (c NBDClientConfig) withDefaults() NBDClientConfig {
 
 // nbdExport is the subset of `nbdinfo --json` this suite asserts on.
 type nbdExport struct {
-	Name               string `json:"export-name"`
-	Size               int64  `json:"export-size"`
-	ReadOnly           bool   `json:"is_read_only"`
-	BlockSizeMinimum   int64  `json:"block_size_minimum"`
-	BlockSizePreferred int64  `json:"block_size_preferred"`
-	CanFlush           bool   `json:"can_flush"`
+	Name               string   `json:"export-name"`
+	Size               int64    `json:"export-size"`
+	ReadOnly           bool     `json:"is_read_only"`
+	BlockSizeMinimum   int64    `json:"block_size_minimum"`
+	BlockSizePreferred int64    `json:"block_size_preferred"`
+	CanFlush           bool     `json:"can_flush"`
+	Contexts           []string `json:"contexts"`
 }
 
 type nbdInfoOutput struct {
@@ -265,8 +267,42 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 		assert.True(t, bytes.Equal(got, want), "data read back over NBD differs from what was written")
 	})
 
-	t.Run("read-only publish is advertised as read-only", func(t *testing.T) {
+	// SparseExtentReporting is only observable at the export: base:allocation
+	// is the metadata context an NBD client queries for which extents are
+	// allocated. Advertising the capability without it is a false claim.
+	t.Run("sparse extent reporting matches the advertised capability", func(t *testing.T) {
 		provider := newProvider(t)
+		capabilities := capabilitiesOf(t, provider)
+		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
+		export := nbdInfo(t, dialURI(t, pub.NBDURI))
+
+		assert.Equalf(t, capabilities.SparseExtentReporting, slices.Contains(export.Contexts, "base:allocation"),
+			"SparseExtentReporting=%v but export contexts are %v", capabilities.SparseExtentReporting, export.Contexts)
+	})
+
+	t.Run("read-only publish matches the advertised capability", func(t *testing.T) {
+		provider := newProvider(t)
+		capabilities := capabilitiesOf(t, provider)
+
+		if !capabilities.ReadOnlyPublish {
+			// Refusing is the contract for a provider that cannot honour it;
+			// handing back a writable export would be the real failure.
+			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+				Versioned:     ebsprovider.NewVersioned(),
+				VolumeID:      cfg.VolumePrefix + "-readonly",
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: cfg.VolumeBytes},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { cleanupVolume(t, provider, cfg, cfg.VolumePrefix+"-readonly") })
+
+			_, err = provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.VolumePrefix + "-readonly",
+				NodeID: cfg.NodeID, ReadOnly: true,
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
+			return
+		}
+
 		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-readonly", true)
 		export := nbdInfo(t, dialURI(t, pub.NBDURI))
 		assert.True(t, export.ReadOnly, "a volume published ReadOnly must set the NBD read-only transmission flag")

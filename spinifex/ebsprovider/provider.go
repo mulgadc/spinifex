@@ -51,6 +51,11 @@ type Capabilities struct {
 	CrashConsistentSnapshot bool `json:"crash_consistent_snapshot"`
 	VolumeSeeding           bool `json:"volume_seeding"`
 
+	// ReadOnlyPublish advertises that PublishVolume honours ReadOnly by
+	// exporting the volume read-only. A provider leaving this false must
+	// refuse a ReadOnly request, never hand back a writable export instead.
+	ReadOnlyPublish bool `json:"read_only_publish"`
+
 	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
 	// and GetVolume are answered directly by a volume's mounting node over
 	// its OwnerSubject when one exists, instead of always fanning out to the

@@ -13,25 +13,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Capabilities is shared by every provider constructor callers pass to
-// RunSuite, so GetCapabilities and the OnlineExpansion-gated volume_in_use
-// case behave identically regardless of which EBSProvider implementation answers.
-var Capabilities = ebsprovider.Capabilities{
+// ReferenceCapabilities is what a full-featured provider advertises. It is
+// only a convenience for callers constructing a MemoryProvider; the suite
+// itself never assumes any implementation reports this set.
+var ReferenceCapabilities = ebsprovider.Capabilities{
 	CopyOnWriteClone:        true,
 	OnlineExpansion:         false,
-	SparseExtentReporting:   false,
+	SparseExtentReporting:   true,
 	CrashConsistentSnapshot: true,
 	VolumeSeeding:           true,
+	ReadOnlyPublish:         true,
+}
+
+// capabilitiesOf reads what a provider advertises, so the suite can branch on
+// it the way the contract tells callers to.
+func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.Capabilities {
+	t.Helper()
+	resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	return resp.Capabilities
 }
 
 // RunSuite runs the full EBSProvider conformance suite against a provider
-// newProvider constructs fresh for each subtest.
+// newProvider constructs fresh for each subtest. Optional behaviour is gated
+// on what the provider advertises, never on a set the suite picked.
 func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider) {
+	capabilities := capabilitiesOf(t, newProvider(t))
+
 	t.Run("GetCapabilities", func(t *testing.T) {
 		provider := newProvider(t)
 		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
 		require.NoError(t, err)
-		assert.Equal(t, Capabilities, resp.Capabilities)
+		require.NotNil(t, resp)
+		assert.Equal(t, ebsprovider.SchemaVersion, resp.SchemaVersion, "response must carry the negotiated schema version")
+
+		// Capabilities describe the implementation, so they must not vary
+		// between calls: a caller branches on them once and caches.
+		again, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+		require.NoError(t, err)
+		assert.Equal(t, resp.Capabilities, again.Capabilities, "GetCapabilities must be stable across calls")
 	})
 
 	t.Run("CreateVolume", func(t *testing.T) {
@@ -81,6 +102,9 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		})
 
 		t.Run("seeded volume is created", func(t *testing.T) {
+			if !capabilities.VolumeSeeding {
+				t.Skip("provider does not advertise VolumeSeeding")
+			}
 			provider := newProvider(t)
 			vol, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seeded",
@@ -92,10 +116,28 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			assert.Equal(t, int64(4096), vol.CapacityBytes)
 		})
 
+		// A provider that cannot seed must say so, not accept the seed and
+		// drop it: the caller has no other way to learn the volume is blank.
+		t.Run("unsupported_capability on seed when seeding is not advertised", func(t *testing.T) {
+			if capabilities.VolumeSeeding {
+				t.Skip("provider advertises VolumeSeeding")
+			}
+			provider := newProvider(t)
+			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-unsupported",
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4096},
+				SeedData:      bytes.Repeat([]byte{0xAB}, 4096),
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
+		})
+
 		// A seed above MaxSeedBytes must fail as invalid_argument rather than
 		// reaching the transport, where NATS would refuse the oversized publish
 		// with an error that says nothing about firmware.
 		t.Run("invalid_argument on oversized seed", func(t *testing.T) {
+			if !capabilities.VolumeSeeding {
+				t.Skip("provider does not advertise VolumeSeeding")
+			}
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-toobig",
@@ -106,6 +148,9 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		})
 
 		t.Run("invalid_argument when seed exceeds capacity", func(t *testing.T) {
+			if !capabilities.VolumeSeeding {
+				t.Skip("provider does not advertise VolumeSeeding")
+			}
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-overcap",
@@ -167,15 +212,25 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 
-		t.Run("volume_in_use when published and provider lacks online expansion", func(t *testing.T) {
+		// Expanding a published volume is the one operation OnlineExpansion
+		// describes, so both answers are contractual: succeed, or refuse with
+		// volume_in_use. Silently doing nothing is neither.
+		t.Run("expanding a published volume matches OnlineExpansion", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
 			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", NodeID: "node-1"})
 			require.NoError(t, err)
-			_, err = provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
-			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
+
+			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+			if !capabilities.OnlineExpansion {
+				require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
+				return
+			}
+			require.NoError(t, err, "provider advertises OnlineExpansion, so expanding a published volume must succeed")
+			require.NotNil(t, expanded)
+			assert.Equal(t, int64(2<<30), expanded.CapacityBytes)
 		})
 	})
 

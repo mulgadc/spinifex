@@ -761,9 +761,8 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 }
 
 // TestProviderHandlers_PublishVolume_ReadOnlyRejected covers the ReadOnly
-// field, which has no equivalent in the nbdkit mount path (nbdkit is started
-// read-write or not at all): a read-only request must come back as an error,
-// never a silently read-write attachment.
+// field against a provider that does not advertise ReadOnlyPublish: the
+// request must be refused as unsupported, never silently attached read-write.
 func TestProviderHandlers_PublishVolume_ReadOnlyRejected(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
@@ -782,7 +781,7 @@ func TestProviderHandlers_PublishVolume_ReadOnlyRejected(t *testing.T) {
 	var resp ebsprovider.PublishVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	require.NotNil(t, resp.Error)
-	assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
+	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedCap, resp.Error.Code)
 }
 
 // TestProviderHandlers_UnpublishVolume_RemovesMountedVolume mirrors

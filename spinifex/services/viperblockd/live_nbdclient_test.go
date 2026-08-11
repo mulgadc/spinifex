@@ -27,10 +27,10 @@ const defaultConfigPath = "/etc/spinifex/spinifex.toml"
 // round trip over the real store.
 const liveVolumeBytes int64 = 64 << 20
 
-// TestLive_ViperblockdExternalNBDClient points libnbd at whatever nbdkit
-// export viperblockd publishes, through the same NATS client shape the
-// control plane uses.
-func TestLive_ViperblockdExternalNBDClient(t *testing.T) {
+// liveProvider dials the running cluster's NATS and returns a provider client
+// pointed at the local viperblockd, plus the node it is running on.
+func liveProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string) {
+	t.Helper()
 	if os.Getenv(liveEnvVar) == "" {
 		t.Skipf("skipping: set %s=1 to run this against a real viperblockd over a live cluster's NATS", liveEnvVar)
 	}
@@ -55,14 +55,39 @@ func TestLive_ViperblockdExternalNBDClient(t *testing.T) {
 	require.NoError(t, err, "connect to NATS")
 	t.Cleanup(nc.Close)
 
-	conformance.RunNBDClientSuiteWithConfig(t,
-		func(t *testing.T) ebsprovider.EBSProvider {
-			t.Helper()
-			return ebsprovider.NewNATSProvider(nc, 120*time.Second)
-		},
+	return func(t *testing.T) ebsprovider.EBSProvider {
+		t.Helper()
+		return ebsprovider.NewNATSProvider(nc, 120*time.Second)
+	}, nodeID
+}
+
+// runPrefix names one run's volumes so it cannot collide with an earlier run's
+// leftovers on a store that keeps them.
+func runPrefix(kind string) string {
+	return kind + strconv.FormatInt(time.Now().UnixNano(), 10) + "-"
+}
+
+// TestLive_ViperblockdExternalNBDClient points libnbd at whatever nbdkit
+// export viperblockd publishes, through the same NATS client shape the
+// control plane uses.
+func TestLive_ViperblockdExternalNBDClient(t *testing.T) {
+	newProvider, nodeID := liveProvider(t)
+	conformance.RunNBDClientSuiteWithConfig(t, newProvider,
 		conformance.NBDClientConfig{
 			NodeID:       nodeID,
 			VolumePrefix: "vol-nbdlive-" + strconv.FormatInt(time.Now().UnixNano(), 10),
 			VolumeBytes:  liveVolumeBytes,
 		})
+}
+
+// TestLive_ViperblockdConformance runs the contract suite against the real
+// viperblockd. Until now it had only ever run against MemoryProvider and
+// qemunbdd, so the provider production actually uses was the one implementation
+// the suite never judged.
+func TestLive_ViperblockdConformance(t *testing.T) {
+	newProvider, nodeID := liveProvider(t)
+	conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{
+		NamePrefix: runPrefix("live"),
+		NodeID:     nodeID,
+	})
 }

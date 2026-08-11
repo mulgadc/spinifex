@@ -40,6 +40,41 @@ func TestMemoryProviderOnlineExpansionConformance(t *testing.T) {
 	})
 }
 
+// TestMemoryProviderSharedInstanceConformance runs the suite twice against one
+// provider instance, standing in for a live daemon whose volumes outlive the
+// test binary. It passes only if the suite removes everything it creates: with
+// no cleanup the second run collides with the first on already_exists.
+func TestMemoryProviderSharedInstanceConformance(t *testing.T) {
+	shared := ebsprovider.NewMemoryProvider(conformance.ReferenceCapabilities)
+	newProvider := func(t *testing.T) ebsprovider.EBSProvider {
+		t.Helper()
+		return shared
+	}
+
+	for _, run := range []string{"first run", "second run"} {
+		t.Run(run, func(t *testing.T) {
+			conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{})
+		})
+	}
+}
+
+// TestMemoryProviderNamePrefixConformance covers the other half of running
+// against a live provider: distinct prefixes let concurrent runs share one
+// daemon without naming the same volumes.
+func TestMemoryProviderNamePrefixConformance(t *testing.T) {
+	shared := ebsprovider.NewMemoryProvider(conformance.ReferenceCapabilities)
+	newProvider := func(t *testing.T) ebsprovider.EBSProvider {
+		t.Helper()
+		return shared
+	}
+
+	for _, prefix := range []string{"alpha-", "beta-"} {
+		t.Run(prefix, func(t *testing.T) {
+			conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{NamePrefix: prefix})
+		})
+	}
+}
+
 // TestNATSProviderConformance runs the suite against a NATSProvider backed
 // by natsserve.Serve, the production-shaped neutral server, rather than a
 // test-only twin: this exercises the transport this package's implementors actually run in production, not a hand-written stand-in for it.

@@ -6,6 +6,7 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
@@ -35,10 +36,67 @@ func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.
 	return resp.Capabilities
 }
 
+// SuiteConfig tunes a run for the provider it is pointed at.
+type SuiteConfig struct {
+	// NamePrefix is inserted into every volume and snapshot ID the suite
+	// creates, after the vol-/snap- token. A provider that keeps state across
+	// runs needs it: without it a second run collides with the first run's
+	// volumes and fails on already_exists.
+	NamePrefix string
+
+	// NodeID is the node PublishVolume targets. A live provider answers only
+	// for the node it runs on, so the in-process default is wrong there.
+	NodeID string
+
+	// OtherNodeID is a second node, used to prove a published volume cannot
+	// also be published elsewhere. Empty skips that subtest, for a caller with
+	// only one node to offer.
+	OtherNodeID string
+}
+
+func (c SuiteConfig) node() string {
+	if c.NodeID == "" {
+		return "node-1"
+	}
+	return c.NodeID
+}
+
+func (c SuiteConfig) otherNode() string {
+	if c.NodeID == "" && c.OtherNodeID == "" {
+		return "node-2"
+	}
+	return c.OtherNodeID
+}
+
+// id builds a suite-owned identifier, keeping the vol-/snap- prefix the rest of
+// the system reads as a type token.
+func (c SuiteConfig) id(base string) string {
+	if c.NamePrefix == "" {
+		return base
+	}
+	if kind, rest, ok := strings.Cut(base, "-"); ok {
+		return kind + "-" + c.NamePrefix + rest
+	}
+	return c.NamePrefix + base
+}
+
 // RunSuite runs the full EBSProvider conformance suite against a provider
-// newProvider constructs fresh for each subtest. Optional behaviour is gated
-// on what the provider advertises, never on a set the suite picked.
+// newProvider constructs fresh for each subtest.
 func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider) {
+	RunSuiteWithConfig(t, newProvider, SuiteConfig{})
+}
+
+// RunSuiteWithConfig is RunSuite with control over the identifiers it uses, so
+// the same suite can run against a live provider whose state outlives the test.
+// Optional behaviour is gated on what the provider advertises, never on a set
+// the suite picked.
+func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovider.EBSProvider, cfg SuiteConfig) {
+	// Everything the suite creates is tracked and torn down, so a live
+	// provider is left as the run found it.
+	newProvider := func(t *testing.T) ebsprovider.EBSProvider {
+		return newTrackingProvider(t, newRawProvider(t))
+	}
+
 	capabilities := capabilitiesOf(t, newProvider(t))
 
 	t.Run("GetCapabilities", func(t *testing.T) {
@@ -59,11 +117,11 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			vol, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-create-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-create-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.NoError(t, err)
 			require.NotNil(t, vol)
-			assert.Equal(t, "vol-create-ok", vol.ID)
+			assert.Equal(t, cfg.id("vol-create-ok"), vol.ID)
 			assert.Equal(t, int64(1<<30), vol.CapacityBytes)
 			assert.Equal(t, ebsprovider.VolumeStateAvailable, vol.State)
 			assert.NotEmpty(t, vol.Handle)
@@ -72,9 +130,9 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("already_exists on conflicting recreate", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-conflict", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-conflict", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
 			require.ErrorIs(t, err, ebsprovider.ErrAlreadyExists)
 		})
 
@@ -87,9 +145,9 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("not_found on absent source snapshot", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-from-missing-snap",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-from-missing-snap"),
 				CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-				SourceSnapshotID: "snap-missing", SourceSnapshotVolumeID: "vol-missing-origin",
+				SourceSnapshotID: cfg.id("snap-missing"), SourceSnapshotVolumeID: cfg.id("vol-missing-origin"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
@@ -100,8 +158,8 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("invalid_argument when a source snapshot has no source volume", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-noorigin",
-				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}, SourceSnapshotID: "snap-any",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snapsrc-noorigin"),
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}, SourceSnapshotID: cfg.id("snap-any"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
@@ -110,18 +168,18 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-origin",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snapsrc-origin"),
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.NoError(t, err)
 			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-snapsrc", VolumeID: "vol-snapsrc-origin",
+				Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-snapsrc"), VolumeID: cfg.id("vol-snapsrc-origin"),
 			})
 			require.NoError(t, err)
-			require.Equal(t, "vol-snapsrc-origin", snap.SourceVolumeID, "a snapshot must report the volume it was taken from")
+			require.Equal(t, cfg.id("vol-snapsrc-origin"), snap.SourceVolumeID, "a snapshot must report the volume it was taken from")
 
 			restored, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-restored",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snapsrc-restored"),
 				CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 				SourceSnapshotID: snap.ID, SourceSnapshotVolumeID: snap.SourceVolumeID,
 			})
@@ -132,7 +190,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("unsupported_version", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				VolumeID: "vol-noversion", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+				VolumeID: cfg.id("vol-noversion"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
@@ -143,7 +201,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			}
 			provider := newProvider(t)
 			vol, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seeded",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-seeded"),
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4096},
 				SeedData:      bytes.Repeat([]byte{0xAB}, 4096),
 			})
@@ -160,7 +218,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			}
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-unsupported",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-seed-unsupported"),
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 4096},
 				SeedData:      bytes.Repeat([]byte{0xAB}, 4096),
 			})
@@ -176,7 +234,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			}
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-toobig",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-seed-toobig"),
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 				SeedData:      make([]byte, ebsprovider.MaxSeedBytes+1),
 			})
@@ -189,7 +247,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			}
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-seed-overcap",
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-seed-overcap"),
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 512},
 				SeedData:      make([]byte, 4096),
 			})
@@ -201,9 +259,9 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			created, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-get-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			created, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-get-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			got, err := provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-get-ok"})
+			got, err := provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-get-ok")})
 			require.NoError(t, err)
 			assert.Equal(t, created.Handle, got.Handle)
 			assert.Equal(t, created.CapacityBytes, got.CapacityBytes)
@@ -211,7 +269,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-never-existed"})
+			_, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed")})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
@@ -226,25 +284,25 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
 			require.NoError(t, err)
 			assert.Equal(t, int64(2<<30), expanded.CapacityBytes)
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.ExpandVolume(context.Background(), ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-never-existed", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.ExpandVolume(context.Background(), ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("invalid_argument on shrink", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-shrink", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-shrink"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
 			require.NoError(t, err)
-			_, err = provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-shrink", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err = provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-shrink"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 
@@ -254,12 +312,12 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("expanding a published volume matches OnlineExpansion", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", NodeID: "node-1"})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), NodeID: cfg.node()})
 			require.NoError(t, err)
 
-			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-expand-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
 			if !capabilities.OnlineExpansion {
 				require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 				return
@@ -274,10 +332,10 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-ok"}))
-			_, err = provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-ok"})
+			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-ok")}))
+			_, err = provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-ok")})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
@@ -285,17 +343,17 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		// success (idempotent-when-absent), not not_found.
 		t.Run("absent target is idempotent", func(t *testing.T) {
 			provider := newProvider(t)
-			require.NoError(t, provider.DeleteVolume(context.Background(), ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-never-existed"}))
+			require.NoError(t, provider.DeleteVolume(context.Background(), ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed")}))
 		})
 
 		t.Run("volume_in_use when published", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-inuse", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-inuse", NodeID: "node-1"})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delete-inuse"})
+			err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse")})
 			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 		})
 	})
@@ -304,32 +362,32 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snap-src", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-ok", VolumeID: "vol-snap-src"})
+			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-ok"), VolumeID: cfg.id("vol-snap-src")})
 			require.NoError(t, err)
 			require.NotNil(t, snap)
-			assert.Equal(t, "snap-ok", snap.ID)
-			assert.Equal(t, "vol-snap-src", snap.SourceVolumeID)
+			assert.Equal(t, cfg.id("snap-ok"), snap.ID)
+			assert.Equal(t, cfg.id("vol-snap-src"), snap.SourceVolumeID)
 			assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
 		})
 
 		t.Run("not_found on absent source volume", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-orphan", VolumeID: "vol-never-existed"})
+			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-orphan"), VolumeID: cfg.id("vol-never-existed")})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("already_exists on conflicting source volume", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snap-a", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-a"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snap-b", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-b"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-conflict", VolumeID: "vol-snap-a"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-conflict"), VolumeID: cfg.id("vol-snap-a")})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-conflict", VolumeID: "vol-snap-b"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-conflict"), VolumeID: cfg.id("vol-snap-b")})
 			require.ErrorIs(t, err, ebsprovider.ErrAlreadyExists)
 		})
 
@@ -344,18 +402,18 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-delsnap-src", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delsnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-delete-ok", VolumeID: "vol-delsnap-src"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-delete-ok"), VolumeID: cfg.id("vol-delsnap-src")})
 			require.NoError(t, err)
-			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-delete-ok"}))
+			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-delete-ok")}))
 		})
 
 		// memory.go implements delete-of-absent-snapshot as a no-op success,
 		// matching CSI's idempotency rule the same way DeleteVolume does.
 		t.Run("absent target is idempotent", func(t *testing.T) {
 			provider := newProvider(t)
-			require.NoError(t, provider.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-never-existed"}))
+			require.NoError(t, provider.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-never-existed")}))
 		})
 	})
 
@@ -363,33 +421,33 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-src", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-src", VolumeID: "vol-copysnap-src"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-src"), VolumeID: cfg.id("vol-copysnap-src")})
 			require.NoError(t, err)
 
 			copied, err := provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: "snap-copysnap-src", DestinationSnapshotID: "snap-copysnap-dst", VolumeID: "vol-copysnap-src",
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-src"), DestinationSnapshotID: cfg.id("snap-copysnap-dst"), VolumeID: cfg.id("vol-copysnap-src"),
 			})
 			require.NoError(t, err)
 			require.NotNil(t, copied)
-			assert.Equal(t, "snap-copysnap-dst", copied.ID)
-			assert.Equal(t, "vol-copysnap-src", copied.SourceVolumeID)
+			assert.Equal(t, cfg.id("snap-copysnap-dst"), copied.ID)
+			assert.Equal(t, cfg.id("vol-copysnap-src"), copied.SourceVolumeID)
 			assert.Equal(t, ebsprovider.SnapshotStateCompleted, copied.State)
 			assert.NotEmpty(t, copied.Handle)
 
 			// The destination is a real, independently addressable snapshot.
-			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-src"}))
-			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-dst"}))
+			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-src")}))
+			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-dst")}))
 		})
 
 		t.Run("not_found on absent source snapshot", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-nosrc", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-nosrc"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: "snap-copysnap-missing", DestinationSnapshotID: "snap-copysnap-missing-dst", VolumeID: "vol-copysnap-nosrc",
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-missing"), DestinationSnapshotID: cfg.id("snap-copysnap-missing-dst"), VolumeID: cfg.id("vol-copysnap-nosrc"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
@@ -397,14 +455,14 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("already_exists on conflicting destination", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-conflict", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-a", VolumeID: "vol-copysnap-conflict"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-a"), VolumeID: cfg.id("vol-copysnap-conflict")})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-b", VolumeID: "vol-copysnap-conflict"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-b"), VolumeID: cfg.id("vol-copysnap-conflict")})
 			require.NoError(t, err)
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: "snap-copysnap-a", DestinationSnapshotID: "snap-copysnap-b", VolumeID: "vol-copysnap-conflict",
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-a"), DestinationSnapshotID: cfg.id("snap-copysnap-b"), VolumeID: cfg.id("vol-copysnap-conflict"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrAlreadyExists)
 		})
@@ -418,12 +476,12 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("invalid_argument when source and destination match", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-same", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-same"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-same", VolumeID: "vol-copysnap-same"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-same"), VolumeID: cfg.id("vol-copysnap-same")})
 			require.NoError(t, err)
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: "snap-copysnap-same", DestinationSnapshotID: "snap-copysnap-same", VolumeID: "vol-copysnap-same",
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-same"), DestinationSnapshotID: cfg.id("snap-copysnap-same"), VolumeID: cfg.id("vol-copysnap-same"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
@@ -431,14 +489,14 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("invalid_argument when volume id does not own the source snapshot", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-owner", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-owner"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-copysnap-foreign", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-foreign"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-copysnap-owned", VolumeID: "vol-copysnap-owner"})
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-owned"), VolumeID: cfg.id("vol-copysnap-owner")})
 			require.NoError(t, err)
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: "snap-copysnap-owned", DestinationSnapshotID: "snap-copysnap-owned-dst", VolumeID: "vol-copysnap-foreign",
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-owned"), DestinationSnapshotID: cfg.id("snap-copysnap-owned-dst"), VolumeID: cfg.id("vol-copysnap-foreign"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
@@ -446,7 +504,7 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("unsupported_version", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
-				SourceSnapshotID: "snap-a", DestinationSnapshotID: "snap-b", VolumeID: "vol-a",
+				SourceSnapshotID: cfg.id("snap-a"), DestinationSnapshotID: cfg.id("snap-b"), VolumeID: cfg.id("vol-a"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
@@ -456,42 +514,45 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-ok", NodeID: "node-1"})
+			pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-ok"), NodeID: cfg.node()})
 			require.NoError(t, err)
 			require.NotNil(t, pub)
-			assert.Equal(t, "vol-pub-ok", pub.VolumeID)
-			assert.Equal(t, "node-1", pub.NodeID)
+			assert.Equal(t, cfg.id("vol-pub-ok"), pub.VolumeID)
+			assert.Equal(t, cfg.node(), pub.NodeID)
 			assertNBDURI(t, pub.NBDURI)
 		})
 
 		t.Run("idempotent republish to the same node", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-idem", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-idem", NodeID: "node-1"})
+			first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-idem", NodeID: "node-1"})
+			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), NodeID: cfg.node()})
 			require.NoError(t, err)
 			assert.Equal(t, first, second)
 		})
 
 		t.Run("volume_in_use when published to a different node", func(t *testing.T) {
+			if cfg.otherNode() == "" {
+				t.Skip("no second node configured")
+			}
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-conflict", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-conflict", NodeID: "node-1"})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-pub-conflict", NodeID: "node-2"})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.otherNode()})
 			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-never-existed", NodeID: "node-1"})
+			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
@@ -506,16 +567,16 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-unpub-ok", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-unpub-ok", NodeID: "node-1"})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-unpub-ok", NodeID: "node-1"}))
+			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()}))
 		})
 
 		t.Run("absent target is idempotent", func(t *testing.T) {
 			provider := newProvider(t)
-			require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-never-existed", NodeID: "node-1"}))
+			require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()}))
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {

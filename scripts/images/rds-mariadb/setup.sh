@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+# setup.sh — guest customisation for the spinifex-rds-mariadb AMI. Runs inside
+# the libguestfs appliance under build-system-image.sh, after packages and
+# INSTALL_FILES are placed.
+
+# INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-datadir
+# is executed directly by its service.
+chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-agent /usr/local/sbin/rds-datadir
+chmod 0755 /etc/init.d/mulga-mgmt-net /etc/init.d/mulga-mgmt-net-routes \
+    /usr/local/sbin/mulga-mgmt-net
+
+# mulga-mgmt-net goes in the boot runlevel, not default (where ENABLE_SERVICES
+# lands services). It applies mgmt0's static address, which rds-agent needs to
+# reach the gateway at all, and DHCPs the data NIC so the init-local Ec2 crawl
+# reaches IMDS; a default entry runs after cloud-init-local and is too late.
+rc-update add mulga-mgmt-net boot
+
+# Where cloud-init drops the agent's env file and the gateway CA. Created here
+# so the delivery lands in a root-only directory.
+install -d -m 0700 /etc/spinifex-rds
+
+# The engine this image bakes. rds-agent builds its engine implementation from
+# this file, so running the wrong implementation is structurally impossible
+# rather than merely validated against; a VM launched as another engine is
+# refused before anything touches the datadir.
+printf 'mariadb\n' > /etc/spinifex-rds/engine
+chmod 0444 /etc/spinifex-rds/engine
+
+# Empty in the image: rds-datadir mounts over it at boot. The package already
+# creates it 0750 mysql:mysql; restated so a packaging change cannot loosen it.
+install -d -m 0750 -o mysql -g mysql /var/lib/mysql
+
+# The include target, baked so it exists even when the data volume is not
+# mounted. MariaDB treats an !includedir it cannot open as a fatal error while
+# parsing defaults, which would take down the client alongside the server on
+# exactly the boot an operator needs both to diagnose the missing volume.
+install -d -m 0750 -o mysql -g mysql /var/lib/mysql/conf.d
+
+# The generated configuration must be read last, or a packaged default would win
+# over a platform-owned setting. Sorted in byte order, the way MariaDB itself
+# walks an include directory, so a future package adding a later-sorting file
+# fails the build rather than silently overriding the platform.
+last_dropin=$(ls /etc/my.cnf.d | LC_ALL=C sort | tail -n 1)
+if [ "${last_dropin}" != "zz-rds-include.cnf" ]; then
+    echo "[rds-mariadb-setup] /etc/my.cnf.d/${last_dropin} is read after the RDS include"
+    exit 1
+fi
+
+# Alpine's packaged server drop-in sets skip-networking, which would leave the
+# instance reachable only over its unix socket — the endpoint would resolve, the
+# health probe would pass, and nothing on the customer ENI could ever connect.
+# Disabled at the source rather than countered from a later file, so the image
+# does not depend on override ordering for the endpoint to work at all.
+sed -i 's/^skip-networking$/# skip-networking — disabled: the customer reaches this instance over TCP/' \
+    /etc/my.cnf.d/mariadb-server.cnf
+if grep -rEq '^[[:space:]]*skip[-_]networking' /etc/my.cnf /etc/my.cnf.d; then
+    echo "[rds-mariadb-setup] a packaged configuration file still disables TCP networking"
+    grep -rEn '^[[:space:]]*skip[-_]networking' /etc/my.cnf /etc/my.cnf.d
+    exit 1
+fi
+
+# Bind /dev/console to the serial port so userspace boot output reaches ttyS0,
+# which the orchestrator captures host-side. Linux makes the last console= the
+# controlling one, and stock Alpine lists tty0 last — reorder so ttyS0 wins.
+sed -i \
+    's|console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0|console=tty0 console=ttyAMA0,115200n8 console=ttyS0,115200n8|' \
+    /etc/update-extlinux.conf /boot/extlinux.conf
+
+# Cut the boot-menu countdown from 10s to ~1s, a fixed tax on every VM start.
+# Both the generator config (seconds) and the rendered output (1/10s) are patched
+# so a regenerate keeps it; a small nonzero keeps the menu interruptible.
+sed -i 's/^timeout=.*/timeout=1/' /etc/update-extlinux.conf
+sed -i 's/^TIMEOUT[[:space:]].*/TIMEOUT 10/' /boot/extlinux.conf
+
+echo "[rds-mariadb-setup] done"

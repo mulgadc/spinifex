@@ -56,6 +56,7 @@ fail() { echo "FAIL: $*"; FAILS=$((FAILS + 1)); }
 pass() { echo "ok: $*"; }
 
 DATA_MOUNT="${WORK}/data"
+ENGINE_USER="dbengine"
 SYS_BLOCK="${WORK}/sys/block"
 DEV_DIR="${WORK}/dev"
 MOUNTS="${WORK}/mounts"
@@ -91,6 +92,8 @@ EOF
 }
 
 reset_state() {
+    DATA_MOUNT="${WORK}/data"
+    ENGINE_USER="dbengine"
     rm -rf "${WORK}/sys" "${DEV_DIR}" "${DATA_MOUNT}" "$(dirname "${HANDOFF}")"
     mkdir -p "${SYS_BLOCK}" "${DEV_DIR}" "${DATA_MOUNT}"
     printf '/dev/vda1 / ext4 rw,relatime 0 0\n' > "${MOUNTS}"
@@ -104,6 +107,7 @@ reset_state() {
 
 run() {
     env RDS_DATA_MOUNT="${DATA_MOUNT}" \
+        RDS_ENGINE_USER="${ENGINE_USER}" \
         RDS_SYS_BLOCK="${SYS_BLOCK}" \
         RDS_DEV_DIR="${DEV_DIR}" \
         RDS_MOUNTS_FILE="${MOUNTS}" \
@@ -152,6 +156,9 @@ if run_ok "authorized blank exact volume"; then
     grep -q "mkfs.ext4 .*${DEV_DIR}/vdc" "${MKFS_CALLS}" && pass "authorized: exact disk formatted" || fail "authorized: exact disk not formatted"
     grep -q -- '-m 0' "${MKFS_CALLS}" && pass "authorized: no reserved blocks" || fail "authorized: reserved blocks left on"
     grep -q "mount -t ext4 ${DEV_DIR}/vdc ${DATA_MOUNT}" "${MOUNT_CALLS}" && pass "authorized: mounted" || fail "authorized: not mounted"
+    # The engine reads its own datadir, so the mount is handed to the preset's
+    # user rather than to whichever engine this script was first written for.
+    grep -q "chown ${ENGINE_USER}:${ENGINE_USER} ${DATA_MOUNT}" "${CHOWN_CALLS}" && pass "authorized: handed to the engine user" || fail "authorized: not handed to ${ENGINE_USER}"
     grep -q '^RDS_MASTER_PASSWORD=' "${HANDOFF}" && pass "authorized: bootstrap material preserved" || fail "authorized: bootstrap material removed"
     if grep -q '^RDS_FORMAT_AUTHORIZED=' "${HANDOFF}"; then fail "authorized: grant retained"; else pass "authorized: grant consumed"; fi
 fi
@@ -308,6 +315,24 @@ add_disk vdb volexpected
 printf '%s %s ext4 rw 0 0\n' "${DEV_DIR}/wrong" "${DATA_MOUNT}" >> "${MOUNTS}"
 run_fails "already mounted wrong device" "not expected device"
 nothing_formatted "already mounted wrong device"
+
+# An image whose service states no layout must not fall back to another engine's
+# paths: a volume mounted where the engine is not looking reads as an empty
+# datadir, and the bootstrap that follows serves an empty database beside the
+# customer's data. Both refusals come before the handoff is even read.
+reset_state
+add_disk vdb volexpected
+write_handoff vol-expected volexpected 1 true
+DATA_MOUNT=""
+run_fails "no mount point" "RDS_DATA_MOUNT is not set"
+nothing_formatted "no mount point"
+
+reset_state
+add_disk vdb volexpected
+write_handoff vol-expected volexpected 1 true
+ENGINE_USER=""
+run_fails "no engine user" "RDS_ENGINE_USER is not set"
+nothing_formatted "no engine user"
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-datadir cases"

@@ -60,6 +60,17 @@ func FindOrphanVolumes(ctx context.Context, provider ebsprovider.EBSProvider, me
 		known[volume.VolumeID] = true
 	}
 
+	// An AMI's blocks live in a provider volume named after the image, and it
+	// is recorded as an AMI document rather than a volume one. Without this
+	// every registered image reads as an orphan.
+	images, err := metadata.ListAMIsStrict(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("orphan scan: list control-plane images: %w", err)
+	}
+	for _, image := range images {
+		known[image.ImageID] = true
+	}
+
 	held, err := listProviderVolumes(ctx, provider)
 	if err != nil {
 		return nil, err

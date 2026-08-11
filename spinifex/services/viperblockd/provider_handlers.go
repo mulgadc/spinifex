@@ -212,9 +212,15 @@ func handleProviderCapabilities(msg *nats.Msg) {
 	})
 }
 
-// reservedListPrefix is the control plane's own metadata prefix. It is not a
-// volume, and enumeration must not report it as one.
-const reservedListPrefix = "spinifex/"
+// reservedListPrefixes are top-level prefixes in the bucket that are not
+// volumes: the control plane's own metadata, and the cluster key store.
+var reservedListPrefixes = map[string]bool{"spinifex": true, "keys": true}
+
+// snapshotIDPrefix marks a snapshot's objects. A snapshot sits at the bucket's
+// top level beside volumes and has a config of its own, so the name is the
+// only thing separating the two; SnapPrefix builds it and the AMI removal path
+// already reads it back the same way.
+const snapshotIDPrefix = "snap-"
 
 // listVolumePrefixes returns every top-level prefix in the bucket that names a
 // volume, sorted. It reports what storage actually holds, which is the point:
@@ -232,13 +238,11 @@ func listVolumePrefixes(ctx context.Context, store objectstore.ObjectStore, buck
 			return nil, fmt.Errorf("list volume prefixes: %w", err)
 		}
 		for _, commonPrefix := range listOutput.CommonPrefixes {
-			prefix := awssdk.StringValue(commonPrefix.Prefix)
-			if prefix == "" || prefix == reservedListPrefix {
+			id := strings.TrimSuffix(awssdk.StringValue(commonPrefix.Prefix), "/")
+			if !validVolumeName(id) || reservedListPrefixes[id] || strings.HasPrefix(id, snapshotIDPrefix) {
 				continue
 			}
-			if id := strings.TrimSuffix(prefix, "/"); validVolumeName(id) {
-				ids = append(ids, id)
-			}
+			ids = append(ids, id)
 		}
 		if !awssdk.BoolValue(listOutput.IsTruncated) {
 			break

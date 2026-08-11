@@ -54,6 +54,19 @@ func putRawVolumeDocument(t *testing.T, store objectstore.ObjectStore, volumeID 
 	require.NoError(t, err)
 }
 
+// putRawAMIDocument writes bytes straight to an AMI's document key.
+func putRawAMIDocument(t *testing.T, store objectstore.ObjectStore, imageID string, body []byte) {
+	t.Helper()
+	key, err := ebsmetadata.AMIKey(imageID)
+	require.NoError(t, err)
+	_, err = store.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String(orphanTestBucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(body),
+	})
+	require.NoError(t, err)
+}
+
 // TestFindOrphanVolumes_FindsAVolumeWhoseDocumentIsGone is the reason the
 // enumeration verb exists. Deleting the document is exactly the failure the
 // consolidated boundary made unrecoverable: the volume vanishes from
@@ -116,6 +129,35 @@ func TestFindOrphanVolumes_DerivedVolumeReportedWhenItsBaseIsGone(t *testing.T) 
 	assert.Equal(t, "vol-gone00000000", orphans[0].VolumeID)
 	assert.Equal(t, "vol-gone00000000-efi", orphans[1].VolumeID)
 	assert.True(t, orphans[1].Derived)
+}
+
+// An AMI's blocks live in a provider volume named after the image, recorded as
+// an AMI document rather than a volume one. A live env19 run reported every
+// registered image as an orphan before this was handled.
+func TestFindOrphanVolumes_AMIBackedVolumeIsNotAnOrphan(t *testing.T) {
+	provider, metadata := newOrphanScanFixture(t)
+	createProviderVolume(t, provider, "ami-dd7f063caded1ff82")
+	require.NoError(t, metadata.PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID: "ami-dd7f063caded1ff82", Name: "ubuntu", State: "available",
+	}))
+
+	orphans, err := FindOrphanVolumes(t.Context(), provider, metadata)
+	require.NoError(t, err)
+	assert.Empty(t, orphans, "a registered AMI's backing volume is documented as an image, not as an orphan")
+}
+
+// An undecodable AMI document must abort the scan for the same reason an
+// undecodable volume document does: absence and unreadability are different
+// answers, and only one of them means orphaned.
+func TestFindOrphanVolumes_UndecodableAMIDocumentAbortsTheScan(t *testing.T) {
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true})
+	store := objectstore.NewMemoryObjectStore()
+	metadata := ebsmetadata.NewStore(store, orphanTestBucket)
+	createProviderVolume(t, provider, "ami-corrupted000")
+	putRawAMIDocument(t, store, "ami-corrupted000", []byte("{not json"))
+
+	_, err := FindOrphanVolumes(t.Context(), provider, metadata)
+	require.Error(t, err)
 }
 
 // An unreadable document must abort the scan, never read as absent: reporting

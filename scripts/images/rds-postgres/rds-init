@@ -71,6 +71,10 @@ MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 # AWS, so a customer's `GRANT rds_superuser TO ...` works here too.
 MASTER_GROUP_ROLE="rds_superuser"
 
+# NAMEDATALEN-1: the server truncates a longer identifier, so the database
+# created would not be the one the customer asked for.
+MAX_DB_NAME_LEN=63
+
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
 
@@ -133,6 +137,20 @@ load_handoff() {
             fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
             ;;
     esac
+
+    # The same rule the control plane applies, for the same reason the reserved
+    # name is re-checked: an unusable name reaches initdb, fails at CREATE
+    # DATABASE and spends the one-shot password on the way. psql quotes the
+    # identifier, so here this is defence in depth rather than the barrier.
+    case "${RDS_DB_NAME}" in
+        '') ;;
+        [!A-Za-z]* | *[!A-Za-z0-9_]*)
+            fail "RDS_DB_NAME ${RDS_DB_NAME} must begin with a letter and hold only letters, digits and underscores; the control plane should have rejected it"
+            ;;
+    esac
+    if [ "${#RDS_DB_NAME}" -gt "${MAX_DB_NAME_LEN}" ]; then
+        fail "RDS_DB_NAME is longer than the ${MAX_DB_NAME_LEN} characters PostgreSQL allows; the control plane should have rejected it"
+    fi
 
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;

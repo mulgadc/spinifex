@@ -26,6 +26,9 @@ type Engine struct {
 	// The engine's own identifier limit for a role name. The character rule is
 	// shared across engines; the length is not.
 	maxUsernameLen int
+	// The engine's rule for an initial database name, which the guest
+	// interpolates into a CREATE DATABASE.
+	validateDBName func(string) error
 
 	// The engine's parameter table, keyed by parameter name. The generic spec
 	// machinery is shared; only the table and its formulas are per-engine.
@@ -47,6 +50,11 @@ var enginesByFamily = indexEnginesByFamily()
 func indexEnginesByFamily() map[string]Engine {
 	out := make(map[string]Engine, len(engines))
 	for _, engine := range engines {
+		// An engine registered without its own name rule would panic on the first
+		// create that names a database, rather than here where every build sees it.
+		if engine.validateDBName == nil {
+			panic("rds: engine " + engine.Name + " registers no DBName rule")
+		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {
 			panic("rds: parameter group family " + family + " is claimed by two engines")
@@ -158,6 +166,36 @@ func (e Engine) ValidateUsernameNotReserved(username string) error {
 		}
 	}
 	return nil
+}
+
+// The initial database, which AWS leaves optional: an empty name creates no
+// database at all rather than one named by default.
+func (e Engine) ValidateDBName(name string) error {
+	return e.validateDBName(name)
+}
+
+// The shared rule, taking each engine's own identifier limit. The character set
+// is narrower than either engine accepts, because it is also what makes the name
+// safe to interpolate into the CREATE DATABASE rds-init builds inside the guest.
+func dbNameRule(maxLen int) func(string) error {
+	return func(name string) error {
+		switch {
+		case name == "":
+			return nil
+		case len(name) > maxLen:
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"DBName must be at most %d characters", maxLen)
+		case !isLetter(rune(name[0])):
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBName must begin with a letter")
+		}
+		for _, r := range name {
+			if !isLetter(r) && !isDigit(r) && r != '_' {
+				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+					"DBName may contain only letters, digits and underscores")
+			}
+		}
+		return nil
+	}
 }
 
 // Bounds and the printable-ASCII range AWS accepts. The password is never

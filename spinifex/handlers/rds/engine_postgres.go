@@ -20,8 +20,9 @@ var enginePostgres = Engine{
 	reservedUsernames:        []string{"rdsadmin", "postgres", "rds_superuser"},
 	reservedUsernamePrefixes: []string{"pg_"},
 	// NAMEDATALEN-1, where the engine's own limit and AWS's documented one
-	// coincide.
+	// coincide. A database name is the same identifier limit.
 	maxUsernameLen:       63,
+	validateDBName:       dbNameRule(63),
 	catalog:              postgresParameterCatalog,
 	validateCombinations: validatePostgresParameterCombinations,
 }

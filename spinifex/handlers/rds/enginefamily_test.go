@@ -27,6 +27,7 @@ var engineUnderTest = Engine{
 	reservedUsernames:        []string{"root"},
 	reservedUsernamePrefixes: []string{"testdb_"},
 	maxUsernameLen:           80,
+	validateDBName:           dbNameRule(64),
 	catalog: buildParameterCatalog(
 		ParameterSpec{
 			Name: "buffer_size", DataType: paramTypeInteger, ApplyType: ApplyTypeStatic,

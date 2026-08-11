@@ -75,6 +75,39 @@ func TestEngineValidateMasterUsername(t *testing.T) {
 	}
 }
 
+// The name is interpolated into a CREATE DATABASE in the guest, so the rule is
+// narrower than the engine's own: it is what makes the interpolation safe.
+func TestEngineValidateDBName(t *testing.T) {
+	engine, err := LookupEngine("postgres")
+	require.NoError(t, err)
+
+	// Empty is not a rejection: AWS creates no initial database when none is named.
+	for _, name := range []string{"", "orders", "order_db1", "Orders"} {
+		assert.NoError(t, engine.ValidateDBName(name), "DBName %q", name)
+	}
+
+	cases := map[string]string{
+		"hyphen":        "my-db",
+		"leading digit": "1db",
+		"space":         "my db",
+		"dot":           "my.db",
+		// MariaDB maps a database name onto a directory name, so these are
+		// structurally dangerous there rather than merely awkward.
+		"slash":          "my/db",
+		"backslash":      `my\db`,
+		"trailing space": "orders ",
+		"quote":          "orders'",
+		"too long":       strings.Repeat("a", 64),
+	}
+	for name, dbName := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := engine.ValidateDBName(dbName)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+		})
+	}
+}
+
 func TestValidateMasterUserPassword(t *testing.T) {
 	assert.NoError(t, ValidateMasterUserPassword("Sup3rSecret!"))
 	assert.NoError(t, ValidateMasterUserPassword(strings.Repeat("x", maxMasterPasswordLen)))

@@ -207,7 +207,10 @@ write_handoff() {
         # password carrying shell metacharacters — or a newline — survive the
         # handoff intact and reach the checks that exist for it.
         [ -n "$2" ] && echo "RDS_MASTER_PASSWORD='$2'"
-        [ -n "$3" ] && echo "RDS_DB_NAME=$3"
+        # Quoted as rds-agent's shellQuote writes it, so a name carrying a space
+        # or a shell metacharacter survives the handoff and reaches the check
+        # that exists for it rather than being mangled on the way.
+        [ -n "$3" ] && echo "RDS_DB_NAME='$3'"
         [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
         [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
         # Last, and unconditional: an optional line failing its test would make
@@ -810,6 +813,31 @@ for reserved in postgres rds_superuser rdsadmin pg_toast_owner PostGres; do
         || pass "reserved-master-${reserved}: refused before initdb"
     unset MASTER_USER
 done
+
+# --- Case 10: an initial database name the control plane would have refused ---
+# The name is interpolated into a CREATE DATABASE, and a failure there is a
+# failure after initdb: the datadir is cleared and the one-shot password is
+# gone. Refusing before initdb is what keeps the create retryable.
+for badname in 'my-db' 'my db' 'my/db' 'my.db' '1db' \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    reset_state
+    write_handoff initialize 's3cr3t' "${badname}"
+    run_fails "bad-dbname-${badname}"
+    [ -s "${INITDB_CALLS}" ] \
+        && fail "bad-dbname-${badname}: initdb ran before the name was refused" \
+        || pass "bad-dbname-${badname}: refused before initdb"
+done
+
+# The rule is a rejection of malformed names, not of every name: the boundary
+# length and an underscore have to keep working.
+reset_state
+write_handoff initialize 's3cr3t' \
+    'a_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+write_parameters
+if run_ok "dbname-at-the-limit"; then
+    grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
+        && pass "dbname-at-the-limit: accepted" || fail "dbname-at-the-limit: no CREATE DATABASE"
+fi
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"

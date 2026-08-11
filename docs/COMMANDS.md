@@ -845,16 +845,35 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 
 ---
 
-## RDS (PostgreSQL)
+## RDS (PostgreSQL and MariaDB)
 
-Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**, from any subnet of it rather than the endpoint ENI's own. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
+Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` or `spinifex-rds-mariadb` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**, from any subnet of it rather than the endpoint ENI's own. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way.
 
-- **Engine:** `postgres` 18 only — `EngineVersion` accepts `18` or `18.x`, and there is no in-place upgrade.
+Everything below applies to both engines unless it names one. `Engine` is fixed at create — there is no in-place engine change, no cross-engine snapshot restore and no migration between the two.
+
+| | `postgres` | `mariadb` |
+|---|---|---|
+| Version | 18 | 11.8 |
+| `EngineVersion` accepted | `18`, or omitted | `11.8`, or omitted |
+| Default port | 5432 | 3306 |
+| Parameter-group family | `postgres18` | `mariadb11.8` |
+| Implicit default group | `default.postgres18` | `default.mariadb11.8` |
+| `DBName` maximum | 63 characters | 64 characters |
+| `MasterUsername` maximum | 63 characters | 80 characters |
+| Reserved usernames | `postgres`, `rdsadmin`, `rds_superuser`, and the `pg_` prefix | `root`, `mysql`, `mariadb.sys`, `rdsadmin`, `PUBLIC`, and the `mysql.` and `mariadb.` prefixes |
+| Catalog size | 51 parameters | 54 parameters |
+
+**`mysql` is not an accepted engine and is not an alias for `mariadb`.** MariaDB is offered under its own AWS engine name, exactly as AWS RDS offers it. Naming `mysql` fails with `InvalidParameterValue`; a client — including Terraform's `aws_db_instance` — must set `engine = "mariadb"`. Aliasing would report an engine and a version the instance is not running, and the discrepancy would propagate into `DescribeDBInstances`, parameter-group families and snapshot metadata.
+
+- **Engine version:** pinned per engine, and an `EngineVersion` naming anything but the pin is rejected. A minor version such as `18.4` or `11.8.8` is rejected as well: the AMI does not promise any particular minor, so accepting one would be a promise the platform cannot keep. There is no in-place upgrade.
 - **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
 - **Storage:** gp3 only, 20–65536 GiB, always encrypted with the cluster key. Grow-only, and a grow is **stop/start with downtime** — the volume cannot be resized while attached.
-- **TLS:** offered, not enforced. The engine serves a per-instance certificate signed by the cluster CA (the `ca.pem` baked into AMIs) carrying both the ENI IP and the DNS name in its SAN set, so `sslmode=verify-full` works by name or by address. A deployment with no cluster CA starts the engine without TLS.
-- **Master user:** administrative but **not a PostgreSQL superuser**, as on AWS. It gets `CREATEDB` and `CREATEROLE`, owns the initial database, and holds `rds_superuser` (`pg_monitor`, `pg_signal_backend`, `pg_checkpoint`) with `ADMIN OPTION`, so it can grant that set onward. It cannot `COPY ... FROM/TO PROGRAM`, touch server-side files, run `ALTER SYSTEM`, or install **untrusted** extensions — those need the cluster superuser, which no customer credential is. Trusted extensions install normally in a database it owns. `postgres`, `rdsadmin` and `rds_superuser` are rejected as `--master-username`.
-- **Backups:** daily COW snapshots of the data volume inside `PreferredBackupWindow`. Retention defaults to 7 days and caps at 7; `0` disables automated backups. No point-in-time recovery.
+- **`DBName`:** optional; an omitted name creates no initial database. When supplied it must begin with a letter and hold only letters, digits and underscores, within the per-engine limit above. The rule is narrower than either engine's own, because the guest interpolates the name into a `CREATE DATABASE`.
+- **TLS:** offered, not enforced, on both engines. The engine serves a per-instance certificate signed by the cluster CA (the `ca.pem` baked into AMIs) carrying both the ENI IP and the DNS name in its SAN set, so PostgreSQL's `sslmode=verify-full` verifies by name or by address, and MariaDB's `--ssl-ca` plus `--ssl-verify-server-cert` verifies against the endpoint name. A deployment with no cluster CA starts the engine without TLS.
+- **PostgreSQL master user:** administrative but **not a PostgreSQL superuser**, as on AWS. It gets `CREATEDB` and `CREATEROLE`, owns the initial database, and holds `rds_superuser` (`pg_monitor`, `pg_signal_backend`, `pg_checkpoint`) with `ADMIN OPTION`, so it can grant that set onward. It cannot `COPY ... FROM/TO PROGRAM`, touch server-side files, run `ALTER SYSTEM`, or install **untrusted** extensions — those need the cluster superuser, which no customer credential is. Trusted extensions install normally in a database it owns.
+- **MariaDB master user:** created as `'<name>'@'%'` with an explicitly enumerated grant list `ON *.*` `WITH GRANT OPTION` — `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `RELOAD`, `PROCESS`, `REFERENCES`, `INDEX`, `ALTER`, `SHOW DATABASES`, `CREATE TEMPORARY TABLES`, `LOCK TABLES`, `EXECUTE`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE VIEW`, `SHOW VIEW`, `CREATE ROUTINE`, `ALTER ROUTINE`, `CREATE USER`, `EVENT`, `TRIGGER`. Deliberately withheld are `SUPER` and its 11.8 split-out successors, `FILE`, `SHUTDOWN` and everything scoped to `mysql.*`: `FILE` would give `SELECT ... INTO OUTFILE` and `LOAD_FILE()` as the OS user, and `INSERT` on `mysql.*` would allow `CREATE FUNCTION ... SONAME` to load native code into the server.
+- **MariaDB storage engine:** `default_storage_engine` is platform-owned and pinned to **InnoDB**, and is absent from the parameter catalog — a deliberate divergence from AWS, which exposes it as modifiable. Only InnoDB keeps a redo log, so only InnoDB is covered by the snapshot guarantee. An explicit `ENGINE=Aria` or `ENGINE=MyISAM` on `CREATE TABLE` still works — the limitation is documented rather than prevented — but such a table has no redo log, so a snapshot taken without a successful quiesce can leave it inconsistent with no way back. Use InnoDB, as AWS also recommends.
+- **Backups:** daily COW snapshots of the data volume inside `PreferredBackupWindow`. Retention defaults to 7 days and caps at 7; `0` disables automated backups. No point-in-time recovery, and MariaDB's binary log is off.
 - **Availability:** single-AZ. Engine crashes restart in-guest and VM crashes on a live host restart via `ec2-health-restart`, but an instance whose host is lost is reported `failed` with a reason in `StatusInfos` and needs operator recovery.
 
 Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stopping`, `stopped`, `starting`, `deleting`, `failed`. (`recovering` is defined in the state machine but unreachable until auto-recovery lands.)
@@ -863,7 +882,7 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-db-instance` | `--db-instance-identifier`, `--engine` (postgres), `--engine-version` (18), `--db-instance-class`, `--allocated-storage` (20–65536 GiB), `--storage-type` (gp3), `--master-username`, `--master-user-password`, `--db-name` (letters, digits and underscores, beginning with a letter, max 63), `--port` (1150–65535), `--db-subnet-group-name` (unnamed → the account's default VPC subnet), `--vpc-security-group-ids`, `--db-parameter-group-name`, `--backup-retention-period` (0–7, default 7), `--preferred-backup-window`, `--preferred-maintenance-window` (unnamed → assigned from the identifier), `--deletion-protection`, `--tags`, `--storage-encrypted` (true only) | `--auto-minor-version-upgrade`, `--copy-tags-to-snapshot`, Performance Insights / Enhanced Monitoring flags (all accepted, no-op); see "Rejected Parameters" for those that fail loudly | **DONE** |
+| `create-db-instance` | `--db-instance-identifier`, `--engine` (postgres, mariadb), `--engine-version` (the engine's pin, or omitted), `--db-instance-class`, `--allocated-storage` (20–65536 GiB), `--storage-type` (gp3), `--master-username`, `--master-user-password`, `--db-name` (letters, digits and underscores, beginning with a letter, max 63 on postgres and 64 on mariadb), `--port` (1150–65535), `--db-subnet-group-name` (unnamed → the account's default VPC subnet), `--vpc-security-group-ids`, `--db-parameter-group-name`, `--backup-retention-period` (0–7, default 7), `--preferred-backup-window`, `--preferred-maintenance-window` (unnamed → assigned from the identifier), `--deletion-protection`, `--tags`, `--storage-encrypted` (true only) | `--auto-minor-version-upgrade`, `--copy-tags-to-snapshot`, Performance Insights / Enhanced Monitoring flags (all accepted, no-op); see "Rejected Parameters" for those that fail loudly | **DONE** |
 | `describe-db-instances` | `--db-instance-identifier` | `--filters`, `--max-records`, `--marker` (parsed, not applied) | **DONE** |
 | `modify-db-instance` | `--db-instance-identifier`, `--master-user-password`, `--allocated-storage` (grow only, stop/start), `--db-instance-class` (VM replace), `--db-parameter-group-name`, `--vpc-security-group-ids`, `--deletion-protection`, `--backup-retention-period`, `--preferred-backup-window`, `--preferred-maintenance-window`, `--apply-immediately` | `--new-db-instance-identifier`, `--engine-version`, `--db-port-number`, `--db-subnet-group-name`, `--max-allocated-storage`, `--ca-certificate-identifier` (all rejected, not ignored) | **DONE** |
 | `delete-db-instance` | `--db-instance-identifier`, `--skip-final-snapshot`, `--final-db-snapshot-identifier` (exactly one is required) | `--delete-automated-backups` (no-op — automated snapshots are always purged with the instance) | **DONE** — `DeletionProtection` blocks the call; a final snapshot **retains** the data volume until that snapshot is deleted |
@@ -875,7 +894,7 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-db-snapshot` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--tags` | — | **DONE** — the agent quiesces the engine first; a failed quiesce falls back to a crash-consistent snapshot and writes a `DescribeEvents` warning |
+| `create-db-snapshot` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--tags` | — | **DONE** — the agent quiesces the engine first (`pg_backup_start` on postgres, `BACKUP STAGE` on mariadb); a failed quiesce falls back to a crash-consistent snapshot and writes a `DescribeEvents` warning naming what that engine does and does not recover |
 | `describe-db-snapshots` | `--db-snapshot-identifier`, `--db-instance-identifier`, `--snapshot-type` (manual, automated) | `--filters`, `--dbi-resource-id`, `--include-shared`, `--include-public` (rejected), `--max-records`, `--marker` | **DONE** |
 | `delete-db-snapshot` | `--db-snapshot-identifier` | — | **DONE** — refused while a restored volume still references the snapshot; the last snapshot released reclaims a retained data volume |
 | `restore-db-instance-from-db-snapshot` | `--db-instance-identifier`, `--db-snapshot-identifier`, `--db-instance-class`, `--allocated-storage` (≥ the snapshot's), `--storage-type` (gp3), `--port`, `--db-subnet-group-name`, `--vpc-security-group-ids`, `--db-parameter-group-name`, `--deletion-protection`, `--tags`, `--engine` (must match the snapshot) | `--db-name` (rejected when it differs from the snapshot's), plus the create rejections | **DONE** — unnamed fields are inherited from the snapshot; the master password comes from the restored datadir |
@@ -903,14 +922,16 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-db-parameter-group` | `--db-parameter-group-name`, `--db-parameter-group-family` (postgres18), `--description`, `--tags` | — | **DONE** — names beginning with `default.` are reserved; the implicit group is `default.postgres18` |
-| `describe-db-parameter-groups` | `--db-parameter-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** — the implicit default group is always listed |
+| `create-db-parameter-group` | `--db-parameter-group-name`, `--db-parameter-group-family` (`postgres18` or `mariadb11.8`), `--description`, `--tags` | — | **DONE** — names beginning with `default.` are reserved. **`--db-parameter-group-family` defaults to `postgres18` when omitted**, so a MariaDB group must name its family explicitly or the mismatch surfaces one call later, at `create-db-instance` |
+| `describe-db-parameter-groups` | `--db-parameter-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** — every engine's implicit default group is always listed, so both `default.postgres18` and `default.mariadb11.8` appear in every account |
 | `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written and propagated to attached instances; `immediate` on a static parameter is rejected, as AWS does |
-| `describe-db-parameters` | `--db-parameter-group-name`, `--source` (user, engine-default) | `--filters`, `--max-records`, `--marker` | **DONE** — 51-parameter PostgreSQL 18 catalog; memory defaults are computed per instance class and reported as literals |
+| `describe-db-parameters` | `--db-parameter-group-name`, `--source` (user, engine-default) | `--filters`, `--max-records`, `--marker` | **DONE** — the catalog of the group's own family: 51 parameters on `postgres18`, 54 on `mariadb11.8`. Memory defaults are computed per instance class and reported as literals |
 | `delete-db-parameter-group` | `--db-parameter-group-name` | — | **DONE** — refused for a default group and while any instance references it |
 | `reset-db-parameter-group` | — | all | **NOT STARTED** (`InvalidAction`) |
 
 A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Later group edits propagate to every attached instance. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
+
+**A group's family must match the instance's engine.** A `postgres18` group cannot be attached to a MariaDB instance and a `mariadb11.8` group cannot be attached to a PostgreSQL one, on create, on modify, on a deferred apply or on a snapshot restore; the mismatch is refused with `InvalidParameterCombination`. The catalogs are per-family too, so `modify-db-parameter-group` will not store one engine's parameter name into the other's group. Each catalog is a curated, validated subset rather than the engine's full variable set, and the platform-owned settings — the port, the datadir, the socket, the bind address, the `ssl_*` family, and on MariaDB `secure_file_priv`, `log_bin`, `default_storage_engine` and the InnoDB buffer-pool chunk settings — are absent from it rather than present-and-unmodifiable, because they are not the customer's to set.
 
 ### RDS — Tags
 
@@ -942,7 +963,8 @@ Policy: a parameter whose omission would create a false safety, security or avai
 | `DBSecurityGroups` | EC2-Classic security groups — use `VpcSecurityGroupIds` |
 | `DBClusterIdentifier`, `DBClusterSnapshotIdentifier` | Clustered engines are not offered |
 | `EnableCloudwatchLogsExports` | Log export is not implemented |
-| `EngineVersion` other than 18, `Engine` on modify | No in-place engine or version change |
+| `EngineVersion` other than the engine's pin, `Engine` on modify | No in-place engine or version change |
+| `Engine=mysql` (and Aurora engines) | Oracle MySQL is not offered; `mariadb` is a distinct engine, not an alias for it |
 | `NewDBInstanceIdentifier` | The identifier is the DNS label and the KV key |
 | `DBPortNumber`, `DBSubnetGroupName` on modify | Both would move the endpoint |
 | `MaxAllocatedStorage` | Storage autoscaling is not implemented |
@@ -961,14 +983,14 @@ Recognised actions below return `OperationNotSupported`, so a client sees "not o
 
 | Feature | Actions | Priority | Status |
 |---------|---------|----------|--------|
-| MySQL engine | — (second AMI preset + `Engine` implementation) | High | **NOT STARTED** |
-| Point-in-time recovery (WAL archiving to predastore) | `restore-db-instance-to-point-in-time` | High | **NOT STARTED** |
+| Oracle MySQL engine | — | Low | **NOT PLANNED** — MariaDB is offered instead, under its own `mariadb` engine name; see the note above on why it is not aliased onto `mysql` |
+| Point-in-time recovery (WAL archiving to predastore on postgres, binlog on mariadb) | `restore-db-instance-to-point-in-time` | High | **NOT STARTED** |
 | Auto-recovery from node loss (failure is detected, not repaired) | — | High | **NOT STARTED** |
 | Read replicas | `create-db-instance-read-replica`, `promote-read-replica` | Medium | **NOT STARTED** |
 | Aurora / DB clusters | `create-db-cluster`, `modify-db-cluster`, `delete-db-cluster`, `describe-db-clusters`, `failover-db-cluster` | Low | **NOT STARTED** |
 | Option groups | `create-option-group`, `modify-option-group`, `delete-option-group`, `describe-option-groups` | Low | **NOT STARTED** |
 | Engine-version / orderable-option data sources | `describe-db-engine-versions`, `describe-orderable-db-instance-options` | Low | **NOT STARTED** (`InvalidAction`) — not required by `aws_db_instance`; pin the class and version literally in Terraform |
-| Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS | — | — | **NOT STARTED** |
+| Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS, cross-engine snapshot restore, in-place migration between the two engines | — | — | **NOT STARTED** |
 
 IAM: `AmazonRDSFullAccess` and `AmazonRDSReadOnlyAccess` are available as managed policies. They grant `rds:` verb prefixes rather than `rds:*`, because `rds:*` would also appear to grant the internal agent actions the gateway reserves for a DB VM's own role.
 

@@ -21,9 +21,9 @@ import (
 // So the client that proves a customer can reach the database has to be a VM in
 // that subnet, driven over SSH — not psql on the machine running the test.
 //
-// The client is an Ubuntu gold image with the postgres client installed at boot,
-// not the rds-postgres engine AMI: that image carries neither sshd nor
-// cloud-init, so a VM launched from it would come up unreachable.
+// The client is an Ubuntu gold image with both engines' clients installed at
+// boot, not an engine AMI: those images carry neither sshd nor cloud-init, so a
+// VM launched from one would come up unreachable.
 const (
 	rdsClientUser = "ubuntu"
 
@@ -37,17 +37,19 @@ const (
 	// trust root. The engine AMI ships one; an Ubuntu client does not.
 	RDSClientCACertPath = "/home/ubuntu/spinifex-ca.pem"
 
-	// Postgres' assigned port, and the only one a DB instance publishes.
-	DBEnginePort = 5432
+	// Each engine's assigned port, and the only one an instance of it publishes.
+	PostgresEnginePort = 5432
+	MariaDBEnginePort  = 3306
 
 	rdsClientSSHTimeout   = 5 * time.Minute
 	rdsClientSetupTimeout = 5 * time.Minute
 )
 
-// rdsClientUserData installs the postgres client at first boot. Status and
+// rdsClientUserData installs both engines' clients at first boot. Status and
 // exit-code sentinels mirror the storagegrowth suite's protocol; the distinct
-// exit codes separate "no apt egress" from "no such package", which otherwise
-// both surface as a missing psql much later.
+// exit codes separate "no apt egress" from "no such package", and one engine's
+// client from the other's, which otherwise all surface as a missing binary much
+// later.
 var rdsClientUserData = fmt.Sprintf(`#!/bin/bash
 set -u
 trap 'echo $? > %[2]s' EXIT
@@ -57,6 +59,7 @@ echo running > %[1]s
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y || exit 10
 apt-get install -y postgresql-client || exit 11
+apt-get install -y mariadb-client || exit 12
 
 echo done > %[1]s
 `, rdsClientStatusFile, rdsClientExitCodeFile)
@@ -83,9 +86,12 @@ func RDSClientVM(t *testing.T, c *AWSClient, fx *Fixture, env *Env) SSHTarget {
 
 	// The default SG admits only same-SG members, so the runner's SSH and the
 	// client's connection to the DB endpoint both need opening explicitly. A
-	// caller supplying its own placement brings its own groups instead.
+	// caller supplying its own placement brings its own groups instead. Both
+	// engines' ports are opened here: the client VM is shared by every test that
+	// needs a connection, whichever engine it is connecting to.
 	EnsureDefaultSGOpen(t, c)
-	AuthorizeTCPIngress(t, c, vpc.SGID, DBEnginePort)
+	AuthorizeTCPIngress(t, c, vpc.SGID, PostgresEnginePort)
+	AuthorizeTCPIngress(t, c, vpc.SGID, MariaDBEnginePort)
 
 	return RDSClientVMIn(t, c, fx, env, RDSClientPlacement{SubnetID: vpc.SubnetID, SGID: vpc.SGID})
 }
@@ -141,9 +147,9 @@ func RDSClientVMIn(t *testing.T, c *AWSClient, fx *Fixture, env *Env, p RDSClien
 	return tgt
 }
 
-// waitForRDSClientTooling polls the boot-time install's sentinels until psql is
-// installed. A non-zero exit code is reported with the cloud-init log tail,
-// since the interesting failure is always inside apt.
+// waitForRDSClientTooling polls the boot-time install's sentinels until both
+// clients are installed. A non-zero exit code is reported with the cloud-init
+// log tail, since the interesting failure is always inside apt.
 func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 	t.Helper()
 	deadline := time.Now().Add(rdsClientSetupTimeout)
@@ -163,13 +169,13 @@ func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 
 		if code != "" && code != "0" {
 			log, _ := GuestExec(tgt, "tail -40 /var/log/cloud-init-output.log 2>/dev/null || true")
-			return fmt.Errorf("client VM postgres-client install exited %s (status=%q):\n%s", code, status, log)
+			return fmt.Errorf("client VM database-client install exited %s (status=%q):\n%s", code, status, log)
 		}
 		if code == "0" && status == "done" {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("client VM postgres-client install still %q after %s (last ssh error: %v)",
+			return fmt.Errorf("client VM database-client install still %q after %s (last ssh error: %v)",
 				status, rdsClientSetupTimeout, lastErr)
 		}
 		time.Sleep(5 * time.Second)
@@ -266,7 +272,7 @@ func TryPSQL(tgt SSHTarget, conn PSQLConn, sql string) (string, error) {
 func psqlCommand(conn PSQLConn, sql string) string {
 	port := conn.Port
 	if port == 0 {
-		port = DBEnginePort
+		port = PostgresEnginePort
 	}
 	env := []string{
 		"PGPASSWORD=" + shellQuote(conn.Password),

@@ -19,11 +19,17 @@ import (
 )
 
 // requireQEMUTools skips when the host has no qemu, so the suite stays
-// runnable on a machine that cannot exercise the real binaries.
+// runnable on a machine that cannot exercise the real binaries. CI sets
+// SPINIFEX_REQUIRE_CONFORMANCE_TOOLS so a runner image that loses qemu fails
+// loudly instead of quietly leaving MemoryProvider as the only implementation
+// the contract suite judges.
 func requireQEMUTools(t *testing.T) {
 	t.Helper()
 	for _, bin := range []string{"qemu-img", "qemu-nbd", "qemu-io"} {
 		if _, err := exec.LookPath(bin); err != nil {
+			if os.Getenv("SPINIFEX_REQUIRE_CONFORMANCE_TOOLS") != "" {
+				t.Fatalf("%s not installed, but SPINIFEX_REQUIRE_CONFORMANCE_TOOLS is set", bin)
+			}
 			t.Skipf("%s not installed", bin)
 		}
 	}

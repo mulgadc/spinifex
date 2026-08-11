@@ -56,6 +56,87 @@ type servingParameterRecorder interface {
 	RecordServingParameters(ctx context.Context) error
 }
 
+// Everything one engine implementation owns. The narrow interfaces above are
+// what the heartbeat, the commander and the rollback guard each hold; this is
+// only what the agent has to construct.
+type engine interface {
+	engineOps
+	parameterRecovery
+	servingParameterRecorder
+	// Follows the port the control plane assigned, once the bootstrap fetch
+	// lands. Called from a different goroutine than the commands that read it.
+	setPort(port int)
+}
+
+// The guest layout an engine preset lays down, keyed by the engine the image
+// bakes. Every default that belongs to one engine lives here, so nothing
+// outside an implementation names its paths, service, port or probe.
+type engineLayout struct {
+	binDir    string
+	dataDir   string
+	socketDir string
+	osUser    string
+	service   string
+	dataMount string
+	port      int
+	// The engine's own liveness signal, which is the only part of engineProbe
+	// that is not shared.
+	newProbe func(cfg config, run probeRunner) *engineProbe
+	// The implementation every control-plane directive is served by.
+	newEngine func(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) engine
+}
+
+// The name the control plane knows this implementation by, which is also what
+// setup.sh stamps into the image.
+const enginePostgres = "postgres"
+
+var engineLayouts = map[string]engineLayout{
+	enginePostgres: {
+		binDir:    "/usr/libexec/postgresql18",
+		dataDir:   "/var/lib/postgresql/18/data",
+		socketDir: "/run/postgresql",
+		osUser:    "postgres",
+		service:   "postgresql",
+		dataMount: "/var/lib/postgresql",
+		port:      5432,
+		newProbe:  newPostgresProbe,
+		newEngine: func(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) engine {
+			return newPostgresEngine(cfg, run, startSess, probe)
+		},
+	},
+}
+
+// Builds the health probe the image's engine supplies.
+func newProbe(cfg config, run probeRunner) (*engineProbe, error) {
+	layout, err := layoutFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return layout.newProbe(cfg, run), nil
+}
+
+// Builds the implementation the image bakes. Nothing here consults the control
+// plane: the agent runs the engine it is made of, and the delivered engine is
+// only ever checked against it.
+func newEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
+	layout, err := layoutFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return layout.newEngine(cfg, run, startSess, probe), nil
+}
+
+func layoutFor(cfg config) (engineLayout, error) {
+	if cfg.BakedEngine == "" {
+		return engineLayout{}, fmt.Errorf("this image carries no engine stamp at %s", cfg.EngineFile)
+	}
+	layout, ok := engineLayouts[cfg.BakedEngine]
+	if !ok {
+		return engineLayout{}, fmt.Errorf("this image bakes engine %q, which this agent does not implement", cfg.BakedEngine)
+	}
+	return layout, nil
+}
+
 // One child process. Env replaces the agent's own environment rather than
 // extending it, so a secret placed here reaches only the process that needs it.
 type command struct {
@@ -145,16 +226,42 @@ type postgresEngine struct {
 	held *quiesceHold
 }
 
-var (
-	_ engineOps                = (*postgresEngine)(nil)
-	_ parameterRecovery        = (*postgresEngine)(nil)
-	_ servingParameterRecorder = (*postgresEngine)(nil)
-)
+var _ engine = (*postgresEngine)(nil)
 
 const (
 	parameterRepairTimeout = 90 * time.Second
 	parameterRepairPoll    = time.Second
 )
+
+// pg_isready is what gives PostgreSQL three states for free: exit 0 is serving,
+// exit 1 is a postmaster up and rejecting connections, and anything else is an
+// engine that is not there at all. Resolved on PATH, where the client package
+// puts it.
+const postgresProbeBinary = "pg_isready"
+
+func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
+	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.EngineHost, run))
+}
+
+func postgresProbeState(host string, run probeRunner) probeStateFn {
+	return func(ctx context.Context, port int64) (engineState, string) {
+		portArg := strconv.FormatInt(port, 10)
+		code, err := run(ctx, postgresProbeBinary, "-h", host, "-p", portArg, "-q")
+		switch {
+		case err != nil:
+			// A missing binary or broken image. Reporting healthy on the strength of
+			// nothing would hide it, so this reads as absent like an engine that did
+			// not answer.
+			return engineAbsent, fmt.Sprintf("engine probe could not run: %v", err)
+		case code == 0:
+			return engineServing, ""
+		case code == 1:
+			return engineRecovering, "engine is rejecting connections (startup or recovery)"
+		default:
+			return engineAbsent, fmt.Sprintf("engine did not respond on %s:%s", host, portArg)
+		}
+	}
+}
 
 // Resolved once, under the name the control plane knows this implementation by.
 // A lookup failure is a mismatch between the agent and the control plane it was
@@ -174,12 +281,12 @@ func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, p
 		meta:          postgresEngineMeta,
 		run:           run,
 		startSess:     startSess,
-		psql:          filepath.Join(cfg.PGBin, "psql"),
+		psql:          filepath.Join(cfg.EngineBinDir, "psql"),
 		rcService:     cfg.RCService,
 		service:       cfg.EngineService,
-		pgData:        cfg.PGData,
+		pgData:        cfg.EngineDataDir,
 		socketDir:     cfg.SocketDir,
-		osUser:        cfg.PGUser,
+		osUser:        cfg.EngineUser,
 		probe:         probe,
 		repairTimeout: parameterRepairTimeout,
 		repairPoll:    parameterRepairPoll,

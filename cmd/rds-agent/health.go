@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
-	"strconv"
 	"sync/atomic"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -27,12 +25,16 @@ func execProbeRunner(ctx context.Context, name string, args ...string) (int, err
 	return -1, err
 }
 
-// Shells out to pg_isready rather than dialling the port, since only a startup
-// exchange separates an engine that is serving from one still in recovery.
+// What the engine reports about itself, which is the only part of the probe
+// that differs between engines. The port is passed in rather than read from the
+// engine, so the atomic below stays the one place it is followed from.
+type probeStateFn func(ctx context.Context, port int64) (engineState, string)
+
+// Engine-neutral: the latch, the port, the degraded mapping and the translation
+// to a reported health are shared, and only the state function is supplied by
+// the engine the image bakes.
 type engineProbe struct {
-	run    probeRunner
-	binary string
-	host   string
+	stateFn probeStateFn
 	// Set from the bootstrap config once it lands, from a different goroutine
 	// than the heartbeat that reads it.
 	port atomic.Int64
@@ -41,9 +43,9 @@ type engineProbe struct {
 	seenHealthy bool
 }
 
-func newEngineProbe(cfg config, run probeRunner) *engineProbe {
-	p := &engineProbe{run: run, binary: cfg.PGIsReady, host: cfg.EngineHost}
-	p.port.Store(int64(cfg.EnginePort))
+func newEngineProbe(port int, stateFn probeStateFn) *engineProbe {
+	p := &engineProbe{stateFn: stateFn}
+	p.port.Store(int64(port))
 	return p
 }
 
@@ -60,7 +62,7 @@ type engineState int
 const (
 	// Not answering at all, or the probe could not run.
 	engineAbsent engineState = iota
-	// The postmaster is up and rejecting connections: startup or crash recovery.
+	// The process is up but not yet serving: startup or crash recovery.
 	engineRecovering
 	engineServing
 )
@@ -83,21 +85,7 @@ func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, str
 // The raw probe result. Safe to call from a goroutine other than the
 // heartbeat's: it touches no latched state.
 func (p *engineProbe) state(ctx context.Context) (engineState, string) {
-	port := strconv.FormatInt(p.port.Load(), 10)
-	code, err := p.run(ctx, p.binary, "-h", p.host, "-p", port, "-q")
-	switch {
-	case err != nil:
-		// A missing binary or broken image. Reporting healthy on the strength of
-		// nothing would hide it, so this reads as absent like an engine that did
-		// not answer.
-		return engineAbsent, fmt.Sprintf("engine probe could not run: %v", err)
-	case code == 0:
-		return engineServing, ""
-	case code == 1:
-		return engineRecovering, "engine is rejecting connections (startup or recovery)"
-	default:
-		return engineAbsent, fmt.Sprintf("engine did not respond on %s:%s", p.host, port)
-	}
+	return p.stateFn(ctx, p.port.Load())
 }
 
 // A non-answering engine: starting until it has answered once, unhealthy after.

@@ -39,7 +39,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 }
 
 func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
-	h := newHeartbeater(newFakeControlPlane(), newEngineProbe(testProbeConfig(), staticProbe(2)), nil, 0)
+	h := newHeartbeater(newFakeControlPlane(), newPostgresProbe(testProbeConfig(), staticProbe(2)), nil, 0)
 	h.setBootstrapFailure("bootstrap fetch", errors.New(strings.Repeat("界", 1000)))
 
 	failure := h.bootstrapFailure.Load()
@@ -60,7 +60,7 @@ func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
 func TestHeartbeater_ChecksServingParametersOnEveryHealthyProbe(t *testing.T) {
 	code := 0
 	cfg := testProbeConfig()
-	probe := newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+	probe := newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
 		return code, nil
 	})
 	recorder := &countingServingRecorder{}

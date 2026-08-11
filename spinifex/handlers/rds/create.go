@@ -99,6 +99,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 			GatewayCACert:        s.deps.GatewayCACert,
 			Region:               s.region,
 			DBInstanceIdentifier: req.Identifier,
+			Engine:               req.Engine.Name,
 			EngineVersion:        req.EngineVersion,
 			EnginePort:           req.Port,
 		}),

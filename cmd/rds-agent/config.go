@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/guestenv"
@@ -12,17 +14,10 @@ const (
 	defaultGatewayCA  = "/etc/spinifex-rds/gateway-ca.pem"
 	defaultHandoffDir = "/run/spinifex-rds"
 	defaultEngineHost = "127.0.0.1"
-	defaultEnginePort = 5432
-	defaultPGIsReady  = "pg_isready"
-
-	// The guest layout rds-init lays down. Overridable for the same reason it is
-	// there: a sibling engine preset points at its own paths.
-	defaultPGBin         = "/usr/libexec/postgresql18"
-	defaultPGData        = "/var/lib/postgresql/18/data"
-	defaultSocketDir     = "/run/postgresql"
-	defaultPGUser        = "postgres"
-	defaultRCService     = "rc-service"
-	defaultEngineSvcName = "postgresql"
+	// Where setup.sh stamps the engine the image bakes. The agent builds its
+	// engine implementation from this file rather than from anything delivered.
+	defaultEngineFile = "/etc/spinifex-rds/engine"
+	defaultRCService  = "rc-service"
 	// The long-poll window the agent asks the gateway to hold a request open
 	// for. The gateway caps it at 20s.
 	defaultPollWait = 20 * time.Second
@@ -44,17 +39,22 @@ type config struct {
 	HandoffDir    string
 	EngineHost    string
 	EnginePort    int
-	// Overridable so a test or a sibling engine preset can point at its own.
-	PGIsReady string
-	PollWait  time.Duration
+	PollWait      time.Duration
+
+	// The engine the control plane launched this VM as, delivered by cloud-init,
+	// and the engine the image itself bakes. Two independent statements of the
+	// same fact: the agent refuses to bootstrap when they disagree.
+	Engine      string
+	EngineFile  string
+	BakedEngine string
 
 	// Where the command handlers reach the engine: the client binaries, the
 	// datadir the parameter file is installed into, the socket they connect
 	// over, the OS user they drop to, and the service the stop goes through.
-	PGBin         string
-	PGData        string
+	EngineBinDir  string
+	EngineDataDir string
 	SocketDir     string
-	PGUser        string
+	EngineUser    string
 	RCService     string
 	EngineService string
 
@@ -75,18 +75,18 @@ func loadConfig(envFile string) config {
 		GatewayCA:            get("RDS_GATEWAY_CA"),
 		Region:               get("RDS_REGION"),
 		DBInstanceIdentifier: get("RDS_DB_INSTANCE_IDENTIFIER"),
+		Engine:               get("RDS_ENGINE"),
+		EngineFile:           get("RDS_ENGINE_FILE"),
 		EngineVersion:        get("RDS_ENGINE_VERSION"),
 		HandoffDir:           get("RDS_HANDOFF_DIR"),
 		EngineHost:           get("RDS_ENGINE_HOST"),
-		PGIsReady:            get("RDS_PG_ISREADY"),
-		PGBin:                get("RDS_PG_BIN"),
-		PGData:               get("RDS_PGDATA"),
+		EngineBinDir:         get("RDS_ENGINE_BIN"),
+		EngineDataDir:        get("RDS_ENGINE_DATA"),
 		SocketDir:            get("RDS_SOCKET_DIR"),
-		PGUser:               get("RDS_PG_USER"),
+		EngineUser:           get("RDS_ENGINE_USER"),
 		RCService:            get("RDS_RC_SERVICE"),
 		EngineService:        get("RDS_ENGINE_SERVICE"),
 		DataMount:            get("RDS_DATA_MOUNT"),
-		EnginePort:           defaultEnginePort,
 		PollWait:             defaultPollWait,
 	}
 	if cfg.GatewayCA == "" {
@@ -98,32 +98,20 @@ func loadConfig(envFile string) config {
 	if cfg.EngineHost == "" {
 		cfg.EngineHost = defaultEngineHost
 	}
-	if cfg.PGIsReady == "" {
-		cfg.PGIsReady = defaultPGIsReady
-	}
-	if cfg.PGBin == "" {
-		cfg.PGBin = defaultPGBin
-	}
-	if cfg.PGData == "" {
-		cfg.PGData = defaultPGData
-	}
-	if cfg.SocketDir == "" {
-		cfg.SocketDir = defaultSocketDir
-	}
-	if cfg.PGUser == "" {
-		cfg.PGUser = defaultPGUser
+	if cfg.EngineFile == "" {
+		cfg.EngineFile = defaultEngineFile
 	}
 	if cfg.RCService == "" {
 		cfg.RCService = defaultRCService
 	}
-	if cfg.EngineService == "" {
-		cfg.EngineService = defaultEngineSvcName
-	}
+	// The image's own stamp rather than the delivered engine: an agent that took
+	// its layout from the payload could run one engine's implementation against
+	// another engine's datadir, which is the failure the stamp exists to prevent.
+	cfg.BakedEngine = readBakedEngine(cfg.EngineFile)
+	cfg.applyLayout(engineLayouts[cfg.BakedEngine])
+
 	// rds-datadir reads the same RDS_DATA_MOUNT, so the two agree on where the
 	// volume landed without either asserting it to the other.
-	if cfg.DataMount == "" {
-		cfg.DataMount = defaultDataMount
-	}
 	cfg.MountsFile = defaultMountsFile
 	cfg.SysBlock = defaultSysBlock
 	// The authoritative port comes from the bootstrap config; this is only what
@@ -139,4 +127,41 @@ func loadConfig(envFile string) config {
 		}
 	}
 	return cfg
+}
+
+// Fills in whatever the delivered configuration left unset. An override always
+// wins, so a test can point any of these at a fixture. An unrecognised engine
+// leaves the layout empty, and New refuses rather than guessing at one.
+func (c *config) applyLayout(layout engineLayout) {
+	if c.EngineBinDir == "" {
+		c.EngineBinDir = layout.binDir
+	}
+	if c.EngineDataDir == "" {
+		c.EngineDataDir = layout.dataDir
+	}
+	if c.SocketDir == "" {
+		c.SocketDir = layout.socketDir
+	}
+	if c.EngineUser == "" {
+		c.EngineUser = layout.osUser
+	}
+	if c.EngineService == "" {
+		c.EngineService = layout.service
+	}
+	if c.DataMount == "" {
+		c.DataMount = layout.dataMount
+	}
+	if c.EnginePort == 0 {
+		c.EnginePort = layout.port
+	}
+}
+
+// The engine the image bakes. An absent or unreadable stamp reads as empty,
+// which New refuses: an agent that guessed would defeat the stamp.
+func readBakedEngine(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(string(raw)))
 }

@@ -141,9 +141,9 @@ func (r *recordingRunner) run(_ context.Context, c command) (string, error) {
 
 func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	t.Helper()
-	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
-	cfg.PGData = t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cfg.PGData, "conf.d"), 0o700); err != nil {
+	cfg := testLoadConfig(t, enginePostgres)
+	cfg.EngineDataDir = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg.EngineDataDir, "conf.d"), 0o700); err != nil {
 		t.Fatalf("create conf.d: %v", err)
 	}
 	// The guest's postgres user does not exist here, and the chown of the
@@ -152,8 +152,8 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	if err != nil {
 		t.Fatalf("resolve the current user: %v", err)
 	}
-	cfg.PGUser = current.Username
-	return newPostgresEngine(cfg, run, nil, newEngineProbe(cfg, staticProbe(0)))
+	cfg.EngineUser = current.Username
+	return newPostgresEngine(cfg, run, nil, newPostgresProbe(cfg, staticProbe(0)))
 }
 
 // The password reaches psql through the environment and is re-quoted there,
@@ -341,7 +341,7 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	codes := []int{2, 2, 0}
 	probeCall := 0
 	cfg := testProbeConfig()
-	engine.probe = newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+	engine.probe = newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
 		code := codes[min(probeCall, len(codes)-1)]
 		probeCall++
 		return code, nil

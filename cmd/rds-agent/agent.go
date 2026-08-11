@@ -180,7 +180,7 @@ type Agent struct {
 	id              identity
 	cp              controlPlane
 	probe           *engineProbe
-	engine          *postgresEngine
+	engine          engine
 	handoffWriter   func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
 	dataMountWaiter func(context.Context, string, string) error
 
@@ -195,10 +195,7 @@ type Agent struct {
 
 // Assembles from already-built parts, so tests can pass fakes; New builds the
 // production control plane and delegates here.
-func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
-	if cfg.DataMount == "" {
-		cfg.DataMount = defaultDataMount
-	}
+func newAgent(cfg config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 	if cfg.MountsFile == "" {
 		cfg.MountsFile = defaultMountsFile
 	}
@@ -211,11 +208,15 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
 		cfg: cfg, id: id, cp: cp, probe: probe,
 		handoffWriter: writeHandoff, dataMountWaiter: waitForDataMount,
 	}
-	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner, probe)
+	eng, err := newEngine(cfg, execCommandRunner, execSessionRunner, probe)
+	if err != nil {
+		return nil, err
+	}
+	a.engine = eng
 	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
 	a.guard = newParamGuard(a.engine, probe, cp)
-	return a
+	return a, nil
 }
 
 // Does not wait for IMDS: the register loop rides out a datapath still coming up.
@@ -227,7 +228,11 @@ func New(cfg config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAgent(cfg, cp, newEngineProbe(cfg, execProbeRunner)), nil
+	probe, err := newProbe(cfg, execProbeRunner)
+	if err != nil {
+		return nil, err
+	}
+	return newAgent(cfg, cp, probe)
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -244,6 +249,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 	a.hb.id, a.cmd.id, a.guard.id = a.id, a.id, a.id
+
+	// Ahead of the handoff, so rds-init never unblocks and no datadir is touched.
+	// An agent running on the wrong image would initialise one engine over
+	// another's data, coming up healthy and empty beside data nothing references.
+	if err := a.refuseEngineMismatch(ctx); err != nil {
+		return err
+	}
 
 	// Beating before the bootstrap keeps a stuck boot visible as a live VM with
 	// a down engine rather than as silence.
@@ -277,6 +289,26 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+// The engine cloud-init says this VM was launched as, against the engine the
+// image bakes. An empty expectation is no assertion rather than a disagreement:
+// a VM launched before the control plane emitted RDS_ENGINE carries none.
+func (a *Agent) refuseEngineMismatch(ctx context.Context) error {
+	expected := strings.ToLower(strings.TrimSpace(a.cfg.Engine))
+	if expected == "" || expected == a.cfg.BakedEngine {
+		return nil
+	}
+
+	message := fmt.Sprintf("this VM was launched as engine %q but its image bakes %q; refusing to bootstrap",
+		expected, a.cfg.BakedEngine)
+	slog.ErrorContext(ctx, "rds-agent: "+message)
+	// Reported before returning, so the control plane learns why the instance
+	// never came up rather than only that it never did.
+	if _, err := a.cp.SubmitState(ctx, a.id, handlers_rds.EngineHealthUnhealthy, message); err != nil {
+		slog.ErrorContext(ctx, "rds-agent: reporting the engine mismatch failed", "err", err)
+	}
+	return errors.New(message)
 }
 
 const dataMountPollInterval = time.Second

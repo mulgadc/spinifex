@@ -124,6 +124,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 			GatewayCACert:        s.deps.GatewayCACert,
 			Region:               s.region,
 			DBInstanceIdentifier: req.Identifier,
+			Engine:               req.Engine.Name,
 			EngineVersion:        req.EngineVersion,
 			EnginePort:           req.Port,
 		}),

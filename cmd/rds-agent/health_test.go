@@ -28,7 +28,7 @@ func TestEngineProbe_MapsExitCodesToHealth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			probe := newEngineProbe(testProbeConfig(), func(context.Context, string, ...string) (int, error) {
+			probe := newPostgresProbe(testProbeConfig(), func(context.Context, string, ...string) (int, error) {
 				return tt.code, tt.runErr
 			})
 			probe.seenHealthy = tt.seenHealthy
@@ -51,7 +51,7 @@ func TestEngineProbe_MapsExitCodesToHealth(t *testing.T) {
 // has to flip the first time the engine answers.
 func TestEngineProbe_LatchesAfterFirstHealthy(t *testing.T) {
 	code := 0
-	probe := newEngineProbe(testProbeConfig(), func(context.Context, string, ...string) (int, error) {
+	probe := newPostgresProbe(testProbeConfig(), func(context.Context, string, ...string) (int, error) {
 		return code, nil
 	})
 
@@ -68,7 +68,7 @@ func TestEngineProbe_LatchesAfterFirstHealthy(t *testing.T) {
 // must follow it rather than keep asking the default.
 func TestEngineProbe_ProbesTheAssignedPort(t *testing.T) {
 	var gotArgs []string
-	probe := newEngineProbe(testProbeConfig(), func(_ context.Context, _ string, args ...string) (int, error) {
+	probe := newPostgresProbe(testProbeConfig(), func(_ context.Context, _ string, args ...string) (int, error) {
 		gotArgs = args
 		return 0, nil
 	})
@@ -82,5 +82,5 @@ func TestEngineProbe_ProbesTheAssignedPort(t *testing.T) {
 }
 
 func testProbeConfig() config {
-	return config{EngineHost: defaultEngineHost, EnginePort: defaultEnginePort, PGIsReady: defaultPGIsReady}
+	return config{EngineHost: defaultEngineHost, EnginePort: engineLayouts[enginePostgres].port}
 }

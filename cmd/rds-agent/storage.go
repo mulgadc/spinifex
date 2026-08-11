@@ -28,8 +28,6 @@ const (
 	defaultXFSGrowfs  = "xfs_growfs"
 	defaultMountsFile = "/proc/mounts"
 	defaultSysBlock   = "/sys/class/block"
-	// Where rds-datadir mounts the data volume; the datadir sits one level in.
-	defaultDataMount = "/var/lib/postgresql"
 	// growpart says this when the partition already fills the disk, which a
 	// resumed grow is the normal way to reach.
 	growpartNoChange = "NOCHANGE"

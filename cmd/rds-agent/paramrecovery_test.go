@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -369,8 +368,8 @@ func (f *fakeRecovery) Restart(context.Context) error {
 // A probe whose result the test drives directly, standing in for pg_isready.
 func stubProbe(t *testing.T, code int, err error) *engineProbe {
 	t.Helper()
-	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
-	return newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+	cfg := testLoadConfig(t, enginePostgres)
+	return newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
 		return code, err
 	})
 }

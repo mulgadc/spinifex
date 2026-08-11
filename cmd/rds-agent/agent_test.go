@@ -168,18 +168,26 @@ func (f *fakeControlPlane) snapshotReplies() [][]handlers_rds.CommandReply {
 	return out
 }
 
-// testConfig points the agent's file output at a temp dir and its probe at a
-// name no real binary answers to.
+// testConfig stamps the engine a real rds-postgres image bakes, so the agent
+// resolves the same guest layout it would in a guest, and points its file output
+// at a temp dir.
 func testConfig(t *testing.T) config {
 	t.Helper()
-	return config{
-		GatewayURL: "https://gw.test",
-		HandoffDir: filepath.Join(t.TempDir(), "spinifex-rds"),
-		EngineHost: defaultEngineHost,
-		EnginePort: defaultEnginePort,
-		PGIsReady:  "pg_isready",
-		PollWait:   time.Second,
+	cfg := testLoadConfig(t, enginePostgres)
+	cfg.GatewayURL = "https://gw.test"
+	cfg.HandoffDir = filepath.Join(t.TempDir(), "spinifex-rds")
+	cfg.PollWait = time.Second
+	return cfg
+}
+
+// newTestAgent builds the agent over a probe the test drives directly.
+func newTestAgent(t *testing.T, cfg config, cp controlPlane, run probeRunner) *Agent {
+	t.Helper()
+	a, err := newAgent(cfg, cp, newPostgresProbe(cfg, run))
+	if err != nil {
+		t.Fatalf("newAgent: %v", err)
 	}
+	return a
 }
 
 // staticProbe is a probeRunner that always reports the same exit code.
@@ -272,7 +280,7 @@ func TestRun_RegistersThenDeliversBootstrap(t *testing.T) {
 	cp.bootstrapOut = bootstrapOutput(&password)
 
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	if err := runAgent(t, a); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -303,7 +311,7 @@ func TestRun_AttachModeNeedsNoPassword(t *testing.T) {
 	cp.bootstrapOut = bootstrapOutput(nil)
 
 	cfg := testConfig(t)
-	if err := runAgent(t, newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))); err != nil {
+	if err := runAgent(t, newTestAgent(t, cfg, cp, staticProbe(0))); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -325,7 +333,7 @@ func TestRun_RetriesRegisterAndBootstrap(t *testing.T) {
 	cp.bootstrapErrs = []error{errors.New("ServerInternal")}
 
 	cfg := testConfig(t)
-	if err := runAgent(t, newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))); err != nil {
+	if err := runAgent(t, newTestAgent(t, cfg, cp, staticProbe(0))); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -344,7 +352,7 @@ func TestBootstrap_RetriesHandoffWithoutRefetching(t *testing.T) {
 	password := "staged-secret"
 	cp.bootstrapOut = bootstrapOutput(&password)
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 
 	writes := 0
 	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
@@ -385,7 +393,7 @@ func TestBootstrap_RetriesInitializeWithNoPassword(t *testing.T) {
 	}}
 	cp.bootstrapOut = bootstrapOutput(&password)
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 
 	var handed []*handlers_rds.GetDBBootstrapConfigOutput
 	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
@@ -408,7 +416,7 @@ func TestAcknowledgeBootstrap_WaitsForTheReceiptThenRetiresIt(t *testing.T) {
 	cp := newFakeControlPlane()
 	cfg := testConfig(t)
 	cfg.DataMount = t.TempDir()
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	a.id = identity{DBInstanceIdentifier: "db-resolved"}
 	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1, dataVolumeID: "vol-data-01"}
 
@@ -447,7 +455,7 @@ func TestAcknowledgeBootstrap_IgnoresAForeignReceipt(t *testing.T) {
 			cp := newFakeControlPlane()
 			cfg := testConfig(t)
 			cfg.DataMount = t.TempDir()
-			a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+			a := newTestAgent(t, cfg, cp, staticProbe(0))
 			a.id = identity{DBInstanceIdentifier: "db-resolved"}
 			a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
 			writeReceipt(t, a, tc.payloadID, tc.dbID)
@@ -470,13 +478,59 @@ func TestAcknowledgeBootstrap_IsANoOpOnAttach(t *testing.T) {
 	cp := newFakeControlPlane()
 	cfg := testConfig(t)
 	cfg.DataMount = t.TempDir()
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 
 	if err := a.acknowledgeBootstrap(t.Context()); err != nil {
 		t.Fatalf("acknowledgeBootstrap: %v", err)
 	}
 	if n := len(cp.ackRequests()); n != 0 {
 		t.Errorf("acknowledgements = %d, want 0 when nothing was staged", n)
+	}
+}
+
+// The image is the authority on which engine the agent runs. A VM launched as
+// another engine has to stop ahead of the handoff: rds-init would otherwise
+// initialise one engine over the other's datadir and come up healthy and empty
+// beside data nothing references.
+func TestRun_RefusesAnEngineTheImageDoesNotBake(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.bootstrapOut = bootstrapOutput(nil)
+
+	cfg := testConfig(t)
+	cfg.Engine = "mariadb"
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
+
+	err := a.Run(t.Context())
+	if err == nil {
+		t.Fatal("Run returned nil for a VM launched as an engine this image does not bake")
+	}
+	if !strings.Contains(err.Error(), "mariadb") {
+		t.Errorf("error = %v, want it to name the engine the VM was launched as", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.HandoffDir, handoffEnvFile)); !os.IsNotExist(statErr) {
+		t.Error("the agent wrote a bootstrap handoff for an engine it refused to run")
+	}
+	if n := len(cp.bootstrapReqs); n != 0 {
+		t.Errorf("bootstrap fetches = %d, want none before the refusal", n)
+	}
+	// Reported rather than only logged, so the control plane learns why the
+	// instance never came up rather than only that it never did.
+	states := cp.snapshotStates()
+	if len(states) != 1 || states[0].health != handlers_rds.EngineHealthUnhealthy {
+		t.Fatalf("submitted states = %+v, want a single unhealthy report", states)
+	}
+}
+
+// The same assertion when it agrees is not a gate: the boot goes on exactly as
+// it does for a VM launched before the control plane sent one at all.
+func TestRun_ProceedsWhenTheDeliveredEngineMatchesTheImage(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.bootstrapOut = bootstrapOutput(nil)
+
+	cfg := testConfig(t)
+	cfg.Engine = enginePostgres
+	if err := runAgent(t, newTestAgent(t, cfg, cp, staticProbe(0))); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 }
 
@@ -489,7 +543,7 @@ func TestRun_SendsConfiguredIdentifier(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DBInstanceIdentifier = "db-configured"
 	cfg.EngineVersion = "18.1"
-	if err := runAgent(t, newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))); err != nil {
+	if err := runAgent(t, newTestAgent(t, cfg, cp, staticProbe(0))); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -503,12 +557,12 @@ func TestRun_WaitsForDataMountBeforePollingCommands(t *testing.T) {
 	cp := newFakeControlPlane()
 	cp.bootstrapOut = bootstrapOutput(nil)
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(2)))
+	a := newTestAgent(t, cfg, cp, staticProbe(2))
 
 	waiting := make(chan struct{})
 	release := make(chan struct{})
 	a.dataMountWaiter = func(ctx context.Context, mountsFile, target string) error {
-		if mountsFile != defaultMountsFile || target != defaultDataMount {
+		if mountsFile != defaultMountsFile || target != cfg.DataMount {
 			t.Errorf("mount waiter got %q/%q, want configured defaults", mountsFile, target)
 		}
 		close(waiting)
@@ -580,7 +634,7 @@ func TestRun_HeartbeatIncludesBootstrapFailure(t *testing.T) {
 	cp.registerOut.HeartbeatIntervalSeconds = 0
 
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(2)))
+	a := newTestAgent(t, cfg, cp, staticProbe(2))
 	a.hb.interval = 10 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -609,7 +663,7 @@ func TestRun_HeartbeatsEngineHealth(t *testing.T) {
 	cp.registerOut.HeartbeatIntervalSeconds = 0
 
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	a.hb.interval = 10 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -639,7 +693,7 @@ func TestRegister_AdoptsControlPlaneCadence(t *testing.T) {
 	cp.registerOut.HeartbeatIntervalSeconds = 45
 
 	cfg := testConfig(t)
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	if err := runAgent(t, a); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -656,12 +710,15 @@ func TestRun_HeartbeatReportsDownEngine(t *testing.T) {
 	cp.registerOut.HeartbeatIntervalSeconds = 0
 
 	cfg := testConfig(t)
-	probe := newEngineProbe(cfg, staticProbe(2))
+	probe := newPostgresProbe(cfg, staticProbe(2))
 	// The engine has served before, so a silent one now is a failure rather
 	// than a boot still in progress.
 	probe.seenHealthy = true
 
-	a := newAgent(cfg, cp, probe)
+	a, err := newAgent(cfg, cp, probe)
+	if err != nil {
+		t.Fatalf("newAgent: %v", err)
+	}
 	a.hb.interval = 10 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -752,7 +809,7 @@ func TestAcknowledgeBootstrap_StopsOnATerminalDenial(t *testing.T) {
 	}}
 	cfg := testConfig(t)
 	cfg.DataMount = t.TempDir()
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	a.id = identity{DBInstanceIdentifier: "db-resolved"}
 	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
 	writeReceipt(t, a, testPayloadID, "db-resolved")
@@ -780,7 +837,7 @@ func TestAcknowledgeBootstrap_DoesNotReportAnAbsentReceiptAsAFailure(t *testing.
 	cp := newFakeControlPlane()
 	cfg := testConfig(t)
 	cfg.DataMount = t.TempDir()
-	a := newAgent(cfg, cp, newEngineProbe(cfg, staticProbe(0)))
+	a := newTestAgent(t, cfg, cp, staticProbe(0))
 	a.id = identity{DBInstanceIdentifier: "db-resolved"}
 	a.pending = &pendingBootstrap{payloadID: testPayloadID, vmGeneration: 1}
 

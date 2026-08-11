@@ -14,6 +14,7 @@ func testAgentUserDataInput() agentUserDataInput {
 		GatewayCACert:        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
 		Region:               testRegion,
 		DBInstanceIdentifier: testDBID,
+		Engine:               enginePostgres.Name,
 		EngineVersion:        "18",
 		EnginePort:           5432,
 	}
@@ -29,6 +30,9 @@ func TestBuildAgentUserData(t *testing.T) {
 	assert.Contains(t, out, "RDS_GATEWAY_CA="+agentGatewayCAPath)
 	assert.Contains(t, out, "RDS_REGION="+testRegion)
 	assert.Contains(t, out, "RDS_DB_INSTANCE_IDENTIFIER="+testDBID)
+	// The agent checks this against the engine its own image bakes and refuses
+	// to bootstrap when the two disagree.
+	assert.Contains(t, out, "RDS_ENGINE=postgres")
 	assert.Contains(t, out, "RDS_ENGINE_VERSION=18")
 	assert.Contains(t, out, "RDS_ENGINE_PORT=5432")
 

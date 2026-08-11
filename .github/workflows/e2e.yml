@@ -52,10 +52,7 @@ jobs:
     # inputs.suites.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
     runs-on: [self-hosted, ci-single]
-    # Sized against the rds suite, which is the long pole and now carries both
-    # engines: ~6 minutes of provision, bootstrap and two image builds, plus a
-    # suite whose own per-test timeout is 45m.
-    timeout-minutes: 70
+    timeout-minutes: 60
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}

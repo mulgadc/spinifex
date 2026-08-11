@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -1330,38 +1331,34 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		return ebsResponse, errors.New(ebsResponse.Error)
 	}
 
-	// Poll for up to 1 second to confirm nbdkit is running, checking every
-	// 50ms so a fast failure is detected quickly instead of always
-	// costing the full second. Any exit within that window means NBDKit
-	// failed to stay up.
-	const nbdkitConfirmPollInterval = 50 * time.Millisecond
-	const nbdkitConfirmDeadline = 1 * time.Second
-	confirmDeadline := time.Now().Add(nbdkitConfirmDeadline)
-	for {
-		select {
-		case exitErr := <-exitChan:
-			ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
-			return ebsResponse, errors.New(ebsResponse.Error)
-		default:
-		}
+	ctx, readySpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount.nbdkit_ready")
+	readyDeadline := time.Now().Add(nbdkitReadyDeadline)
 
-		if time.Now().After(confirmDeadline) {
-			break
-		}
-
-		time.Sleep(nbdkitConfirmPollInterval)
-	}
-
-	// nbdkit is still running after the poll window, which means it started successfully
-	slog.InfoContext(ctx, "NBDKit started successfully and is running")
-
-	// NBDKit creates the socket with its own umask (typically 0755).
-	// The daemon (different user, same group) needs write access to connect.
+	network, address := "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(nbdPort))
 	if nbdSocket != "" {
+		network, address = "unix", nbdSocket
+
+		// NBDKit creates the socket with its own umask (typically 0755).
+		// The daemon (different user, same group) needs write access to
+		// connect, and the file has to exist before it can be chmod'd.
+		if err := waitForSocketFile(ctx, nbdSocket, exitChan, readyDeadline); err != nil {
+			readySpan.End()
+			ebsResponse.Error = err.Error()
+			return ebsResponse, err
+		}
 		if err := os.Chmod(nbdSocket, 0770); err != nil { //nolint:gosec // socket needs group-write for cross-service access
 			slog.WarnContext(ctx, "Failed to chmod NBD socket", "socket", nbdSocket, "err", err)
 		}
 	}
+
+	if err := waitForNBDDial(ctx, network, address, exitChan, readyDeadline); err != nil {
+		readySpan.End()
+		ebsResponse.Error = err.Error()
+		return ebsResponse, err
+	}
+	readySpan.End()
+
+	slog.InfoContext(ctx, "NBDKit is accepting connections", "network", network, "address", address)
 
 	ebsResponse.Mounted = true
 	ebsResponse.URI = nbdURI

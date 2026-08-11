@@ -149,7 +149,7 @@ The recommended installation is a [bootable x86 installer](https://iso.mulgadc.c
 curl -fLO https://iso.mulgadc.com/spinifex.iso
 ```
 
-Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware. The install guide walks through the full process.
+Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware.
 
 ### Single Node Install
 

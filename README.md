@@ -64,7 +64,7 @@ Bring your own hardware and host Spinifex in your own data centre. A real multi-
 
 Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels, factories, and clinics. Compute next to the data, running through disconnection, on hardware you own. The same AWS APIs your software already uses.
 
-## AWS compatibility
+## AWS Compatibility
 
 Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform: everything you deploy on AWS deploys on Spinifex unchanged. At the edge, on-premise, or on a partner Neocloud.
 
@@ -143,14 +143,11 @@ curl -fLO https://iso.mulgadc.com/spinifex.iso
 
 Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware. The install guide walks through the full process.
 
-
 ### Single Node Install
 
 The installation is straightforward to set up and running on a single node for testing purposes. Debian 13 is currently supported, additional Linux distributions are on the immediate roadmap.
 
->*Prerequisite:* Linux bridge for networking.
-
-Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) prerequisites for setup details.
+>*Prerequisite:* Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) for setup details.
 
 ```bash
 curl -fsSL https://install.mulgadc.com | bash
@@ -188,10 +185,6 @@ Spinifex ships with a built-in web console — an optional alternative to the AW
 </p>
 
 The console is served by each node on port `3000` over TLS, and becomes available as soon as `spinifex.target` is up:
-
-```bash
-open https://YOUR_NODE_IP:3000
-```
 
 - **Same API, different surface.** Every action in the UI is the same AWS SigV4 call the CLI makes — so RBAC, audit trails, and IAM policies apply uniformly.
 - **Single sign-on against your AWS credentials.** Log in with the access keys from `~/.aws/credentials` on the node where Spinifex is installed — no separate user database.

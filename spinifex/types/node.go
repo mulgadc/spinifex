@@ -62,8 +62,11 @@ type NodeStatusResponse struct {
 	InstanceTypes  []InstanceTypeCap `json:"instance_types"`
 
 	// Leader roles for clustered services (empty string = service not running or not clustered)
-	NATSRole       string `json:"nats_role,omitempty"`       // "leader" or "follower"
-	PredastoreRole string `json:"predastore_role,omitempty"` // "leader" or "follower"
+	NATSRole string `json:"nats_role,omitempty"` // "leader" or "follower"
+
+	// Never populated: predastore's meta nodes expose no status surface. Kept so
+	// the JSON contract and the UI are unchanged when the probe is restored.
+	PredastoreRole string `json:"predastore_role,omitempty"`
 
 	// OVN DB Raft roles ("leader"/"follower"/""); empty when the node is not an
 	// OVN DB cluster member or OVN is standalone.

@@ -1,6 +1,6 @@
 ---
-title: "IAM Roles and Instance Profiles"
-description: "Create IAM roles with trust policies, wrap them in instance profiles, and grant EC2 instances credentials without static keys."
+title: "AWS IAM Roles and Instance Profiles for EC2"
+description: "Create AWS IAM roles with trust policies, wrap them in instance profiles, and launch EC2 instances that receive credentials with no static access keys at all."
 category: "Identity"
 tags:
   - iam
@@ -18,9 +18,9 @@ resources:
     url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2_instance-profiles.html"
 ---
 
-# IAM Roles and Instance Profiles
+# AWS IAM Roles and Instance Profiles for EC2
 
-> Create IAM roles with trust policies, wrap them in instance profiles, and grant EC2 instances credentials without static keys.
+> Create AWS IAM roles with trust policies, wrap them in instance profiles, and launch EC2 instances that receive credentials with no static access keys at all.
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ resources:
 
 ## Overview
 
-A role is an IAM identity with permissions but no long-lived credentials. Instead of an access key pair, a role has a **trust policy** declaring who may assume it; whoever assumes the role receives short-lived, auto-rotating STS credentials.
+A role is an IAM identity with permissions but no long-lived credentials. Unlike an [IAM group](/docs/iam-groups), which only bundles users together, a role is a principal in its own right: instead of an access key pair it has a **trust policy** declaring who may assume it, and whoever assumes the role receives short-lived, auto-rotating STS credentials.
 
 An **instance profile** is the container that binds a role to an EC2 instance. An instance launched with a profile gets the role's credentials delivered through [IMDS](/docs/imds) — no static keys baked into the image, no `~/.aws/credentials` inside the guest.
 

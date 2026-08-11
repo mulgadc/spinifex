@@ -1,6 +1,6 @@
 ---
-title: "STS and Temporary Credentials"
-description: "Mint short-lived credentials with STS — assume roles, issue session tokens, and federate Kubernetes workloads with OIDC."
+title: "AWS STS Temporary Credentials and AssumeRole"
+description: "Use AWS STS to issue temporary credentials: assume an IAM role, request a session token, or federate Kubernetes workloads with OIDC web identity on Spinifex."
 category: "Identity"
 tags:
   - sts
@@ -18,9 +18,9 @@ resources:
     url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp.html"
 ---
 
-# STS and Temporary Credentials
+# AWS STS Temporary Credentials and AssumeRole
 
-> Mint short-lived credentials with STS — assume roles, issue session tokens, and federate Kubernetes workloads with OIDC.
+> Use AWS STS to issue temporary credentials: assume an IAM role, request a session token, or federate Kubernetes workloads with OIDC web identity on Spinifex.
 
 ## Table of Contents
 
@@ -43,7 +43,7 @@ STS (Security Token Service) issues **temporary credentials**: an `ASIA`-prefixe
 Spinifex supports the three main ways to obtain them:
 
 - **`assume-role`** — exchange your IAM user credentials for a [role's](/docs/iam-roles-and-instance-profiles) permissions, gated by the role's trust policy.
-- **`get-session-token`** — get a time-boxed copy of your own user's permissions.
+- **`get-session-token`** — get a time-boxed copy of your own [IAM user's](/docs/iam-users-and-policies) permissions.
 - **`assume-role-with-web-identity`** — exchange an OIDC ID token (a Kubernetes ServiceAccount token) for role credentials, with no IAM credentials at all.
 
 EC2 instances get role credentials a fourth way, automatically through [IMDS](/docs/imds) — no STS call needed in the guest.

@@ -49,6 +49,13 @@ var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
 // / UnpublishSubject already route to one node), so they are only registered
 // when cfg.NodeName is set; there is no queue-group fallback the way the
 // legacy ebs.mount/ebs.unmount subjects have.
+// RegisterProviderSubjects serves the provider contract from cfg on nc without
+// launching the rest of the daemon. It exists for harnesses that need a real
+// provider behind the control plane, which otherwise has none to call.
+func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
+	return registerProviderSubjects(cfg, nc)
+}
+
 func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	subs := []struct {
 		subject string

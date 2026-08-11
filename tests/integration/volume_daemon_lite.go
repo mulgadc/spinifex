@@ -5,10 +5,13 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -20,6 +23,15 @@ import (
 // genuinely exists on the shared predastore fixture: viperblock's S3 backend
 // dials it for real, so chunk uploads and config.json persistence are real.
 const testVolumeBucket = "integration-test-volumes"
+
+// testProviderNodeName names the node the in-process provider answers as. Only
+// publish and unpublish are node-addressed, and nothing here publishes, but an
+// empty name makes the provider log a warning about attachments it cannot serve.
+const testProviderNodeName = "integration-node"
+
+// providerRequestTimeout bounds a control-plane call to the provider. Generous
+// because the first CreateVolume pays the real predastore's cold start.
+const providerRequestTimeout = 60 * time.Second
 
 // StartVolumeDaemonLite subscribes a real handlers_ec2_volume.VolumeServiceImpl
 // — the same production code a live daemon runs (daemon/daemon_handlers_volume.go)
@@ -62,6 +74,20 @@ func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_volume.Volum
 
 	nc := gw.NATSConn
 	svc := handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, store, nc)
+
+	// The control plane no longer builds volumes itself; it asks a provider.
+	// Serve the provider contract from viperblockd against the same fixture,
+	// so the blocks are still written by real viperblock to real predastore.
+	require.NoError(t, viperblockd.RegisterProviderSubjects(&viperblockd.Config{
+		S3Host:    "https://" + fixture.Host,
+		Bucket:    testVolumeBucket,
+		Region:    fixture.Region,
+		AccessKey: fixture.AccessKey,
+		SecretKey: fixture.SecretKey,
+		BaseDir:   cfg.WalDir,
+		NodeName:  testProviderNodeName,
+	}, nc), "register provider subjects")
+	svc.SetEBSProvider(ebsprovider.NewNATSProvider(nc, providerRequestTimeout))
 
 	sub(t, nc, "ec2.CreateVolume", func(m *nats.Msg) { dispatch(m, svc.CreateVolume) })
 	sub(t, nc, "ec2.DeleteVolume", func(m *nats.Msg) { dispatch(m, svc.DeleteVolume) })

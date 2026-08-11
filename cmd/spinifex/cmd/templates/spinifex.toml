@@ -127,10 +127,8 @@ bridge_mode = "{{.BridgeMode}}"
 
 [nodes.{{.Node}}.predastore]
 # Wildcard rather than the bind IP: S3 is a public service and has to answer on
-# the wan plane, and predastore-start.sh scrapes this line into
-# SPINIFEX_PREDASTORE_HOST, which outranks the host set in predastore.toml. Only
-# the S3 API moves — the [[db]] and [[nodes]] peer addresses in
-# predastore-multinode.toml stay on the bind address.
+# the wan plane. The service binds this address and serves S3 on this port,
+# leaving [[host]].addr — the address peer hosts dial — as predastore.toml has it.
 #
 # This doubles as the local dial target, and 0.0.0.0 is not one: config loading
 # rewrites it to 127.0.0.1 for this node, and admin.DialTarget does the same for

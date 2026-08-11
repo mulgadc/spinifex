@@ -137,19 +137,19 @@ lspci -d 10de: -nn
 
 **4. Attach Predastore storage**
 
-The X14 has four NVMe drives: two 1.5 TB SSDs (one carries the OS) and two ~880 GB SSDs. The OS occupies its own dedicated NVMe; the remaining three drives are pre-formatted and already mounted at `/mnt/nvme-1`, `/mnt/nvme-2`, and `/mnt/nvme-3`. Predastore is distributed across these three drives — one storage node per physical drive, with Reed–Solomon redundancy so a single drive failure is recoverable.
+The X14 has four NVMe drives: two 1.5 TB SSDs (one carries the OS) and two ~880 GB SSDs. The OS occupies its own dedicated NVMe; the remaining three drives are pre-formatted and already mounted at `/mnt/nvme-1`, `/mnt/nvme-2`, and `/mnt/nvme-3`. Predastore spreads object shards across these three drives — one blob node per physical drive, with Reed–Solomon redundancy so a single drive failure is recoverable.
 
-Relocate the Predastore data directories onto the mounted drives:
+A single-node install is one Predastore host running seven nodes, each with a directory named for its node ID under `/var/lib/spinifex/predastore/cluster`. The three blob nodes are `node-2`, `node-3` and `node-4`, so `nvme-$i` takes `node-$((i + 1))`. The gate keeps no data at all, and the three meta nodes hold only the Raft log for buckets and the object index, which is small enough to leave on the OS drive.
+
+Relocate the blob node directories onto the mounted drives:
 
 ```bash
 sudo systemctl stop spinifex.target
 
 for i in 1 2 3; do
-  sudo mkdir -p /mnt/nvme-$i/nodes /mnt/nvme-$i/db
-  sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-$i /mnt/nvme-$i/nodes/node-$i
-  sudo mv /var/lib/spinifex/predastore/distributed/db/node-$i    /mnt/nvme-$i/db/node-$i
-  sudo ln -s /mnt/nvme-$i/nodes/node-$i /var/lib/spinifex/predastore/distributed/nodes/node-$i
-  sudo ln -s /mnt/nvme-$i/db/node-$i    /var/lib/spinifex/predastore/distributed/db/node-$i
+  node="node-$((i + 1))"
+  sudo mv /var/lib/spinifex/predastore/cluster/$node /mnt/nvme-$i/$node
+  sudo ln -s /mnt/nvme-$i/$node /var/lib/spinifex/predastore/cluster/$node
 done
 
 sudo systemctl start spinifex.target

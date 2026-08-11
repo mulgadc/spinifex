@@ -21,9 +21,9 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.72
-	github.com/mulgadc/northstar v1.15.1-0.20260810233215-04fade67fb2c
-	github.com/mulgadc/predastore v1.15.1-0.20260811210342-f8e0ba321f1f
-	github.com/mulgadc/viperblock v1.15.0
+	github.com/mulgadc/northstar v1.16.0
+	github.com/mulgadc/predastore v1.16.0
+	github.com/mulgadc/viperblock v1.16.0
 	github.com/nats-io/nats-server/v2 v2.14.4
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

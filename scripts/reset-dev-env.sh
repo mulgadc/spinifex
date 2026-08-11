@@ -296,6 +296,14 @@ else
     echo "==> WAN is physical: $WAN_BRIDGE (direct bridge br-wan)"
 fi
 
+# Bind the NB/SB client listener to the lan plane only when lan is a
+# genuinely distinct plane from wan — when it folds onto wan (single-nic),
+# --lan-addr=$LAN_IP would put the listener on the public interface.
+if [ "$LAN_BRIDGE" != "$WAN_BRIDGE" ] && [ -n "$LAN_IP" ]; then
+    SETUP_OVN_FLAGS="$SETUP_OVN_FLAGS --lan-addr=$LAN_IP"
+    echo "==> LAN plane: $LAN_BRIDGE ($LAN_IP) — binding NB/SB client listener"
+fi
+
 # Mirror the ISO installer: internal services on lan, public dial target on
 # wan. --advertise must be explicit, because resolveAdvertiseIP echoes a
 # non-wildcard --bind straight back and would publish the internal address.

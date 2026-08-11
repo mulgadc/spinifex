@@ -551,6 +551,33 @@ func TestMariaDBProbe_SeparatesRecoveringFromAbsent(t *testing.T) {
 // The failure the guard exists for still behaves correctly: a static value
 // mariadbd will not accept makes it exit during startup, so the pidfile names a
 // process that is gone and the deadline runs.
+func TestMariaDBProbe_BoundsAStalledClient(t *testing.T) {
+	cfg := mariadbTestProbeConfig(t)
+	cfg.EngineProbeTimeout = 20 * time.Millisecond
+	writePid(t, cfg.EnginePidFile, 4242)
+
+	started := time.Now()
+	state, message := mariadbProbeState(cfg,
+		func(ctx context.Context, _ string, args ...string) (int, error) {
+			if !slices.Contains(args, "--connect-timeout=3") {
+				t.Errorf("probe args = %v, want a client connection timeout", args)
+			}
+			<-ctx.Done()
+			return -1, ctx.Err()
+		},
+		func(int) bool { return true })(t.Context(), int64(cfg.EnginePort))
+
+	if state != engineRecovering {
+		t.Errorf("state = %v, want recovering after a live engine's probe timed out", state)
+	}
+	if !strings.Contains(message, context.DeadlineExceeded.Error()) {
+		t.Errorf("message = %q, want the probe deadline", message)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("probe took %v, want the configured deadline to bound it", elapsed)
+	}
+}
+
 func TestMariaDBProbe_MapsToTheHealthTheControlPlaneReads(t *testing.T) {
 	cfg := mariadbTestProbeConfig(t)
 	writePid(t, cfg.EnginePidFile, 4242)

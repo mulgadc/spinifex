@@ -111,11 +111,15 @@ MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 # first start, so it is not instant.
 BOOTSTRAP_PROBES="${RDS_BOOTSTRAP_PROBES:-60}"
 BOOTSTRAP_POLL="${RDS_BOOTSTRAP_POLL:-1}"
+# Failure cleanup gives the private server this long to honor TERM before KILL.
+BOOTSTRAP_STOP_GRACE="${RDS_BOOTSTRAP_STOP_GRACE:-10}"
 
 # The server truncates a longer name, so the database created would not be the
 # one the customer asked for, and MariaDB maps the name onto a directory name.
 MAX_DB_NAME_LEN=64
 MAX_USERNAME_LEN=80
+MANAGEMENT_DB="_spinifex_rds"
+CREATE_DATABASE_PROCEDURE="create_database"
 
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
@@ -150,8 +154,23 @@ clear_unfinished_datadir() {
 
 kill_bootstrap_server() {
     [ -n "${_server_pid}" ] || return 0
-    kill -TERM "${_server_pid}" 2>/dev/null || true
+    _pid="${_server_pid}"
+
+    # wait has no timeout in POSIX sh. A watchdog bounds it and escalates, while
+    # this shell remains the one that waits and reaps its own child.
+    kill -TERM "${_pid}" 2>/dev/null || true
+    (
+        sleep "${BOOTSTRAP_STOP_GRACE}"
+        kill -KILL "${_pid}" 2>/dev/null || true
+    ) &
+    _watchdog_pid=$!
+
+    # A signal exit is expected here: cleanup cares that the process is reaped
+    # and cannot touch the datadir, not whether its incomplete startup was clean.
+    wait "${_pid}" 2>/dev/null || true
     _server_pid=""
+    kill -TERM "${_watchdog_pid}" 2>/dev/null || true
+    wait "${_watchdog_pid}" 2>/dev/null || true
 }
 
 load_handoff() {
@@ -654,38 +673,49 @@ FLUSH PRIVILEGES;
 SQL
 }
 
-# The master user is administrative but is not granted the privileges that reach
-# outside the database: FILE is SELECT INTO OUTFILE and LOAD_FILE against any
-# path as the mysql OS user, SUPER and its 11.8 split-out successors reach SET
-# GLOBAL and plugin loading, and SHUTDOWN stops the server underneath the control
-# plane's lifecycle. Master credentials must be a database privilege, not a shell
-# in the DB VM.
-#
-# What the grant list cannot do is withhold the mysql schema. MariaDB privileges
-# are additive and it has no DENY, so the DML below reaches mysql.global_priv,
-# and REVOKE ... ON mysql.* is refused outright (ER_NONEXISTING_GRANT) because no
-# database-level row exists to revoke from. A master that writes that table and
-# runs FLUSH PRIVILEGES therefore holds ALL PRIVILEGES, including the three above.
-#
-# What still holds after that is the boundary this preset actually depends on:
-# secure_file_priv and plugin_dir are read-only variables, so 90-rds-init.cnf
-# pins them past any SET GLOBAL and FILE reaches only an empty root-owned
-# directory. The residual exposure is SHUTDOWN and unrecorded SET GLOBAL, not a
-# shell in the DB VM.
+# MariaDB has no DENY or partial revocation: an object privilege ON *.* also
+# reaches mysql.global_priv. Application privileges are therefore database-scoped,
+# while this protected definer procedure creates and grants future databases.
 apply_master_user() {
     log "creating the master user ${RDS_MASTER_USERNAME}"
-    # Enumerated rather than GRANT ALL followed by revocations: a MariaDB release
-    # that adds a privilege would otherwise hand it to the master silently.
-    # '%' because the customer reaches the instance over its customer ENI.
     mariadb_bootstrap <<SQL
 CREATE USER IF NOT EXISTS '${RDS_MASTER_USERNAME}'@'%' IDENTIFIED BY '${RDS_MASTER_PASSWORD_SQL}';
 ALTER USER '${RDS_MASTER_USERNAME}'@'%' IDENTIFIED BY '${RDS_MASTER_PASSWORD_SQL}';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS,
-      REFERENCES, INDEX, ALTER, SHOW DATABASES, CREATE TEMPORARY TABLES,
-      LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT,
-      CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE,
-      CREATE USER, EVENT, TRIGGER
-  ON *.* TO '${RDS_MASTER_USERNAME}'@'%' WITH GRANT OPTION;
+GRANT RELOAD, PROCESS, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT
+  ON *.* TO '${RDS_MASTER_USERNAME}'@'%';
+CREATE DATABASE IF NOT EXISTS \`${MANAGEMENT_DB}\`;
+DROP PROCEDURE IF EXISTS \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`;
+DELIMITER //
+CREATE DEFINER='root'@'localhost' PROCEDURE \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`(
+    IN database_name VARCHAR(64) CHARACTER SET ascii
+)
+SQL SECURITY DEFINER
+BEGIN
+    IF database_name IS NULL
+       OR BINARY database_name NOT REGEXP '^[A-Za-z][A-Za-z0-9_]{0,63}$'
+       OR LOWER(database_name) IN ('mysql', 'information_schema', 'performance_schema', 'sys', '${MANAGEMENT_DB}') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'database name must be a non-system identifier of at most 64 characters';
+    END IF;
+
+    SET @rds_database = REPLACE(database_name, '\`', '\`\`');
+    SET @rds_statement = CONCAT('CREATE DATABASE IF NOT EXISTS \`', @rds_database, '\`');
+    PREPARE rds_create_database FROM @rds_statement;
+    EXECUTE rds_create_database;
+    DEALLOCATE PREPARE rds_create_database;
+
+    SET @rds_statement = CONCAT(
+        'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES, INDEX, ALTER, ',
+        'CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, ',
+        'CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER ON \`', @rds_database,
+        '\`.* TO ''${RDS_MASTER_USERNAME}''@''%'' WITH GRANT OPTION'
+    );
+    PREPARE rds_grant_database FROM @rds_statement;
+    EXECUTE rds_grant_database;
+    DEALLOCATE PREPARE rds_grant_database;
+END//
+DELIMITER ;
+GRANT EXECUTE ON PROCEDURE \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`
+  TO '${RDS_MASTER_USERNAME}'@'%';
 SQL
 }
 
@@ -722,14 +752,15 @@ database_charset_clause() {
     printf 'CHARACTER SET %s' "${_charset}"
 }
 
-# As on AWS, an instance created without a DBName gets no initial database. The
-# master reaches it through the global grant above, so nothing further is granted
-# on it here.
+# As on AWS, an instance created without a DBName gets no initial database. A
+# supplied database is created under its resolved charset before the protected
+# routine applies the same scope future databases receive.
 create_database() {
     log "creating database ${RDS_DB_NAME}"
     _charset_clause=$(database_charset_clause)
     mariadb_bootstrap <<SQL
 CREATE DATABASE IF NOT EXISTS \`${RDS_DB_NAME}\` ${_charset_clause};
+CALL \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`('${RDS_DB_NAME}');
 SQL
 }
 

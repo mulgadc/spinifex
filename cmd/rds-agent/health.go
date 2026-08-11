@@ -18,6 +18,9 @@ func execProbeRunner(ctx context.Context, name string, args ...string) (int, err
 	if err == nil {
 		return 0, nil
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return -1, ctxErr
+	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode(), nil

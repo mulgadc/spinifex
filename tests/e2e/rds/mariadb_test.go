@@ -154,6 +154,40 @@ func TestMariaDBInstance(t *testing.T) {
 			"a table created with no ENGINE clause must be InnoDB")
 	})
 
+	// Stock MariaDB cannot exclude mysql.* from a global object grant. The
+	// protected routine is the only path to privileges on another database.
+	t.Run("MasterPrivilegesCannotReachSystemAccounts", func(t *testing.T) {
+		for name, sql := range map[string]string{
+			"ReadGrantTable":  "SELECT Priv FROM mysql.global_priv LIMIT 1;",
+			"WriteGrantTable": "UPDATE mysql.global_priv SET Priv = Priv WHERE User = 'root';",
+			"AlterRoot":       "ALTER USER 'root'@'localhost' IDENTIFIED BY 'not-allowed';",
+			"DropRoutine":     "DROP PROCEDURE `_spinifex_rds`.`create_database`;",
+			"PlainCreate":     "CREATE DATABASE forbidden_plain_database;",
+		} {
+			t.Run(name, func(t *testing.T) {
+				out, err := harness.TryMariaDB(client, conn, sql)
+				require.Error(t, err, "master statement unexpectedly succeeded: %s", out)
+				assert.Contains(t, strings.ToLower(out), "denied")
+			})
+		}
+
+		harness.MariaDB(t, client, conn, "FLUSH PRIVILEGES;")
+		futureDB := "e2e_future_database"
+		harness.MariaDB(t, client, conn,
+			fmt.Sprintf("CALL `_spinifex_rds`.`create_database`('%s');", futureDB))
+		future := conn
+		future.DBName = futureDB
+		harness.MariaDB(t, client, future,
+			"CREATE TABLE future_table (id int primary key); INSERT INTO future_table VALUES (1);")
+		assert.Equal(t, "1", strings.TrimSpace(harness.MariaDB(t, client, future,
+			"SELECT id FROM future_table;")))
+
+		out, err := harness.TryMariaDB(client, conn,
+			"CALL `_spinifex_rds`.`create_database`('mysql');")
+		require.Error(t, err, "system database creation unexpectedly succeeded: %s", out)
+		assert.Contains(t, out, "non-system identifier")
+	})
+
 	// TLS is offered rather than enforced, so what is asserted is that a client
 	// asking for it gets it.
 	t.Run("AClientCanConnectOverTLS", func(t *testing.T) {

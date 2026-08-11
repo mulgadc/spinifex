@@ -29,6 +29,9 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.EngineHost != defaultEngineHost || cfg.PollWait != defaultPollWait {
 		t.Errorf("engine host/pollWait = %q/%v, want the built-in defaults", cfg.EngineHost, cfg.PollWait)
 	}
+	if cfg.EngineProbeTimeout != defaultEngineProbeTimeout {
+		t.Errorf("engine probe timeout = %v, want %v", cfg.EngineProbeTimeout, defaultEngineProbeTimeout)
+	}
 	// Identity is optional: the gateway resolves it from the caller's
 	// credentials, so an agent with no configured identifier is normal.
 	if cfg.DBInstanceIdentifier != "" {

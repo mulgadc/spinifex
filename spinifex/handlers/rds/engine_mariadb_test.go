@@ -256,6 +256,8 @@ func TestMariaDBCatalog_RejectsBadValues(t *testing.T) {
 		{"OffsetOutOfRange", "time_zone", "+15:00", "does not accept"},
 		{"UnsignedOffset", "time_zone", "10:00", "does not accept"},
 		{"OffsetWithoutMinutes", "time_zone", "+10", "does not accept"},
+		{"OffsetWithShortHour", "time_zone", "+1:00", "does not accept"},
+		{"OffsetWithLongHour", "time_zone", "+0001:00", "does not accept"},
 		{"Empty", "sort_buffer_size", "", "empty value"},
 		{"Formula", "innodb_buffer_pool_size", "{DBInstanceClassMemory*3/4}", "is a formula"},
 	}

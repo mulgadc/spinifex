@@ -16,8 +16,9 @@ const (
 	defaultEngineHost = "127.0.0.1"
 	// Where setup.sh stamps the engine the image bakes. The agent builds its
 	// engine implementation from this file rather than from anything delivered.
-	defaultEngineFile = "/etc/spinifex-rds/engine"
-	defaultRCService  = "rc-service"
+	defaultEngineFile         = "/etc/spinifex-rds/engine"
+	defaultRCService          = "rc-service"
+	defaultEngineProbeTimeout = 5 * time.Second
 	// The long-poll window the agent asks the gateway to hold a request open
 	// for. The gateway caps it at 20s.
 	defaultPollWait = 20 * time.Second
@@ -60,7 +61,8 @@ type config struct {
 	// Where the engine records the pid its probe checks for liveness, for an
 	// engine whose own client cannot tell a server still recovering from one that
 	// is not running at all.
-	EnginePidFile string
+	EnginePidFile      string
+	EngineProbeTimeout time.Duration
 
 	// Where the data volume is mounted, and the two kernel surfaces a storage
 	// grow resolves its device from. Overridable so a test can point them at
@@ -93,6 +95,7 @@ func loadConfig(envFile string) config {
 		EnginePidFile:        get("RDS_ENGINE_PIDFILE"),
 		DataMount:            get("RDS_DATA_MOUNT"),
 		PollWait:             defaultPollWait,
+		EngineProbeTimeout:   defaultEngineProbeTimeout,
 	}
 	if cfg.GatewayCA == "" {
 		cfg.GatewayCA = defaultGatewayCA
@@ -129,6 +132,11 @@ func loadConfig(envFile string) config {
 	if v := get("RDS_POLL_WAIT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.PollWait = d
+		}
+	}
+	if v := get("RDS_ENGINE_PROBE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.EngineProbeTimeout = d
 		}
 	}
 	return cfg

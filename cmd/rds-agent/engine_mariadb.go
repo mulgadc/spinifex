@@ -74,7 +74,8 @@ const (
 	mariadbAdminBinary  = "mariadb-admin"
 	// The account mariadb-install-db creates for the unix_socket plugin, which
 	// rds-init keeps for the platform and never hands to the customer.
-	mariadbSuperuser = "root"
+	mariadbSuperuser                  = "root"
+	mariadbProbeConnectTimeoutSeconds = 3
 	// Named by the platform drop-in rds-init writes, so both halves reach the
 	// same socket without either asserting it to the other.
 	mariadbSocketFile = "mysqld.sock"
@@ -175,7 +176,20 @@ func newMariaDBProbe(cfg config, run probeRunner) *engineProbe {
 func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) probeStateFn {
 	pidFile, socket := cfg.EnginePidFile, mariadbSocketPath(cfg)
 	admin, client := filepath.Join(cfg.EngineBinDir, mariadbAdminBinary), filepath.Join(cfg.EngineBinDir, mariadbClientBinary)
-	connect := []string{"--no-defaults", "--protocol=socket", "--socket=" + socket, "--user=" + mariadbSuperuser}
+	connect := []string{
+		"--no-defaults", "--protocol=socket", "--socket=" + socket,
+		"--user=" + mariadbSuperuser,
+		fmt.Sprintf("--connect-timeout=%d", mariadbProbeConnectTimeoutSeconds),
+	}
+	probeTimeout := cfg.EngineProbeTimeout
+	if probeTimeout <= 0 {
+		probeTimeout = defaultEngineProbeTimeout
+	}
+	runBounded := func(ctx context.Context, name string, args ...string) (int, error) {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		defer cancel()
+		return run(probeCtx, name, args...)
+	}
 
 	return func(ctx context.Context, _ int64) (engineState, string) {
 		pid, err := readPidFile(pidFile)
@@ -192,7 +206,7 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		// that is not serving yet rather than one that is gone — including a probe
 		// binary that will not run at all. Reporting absent against a live server
 		// would have the rollback guard restart one that is making progress.
-		switch code, err := run(ctx, admin, append(slices.Clone(connect), "ping")...); {
+		switch code, err := runBounded(ctx, admin, append(slices.Clone(connect), "ping")...); {
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
 		case code != 0:
@@ -204,7 +218,7 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		// statement is a literal in the argv rather than on stdin because it
 		// carries nothing secret and a probe reads no result back.
 		query := append(slices.Clone(connect), "--batch", "--skip-column-names", "--execute=SELECT 1")
-		switch code, err := run(ctx, client, query...); {
+		switch code, err := runBounded(ctx, client, query...); {
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
 		case code != 0:

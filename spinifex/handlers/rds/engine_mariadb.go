@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
@@ -456,26 +457,13 @@ func validateMariaDBTimeZone(value string) error {
 }
 
 func parseTimeZoneOffset(value string) (int, error) {
-	sign := 1
-	switch {
-	case strings.HasPrefix(value, "-"):
-		sign = -1
-	case !strings.HasPrefix(value, "+"):
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "offset must be signed")
+	parsed, err := time.Parse("-07:00", value)
+	if err != nil {
+		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"offset must use signed HH:MM syntax: %v", err)
 	}
-	hours, minutes, ok := strings.Cut(value[1:], ":")
-	if !ok {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "offset must be hours and minutes")
-	}
-	h, err := strconv.Atoi(hours)
-	if err != nil || h < 0 {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "offset hours are not a number")
-	}
-	m, err := strconv.Atoi(minutes)
-	if err != nil || len(minutes) != 2 || m < 0 || m > 59 {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "offset minutes are not a number")
-	}
-	return sign * (h*60 + m), nil
+	_, offsetSeconds := parsed.Zone()
+	return offsetSeconds / int(time.Minute/time.Second), nil
 }
 
 func validateMariaDBParameterCombinations(params []Parameter) error {

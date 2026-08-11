@@ -97,12 +97,14 @@ for a in "$@"; do
         --pid-file=*) pid="${a#--pid-file=}" ;;
     esac
 done
+[ "${MARIADBD_IGNORE_TERM:-0}" = "1" ] && trap '' TERM
 if [ "${MARIADBD_KILL_PARENT:-0}" = "1" ]; then
     kill -TERM "$(cat "${KILL_PID_FILE}")"
     exit 0
 fi
 : > "${sock}"
 echo "$$" > "${pid}"
+[ -n "${MARIADBD_TEST_PID_FILE:-}" ] && echo "$$" > "${MARIADBD_TEST_PID_FILE}"
 # The bound keeps a refused shutdown from leaving a process behind the run.
 _left=200
 while [ -e "${sock}" ] && [ "${_left}" -gt 0 ]; do
@@ -143,6 +145,10 @@ cat > "${STUBBIN}/mariadb" <<'EOF'
 #!/bin/sh
 _in="${WORKDIR}/client.stdin.$$"
 cat > "${_in}"
+if [ "${CLIENT_KILL_PARENT:-0}" = "1" ]; then
+    kill -TERM "$(cat "${KILL_PID_FILE}")"
+    exit 1
+fi
 {
     echo "--- mariadb $* [env-password=${RDS_MASTER_PASSWORD:-}]"
     cat "${_in}"
@@ -227,8 +233,9 @@ HANDOFF="${WORK}/run/spinifex-rds"
 SECURE_FILE_DIR="${WORK}/mysql-files"
 MOUNTS="${WORK}/mounts"
 KILL_PID_FILE="${WORK}/rds-init.pid"
+MARIADBD_TEST_PID_FILE="${WORK}/mariadbd.pid"
 WORKDIR="${WORK}"
-export KILL_PID_FILE WORKDIR
+export KILL_PID_FILE MARIADBD_TEST_PID_FILE WORKDIR
 
 INSTALLDB_CALLS="${WORK}/install-db.calls"
 MARIADBD_CALLS="${WORK}/mariadbd.calls"
@@ -296,7 +303,9 @@ reset_state() {
     : > "${CLIENT_CALLS}"
     unset INSTALLDB_FAIL CLIENT_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
     unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE CLIENT_STATUS_CORRUPT STAMP_OVERRIDE || true
-    unset MARIADBD_START_FAIL MARIADBD_KILL_PARENT ADMIN_SHUTDOWN_FAIL SYNC_KILL_PARENT || true
+    unset MARIADBD_START_FAIL MARIADBD_KILL_PARENT MARIADBD_IGNORE_TERM CLIENT_KILL_PARENT || true
+    unset ADMIN_SHUTDOWN_FAIL SYNC_KILL_PARENT || true
+    rm -f "${MARIADBD_TEST_PID_FILE}"
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir. The
@@ -316,6 +325,7 @@ run_env() {
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         RDS_BOOTSTRAP_POLL=0.05 \
         RDS_BOOTSTRAP_PROBES=200 \
+        RDS_BOOTSTRAP_STOP_GRACE=0.1 \
         "$@" </dev/null
 }
 
@@ -386,39 +396,38 @@ if run_ok "initialize"; then
         && pass "initialize: the database takes the group's character set" \
         || fail "initialize: the database was created under the compiled default"
 
-    # Withheld deliberately: FILE is arbitrary host file access as the mysql user,
-    # SUPER and its 11.8 split-out successors reach SET GLOBAL and plugin loading,
-    # and SHUTDOWN stops the server underneath the control plane's lifecycle.
-    for privilege in SUPER FILE SHUTDOWN 'ALL PRIVILEGES' 'SET USER' \
-        'BINLOG ADMIN' 'BINLOG REPLAY' 'CONNECTION ADMIN' 'FEDERATED ADMIN' \
-        'READ_ONLY ADMIN' 'REPLICATION MASTER ADMIN' 'REPLICATION SLAVE ADMIN' \
-        'SLAVE MONITOR'; do
-        grep -q "${privilege}" "${CLIENT_CALLS}" \
-            && fail "initialize: the master grant includes ${privilege}" \
-            || pass "initialize: master holds no ${privilege}"
+    # MariaDB cannot partially revoke mysql.* from a global grant, so only the
+    # monitoring privileges are global and they carry no grant option.
+    _global_grant=$(sed -n '/^GRANT RELOAD,/,/^  ON .*;$/p' "${CLIENT_CALLS}" | tr '\n' ' ' | tr -s ' ')
+    _expected_global="GRANT RELOAD, PROCESS, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'mulgamaster'@'%'; "
+    [ "${_global_grant}" = "${_expected_global}" ] \
+        && pass "initialize: global privileges cannot modify system schemas" \
+        || fail "initialize: unsafe global grant: ${_global_grant}"
+
+    grep -q 'CREATE DEFINER='"'"'root'"'"'@'"'"'localhost'"'"' PROCEDURE `_spinifex_rds`.`create_database`' "${CLIENT_CALLS}" \
+        && pass "initialize: future databases use the root-owned routine" \
+        || fail "initialize: no protected create-database routine"
+    grep -q "GRANT EXECUTE ON PROCEDURE \`_spinifex_rds\`.\`create_database\`" "${CLIENT_CALLS}" \
+        && pass "initialize: master can call only the protected routine" \
+        || fail "initialize: routine execute grant missing"
+    grep -q "CALL \`_spinifex_rds\`.\`create_database\`('appdb')" "${CLIENT_CALLS}" \
+        && pass "initialize: initial database receives the scoped grant" \
+        || fail "initialize: initial database was not granted through the routine"
+    grep -q "LOWER(database_name) IN ('mysql', 'information_schema', 'performance_schema', 'sys', '_spinifex_rds')" "${CLIENT_CALLS}" \
+        && pass "initialize: routine refuses every system schema" \
+        || fail "initialize: routine does not protect system schemas"
+    grep -q "CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER ON" "${CLIENT_CALLS}" && \
+        grep -q "TO ''mulgamaster''@''%'' WITH GRANT OPTION" "${CLIENT_CALLS}" \
+        && pass "initialize: application privileges are database-scoped" \
+        || fail "initialize: database-scoped privilege grant missing"
+
+    # The prohibited names may appear in comments or the procedure's validation,
+    # so inspect the actual global grant rather than grepping the whole script.
+    for privilege in SELECT INSERT UPDATE DELETE CREATE DROP EXECUTE 'CREATE USER' 'WITH GRANT OPTION'; do
+        printf '%s\n' "${_global_grant}" | grep -q "${privilege}" \
+            && fail "initialize: global grant includes ${privilege}" \
+            || pass "initialize: ${privilege} is not global"
     done
-
-    # Asserted whole rather than by prefix. A privilege appended to the list is a
-    # privilege the master silently gains, and the enumeration exists precisely so
-    # that widening it has to be deliberate.
-    _grant=$(sed -n '/^GRANT /,/WITH GRANT OPTION;/p' "${CLIENT_CALLS}" | tr '\n' ' ' | tr -s ' ')
-    _expected_grant="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, \
-REFERENCES, INDEX, ALTER, SHOW DATABASES, CREATE TEMPORARY TABLES, \
-LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, \
-CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, \
-CREATE USER, EVENT, TRIGGER ON *.* TO 'mulgamaster'@'%' WITH GRANT OPTION; "
-    [ "${_grant}" = "${_expected_grant}" ] \
-        && pass "initialize: the grant is exactly the enumerated list" \
-        || fail "initialize: the master grant has changed: ${_grant}"
-
-    # MariaDB privileges are additive and it has no DENY, so scope is the only
-    # control left: a second ON clause would widen the master beyond this list.
-    [ "$(grep -c '^  ON ' "${CLIENT_CALLS}")" = "1" ] \
-        && pass "initialize: the grant is scoped ON *.* and nothing else" \
-        || fail "initialize: the master carries more than one grant scope"
-    grep -q "WITH GRANT OPTION" "${CLIENT_CALLS}" \
-        && pass "initialize: master can delegate its own privileges" \
-        || fail "initialize: master cannot grant"
     grep -q "DELETE FROM mysql.global_priv WHERE User = ''" "${CLIENT_CALLS}" \
         && pass "initialize: anonymous accounts removed" || fail "initialize: anonymous accounts left"
     grep -q 'DROP DATABASE IF EXISTS test' "${CLIENT_CALLS}" \
@@ -775,7 +784,27 @@ run_signalled_fails "sigterm-midbootstrap"
     || pass "sigterm-midbootstrap: stopped before the master user"
 unset MARIADBD_KILL_PARENT
 
-# --- Case 6f: a datadir carrying the sentinel is refused, not started ---
+# --- Case 6f: cleanup reaps a bootstrap server that ignores TERM ---
+reset_state
+write_handoff initialize 's3cr3t' appdb
+MARIADBD_IGNORE_TERM=1
+CLIENT_KILL_PARENT=1
+export MARIADBD_IGNORE_TERM CLIENT_KILL_PARENT
+run_signalled_fails "sigterm-stubborn-bootstrap"
+if [ -s "${MARIADBD_TEST_PID_FILE}" ]; then
+    _stubborn_pid=$(cat "${MARIADBD_TEST_PID_FILE}")
+    kill -0 "${_stubborn_pid}" 2>/dev/null \
+        && fail "sigterm-stubborn-bootstrap: mariadbd survived cleanup" \
+        || pass "sigterm-stubborn-bootstrap: mariadbd was killed and reaped"
+else
+    fail "sigterm-stubborn-bootstrap: the private server never published its pid"
+fi
+[ -e "${DATADIR}/mysql" ] \
+    && fail "sigterm-stubborn-bootstrap: datadir kept after the server was reaped" \
+    || pass "sigterm-stubborn-bootstrap: datadir cleared after process death"
+unset MARIADBD_IGNORE_TERM CLIENT_KILL_PARENT
+
+# --- Case 6g: a datadir carrying the sentinel is refused, not started ---
 # No trap survives a crash or a SIGKILL, so the sentinel is the only record that
 # the bootstrap did not finish. It says the master user is missing, not that the
 # volume is empty, so the refusal must not clear anything.
@@ -898,7 +927,7 @@ write_handoff initialize 's3cr3t' ''
 if run_ok "no-cert"; then
     grep -q '^ssl_cert' "${PLATFORM_FILE}" \
         && fail "no-cert: points at a cert that was never delivered" || pass "no-cert: no cert paths"
-    grep -q 'CREATE DATABASE' "${CLIENT_CALLS}" \
+    grep -q '^CALL `_spinifex_rds`.`create_database`' "${CLIENT_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
 fi
 

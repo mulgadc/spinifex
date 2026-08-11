@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
@@ -78,6 +79,19 @@ func TestEngineProbe_ProbesTheAssignedPort(t *testing.T) {
 
 	if !strings.Contains(strings.Join(gotArgs, " "), "-p 6543") {
 		t.Errorf("probe args = %v, want the assigned port 6543", gotArgs)
+	}
+}
+
+func TestExecProbeRunner_PreservesTheProbeDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	code, err := execProbeRunner(ctx, "sh", "-c", "while :; do :; done")
+	if code != -1 {
+		t.Errorf("exit code = %d, want -1 for a timed-out probe", code)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want the context deadline", err)
 	}
 }
 

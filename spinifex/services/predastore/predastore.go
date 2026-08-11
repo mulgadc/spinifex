@@ -23,9 +23,11 @@ var serviceName = "predastore"
 type Config struct {
 	ConfigPath string
 	Port       int
-	Host       string
-	TlsCert    string
-	TlsKey     string
+	// Host is where the S3 API listens, and only that: the cluster plane binds
+	// the host's own address from the predastore configuration file.
+	Host    string
+	TlsCert string
+	TlsKey  string
 
 	// BasePath is where this service keeps its pid file. Predastore itself has
 	// no base path — its directories come from the configuration file — but
@@ -132,7 +134,9 @@ func (svc *Service) mergeHost(cfg *pds.Config) (pds.HostID, error) {
 		return 0, fmt.Errorf("predastore host %d is not in %s", svc.Config.HostID, svc.Config.ConfigPath)
 	}
 
-	host.BindAddr = cmp.Or(svc.Config.Host, host.BindAddr, host.Addr)
+	// host.BindAddr is left as the file has it: it is the cluster plane, there
+	// is no flag for it, and predastore falls back to the host's dial address
+	// when it is empty.
 	host.TLSCert = cmp.Or(svc.Config.TlsCert, host.TLSCert)
 	host.TLSKey = cmp.Or(svc.Config.TlsKey, host.TLSKey)
 
@@ -148,6 +152,10 @@ func (svc *Service) mergeHost(cfg *pds.Config) (pds.HostID, error) {
 	if gate < 0 {
 		return 0, fmt.Errorf("predastore host %d runs no gate node in %s", svc.Config.HostID, svc.Config.ConfigPath)
 	}
+	// The address spinifex.toml carries is the S3 endpoint, which is the gate's
+	// alone. Settling it on the host would put raft and blob traffic on the
+	// public interface with it, which is the one place they must never be.
+	host.Nodes[gate].BindAddr = cmp.Or(svc.Config.Host, host.Nodes[gate].BindAddr)
 	host.Nodes[gate].Port = cmp.Or(svc.Config.Port, host.Nodes[gate].Port)
 
 	return hostID, cfg.Validate()

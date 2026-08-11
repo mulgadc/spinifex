@@ -1,13 +1,10 @@
 # Predastore S3-compatible storage configuration file in TOML format.
 # Generated for multi-node cluster
-version = "5"
+version = 1
 region = "{{.Region}}"
 
-# The gateway listen address comes from the daemon CLI options: a top-level
-# host key would collide with the [[host]] topology tables below.
-
-debug = false
-
+# Reed-Solomon erasure code. data + parity must not exceed the number of blob
+# nodes in the cluster, and each machine contributes exactly one.
 [rs]
 {{- if eq (len .Nodes) 2}}
 data = 1
@@ -17,46 +14,47 @@ data = 2
 parity = 1
 {{- end}}
 
-# One host per machine: a predastore process owning a socket and a data
-# directory. bind_addr binds every interface; public_addr is what the other
-# hosts dial.
-{{- range .Nodes}}
+# One host per machine: a predastore process owning a data directory, a TLS
+# identity and the nodes pinned to it. bind_addr binds every interface; addr is
+# what the other hosts dial, so it carries no port and names one machine.
+#
+# Each machine runs a gate for the S3 API, a blob node for erasure-coded object
+# shards and a meta node for the Raft quorum over global state. Ports are
+# unique within a host, so every machine uses the same three.
+{{- range $host := .Nodes}}
 
 [[host]]
-id = {{.ID}}
-bind_addr = "0.0.0.0:6660"
-public_addr = "{{.Host}}:6660"
+id = {{$host.ID}}
+bind_addr = "0.0.0.0"
+addr = "{{$host.Host}}"
 data_dir = "{{$.PredastoreDataDir}}"
-{{- end}}
+tls_cert = "{{$.ConfigDir}}/server.pem"
+tls_key = "{{$.ConfigDir}}/server.key"
+encryption_key = "{{$.ConfigDir}}/predastore/encryption.key"
+{{- range $.ClusterNodes}}
+{{- if eq .HostID $host.ID}}
 
-# Nodes are roles pinned to a host: each machine carries one shard-storage
-# node for erasure-coded object shards and one state replica for the Raft
-# quorum over global state.
-{{- range .ClusterNodes}}
-
-[[node]]
+[[host.node]]
 id = {{.ID}}
-host_id = {{.HostID}}
 role = "{{.Role}}"
+port = {{.Port}}
+{{- end}}
+{{- end}}
 {{- end}}
 
-[[buckets]]
+[[bucket]]
 name = "predastore"
 region = "{{.Region}}"
-type = "distributed"
 public = false
-encryption = ""
 account_id = "000000000000"
 
 {{- if .NorthstarAccessKey}}
 # Northstar DNS zone storage. Read-only for the northstar service; the control
 # plane writes zone files with the system credentials.
-[[buckets]]
+[[bucket]]
 name = "{{.NorthstarBucket}}"
 region = "{{.Region}}"
-type = "distributed"
 public = false
-encryption = ""
 account_id = "000000000000"
 {{- end}}
 
@@ -101,7 +99,6 @@ burst = 200
 [iam]
 nats_url = "nats://{{if eq .BindIP "0.0.0.0"}}localhost{{else}}{{.BindIP}}{{end}}:4222"
 nats_token = "{{.NatsToken}}"
-nats_ca_cert = "{{.ConfigDir}}/ca.pem"
 master_key_path = "{{.ConfigDir}}/master.key"
 access_keys_bucket = "spinifex-iam-access-keys"
 {{- if .CompactionIntervalSeconds}}

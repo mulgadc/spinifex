@@ -3,13 +3,16 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 )
@@ -48,6 +51,80 @@ func hostIsStopping() (bool, error) {
 	}
 
 	return out == "stopping", nil
+}
+
+// systemctlListJobs is overridable in tests so stackIsRestarting does not
+// need a real systemd. Output is one line per pending job in the form
+// "JOB UNIT TYPE STATE" (systemctl list-jobs --no-legend --no-pager).
+var systemctlListJobs = func() (string, error) {
+	out, err := exec.Command("systemctl", "list-jobs", "--no-legend", "--no-pager").Output()
+	return string(out), err
+}
+
+// stackIsRestarting reports whether a pending systemd job shows the spinifex
+// stack is already coming back: a queued START job for spinifex.target
+// (its stop leg resolves instantly, so only the start job stays pending
+// during `systemctl restart`), or a queued RESTART job for
+// spinifex-shutdown.service itself (PartOf propagates target-to-member
+// only, so a direct unit restart looks different). No pending jobs is a
+// clean "not restarting"; output with no recognizable job line is an error.
+func stackIsRestarting() (bool, error) {
+	out, err := systemctlListJobs()
+	if err != nil {
+		return false, fmt.Errorf("systemctl list-jobs: %w", err)
+	}
+
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return false, nil
+	}
+
+	sawParseableLine := false
+	for line := range strings.SplitSeq(trimmed, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		sawParseableLine = true
+		unit, jobType := fields[1], fields[2]
+		if unit == "spinifex.target" && jobType == "start" {
+			return true, nil
+		}
+		if unit == "spinifex-shutdown.service" && jobType == "restart" {
+			return true, nil
+		}
+	}
+	if !sawParseableLine {
+		return false, fmt.Errorf("systemctl list-jobs: no parseable job lines in output %q", trimmed)
+	}
+	return false, nil
+}
+
+// shouldDrainOnStop decides whether a spinifex.target stop should drain
+// local guests. A real host shutdown always drains. Otherwise a plain
+// target stop drains too, since nothing then guarantees the stack comes
+// back; only a systemd job proving a restart is already queued skips it.
+// Any step systemctl cannot answer fails toward draining: a spurious drain
+// only costs a graceful stop and relaunch, a skipped one costs a guest's
+// data path.
+func shouldDrainOnStop() (drain bool, reason string) {
+	stopping, err := hostIsStopping()
+	if err != nil {
+		return true, fmt.Sprintf("could not determine host shutdown state, draining: %v", err)
+	}
+	if stopping {
+		return true, "host is shutting down (reboot/poweroff)"
+	}
+
+	restarting, err := stackIsRestarting()
+	if err != nil {
+		return true, fmt.Sprintf("could not determine whether the spinifex stack is restarting, draining: %v", err)
+	}
+	if restarting {
+		return false, "a restart of the spinifex stack is already queued"
+	}
+
+	return true, "plain target stop with no restart queued"
 }
 
 // runClusterShutdown orchestrates a phased, coordinated shutdown of the cluster.
@@ -206,22 +283,26 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 	local, _ := cmd.Flags().GetBool("local")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	onlyIfHostStopping, _ := cmd.Flags().GetBool("only-if-host-stopping")
+	unlessRestarting, _ := cmd.Flags().GetBool("unless-restarting")
+	// --only-if-host-stopping is a deprecated alias for --unless-restarting;
+	// OR it in so a mixed-version node/unit-file pairing during a partial
+	// upgrade still gets a gate rather than silently always draining.
+	deprecatedOnlyIfHostStopping, _ := cmd.Flags().GetBool("only-if-host-stopping")
+	unlessRestarting = unlessRestarting || deprecatedOnlyIfHostStopping
 	if !local {
 		fmt.Fprintln(os.Stderr, "Error: node drain currently supports only --local")
 		os.Exit(1)
 	}
 
 	// Unset (an operator running this by hand), the command drains
-	// unconditionally. Set, it skips anything short of a real host shutdown,
-	// since PartOf=spinifex.target fires ExecStop on restarts too.
-	if onlyIfHostStopping {
-		stopping, err := hostIsStopping()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not determine host shutdown state: %v\n", err)
-		}
-		if !stopping {
-			fmt.Println("Host is not shutting down; skipping guest drain.")
+	// unconditionally. Set, it drains on a real host shutdown and on a plain
+	// target stop, and skips only when a restart of the stack is already
+	// queued.
+	if unlessRestarting {
+		drain, reason := shouldDrainOnStop()
+		if !drain {
+			fmt.Printf("Skipping guest drain: %s. Guests are left running for the stack to reattach to.\n", reason)
+			warnIfGuestsLeftRunning()
 			return
 		}
 	}
@@ -262,6 +343,63 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Local node %q drained; systemd may now stop storage services\n", node)
+}
+
+// guestEnumerationTimeout bounds how long a skipped drain waits on the
+// spinifex.node.vms fan-out before giving up. It is intentionally short and
+// independent of the drain --timeout: this only runs when the drain itself
+// is being skipped, so it must never itself stall the stop. A var (like
+// systemIsSystemRunning) so tests do not have to wait out a real timeout.
+var guestEnumerationTimeout = 3 * time.Second
+
+// vmStatusRunning mirrors vm.StateRunning's wire value. Not imported directly
+// to avoid pulling the vm package into the CLI: VMInfo.Status crosses NATS as
+// a plain string.
+const vmStatusRunning = "running"
+
+// warnIfGuestsLeftRunning names, at WARN level, every guest still running on
+// this node when the drain gate has just decided to skip a stop. It reuses
+// the spinifex.node.vms fan-out that `spx get vms` already relies on for
+// per-node VM state, rather than adding a second enumeration path. Failures
+// to connect or enumerate are themselves warned about, never fatal — a
+// skipped drain must not block the stop.
+func warnIfGuestsLeftRunning() {
+	cfg, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		slog.Warn("skipped drain: could not connect to check for guests left running", "error", err)
+		return
+	}
+	defer nc.Close()
+	node := cfg.Node
+
+	responses, err := collectResponses(nc, "spinifex.node.vms", guestEnumerationTimeout)
+	if err != nil {
+		slog.Warn("skipped drain: could not enumerate local guests", "node", node, "error", err)
+		return
+	}
+
+	var running []string
+	for _, data := range responses {
+		var resp types.NodeVMsResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+		if resp.Node != node {
+			continue
+		}
+		for _, v := range resp.VMs {
+			if v.Status == vmStatusRunning {
+				running = append(running, v.InstanceID)
+			}
+		}
+	}
+
+	if len(running) == 0 {
+		return
+	}
+	sort.Strings(running)
+	slog.Warn("skipped drain leaves guests running unsupervised; they will lose their data path if the spinifex stack does not come back",
+		"node", node, "instances", running)
 }
 
 // collectLocalShutdownACK publishes a shutdown-phase request and returns the ACK

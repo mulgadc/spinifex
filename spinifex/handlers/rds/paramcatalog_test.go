@@ -10,46 +10,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Every engine's catalog, whether or not it is registered in engines: a catalog
+// has to satisfy these invariants before the engine is offered, not once a
+// customer can reach it.
+var catalogEngines = []Engine{enginePostgres, engineMariaDB}
+
 // The failure this guards is the one the phase opens by warning about, arriving
 // through the default path rather than a customer typo: a catalog change that
 // makes the smallest class unbootable has to fail here rather than in a create.
 func TestParameterCatalog_DefaultsSatisfyTheirOwnConstraintsAtEveryClass(t *testing.T) {
-	for _, class := range SupportedInstanceClasses() {
-		t.Run(class, func(t *testing.T) {
-			memoryMiB, err := classMemoryMiB(class)
-			require.NoError(t, err)
+	for _, engine := range catalogEngines {
+		for _, class := range SupportedInstanceClasses() {
+			t.Run(engine.Name+"/"+class, func(t *testing.T) {
+				memoryMiB, err := classMemoryMiB(class)
+				require.NoError(t, err)
 
-			for _, name := range enginePostgres.CatalogParameterNames() {
-				spec, ok := enginePostgres.LookupParameter(name)
-				require.True(t, ok)
+				for _, name := range engine.CatalogParameterNames() {
+					spec, ok := engine.LookupParameter(name)
+					require.True(t, ok)
 
-				value := spec.DefaultAt(memoryMiB)
-				assert.NotEmpty(t, value, "%s has an empty default at %s", name, class)
-				// Validated by the same function a customer's value goes through, so
-				// a default cannot be something the API would reject.
-				_, err := enginePostgres.validateParameterValue(name, value)
-				assert.NoError(t, err, "the default %q of %s is not a value %s accepts", value, name, class)
-			}
-		})
+					value := spec.DefaultAt(memoryMiB)
+					assert.NotEmpty(t, value, "%s has an empty default at %s", name, class)
+					// Validated by the same function a customer's value goes through, so
+					// a default cannot be something the API would reject.
+					_, err := engine.validateParameterValue(name, value)
+					assert.NoError(t, err, "the default %q of %s is not a value %s accepts", value, name, class)
+				}
+
+				// The defaults also have to satisfy the engine's combination checks,
+				// which no single parameter's own validation can see.
+				_, err = engine.ResolveEffectiveParameters(class, nil)
+				assert.NoError(t, err, "the untouched defaults do not resolve at %s", class)
+			})
+		}
 	}
 }
 
 // Every entry has to be a shape the resolver and the describe can both render,
 // or a client reads a parameter with no type and no apply semantics.
 func TestParameterCatalog_EntriesAreWellFormed(t *testing.T) {
-	for _, name := range enginePostgres.CatalogParameterNames() {
-		spec, _ := enginePostgres.LookupParameter(name)
+	for _, engine := range catalogEngines {
+		t.Run(engine.Name, func(t *testing.T) {
+			for _, name := range engine.CatalogParameterNames() {
+				spec, _ := engine.LookupParameter(name)
 
-		assert.Equal(t, name, spec.Name, "the catalog key and the spec name disagree")
-		assert.Contains(t, []string{ApplyTypeStatic, ApplyTypeDynamic}, spec.ApplyType, "%s", name)
-		assert.Contains(t, []string{paramTypeInteger, paramTypeReal, paramTypeBoolean, paramTypeString, paramTypeEnum},
-			spec.DataType, "%s", name)
-		if spec.DataType == paramTypeEnum {
-			assert.NotEmpty(t, spec.Enum, "%s is an enum with no allowed values", name)
-		}
-		if spec.DataType == paramTypeInteger || spec.DataType == paramTypeReal {
-			assert.Less(t, spec.Min, spec.Max, "%s has an empty range", name)
-		}
+				assert.Equal(t, name, spec.Name, "the catalog key and the spec name disagree")
+				assert.Contains(t, []string{ApplyTypeStatic, ApplyTypeDynamic}, spec.ApplyType, "%s", name)
+				assert.Contains(t, []string{paramTypeInteger, paramTypeReal, paramTypeBoolean, paramTypeString, paramTypeEnum},
+					spec.DataType, "%s", name)
+				if spec.DataType == paramTypeEnum {
+					assert.NotEmpty(t, spec.Enum, "%s is an enum with no allowed values", name)
+				}
+				if spec.DataType == paramTypeInteger || spec.DataType == paramTypeReal {
+					assert.Less(t, spec.Min, spec.Max, "%s has an empty range", name)
+				}
+			}
+		})
 	}
 }
 
@@ -151,7 +167,7 @@ func TestValidateParameterValue_AcceptsPostgresStringValues(t *testing.T) {
 	}
 }
 
-func TestValidateParameterValue_AcceptsEveryEnginesSpellingOfABoolean(t *testing.T) {
+func TestValidateParameterValue_AcceptsEveryPostgresSpellingOfABoolean(t *testing.T) {
 	for _, value := range []string{"on", "OFF", "true", "False", "yes", "no", "1", "0"} {
 		_, err := enginePostgres.validateParameterValue("autovacuum", value)
 		assert.NoError(t, err, "autovacuum rejected %q, which the engine accepts", value)

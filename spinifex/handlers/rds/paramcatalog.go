@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
-	_ "time/tzdata"
 	"unicode"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -73,11 +71,17 @@ type ParameterSpec struct {
 	// unbounded below and above.
 	Min, Max float64
 	// The permitted values of an enum parameter, lowest-to-highest where the
-	// engine gives them an order.
+	// engine gives them an order. On a boolean it narrows the spellings the
+	// engine parses, which are not the same set for every engine.
 	Enum []string
 	// The engine's own unit suffix, reported in AllowedValues so a customer can
 	// see what an integer means. Empty for unitless settings.
 	Unit string
+
+	// The engine's own rule for a value the generic type and range checks cannot
+	// express, such as a zone name that must resolve or a comma-separated list of
+	// engine mode names. Runs last, on the trimmed value.
+	Validate func(value string) error
 }
 
 // Indexes the specs by name and fails the build-equivalent — process start — on
@@ -138,10 +142,22 @@ func (s ParameterSpec) AllowedValues() string {
 	case paramTypeEnum:
 		return strings.Join(s.Enum, ",")
 	case paramTypeBoolean:
-		return "on,off,true,false,yes,no,1,0"
+		return strings.Join(s.booleanSpellings(), ",")
 	default:
 		return ""
 	}
+}
+
+// The spellings the engine parses for a boolean. PostgreSQL takes all of these;
+// MariaDB refuses yes and no, so its specs narrow the set rather than let the
+// API accept a value mysqld will not parse.
+var defaultBooleanSpellings = []string{"on", "off", "true", "false", "yes", "no", "1", "0"}
+
+func (s ParameterSpec) booleanSpellings() []string {
+	if len(s.Enum) > 0 {
+		return s.Enum
+	}
+	return defaultBooleanSpellings
 }
 
 // Integral bounds print without a decimal point, so an integer parameter's range
@@ -224,8 +240,9 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 			return ParameterSpec{}, rangeError(spec, value)
 		}
 	case paramTypeBoolean:
-		if !validBoolean(trimmed) {
-			return ParameterSpec{}, typeError(spec, value, "a boolean (on, off, true, false, yes, no, 1, 0)")
+		if !slices.Contains(spec.booleanSpellings(), strings.ToLower(trimmed)) {
+			return ParameterSpec{}, typeError(spec, value,
+				"a boolean ("+strings.Join(spec.booleanSpellings(), ", ")+")")
 		}
 	case paramTypeEnum:
 		if !slices.Contains(spec.Enum, strings.ToLower(trimmed)) {
@@ -233,7 +250,12 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
 		}
 	case paramTypeString:
-		if err := validateStringParameter(spec, value, trimmed); err != nil {
+		if err := validateStringParameter(spec, trimmed); err != nil {
+			return ParameterSpec{}, err
+		}
+	}
+	if spec.Validate != nil {
+		if err := spec.Validate(trimmed); err != nil {
 			return ParameterSpec{}, err
 		}
 	}
@@ -242,7 +264,9 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 
 const maxStringParameterBytes = 1024
 
-func validateStringParameter(spec ParameterSpec, value, trimmed string) error {
+// The bounds every engine's free-form string shares. What a particular setting
+// means is the engine's own rule, carried on the spec's Validate.
+func validateStringParameter(spec ParameterSpec, trimmed string) error {
 	if len(trimmed) > maxStringParameterBytes {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s exceeds the maximum length of %d bytes", spec.Name, maxStringParameterBytes)
@@ -255,62 +279,7 @@ func validateStringParameter(spec ParameterSpec, value, trimmed string) error {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s cannot contain control characters", spec.Name)
 	}
-	switch spec.Name {
-	case "timezone":
-		if strings.EqualFold(trimmed, "Local") {
-			return invalidTimezone(value)
-		}
-		if _, err := time.LoadLocation(trimmed); err != nil {
-			return invalidTimezone(value)
-		}
-	case "datestyle":
-		if !validDateStyle(trimmed) {
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"parameter datestyle does not accept %q; use one output style (ISO, SQL, Postgres, German) and one date order (MDY, DMY, YMD)", value)
-		}
-	}
 	return nil
-}
-
-func invalidTimezone(value string) error {
-	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-		"parameter timezone does not accept %q; use an IANA time zone name such as UTC or Australia/Sydney", value)
-}
-
-func validDateStyle(value string) bool {
-	parts := strings.Split(value, ",")
-	if len(parts) == 0 || len(parts) > 2 {
-		return false
-	}
-	seenStyle, seenOrder := false, false
-	for _, part := range parts {
-		switch strings.ToLower(strings.TrimSpace(part)) {
-		case "iso", "sql", "postgres", "german":
-			if seenStyle {
-				return false
-			}
-			seenStyle = true
-		case "mdy", "dmy", "ymd":
-			if seenOrder {
-				return false
-			}
-			seenOrder = true
-		default:
-			return false
-		}
-	}
-	return seenStyle || seenOrder
-}
-
-// PostgreSQL's own boolean spellings, so a config a customer copied from the
-// engine's documentation is accepted as the engine would accept it.
-func validBoolean(value string) bool {
-	switch strings.ToLower(value) {
-	case "on", "off", "true", "false", "yes", "no", "1", "0":
-		return true
-	default:
-		return false
-	}
 }
 
 func typeError(spec ParameterSpec, value, want string) error {
@@ -359,6 +328,48 @@ func (e Engine) ResolveEffectiveParameters(instanceClass string, overrides map[s
 		return nil, err
 	}
 	return resolved, nil
+}
+
+// The bytes of class memory an RDS parameter formula divides. Real RDS exposes
+// it as {DBInstanceClassMemory}, and the resolver evaluates the formulas here
+// rather than passing them to the engine.
+const mibToBytes = 1024 * 1024
+
+func clampInt64(v, lo, hi int64) int64 {
+	return min(max(v, lo), hi)
+}
+
+// Reads one setting out of a resolved set for a combination check. The set is
+// every catalog name by construction, so an absent one is a catalog bug rather
+// than anything a customer did.
+func resolvedValues(params []Parameter) map[string]string {
+	values := make(map[string]string, len(params))
+	for _, param := range params {
+		values[param.Name] = strings.ToLower(strings.TrimSpace(param.Value))
+	}
+	return values
+}
+
+func resolvedString(values map[string]string, name string) (string, error) {
+	value, ok := values[name]
+	if !ok {
+		return "", awserrors.Errorf(awserrors.ErrorServerInternal,
+			"resolved parameter set is missing %s", name)
+	}
+	return value, nil
+}
+
+func resolvedInteger(values map[string]string, name string) (int64, error) {
+	value, err := resolvedString(values, name)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
+			"resolved parameter %s has invalid integer value %q", name, value)
+	}
+	return n, nil
 }
 
 func validateClassParameterValue(instanceClass string, memoryMiB int64, spec ParameterSpec, value string) error {

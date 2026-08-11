@@ -3,6 +3,10 @@ package handlers_rds
 import (
 	"strconv"
 	"strings"
+	"time"
+	// The zone database Go's own LoadLocation reads, vendored into the binary so
+	// the timezone parameter validates identically wherever the daemon runs.
+	_ "time/tzdata"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
@@ -315,12 +319,12 @@ var postgresParameterCatalog = buildParameterCatalog(
 	},
 	ParameterSpec{
 		Name: "timezone", DataType: paramTypeString, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Default: "UTC",
+		IsModifiable: true, Default: "UTC", Validate: validatePostgresTimezone,
 		Description: "Time zone the server displays and interprets timestamps in.",
 	},
 	ParameterSpec{
 		Name: "datestyle", DataType: paramTypeString, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Default: "ISO, MDY",
+		IsModifiable: true, Default: "ISO, MDY", Validate: validatePostgresDateStyle,
 		Description: "Display format for date and time values.",
 	},
 	ParameterSpec{
@@ -335,10 +339,52 @@ var postgresParameterCatalog = buildParameterCatalog(
 	},
 )
 
-// The bytes of class memory an RDS parameter formula divides. Real RDS exposes
-// it as {DBInstanceClassMemory}, and the resolver evaluates the formulas here
-// rather than passing them to the engine.
-const mibToBytes = 1024 * 1024
+// Go's own zone database, which is vendored into the binary, so a name the API
+// accepts is one the guest can load without a tzdata package.
+func validatePostgresTimezone(value string) error {
+	if !strings.EqualFold(value, "Local") {
+		if _, err := time.LoadLocation(value); err == nil {
+			return nil
+		}
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"parameter timezone does not accept %q; use an IANA time zone name such as UTC or Australia/Sydney", value)
+}
+
+// One output style and one date order, in either order, which is the grammar
+// PostgreSQL's DateStyle accepts.
+func validatePostgresDateStyle(value string) error {
+	if validDateStyle(value) {
+		return nil
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"parameter datestyle does not accept %q; use one output style (ISO, SQL, Postgres, German) and one date order (MDY, DMY, YMD)", value)
+}
+
+func validDateStyle(value string) bool {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > 2 {
+		return false
+	}
+	seenStyle, seenOrder := false, false
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "iso", "sql", "postgres", "german":
+			if seenStyle {
+				return false
+			}
+			seenStyle = true
+		case "mdy", "dmy", "ymd":
+			if seenOrder {
+				return false
+			}
+			seenOrder = true
+		default:
+			return false
+		}
+	}
+	return seenStyle || seenOrder
+}
 
 // shared_buffers = {DBInstanceClassMemory/32768}, in 8 kB blocks — a quarter of
 // class memory, which is RDS's own default.
@@ -386,15 +432,8 @@ func maintenanceWorkMemCeilingFor(memoryMiB int64) int64 {
 	return clampInt64(memoryMiB*1024/2, 16384, 2147483647)
 }
 
-func clampInt64(v, lo, hi int64) int64 {
-	return min(max(v, lo), hi)
-}
-
 func validatePostgresParameterCombinations(params []Parameter) error {
-	values := make(map[string]string, len(params))
-	for _, param := range params {
-		values[param.Name] = strings.ToLower(strings.TrimSpace(param.Value))
-	}
+	values := resolvedValues(params)
 
 	maxWALSenders, err := resolvedInteger(values, "max_wal_senders")
 	if err != nil {
@@ -435,18 +474,4 @@ func validatePostgresParameterCombinations(params []Parameter) error {
 			"max_connections, max_worker_processes and max_wal_senders reserve too many server processes")
 	}
 	return nil
-}
-
-func resolvedInteger(values map[string]string, name string) (int64, error) {
-	value, ok := values[name]
-	if !ok {
-		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
-			"resolved parameter set is missing %s", name)
-	}
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
-			"resolved parameter %s has invalid integer value %q", name, value)
-	}
-	return n, nil
 }

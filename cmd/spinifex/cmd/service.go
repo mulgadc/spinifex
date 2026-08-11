@@ -104,9 +104,9 @@ type predastoreBind struct {
 // normalization for callers that DIAL predastore, not for the address
 // predastore itself binds to.
 //
-// host_id defaults to 0 when spinifex.toml omits the key, which runs the whole
-// predastore topology in this one process — the single-node deployment. Only a
-// multi-node config names a host (>= 1), selecting just that host's nodes.
+// host_id resolves to 0 when spinifex.toml omits the key. That names no
+// [[host]] of the predastore topology, so the start command rejects it rather
+// than substituting one.
 func derivePredastoreBind(clusterConfig *config.ClusterConfig) (predastoreBind, error) {
 	node := clusterConfig.Node
 	bindKey := "nodes." + node + ".predastore.host"
@@ -138,7 +138,6 @@ var predastoreStartCmd = &cobra.Command{
 		port := viper.GetInt("predastore-port")
 		host := viper.GetString("predastore-host")
 		basePath := viper.GetString("predastore-base-path")
-		debug := viper.GetBool("predastore-debug")
 		hostID := viper.GetInt("predastore-host-id")
 
 		// Derive bind host/port/host-id from spinifex.toml when its path is
@@ -166,9 +165,10 @@ var predastoreStartCmd = &cobra.Command{
 			}
 		}
 
-		// Required, no default
-		if basePath == "" {
-			fmt.Println("Base path is not set")
+		// Required, no default: the host id selects the [[host]] of the
+		// predastore topology this process runs, and nothing can guess it.
+		if hostID <= 0 {
+			fmt.Println("Host ID is not set (--host-id, SPINIFEX_PREDASTORE_HOST_ID or host_id in spinifex.toml)")
 			return
 		}
 
@@ -200,26 +200,19 @@ var predastoreStartCmd = &cobra.Command{
 			return
 		}
 
-		pprofEnabled := viper.GetBool("pprof")
-		pprofOutput := viper.GetString("pprof-output")
-
-		defer initTelemetry("predastore", debug)()
+		defer initTelemetry("predastore", false)()
 
 		service, err := service.New("predastore", &predastore.Config{
 			Port:       port,
 			Host:       host,
 			BasePath:   basePath,
 			ConfigPath: configPath,
-			Debug:      debug,
 			TlsCert:    tlsCert,
 			TlsKey:     tlsKey,
 
 			EncryptionKeyFile: encryptionKeyFile,
 
 			HostID: hostID,
-
-			PprofEnabled:    pprofEnabled,
-			PprofOutputPath: pprofOutput,
 		})
 
 		if err != nil {
@@ -242,7 +235,11 @@ var predastoreStopCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("Stopping predastore service...")
 
-		service, err := service.New("predastore", &predastore.Config{})
+		// Only the pid directory matters here: Stop finds the running process
+		// through it, and start wrote the file there.
+		service, err := service.New("predastore", &predastore.Config{
+			BasePath: viper.GetString("predastore-base-path"),
+		})
 
 		if err != nil {
 			fmt.Println("Error stopping predastore service:", err)
@@ -1156,7 +1153,7 @@ var qmpCollectorStatusCmd = &cobra.Command{
 // init()); pflag panics on a redefined flag.
 func registerPredastoreNamespacedFlags() {
 	predastoreCmd.PersistentFlags().String("host", "0.0.0.0", "Predastore (S3) host")
-	predastoreCmd.PersistentFlags().String("base-path", "", "Predastore (S3) base path")
+	predastoreCmd.PersistentFlags().String("base-path", "", "Directory holding the predastore service pid file")
 	predastoreCmd.PersistentFlags().String("config-path", "", "Predastore (S3) config path")
 	bindPredastoreNamespacedEnv()
 }
@@ -1175,15 +1172,12 @@ func bindPredastoreNamespacedEnv() {
 	viper.BindPFlag("predastore-config-path", predastoreCmd.PersistentFlags().Lookup("config-path"))
 }
 
-// bindPredastoreCollisionEnv namespaces predastore's port, debug, tls-cert,
-// tls-key, encryption-key-file and host-id keys, which nats and awsgw also
-// bind bare. Each derived env name now matches its own BindEnv target.
+// bindPredastoreCollisionEnv namespaces predastore's port, tls-cert, tls-key,
+// encryption-key-file and host-id keys, which nats and awsgw also bind bare.
+// Each derived env name now matches its own BindEnv target.
 func bindPredastoreCollisionEnv() {
 	viper.BindEnv("predastore-port", "SPINIFEX_PREDASTORE_PORT")
 	viper.BindPFlag("predastore-port", predastoreCmd.PersistentFlags().Lookup("port"))
-
-	viper.BindEnv("predastore-debug", "SPINIFEX_PREDASTORE_DEBUG")
-	viper.BindPFlag("predastore-debug", predastoreCmd.PersistentFlags().Lookup("debug"))
 
 	viper.BindEnv("predastore-tls-cert", "SPINIFEX_PREDASTORE_TLS_CERT")
 	viper.BindPFlag("predastore-tls-cert", predastoreCmd.PersistentFlags().Lookup("tls-cert"))
@@ -1259,12 +1253,9 @@ func init() {
 	// Predastore Port
 	predastoreCmd.PersistentFlags().Int("port", 8443, "Predastore (S3) port")
 
-	// Predastore host, base-path, config-path (namespaced viper keys —
+	// Predastore host, config-path (namespaced viper keys —
 	// see registerPredastoreNamespacedFlags doc comment)
 	registerPredastoreNamespacedFlags()
-
-	// Predastore Debug
-	predastoreCmd.PersistentFlags().Bool("debug", false, "Predastore (S3) debug")
 
 	// Predastore TLS Cert
 	predastoreCmd.PersistentFlags().String("tls-cert", "", "Predastore (S3) TLS certificate")
@@ -1276,24 +1267,14 @@ func init() {
 	predastoreCmd.PersistentFlags().String("encryption-key-file", "", "Path to this node's 32-byte AES-256 master key file (required)")
 
 	// Predastore host ID: which [[host]] of the predastore topology this
-	// process is. Default 0 runs every node of the topology in this process,
-	// which is the single-node deployment. Multi-node deployments set the
-	// host's real ID (>= 1) via SPINIFEX_PREDASTORE_HOST_ID or --host-id.
-	predastoreCmd.PersistentFlags().Int("host-id", 0, "Predastore cluster host ID (0 = run the whole topology in this process, >= 1 = this host only)")
+	// process runs. Required, and it must name a host the predastore config
+	// declares; the default 0 names none. Set it via spinifex.toml's host_id,
+	// SPINIFEX_PREDASTORE_HOST_ID or --host-id.
+	predastoreCmd.PersistentFlags().Int("host-id", 0, "Predastore cluster host ID, naming a [[host]] in the predastore config (required)")
 
-	// Namespaced viper keys for port/debug/tls-cert/tls-key/encryption-key-file/host-id
+	// Namespaced viper keys for port/tls-cert/tls-key/encryption-key-file/host-id
 	// (see bindPredastoreCollisionEnv doc comment)
 	bindPredastoreCollisionEnv()
-
-	// Predastore CPU Profiling
-	predastoreCmd.PersistentFlags().Bool("pprof", false, "Enable CPU profiling (also via PPROF_ENABLED=1)")
-	viper.BindEnv("pprof", "PPROF_ENABLED")
-	viper.BindPFlag("pprof", predastoreCmd.PersistentFlags().Lookup("pprof"))
-
-	// Predastore CPU Profile Output Path
-	predastoreCmd.PersistentFlags().String("pprof-output", "/tmp/predastore-cpu.prof", "CPU profile output path")
-	viper.BindEnv("pprof-output", "PPROF_OUTPUT")
-	viper.BindPFlag("pprof-output", predastoreCmd.PersistentFlags().Lookup("pprof-output"))
 
 	predastoreCmd.AddCommand(predastoreStartCmd)
 	predastoreCmd.AddCommand(predastoreStopCmd)

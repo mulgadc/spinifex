@@ -2,18 +2,20 @@ name: Publish System AMIs
 
 # Builds the system AMIs (libguestfs, on the runner) and publishes each
 # compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket that backs
-# iso.mulgadc.com/system-ami/. Five images ship:
+# iso.mulgadc.com/system-ami/. Six images ship:
 #   spinifex-eks-node       Alpine EKS K3s node (server|agent, role at boot)
 #   spinifex-ecs-node       Alpine ECS container instance
 #   spinifex-eks-node-gpu   Ubuntu EKS K3s GPU worker (NVIDIA driver + toolkit)
 #   spinifex-ecs-node-gpu   Ubuntu ECS GPU container instance
 #   spinifex-rds-postgres   Alpine RDS PostgreSQL instance
+#   spinifex-rds-mariadb    Alpine RDS MariaDB instance
 # Operators then install them on any cluster with:
 #   spx admin images import --name spinifex-eks-node
 #   spx admin images import --name spinifex-ecs-node
 #   spx admin images import --name spinifex-eks-node-gpu
 #   spx admin images import --name spinifex-ecs-node-gpu
 #   spx admin images import --name spinifex-rds-postgres
+#   spx admin images import --name spinifex-rds-mariadb
 #
 # Manual-only: publishing overwrites the mirror artifact, so it is a deliberate
 # action, not something every push should trigger. The `variant` input scopes
@@ -59,7 +61,7 @@ jobs:
           set -euo pipefail
           cpu='{"name":"spinifex-eks-node","manifest":"scripts/images/eks-node/manifest.conf"},{"name":"spinifex-ecs-node","manifest":"scripts/images/ecs-agent/manifest.conf"}'
           gpu='{"name":"spinifex-eks-node-gpu","manifest":"scripts/images/eks-node-gpu/manifest.conf"},{"name":"spinifex-ecs-node-gpu","manifest":"scripts/images/ecs-agent-gpu/manifest.conf"}'
-          rds='{"name":"spinifex-rds-postgres","manifest":"scripts/images/rds-postgres/manifest.conf"}'
+          rds='{"name":"spinifex-rds-postgres","manifest":"scripts/images/rds-postgres/manifest.conf"},{"name":"spinifex-rds-mariadb","manifest":"scripts/images/rds-mariadb/manifest.conf"}'
           case "${VARIANT}" in
             cpu) items="${cpu}" ;;
             gpu) items="${gpu}" ;;

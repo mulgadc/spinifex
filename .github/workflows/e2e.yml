@@ -52,7 +52,10 @@ jobs:
     # inputs.suites.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 50
+    # Sized against the rds suite, which is the long pole and now carries both
+    # engines: ~6 minutes of provision, bootstrap and two image builds, plus a
+    # suite whose own per-test timeout is 45m.
+    timeout-minutes: 70
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
@@ -250,53 +253,58 @@ jobs:
           EOF
           ok "kubectl installed on VM"
 
-      # CreateDBInstance boots the DB VM from the rds-postgres AMI, so that image
+      # CreateDBInstance boots the DB VM from an RDS AMI, so both engines' images
       # must be in the VM's image store before the suite runs — same split as the
       # eks-node pair above: build on the runner (needs source + network), import
-      # on the VM (needs predastore/NATS). The suite's psql client needs no step
-      # here: it runs inside a client VM that installs postgresql-client from its
-      # own user-data, because a private-only endpoint is unreachable from the
-      # runner and from the cluster host alike.
-      - name: Build rds-postgres AMI (libguestfs, runner)
+      # on the VM (needs predastore/NATS). The suite's psql and mariadb clients
+      # need no step here: they run inside a client VM that installs them from
+      # its own user-data, because a private-only endpoint is unreachable from
+      # the runner and from the cluster host alike.
+      - name: Build RDS AMIs (libguestfs, runner)
         if: contains(env.SUITES, 'e2e-rds')
         working-directory: spinifex
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          banner "build rds-postgres AMI (libguestfs — no host devices)"
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
           export LIBGUESTFS_BACKEND=direct
           sudo chmod 0644 /boot/vmlinuz-* || true
-          group_open "make build-rds-postgres-image"
-          make build-rds-postgres-image
-          group_close
-          ok "raw: $(du -h /tmp/rds-postgres-image-build/rds-postgres-alpine.raw | cut -f1)"
+          for IMAGE in rds-postgres rds-mariadb; do
+            banner "build ${IMAGE} AMI (libguestfs — no host devices)"
+            group_open "make build-${IMAGE}-image"
+            make "build-${IMAGE}-image"
+            group_close
+            ok "raw: $(du -h "/tmp/${IMAGE}-image-build/${IMAGE}-alpine.raw" | cut -f1)"
+          done
 
-      - name: Import rds-postgres AMI on VM
+      - name: Import RDS AMIs on VM
         if: contains(env.SUITES, 'e2e-rds')
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
-            spinifex/scripts/images/rds-postgres/manifest.conf)"
-          # SYSTEM_TAG carries three tags, not one: managed-by marks it a system
-          # image and engine/engine-version are what an EngineVersion request
-          # resolves against. --tag is repeatable, so expand rather than pass the
-          # whole string as a single value.
-          TAG_ARGS=""
-          for tag in ${SYSTEM_TAG}; do TAG_ARGS="${TAG_ARGS} --tag ${tag}"; done
           SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
           VM=tf-user@${{ steps.vm.outputs.wan_ip }}
-          banner "import rds-postgres AMI to VM image store"
-          scp "${SSH_OPTS[@]}" \
-            /tmp/rds-postgres-image-build/rds-postgres-alpine.raw \
-            "$VM":/tmp/rds-postgres-alpine.raw
-          ssh "${SSH_OPTS[@]}" "$VM" \
-            "spx admin images import --file /tmp/rds-postgres-alpine.raw \
-               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}" >/dev/null 2>&1
-          ok "rds-postgres AMI imported"
+          for IMAGE in rds-postgres rds-mariadb; do
+            eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+              "spinifex/scripts/images/${IMAGE}/manifest.conf")"
+            # SYSTEM_TAG carries four tags, not one: managed-by marks it a system
+            # image, engine/engine-version are what an EngineVersion request
+            # resolves against, and the contract tag gates the data-volume format
+            # grant. --tag is repeatable, so expand rather than pass the whole
+            # string as a single value.
+            TAG_ARGS=""
+            for tag in ${SYSTEM_TAG}; do TAG_ARGS="${TAG_ARGS} --tag ${tag}"; done
+            banner "import ${IMAGE} AMI to VM image store"
+            scp "${SSH_OPTS[@]}" \
+              "/tmp/${IMAGE}-image-build/${IMAGE}-alpine.raw" \
+              "$VM":"/tmp/${IMAGE}-alpine.raw"
+            ssh "${SSH_OPTS[@]}" "$VM" \
+              "spx admin images import --file /tmp/${IMAGE}-alpine.raw \
+                 --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+                 --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}" >/dev/null 2>&1
+            ok "${IMAGE} AMI imported"
+          done
 
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e
@@ -383,9 +391,10 @@ jobs:
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
+               case \$SUITE in rds) TMO=45m ;; *) TMO=30m ;; esac; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
-                 ./\$SUITE.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+                 ./\$SUITE.test -test.v -test.timeout=\$TMO ${TEST_RUN_FLAG} \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \
                       | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
                rc=\${PIPESTATUS[0]}; \

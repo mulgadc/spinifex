@@ -8,17 +8,35 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 )
 
-// benchVolumeBytes is the size every benchmarked volume is created at. It is
-// deliberately small: this suite prices control operations, and a provider
-// that allocates lazily would otherwise be credited for doing less work.
-const benchVolumeBytes = 1 << 30
+// defaultBenchVolumeBytes is the size a benchmarked volume is created at when
+// BenchConfig does not say. A provider that allocates lazily costs the same at
+// any size, and one that does not should be measured at a size its operator
+// recognises rather than at whatever this file picked.
+const defaultBenchVolumeBytes int64 = 1 << 30
+
+// BenchConfig tunes a benchmark run for the provider it is pointed at.
+type BenchConfig struct {
+	SuiteConfig
+
+	// VolumeBytes sizes every volume the suite creates. Against a live store
+	// this wants to be small enough that a run finishes and large enough that
+	// the provider does real work.
+	VolumeBytes int64
+}
+
+func (c BenchConfig) volumeBytes() int64 {
+	if c.VolumeBytes <= 0 {
+		return defaultBenchVolumeBytes
+	}
+	return c.VolumeBytes
+}
 
 // benchProvider is what a benchmark measures. Unlike the conformance suite it
 // is built once for the whole run: constructing a provider per iteration would
 // price the constructor, which is not a verb.
 type benchProvider struct {
 	provider ebsprovider.EBSProvider
-	cfg      SuiteConfig
+	cfg      BenchConfig
 }
 
 func (p benchProvider) createVolume(b *testing.B, volumeID string) {
@@ -26,7 +44,7 @@ func (p benchProvider) createVolume(b *testing.B, volumeID string) {
 	_, err := p.provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned:     ebsprovider.NewVersioned(),
 		VolumeID:      volumeID,
-		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: benchVolumeBytes},
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: p.cfg.volumeBytes()},
 	})
 	if err != nil {
 		b.Fatalf("create %s: %v", volumeID, err)
@@ -49,7 +67,7 @@ func (p benchProvider) deleteVolume(b *testing.B, volumeID string) {
 //
 // It measures control operations. Guest I/O never crosses these verbs, so no
 // number here says anything about data-path throughput.
-func RunBenchSuite(b *testing.B, provider ebsprovider.EBSProvider, cfg SuiteConfig) {
+func RunBenchSuite(b *testing.B, provider ebsprovider.EBSProvider, cfg BenchConfig) {
 	p := benchProvider{provider: provider, cfg: cfg}
 	capabilities := benchCapabilities(b, provider)
 

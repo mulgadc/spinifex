@@ -31,6 +31,17 @@ const liveVolumeBytes int64 = 64 << 20
 // pointed at the local viperblockd, plus the node it is running on.
 func liveProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string) {
 	t.Helper()
+	provider, nodeID := liveProviderTB(t)
+	return func(t *testing.T) ebsprovider.EBSProvider {
+		t.Helper()
+		return provider
+	}, nodeID
+}
+
+// liveProviderTB is liveProvider for any test kind. Benchmarks need the same
+// connection and the same node, and cannot be handed a *testing.T.
+func liveProviderTB(t testing.TB) (ebsprovider.EBSProvider, string) {
+	t.Helper()
 	if os.Getenv(liveEnvVar) == "" {
 		t.Skipf("skipping: set %s=1 to run this against a real viperblockd over a live cluster's NATS", liveEnvVar)
 	}
@@ -55,10 +66,7 @@ func liveProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, str
 	require.NoError(t, err, "connect to NATS")
 	t.Cleanup(nc.Close)
 
-	return func(t *testing.T) ebsprovider.EBSProvider {
-		t.Helper()
-		return ebsprovider.NewNATSProvider(nc, 120*time.Second)
-	}, nodeID
+	return ebsprovider.NewNATSProvider(nc, 120*time.Second), nodeID
 }
 
 // runPrefix names one run's volumes so it cannot collide with an earlier run's

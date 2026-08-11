@@ -12,7 +12,7 @@ import (
 // BenchmarkNullProvider_InProcess prices the contract with no transport and no
 // storage. Anything a real provider costs above this is its own.
 func BenchmarkNullProvider_InProcess(b *testing.B) {
-	conformance.RunBenchSuite(b, nullprovider.New(), conformance.SuiteConfig{})
+	conformance.RunBenchSuite(b, nullprovider.New(), conformance.BenchConfig{})
 }
 
 // BenchmarkNullProvider_OverNATS adds the transport and nothing else, so the
@@ -25,5 +25,5 @@ func BenchmarkNullProvider_OverNATS(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Cleanup(stop)
-	conformance.RunBenchSuite(b, client, conformance.SuiteConfig{})
+	conformance.RunBenchSuite(b, client, conformance.BenchConfig{})
 }

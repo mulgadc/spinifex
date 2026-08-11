@@ -23,7 +23,7 @@ import (
 // SPINIFEX_REQUIRE_CONFORMANCE_TOOLS so a runner image that loses qemu fails
 // loudly instead of quietly leaving MemoryProvider as the only implementation
 // the contract suite judges.
-func requireQEMUTools(t *testing.T) {
+func requireQEMUTools(t testing.TB) {
 	t.Helper()
 	for _, bin := range []string{"qemu-img", "qemu-nbd", "qemu-io"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -38,7 +38,7 @@ func requireQEMUTools(t *testing.T) {
 // shortTempDir is used instead of t.TempDir because the test name is part of
 // that path, and AF_UNIX truncates a socket path at 108 bytes. Real base
 // directories are short; only the test names are not.
-func shortTempDir(t *testing.T) string {
+func shortTempDir(t testing.TB) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "qnbd") //nolint:usetesting // t.TempDir embeds the test name and overflows the 108-byte socket path limit
 	require.NoError(t, err)
@@ -47,6 +47,11 @@ func shortTempDir(t *testing.T) string {
 }
 
 func newQEMUProvider(t *testing.T) ebsprovider.EBSProvider {
+	t.Helper()
+	return newQEMUProviderTB(t)
+}
+
+func newQEMUProviderTB(t testing.TB) ebsprovider.EBSProvider {
 	t.Helper()
 	provider, err := qemunbdd.NewProvider(shortTempDir(t))
 	require.NoError(t, err)

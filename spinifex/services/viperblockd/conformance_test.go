@@ -50,10 +50,11 @@ func requireExportTools(t *testing.T) string {
 	return pluginPath
 }
 
-// TestViperblockdConformance stands the provider handlers up over an embedded
-// NATS and a real predastore, then judges them by the same suite MemoryProvider
-// and qemunbdd answer to.
-func TestViperblockdConformance(t *testing.T) {
+// inProcessProvider stands the provider handlers up over an embedded NATS and
+// a real predastore, and returns a client for them plus the node they answer
+// as. Everything is torn down with the test.
+func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string) {
+	t.Helper()
 	pluginPath := requireExportTools(t)
 
 	fixture := testpredastore.Start(t)
@@ -71,13 +72,35 @@ func TestViperblockdConformance(t *testing.T) {
 
 	nc := startProviderSubjects(t, cfg, natsURL)
 
-	conformance.RunSuiteWithConfig(t, func(t *testing.T) ebsprovider.EBSProvider {
+	return func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		return ebsprovider.NewNATSProvider(nc, 60*time.Second)
-	}, conformance.SuiteConfig{
-		// The fixture's object store outlives an individual test, so each run
-		// names its own volumes rather than meeting the last run's.
-		NamePrefix: "ci" + strconv.FormatInt(time.Now().UnixNano(), 10) + "-",
-		NodeID:     cfg.NodeName,
+	}, cfg.NodeName
+}
+
+// runPrefix names one run's volumes so it cannot meet an earlier run's
+// leftovers: the predastore fixture's object store outlives a single test.
+func runPrefix() string {
+	return "ci" + strconv.FormatInt(time.Now().UnixNano(), 10) + "-"
+}
+
+// TestViperblockdConformance judges the provider handlers by the same suite
+// MemoryProvider and qemunbdd answer to.
+func TestViperblockdConformance(t *testing.T) {
+	newProvider, nodeID := inProcessProvider(t)
+	conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{
+		NamePrefix: runPrefix(),
+		NodeID:     nodeID,
+	})
+}
+
+// TestViperblockdNBDClient checks the half of the boundary our own Go client
+// cannot: whether the nbdkit export viperblockd publishes is usable by libnbd,
+// which knows nothing about this codebase.
+func TestViperblockdNBDClient(t *testing.T) {
+	newProvider, nodeID := inProcessProvider(t)
+	conformance.RunNBDClientSuiteWithConfig(t, newProvider, conformance.NBDClientConfig{
+		NodeID:       nodeID,
+		VolumePrefix: "vol-" + runPrefix() + "nbd",
 	})
 }

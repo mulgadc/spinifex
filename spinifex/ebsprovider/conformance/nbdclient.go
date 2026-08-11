@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +70,14 @@ type nbdInfoOutput struct {
 	Exports []nbdExport `json:"exports"`
 }
 
+// nbdExtent is one entry of `nbdinfo --map --json`. Description is libnbd's
+// rendering of the allocation flags, e.g. "data" or "hole,zero".
+type nbdExtent struct {
+	Offset      int64  `json:"offset"`
+	Length      int64  `json:"length"`
+	Description string `json:"description"`
+}
+
 // assertNBDURI requires a published URI to be one an NBD client can dial:
 // nbd+unix:///?socket=/path or nbd://host:port. QEMU's legacy nbd:unix:
 // filename syntax is not a URI and no NBD client but QEMU accepts it.
@@ -101,6 +108,11 @@ func RequireNBDTools(t *testing.T) {
 	t.Helper()
 	for _, bin := range []string{"nbdinfo", "nbdcopy"} {
 		if _, err := exec.LookPath(bin); err != nil {
+			// CI sets this so a runner image that loses libnbd fails rather
+			// than dropping the only external witness to the export.
+			if os.Getenv("SPINIFEX_REQUIRE_CONFORMANCE_TOOLS") != "" {
+				t.Fatalf("%s not installed (libnbd-bin), but SPINIFEX_REQUIRE_CONFORMANCE_TOOLS is set", bin)
+			}
 			t.Skipf("%s not installed (libnbd-bin)", bin)
 		}
 	}
@@ -117,6 +129,19 @@ func nbdInfo(t *testing.T, uri string) nbdExport {
 	require.NoError(t, json.Unmarshal(out, &parsed))
 	require.Lenf(t, parsed.Exports, 1, "expected exactly one export from %s", uri)
 	return parsed.Exports[0]
+}
+
+// nbdMap runs nbdinfo --map against uri and returns the allocation map the
+// export reports.
+func nbdMap(t *testing.T, uri string) []nbdExtent {
+	t.Helper()
+	out, err := exec.CommandContext(context.Background(), "nbdinfo", "--map", "--json", uri).CombinedOutput()
+	require.NoErrorf(t, err, "nbdinfo --map %s: %s", uri, out)
+	t.Logf("nbdinfo --map %s:\n%s", uri, out)
+
+	var extents []nbdExtent
+	require.NoError(t, json.Unmarshal(out, &extents))
+	return extents
 }
 
 // nbdInfoRetry retries nbdinfo until the export accepts it, reporting how
@@ -267,17 +292,26 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 		assert.True(t, bytes.Equal(got, want), "data read back over NBD differs from what was written")
 	})
 
-	// SparseExtentReporting is only observable at the export: base:allocation
-	// is the metadata context an NBD client queries for which extents are
-	// allocated. Advertising the capability without it is a false claim.
+	// SparseExtentReporting is only observable at the export. base:allocation
+	// being offered proves nothing on its own — nbdkit offers it whether or not
+	// the plugin can compute extents, answering "all allocated" when it cannot.
+	// What separates the two is the answer: an untouched volume is entirely
+	// holes to a server that really tracks allocation.
 	t.Run("sparse extent reporting matches the advertised capability", func(t *testing.T) {
 		provider := newProvider(t)
 		capabilities := capabilitiesOf(t, provider)
 		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
-		export := nbdInfo(t, dialURI(t, pub.NBDURI))
 
-		assert.Equalf(t, capabilities.SparseExtentReporting, slices.Contains(export.Contexts, "base:allocation"),
-			"SparseExtentReporting=%v but export contexts are %v", capabilities.SparseExtentReporting, export.Contexts)
+		holes := false
+		for _, extent := range nbdMap(t, dialURI(t, pub.NBDURI)) {
+			if strings.Contains(extent.Description, "hole") {
+				holes = true
+				break
+			}
+		}
+		assert.Equalf(t, capabilities.SparseExtentReporting, holes,
+			"SparseExtentReporting=%v but a volume with nothing written to it reports holes=%v",
+			capabilities.SparseExtentReporting, holes)
 	})
 
 	t.Run("read-only publish matches the advertised capability", func(t *testing.T) {

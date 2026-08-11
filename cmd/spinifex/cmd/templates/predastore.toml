@@ -1,86 +1,81 @@
 # Predastore S3-compatible storage configuration file in TOML format.
-# MULTI NODE used for testing
-version = "5"
+# Single node: one host running every node in one process.
+version = 1
 region = "{{.Region}}"
 
-# The gateway listen address comes from the daemon CLI options: a top-level
-# host key would collide with the [[host]] topology table below.
-
-# Enable verbose debugging
-debug = false
-
-# Optionally configure base-path if full directory path not defined for "fs" buckets
-# base_path = "/home/predastore/data/"
-
-# Specify reed solomon encoding - 
+# Reed-Solomon erasure code. data + parity must not exceed the number of blob
+# nodes in the cluster.
 # RS(2,1), 2 data, 1 parity. Minimum
 # RS(3,2), 3 data, 2 parity. Recommended for production
 [rs]
 data = 2
 parity = 1
 
-# A host is one predastore process: it owns a socket and a data directory,
-# and runs the nodes pinned to it. A single-node deployment declares one host
-# and colocates every node in it, so all intra-cluster traffic goes over the
-# in-process pipe and no socket is bound. bind_addr/public_addr are unused
-# while everything is colocated; they only matter once nodes are split across
-# processes.
+# A host is one predastore process: it owns a data directory, a TLS identity
+# and the nodes pinned to it. Everything is colocated here, so the nodes talk
+# over the in-process pipe and only the gate binds a socket.
 [[host]]
 id = 1
-bind_addr = "127.0.0.1:6660"
-public_addr = "127.0.0.1:6660"
+bind_addr = "0.0.0.0"
+addr = "127.0.0.1"
 data_dir = "{{.PredastoreDataDir}}"
+tls_cert = "{{.ConfigDir}}/server.pem"
+tls_key = "{{.ConfigDir}}/server.key"
+encryption_key = "{{.ConfigDir}}/predastore/encryption.key"
 
-# Shard nodes: the distributed hash ring places object shards across these.
-# RS(2,1) needs 3.
-[[node]]
+# The gate serves the S3 API. Without one the host answers no S3 request.
+[[host.node]]
 id = 1
-host_id = 1
-role = "shard-storage"
+role = "gate"
+port = 8443
 
-[[node]]
+# Blob nodes hold erasure-coded object shards; a stripe spreads over distinct
+# ones, so RS(2,1) needs 3. Colocated nodes bind no socket, but each still
+# needs a port unique within its host.
+[[host.node]]
 id = 2
-host_id = 1
-role = "shard-storage"
+role = "blob"
+port = 6660
 
-[[node]]
+[[host.node]]
 id = 3
-host_id = 1
-role = "shard-storage"
+role = "blob"
+port = 6661
 
-# State replicas: the Raft quorum over global state (buckets, object index).
-[[node]]
+[[host.node]]
 id = 4
-host_id = 1
-role = "state-replica"
+role = "blob"
+port = 6662
 
-[[node]]
+# Meta nodes form the Raft quorum over global state (buckets, object index).
+[[host.node]]
 id = 5
-host_id = 1
-role = "state-replica"
+role = "meta"
+port = 7660
 
-[[node]]
+[[host.node]]
 id = 6
-host_id = 1
-role = "state-replica"
+role = "meta"
+port = 7661
 
-[[buckets]]
+[[host.node]]
+id = 7
+role = "meta"
+port = 7662
+
+[[bucket]]
 name = "predastore"
 region = "{{.Region}}"
-type = "distributed"
 public = false
-encryption = ""
 account_id = "000000000000"
 
 {{- if .NorthstarAccessKey}}
 # Northstar DNS zone storage. Read-only for the northstar service; the control
 # plane writes zone files with the system credentials.
-[[buckets]]
+[[bucket]]
 name = "{{.NorthstarBucket}}"
 region = "{{.Region}}"
-type = "distributed"
 public = false
-encryption = ""
 account_id = "000000000000"
 {{- end}}
 
@@ -125,7 +120,6 @@ burst = 200
 [iam]
 nats_url = "nats://{{if eq .BindIP "0.0.0.0"}}localhost{{else}}{{.BindIP}}{{end}}:4222"
 nats_token = "{{.NatsToken}}"
-nats_ca_cert = "{{.ConfigDir}}/ca.pem"
 master_key_path = "{{.ConfigDir}}/master.key"
 access_keys_bucket = "spinifex-iam-access-keys"
 {{- if .CompactionIntervalSeconds}}

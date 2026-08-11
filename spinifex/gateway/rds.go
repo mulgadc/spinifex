@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 )

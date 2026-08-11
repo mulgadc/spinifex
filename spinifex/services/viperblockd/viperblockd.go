@@ -238,6 +238,55 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 	}
 }
 
+// volumeVBConfig builds the engine and backend config for one volume. Shared
+// by the read-write open and the read-only state read so the two cannot drift
+// on encryption, bucket or base directory.
+func volumeVBConfig(cfg *Config, volumeName string) (viperblock.VB, s3.S3Config) {
+	return viperblock.VB{
+			VolumeName:        volumeName,
+			VolumeSize:        1, // Recalculated on LoadState.
+			BaseDir:           cfg.BaseDir,
+			VolumeConfig:      viperblock.VolumeConfig{},
+			MasterKey:         cfg.masterKey,
+			EncryptionEnabled: cfg.masterKey != nil,
+			GCEnabled:         cfg.GCEnabled,
+		}, s3.S3Config{
+			VolumeName: volumeName,
+			Bucket:     cfg.Bucket,
+			Region:     cfg.Region,
+			AccessKey:  cfg.AccessKey,
+			SecretKey:  cfg.SecretKey,
+			Host:       admin.DialTarget(cfg.S3Host),
+		}
+}
+
+// readVolumeState reads and verifies a volume's persisted state without
+// opening the volume: no background goroutines, no reachability probe and no
+// SeqNum window claimed. A describe is then one GetObject that writes nothing,
+// which matters because it runs on whichever worker took the request rather
+// than on the node that owns the volume.
+func readVolumeState(ctx context.Context, cfg *Config, volumeName string) (viperblock.VBState, error) {
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
+	vb, err := viperblock.NewStateReader(&vbconfig, "s3", s3cfg)
+	if err != nil {
+		return viperblock.VBState{}, fmt.Errorf("new state reader: %w", err)
+	}
+	if err := vb.InitBackendForRead(ctx); err != nil {
+		return viperblock.VBState{}, fmt.Errorf("backend init: %w", err)
+	}
+
+	var state viperblock.VBState
+	read := func() error {
+		var rerr error
+		state, rerr = vb.ReadStateCtx(ctx)
+		return rerr
+	}
+	if err := retryLoadState(volumeName, loadStateRetryAttempts, loadStateRetryBaseDelay, time.Sleep, read); err != nil {
+		return viperblock.VBState{}, fmt.Errorf("read state: %w", err)
+	}
+	return state, nil
+}
+
 // openVolumeVB constructs and opens an existing viperblock volume with its
 // config state loaded (LoadState) but NOT its block map. Construction mirrors
 // the ebs.mount path so encrypted volumes open with the master key and matching
@@ -245,23 +294,7 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 // openLoadedVolumeVB instead, so the block map is restored before Close()
 // flushes it back to predastore.
 func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, error) {
-	s3cfg := s3.S3Config{
-		VolumeName: volumeName,
-		Bucket:     cfg.Bucket,
-		Region:     cfg.Region,
-		AccessKey:  cfg.AccessKey,
-		SecretKey:  cfg.SecretKey,
-		Host:       admin.DialTarget(cfg.S3Host),
-	}
-	vbconfig := viperblock.VB{
-		VolumeName:        volumeName,
-		VolumeSize:        1, // Recalculated on LoadState.
-		BaseDir:           cfg.BaseDir,
-		VolumeConfig:      viperblock.VolumeConfig{},
-		MasterKey:         cfg.masterKey,
-		EncryptionEnabled: cfg.masterKey != nil,
-		GCEnabled:         cfg.GCEnabled,
-	}
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
 		return nil, fmt.Errorf("new viperblock: %w", err)

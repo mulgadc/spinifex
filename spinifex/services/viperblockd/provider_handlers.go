@@ -519,9 +519,10 @@ func seedVolume(ctx context.Context, vb *viperblock.VB, seed []byte) error {
 }
 
 // describeVolumeEngine resolves volumeID to a provider-neutral Volume,
-// preferring a live mounted VB over opening a second engine on the same
-// volume. The returned error satisfies errors.Is(err, viperblock.ErrStateNotFound)
-// when the volume does not exist.
+// preferring a live mounted VB and otherwise reading persisted state rather
+// than opening a second engine on the same volume. The returned error
+// satisfies errors.Is(err, viperblock.ErrStateNotFound) when the volume does
+// not exist.
 func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*ebsprovider.Volume, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
 		return &ebsprovider.Volume{
@@ -532,17 +533,13 @@ func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*e
 		}, nil
 	}
 
-	vb, err := openVolumeVB(ctx, cfg, volumeID)
+	state, err := readVolumeState(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
-	}()
 	return &ebsprovider.Volume{
 		ID:            volumeID,
-		CapacityBytes: utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+		CapacityBytes: utils.SafeUint64ToInt64(state.VolumeSize),
 		State:         ebsprovider.VolumeStateAvailable,
 		Handle:        volumeHandle(volumeID),
 	}, nil

@@ -58,11 +58,11 @@ host_id = 3
 	assert.Equal(t, 3, bind.HostID)
 }
 
-// TestDerivePredastoreBind_HostIDAbsentRunsWholeTopology covers the
-// single-node rule: those spinifex.toml templates omit host_id entirely,
-// pinning every node of the topology to one host, which only a
-// whole-topology process can serve.
-func TestDerivePredastoreBind_HostIDAbsentRunsWholeTopology(t *testing.T) {
+// TestDerivePredastoreBind_HostIDAbsentDerivesZero covers a spinifex.toml
+// that omits host_id: the derivation substitutes nothing, so the zero it
+// returns names no [[host]] and the start command rejects it rather than
+// guessing which host of the topology this process runs.
+func TestDerivePredastoreBind_HostIDAbsentDerivesZero(t *testing.T) {
 	resetGlobalViper(t)
 
 	path := writeSpinifexToml(t, `

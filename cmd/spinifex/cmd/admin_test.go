@@ -768,8 +768,7 @@ func predastoreMultinodeNodes() []admin.PredastoreNodeConfig {
 type predastoreBucketAuth struct {
 	Buckets []struct {
 		Name string `toml:"name"`
-		Type string `toml:"type"`
-	} `toml:"buckets"`
+	} `toml:"bucket"`
 	Auth []struct {
 		AccessKeyID     string `toml:"access_key_id"`
 		SecretAccessKey string `toml:"secret_access_key"`
@@ -821,15 +820,9 @@ func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
 	var cfg predastoreBucketAuth
 	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
 
+	// The zone bucket is declared once for the whole cluster: every host's gate
+	// reads the same config, so a resolver on any node can serve it.
 	assert.True(t, cfg.hasBucket(admin.NorthstarBucketName), "northstar zone bucket not rendered")
-
-	// The zone bucket must be readable from every node's local predastore, so
-	// a resolver on any node can serve it.
-	for _, b := range cfg.Buckets {
-		if b.Name == admin.NorthstarBucketName {
-			assert.Equal(t, "distributed", b.Type)
-		}
-	}
 
 	// BootstrapBaseZone writes zone files with the system key, not the
 	// resolver's. Without this grant, seeding fails on every node.
@@ -1055,15 +1048,15 @@ func TestSpinifexTomlTemplate_PeerNorthstarStanzaIsPathOnly(t *testing.T) {
 }
 
 // Unset knob must leave production config byte-identical: no [compaction] block
-// and the original trailing bytes unchanged (single-node has no trailing
-// newline, multinode keeps one).
+// and the original trailing bytes unchanged — the [iam] table both templates
+// end on, and the newline after it.
 func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
 	single := renderSingleNodePredastore(t, admin.ConfigSettings{
 		Region: "ap-southeast-2", BindIP: "0.0.0.0", ConfigDir: "/cfg",
 		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok",
 	})
 	assert.NotContains(t, single, "[compaction]")
-	assert.True(t, strings.HasSuffix(single, `access_keys_bucket = "spinifex-iam-access-keys"`),
+	assert.True(t, strings.HasSuffix(single, "access_keys_bucket = \"spinifex-iam-access-keys\"\n"),
 		"unset single-node tail changed: %q", single[len(single)-40:])
 
 	multi, err := admin.GenerateMultiNodePredastoreConfig(

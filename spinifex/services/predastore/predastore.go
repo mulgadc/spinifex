@@ -81,7 +81,8 @@ func (svc *Service) Start() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read predastore config %s: %w", svc.Config.ConfigPath, err)
 	}
-	if err := svc.mergeHost(cfg); err != nil {
+	hostID, err := svc.mergeHost(cfg)
+	if err != nil {
 		return 0, err
 	}
 
@@ -101,7 +102,7 @@ func (svc *Service) Start() (int, error) {
 
 	if err := pds.Run(ctx, pds.Options{
 		Config:    cfg,
-		HostID:    pds.HostID(svc.Config.HostID),
+		HostID:    hostID,
 		MasterKey: key,
 	}); err != nil {
 		slog.Error("Predastore service exited", "error", err)
@@ -113,21 +114,22 @@ func (svc *Service) Start() (int, error) {
 // mergeHost settles the host-local fields spinifex.toml owns into the parsed
 // configuration, then rechecks the merged tree: a flag can supply an address or
 // a port the file never had, and the collision checks only mean something once
-// those are in place.
-func (svc *Service) mergeHost(cfg *pds.Config) error {
+// those are in place. It returns the host this process runs.
+func (svc *Service) mergeHost(cfg *pds.Config) (pds.HostID, error) {
 	if svc.Config.HostID <= 0 {
-		return fmt.Errorf("predastore host id is required and must name a [[host]] in %s", svc.Config.ConfigPath)
+		return 0, fmt.Errorf("predastore host id is required and must name a [[host]] in %s", svc.Config.ConfigPath)
 	}
+	hostID := pds.HostID(svc.Config.HostID)
 
 	var host *pds.HostConfig
 	for i := range cfg.Hosts {
-		if cfg.Hosts[i].ID == pds.HostID(svc.Config.HostID) {
+		if cfg.Hosts[i].ID == hostID {
 			host = &cfg.Hosts[i]
 			break
 		}
 	}
 	if host == nil {
-		return fmt.Errorf("predastore host %d is not in %s", svc.Config.HostID, svc.Config.ConfigPath)
+		return 0, fmt.Errorf("predastore host %d is not in %s", svc.Config.HostID, svc.Config.ConfigPath)
 	}
 
 	host.BindAddr = cmp.Or(svc.Config.Host, host.BindAddr, host.Addr)
@@ -144,11 +146,11 @@ func (svc *Service) mergeHost(cfg *pds.Config) error {
 		}
 	}
 	if gate < 0 {
-		return fmt.Errorf("predastore host %d runs no gate node in %s", svc.Config.HostID, svc.Config.ConfigPath)
+		return 0, fmt.Errorf("predastore host %d runs no gate node in %s", svc.Config.HostID, svc.Config.ConfigPath)
 	}
 	host.Nodes[gate].Port = cmp.Or(svc.Config.Port, host.Nodes[gate].Port)
 
-	return cfg.Validate()
+	return hostID, cfg.Validate()
 }
 
 // Stop stops the predastore service.

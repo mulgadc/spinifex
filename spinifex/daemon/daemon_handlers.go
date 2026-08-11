@@ -347,12 +347,10 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 	// OVN roles are probed only on DB quorum members; compute-only nodes skip
 	// the shell-out entirely.
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); resp.NATSRole = d.queryNATSRole() }()
+	wg.Go(func() { resp.NATSRole = d.queryNATSRole() })
 	if d.isOVNDBQuorumMember() {
-		wg.Add(2)
-		go func() { defer wg.Done(); resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) }()
-		go func() { defer wg.Done(); resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) }()
+		wg.Go(func() { resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) })
+		wg.Go(func() { resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) })
 	}
 	wg.Wait()
 

@@ -73,10 +73,13 @@ func retryLoadState(volume string, attempts int, baseDelay time.Duration, sleep 
 	return fmt.Errorf("LoadState exhausted %d retries: %w", attempts, err)
 }
 
-// loadStateWithRetry calls vb.LoadState with the production retry budget
-// (loadStateRetryAttempts / loadStateRetryBaseDelay).
-func loadStateWithRetry(vb *viperblock.VB, volume string) error {
-	return retryLoadState(volume, loadStateRetryAttempts, loadStateRetryBaseDelay, time.Sleep, vb.LoadState)
+// loadStateWithRetry calls vb.LoadStateCtx with the production retry budget
+// (loadStateRetryAttempts / loadStateRetryBaseDelay). The context matters
+// beyond cancellation: the S3 backend only emits a span per request when the
+// request carries one, so the no-context variant makes this time invisible.
+func loadStateWithRetry(ctx context.Context, vb *viperblock.VB, volume string) error {
+	load := func() error { return vb.LoadStateCtx(ctx) }
+	return retryLoadState(volume, loadStateRetryAttempts, loadStateRetryBaseDelay, time.Sleep, load)
 }
 
 var serviceName = "viperblock"
@@ -147,7 +150,7 @@ type Config struct {
 	// real failure only arrives once the S3 client exhausts its jittered
 	// backoff, which takes anywhere from one to five seconds and so decides the
 	// test on where the dice land relative to the caller's deadline.
-	sealVolume func(volumeName string) error
+	sealVolume func(ctx context.Context, volumeName string) error
 
 	// constructVB overrides constructMountedVB. Nil means the real
 	// construction. Tests inject a fake (e.g. file-backed) VB here to avoid
@@ -159,11 +162,11 @@ type Config struct {
 
 // seal persists volumeName's block map to predastore, honouring a test's
 // injected seal if there is one.
-func (cfg *Config) seal(volumeName string) error {
+func (cfg *Config) seal(ctx context.Context, volumeName string) error {
 	if cfg.sealVolume != nil {
-		return cfg.sealVolume(volumeName)
+		return cfg.sealVolume(ctx, volumeName)
 	}
-	return sealVolumeVB(cfg, volumeName)
+	return sealVolumeVB(ctx, cfg, volumeName)
 }
 
 // buildVB constructs volumeName's daemon-side VB, honouring a test's
@@ -198,7 +201,7 @@ func New(config any) (svc *Service, err error) {
 // AES-GCM tag under the volume's current StateSeqNum, so the caller MUST own the
 // volume exclusively (live mounted VB, or a freshly opened detached one) to keep
 // the GCM nonce unique.
-func applyConfigUpdate(vb *viperblock.VB, req types.EBSConfigUpdateRequest) error {
+func applyConfigUpdate(ctx context.Context, vb *viperblock.VB, req types.EBSConfigUpdateRequest) error {
 	var vc viperblock.VolumeConfig
 	if err := json.Unmarshal(req.VolumeConfig, &vc); err != nil {
 		return fmt.Errorf("unmarshal VolumeConfig: %w", err)
@@ -208,7 +211,7 @@ func applyConfigUpdate(vb *viperblock.VB, req types.EBSConfigUpdateRequest) erro
 	if sz := vc.VolumeMetadata.SizeGiB * 1024 * 1024 * 1024; sz > vb.VolumeSize {
 		vb.VolumeSize = sz
 	}
-	return vb.SaveState()
+	return vb.SaveStateCtx(ctx)
 }
 
 // makeConfigUpdateHandler returns a NATS handler for volume-specific config
@@ -216,14 +219,17 @@ func applyConfigUpdate(vb *viperblock.VB, req types.EBSConfigUpdateRequest) erro
 // the single writer that owns the volume's StateSeqNum.
 func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
 	return func(msg *nats.Msg) {
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+
 		var req types.EBSConfigUpdateRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			slog.Error("Failed to unmarshal ebs.config message", "volume", volumeName, "err", err)
+			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "volume", volumeName, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
-		if err := applyConfigUpdate(vb, req); err != nil {
-			slog.Error("ebs.config: live VB update failed", "volume", volumeName, "err", err)
+		if err := applyConfigUpdate(ctx, vb, req); err != nil {
+			slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", volumeName, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: err.Error()})
 			return
 		}
@@ -238,7 +244,7 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
 // flushes it back to predastore.
-func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
+func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, error) {
 	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
 		Bucket:     cfg.Bucket,
@@ -271,10 +277,10 @@ func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 		}
 	}()
 
-	if err := vb.Backend.Init(); err != nil {
+	if err := vb.Backend.InitCtx(ctx); err != nil {
 		return nil, fmt.Errorf("backend init: %w", err)
 	}
-	if err := loadStateWithRetry(vb, volumeName); err != nil {
+	if err := loadStateWithRetry(ctx, vb, volumeName); err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
@@ -407,12 +413,12 @@ func clearStaleSealReceipt(baseDir, volume string) {
 // MUST Close the returned VB; on error the WAL syncer is stopped and no VB is
 // returned. The caller MUST ensure no nbdkit process is writing the shared
 // BaseDir first (post-KillProcess, or volume detached).
-func openLoadedVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
-	vb, err := openVolumeVB(cfg, volumeName)
+func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, error) {
+	vb, err := openVolumeVB(ctx, cfg, volumeName)
 	if err != nil {
 		return nil, err
 	}
-	if err := vb.LoadBlockState(); err != nil {
+	if err := vb.LoadBlockStateCtx(ctx); err != nil {
 		vb.StopWALSyncer()
 		return nil, fmt.Errorf("load block state: %w", err)
 	}
@@ -431,14 +437,14 @@ func openLoadedVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) 
 // node lacking the local WAL finds no checkpoint (bad superblock). It mirrors
 // the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
 // un-sealed chunk WALs) then Close()s to flush the map.
-func sealVolumeVB(cfg *Config, volumeName string) error {
-	vb, err := openLoadedVolumeVB(cfg, volumeName)
+func sealVolumeVB(ctx context.Context, cfg *Config, volumeName string) error {
+	vb, err := openLoadedVolumeVB(ctx, cfg, volumeName)
 	if err != nil {
 		return err
 	}
 	// Close removes local files only after the predastore writes succeed, so a
 	// failed seal leaves the WAL intact rather than losing data.
-	if err := vb.Close(); err != nil {
+	if err := vb.CloseCtx(ctx); err != nil {
 		return fmt.Errorf("seal close: %w", err)
 	}
 	return nil
@@ -741,7 +747,7 @@ func launchService(cfg *Config) (err error) {
 		cfg.mu.Unlock()
 
 		if live != nil {
-			if err := applyConfigUpdate(live, req); err != nil {
+			if err := applyConfigUpdate(ctx, live, req); err != nil {
 				slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", req.Volume, "err", err)
 				utils.MarkSpanError(span, err)
 				respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
@@ -752,15 +758,15 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openLoadedVolumeVB(cfg, req.Volume)
+		vb, err := openLoadedVolumeVB(ctx, cfg, req.Volume)
 		if err != nil {
 			slog.ErrorContext(ctx, "ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}
-		applyErr := applyConfigUpdate(vb, req)
-		if closeErr := vb.Close(); closeErr != nil {
+		applyErr := applyConfigUpdate(ctx, vb, req)
+		if closeErr := vb.CloseCtx(ctx); closeErr != nil {
 			slog.ErrorContext(ctx, "ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
 		}
 		if applyErr != nil {

@@ -6,6 +6,7 @@ package viperblockd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -422,7 +423,7 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	// is what put this test's outcome inside the tail of the 5s deadline below.
 	createMockVolumeState(t, cfg.BaseDir, "vol-seal-fail")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return fmt.Errorf("seal %s: injected backend failure", volumeName)
 	}
@@ -475,7 +476,7 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	writeSealReceipt(t, cfg.BaseDir, "vol-clean-receipt")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -527,7 +528,7 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 	createMockVolumeState(t, cfg.BaseDir, "vol-state-and-receipt")
 	writeSealReceipt(t, cfg.BaseDir, "vol-state-and-receipt")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -570,7 +571,7 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	createMockVolumeState(t, cfg.BaseDir, "vol-aux-efi")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -613,7 +614,7 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}

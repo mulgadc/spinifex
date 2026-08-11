@@ -389,7 +389,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	existing, err := describeVolumeEngine(cfg, req.VolumeID)
+	existing, err := describeVolumeEngine(ctx, cfg, req.VolumeID)
 	switch {
 	case err == nil:
 		if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
@@ -428,7 +428,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}()
 	vb.SetDebug(false)
 
-	if err := vb.Backend.Init(); err != nil {
+	if err := vb.Backend.InitCtx(ctx); err != nil {
 		slog.Error("ebs.provider.volume.create: backend init failed", "volume", req.VolumeID, "err", err)
 		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("backend init: %v", err)})
 		return
@@ -441,12 +441,12 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		}
 	}
 	if len(req.SeedData) > 0 {
-		if err := seedVolume(vb, req.SeedData); err != nil {
+		if err := seedVolume(ctx, vb, req.SeedData); err != nil {
 			slog.Error("ebs.provider.volume.create: seed failed", "volume", req.VolumeID, "bytes", len(req.SeedData), "err", err)
 			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("seed volume: %v", err)})
 			return
 		}
-	} else if err := vb.SaveState(); err != nil {
+	} else if err := vb.SaveStateCtx(ctx); err != nil {
 		slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
 		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
 		return
@@ -490,7 +490,7 @@ func verifySourceSnapshot(vb *viperblock.VB, snapshotID, sourceVolumeID string) 
 // seedVolume writes seed at offset 0 of a freshly created volume. Only
 // CreateVolume calls it, and only when the existence check above found no
 // volume, so it can never overwrite bytes a guest has already written.
-func seedVolume(vb *viperblock.VB, seed []byte) error {
+func seedVolume(ctx context.Context, vb *viperblock.VB, seed []byte) error {
 	var err error
 	if vb.UseShardedWAL {
 		err = vb.OpenShardedWAL()
@@ -509,7 +509,7 @@ func seedVolume(vb *viperblock.VB, seed []byte) error {
 
 	// Close is the durability boundary, not Flush: a partially persisted seed
 	// leaves the caller believing bytes it never got are on the volume.
-	if err := vb.Close(); err != nil {
+	if err := vb.CloseCtx(ctx); err != nil {
 		return fmt.Errorf("close: %w", err)
 	}
 	if err := vb.RemoveLocalFiles(); err != nil {
@@ -522,7 +522,7 @@ func seedVolume(vb *viperblock.VB, seed []byte) error {
 // preferring a live mounted VB over opening a second engine on the same
 // volume. The returned error satisfies errors.Is(err, viperblock.ErrStateNotFound)
 // when the volume does not exist.
-func describeVolumeEngine(cfg *Config, volumeID string) (*ebsprovider.Volume, error) {
+func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*ebsprovider.Volume, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
 		return &ebsprovider.Volume{
 			ID:            volumeID,
@@ -532,7 +532,7 @@ func describeVolumeEngine(cfg *Config, volumeID string) (*ebsprovider.Volume, er
 		}, nil
 	}
 
-	vb, err := openVolumeVB(cfg, volumeID)
+	vb, err := openVolumeVB(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -564,7 +564,7 @@ func handleGetVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	volume, err := describeVolumeEngine(cfg, req.VolumeID)
+	volume, err := describeVolumeEngine(ctx, cfg, req.VolumeID)
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
 			respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
@@ -603,7 +603,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	vb, err := openVolumeVB(cfg, req.VolumeID)
+	vb, err := openVolumeVB(ctx, cfg, req.VolumeID)
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
 			respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
@@ -632,7 +632,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("marshal volume config: %v", err)})
 		return
 	}
-	if err := applyConfigUpdate(vb, types.EBSConfigUpdateRequest{Volume: req.VolumeID, VolumeConfig: rawConfig}); err != nil {
+	if err := applyConfigUpdate(ctx, vb, types.EBSConfigUpdateRequest{Volume: req.VolumeID, VolumeConfig: rawConfig}); err != nil {
 		slog.Error("ebs.provider.volume.expand: apply config update failed", "volume", req.VolumeID, "err", err)
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("apply config update: %v", err)})
 		return
@@ -808,7 +808,7 @@ func handleCopySnapshot(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	snapshot, err := copySnapshotOnVolume(cfg, req.VolumeID, req.SourceSnapshotID, req.DestinationSnapshotID)
+	snapshot, err := copySnapshotOnVolume(ctx, cfg, req.VolumeID, req.SourceSnapshotID, req.DestinationSnapshotID)
 	if err != nil {
 		switch {
 		case errors.Is(err, errSnapshotDestinationExists):
@@ -846,12 +846,12 @@ func snapshotConfigExists(vb *viperblock.VB, snapshotID string) (bool, error) {
 // which requires the VB to be opened over the snapshot's own source volume.
 // Mirrors snapshotVolumeEngine: prefer the already-mounted VB over opening a
 // second engine on the same volume, which would be a second writer.
-func copySnapshotOnVolume(cfg *Config, volumeID, srcSnapshotID, dstSnapshotID string) (*ebsprovider.Snapshot, error) {
+func copySnapshotOnVolume(ctx context.Context, cfg *Config, volumeID, srcSnapshotID, dstSnapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
 		return copySnapshotMetaWithVB(mv.VB, volumeID, srcSnapshotID, dstSnapshotID)
 	}
 
-	vb, err := openVolumeVB(cfg, volumeID)
+	vb, err := openVolumeVB(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -941,20 +941,23 @@ func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *
 	// writes to the live checkpoint) before requesting a snapshot; that
 	// coordination goes through the guest over ec2.cmd.<instanceID> and
 	// stays a control-plane concern this provider boundary does not reach.
-	go completeCreateSnapshot(cfg, nc, req, operationID, completionSubject)
+	// WithoutCancel keeps the trace context while dropping the deadline: the
+	// work has to outlive the request it was accepted by, and it still has to
+	// be attributable to it.
+	go completeCreateSnapshot(context.WithoutCancel(ctx), cfg, nc, req, operationID, completionSubject)
 }
 
 // completeCreateSnapshot runs the snapshot work in the background and
 // publishes the result to completionSubject, matching the accept-then-publish
 // contract NATSProvider.CreateSnapshot waits on.
-func completeCreateSnapshot(cfg *Config, nc *nats.Conn, req ebsprovider.CreateSnapshotRequest, operationID, completionSubject string) {
+func completeCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, req ebsprovider.CreateSnapshotRequest, operationID, completionSubject string) {
 	completion := ebsprovider.CreateSnapshotResponse{
 		Versioned:         ebsprovider.NewVersioned(),
 		OperationID:       operationID,
 		CompletionSubject: completionSubject,
 	}
 
-	snapshot, err := snapshotVolumeEngine(cfg, req.VolumeID, req.SnapshotID)
+	snapshot, err := snapshotVolumeEngine(ctx, cfg, req.VolumeID, req.SnapshotID)
 	if err != nil {
 		slog.Error("ebs.provider.snapshot.create: snapshot failed", "volume", req.VolumeID, "snapshot", req.SnapshotID, "err", err)
 		code := ebsprovider.ErrorCodeInternal
@@ -1000,7 +1003,7 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
 // preferring an already-mounted VB over opening a second engine on the same
 // volume. Draining the volume so the checkpoint is current is the caller's
 // responsibility (see handleCreateSnapshot).
-func snapshotVolumeEngine(cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
+func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
 		if err := checkSnapshotIDFree(mv.VB, volumeID, snapshotID); err != nil {
 			return nil, err
@@ -1046,10 +1049,10 @@ func snapshotVolumeEngine(cfg *Config, volumeID, snapshotID string) (*ebsprovide
 		vb.StopChunkUploader()
 		vb.StopWALSyncer()
 	}()
-	if err := vb.Backend.Init(); err != nil {
+	if err := vb.Backend.InitCtx(ctx); err != nil {
 		return nil, fmt.Errorf("backend init: %w", err)
 	}
-	if err := loadStateWithRetry(vb, volumeID); err != nil {
+	if err := loadStateWithRetry(ctx, vb, volumeID); err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
@@ -1205,12 +1208,12 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		vb.SetDebug(true)
 	}
 
-	if err := vb.Backend.Init(); err != nil {
+	if err := vb.Backend.InitCtx(ctx); err != nil {
 		return nil, 0, err
 	}
 
 	// Retry on transient backend errors so daemon recovery doesn't tip a healthy volume into cleanup.
-	if err := loadStateWithRetry(vb, volumeName); err != nil {
+	if err := loadStateWithRetry(ctx, vb, volumeName); err != nil {
 		return nil, 0, err
 	}
 
@@ -1229,7 +1232,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	// return early, so a stale receipt can never survive into this mount.
 	clearStaleSealReceipt(cfg.BaseDir, volumeName)
 
-	_, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
+	ctx, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
 	var ebsResponse types.EBSMountResponse
@@ -1428,7 +1431,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 // response.NotFound set instead of a bare error, so callers can tell "never
 // mounted here" apart from "seal failed".
 func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.EBSUnMountResponse, error) {
-	_, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
+	ctx, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
 	// Find the volume and extract references while holding the lock,
@@ -1482,7 +1485,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 		} else if volumeNeedsSeal(matched.Name, cfg.BaseDir) {
 			// Local state survived: the plugin's seal either failed or was
 			// cut short, so this fallback is the real seal.
-			if err := cfg.seal(matched.Name); err != nil {
+			if err := cfg.seal(ctx, matched.Name); err != nil {
 				slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 				ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 			} else {

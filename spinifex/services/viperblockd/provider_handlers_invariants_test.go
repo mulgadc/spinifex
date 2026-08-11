@@ -79,7 +79,7 @@ func TestOpenVolumeVB_FailedOpenLeavesNoChunkUploader(t *testing.T) {
 
 	before := chunkUploaderFrames(t)
 
-	vb, err := openVolumeVB(cfg, "vol-invariantleak001")
+	vb, err := openVolumeVB(t.Context(), cfg, "vol-invariantleak001")
 	require.Error(t, err, "the fast-failing backend must fail the open, or this test proves nothing")
 	require.Nil(t, vb)
 

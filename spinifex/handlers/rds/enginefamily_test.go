@@ -42,6 +42,7 @@ var engineUnderTest = Engine{
 	),
 	validateCombinations: func([]Parameter) error { return nil },
 	crashRecoveryNote:    "It will recover when it is restored.",
+	uncleanStopNote:      "It will recover on the next start.",
 }
 
 // Registers the second engine for one test. Both indexes are rebuilt, because a

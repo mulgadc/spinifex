@@ -387,15 +387,35 @@ if run_ok "initialize"; then
         || fail "initialize: the database was created under the compiled default"
 
     # Withheld deliberately: FILE is arbitrary host file access as the mysql user,
-    # SUPER reaches SET GLOBAL and plugin loading, and SHUTDOWN stops the server
-    # underneath the control plane's lifecycle.
-    for privilege in SUPER FILE SHUTDOWN 'ALL PRIVILEGES'; do
+    # SUPER and its 11.8 split-out successors reach SET GLOBAL and plugin loading,
+    # and SHUTDOWN stops the server underneath the control plane's lifecycle.
+    for privilege in SUPER FILE SHUTDOWN 'ALL PRIVILEGES' 'SET USER' \
+        'BINLOG ADMIN' 'BINLOG REPLAY' 'CONNECTION ADMIN' 'FEDERATED ADMIN' \
+        'READ_ONLY ADMIN' 'REPLICATION MASTER ADMIN' 'REPLICATION SLAVE ADMIN' \
+        'SLAVE MONITOR'; do
         grep -q "${privilege}" "${CLIENT_CALLS}" \
             && fail "initialize: the master grant includes ${privilege}" \
             || pass "initialize: master holds no ${privilege}"
     done
-    grep -q 'GRANT SELECT, INSERT, UPDATE, DELETE' "${CLIENT_CALLS}" \
-        && pass "initialize: the grant is enumerated" || fail "initialize: no enumerated grant"
+
+    # Asserted whole rather than by prefix. A privilege appended to the list is a
+    # privilege the master silently gains, and the enumeration exists precisely so
+    # that widening it has to be deliberate.
+    _grant=$(sed -n '/^GRANT /,/WITH GRANT OPTION;/p' "${CLIENT_CALLS}" | tr '\n' ' ' | tr -s ' ')
+    _expected_grant="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, PROCESS, \
+REFERENCES, INDEX, ALTER, SHOW DATABASES, CREATE TEMPORARY TABLES, \
+LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, \
+CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, \
+CREATE USER, EVENT, TRIGGER ON *.* TO 'mulgamaster'@'%' WITH GRANT OPTION; "
+    [ "${_grant}" = "${_expected_grant}" ] \
+        && pass "initialize: the grant is exactly the enumerated list" \
+        || fail "initialize: the master grant has changed: ${_grant}"
+
+    # MariaDB privileges are additive and it has no DENY, so scope is the only
+    # control left: a second ON clause would widen the master beyond this list.
+    [ "$(grep -c '^  ON ' "${CLIENT_CALLS}")" = "1" ] \
+        && pass "initialize: the grant is scoped ON *.* and nothing else" \
+        || fail "initialize: the master carries more than one grant scope"
     grep -q "WITH GRANT OPTION" "${CLIENT_CALLS}" \
         && pass "initialize: master can delegate its own privileges" \
         || fail "initialize: master cannot grant"
@@ -699,7 +719,7 @@ unset LS_FAIL
 [ -s "${INSTALLDB_CALLS}" ] \
     && fail "datadir-probe-fail: initialised after the probe failed" \
     || pass "datadir-probe-fail: nothing created"
-grep -q 'could not inspect datadir' "${WORK}/out" \
+grep -q 'refusing to decide whether the data volume is ours' "${WORK}/out" \
     && pass "datadir-probe-fail: refusal explains why" || fail "datadir-probe-fail: no refusal message"
 
 # --- Case 6c: the bootstrap server never starts ---
@@ -1012,6 +1032,47 @@ if run_ok "stamp-absent-empty"; then
     grep -q 'no mariadb engine stamp' "${WORK}/out" \
         && pass "stamp-absent-nonempty: refusal names the missing stamp" \
         || fail "stamp-absent-nonempty: no refusal message"
+
+    # --- Case 12f: an unstamped PostgreSQL volume is refused ---
+    # The one unstamped volume that actually exists in the field, and the reason
+    # emptiness is decided on the mount: PostgreSQL keeps its cluster under
+    # ${DATA_MOUNT}/18/data, so ${DATADIR} is absent and the volume reads as new.
+    rm -rf "${DATADIR}" "${STAMP}"
+    mkdir -p "${DATA_MOUNT}/18/data"
+    echo 'customer cluster data' > "${DATA_MOUNT}/18/data/PG_VERSION"
+    : > "${INSTALLDB_CALLS}"
+    run_fails "stamp-absent-pgvolume"
+    [ -s "${INSTALLDB_CALLS}" ] \
+        && fail "stamp-absent-pgvolume: initialised over a PostgreSQL volume" \
+        || pass "stamp-absent-pgvolume: nothing created"
+    [ -f "${DATA_MOUNT}/18/data/PG_VERSION" ] \
+        && pass "stamp-absent-pgvolume: the PostgreSQL cluster is preserved" \
+        || fail "stamp-absent-pgvolume: the PostgreSQL cluster was touched"
+    # A stamp here is the worst outcome of all: the PostgreSQL image refuses a
+    # 'mariadb' stamp too, so the volume becomes unreachable from both engines.
+    [ -e "${STAMP}" ] \
+        && fail "stamp-absent-pgvolume: another engine's volume was stamped ours" \
+        || pass "stamp-absent-pgvolume: no stamp written"
+    grep -q 'no mariadb engine stamp' "${WORK}/out" \
+        && pass "stamp-absent-pgvolume: refusal names the missing stamp" \
+        || fail "stamp-absent-pgvolume: no refusal message"
+    rm -rf "${DATA_MOUNT}/18"
+
+    # --- Case 12g: lost+found alone does not make a fresh volume look used ---
+    # ext4 creates it at mkfs, so counting it as content would refuse every
+    # genuinely new data volume.
+    rm -rf "${DATADIR}" "${STAMP}"
+    mkdir -p "${DATA_MOUNT}/lost+found"
+    : > "${INSTALLDB_CALLS}"
+    write_handoff initialize 's3cr3t' appdb
+    if run_ok "stamp-absent-lostfound"; then
+        [ -s "${INSTALLDB_CALLS}" ] \
+            && pass "stamp-absent-lostfound: a fresh volume still initialises" \
+            || fail "stamp-absent-lostfound: nothing was initialised"
+        [ "$(cat "${STAMP}")" = "mariadb" ] \
+            && pass "stamp-absent-lostfound: the fresh volume was stamped" \
+            || fail "stamp-absent-lostfound: no stamp written"
+    fi
 fi
 
 # --- Case 12e: a stamp that cannot be written is fatal, before initialisation ---

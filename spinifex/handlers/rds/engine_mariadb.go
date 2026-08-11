@@ -36,6 +36,8 @@ var engineMariaDB = Engine{
 	// mid-write can leave one of their tables inconsistent with no way back.
 	crashRecoveryNote: "InnoDB tables will recover from the redo log when it is restored; " +
 		"non-transactional tables such as Aria and MyISAM may be left inconsistent.",
+	uncleanStopNote: "InnoDB tables will recover from the redo log on the next start; " +
+		"non-transactional tables such as Aria and MyISAM may be left inconsistent.",
 }
 
 // The curated MariaDB 11.8 table, the same shape and approximate size as the

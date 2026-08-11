@@ -252,14 +252,29 @@ require_data_volume() {
     log "warning: ${DATA_MOUNT} is not a mount point; data will not survive a VM replace (RDS_ALLOW_LOCAL_DATADIR=1)"
 }
 
-# True when the datadir holds anything at all. A failed enumeration is neither
-# "empty" nor "has content": it is a refusal, because both callers below decide
-# whether something may be created or deleted from the answer.
-datadir_has_content() {
-    [ -d "${DATADIR}" ] || return 1
-    _contents=$(ls -A -- "${DATADIR}" 2>/dev/null) ||
-        fail "could not inspect datadir ${DATADIR}; refusing to decide whether it is ours"
-    [ -n "${_contents}" ]
+# True when the data volume holds anything that is not ours. The mount is what
+# is inspected rather than ${DATADIR}: another engine lays its data out under its
+# own name, so a PostgreSQL volume has content here while ${DATADIR} does not
+# exist at all.
+data_volume_has_content() {
+    [ -d "${DATA_MOUNT}" ] || return 1
+
+    # A mount that cannot be read is neither empty nor not: it is a refusal,
+    # because the caller decides from the answer whether to initialise.
+    ls -A -- "${DATA_MOUNT}" >/dev/null 2>&1 ||
+        fail "could not inspect ${DATA_MOUNT}; refusing to decide whether the data volume is ours"
+
+    # Globbed rather than split out of `ls`, so an entry carrying whitespace
+    # counts once. lost+found is the filesystem's, and the metadata and include
+    # directories are ours — none of the three says whose data the volume holds.
+    for _entry in "${DATA_MOUNT}"/* "${DATA_MOUNT}"/.[!.]* "${DATA_MOUNT}"/..?*; do
+        [ -e "${_entry}" ] || [ -L "${_entry}" ] || continue
+        case "${_entry##*/}" in
+            lost+found | .spinifex-rds | "${CONF_DIR##*/}") continue ;;
+        esac
+        return 0
+    done
+    return 1
 }
 
 # Written before the datadir is inspected, so a volume this image goes on to
@@ -304,11 +319,11 @@ require_engine_stamp() {
     fi
 
     # No MariaDB volume in the field predates the stamp, so unlike PostgreSQL
-    # there is nothing to backfill onto: an unstamped datadir with content in it
+    # there is nothing to backfill onto: an unstamped volume with content on it
     # is by definition not ours, and stamping it would turn the check into a
     # rubber stamp on exactly the volume it exists to refuse.
-    if datadir_has_content; then
-        fail "${DATADIR} holds data but the volume carries no ${ENGINE} engine stamp; refusing to touch it. Recover the volume out of band."
+    if data_volume_has_content; then
+        fail "${DATA_MOUNT} holds data but the volume carries no ${ENGINE} engine stamp; refusing to touch it. Recover the volume out of band."
     fi
 
     log "data volume carries no engine stamp — recording ${ENGINE}"
@@ -639,13 +654,24 @@ FLUSH PRIVILEGES;
 SQL
 }
 
-# The master user is administrative but deliberately holds none of the
-# privileges that reach outside the database: FILE is SELECT INTO OUTFILE and
-# LOAD_FILE against any path as the mysql OS user, INSERT on mysql.* is native
-# code execution through CREATE FUNCTION ... SONAME, SUPER and its 11.8 split-out
-# successors reach SET GLOBAL and plugin loading, and SHUTDOWN stops the server
-# underneath the control plane's lifecycle. Master credentials must be a database
-# privilege, not a shell in the DB VM.
+# The master user is administrative but is not granted the privileges that reach
+# outside the database: FILE is SELECT INTO OUTFILE and LOAD_FILE against any
+# path as the mysql OS user, SUPER and its 11.8 split-out successors reach SET
+# GLOBAL and plugin loading, and SHUTDOWN stops the server underneath the control
+# plane's lifecycle. Master credentials must be a database privilege, not a shell
+# in the DB VM.
+#
+# What the grant list cannot do is withhold the mysql schema. MariaDB privileges
+# are additive and it has no DENY, so the DML below reaches mysql.global_priv,
+# and REVOKE ... ON mysql.* is refused outright (ER_NONEXISTING_GRANT) because no
+# database-level row exists to revoke from. A master that writes that table and
+# runs FLUSH PRIVILEGES therefore holds ALL PRIVILEGES, including the three above.
+#
+# What still holds after that is the boundary this preset actually depends on:
+# secure_file_priv and plugin_dir are read-only variables, so 90-rds-init.cnf
+# pins them past any SET GLOBAL and FILE reaches only an empty root-owned
+# directory. The residual exposure is SHUTDOWN and unrecorded SET GLOBAL, not a
+# shell in the DB VM.
 apply_master_user() {
     log "creating the master user ${RDS_MASTER_USERNAME}"
     # Enumerated rather than GRANT ALL followed by revocations: a MariaDB release

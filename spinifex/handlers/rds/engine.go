@@ -40,6 +40,9 @@ type Engine struct {
 	// What a snapshot taken without a quiesce actually recovers on restore, which
 	// is the engine's own guarantee and not a shared one.
 	crashRecoveryNote string
+	// The same guarantee stated for the next start rather than for a restore,
+	// which is what an engine that would not shut down cleanly gets.
+	uncleanStopNote string
 }
 
 var engines = map[string]Engine{
@@ -60,10 +63,14 @@ func indexEnginesByFamily() map[string]Engine {
 		if engine.validateDBName == nil {
 			panic("rds: engine " + engine.Name + " registers no DBName rule")
 		}
-		// An engine without one would tell a customer nothing about what a
-		// crash-consistent snapshot of it recovers, on the one event that says so.
+		// An engine without these would tell a customer nothing about what a
+		// crash-consistent snapshot or an unclean stop of it recovers, on the two
+		// events that say so.
 		if engine.crashRecoveryNote == "" {
 			panic("rds: engine " + engine.Name + " registers no crash-recovery note")
+		}
+		if engine.uncleanStopNote == "" {
+			panic("rds: engine " + engine.Name + " registers no unclean-stop note")
 		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {

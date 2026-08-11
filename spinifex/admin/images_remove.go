@@ -246,7 +246,10 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 	// AMI from DescribeImages, so no new launch can land on blocks step 2 is
 	// about to delete. Fatal, unlike the blocks: an AMI still advertised after
 	// its blocks are gone is worse than one whose blocks outlive it.
-	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(context.Background(), opts.ImageID); err != nil {
+	// An already-absent document is the barrier being satisfied, not a failure:
+	// this is exactly the state of an orphaned image, whose blocks are the only
+	// thing left to reclaim and the whole reason --force exists.
+	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(context.Background(), opts.ImageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		return nil, fmt.Errorf("delete ebsmetadata document: %w", err)
 	}
 

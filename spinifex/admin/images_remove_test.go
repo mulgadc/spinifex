@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -120,6 +121,39 @@ func TestRemoveSystemImage_HappyPath(t *testing.T) {
 	assert.Equal(t, preview.AMIObjectCount+preview.SnapObjectCount, res.ObjectsDeleted)
 	assert.Equal(t, preview.AMIBytesTotal+preview.SnapBytesTotal, res.BytesDeleted)
 	assert.Equal(t, 0, store.Count())
+}
+
+// strictDeleteStore reports a missing key on delete, the way predastore does.
+// The in-memory store is silently tolerant and AWS S3 answers 204, so neither
+// reproduces the backend this actually runs against.
+type strictDeleteStore struct {
+	*objectstore.MemoryObjectStore
+}
+
+var _ objectstore.ObjectStore = (*strictDeleteStore)(nil)
+
+func (s *strictDeleteStore) DeleteObject(ctx context.Context, input *awss3.DeleteObjectInput) (*awss3.DeleteObjectOutput, error) {
+	key := aws.StringValue(input.Key)
+	if _, err := s.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: input.Bucket, Key: input.Key}); err != nil {
+		return nil, &objectstore.NoSuchKeyError{Key: key}
+	}
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+// TestRemoveSystemImage_OrphanedBlocksAreReclaimable covers the state the
+// orphan report points operators at: blocks in the object store with no
+// document. A live env19 run failed here on NoSuchKey, so the one documented
+// way to reclaim an orphan was broken by the very thing that defines one.
+func TestRemoveSystemImage_OrphanedBlocksAreReclaimable(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	store := &strictDeleteStore{MemoryObjectStore: memory}
+	const id = "ami-orphaned0001"
+	putAMIBlocks(t, memory, id, 3, 128)
+
+	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	require.NoError(t, err, "an image whose document is already gone must still have its blocks reclaimable")
+	assert.Equal(t, 3, res.ObjectsDeleted)
+	assert.Equal(t, 0, memory.Count(), "the stranded blocks must actually be released")
 }
 
 func TestRemoveSystemImage_AccountOwned_Refused(t *testing.T) {

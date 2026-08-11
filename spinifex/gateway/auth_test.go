@@ -580,7 +580,7 @@ func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 // --- writeSigV4Error Response Format Tests ---
 
 func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()}
 
 	testCases := []struct {
 		errorCode      string
@@ -630,7 +630,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()}
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

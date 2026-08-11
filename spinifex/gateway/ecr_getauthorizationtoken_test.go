@@ -18,6 +18,7 @@ func TestHandleGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	gw := &GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
+		IAMService: allowAllIAMService(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
@@ -61,6 +62,7 @@ func TestHandleGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	gw := &GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: "9999",
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
+		IAMService: allowAllIAMService(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
@@ -82,7 +84,7 @@ func TestHandleGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 }
 
 func TestHandleGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	err := gw.handleGetAuthorizationToken(httptest.NewRecorder(), req.WithContext(ctx))
@@ -94,6 +96,7 @@ func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 	gw := &GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
+		IAMService: allowAllIAMService(),
 	}
 	w := httptest.NewRecorder()
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken", "{}")

@@ -59,7 +59,7 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 		return nil, err
 	}
 
-	actions, err := s.validateAndConvertRuleActions(ctx, input.Actions, listener.Protocol)
+	actions, err := s.validateAndConvertRuleActions(ctx, input.Actions, listener.Protocol, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (s *ELBv2ServiceImpl) ModifyRule(ctx context.Context, input *elbv2.ModifyRu
 		updated.Conditions = conditions
 	}
 	if len(input.Actions) > 0 {
-		actions, err := s.validateAndConvertRuleActions(ctx, input.Actions, listener.Protocol)
+		actions, err := s.validateAndConvertRuleActions(ctx, input.Actions, listener.Protocol, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -556,7 +556,7 @@ func stringPtrSlice(in []*string) []string {
 	return out
 }
 
-func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(ctx context.Context, in []*elbv2.Action, listenerProto string) ([]ListenerAction, error) {
+func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(ctx context.Context, in []*elbv2.Action, listenerProto, accountID string) ([]ListenerAction, error) {
 	if len(in) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -580,7 +580,7 @@ func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(ctx context.Context, in
 				slog.Error("rule action: failed to get target group", "arn", action.TargetGroupArn, "err", err)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-			if tg == nil {
+			if tg == nil || tg.AccountID != accountID {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 			}
 			if !isCompatibleProtocol(listenerProto, tg.Protocol) {

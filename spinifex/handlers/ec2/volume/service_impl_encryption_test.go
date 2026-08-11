@@ -84,7 +84,7 @@ func newTestVolumeServiceWithEncryptionKey(az, keyFile string) *VolumeServiceImp
 		Predastore: config.PredastoreConfig{
 			Bucket:    "test-bucket",
 			Region:    "ap-southeast-2",
-			Host:      "localhost:9000",
+			Host:      fakeS3Host,
 			AccessKey: "testkey",
 			SecretKey: "testsecret",
 		},

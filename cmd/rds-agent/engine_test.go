@@ -153,7 +153,7 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 		t.Fatalf("resolve the current user: %v", err)
 	}
 	cfg.PGUser = current.Username
-	return newPostgresEngine(cfg, run, nil)
+	return newPostgresEngine(cfg, run, nil, newEngineProbe(cfg, staticProbe(0)))
 }
 
 // The password reaches psql through the environment and is re-quoted there,
@@ -182,6 +182,40 @@ func TestPostgresEngine_SetPasswordKeepsTheSecretOutOfArgv(t *testing.T) {
 	}
 	if !strings.Contains(call.Stdin, "ALTER ROLE") {
 		t.Errorf("SQL %q does not alter the role", call.Stdin)
+	}
+}
+
+// psql interpolates the password into the ALTER ROLE before the server sees it,
+// so a parameter group that turns statement logging on would write the rotated
+// password into a postmaster.log every snapshot then carries.
+func TestPostgresEngine_SetPasswordSilencesStatementLogging(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+
+	if err := engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("ran %d commands, want 1", len(runner.calls))
+	}
+	sql := runner.calls[0].Stdin
+	alter := strings.Index(sql, "ALTER ROLE")
+	if alter < 0 {
+		t.Fatalf("SQL %q does not alter the role", sql)
+	}
+	for _, guard := range []string{
+		"SET log_statement = 'none';",
+		"SET log_min_duration_statement = -1;",
+		"SET log_min_error_statement = 'panic';",
+	} {
+		at := strings.Index(sql, guard)
+		if at < 0 {
+			t.Errorf("SQL %q is missing %q", sql, guard)
+			continue
+		}
+		if at > alter {
+			t.Errorf("SQL %q sets %q only after the ALTER ROLE has already been logged", sql, guard)
+		}
 	}
 }
 
@@ -276,12 +310,94 @@ func TestPostgresEngine_ApplyParametersInstallsAndReloads(t *testing.T) {
 // A reload that failed leaves the engine on its old values, so reporting the
 // apply as successful would tell the customer a change took effect that did not.
 func TestPostgresEngine_ApplyParametersSurfacesAFailedReload(t *testing.T) {
-	runner := &recordingRunner{err: errors.New("could not connect to server")}
+	runner := &reloadFailingRunner{reloadErr: errors.New("reload was rejected")}
 	engine := newTestEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
 		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a failing reload")
+	}
+}
+
+type reloadFailingRunner struct {
+	recordingRunner
+
+	reloadErr error
+}
+
+func (r *reloadFailingRunner) run(ctx context.Context, c command) (string, error) {
+	if strings.Contains(c.Stdin, "pg_reload_conf") {
+		r.calls = append(r.calls, c)
+		return "", r.reloadErr
+	}
+	return r.recordingRunner.run(ctx, c)
+}
+
+// A failed instance cannot reload through psql. Its corrected, parser-checked
+// include must start the service and remain installed as the serving set.
+func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+	codes := []int{2, 2, 0}
+	probeCall := 0
+	cfg := testProbeConfig()
+	engine.probe = newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+		code := codes[min(probeCall, len(codes)-1)]
+		probeCall++
+		return code, nil
+	})
+	engine.repairTimeout = 100 * time.Millisecond
+	engine.repairPoll = time.Millisecond
+	params := []handlers_rds.Parameter{
+		{Name: "shared_buffers", Value: "32768"},
+		{Name: "work_mem", Value: "8192"},
+	}
+
+	pending, err := engine.ApplyParameters(t.Context(), params)
+	if err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending = %v, want the restarted engine's actual pending set", pending)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("calls = %+v, want config check, service restart and pending read", runner.calls)
+	}
+	if !slices.Contains(runner.calls[0].Args, "-C") {
+		t.Errorf("first call = %+v, want the offline config check", runner.calls[0])
+	}
+	if !slices.Equal(runner.calls[1].Args, []string{"postgresql", "restart"}) {
+		t.Errorf("second call args = %v, want the service restart", runner.calls[1].Args)
+	}
+	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
+		t.Errorf("third call = %+v, want the pending-restart read", runner.calls[2])
+	}
+	installed, err := os.ReadFile(engine.parametersPath())
+	if err != nil {
+		t.Fatalf("read installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "work_mem = '8192'") {
+		t.Errorf("installed parameters = %q, want the repair set retained", installed)
+	}
+}
+
+func TestPostgresEngine_ApplyParametersKeepsRepairSetWhenRestartTimesOut(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestEngine(t, runner.run)
+	engine.probe = stubProbe(t, 2, nil)
+	engine.repairTimeout = 10 * time.Millisecond
+	engine.repairPoll = time.Millisecond
+
+	_, err := engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{{Name: "work_mem", Value: "8192"}})
+	if err == nil || !strings.Contains(err.Error(), "wait for the engine") {
+		t.Fatalf("ApplyParameters error = %v, want the repair wait failure", err)
+	}
+	installed, readErr := os.ReadFile(engine.parametersPath())
+	if readErr != nil {
+		t.Fatalf("read installed parameters: %v", readErr)
+	}
+	if !strings.Contains(string(installed), "work_mem = '8192'") {
+		t.Errorf("installed parameters = %q, want the checked repair set retained", installed)
 	}
 }
 

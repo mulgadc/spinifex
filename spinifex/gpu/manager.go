@@ -8,6 +8,11 @@ import (
 	"sync"
 )
 
+// ErrNoGPUClaimed reports that the instance held no device when Release ran.
+// Teardown re-drives releases and should read this as success, since the state
+// it wants already holds; a claim/release pair that hits it is out of step.
+var ErrNoGPUClaimed = errors.New("no GPU claimed by instance")
+
 type gpuEntry struct {
 	Device        GPUDevice
 	MIGInstance   *MIGInstance       // nil = whole-GPU passthrough; non-nil = MIG slice
@@ -213,6 +218,10 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 // (already vfio-pci before the daemon) are left bound; Claim-bound devices are
 // unbound and rebind to their original driver (failure marks them unavailable).
 // For dynamically carved MIG GPUs, the last release destroys all slices.
+//
+// Holding nothing yields ErrNoGPUClaimed, which is a distinct condition rather
+// than a fault: it says the desired state already holds. Callers that re-drive
+// releases decide for themselves whether that counts as success.
 func (m *Manager) Release(instanceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -269,7 +278,7 @@ func (m *Manager) Release(instanceID string) error {
 	}
 
 	if !released {
-		return fmt.Errorf("no GPU claimed by instance %s", instanceID)
+		return fmt.Errorf("%w %s", ErrNoGPUClaimed, instanceID)
 	}
 
 	// For dynamically carved MIG GPUs: destroy all slices when the last instance

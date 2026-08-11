@@ -1687,6 +1687,8 @@ func TestAvailableImages_RDSPostgresEntry(t *testing.T) {
 	assert.Equal(t, "postgres", img.Tags["engine"])
 	assert.Equal(t, "18", img.Tags["engine-version"],
 		"the pinned PostgreSQL major version is what EngineVersion resolves against")
+	assert.Equal(t, "format-auth-v1", img.Tags["rds-data-volume-contract"],
+		"RDS launches must exclude images that still discover generic data disks")
 }
 
 // --- NormalizeXMLOutput / normalizeNilSlices ---

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -56,19 +57,6 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 	}
 }
 
-// Recognised but deliberately outside v1, so a client sees "not offered" rather
-// than "you typo'd the action name".
-func unsupported() Handler {
-	return rejectWith(awserrors.ErrorOperationNotSupported)
-}
-
-func rejectWith(code string) Handler {
-	return func(ctx context.Context, action string, _ map[string]string, _ *nats.Conn, _ Caller) ([]byte, error) {
-		slog.DebugContext(ctx, "RDS: action not available", "action", action, "code", code)
-		return nil, errors.New(code)
-	}
-}
-
 // One entry per action: what serves it, whether it is agent-only, and which
 // resource its policy check evaluates against. Both authorization facts live on
 // the table so a new action cannot be added without deciding either.
@@ -77,6 +65,9 @@ type actionDef struct {
 	// Agent-only: refused to every customer principal by class, before any
 	// policy is evaluated.
 	internal bool
+	// Recognised but deliberately outside v1, so a client sees "not offered"
+	// rather than "you typo'd the action name". Carries no handler.
+	unsupported bool
 	// nil evaluates against "*", which is right for creates and for describes
 	// that filter rather than address one resource.
 	scope *resourceScope
@@ -130,26 +121,27 @@ var actions = map[string]actionDef{
 	// Internal agent actions, callable only by the in-guest agent's system role.
 	// They share the namespace because the agent reaches the control plane over
 	// SigV4-on-awsgw like every other in-guest agent.
-	"RegisterDBInstance":   {handler: typed(RegisterDBInstance), internal: true},
-	"SubmitDBStateChange":  {handler: typed(SubmitDBStateChange), internal: true},
-	"PollDBCommands":       {handler: typed(PollDBCommands), internal: true},
-	"GetDBBootstrapConfig": {handler: typed(GetDBBootstrapConfig), internal: true},
+	"RegisterDBInstance":     {handler: typed(RegisterDBInstance), internal: true},
+	"SubmitDBStateChange":    {handler: typed(SubmitDBStateChange), internal: true},
+	"PollDBCommands":         {handler: typed(PollDBCommands), internal: true},
+	"GetDBBootstrapConfig":   {handler: typed(GetDBBootstrapConfig), internal: true},
+	"AcknowledgeDBBootstrap": {handler: typed(AcknowledgeDBBootstrap), internal: true},
 
 	// Recognised but out of scope. Read replicas, Aurora clusters and option
 	// groups are not offered at all; point-in-time restore waits on WAL
 	// archiving.
-	"CreateDBInstanceReadReplica":    {handler: unsupported()},
-	"PromoteReadReplica":             {handler: unsupported()},
-	"CreateDBCluster":                {handler: unsupported()},
-	"ModifyDBCluster":                {handler: unsupported()},
-	"DeleteDBCluster":                {handler: unsupported()},
-	"DescribeDBClusters":             {handler: unsupported()},
-	"FailoverDBCluster":              {handler: unsupported()},
-	"CreateOptionGroup":              {handler: unsupported()},
-	"ModifyOptionGroup":              {handler: unsupported()},
-	"DeleteOptionGroup":              {handler: unsupported()},
-	"DescribeOptionGroups":           {handler: unsupported()},
-	"RestoreDBInstanceToPointInTime": {handler: unsupported()},
+	"CreateDBInstanceReadReplica":    {unsupported: true},
+	"PromoteReadReplica":             {unsupported: true},
+	"CreateDBCluster":                {unsupported: true},
+	"ModifyDBCluster":                {unsupported: true},
+	"DeleteDBCluster":                {unsupported: true},
+	"DescribeDBClusters":             {unsupported: true},
+	"FailoverDBCluster":              {unsupported: true},
+	"CreateOptionGroup":              {unsupported: true},
+	"ModifyOptionGroup":              {unsupported: true},
+	"DeleteOptionGroup":              {unsupported: true},
+	"DescribeOptionGroups":           {unsupported: true},
+	"RestoreDBInstanceToPointInTime": {unsupported: true},
 }
 
 // Checked before the IAM policy check, so an unknown action is rejected as
@@ -167,5 +159,31 @@ func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
+	if def.unsupported {
+		slog.DebugContext(ctx, "RDS: action not available", "action", action)
+		return nil, errors.New(awserrors.ErrorOperationNotSupported)
+	}
 	return def.handler(ctx, action, q, nc, caller)
+}
+
+// ActionNames returns every action the gateway recognises, in stable order.
+func ActionNames() []string {
+	return actionNames(func(actionDef) bool { return true })
+}
+
+// UnsupportedActionNames returns the recognised actions that deliberately
+// report the feature as unavailable rather than serving it.
+func UnsupportedActionNames() []string {
+	return actionNames(func(def actionDef) bool { return def.unsupported })
+}
+
+func actionNames(match func(actionDef) bool) []string {
+	names := make([]string, 0, len(actions))
+	for name, def := range actions {
+		if match(def) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }

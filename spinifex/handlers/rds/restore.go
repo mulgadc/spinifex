@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -132,7 +131,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 		return nil, err
 	}
 
-	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched, false)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err
@@ -344,14 +343,14 @@ func rejectUnimplementedRestore(input *rds.RestoreDBInstanceFromDBSnapshotInput)
 }
 
 // The reserved record for a restored instance: everything the request and the
-// snapshot decided, with the bootstrap marked consumed so the agent's first
-// fetch returns attach rather than a password it would use to run initdb.
+// snapshot decided. No bootstrap payload is ever staged for it, so the agent's
+// first fetch returns attach rather than a password it would use to run initdb.
+// Born none rather than acknowledged, so an acknowledgement arriving against it
+// is denied with a legible reason instead of read as a benign duplicate.
 func newRestoredDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement,
 	parameters []Parameter, snapshot *DBSnapshotRecord) DBInstanceRecord {
 	rec := newDBInstanceRecord(accountID, req, placement, parameters)
-	now := time.Now().UTC()
-	rec.Bootstrap.Consumed = true
-	rec.Bootstrap.ConsumedAt = &now
+	rec.Bootstrap.State = BootstrapStateNone
 	// Carried over so a later ModifyDBInstance --master-user-password still reads
 	// as a rotation of the credentials the datadir was written with.
 	rec.MasterPasswordUpdatedAt = snapshot.MasterPasswordUpdatedAt

@@ -156,7 +156,8 @@ resolvconf -u
 # Write the banner (first time, spinifex-banner service will do this on reboot)
 /usr/local/bin/spx admin banner --boot-check
 
-# Cluster formation — capture credentials to file for display on console.
+# Cluster formation. Output goes to the journal via the systemd unit; spx
+# admin init writes credentials to disk and never prints them.
 %s 2>&1
 
 # Fix ownership of files spx admin init wrote. spx runs as root under

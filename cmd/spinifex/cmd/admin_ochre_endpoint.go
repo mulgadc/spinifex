@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
@@ -19,8 +20,11 @@ var ochreEndpointCmd = &cobra.Command{
 	Long: `Operator surface over the daemon's serving-endpoint lifecycle: request an
 endpoint for a staged model, inspect its state, and tear it down.
 
-The gateway does not yet request endpoints itself, so until it does this is
-the only way to start a serving VM.`,
+The gateway requests endpoints on its own: an invoke for a model with no
+endpoint returns ModelNotReadyException and launches one in the background,
+and the daemon reclaims an endpoint that has been idle past its TTL. These
+commands drive the same lifecycle by hand, for staging a model ahead of first
+use or taking its GPU back early.`,
 }
 
 var ochreEndpointEnsureCmd = &cobra.Command{
@@ -71,6 +75,7 @@ func init() {
 	_ = ochreEndpointEnsureCmd.MarkFlagRequired("model-id")
 
 	ochreEndpointDescribeCmd.Flags().String("model-id", "", "Model ID to describe (required)")
+	ochreEndpointDescribeCmd.Flags().String("account", "", "Account ID scoping the lookup (defaults to the shared platform account; set to see a pinned provisioned-throughput endpoint)")
 	_ = ochreEndpointDescribeCmd.MarkFlagRequired("model-id")
 
 	ochreEndpointDeleteCmd.Flags().String("model-id", "", "Model ID whose endpoint to tear down (required)")
@@ -78,10 +83,12 @@ func init() {
 }
 
 const (
-	// defaultEndpointWaitTimeout is deliberately generous: the cold start this
-	// waits on has never been measured, so a tight default would report a
-	// timeout for what is really a slow first launch.
-	defaultEndpointWaitTimeout = 15 * time.Minute
+	// defaultEndpointWaitTimeout must stay comfortably above the daemon's own
+	// readiness bound. The daemon starts its clock once the VM is launched,
+	// which is up to a minute after this one starts, so an equal value expires
+	// here first and reports a bare client timeout instead of the daemon's
+	// abort, which says why the launch actually failed.
+	defaultEndpointWaitTimeout = 20 * time.Minute
 	// endpointPollInterval trades responsiveness against KV read volume. A
 	// cold start is minutes, so seconds of granularity is plenty.
 	endpointPollInterval = 2 * time.Second
@@ -139,7 +146,13 @@ func waitForEndpointReady(ctx context.Context, svc handlers_bedrock.EndpointServ
 func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
 	rows := [][2]string{
 		{"Model ID", rec.ModelID},
-		{"State", string(rec.State)},
+	}
+	if rec.AccountID != "" {
+		rows = append(rows, [2]string{"Account", rec.AccountID})
+	}
+	rows = append(rows, [2]string{"State", string(rec.State)})
+	if rec.Pinned {
+		rows = append(rows, [2]string{"Pinned", "yes"})
 	}
 	if rec.InstanceID != "" {
 		rows = append(rows, [2]string{"Instance ID", rec.InstanceID})
@@ -162,6 +175,7 @@ func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
 			rows = append(rows, [2]string{"Startup", rec.ReadyAt.Sub(rec.CreatedAt).Round(time.Second).String()})
 		}
 	}
+	rows = append(rows, reclaimRows(rec)...)
 
 	out := ""
 	for _, row := range rows {
@@ -170,8 +184,36 @@ func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
 	return out
 }
 
+// reclaimRows renders what the daemon's idle sweep last observed, so an
+// operator asking why an endpoint was or was not reclaimed can see the inputs
+// rather than infer them. Only meaningful for a READY endpoint: no other state
+// is swept. The Pinned flag itself is rendered unconditionally in
+// formatEndpointRecord, since it is meaningful regardless of state.
+//
+// "Idle for" is measured from the record's LastActive, which falls back to
+// ReadyAt, so an endpoint that has been quiet since launch reads as idle since
+// launch rather than since the zero time.
+func reclaimRows(rec handlers_bedrock.EndpointRecord) [][2]string {
+	if rec.State != handlers_bedrock.StateReady {
+		return nil
+	}
+	rows := [][2]string{{"In flight", strconv.Itoa(rec.InFlight)}}
+	if since := rec.LastActive(); !since.IsZero() {
+		rows = append(rows,
+			[2]string{"Last active", since.Format(time.RFC3339)},
+			[2]string{"Idle for", time.Since(since).Round(time.Second).String()})
+	}
+	if rec.ScrapeFailures > 0 {
+		rows = append(rows, [2]string{"Scrape failures", strconv.Itoa(rec.ScrapeFailures)})
+	}
+	return rows
+}
+
 // listEndpointsOutput renders 'ochre endpoint list'. Split from its Run
 // function so it is testable against a fake service with no NATS connection.
+// ACCOUNT and PINNED distinguish a pinned, account-scoped endpoint from a
+// shared platform one — List itself now returns every account's records, not
+// just the shared platform account's.
 func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointService) (string, error) {
 	out, err := svc.List(ctx, &handlers_bedrock.ListEndpointsInput{}, utils.GlobalAccountID)
 	if err != nil {
@@ -181,9 +223,13 @@ func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointServi
 		return "No serving endpoints.", nil
 	}
 
-	tableData := pterm.TableData{{"MODEL ID", "STATE", "INSTANCE ID", "BASE URL"}}
+	tableData := pterm.TableData{{"MODEL ID", "STATE", "ACCOUNT", "PINNED", "INSTANCE ID", "BASE URL"}}
 	for _, e := range out.Endpoints {
-		tableData = append(tableData, []string{e.ModelID, string(e.State), e.InstanceID, e.BaseURL})
+		pinned := ""
+		if e.Pinned {
+			pinned = "yes"
+		}
+		tableData = append(tableData, []string{e.ModelID, string(e.State), e.AccountID, pinned, e.InstanceID, e.BaseURL})
 	}
 	return pterm.DefaultTable.WithHasHeader().WithData(tableData).Srender()
 }
@@ -248,6 +294,7 @@ func runOchreEndpointEnsure(cmd *cobra.Command, _ []string) {
 
 func runOchreEndpointDescribe(cmd *cobra.Command, _ []string) {
 	modelID, _ := cmd.Flags().GetString("model-id")
+	accountID, _ := cmd.Flags().GetString("account")
 
 	svc, closeFn, err := endpointServiceFn()
 	if err != nil {
@@ -257,7 +304,7 @@ func runOchreEndpointDescribe(cmd *cobra.Command, _ []string) {
 	}
 	defer closeFn()
 
-	out, err := svc.Describe(context.Background(), &handlers_bedrock.DescribeEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+	out, err := svc.Describe(context.Background(), &handlers_bedrock.DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, utils.GlobalAccountID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)

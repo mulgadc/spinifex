@@ -154,7 +154,7 @@ func TestConverseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.
 	rec := httptest.NewRecorder()
 	body := []byte(`{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`)
 
-	err := ConverseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", body, nil, nil, nil)
+	err := ConverseStream(context.Background(), rec, "000000000001", "does.not-exist-v1:0", body, nil, nil, nil, grantAll{}, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
 	// A pre-stream failure must not have written anything: the gateway's
@@ -164,7 +164,7 @@ func TestConverseStream_UnknownModelReturnsResourceNotFoundPreHeader(t *testing.
 
 func TestConverseStream_MalformedBodyReturnsValidationException(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte("{not-json"), nil, nil, nil)
+	err := ConverseStream(context.Background(), rec, "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte("{not-json"), nil, nil, nil, grantAll{}, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
 }
@@ -186,7 +186,7 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ConverseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
+	err = ConverseStream(context.Background(), rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -301,7 +301,7 @@ func TestConverseStream_ClientDisconnectAbortsUpstreamRequest(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = ConverseStream(ctx, rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
+		_ = ConverseStream(ctx, rec, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
 	}()
 
 	select {
@@ -337,7 +337,7 @@ func TestConverseStream_NonFlusherWriter_ReturnsPreHeaderError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ConverseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil)
+	err = ConverseStream(context.Background(), w, "000000000001", modelID, body, nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.False(t, w.wroteHeader)

@@ -20,6 +20,10 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 		MasterUserPassword: &password,
 		DBName:             "appdb",
 		Port:               5433,
+		DataVolumeID:       "vol-data-01",
+		DataVolumeSerial:   "voldata01",
+		VMGeneration:       4,
+		FormatAuthorized:   true,
 		Parameters: []handlers_rds.Parameter{
 			{Name: "max_connections", Value: "200"},
 			{Name: "shared_buffers", Value: "256MB"},
@@ -38,6 +42,10 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 		"RDS_MASTER_PASSWORD='s3cret'",
 		"RDS_DB_NAME='appdb'",
 		"RDS_PORT='5433'",
+		"RDS_DATA_VOLUME_ID='vol-data-01'",
+		"RDS_DATA_VOLUME_SERIAL='voldata01'",
+		"RDS_VM_GENERATION='4'",
+		"RDS_FORMAT_AUTHORIZED='true'",
 	} {
 		if !strings.Contains(env, want) {
 			t.Errorf("handoff env missing %s:\n%s", want, env)
@@ -80,8 +88,19 @@ func TestWriteHandoff_AttachOmitsPassword(t *testing.T) {
 		t.Fatalf("writeHandoff: %v", err)
 	}
 
-	if env := readFile(t, filepath.Join(dir, handoffEnvFile)); strings.Contains(env, "RDS_MASTER_PASSWORD") {
+	env := readFile(t, filepath.Join(dir, handoffEnvFile))
+	if strings.Contains(env, "RDS_MASTER_PASSWORD") {
 		t.Errorf("handoff env = %q, want no RDS_MASTER_PASSWORD key", env)
+	}
+	for _, want := range []string{
+		"RDS_DATA_VOLUME_ID=''",
+		"RDS_DATA_VOLUME_SERIAL=''",
+		"RDS_VM_GENERATION='0'",
+		"RDS_FORMAT_AUTHORIZED='false'",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("handoff env missing fail-closed field %s: %q", want, env)
+		}
 	}
 }
 

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
@@ -30,9 +34,12 @@ type identity struct {
 type controlPlane interface {
 	Register(ctx context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error)
 	SubmitState(ctx context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error)
-	// The first call of an instance's life returns Mode=initialize with the
-	// master password; every later call returns Mode=attach without it.
+	// Returns Mode=initialize with the master password for as long as a payload
+	// staged for this VM generation is unacknowledged, and Mode=attach after.
 	GetBootstrapConfig(ctx context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error)
+	// Reports that PostgreSQL durably applied the staged password, which is what
+	// lets the control plane destroy it.
+	AcknowledgeBootstrap(ctx context.Context, id identity, pending *pendingBootstrap) error
 	PollCommands(ctx context.Context, id identity, replies []handlers_rds.CommandReply, wait time.Duration) ([]handlers_rds.Command, error)
 }
 
@@ -112,6 +119,27 @@ func (g *gatewayControlPlane) GetBootstrapConfig(ctx context.Context, id identit
 	return &out, nil
 }
 
+func (g *gatewayControlPlane) AcknowledgeBootstrap(ctx context.Context, id identity, pending *pendingBootstrap) error {
+	params := url.Values{
+		"PayloadId":    {pending.payloadID},
+		"VMGeneration": {strconv.FormatInt(pending.vmGeneration, 10)},
+	}
+	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
+	setIfPresent(params, "DataVolumeId", pending.dataVolumeID)
+
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	var out handlers_rds.AcknowledgeDBBootstrapOutput
+	if err := g.client.Call(ctx, "AcknowledgeDBBootstrap", params, &out); err != nil {
+		return err
+	}
+	if !out.Acknowledged {
+		return fmt.Errorf("the control plane did not acknowledge bootstrap payload %s", pending.payloadID)
+	}
+	return nil
+}
+
 // Declared here so the in-guest binary does not link the server side of the API.
 type pollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `xml:"Commands>member"`
@@ -148,12 +176,17 @@ func setIfPresent(params url.Values, key, value string) {
 }
 
 type Agent struct {
-	cfg           config
-	id            identity
-	cp            controlPlane
-	probe         *engineProbe
-	engine        *postgresEngine
-	handoffWriter func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
+	cfg             config
+	id              identity
+	cp              controlPlane
+	probe           *engineProbe
+	engine          *postgresEngine
+	handoffWriter   func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
+	dataMountWaiter func(context.Context, string, string) error
+
+	// Set by bootstrap when the fetch replayed a staged payload; nil leaves the
+	// acknowledgement step a no-op, which is every attach boot.
+	pending *pendingBootstrap
 
 	hb    *heartbeater
 	cmd   *commander
@@ -163,16 +196,25 @@ type Agent struct {
 // Assembles from already-built parts, so tests can pass fakes; New builds the
 // production control plane and delegates here.
 func newAgent(cfg config, cp controlPlane, probe *engineProbe) *Agent {
+	if cfg.DataMount == "" {
+		cfg.DataMount = defaultDataMount
+	}
+	if cfg.MountsFile == "" {
+		cfg.MountsFile = defaultMountsFile
+	}
 	id := identity{
 		DBInstanceIdentifier: cfg.DBInstanceIdentifier,
 		AgentVersion:         version,
 		EngineVersion:        cfg.EngineVersion,
 	}
-	a := &Agent{cfg: cfg, id: id, cp: cp, probe: probe, handoffWriter: writeHandoff}
-	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner)
-	a.hb = newHeartbeater(cp, probe, handlers_rds.HeartbeatInterval)
+	a := &Agent{
+		cfg: cfg, id: id, cp: cp, probe: probe,
+		handoffWriter: writeHandoff, dataMountWaiter: waitForDataMount,
+	}
+	a.engine = newPostgresEngine(cfg, execCommandRunner, execSessionRunner, probe)
+	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
-	a.guard = newParamGuard(a.engine, probe)
+	a.guard = newParamGuard(a.engine, probe, cp)
 	return a
 }
 
@@ -201,7 +243,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.register(ctx); err != nil {
 		return err
 	}
-	a.hb.id, a.cmd.id = a.id, a.id
+	a.hb.id, a.cmd.id, a.guard.id = a.id, a.id, a.id
 
 	// Beating before the bootstrap keeps a stuck boot visible as a live VM with
 	// a down engine rather than as silence.
@@ -211,7 +253,22 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Directives are only meaningful against a bootstrapped engine.
+	// The handoff must land before this wait: rds-datadir needs it to identify
+	// and authorize the volume. Commands and the parameter guard wait because
+	// their durable state belongs on that mount, never on the disposable boot disk.
+	if err := a.dataMountWaiter(ctx, a.cfg.MountsFile, a.cfg.DataMount); err != nil {
+		// A shutdown cancels this wait; main treats the wrapped context.Canceled
+		// as a clean stop, exactly as it does for register and bootstrap above.
+		return fmt.Errorf("wait for data mount %s: %w", a.cfg.DataMount, err)
+	}
+
+	// The receipt it waits on lives on that mount, so this cannot run any earlier.
+	// A cancelled wait is a clean stop here too.
+	if err := a.acknowledgeBootstrap(ctx); err != nil {
+		return err
+	}
+
+	// Directives are only meaningful against a bootstrapped, mounted engine.
 	go a.cmd.Run(ctx)
 
 	// Started after the handoff, so the window it measures covers the engine's
@@ -222,17 +279,84 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
+const dataMountPollInterval = time.Second
+
+// waitForDataMount blocks the stateful agent loops until the kernel reports the
+// configured data mount. Registration, heartbeat, and bootstrap run before it.
+func waitForDataMount(ctx context.Context, mountsFile, target string) error {
+	ticker := time.NewTicker(dataMountPollInterval)
+	defer ticker.Stop()
+
+	for {
+		mounted, err := mountTableContains(mountsFile, target)
+		if err != nil {
+			slog.WarnContext(ctx, "rds-agent: could not read mount table while waiting for data volume",
+				"mountsFile", mountsFile, "dataMount", target, "err", err)
+		} else if mounted {
+			slog.InfoContext(ctx, "rds-agent: data volume mount is ready", "dataMount", target)
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func mountTableContains(path, target string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && unescapeMountField(fields[1]) == target {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// Linux mount tables encode whitespace and backslashes as octal escapes.
+func unescapeMountField(field string) string {
+	replacer := strings.NewReplacer(`\134`, `\`, `\040`, " ", `\011`, "\t", `\012`, "\n")
+	return replacer.Replace(field)
+}
+
 // Boot-retry bounds. Tight to start, since the usual cause is a control plane
 // still creating this instance's record, and capped so an outage does not turn
 // a booting fleet into a retry storm.
 const (
 	retryMin = 1 * time.Second
 	retryMax = 30 * time.Second
+
+	// With the production backoff, attempt five is about 15 seconds into the
+	// failure and still precedes the first 30-second heartbeat.
+	retryErrorAttempt = 5
 )
+
+// Wrapping an error in this stops retryObserved. For the failures the control
+// plane decides from its own record, no retry can change the answer, and looping
+// on one only keeps the caller blocked.
+var errRetryTerminal = errors.New("terminal failure")
 
 // Never gives up on its own: an agent that stopped trying would leave the
 // control plane with no signal at all.
 func retry(ctx context.Context, what string, fn func(context.Context) error) error {
+	return retryObserved(ctx, what, fn, nil)
+}
+
+// onFailure lets boot-critical callers publish the latest error while the retry
+// remains blocked. It must not block because it runs on the retry path itself.
+func retryObserved(ctx context.Context, what string, fn func(context.Context) error, onFailure func(error)) error {
 	delay := retryMin
 	for attempt := 1; ; attempt++ {
 		err := fn(ctx)
@@ -242,7 +366,20 @@ func retry(ctx context.Context, what string, fn func(context.Context) error) err
 		if ctx.Err() != nil {
 			return fmt.Errorf("%s: %w", what, ctx.Err())
 		}
-		slog.Warn("rds-agent: "+what+" failed, retrying", "attempt", attempt, "retryIn", delay, "err", err)
+		if onFailure != nil {
+			onFailure(err)
+		}
+		if errors.Is(err, errRetryTerminal) {
+			slog.ErrorContext(ctx, "rds-agent: "+what+" failed terminally, not retrying", "err", err)
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		if attempt >= retryErrorAttempt {
+			slog.ErrorContext(ctx, "rds-agent: "+what+" still failing, retrying",
+				"attempt", attempt, "retryIn", delay, "err", err)
+		} else {
+			slog.WarnContext(ctx, "rds-agent: "+what+" failed, retrying",
+				"attempt", attempt, "retryIn", delay, "err", err)
+		}
 
 		select {
 		case <-ctx.Done():

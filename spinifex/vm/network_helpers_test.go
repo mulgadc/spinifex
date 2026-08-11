@@ -13,16 +13,20 @@ import (
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
-	setupCalls        []TapSpec
-	cleanupCalls      []string
-	imdsAttachCalls   []imdsAttachCall
-	imdsDetachCalls   []string
-	ensureBridgeCalls int
-	setupErr          error
-	cleanupErr        error
-	imdsAttachErr     error
-	imdsDetachErr     error
-	ensureBridgeErr   error
+	setupCalls          []TapSpec
+	cleanupCalls        []string
+	imdsAttachCalls     []imdsAttachCall
+	imdsDetachCalls     []string
+	hostPortCalls       []hostPortCall
+	hostPortRemoveCalls []string
+	ensureBridgeCalls   int
+	setupErr            error
+	cleanupErr          error
+	imdsAttachErr       error
+	imdsDetachErr       error
+	hostPortErr         error
+	hostPortRemoveErr   error
+	ensureBridgeErr     error
 }
 
 // imdsAttachCall captures the args of one AttachIMDSDatapath invocation.
@@ -30,6 +34,13 @@ type imdsAttachCall struct {
 	eniID    string
 	mac      string
 	subnetID string
+}
+
+// hostPortCall captures the args of one EnsureVPCHostPort invocation.
+type hostPortCall struct {
+	eniID string
+	mac   string
+	addr  string
 }
 
 func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
@@ -55,6 +66,16 @@ func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
 func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {
 	p.ensureBridgeCalls++
 	return p.ensureBridgeErr
+}
+
+func (p *fakeNetworkPlumber) EnsureVPCHostPort(eniID, mac, addr string) error {
+	p.hostPortCalls = append(p.hostPortCalls, hostPortCall{eniID: eniID, mac: mac, addr: addr})
+	return p.hostPortErr
+}
+
+func (p *fakeNetworkPlumber) RemoveVPCHostPort(eniID string) error {
+	p.hostPortRemoveCalls = append(p.hostPortRemoveCalls, eniID)
+	return p.hostPortRemoveErr
 }
 
 var _ NetworkPlumber = (*fakeNetworkPlumber)(nil)

@@ -119,8 +119,8 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` (no-op). Then validates the prefix holds `config.json`, `tokenizer_config.json`, at least one `*.safetensors` file, and at least one of `tokenizer.json` or `tokenizer.model`, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
-| `spx admin ochre weights list` | — | Lists every staged model with its source URI and snapshot ID, so an operator can see why a model is (or isn't) advertised via `ListFoundationModels`. |
+| `spx admin ochre weights stage` | `--model-id` (required), `--s3-uri` (required, `s3://bucket/prefix/`), `--tmp-dir` (default: OS temp dir) | Stages a self-host model's weights for serving. Refuses first if `--model-id` is not a self-host catalog entry (unknown or provider-served), or if `bedrock-weights` already has this model staged from the same `--s3-uri` and that snapshot still exists (no-op). If the recorded snapshot is gone (host rebuild, volume GC), it re-stages instead of refusing, so no manual `remove` is needed. Then validates the prefix holds `config.json`, `tokenizer_config.json`, at least one `*.safetensors` file, and at least one of `tokenizer.json` or `tokenizer.model`, failing before downloading anything if any are missing. Downloads the prefix's objects from predastore into `--tmp-dir`, packs them into an ext4 image (`mkfs.ext4 -d`), imports it into a new viperblock volume via `v_utils.ImportDiskImage` with `AMIMetadata` left empty (plain volume, no AMI registration), snapshots the closed volume, and records the source URI and snapshot ID against `--model-id` in the `bedrock-weights` KV bucket. Re-staging a different `--s3-uri` replaces the entry and reports the previous snapshot ID for separate reclamation. |
+| `spx admin ochre weights list` | — | Lists every staged model with its source URI, snapshot ID and a STATUS column, so an operator can see why a model is (or isn't) advertised via `ListFoundationModels`. STATUS reads `OK` when the recorded snapshot still exists, or `DANGLING (snapshot missing)` when the KV record survives but its snapshot is gone. |
 | `spx admin ochre weights remove` | `--model-id` (required) | Drops `--model-id`'s entry from `bedrock-weights`, hiding it from `ListFoundationModels` again. Refuses if the model has no staged entry. Never deletes the underlying snapshot or source S3 objects; reclaiming that storage is a separate, explicit act. |
 
 ### Ochre Serving Endpoints
@@ -133,6 +133,8 @@ Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway do
 | `spx admin ochre endpoint describe` | `--model-id` (required) | Shows the model's current endpoint record: state, instance and node IDs, base URL, weights volume, and the derived startup time once `READY`. A model with no record reads as `ABSENT`. |
 | `spx admin ochre endpoint list` | — | Lists every endpoint record with its state, instance ID and base URL. |
 | `spx admin ochre endpoint delete` | `--model-id` (required) | Moves a `READY` endpoint to `DRAINING` and tears its VM down, releasing the GPU. Idempotent: an already-absent endpoint reports success. |
+
+Self-hosted models are served from the `ubuntu-26.04-vllm-serving-x86_64` system image (`spx admin images import --name ubuntu-26.04-vllm-serving-x86_64`), built by `scripts/mkosi-build.sh --image ubuntu-vllm-serving` (`gpu-nvidia` + `vllm` profiles). It carries the tags `spinifex:managed-by=bedrock` and `spinifex:bedrock-role=vllm-serving`, which is what `LaunchServingVM` filters on rather than resolving by name. The image bakes vLLM's OpenAI-compatible server into a uv-managed venv — no Docker daemon, no runtime container pull — and boots `vllm-serve.service`, which waits for cloud-init's `/etc/conf.d/vllm-serve` handoff, resolves and mounts the endpoint's cloned weights volume read-only, then execs `vllm serve` on port 8000.
 
 ### EKS Control-Plane Disaster Recovery
 
@@ -155,6 +157,7 @@ Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway do
 | `describe-instance-types` | `--filters` (capacity only) | `--instance-types`, `--max-results`, `--next-token`, `--dry-run`, other filters | **DONE** |
 | `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
 | `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
+| `get-password-data` | `--instance-id` | `--dry-run` | **DONE** |
 | `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
 | `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`/`optional`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — unmodelled values return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
@@ -338,8 +341,8 @@ KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on 
 | `delete-network-interface` | `--network-interface-id` | `--dry-run` | **DONE** |
 | `describe-network-interfaces` | `--network-interface-ids`, `--filters` (subnet-id, vpc-id, attachment.instance-id) | `--max-results`, `--dry-run` | **DONE** |
 | `modify-network-interface-attribute` | — | `--network-interface-id`, `--description`, `--groups` | **DONE** |
-| `attach-network-interface` | — | `--network-interface-id`, `--instance-id`, `--device-index` | **NOT STARTED** (internal only) |
-| `detach-network-interface` | — | `--attachment-id`, `--force` | **NOT STARTED** (internal only) |
+| `attach-network-interface` | `--network-interface-id`, `--instance-id`, `--device-index` (all required) | `--dry-run`, `--network-card-index`, `--ena-srd-specification` | **DONE** — hot-plugged into a running instance |
+| `detach-network-interface` | `--attachment-id` (required), `--force` | `--dry-run` | **DONE** |
 | `assign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses`, `--secondary-private-ip-address-count` | **NOT STARTED** |
 | `unassign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses` | **NOT STARTED** |
 
@@ -797,6 +800,8 @@ The default certificate cannot be added/removed via these calls — set it on th
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `describe-tags` | `--resource-arns` (loadbalancer, targetgroup, listener) | — | **DONE** |
+| `add-tags` | `--resource-arns`, `--tags` | — | **DONE** |
+| `remove-tags` | `--resource-arns`, `--tag-keys` | — | **DONE** |
 
 ### ELBv2 — Not Yet Implemented
 
@@ -825,14 +830,14 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 | `CNAME_DELEGATION` | operator once, then Spinifex | CNAME, stable | automatic | deferred — never selected yet (northstar cannot serve public authoritative queries); an ARN-stable delegation token is minted on every managed certificate now so this lands as a non-breaking addition |
 | `PRIVATE_CA` | nobody — no validation | none | automatic | **DONE** — issues synchronously against the tenant CA, no domain outside its name constraints |
 
-`PROVIDER_API` is selected when a DNS provider credential is configured; `MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only option for a deployment with no real, publicly delegated domain. Terraform's canonical `aws_acm_certificate` → `aws_route53_record` → `aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in every mode: where Spinifex owns the record write, no `ResourceRecord` is emitted, so `for_each` over `domain_validation_options` yields zero records and `aws_acm_certificate_validation` still blocks correctly by polling until
-`ISSUED`.
+`PROVIDER_API` is selected when a DNS provider credential is configured; `MANUAL_TXT` when northstar hosts the zone; otherwise `PRIVATE_CA` — the only option for a deployment with no real, publicly delegated domain. Terraform's canonical `aws_acm_certificate` → `aws_route53_record` → `aws_acm_certificate_validation` → `aws_lb_listener` flow works unmodified in every mode: where Spinifex owns the record write, no `ResourceRecord` is emitted, so `for_each` over `domain_validation_options` yields zero records and `aws_acm_certificate_validation` still blocks correctly by polling until `ISSUED`.
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
 | `import-certificate` | `--certificate`, `--private-key`, `--certificate-chain`, `--certificate-arn` (re-import) | `--tags` | **DONE** |
 | `describe-certificate` | `--certificate-arn` | — | **DONE** |
 | `list-certificates` | — | `--certificate-statuses`, `--includes`, `--max-items`, `--next-token` | **DONE** |
+| `get-certificate` | `--certificate-arn` | — | **DONE** — returns the leaf certificate and its chain |
 | `delete-certificate` | `--certificate-arn` | — | **DONE** |
 | `request-certificate` | `--domain-name`, `--subject-alternative-names`, `--tags` | `--validation-method`, `--certificate-authority-arn`, `--options`, `--idempotency-token` | **PARTIAL** — `PRIVATE_CA` issues synchronously; `PROVIDER_API`/`MANUAL_TXT` are accepted and correctly shaped but stay `PENDING_VALIDATION` until a later issuance worker lands |
 | `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | `--certificate-arn`, `--tags`/`--tag-keys` | — | **DONE** |
@@ -842,7 +847,7 @@ Spinifex both stores externally-issued certificates (`import-certificate`) and i
 
 ## RDS (PostgreSQL)
 
-Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
+Each DB instance is one dedicated system-owned VM running the engine directly, launched from the `spinifex-rds-postgres` AMI, tagged `spinifex:managed-by=rds` and therefore hidden from the customer's EC2 API. The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so **the endpoint is private — reachable from inside the VPC only**, from any subnet of it rather than the endpoint ENI's own. `Endpoint.Address` is `{db-instance-identifier}.{account-id}.{region}.rds.{base-domain}` where northstar is configured, and the endpoint ENI's private IP where it is not; the IP is stable across VM replacement either way. Default port 5432.
 
 - **Engine:** `postgres` 18 only — `EngineVersion` accepts `18` or `18.x`, and there is no in-place upgrade.
 - **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
@@ -900,12 +905,12 @@ Statuses: `creating`, `available`, `modifying`, `backing-up`, `rebooting`, `stop
 |---------|-------------------|---------------|--------|
 | `create-db-parameter-group` | `--db-parameter-group-name`, `--db-parameter-group-family` (postgres18), `--description`, `--tags` | — | **DONE** — names beginning with `default.` are reserved; the implicit group is `default.postgres18` |
 | `describe-db-parameter-groups` | `--db-parameter-group-name` | `--filters`, `--max-records`, `--marker` | **DONE** — the implicit default group is always listed |
-| `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written; `immediate` on a static parameter is rejected, as AWS does |
+| `modify-db-parameter-group` | `--db-parameter-group-name`, `--parameters` (ParameterName, ParameterValue, ApplyMethod) | — | **DONE** — the whole batch is validated before anything is written and propagated to attached instances; `immediate` on a static parameter is rejected, as AWS does |
 | `describe-db-parameters` | `--db-parameter-group-name`, `--source` (user, engine-default) | `--filters`, `--max-records`, `--marker` | **DONE** — 51-parameter PostgreSQL 18 catalog; memory defaults are computed per instance class and reported as literals |
 | `delete-db-parameter-group` | `--db-parameter-group-name` | — | **DONE** — refused for a default group and while any instance references it |
 | `reset-db-parameter-group` | — | all | **NOT STARTED** (`InvalidAction`) |
 
-A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
+A group takes effect on an instance when `modify-db-instance --db-parameter-group-name` attaches it — immediately with `--apply-immediately`, otherwise at the next maintenance window. Later group edits propagate to every attached instance. Dynamic parameters are written into the engine's config and reloaded live; static ones are recorded `pending-reboot` and applied by `reboot-db-instance`.
 
 ### RDS — Tags
 
@@ -966,6 +971,52 @@ Recognised actions below return `OperationNotSupported`, so a client sees "not o
 | Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS | — | — | **NOT STARTED** |
 
 IAM: `AmazonRDSFullAccess` and `AmazonRDSReadOnlyAccess` are available as managed policies. They grant `rds:` verb prefixes rather than `rds:*`, because `rds:*` would also appear to grant the internal agent actions the gateway reserves for a DB VM's own role.
+
+---
+
+## ECR (Elastic Container Registry)
+
+Repository metadata is served over the AWS API on the gateway endpoint; image data moves over the OCI Distribution `/v2/` endpoint on that same host, authenticated by the bearer token `get-login-password` mints.
+
+| Command | Status |
+|---------|--------|
+| `create-repository`, `delete-repository`, `describe-repositories` | **DONE** |
+| `describe-images`, `list-images`, `batch-get-image`, `batch-delete-image`, `put-image` | **DONE** |
+| `put-image-tag-mutability` | **DONE** |
+| `get-authorization-token` | **DONE** — mints the short-lived bearer token used by `docker login` |
+| `get-repository-policy`, `set-repository-policy`, `delete-repository-policy` | **DONE** |
+| `get-lifecycle-policy`, `put-lifecycle-policy`, `delete-lifecycle-policy`, `get-lifecycle-policy-preview`, `start-lifecycle-policy-preview` | **DONE** |
+| `list-tags-for-resource` | **DONE** |
+| `tag-resource`, `untag-resource` | **NOT STARTED** (registered stub) |
+| `batch-check-layer-availability`, `initiate-layer-upload`, `upload-layer-part`, `complete-layer-upload`, `get-download-url-for-layer` | **NOT STARTED** (registered stub) — layer transfer is served by the OCI `/v2/` endpoint |
+| `describe-registry`, `get-registry-policy`, `put-registry-policy`, `put-replication-configuration`, `replicate-image` | **NOT STARTED** (registered stub) — single-registry deployment, no cross-region replication |
+| `list-repositories` | **NOT STARTED** (registered stub) — use `describe-repositories` |
+| `start-image-scan`, `describe-image-scan-findings`, `put-image-scanning-configuration`, `get-image-scanning-configuration`, `get-registry-scanning-configuration`, `put-registry-scanning-configuration`, `batch-get-repository-scanning-configuration` | **NOT STARTED** (`OperationNotSupported`) — vulnerability scanning is not offered |
+| Pull-through cache rules, repository creation templates, image replication status | **NOT STARTED** (`InvalidAction`) |
+
+---
+
+## ECS (Elastic Container Service)
+
+Clusters, services and tasks run on EC2 container instances; there is no Fargate launch type.
+
+| Command | Status |
+|---------|--------|
+| `create-cluster`, `delete-cluster`, `describe-clusters`, `list-clusters` | **DONE** |
+| `create-service`, `update-service`, `delete-service`, `describe-services`, `list-services` | **DONE** |
+| `register-task-definition`, `deregister-task-definition`, `describe-task-definition`, `list-task-definitions` | **DONE** |
+| `run-task`, `start-task`, `stop-task`, `describe-tasks`, `list-tasks` | **DONE** |
+| `register-container-instance`, `deregister-container-instance`, `describe-container-instances`, `list-container-instances`, `update-container-instances-state` | **DONE** |
+| `create-capacity-provider`, `delete-capacity-provider`, `describe-capacity-providers`, `put-cluster-capacity-providers` | **DONE** |
+| `submit-task-state-change` | **DONE** — reported by the in-guest agent |
+| `tag-resource`, `untag-resource`, `list-tags-for-resource` | **DONE** |
+| `update-cluster`, `list-account-settings`, `put-account-setting`, `list-services-by-namespace`, `list-task-definition-families` | **NOT STARTED** (registered stub) |
+| Task sets (blue/green): `create-task-set`, `update-task-set`, `delete-task-set`, `describe-task-sets`, `update-service-primary-task-set` | **NOT STARTED** (`InvalidAction`) |
+| `execute-command`, `get-task-protection`, `update-task-protection` | **NOT STARTED** (`InvalidAction`) |
+| Attributes: `put-attributes`, `delete-attributes`, `list-attributes` | **NOT STARTED** (`InvalidAction`) |
+| `update-capacity-provider`, `update-cluster-settings`, `update-container-agent` | **NOT STARTED** (`InvalidAction`) |
+| `delete-account-setting`, `put-account-setting-default`, `delete-task-definitions` | **NOT STARTED** (`InvalidAction`) |
+| `discover-poll-endpoint`, `submit-container-state-change`, `submit-attachment-state-changes` | **NOT STARTED** (`InvalidAction`) |
 
 ---
 

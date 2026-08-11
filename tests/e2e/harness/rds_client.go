@@ -61,14 +61,44 @@ apt-get install -y postgresql-client || exit 11
 echo done > %[1]s
 `, rdsClientStatusFile, rdsClientExitCodeFile)
 
+// RDSClientPlacement is where a client VM is put: the subnet it sits in and the
+// security group it carries. Which subnet is the whole point for a caller
+// proving an endpoint is reachable from somewhere other than its own.
+type RDSClientPlacement struct {
+	SubnetID string
+	SGID     string
+}
+
 // RDSClientVM returns an SSH target for a postgres client VM in the customer's
-// default VPC — the one place a DB endpoint is reachable from. Memoized per
-// fixture: the boot, the install and the CA push happen once per process.
+// default VPC — the placement every test that only needs *a* client wants.
+// Memoized per fixture: the boot, the install and the CA push happen once per
+// process.
 //
 // The default VPC maps public IPs on launch and routes 0.0.0.0/0 at its IGW, so
 // the same VM is reachable from the runner for SSH and has the apt egress the
 // install needs.
 func RDSClientVM(t *testing.T, c *AWSClient, fx *Fixture, env *Env) SSHTarget {
+	t.Helper()
+	vpc := EnsureDefaultVPC(t, fx)
+
+	// The default SG admits only same-SG members, so the runner's SSH and the
+	// client's connection to the DB endpoint both need opening explicitly. A
+	// caller supplying its own placement brings its own groups instead.
+	EnsureDefaultSGOpen(t, c)
+	AuthorizeTCPIngress(t, c, vpc.SGID, DBEnginePort)
+
+	return RDSClientVMIn(t, c, fx, env, RDSClientPlacement{SubnetID: vpc.SubnetID, SGID: vpc.SGID})
+}
+
+// RDSClientVMIn is RDSClientVM in a placement the caller owns, for a topology
+// the default VPC cannot express. The subnet must map public IPs on launch and
+// reach an IGW, and the group must admit tcp/22 from the runner and let the
+// client out to the endpoint: everything past that is the caller's own network.
+//
+// The memo is keyed through EnsureInstance, whose key already carries the subnet
+// and group, so a second placement builds a second VM rather than returning the
+// first.
+func RDSClientVMIn(t *testing.T, c *AWSClient, fx *Fixture, env *Env, p RDSClientPlacement) SSHTarget {
 	t.Helper()
 	instType, arch := DiscoverNanoInstanceType(t, fx)
 	ami := DiscoverUbuntuAMI(t, fx, arch)
@@ -76,19 +106,13 @@ func RDSClientVM(t *testing.T, c *AWSClient, fx *Fixture, env *Env) SSHTarget {
 	// outlives the test that first asked for the VM, and ArtifactDir prunes a
 	// passing test's directory — taking the PEM the next caller needs with it.
 	keyName, keyPath := EnsureKeyPair(t, fx, env.ArtifactDir)
-	vpc := EnsureDefaultVPC(t, fx)
-
-	// The default SG admits only same-SG members, so the runner's SSH and the
-	// client's connection to the DB endpoint both need opening explicitly.
-	EnsureDefaultSGOpen(t, c)
-	AuthorizeTCPIngress(t, c, vpc.SGID, DBEnginePort)
 
 	instanceID := EnsureInstance(t, fx, InstanceSpec{
 		AMIID:        ami,
 		InstanceType: instType,
 		KeyName:      keyName,
-		SubnetID:     vpc.SubnetID,
-		SGID:         vpc.SGID,
+		SubnetID:     p.SubnetID,
+		SGID:         p.SGID,
 		UserData:     base64.StdEncoding.EncodeToString([]byte(rdsClientUserData)),
 	})
 

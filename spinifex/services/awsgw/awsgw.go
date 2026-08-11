@@ -21,6 +21,7 @@ import (
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
@@ -308,10 +309,51 @@ func launchService(config *config.ClusterConfig) error {
 	// are called from gateway/bedrock.go's fixed-arity route table.
 	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
 
-	// Bedrock self-host endpoints are pinned, so their
-	// OpenAI-compatible base URLs come from static config. OCHRE_VLLM_ENDPOINTS
-	// is a comma-separated list of modelId=baseURL pairs.
+	// Bedrock model access: grants live in the bedrock-model-access KV bucket
+	// and are deny-by-default, so a fresh deployment serves no models until an
+	// operator grants them (spx admin ochre access grant).
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, len(config.Nodes))
+
+	// Deny-by-default would otherwise leave a fresh install with a catalog
+	// nobody can see, so seed the platform admin account — the operator's own
+	// account, created by spx admin init — with the full catalog on first
+	// start. Tenant accounts are unaffected and still begin with no access.
+	// Best-effort: the gateway must serve even if this fails, and because the
+	// marker is written only on success, the next start retries.
+	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), admin.DefaultAccountID(), gateway_bedrock.CatalogModelIDs()); err != nil {
+		slog.Warn("Bedrock model access: seeding admin grants failed, will retry on next start",
+			"accountID", admin.DefaultAccountID(), "err", err)
+	} else if seeded {
+		slog.Info("Bedrock model access: seeded admin account with the model catalog",
+			"accountID", admin.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
+	}
+
+	// Bedrock self-host endpoints: OCHRE_VLLM_ENDPOINTS pins a modelId=baseURL
+	// pair to a fixed address, and anything not pinned resolves through the
+	// daemon's endpoint registry, which launches a serving VM on first use.
+	// OCHRE_COLD_START_WAIT optionally holds a cold call that long rather than
+	// returning ModelNotReadyException at once. Unset (the default) keeps the
+	// fail-fast contract: cold start is minutes, which no client retry spans.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
+	bedrockEndpointSvc := handlers_bedrock.NewNATSEndpointService(natsConn)
+	bedrockEndpointResolver := handlers_bedrock.NewDynamicEndpointResolver(
+		bedrockEndpointSvc, bedrockEndpoints, 0,
+		handlers_bedrock.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
+
+	// Bedrock provisioned throughput: commitment metadata lives in the
+	// bedrock-provisioned KV bucket (gateway control plane), while the pinned
+	// endpoint it commits to is requested through the same NATS endpoint
+	// service the dynamic resolver above uses, via an adapter satisfying
+	// gateway_bedrock's narrow EndpointProvisioner (see provisioned_adapter.go
+	// for why the adapter, not handlers_bedrock.EndpointService, is what
+	// gateway_bedrock depends on).
+	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, len(config.Nodes), nodeConfig.Region,
+		handlers_bedrock.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
+
+	// Bedrock guardrails: control-plane CRUD only at this stage — the record
+	// stores the full policy config so a later stage's filter engine and
+	// inference enforcement can read it back, but nothing enforces it yet.
+	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, len(config.Nodes), nodeConfig.Region)
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
@@ -343,27 +385,32 @@ func launchService(config *config.ClusterConfig) error {
 	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
 
 	gw := gateway.GatewayConfig{
-		Debug:                nodeConfig.AWSGW.Debug,
-		DisableLogging:       false,
-		NATSConn:             natsConn,
-		Config:               nodeConfig.AWSGW.Config,
-		ExpectedNodes:        len(config.Nodes),
-		Region:               nodeConfig.Region,
-		InternalSuffix:       config.AWS.InternalSuffix,
-		RegistryPort:         registryPort,
-		RegistryHost:         registryHost,
-		AZ:                   nodeConfig.AZ,
-		IAMService:           iamService,
-		STSService:           stsService,
-		Version:              version,
-		Commit:               commit,
-		ECRRegistry:          ecrRegistry,
-		ECRTokenIssuer:       gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier:     gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials:   bedrockCredentials,
-		BedrockEndpoints:     bedrockEndpoints,
-		BedrockLoggingConfig: bedrockLoggingConfig,
-		BedrockRecorder:      bedrockRecorder,
+		Debug:                   nodeConfig.AWSGW.Debug,
+		DisableLogging:          false,
+		NATSConn:                natsConn,
+		Config:                  nodeConfig.AWSGW.Config,
+		ExpectedNodes:           len(config.Nodes),
+		Region:                  nodeConfig.Region,
+		InternalSuffix:          config.AWS.InternalSuffix,
+		RegistryPort:            registryPort,
+		RegistryHost:            registryHost,
+		AZ:                      nodeConfig.AZ,
+		IAMService:              iamService,
+		STSService:              stsService,
+		Version:                 version,
+		Commit:                  commit,
+		ECRRegistry:             ecrRegistry,
+		ECRTokenIssuer:          gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:        gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		BedrockCredentials:      bedrockCredentials,
+		BedrockEndpoints:        bedrockEndpoints,
+		BedrockEndpointResolver: bedrockEndpointResolver,
+		BedrockLoggingConfig:    bedrockLoggingConfig,
+		BedrockRecorder:         bedrockRecorder,
+		BedrockAccess:           bedrockAccess,
+		BedrockAccessAdmin:      bedrockAccess,
+		BedrockProvisioned:      bedrockProvisioned,
+		BedrockGuardrails:       bedrockGuardrails,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
@@ -525,6 +572,22 @@ func isConcreteRegistryHost(host string) bool {
 // parseBedrockEndpoints parses a comma-separated list of modelId=baseURL pairs
 // into a map for the bedrock self-host endpoint resolver. Malformed or empty
 // entries are skipped. Returns nil for empty input.
+// parseColdStartWait reads OCHRE_COLD_START_WAIT as a Go duration. An
+// unparseable or negative value is logged and ignored rather than fatal: a
+// typo in an optional tuning knob must not stop the gateway from serving.
+func parseColdStartWait(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		slog.Warn("awsgw: ignoring malformed OCHRE_COLD_START_WAIT", "value", raw, "err", err)
+		return 0
+	}
+	return d
+}
+
 func parseBedrockEndpoints(raw string) map[string]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

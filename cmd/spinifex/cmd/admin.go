@@ -1405,9 +1405,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	fmt.Printf("   Key: %s\n", viperblockKeyPath)
 
 	if !masterKeyExisted {
-		fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
-		fmt.Printf("   Access Key:  %s\n", adminAccessKey)
-		fmt.Printf("   Secret Key:  %s\n", adminSecretKey)
+		// Never echo the keys: on an ISO install stdout is the systemd journal,
+		// which persists them for the life of the node. They are recoverable from
+		// bootstrap.json and ~/.aws/credentials.
+		fmt.Printf("\n🔑 Generated admin credentials (written to ~/.aws/credentials)\n")
 		fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
 		fmt.Printf("   AWS Profile: spinifex\n")
 	}

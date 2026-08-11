@@ -60,6 +60,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:        newTestCA(t),
+		MasterKey:     testMasterKey,
 		Launch:        h.launch.deps(),
 		Network:       h.network,
 		IAM:           testIAMProvider(h.iam),
@@ -109,6 +110,20 @@ func modifiableRecord() DBInstanceRecord {
 
 func modifyInput() *rds.ModifyDBInstanceInput {
 	return &rds.ModifyDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}
+}
+
+const largeMemoryParameterGroup = "large-memory"
+
+func createLargeMemoryParameterGroup(t *testing.T, h *modifyHarness) {
+	t.Helper()
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(largeMemoryParameterGroup), testAccountID)
+	require.NoError(t, err)
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(largeMemoryParameterGroup, &rds.Parameter{
+		ParameterName:  aws.String("shared_buffers"),
+		ParameterValue: aws.String("500000"),
+		ApplyMethod:    aws.String(ApplyMethodPendingReboot),
+	}), testAccountID)
+	require.NoError(t, err)
 }
 
 // None of these interrupts service, so AWS applies them as soon as possible and
@@ -338,6 +353,66 @@ func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 	assert.Nil(t, h.record(t).PendingModifiedValues)
 }
 
+func TestModifyDBInstance_RejectsAnIncompatibleParameterGroupBeforeMutation(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	seedInstance(t, h.svc, modifiableRecord())
+
+	in := modifyInput()
+	in.DBParameterGroupName = aws.String(largeMemoryParameterGroup)
+	in.DeletionProtection = aws.Bool(true)
+	in.ApplyImmediately = aws.Bool(true)
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	stored := h.record(t)
+	assert.Equal(t, StatusAvailable, stored.Status)
+	assert.Equal(t, testDefaultGroup, stored.DBParameterGroupName)
+	assert.False(t, stored.DeletionProtection)
+	assert.Nil(t, stored.PendingModifiedValues)
+	assert.Empty(t, h.agent.received())
+}
+
+func TestModifyDBInstance_ValidatesClassChangeAgainstCurrentGroup(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	rec := modifiableRecord()
+	rec.DBInstanceClass = "db.m5.xlarge"
+	rec.DBParameterGroupName = largeMemoryParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	in := modifyInput()
+	in.DBInstanceClass = aws.String("db.t3.medium")
+	in.DeletionProtection = aws.Bool(true)
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	stored := h.record(t)
+	assert.Equal(t, StatusAvailable, stored.Status)
+	assert.Equal(t, "db.m5.xlarge", stored.DBInstanceClass)
+	assert.False(t, stored.DeletionProtection)
+	assert.Nil(t, stored.PendingModifiedValues)
+}
+
+func TestModifyDBInstance_ValidatesSimultaneousGroupAndClassAgainstTargets(t *testing.T) {
+	h := newModifyHarness(t)
+	createLargeMemoryParameterGroup(t, h)
+	seedInstance(t, h.svc, modifiableRecord())
+
+	in := modifyInput()
+	in.DBParameterGroupName = aws.String(largeMemoryParameterGroup)
+	in.DBInstanceClass = aws.String("db.m5.xlarge")
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	require.NoError(t, err)
+	stored := h.record(t)
+	require.NotNil(t, stored.PendingModifiedValues)
+	assert.Equal(t, largeMemoryParameterGroup, stored.PendingModifiedValues.DBParameterGroupName)
+	assert.Equal(t, "db.m5.xlarge", stored.PendingModifiedValues.DBInstanceClass)
+}
+
 // These fields are stored rather than acted on, but a value outside AWS's
 // range would fail in a maintenance window nobody is watching.
 func TestModifyDBInstance_RejectsAnOutOfRangeBackupRetention(t *testing.T) {
@@ -486,7 +561,9 @@ func TestModifyDBInstance_AcceptsARetryFromFailed(t *testing.T) {
 // the in-guest filesystem grow still outstanding.
 func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
 	h := newModifyHarness(t)
-	seedInstance(t, h.svc, modifiableRecord())
+	seed := modifiableRecord()
+	seed.FormatAuthorized = true
+	seedInstance(t, h.svc, seed)
 
 	in := modifyInput()
 	in.AllocatedStorage = aws.Int64(50)
@@ -506,6 +583,7 @@ func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
 	rec := h.record(t)
 	assert.Equal(t, int64(50), rec.AllocatedStorage)
 	assert.Equal(t, testInstance, rec.InstanceID, "a grow restarts the VM rather than replacing it")
+	assert.False(t, rec.FormatAuthorized, "storage grow must not carry create-time formatting into the restart")
 	require.NotNil(t, rec.PendingModifiedValues)
 	assert.True(t, rec.PendingModifiedValues.FilesystemGrowPending)
 	assert.Nil(t, rec.PendingModifiedValues.AllocatedStorage, "the volume is at its new size")
@@ -531,6 +609,11 @@ func TestModifyDBInstance_FailsTheInstanceAndKeepsThePendingValues(t *testing.T)
 	require.NotNil(t, rec.PendingModifiedValues)
 	assert.Equal(t, int64(50), aws.Int64Value(rec.PendingModifiedValues.AllocatedStorage))
 	assert.Equal(t, int64(20), rec.AllocatedStorage, "the record reports the size the volume actually has")
+	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
+
+	messages := h.eventMessages(t)
+	assert.Contains(t, messages, "DB instance restarted after its storage grow failed; storage is unchanged.")
+	assert.Contains(t, messages, "the DB instance could not be modified: grow the data volume vol-rdsdata01 to 50 GiB: the volume store rejected the resize")
 }
 
 func TestModifyDBInstance_RequiresAnIdentifier(t *testing.T) {

@@ -45,8 +45,15 @@ type engineOps interface {
 // engine fails to come up after a parameter change.
 type parameterRecovery interface {
 	// Reports whether the installed set differed and was replaced.
-	RestoreLastKnownGoodParameters() (bool, error)
+	RestoreLastKnownGoodParameters(ctx context.Context) (bool, error)
 	Restart(ctx context.Context) error
+}
+
+// Records the parameter file only after the probe observes the postmaster
+// serving it. This is separate from apply, where static values are installed
+// but not adopted until a later restart.
+type servingParameterRecorder interface {
+	RecordServingParameters(ctx context.Context) error
 }
 
 // One child process. Env replaces the agent's own environment rather than
@@ -117,9 +124,16 @@ type postgresEngine struct {
 	pgData    string
 	socketDir string
 	osUser    string
+	probe     *engineProbe
 	// Set from the bootstrap config, on a different goroutine than the commands
 	// that read it.
 	port atomic.Int64
+
+	// Serializes parameter installs, serving snapshots and rollback restores so
+	// none can copy or replace an intermediate configuration.
+	paramMu       sync.Mutex
+	repairTimeout time.Duration
+	repairPoll    time.Duration
 
 	// The backup mode currently held, if any. Guarded because the expiry timer
 	// releases it on its own goroutine.
@@ -127,18 +141,30 @@ type postgresEngine struct {
 	held *quiesceHold
 }
 
-var _ engineOps = (*postgresEngine)(nil)
+var (
+	_ engineOps                = (*postgresEngine)(nil)
+	_ parameterRecovery        = (*postgresEngine)(nil)
+	_ servingParameterRecorder = (*postgresEngine)(nil)
+)
 
-func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner) *postgresEngine {
+const (
+	parameterRepairTimeout = 90 * time.Second
+	parameterRepairPoll    = time.Second
+)
+
+func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	e := &postgresEngine{
-		run:       run,
-		startSess: startSess,
-		psql:      filepath.Join(cfg.PGBin, "psql"),
-		rcService: cfg.RCService,
-		service:   cfg.EngineService,
-		pgData:    cfg.PGData,
-		socketDir: cfg.SocketDir,
-		osUser:    cfg.PGUser,
+		run:           run,
+		startSess:     startSess,
+		psql:          filepath.Join(cfg.PGBin, "psql"),
+		rcService:     cfg.RCService,
+		service:       cfg.EngineService,
+		pgData:        cfg.PGData,
+		socketDir:     cfg.SocketDir,
+		osUser:        cfg.PGUser,
+		probe:         probe,
+		repairTimeout: parameterRepairTimeout,
+		repairPoll:    parameterRepairPoll,
 	}
 	e.port.Store(int64(cfg.EnginePort))
 	return e
@@ -161,7 +187,13 @@ func (e *postgresEngine) SetPassword(ctx context.Context, username, password str
 	if err := handlers_rds.EnginePostgres().ValidateUsernameNotReserved(username); err != nil {
 		return fmt.Errorf("refusing to set the password of a role the engine reserves: %w", err)
 	}
-	const sql = `\getenv master RDS_MASTER_USERNAME
+	// psql interpolates the password into the ALTER ROLE before the server sees
+	// it, and these three are what would write it to the log — the last on any
+	// failure at its own default. SUSET, so the parameter group cannot win.
+	const sql = `SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = 'panic';
+\getenv master RDS_MASTER_USERNAME
 \getenv password RDS_MASTER_PASSWORD
 ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 `
@@ -193,30 +225,89 @@ const (
 // rolled back here rather than left on the data volume, where it would survive
 // every VM replace and turn the next restart into a boot loop.
 func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
+	e.paramMu.Lock()
+	defer e.paramMu.Unlock()
+
+	initialState, _ := e.probe.state(ctx)
+	if initialState == engineRecovering {
+		return nil, errors.New("apply parameters while the engine is still starting or recovering")
+	}
+	if initialState == engineServing {
+		// A command can arrive before the first heartbeat. Seed the configuration
+		// currently being served before replacing its file in that window.
+		if err := e.recordServingParametersLocked(ctx); err != nil {
+			return nil, fmt.Errorf("record the parameters serving before the apply: %w", err)
+		}
+	}
+
 	// The check has to run against the file in place, because the engine parses
 	// the datadir's own include_dir. The window that leaves is closed from both
 	// ends: the rollback below, and the last-known-good restore the agent runs at
 	// boot when the engine does not come up.
-	previous, restore, err := e.installParameters(params)
+	_, restore, err := e.installParameters(params)
 	if err != nil {
 		return nil, err
 	}
 	if err := e.checkConfig(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("the engine rejected the parameter set: %w", err), restore())
 	}
+
+	state, _ := e.probe.state(ctx)
+	switch state {
+	case engineAbsent:
+		return e.restartOnRepairSetLocked(ctx)
+	case engineRecovering:
+		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restore())
+	}
+
 	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
+		// The engine may have gone down after the first probe. In that case start
+		// it on the new, parser-checked repair set rather than restoring the set
+		// that already left it unable to serve.
+		if state, _ := e.probe.state(ctx); state == engineAbsent {
+			return e.restartOnRepairSetLocked(ctx)
+		}
 		return nil, errors.Join(fmt.Errorf("reload the engine configuration: %w", err), restore())
 	}
+	return e.pendingRestartParameters(ctx)
+}
 
-	// Recorded only once the engine has both parsed and adopted it, so the
-	// rollback target is a set that is known to work rather than the last one
-	// written.
-	if err := e.recordLastKnownGood(previous); err != nil {
-		return nil, err
+func (e *postgresEngine) restartOnRepairSetLocked(ctx context.Context) ([]string, error) {
+	repairCtx, cancel := context.WithTimeout(ctx, e.repairTimeout)
+	defer cancel()
+
+	if err := e.Restart(repairCtx); err != nil {
+		return nil, fmt.Errorf("start the engine on the repaired parameter set: %w", err)
 	}
 
-	// Read after the reload: a setting only becomes pending_restart once the
-	// engine has seen the new value and declined to adopt it live.
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	lastMessage := "engine did not respond"
+	for {
+		select {
+		case <-repairCtx.Done():
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("wait for the engine on the repaired parameter set: %w", ctx.Err())
+			}
+			return nil, fmt.Errorf("wait for the engine on the repaired parameter set: %s: %w", lastMessage, repairCtx.Err())
+		case <-timer.C:
+		}
+
+		state, message := e.probe.state(repairCtx)
+		if state == engineServing {
+			pending, err := e.pendingRestartParameters(repairCtx)
+			if err == nil {
+				return pending, nil
+			}
+			lastMessage = err.Error()
+		} else if message != "" {
+			lastMessage = message
+		}
+		timer.Reset(e.repairPoll)
+	}
+}
+
+func (e *postgresEngine) pendingRestartParameters(ctx context.Context) ([]string, error) {
 	out, err := e.psqlRun(ctx, "SELECT name FROM pg_settings WHERE pending_restart ORDER BY name;\n")
 	if err != nil {
 		return nil, fmt.Errorf("read the settings pending a restart: %w", err)
@@ -265,24 +356,54 @@ func (e *postgresEngine) installParameters(params []handlers_rds.Parameter) (pre
 	}, nil
 }
 
-// Keeps the rollback target in step with what the engine is actually running.
-// The first apply of an instance's life has no predecessor, so the freshly
-// accepted set becomes the target instead.
-func (e *postgresEngine) recordLastKnownGood(previous []byte) error {
-	content := previous
-	if content == nil {
-		var err error
-		if content, err = os.ReadFile(e.parametersPath()); err != nil {
-			return fmt.Errorf("read the accepted parameters: %w", err)
+// Snapshots the include only when the running postmaster has no settings still
+// pending a restart. The parameter mutex keeps an apply from replacing the file
+// between that check and the copy.
+func (e *postgresEngine) RecordServingParameters(ctx context.Context) error {
+	e.paramMu.Lock()
+	defer e.paramMu.Unlock()
+	return e.recordServingParametersLocked(ctx)
+}
+
+func (e *postgresEngine) recordServingParametersLocked(ctx context.Context) error {
+	if _, err := os.Stat(e.parametersPath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil
 		}
+		return fmt.Errorf("inspect the serving parameters: %w", err)
+	}
+	pending, err := e.pendingRestartParameters(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		return nil
+	}
+
+	content, err := os.ReadFile(e.parametersPath())
+	if err != nil {
+		return fmt.Errorf("read the serving parameters: %w", err)
+	}
+	lastGood, err := os.ReadFile(e.lastGoodPath())
+	if err == nil && bytes.Equal(content, lastGood) {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read the last known good parameters: %w", err)
 	}
 	return e.writeEngineFile(e.lastGoodPath(), content)
 }
 
 // Puts the last set the engine accepted back in place, for a restart that failed
-// after a parameter change: the instance comes back on the old parameters rather
-// than boot-looping into recovery. Reports whether anything was restored.
-func (e *postgresEngine) RestoreLastKnownGoodParameters() (bool, error) {
+// after a parameter change. The probe is checked again under the parameter lock
+// so a repair that just brought the engine back cannot be reversed.
+func (e *postgresEngine) RestoreLastKnownGoodParameters(ctx context.Context) (bool, error) {
+	e.paramMu.Lock()
+	defer e.paramMu.Unlock()
+
+	if state, _ := e.probe.state(ctx); state != engineAbsent {
+		return false, nil
+	}
 	lastGood, err := os.ReadFile(e.lastGoodPath())
 	if err != nil {
 		if os.IsNotExist(err) {

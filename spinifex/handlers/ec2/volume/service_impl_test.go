@@ -30,7 +30,7 @@ func newTestVolumeService(az string) *VolumeServiceImpl {
 		Predastore: config.PredastoreConfig{
 			Bucket:    "test-bucket",
 			Region:    "ap-southeast-2",
-			Host:      "localhost:9000",
+			Host:      fakeS3Host,
 			AccessKey: "testkey",
 			SecretKey: "testsecret",
 		},
@@ -397,7 +397,7 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 		Predastore: config.PredastoreConfig{
 			Bucket:    "test-bucket",
 			Region:    "ap-southeast-2",
-			Host:      "localhost:9000",
+			Host:      fakeS3Host,
 			AccessKey: "testkey",
 			SecretKey: "testsecret",
 		},
@@ -406,18 +406,15 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 	return NewVolumeServiceImplWithStore(cfg, store, nil)
 }
 
-func TestCreateVolume_FromSnapshot_PassesValidation(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	snapshotID := "snap-test123"
-
-	// Create snapshot metadata in store (matches spinifex snapshot service format)
-	snapMeta := snapshotMetadata{
+// putTestSnapshotMetadata writes snapshot metadata in the store, matching the
+// spinifex snapshot service format.
+func putTestSnapshotMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID, ownerID string, sizeGiB int64) {
+	t.Helper()
+	snapData, err := json.Marshal(snapshotMetadata{
 		VolumeID:   "vol-source",
-		VolumeSize: 50,
-	}
-	snapData, err := json.Marshal(snapMeta)
+		VolumeSize: sizeGiB,
+		OwnerID:    ownerID,
+	})
 	require.NoError(t, err)
 
 	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
@@ -426,13 +423,21 @@ func TestCreateVolume_FromSnapshot_PassesValidation(t *testing.T) {
 		Body:   strings.NewReader(string(snapData)),
 	})
 	require.NoError(t, err)
+}
+
+func TestCreateVolume_FromSnapshot_PassesValidation(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	snapshotID := "snap-test123"
+	putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 	// CreateVolume from snapshot without explicit size passes validation
 	// (fails later at viperblock backend init because no S3 server in tests)
-	_, err = svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String(snapshotID),
-	}, "")
+	}, testVolAccountID)
 	if err != nil {
 		// Should not be a snapshot or validation error - those are the paths we're testing
 		assert.NotContains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
@@ -445,27 +450,14 @@ func TestCreateVolume_FromSnapshot_WithExplicitSize(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	snapshotID := "snap-test456"
-
-	snapMeta := snapshotMetadata{
-		VolumeID:   "vol-source",
-		VolumeSize: 50,
-	}
-	snapData, err := json.Marshal(snapMeta)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
-		Body:   strings.NewReader(string(snapData)),
-	})
-	require.NoError(t, err)
+	putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 	// CreateVolume from snapshot with explicit larger size passes validation
-	_, err = svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(100),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String(snapshotID),
-	}, "")
+	}, testVolAccountID)
 	if err != nil {
 		assert.NotContains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 		assert.NotContains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
@@ -478,7 +470,7 @@ func TestCreateVolume_FromSnapshot_NotFound(t *testing.T) {
 	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String("snap-nonexistent"),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 }
@@ -488,27 +480,14 @@ func TestCreateVolume_FromSnapshot_SizeSmallerThanSnapshot(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	snapshotID := "snap-sizecheck"
-
-	snapMeta := snapshotMetadata{
-		VolumeID:   "vol-source",
-		VolumeSize: 50,
-	}
-	snapData, err := json.Marshal(snapMeta)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
-		Body:   strings.NewReader(string(snapData)),
-	})
-	require.NoError(t, err)
+	putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 	// Size 10 < snapshot size 50 -- must be rejected
-	_, err = svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(10),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String(snapshotID),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 }
@@ -518,27 +497,14 @@ func TestCreateVolume_FromSnapshot_SizeEqualToSnapshot(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	snapshotID := "snap-sizeequal"
-
-	snapMeta := snapshotMetadata{
-		VolumeID:   "vol-source",
-		VolumeSize: 50,
-	}
-	snapData, err := json.Marshal(snapMeta)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
-		Body:   strings.NewReader(string(snapData)),
-	})
-	require.NoError(t, err)
+	putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 	// Size == snapshot size should pass validation (may fail at backend init)
-	_, err = svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(50),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String(snapshotID),
-	}, "")
+	}, testVolAccountID)
 	if err != nil {
 		assert.NotContains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 		assert.NotContains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
@@ -562,8 +528,58 @@ func TestCreateVolume_FromSnapshot_CorruptMetadata(t *testing.T) {
 	_, err = svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String("ap-southeast-2a"),
 		SnapshotId:       aws.String(snapshotID),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
+}
+
+// assertNoVolumeCreated fails when the store holds any volume config, which is
+// the only on-disk trace CreateVolume leaves before the backend is touched.
+func assertNoVolumeCreated(t *testing.T, store *objectstore.MemoryObjectStore) {
+	t.Helper()
+	out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: aws.String("test-bucket"),
+		Prefix: aws.String("vol-"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.Contents)
+}
+
+func TestCreateVolume_FromSnapshot_OtherAccountDenied(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	snapshotID := "snap-victim"
+	putTestSnapshotMetadata(t, store, snapshotID, "210987654321", 50)
+
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		AvailabilityZone: aws.String("ap-southeast-2a"),
+		SnapshotId:       aws.String(snapshotID),
+	}, testVolAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+	assertNoVolumeCreated(t, store)
+}
+
+// A snapshot written before owner_id was recorded fails closed, including for
+// a caller whose own account ID is empty.
+func TestCreateVolume_FromSnapshot_EmptyOwnerDenied(t *testing.T) {
+	for _, accountID := range []string{testVolAccountID, ""} {
+		t.Run("caller="+accountID, func(t *testing.T) {
+			store := objectstore.NewMemoryObjectStore()
+			svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+			snapshotID := "snap-legacy"
+			putTestSnapshotMetadata(t, store, snapshotID, "", 50)
+
+			_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				SnapshotId:       aws.String(snapshotID),
+			}, accountID)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+			assertNoVolumeCreated(t, store)
+		})
+	}
 }
 
 // setupTestVolumeKV creates a NATS JetStream test server and returns a KV bucket.

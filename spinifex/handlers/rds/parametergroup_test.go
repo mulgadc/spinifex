@@ -38,6 +38,17 @@ func parameter(name, value, applyMethod string) *rds.Parameter {
 	return p
 }
 
+func storedDBInstance(t *testing.T, svc *Service, id string) DBInstanceRecord {
+	t.Helper()
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var rec DBInstanceRecord
+	found, err := getJSON(t.Context(), kv, DBInstanceKey(id), &rec)
+	require.NoError(t, err)
+	require.True(t, found)
+	return rec
+}
+
 // The values of a described group, keyed by name, with the source each was
 // reported under.
 func describedParameters(t *testing.T, h *createHarness, group string) map[string]*rds.Parameter {
@@ -192,6 +203,105 @@ func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
 	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["shared_buffers"].Source))
 	// Untouched parameters stay engine defaults rather than becoming user values.
 	assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(params["autovacuum"].Source))
+}
+
+func TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstance(t *testing.T) {
+	h := newModifyHarness(t)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	first := modifiableRecord()
+	first.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, first)
+
+	secondID := testDBID + "-second"
+	second := modifiableRecord()
+	second.DBInstanceIdentifier = secondID
+	second.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, second)
+	secondAgent := newStubAgent(t, h.nc, testAccountID, secondID, false)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.NoError(t, err)
+
+	for id, issued := range map[string][]Command{
+		testDBID: h.agent.received(),
+		secondID: secondAgent.received(),
+	} {
+		require.Len(t, issued, 1, "instance %s must receive the group update", id)
+		assert.Equal(t, CommandApplyParams, issued[0].Type)
+		assert.Contains(t, issued[0].Parameters, Parameter{Name: "work_mem", Value: "16384"})
+
+		stored := storedDBInstance(t, h.svc, id)
+		assert.Contains(t, stored.Bootstrap.ResolvedParameters, Parameter{Name: "work_mem", Value: "16384"})
+		assert.Empty(t, stored.PendingRebootParameters)
+		groups := projectParameterGroup(&stored)
+		require.Len(t, groups, 1)
+		assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
+	}
+}
+
+func TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.replyWith("max_connections")
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("max_connections", "137", ApplyMethodPendingReboot),
+	), testAccountID)
+	require.NoError(t, err)
+
+	stored := h.record(t)
+	assert.Equal(t, []string{"max_connections"}, stored.PendingRebootParameters)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "pending-reboot", aws.StringValue(groups[0].ParameterApplyStatus))
+}
+
+func TestModifyDBParameterGroup_DoesNotPropagateToAPendingAttachment(t *testing.T) {
+	h := newModifyHarness(t)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.PendingModifiedValues = &PendingModifiedValues{DBParameterGroupName: testParameterGroup}
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, h.agent.received(), "the latest values resolve when the pending attachment is applied")
+}
+
+func TestModifyDBParameterGroup_ReturnsAPropagationFailure(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), testDBID)
+
+	overrides, listErr := ListDBParameterOverrides(t.Context(), h.kv(t), testParameterGroup)
+	require.NoError(t, listErr)
+	assert.Equal(t, "16384", overrides["work_mem"].Value,
+		"the durable group edit remains available for a retry")
+	assert.NotContains(t, h.record(t).Bootstrap.ResolvedParameters,
+		Parameter{Name: "work_mem", Value: "16384"}, "a failed apply must not advance the instance record")
 }
 
 // A batch with one bad value must leave the group exactly as it was: a

@@ -238,6 +238,7 @@ func TestSweep_IsBoundedPerPassAndResumes(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	h.svc = h.svc.WithDeps(Deps{
 		LoadCA:    newTestCA(t),
+		MasterKey: testMasterKey,
 		Launch:    h.launch.deps(),
 		Network:   h.network,
 		Snapshots: h.snaps,

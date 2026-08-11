@@ -2254,7 +2254,7 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		slog.ErrorContext(ctx, "RegisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if tg == nil {
+	if tg == nil || tg.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 	}
 
@@ -2319,7 +2319,7 @@ func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.D
 		slog.ErrorContext(ctx, "DeregisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if tg == nil {
+	if tg == nil || tg.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 	}
 
@@ -2373,7 +2373,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(ctx context.Context, input *elbv
 		slog.ErrorContext(ctx, "DescribeTargetHealth: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if tg == nil {
+	if tg == nil || tg.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 	}
 
@@ -2584,7 +2584,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		slog.ErrorContext(ctx, "CreateListener: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if lb == nil {
+	if lb == nil || lb.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
@@ -2636,7 +2636,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 				slog.ErrorContext(ctx, "CreateListener: failed to get target group", "arn", *a.TargetGroupArn, "err", tgErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-			if tg == nil {
+			if tg == nil || tg.AccountID != accountID {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 			}
 			if !isCompatibleProtocol(protocol, tg.Protocol) {
@@ -2900,7 +2900,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 					slog.ErrorContext(ctx, "ModifyListener: failed to get target group", "arn", action.TargetGroupArn, "err", tgErr)
 					return nil, errors.New(awserrors.ErrorServerInternal)
 				}
-				if tg == nil {
+				if tg == nil || tg.AccountID != accountID {
 					return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 				}
 				if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {
@@ -2920,7 +2920,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 				slog.ErrorContext(ctx, "ModifyListener: failed to get target group", "arn", a.TargetGroupArn, "err", tgErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-			if tg == nil {
+			if tg == nil || tg.AccountID != accountID {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 			}
 			if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {

@@ -156,11 +156,7 @@ aws ecs register-task-definition \
 
 ### 3. Add capacity
 
-Launch one or more EC2 instances from the ECS node image with the `ecsInstanceRole`
-instance profile and a cloud-init that points the agent at the cluster. The
-[ECS Quickstart workbook](https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/ecs-quickstart)
-produces this user-data for you; the console **Provision capacity** action is the
-one-click equivalent. Once an instance boots and its agent registers, it appears here:
+Launch one or more EC2 instances from the ECS node image with the `ecsInstanceRole` instance profile and a cloud-init that points the agent at the cluster. The [ECS Quickstart workbook](https://github.com/mulgadc/spinifex/tree/main/docs/terraform-workbooks/ecs-quickstart) produces this user-data for you; the console **Provision capacity** action is the one-click equivalent. Once an instance boots and its agent registers, it appears here:
 
 ```bash
 aws ecs list-container-instances --cluster demo

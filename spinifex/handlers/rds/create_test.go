@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,6 +150,7 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:     newTestCA(t),
+		MasterKey:  testMasterKey,
 		Launch:     h.launch.deps(),
 		Network:    h.network,
 		IAM:        testIAMProvider(h.iam),
@@ -248,10 +250,21 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.NotEmpty(t, rec.ENIID)
 	assert.NotEqual(t, rec.SystemENIID, rec.ENIID, "the system and customer NICs are distinct")
 	assert.Equal(t, "vol-rdsdata01", rec.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(rec.DataVolumeID), rec.DataVolumeSerial)
+	assert.True(t, rec.FormatAuthorized, "only the fresh initial-create volume may be formatted")
 	assert.True(t, rec.StorageEncrypted)
-	// The master password is staged for the one-shot bootstrap fetch, unconsumed.
-	assert.Equal(t, "Sup3rSecret!", rec.Bootstrap.MasterUserPassword)
-	assert.False(t, rec.Bootstrap.Consumed)
+	// The master password is staged under its own encrypted key, never on the
+	// record; TestCreateDBInstance_StagesThePasswordEncrypted covers the payload.
+	assert.Equal(t, BootstrapStatePending, rec.Bootstrap.State)
+	assert.Empty(t, rec.Bootstrap.MasterUserPassword)
+
+	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{
+		SourceType:       aws.String(EventSourceTypeDBInstance),
+		SourceIdentifier: aws.String(testDBInstanceID),
+	})
+	require.Len(t, events, 1)
+	assert.Equal(t, "DB instance created.", aws.StringValue(events[0].Message))
+	assert.Equal(t, []string{EventCategoryCreation}, aws.StringValueSlice(events[0].EventCategories))
 
 	// The placement is the account's default VPC and its lowest-sorted subnet,
 	// with the VPC's default security group when the request names none.

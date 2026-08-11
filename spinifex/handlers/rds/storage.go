@@ -66,7 +66,7 @@ func (s *Service) growInstanceStorage(ctx context.Context, accountID string, rec
 		return err
 	}
 	if err := s.growDataVolume(ctx, rec.DataVolumeID, targetGiB); err != nil {
-		return err
+		return s.restartAfterStorageGrowFailure(ctx, accountID, rec, err)
 	}
 	if err := context.Cause(ctx); err != nil {
 		return err
@@ -75,6 +75,30 @@ func (s *Service) growInstanceStorage(ctx context.Context, accountID string, rec
 		return fmt.Errorf("restart the DB VM after growing its storage: %w", err)
 	}
 	return nil
+}
+
+// Restarts with a bounded context that survives request cancellation. A lost
+// modify lease transfers recovery to its new holder, so the stale holder stops.
+func (s *Service) restartAfterStorageGrowFailure(
+	ctx context.Context,
+	accountID string,
+	rec *DBInstanceRecord,
+	growErr error,
+) error {
+	if errors.Is(context.Cause(ctx), errModifyLeaseLost) {
+		return growErr
+	}
+
+	restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+
+	if err := s.startInstanceVM(restartCtx, rec.InstanceID); err != nil {
+		return errors.Join(growErr, fmt.Errorf("restart the DB VM after the storage grow failed: %w", err))
+	}
+	s.RecordEvent(restartCtx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+		"DB instance restarted after its storage grow failed; storage is unchanged.",
+		EventCategoryRecovery, EventCategoryAvailability)
+	return growErr
 }
 
 // Grows the data volume itself. Idempotent: a resumed grow re-reads the volume

@@ -5,7 +5,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: monday
+      day: sunday
       timezone: Australia/Sydney
     cooldown:
       default-days: 3
@@ -19,7 +19,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: monday
+      day: sunday
       timezone: Australia/Sydney
     cooldown:
       default-days: 3
@@ -38,7 +38,7 @@ updates:
     directory: /spinifex/services/spinifexui/frontend
     schedule:
       interval: weekly
-      day: monday
+      day: sunday
       timezone: Australia/Sydney
     cooldown:
       default-days: 3

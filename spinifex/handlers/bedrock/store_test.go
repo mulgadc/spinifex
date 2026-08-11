@@ -104,3 +104,42 @@ func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, recs)
 }
+
+// TestListAllEndpoints_ReturnsAcrossAccounts is ListEndpoints' single-account
+// prefix filter's counterpart: ListAllEndpoints must return every account's
+// records in one pass, which is what an operator listing needs to see a
+// pinned endpoint alongside the shared platform ones.
+func TestListAllEndpoints_ReturnsAcrossAccounts(t *testing.T) {
+	kv := newTestBucket(t)
+
+	seed := func(accountID, modelID string, state EndpointState, pinned bool) {
+		rec := EndpointRecord{AccountID: accountID, ModelID: modelID, State: state, Pinned: pinned, Generation: 1}
+		_, err := createJSONRevision(t.Context(), kv, EndpointKey(accountID, modelID), rec)
+		require.NoError(t, err)
+	}
+	seed("000000000000", "model-a", StateReady, false)
+	seed("111111111111", "model-c", StateReady, true)
+
+	recs, err := ListAllEndpoints(t.Context(), kv)
+	require.NoError(t, err)
+	require.Len(t, recs, 2)
+
+	byModel := map[string]EndpointRecord{}
+	for _, rec := range recs {
+		byModel[rec.ModelID] = rec
+	}
+	assert.Equal(t, "000000000000", byModel["model-a"].AccountID)
+	assert.False(t, byModel["model-a"].Pinned)
+	assert.Equal(t, "111111111111", byModel["model-c"].AccountID)
+	assert.True(t, byModel["model-c"].Pinned)
+}
+
+// TestListAllEndpoints_EmptyBucketIsNotAnError mirrors ListEndpoints' own
+// empty-bucket guard.
+func TestListAllEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
+	kv := newTestBucket(t)
+
+	recs, err := ListAllEndpoints(t.Context(), kv)
+	require.NoError(t, err)
+	assert.Empty(t, recs)
+}

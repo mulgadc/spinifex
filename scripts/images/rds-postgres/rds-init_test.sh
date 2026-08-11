@@ -15,7 +15,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "${WORK}"' EXIT
 
 REAL_LS=$(command -v ls)
-export REAL_LS
+REAL_CAT=$(command -v cat)
+export REAL_LS REAL_CAT
 
 STUBBIN="${WORK}/bin"
 mkdir -p "${STUBBIN}"
@@ -35,7 +36,7 @@ done
 # shellcheck disable=SC2086
 set -- ${args}
 if [ "${dirmode}" = 1 ]; then
-    mkdir -p "$@"
+    mkdir -p "$@" || exit 1
     [ -n "${mode}" ] && chmod "${mode}" "$@"
     exit 0
 fi
@@ -122,8 +123,49 @@ cat > "${STUBBIN}/psql" <<'EOF'
     cat
 } >> "${PSQL_CALLS}"
 # ON_ERROR_STOP makes a real psql exit non-zero on any SQL failure; the stub
-# reproduces that so the master-bootstrap failure path is exercisable.
-[ "${PSQL_FAIL:-0}" = "1" ] && exit 3
+# reproduces that, and with it the echo of the failing statement — password and
+# all — that the redaction filter exists to catch.
+if [ "${PSQL_FAIL:-0}" = "1" ]; then
+    echo "psql:<stdin>:7: ERROR: syntax error at or near \"${RDS_MASTER_PASSWORD:-}\"" >&2
+    echo "psql:<stdin>:7: STATEMENT: ALTER ROLE \"m\" WITH LOGIN PASSWORD '${RDS_MASTER_PASSWORD:-}';" >&2
+    exit 3
+fi
+# PSQL_STATUS_CORRUPT=absent: psql succeeds, but rds-init cannot create the
+# status file it recovers psql's exit code through — the shape a read-only or
+# full /run gives it. -h is the bootstrap directory the status file lives in.
+if [ "${PSQL_STATUS_CORRUPT:-}" = "absent" ]; then
+    while [ $# -gt 0 ]; do
+        [ "$1" = "-h" ] && mkdir -p "$2/psql.status" && break
+        shift
+    done
+fi
+exit 0
+EOF
+
+# cat stub: delegates normally, but lets the read-back of psql's exit status
+# return what a torn write or an I/O error would. rds-init's other use of cat
+# takes no argument (it reads the bootstrap script from stdin) and is untouched.
+cat > "${STUBBIN}/cat" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    *psql.status)
+        case "${PSQL_STATUS_CORRUPT:-}" in
+            empty) exit 0 ;;
+            garbage) echo "not-a-number"; exit 0 ;;
+        esac
+        ;;
+esac
+exec "${REAL_CAT}" "$@"
+EOF
+
+# sync stub: a no-op, except that SYNC_KILL_PARENT signals rds-init from the
+# directory sync that follows the receipt rename. That is the one window where
+# an installed receipt and an armed sweep coexist.
+cat > "${STUBBIN}/sync" <<'EOF'
+#!/bin/sh
+if [ "${SYNC_KILL_PARENT:-0}" = "1" ] && [ -d "${1:-}" ]; then
+    kill -TERM "$(cat "${KILL_PID_FILE}")"
+fi
 exit 0
 EOF
 
@@ -138,6 +180,8 @@ pass() { echo "ok: $*"; }
 DATA_MOUNT="${WORK}/data"
 PGDATA="${DATA_MOUNT}/18/data"
 SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
+RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
+RECEIPT="${RECEIPT_DIR}/receipt.env"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
 KILL_PID_FILE="${WORK}/rds-init.pid"
@@ -151,14 +195,25 @@ export INITDB_CALLS PGCTL_CALLS PSQL_CALLS
 # write_handoff <mode> <password> <dbname>: lay down the bootstrap.env rds-agent
 # would have written. An empty password omits the field, as `attach` does.
 # MASTER_USER overrides the master role name, for the reserved-name cases.
+# PENDING/PAYLOAD_ID carry the control plane's "this payload is still staged"
+# assertion, which an agent predating the receipt protocol omits entirely.
 write_handoff() {
     mkdir -p "${HANDOFF}"
     {
         echo "RDS_MODE=$1"
+        echo "RDS_DB_INSTANCE_IDENTIFIER=${DB_ID:-db1}"
         echo "RDS_MASTER_USERNAME=${MASTER_USER:-mulgamaster}"
-        [ -n "$2" ] && echo "RDS_MASTER_PASSWORD=$2"
+        # Single-quoted as rds-agent's shellQuote writes it, which is what lets a
+        # password carrying shell metacharacters — or a newline — survive the
+        # handoff intact and reach the checks that exist for it.
+        [ -n "$2" ] && echo "RDS_MASTER_PASSWORD='$2'"
         [ -n "$3" ] && echo "RDS_DB_NAME=$3"
+        [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
+        [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
+        # Last, and unconditional: an optional line failing its test would make
+        # the whole group's status non-zero and `set -e` would end the run here.
         echo "RDS_PORT=6543"
+        echo "RDS_VM_GENERATION=1"
     } > "${HANDOFF}/bootstrap.env"
 }
 
@@ -168,9 +223,10 @@ write_tls() {
     echo "KEY" > "${HANDOFF}/server.key"
 }
 
+# write_parameters [setting]: the resolved parameter group rds-agent hands over.
 write_parameters() {
     mkdir -p "${HANDOFF}"
-    echo "shared_buffers = 128MB" > "${HANDOFF}/parameters.conf"
+    echo "${1:-shared_buffers = 128MB}" > "${HANDOFF}/parameters.conf"
 }
 
 # reset_state clears everything the previous case left behind: a fresh datadir,
@@ -183,6 +239,7 @@ reset_state() {
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
+    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT || true
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -194,6 +251,7 @@ run_env() {
         RDS_BOOTSTRAP_DIR="${WORK}/run/rds-init" \
         RDS_LOG_DIR="${WORK}/log" \
         RDS_MOUNTS_FILE="${MOUNTS}" \
+        RDS_RECEIPT_DIR="${RECEIPT_DIR_OVERRIDE:-${RECEIPT_DIR}}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
         PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
@@ -301,6 +359,122 @@ if run_ok "attach"; then
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "attach: TLS survives a handoff without a new cert" || fail "attach: TLS turned off"
 fi
+
+# --- Case 3a: a parameter group cannot log the master password ---
+# The customer's parameters are installed before the master role is applied and
+# the bootstrap postmaster does not override config_file, so log_statement = all
+# is live for the ALTER ROLE carrying the password. The guard is session-local
+# and SUSET, so it holds whatever the parameter group says.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters "log_statement = all"
+if run_ok "log-guard"; then
+    grep -q '^log_statement = all' "${PGDATA}/conf.d/10-rds-parameters.conf" \
+        && pass "log-guard: the customer's logging parameter is installed" \
+        || fail "log-guard: the parameter group was not installed, so this is not the reported case"
+    for setting in "SET log_statement = 'none';" \
+        "SET log_min_duration_statement = -1;" \
+        "SET log_min_error_statement = 'panic';"; do
+        grep -qF "${setting}" "${PSQL_CALLS}" \
+            && pass "log-guard: ${setting}" || fail "log-guard: psql never received ${setting}"
+    done
+    # Every bootstrap session carries the guard, so a statement added to the
+    # bootstrap later cannot end up outside it.
+    # `grep -c` exits non-zero on no match, which `set -e` would turn into an
+    # aborted run in place of a reported failure.
+    guard_count=$(grep -cF "SET log_statement = 'none';" "${PSQL_CALLS}" || true)
+    psql_count=$(grep -c '^--- psql ' "${PSQL_CALLS}" || true)
+    [ "${guard_count}" = "${psql_count}" ] \
+        && pass "log-guard: all ${psql_count} bootstrap sessions guarded" \
+        || fail "log-guard: ${guard_count} of ${psql_count} bootstrap sessions guarded"
+    guard_line=$(grep -nF "SET log_statement = 'none';" "${PSQL_CALLS}" | head -n 1 | cut -d: -f1)
+    alter_line=$(grep -n 'ALTER ROLE' "${PSQL_CALLS}" | head -n 1 | cut -d: -f1)
+    { [ -n "${alter_line}" ] && [ "${guard_line}" -lt "${alter_line}" ]; } \
+        && pass "log-guard: the guard precedes the ALTER ROLE" \
+        || fail "log-guard: the guard does not precede the ALTER ROLE"
+fi
+
+# --- Case 3b: a failing psql must not echo the password to the console ---
+# rds-init.initd sends this script's output to /dev/console, which the host
+# captures off ttyS0, and psql under ON_ERROR_STOP echoes the statement it
+# failed on. The redaction must not swallow the failure: the datadir is cleared
+# exactly as in case 6d.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters
+PSQL_FAIL=1
+export PSQL_FAIL
+run_fails "console-redaction"
+grep -q 's3cr3t' "${WORK}/out" \
+    && fail "console-redaction: the console capture carries the master password" \
+    || pass "console-redaction: no password on the console"
+grep -q '\[REDACTED\]' "${WORK}/out" \
+    && pass "console-redaction: the redaction is marked" \
+    || fail "console-redaction: psql's stderr never reached the console"
+grep -q 'ERROR: syntax error' "${WORK}/out" \
+    && pass "console-redaction: the diagnostic itself survives" \
+    || fail "console-redaction: the redaction swallowed the diagnostic"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "console-redaction: datadir kept after a failed master bootstrap" \
+    || pass "console-redaction: the failure still propagates"
+unset PSQL_FAIL
+
+# --- Case 3c: psql's status must cross the redaction pipeline or fail closed ---
+# The status file is how psql's exit code leaves the subshell, POSIX sh having
+# no pipefail. A torn write leaves it created but empty, and `return ""` is
+# fatal in the guest's ash: rds-init would die past the datadir sweep and before
+# any diagnostic, leaving a trust-authenticated postmaster on a deleted datadir.
+for corruption in empty garbage; do
+    reset_state
+    write_handoff initialize 's3cr3t' appdb
+    PSQL_STATUS_CORRUPT="${corruption}"
+    export PSQL_STATUS_CORRUPT
+    run_fails "psql-status-${corruption}"
+    grep -q 'exit status could not be read back' "${WORK}/out" \
+        && pass "psql-status-${corruption}: names the unreadable status rather than blaming psql" \
+        || fail "psql-status-${corruption}: no diagnostic naming the status file"
+    grep -q 'Illegal number\|numeric argument required' "${WORK}/out" \
+        && fail "psql-status-${corruption}: an unvalidated status reached return" \
+        || pass "psql-status-${corruption}: nothing unvalidated reached return"
+    [ -e "${PGDATA}/PG_VERSION" ] \
+        && fail "psql-status-${corruption}: datadir kept after an unrecoverable status" \
+        || pass "psql-status-${corruption}: datadir cleared"
+    grep -q 'stop' "${PGCTL_CALLS}" \
+        && pass "psql-status-${corruption}: bootstrap server stopped" \
+        || fail "psql-status-${corruption}: bootstrap server left holding the datadir"
+    unset PSQL_STATUS_CORRUPT
+done
+
+# --- Case 3d: a status file that could never be written is not psql's fault ---
+# The write can fail outright — a read-only or full /run — while psql itself
+# succeeded. Failing closed is right, but the operator must not be sent to a
+# PostgreSQL that did exactly what it was asked.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+PSQL_STATUS_CORRUPT=absent
+export PSQL_STATUS_CORRUPT
+run_fails "psql-status-absent"
+grep -q 'exit status was never recorded' "${WORK}/out" \
+    && pass "psql-status-absent: names the missing status file" \
+    || fail "psql-status-absent: no diagnostic distinguishing it from a psql failure"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "psql-status-absent: datadir kept" || pass "psql-status-absent: datadir cleared"
+unset PSQL_STATUS_CORRUPT
+
+# --- Case 3e: a multi-line master password is refused before it is spent ---
+# redact_stream is line-oriented, so a password spanning a line boundary matches
+# neither half and reaches /dev/console in the clear. The control plane rejects
+# one; this is the guest asserting that rather than trusting it.
+reset_state
+write_handoff initialize 'top
+secret' appdb
+run_fails "multiline-password"
+[ -s "${INITDB_CALLS}" ] \
+    && fail "multiline-password: initdb ran before the password was refused" \
+    || pass "multiline-password: refused before initdb spent it"
+grep -q 'spans more than one line' "${WORK}/out" \
+    && pass "multiline-password: refusal names the reason" \
+    || fail "multiline-password: no refusal message"
 
 # --- Case 4: an empty datadir in attach mode means the data volume is missing ---
 reset_state
@@ -486,6 +660,122 @@ grep -q 'did not stop' "${WORK}/out" \
     && fail "stop-fail: sentinel kept although the master role exists" \
     || pass "stop-fail: sentinel cleared"
 unset PGCTL_STOP_FAIL
+
+# --- Case 6j: a completed bootstrap leaves a receipt proving it ---
+# The receipt is what lets rds-agent tell the control plane the staged password
+# was durably applied, so the ciphertext can be destroyed. It lives outside
+# PGDATA, which the failure traps rm -rf.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-alpha DB_ID=db-alpha
+export PENDING PAYLOAD_ID DB_ID
+write_handoff initialize 's3cr3t' appdb
+if run_ok "receipt"; then
+    [ -f "${RECEIPT}" ] \
+        && pass "receipt: written on the initialize path" || fail "receipt: no receipt written"
+    grep -q '^RDS_RECEIPT_PAYLOAD_ID=bp-alpha$' "${RECEIPT}" \
+        && pass "receipt: names the payload it applied" || fail "receipt: wrong or missing payload id"
+    grep -q '^RDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-alpha$' "${RECEIPT}" \
+        && pass "receipt: names its DB instance" || fail "receipt: wrong or missing DB instance"
+    grep -q 'PASSWORD\|s3cr3t' "${RECEIPT}" \
+        && fail "receipt: carries a secret" || pass "receipt: carries no secrets"
+    case "${RECEIPT}" in
+        "${PGDATA}"/*) fail "receipt: written inside the datadir the traps clear" ;;
+        *) pass "receipt: written outside PGDATA" ;;
+    esac
+fi
+
+# --- Case 6k: a receipt that cannot be written is fatal ---
+# A successful bootstrap whose receipt never landed would bring up a healthy
+# engine while the agent blocked forever on a receipt that never appears —
+# a working database that can never take a password change or parameter reload.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-beta
+export PENDING PAYLOAD_ID
+write_handoff initialize 's3cr3t' appdb
+: > "${WORK}/not-a-dir"
+RECEIPT_DIR_OVERRIDE="${WORK}/not-a-dir/bootstrap"
+export RECEIPT_DIR_OVERRIDE
+run_fails "receipt-fail"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "receipt-fail: datadir kept although its bootstrap cannot be proven" \
+    || pass "receipt-fail: datadir cleared"
+grep -q 'bootstrap receipt' "${WORK}/out" \
+    && pass "receipt-fail: reported rather than swallowed" || fail "receipt-fail: no failure message"
+unset RECEIPT_DIR_OVERRIDE
+
+# --- Case 6k2: a sweep between the receipt and the retired traps takes both ---
+# The receipt is installed while the traps are still armed. A receipt left behind
+# by a sweep would be read by rds-agent, acknowledged, and the control plane would
+# destroy the only copy of the password this datadir can be initialised with.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-gamma
+export PENDING PAYLOAD_ID
+write_handoff initialize 's3cr3t' appdb
+SYNC_KILL_PARENT=1
+export SYNC_KILL_PARENT
+run_signalled_fails "receipt-swept"
+[ -e "${PGDATA}/PG_VERSION" ] \
+    && fail "receipt-swept: datadir kept after a signal mid-bootstrap" \
+    || pass "receipt-swept: datadir cleared"
+[ -e "${RECEIPT}" ] \
+    && fail "receipt-swept: receipt survived the datadir it vouches for" \
+    || pass "receipt-swept: receipt cleared with the datadir"
+unset SYNC_KILL_PARENT
+
+# --- Case 6l: pending payload, initialised datadir, no receipt -> fail closed ---
+# The datadir alone cannot separate a legacy instance that bootstrapped before
+# receipts existed from one that applied the master role and crashed before the
+# receipt was durable. Only the control plane's pending flag can.
+reset_state
+PENDING=1 PAYLOAD_ID=bp-gamma DB_ID=db-gamma
+export PENDING PAYLOAD_ID DB_ID
+write_handoff initialize 's3cr3t' appdb
+if run_ok "pending-setup"; then
+    echo 'customer table data' > "${PGDATA}/base-relation"
+    rm -f "${RECEIPT}"
+    run_fails "pending-no-receipt"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "pending-no-receipt: datadir preserved" || fail "pending-no-receipt: datadir cleared"
+    grep -q 'master role cannot be proven' "${WORK}/out" \
+        && pass "pending-no-receipt: refusal names the real reason" \
+        || fail "pending-no-receipt: no refusal message"
+    grep -q 'password is spent' "${WORK}/out" \
+        && fail "pending-no-receipt: claims the password is spent, which it is not" \
+        || pass "pending-no-receipt: does not claim a spent password"
+
+    # --- Case 6m: the same boot with a matching receipt attaches ---
+    : > "${INITDB_CALLS}"; : > "${PSQL_CALLS}"
+    mkdir -p "${RECEIPT_DIR}"
+    printf 'RDS_RECEIPT_PAYLOAD_ID=bp-gamma\nRDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-gamma\n' > "${RECEIPT}"
+    if run_ok "pending-with-receipt"; then
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "pending-with-receipt: re-ran initdb" || pass "pending-with-receipt: attached"
+    fi
+
+    # --- Case 6n: a receipt naming another instance is treated as absent ---
+    # The receipt is on the data volume, so it rides along in every snapshot of
+    # it and a restored volume carries the source instance's receipt.
+    printf 'RDS_RECEIPT_PAYLOAD_ID=bp-gamma\nRDS_RECEIPT_DB_INSTANCE_IDENTIFIER=db-somebody-else\n' > "${RECEIPT}"
+    run_fails "pending-foreign-receipt"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "pending-foreign-receipt: datadir preserved" || fail "pending-foreign-receipt: datadir cleared"
+fi
+unset PENDING PAYLOAD_ID DB_ID
+
+# --- Case 6o: no pending payload leaves the attach path unchanged ---
+# An agent predating the receipt protocol sends neither flag, and a legacy
+# instance carries no receipt. Neither may be turned into a refusal.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+if run_ok "legacy-setup"; then
+    rm -rf "${RECEIPT_DIR}"
+    : > "${INITDB_CALLS}"
+    write_handoff attach '' appdb
+    if run_ok "legacy-attach"; then
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "legacy-attach: re-ran initdb" || pass "legacy-attach: attached without a receipt"
+    fi
+fi
 
 # --- Case 7: no serving cert -> TLS off rather than a failed start ---
 reset_state

@@ -34,12 +34,21 @@ type Router struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
 	recorder         Recorder
+	access           AccessResolver
+	// provisioned resolves a provisioned-throughput ARN's commitment.
+	// Nil (a Router built without one) means Converse rejects any PT ARN as
+	// ResourceNotFoundException rather than a bare modelId's usual denial.
+	provisioned *ProvisionedStore
+	// guardrails resolves a Converse request's GuardrailConfig. Nil fails
+	// closed on any GuardrailConfig (ResourceNotFoundException) rather than
+	// proceeding unguarded; a request with none is unaffected either way.
+	guardrails *GuardrailStore
 }
 
 // NewRouter constructs a Router. A nil resolver, endpointResolver, or
-// recorder falls back to a no-op implementation, so a Router is always safe
-// to use even before the real stores are wired in.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) *Router {
+// recorder falls back to a no-op, and a nil access denies every model, so a
+// Router is always safe to use even before the real stores are wired in.
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -49,14 +58,18 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder}
+	if access == nil {
+		access = DenyAllAccessResolver
+	}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
-// and unresolvable vendors return ResourceNotFoundException; a vendor with no
-// resolvable credential returns AccessDeniedException. Every exit records an
-// InvocationRecord via the deferred closure, matching pumpConverseStream's
-// treatment of the streaming path.
+// and unresolvable vendors return ResourceNotFoundException; an ungranted
+// model, or a vendor with no resolvable credential, returns
+// AccessDeniedException. Every exit records an InvocationRecord via the
+// deferred closure, matching pumpConverseStream's treatment of the streaming
+// path.
 func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (out *bedrockruntime.ConverseOutput, err error) {
 	requestID := uuid.NewString()
 	start := time.Now()
@@ -96,9 +109,21 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		})
 	}()
 
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		err = errors.New(awserrors.ErrorResourceNotFoundException)
+	// Translate before resolve: a PT ARN is swapped for the commitment's own
+	// (account, foundation model) here, before catalog lookup, access grant,
+	// and endpoint resolution all act on it. Assigns the named err, so the
+	// deferred closure records a rejected PT ARN the same as any other
+	// failed invocation.
+	var ptAccountID string
+	ptAccountID, modelID, err = resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
+	// Assigns the named err, so the deferred closure records a denied
+	// invocation the same as any other failed one.
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
 		return nil, err
 	}
 	backend = entry.Provider
@@ -106,7 +131,11 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
-		p = newVLLMProvider(rt.endpointResolver)
+		if ptAccountID != "" {
+			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			p = newVLLMProvider(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
@@ -130,15 +159,58 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		return nil, err
 	}
 
+	// An INPUT block returns early with a guarded ConverseOutput, never
+	// reaching p.Converse; inputAssessments survives past the INPUT branch
+	// so a Trace at the end can report both INPUT and OUTPUT halves.
+	var inputAssessments []*bedrockruntime.GuardrailAssessment
+	gc := input.GuardrailConfig
+	if gc != nil {
+		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+		var blockedIn bool
+		var messageIn string
+		blockedIn, messageIn, _, inputAssessments, err = enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+			bedrockruntime.GuardrailContentSourceInput, converseGuardrailTexts(input))
+		if err != nil {
+			return nil, err
+		}
+		if blockedIn {
+			out = blockedConverseOutput(messageIn, time.Since(start))
+			if aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled {
+				out.Trace = converseGuardrailTrace(ident, inputAssessments, nil)
+			}
+			return out, nil
+		}
+	}
+
 	out, err = p.Converse(ctx, modelID, input)
-	return out, err
+	if err != nil || gc == nil {
+		return out, err
+	}
+
+	ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
+	blockedOut, messageOut, redacted, outputAssessments, gerr := enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+		bedrockruntime.GuardrailContentSourceOutput, converseOutputTexts(out))
+	if gerr != nil {
+		err = gerr
+		return nil, err
+	}
+	if blockedOut {
+		out.Output.Message.Content = []*bedrockruntime.ContentBlock{{Text: aws.String(messageOut)}}
+		out.StopReason = aws.String(bedrockruntime.StopReasonGuardrailIntervened)
+	} else {
+		setConverseOutputTexts(out, redacted)
+	}
+	if aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled {
+		out.Trace = converseGuardrailTrace(ident, inputAssessments, outputAssessments)
+	}
+	return out, nil
 }
 
 // Converse is the bedrock-runtime Converse entry point used by the gateway
-// route table. resolver, endpointResolver, and recorder may be nil; NewRouter
-// supplies no-op fallbacks.
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver, recorder).Converse(ctx, accountID, modelID, input)
+// route table. All dependency params may be nil; NewRouter supplies safe
+// fallbacks (deny-all access, PT-ARN- and GuardrailConfig-rejecting).
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may
@@ -163,18 +235,31 @@ func converseStreamToConverseInput(input *bedrockruntime.ConverseStreamInput) *b
 }
 
 // ConverseStream routes modelID to its provider via the catalog, exactly like
-// Converse, then requires the resolved provider to also implement
-// ConverseStreamProvider.
+// Converse — including the same translate-before-resolve treatment of a PT
+// ARN via rt.provisioned — then requires the resolved provider to also
+// implement ConverseStreamProvider.
 func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
-	entry, ok := lookupCatalogEntry(modelID)
-	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	// Translate before resolve, exactly like Converse: a PT ARN is swapped
+	// for the commitment's own (account, foundation model) before catalog
+	// lookup and endpoint resolution act on it.
+	ptAccountID, modelID, err := resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
+	if err != nil {
+		return nil, err
 	}
 
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
-		p = newVLLMProvider(rt.endpointResolver)
+		if ptAccountID != "" {
+			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
+		} else {
+			p = newVLLMProvider(rt.endpointResolver)
+		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:

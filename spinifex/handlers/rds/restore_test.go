@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,13 +60,14 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 
 	stored := h.instance(t, testRestoredID)
 	assert.Equal(t, "vol-rdsdata01", stored.DataVolumeID)
+	assert.Equal(t, vm.VolumeSerial(stored.DataVolumeID), stored.DataVolumeSerial)
+	assert.False(t, stored.FormatAuthorized, "snapshot-derived volumes must never receive a format grant")
 	assert.Equal(t, testSnapshotID, stored.RestoredFromDBSnapshot)
 	assert.True(t, stored.StorageEncrypted)
 
 	// The datadir already holds the master role and its password hash, so
 	// the agent's first bootstrap fetch has to attach rather than run initdb.
-	assert.True(t, stored.Bootstrap.Consumed)
-	require.NotNil(t, stored.Bootstrap.ConsumedAt)
+	assert.Equal(t, BootstrapStateNone, stored.Bootstrap.State)
 	assert.Empty(t, stored.Bootstrap.MasterUserPassword)
 
 	require.NotNil(t, h.launch.launcher.input)

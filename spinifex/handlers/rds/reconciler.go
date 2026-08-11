@@ -78,11 +78,17 @@ type Reconciler struct {
 
 	mu     sync.Mutex
 	leader bool
+
+	// The payloads already reported as stuck pending. The condition persists
+	// until an operator acts, so without this the event would be re-recorded
+	// every sweep and crowd the bounded ring.
+	reportedMu      sync.Mutex
+	reportedPending map[string]string
 }
 
 // holder identifies this daemon in the lease.
 func NewReconciler(svc *Service, holder string) *Reconciler {
-	return &Reconciler{svc: svc, holder: holder}
+	return &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
 }
 
 // Drives the leadership and reconcile loop until ctx is cancelled. Intended as
@@ -242,6 +248,9 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	if err != nil || !found {
 		return err
 	}
+	if err := r.reportStalePendingBootstrap(ctx, kv, accountID, &rec); err != nil {
+		return err
+	}
 	switch rec.Status {
 	case StatusCreating:
 		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
@@ -262,6 +271,56 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	}
 }
 
+// An available instance whose payload is still staged bootstrapped against an
+// agent too old to acknowledge, so the ciphertext will sit there until an
+// operator acts. Only reported: deleting the payload on the grounds that a
+// healthy engine implies a completed bootstrap is exactly the inference this
+// protocol refuses to make.
+func (r *Reconciler) reportStalePendingBootstrap(ctx context.Context, kv jetstream.KeyValue,
+	accountID string, rec *DBInstanceRecord) error {
+	key := accountID + "/" + rec.DBInstanceIdentifier
+	stale := rec.Status == StatusAvailable && time.Since(rec.CreatedAt) > r.svc.bootstrapTimeout()
+	if !stale {
+		r.forgetPendingReport(key)
+		return nil
+	}
+	envelope, _, err := readBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return err
+	}
+	if envelope == nil {
+		r.forgetPendingReport(key)
+		return nil
+	}
+	if !r.notePendingReport(key, envelope.PayloadID) {
+		return nil
+	}
+	slog.WarnContext(ctx, "rds: a staged bootstrap payload is still pending on an available DB instance",
+		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID, "payloadId", envelope.PayloadID)
+	r.svc.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+		"The database engine is serving but has not confirmed its initial master credentials were applied; the staged credentials remain stored until it does.",
+		EventCategoryNotification)
+	return nil
+}
+
+// Reports whether this payload is newly stuck, so the event is recorded once per
+// payload for as long as this node holds the lease.
+func (r *Reconciler) notePendingReport(key, payloadID string) bool {
+	r.reportedMu.Lock()
+	defer r.reportedMu.Unlock()
+	if r.reportedPending[key] == payloadID {
+		return false
+	}
+	r.reportedPending[key] = payloadID
+	return true
+}
+
+func (r *Reconciler) forgetPendingReport(key string) {
+	r.reportedMu.Lock()
+	defer r.reportedMu.Unlock()
+	delete(r.reportedPending, key)
+}
+
 func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	// No lower bound on the heartbeat: the VM is new, so any beat naming it is
 	// necessarily this instance's.
@@ -274,8 +333,11 @@ func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValu
 	}
 	timeout := r.svc.bootstrapTimeout()
 	if time.Since(rec.CreatedAt) > timeout {
-		return r.transition(ctx, kv, rev, rec, StatusFailed,
-			fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout))
+		reason := fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout)
+		if rec.Agent.Message != "" {
+			reason += ": " + rec.Agent.Message
+		}
+		return r.transition(ctx, kv, rev, rec, StatusFailed, reason)
 	}
 	return nil
 }
@@ -592,43 +654,21 @@ func transitionStarted(rec *DBInstanceRecord) time.Time {
 	return rec.UpdatedAt
 }
 
-// Both halves must hold: a healthy heartbeat from the record's *current* VM,
-// and that VM actually running. A stale beat from a superseded VM would
-// otherwise report a replaced instance as ready. Beats at or before since are
-// ignored, which is how a restart is told from the engine it restarted.
+// Both halves must hold: a fresh healthy heartbeat from the record's *current*
+// VM, and that VM actually running. A stale beat from a superseded VM would
+// otherwise report a replaced instance as ready. The observation is the same one
+// the health classifier forms, so freshness is judged by one rule package-wide.
 func (r *Reconciler) engineReady(ctx context.Context, accountID string, rec *DBInstanceRecord, since time.Time) (bool, error) {
-	if rec.Agent.EngineHealth != EngineHealthHealthy || rec.InstanceID == "" ||
-		rec.Agent.InstanceID != rec.InstanceID {
+	obs := r.observeAgent(accountID, rec)
+	if !obs.engineHealthy || !obs.heartbeatFresh {
 		return false, nil
 	}
-	if !r.heartbeatFresh(accountID, rec, since) {
+	// A beat at or before since came from the engine the restart replaced, so it
+	// says nothing about the one that took its place.
+	if !since.IsZero() && !obs.lastSeen.After(since) {
 		return false, nil
 	}
-	if r.svc.deps.InstanceState == nil {
-		return true, nil
-	}
-	state, err := r.svc.deps.InstanceState.InstanceState(ctx, rec.InstanceID, accountID)
-	if err != nil {
-		return false, fmt.Errorf("resolve VM state for %s: %w", rec.InstanceID, err)
-	}
-	return state == instanceStateRunning, nil
-}
-
-// The in-memory beat is fresher than the persisted one but only this node sees
-// it, so a leader that has seen no beat falls back to the record — which trails
-// the truth by at most the persist floor.
-func (r *Reconciler) heartbeatFresh(accountID string, rec *DBInstanceRecord, since time.Time) bool {
-	lastSeen, ok := r.svc.LastSeen(accountID, rec.DBInstanceIdentifier)
-	if !ok {
-		if rec.Agent.LastSeen == nil {
-			return false
-		}
-		lastSeen = *rec.Agent.LastSeen
-	}
-	if !since.IsZero() && !lastSeen.After(since) {
-		return false
-	}
-	return time.Since(lastSeen) <= HeartbeatStaleAfter
+	return r.vmRunning(ctx, accountID, rec)
 }
 
 // A CAS write, so a transition raced by an agent report or a lifecycle op is
@@ -639,6 +679,12 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	}
 	from := rec.Status
 	rec.Status = to
+	if from == StatusCreating {
+		// A healthy engine proves the initial format completed; a failed create
+		// is no longer an active initialization either. Never retain a reusable
+		// grant after leaving the create operation.
+		rec.FormatAuthorized = false
+	}
 	rec.FailureReason = reason
 	rec.UpdatedAt = time.Now().UTC()
 
@@ -652,6 +698,10 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	}
 	slog.InfoContext(ctx, "rds reconciler: DB instance transitioned",
 		"dbInstance", rec.DBInstanceIdentifier, "from", from, "to", to, "reason", reason)
+	if from == StatusCreating && to == StatusAvailable {
+		r.svc.RecordEvent(ctx, AccountIDFromBucketName(kv.Bucket()), EventSourceTypeDBInstance,
+			rec.DBInstanceIdentifier, "DB instance is available.", EventCategoryAvailability)
+	}
 	return nil
 }
 

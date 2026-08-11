@@ -13,7 +13,6 @@ error_log="/var/log/rds-agent.log"
 start_stop_daemon_args="--wait 2000"
 
 AGENT_ENV="/etc/spinifex-rds/agent.env"
-HANDOFF_ENV="${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env"
 
 # The agent retries indefinitely, so this only bounds how long the boot waits
 # before letting rds-init fail visibly rather than hanging forever.
@@ -25,8 +24,8 @@ handoff_tail="${RDS_HANDOFF_TAIL:-20}"
 
 depend() {
     need net
-    before rds-init
     after localmount
+    before rds-datadir rds-init postgresql
 }
 
 start_pre() {
@@ -37,11 +36,15 @@ start_pre() {
         . "${AGENT_ENV}"
         export RDS_GATEWAY_URL RDS_GATEWAY_CA RDS_REGION RDS_DB_INSTANCE_IDENTIFIER \
             RDS_ENGINE_VERSION RDS_HANDOFF_DIR RDS_ENGINE_HOST RDS_ENGINE_PORT \
-            RDS_PG_ISREADY RDS_POLL_WAIT
+            RDS_PG_ISREADY RDS_POLL_WAIT RDS_DATA_MOUNT
     fi
 }
 
 start_post() {
+    # Resolve this after start_pre loads agent.env so custom handoff directories
+    # are shared by the agent, this wait, and rds-init.
+    HANDOFF_ENV="${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env"
+
     # `before rds-init` only orders the starts; rds-init needs the fetched config
     # itself. The agent writes bootstrap.env last and renames it into place, so
     # its appearance means the whole handoff is there.

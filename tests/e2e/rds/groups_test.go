@@ -22,7 +22,8 @@ const (
 	dbParameterGroupFamily = "postgres18"
 	// A dynamic parameter, so the engine adopts it on a reload and the assertion
 	// does not have to wait out a restart. Its default is 4096 kB.
-	workMemKiB = "8192"
+	workMemKiB        = "8192"
+	updatedWorkMemKiB = "12288"
 )
 
 // TestSubnetAndParameterGroups drives the customer-managed group path end to
@@ -124,6 +125,32 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 		})
 	})
 
+	t.Run("CreateRejectsAClassFatalOverride", func(t *testing.T) {
+		_, err := f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String("shared_buffers"),
+				ParameterValue: aws.String("131072"),
+			}},
+		})
+		require.NoError(t, err, "store the catalog-valid large-class value")
+
+		in := validCreateInput(id + "-unsafe")
+		in.DBSubnetGroupName = aws.String(subnetGroup)
+		in.DBParameterGroupName = aws.String(paramGroup)
+		expectCreateRefused(t, f, f.AWS, "InvalidParameterValue", in)
+
+		// Put the group back within the micro ceiling for the serving-path test.
+		_, err = f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String("shared_buffers"),
+				ParameterValue: aws.String("32768"),
+			}},
+		})
+		require.NoError(t, err, "restore the micro-sized shared_buffers value")
+	})
+
 	harness.Phase(t, "Creating DB instance %q against both groups", id)
 	created := createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
 		in.DBSubnetGroupName = aws.String(subnetGroup)
@@ -150,6 +177,53 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
 		out := harness.PSQL(t, client, conn, "SHOW work_mem;")
 		assert.Equal(t, "8MB", strings.TrimSpace(out), "the engine is not running the group's work_mem")
+	})
+
+	t.Run("AttachedGroupEditsReachTheRunningEngine", func(t *testing.T) {
+		requireAvailable(t, instance)
+		client := rdsClient(t, f)
+		conn := harness.PSQLConnFor(t, instance, dbMasterUser, dbMasterPassword, dbName)
+
+		_, err := f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String("work_mem"),
+				ParameterValue: aws.String(updatedWorkMemKiB),
+				ApplyMethod:    aws.String("immediate"),
+			}},
+		})
+		require.NoError(t, err, "modify an attached group with a dynamic parameter")
+		out := harness.PSQL(t, client, conn, "SHOW work_mem;")
+		assert.Equal(t, "12MB", strings.TrimSpace(out),
+			"an immediate edit to an attached group must reload without a reboot")
+
+		before := showInteger(t, client, conn, staticParameterName)
+		require.NotEqual(t, staticParameterValue, before,
+			"the chosen static value must differ from the engine default")
+		_, err = f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+			DBParameterGroupName: aws.String(paramGroup),
+			Parameters: []*rds.Parameter{{
+				ParameterName:  aws.String(staticParameterName),
+				ParameterValue: aws.String(staticParameterValue),
+				ApplyMethod:    aws.String("pending-reboot"),
+			}},
+		})
+		require.NoError(t, err, "modify an attached group with a static parameter")
+
+		pending, err := harness.DescribeDBInstance(f.AWS, id)
+		require.NoError(t, err, "describe the pending static parameter")
+		require.NotEmpty(t, pending.DBParameterGroups)
+		assert.Equal(t, "pending-reboot", aws.StringValue(pending.DBParameterGroups[0].ParameterApplyStatus))
+		assert.Equal(t, before, showInteger(t, client, conn, staticParameterName),
+			"a static edit must not take effect before a reboot")
+
+		_, err = f.AWS.RDS.RebootDBInstance(&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(id)})
+		require.NoError(t, err, "reboot-db-instance for the static parameter")
+		instance = waitForAvailable(t, f, id)
+		require.NotEmpty(t, instance.DBParameterGroups)
+		assert.Equal(t, "in-sync", aws.StringValue(instance.DBParameterGroups[0].ParameterApplyStatus))
+		assert.Equal(t, staticParameterValue, showInteger(t, client, conn, staticParameterName),
+			"the reboot must apply the attached group's static edit")
 	})
 
 	t.Run("GroupsInUseCannotBeDeleted", func(t *testing.T) {

@@ -47,6 +47,7 @@ var ErrNoWeightsStaged = errors.New("bedrock: no weights snapshot staged for thi
 
 type launchVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
+	DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 	DetachENI(ctx context.Context, accountID, eniID string) error
 }
@@ -71,6 +72,12 @@ type LaunchDeps struct {
 	Volume    launchVolumeProvisioner
 	Attacher  volumeAttacher
 	Weights   gateway_bedrock.WeightsResolver
+	// HostPort installs this daemon's own port into the system VPC. Without it
+	// nothing the launch produces is reachable, so a launch refuses to run.
+	HostPort hostPortPlumber
+	// NodeID names the daemon replica, so each node's system-VPC port is a
+	// distinct ENI rather than one they contend for.
+	NodeID string
 }
 
 // LaunchInput describes the serving VM to launch. Everything here is already
@@ -122,6 +129,12 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		return nil, err
 	}
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
+
+	// Before anything is created: a VM this daemon cannot dial is worse than no
+	// VM at all, since it holds a GPU for the whole readiness window first.
+	if err := EnsureDaemonPort(ctx, deps, systemSubnetID, sysRefs.PrivateSubnetCIDRs[0]); err != nil {
+		return nil, err
+	}
 
 	// Unwind in reverse creation order on any failure below. Each step appends
 	// its own undo as soon as the resource exists.

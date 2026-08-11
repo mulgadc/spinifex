@@ -153,6 +153,7 @@ func TestMIGRelease_UnknownInstance_ReturnsError(t *testing.T) {
 	m := NewManager(nil)
 	err := m.Release("i-never-claimed")
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNoGPUClaimed)
 }
 
 // --- MarkMIGFailed ---

@@ -47,6 +47,9 @@ type ServiceDeps struct {
 	PollInterval time.Duration
 	// Replicas sizes the bedrock-endpoints KV bucket on first create.
 	Replicas int
+	// MinResidency protects a freshly READY endpoint from eviction; zero takes
+	// defaultMinResidency.
+	MinResidency time.Duration
 }
 
 // Service is the daemon-side, KV-backed handler set for the serving-endpoint
@@ -110,11 +113,28 @@ func (s *Service) pollInterval() time.Duration {
 	return readinessPollInterval
 }
 
+func (s *Service) minResidency() time.Duration {
+	if s.deps.MinResidency > 0 {
+		return s.deps.MinResidency
+	}
+	return defaultMinResidency
+}
+
 func (s *Service) httpClient() *http.Client {
 	if s.deps.HTTPClient != nil {
 		return s.deps.HTTPClient
 	}
 	return &http.Client{}
+}
+
+// resolveAccountID returns accountID, or utils.GlobalAccountID for the zero
+// value, so every existing Ensure/Describe/Delete caller that leaves the
+// input's AccountID unset keeps resolving to the shared platform endpoint.
+func resolveAccountID(accountID string) string {
+	if accountID == "" {
+		return utils.GlobalAccountID
+	}
+	return accountID
 }
 
 // Ensure idempotently guarantees modelID has a running or starting endpoint.
@@ -130,11 +150,11 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 
-	// Serving endpoints are shared platform infra today, not per-tenant: every
-	// account's Ensure for the same model converges on one shared VM, stored
-	// under the system account. The {accountID}/{modelID} key shape stays
-	// ready for per-tenant serving pools without a schema change later.
-	storeAccountID := utils.GlobalAccountID
+	// Serving endpoints are shared platform infra by default: an Ensure with
+	// no AccountID converges on one shared VM stored under the system
+	// account. A caller that supplies its own AccountID (a pinned,
+	// account-scoped endpoint) gets a distinct key instead.
+	storeAccountID := resolveAccountID(in.AccountID)
 	key := EndpointKey(storeAccountID, in.ModelID)
 
 	unlock := s.ensureMu.lock(key)
@@ -161,7 +181,15 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	}
 
 	if err := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); err != nil {
-		return nil, err
+		// No free device. A GPU held by a model nobody is calling is not a
+		// reason to refuse this one, so make room and re-check — but return the
+		// original refusal, unchanged, when nothing can be given up.
+		if !s.evictForCapacity(ctx, kv, in.ModelID, spec.MinVRAMMiB) {
+			return nil, err
+		}
+		if retryErr := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); retryErr != nil {
+			return nil, retryErr
+		}
 	}
 	if err := validateTransition(StateAbsent, StateStarting); err != nil {
 		return nil, err
@@ -174,6 +202,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		NodeID:     s.deps.NodeID,
 		CreatedAt:  time.Now().UTC(),
 		Generation: 1,
+		Pinned:     in.Pinned,
 	}
 	if _, err := createJSONRevision(ctx, kv, key, rec); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
@@ -203,6 +232,49 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	})
 
 	return &EnsureEndpointOutput{Endpoint: rec}, nil
+}
+
+// evictForCapacity stops the least recently used evictable endpoint so a
+// pending launch can have its device, reporting whether one was stopped. The
+// eviction goes through Delete, so the device is released by the same
+// DRAINING -> terminate -> release path an operator delete takes rather than
+// being taken from underneath a running process.
+//
+// wantModelID is excluded defensively: a caller that reached the capacity
+// check has no endpoint of its own to evict, and stopping one to launch it
+// again would be a no-op at best.
+//
+// Delete takes the per-key mutex for the victim while Ensure holds it for
+// wantModelID. The two can never be the same key, so the locks are disjoint.
+func (s *Service) evictForCapacity(ctx context.Context, kv jetstream.KeyValue, wantModelID string, minVRAMMiB int) bool {
+	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "bedrock: list endpoints for eviction failed", "model", wantModelID, "err", err)
+		return false
+	}
+	candidates := make([]EndpointRecord, 0, len(recs))
+	for _, rec := range recs {
+		if rec.ModelID != wantModelID {
+			candidates = append(candidates, rec)
+		}
+	}
+
+	victim, found := selectEvictable(candidates, s.deps.NodeID, s.minResidency(), time.Now().UTC())
+	if !found {
+		slog.InfoContext(ctx, "bedrock: no free GPU and nothing evictable",
+			"model", wantModelID, "minVRAMMiB", minVRAMMiB, "endpoints", len(recs))
+		return false
+	}
+
+	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
+		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
+		"idleSince", victim.LastActive())
+	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, utils.GlobalAccountID); err != nil {
+		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
+			"evicting", victim.ModelID, "for", wantModelID, "err", err)
+		return false
+	}
+	return true
 }
 
 // runLaunch performs the slow launch + readiness probe and writes the
@@ -299,7 +371,7 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	storeAccountID := utils.GlobalAccountID
+	storeAccountID := resolveAccountID(in.AccountID)
 	kv, err := s.bucket(ctx)
 	if err != nil {
 		return nil, err
@@ -315,13 +387,15 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 	return &DescribeEndpointOutput{Endpoint: rec}, nil
 }
 
-// List returns every endpoint record in the shared endpoints bucket.
+// List returns every endpoint record in the shared endpoints bucket, across
+// every account: an operator listing must see a pinned, account-scoped
+// endpoint alongside the shared platform ones, not just the latter.
 func (s *Service) List(ctx context.Context, _ *ListEndpointsInput, _ string) (*ListEndpointsOutput, error) {
 	kv, err := s.bucket(ctx)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+	recs, err := ListAllEndpoints(ctx, kv)
 	if err != nil {
 		return nil, err
 	}
@@ -331,12 +405,14 @@ func (s *Service) List(ctx context.Context, _ *ListEndpointsInput, _ string) (*L
 // Delete moves a READY endpoint to DRAINING, tears down its VM/ENI/weights
 // volume, then deletes the record. Runs synchronously: unlike Ensure this is
 // an explicit, infrequent operator action, so there is no client-latency
-// reason to background it. An already-ABSENT endpoint is a no-op success.
+// reason to background it. An already-ABSENT endpoint is a no-op success, and
+// a DRAINING one resumes: a teardown that failed partway must be retryable,
+// or the record is stranded in a state nothing else clears.
 func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string) (*DeleteEndpointOutput, error) {
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	storeAccountID := utils.GlobalAccountID
+	storeAccountID := resolveAccountID(in.AccountID)
 	key := EndpointKey(storeAccountID, in.ModelID)
 
 	unlock := s.ensureMu.lock(key)
@@ -353,17 +429,19 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if !found {
 		return &DeleteEndpointOutput{}, nil
 	}
-	if rec.State != StateReady {
+	if rec.State != StateReady && rec.State != StateDraining {
 		return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
-			"bedrock: endpoint for %s is not READY (state=%s)", in.ModelID, rec.State)
+			"bedrock: endpoint for %s cannot be deleted (state=%s)", in.ModelID, rec.State)
 	}
-	if err := validateTransition(rec.State, StateDraining); err != nil {
-		return nil, err
-	}
-	rec.State = StateDraining
-	rec.Generation++
-	if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
-		return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
+	if rec.State == StateReady {
+		if err := validateTransition(rec.State, StateDraining); err != nil {
+			return nil, err
+		}
+		rec.State = StateDraining
+		rec.Generation++
+		if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
+			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
+		}
 	}
 
 	if err := TerminateServingVM(ctx, s.deps.Launch, rec); err != nil {

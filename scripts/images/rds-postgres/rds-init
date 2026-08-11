@@ -9,21 +9,28 @@
 #
 #   /run/spinifex-rds/bootstrap.env    0600  KEY=value shell fragment:
 #       RDS_MODE=initialize|attach
+#       RDS_DB_INSTANCE_IDENTIFIER=<the DB instance this VM backs>
 #       RDS_MASTER_USERNAME=<master role name>
 #       RDS_MASTER_PASSWORD=<present only when RDS_MODE=initialize>
 #       RDS_DB_NAME=<initial database; optional, as on AWS>
 #       RDS_PORT=<listen port; defaults to 5432>
+#       RDS_DATA_VOLUME_ID / RDS_DATA_VOLUME_SERIAL=<expected volume identity>
+#       RDS_VM_GENERATION / RDS_FORMAT_AUTHORIZED=<create-only format grant>
+#       RDS_BOOTSTRAP_PENDING / RDS_PAYLOAD_ID=<the control plane is still
+#                                            waiting for this payload to be applied>
 #   /run/spinifex-rds/parameters.conf  0600  resolved parameter-group values in
 #                                            postgresql.conf syntax
 #   /run/spinifex-rds/server.crt       0600  serving cert, cluster-CA-signed
 #   /run/spinifex-rds/server.key       0600  its private key
 #
-# Nothing there survives a reboot: the next boot re-fetches in `attach` mode and
-# the cert is re-minted rather than persisted.
+# Nothing there survives a reboot: the next boot re-fetches and the cert is
+# re-minted rather than persisted.
 #
 # rds-init keys off the datadir, never off RDS_MODE. An initialised datadir
 # means skip initdb and only refresh config, so a replaced VM comes back on its
-# existing data volume without re-bootstrapping.
+# existing data volume without re-bootstrapping. RDS_BOOTSTRAP_PENDING is not an
+# exception: it is a control-plane-resolved precondition compared against
+# on-disk evidence, the same shape as RDS_FORMAT_AUTHORIZED.
 set -eu
 
 PG_VERSION="${RDS_PG_VERSION:-18}"
@@ -40,6 +47,12 @@ PGDATA="${RDS_PGDATA:-${DATA_MOUNT}/${PG_VERSION}/data}"
 # because no trap survives a crash or a hard kill, and it is what stops the next
 # boot attaching to a datadir whose master role was never created.
 BOOTSTRAP_SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
+
+# Proof that the master role was durably applied, written once initdb and the
+# role are both done. Deliberately outside PGDATA, which clear_unfinished_datadir
+# rm -rf's: no initdb-adjacent path can touch it and PGDATA stays a stock datadir.
+RECEIPT_DIR="${RDS_RECEIPT_DIR:-${DATA_MOUNT}/.spinifex-rds/bootstrap}"
+RECEIPT_FILE="${RECEIPT_DIR}/receipt.env"
 
 HANDOFF_DIR="${RDS_HANDOFF_DIR:-/run/spinifex-rds}"
 ENV_FILE="${HANDOFF_DIR}/bootstrap.env"
@@ -71,6 +84,11 @@ _bootstrapped=0
 clear_unfinished_datadir() {
     [ "${_created_datadir}" = "1" ] || return 0
     [ "${_bootstrapped}" = "1" ] && return 0
+    # The receipt is installed before the traps retire, so a sweep in between
+    # would leave one vouching for a datadir that is about to be deleted. The
+    # agent would acknowledge it and the control plane would destroy the only
+    # copy of the password this instance can ever be initialised with.
+    rm -f -- "${RECEIPT_FILE}"
     if rm -rf -- "${PGDATA}" && [ ! -e "${PGDATA}" ]; then
         echo "[rds-init] ERROR: bootstrap did not complete; datadir ${PGDATA} cleared" >&2
         return 0
@@ -88,10 +106,16 @@ load_handoff() {
     . "${ENV_FILE}"
 
     RDS_MODE="${RDS_MODE:-}"
+    RDS_DB_INSTANCE_IDENTIFIER="${RDS_DB_INSTANCE_IDENTIFIER:-}"
     RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME:-}"
     RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD:-}"
     RDS_DB_NAME="${RDS_DB_NAME:-}"
     RDS_PORT="${RDS_PORT:-5432}"
+    RDS_VM_GENERATION="${RDS_VM_GENERATION:-}"
+    # Absent from an agent that predates the receipt protocol, which reads as
+    # "nothing is pending" and leaves every path below unchanged.
+    RDS_BOOTSTRAP_PENDING="${RDS_BOOTSTRAP_PENDING:-0}"
+    RDS_PAYLOAD_ID="${RDS_PAYLOAD_ID:-}"
 
     [ -n "${RDS_MASTER_USERNAME}" ] || fail "bootstrap config has no RDS_MASTER_USERNAME"
 
@@ -112,6 +136,15 @@ load_handoff() {
 
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
+    esac
+
+    # redact_stream is line-oriented, so a password spanning a line boundary
+    # would match neither half and reach /dev/console in the clear. The control
+    # plane rejects one; refusing here too keeps that an asserted property of
+    # the handoff rather than a silent dependency on another service.
+    case "${RDS_MASTER_PASSWORD}" in
+        *'
+'*) fail "the master password in the bootstrap config spans more than one line; the control plane should have rejected it" ;;
     esac
 
     log "bootstrap config loaded (mode=${RDS_MODE:-unset}, port=${RDS_PORT})"
@@ -182,8 +215,8 @@ initialise_cluster() {
     # recorded on the volume itself. Cleared once the master role exists.
     printf '%s\n' \
         'rds-init created this datadir and did not finish bootstrapping the master role.' \
-        'While this file exists rds-init refuses to start the engine: the one-shot master' \
-        'password is spent, so the cluster cannot be repaired in place. Recover out of band.' \
+        'While this file exists rds-init refuses to start the engine: the datadir carries no' \
+        'usable master role, so it must not be attached to. Recover out of band.' \
         > "${BOOTSTRAP_SENTINEL}"
     chown "${PG_USER}:${PG_USER}" "${BOOTSTRAP_SENTINEL}"
     chmod 0600 "${BOOTSTRAP_SENTINEL}"
@@ -298,16 +331,81 @@ stop_bootstrap_server() {
     as_pg "'${PG_BIN}/pg_ctl' --pgdata='${PGDATA}' --wait --timeout=60 --mode=fast stop"
 }
 
+# Prepended to every bootstrap script. psql interpolates the password into the
+# ALTER ROLE before the server sees it, and these three are what would then write
+# it to the log: log_min_error_statement does so on any failure at its own
+# default. All are SUSET and set for this session only, so nothing the customer
+# puts in the parameter group overrides them.
+BOOTSTRAP_LOG_GUARD="SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = 'panic';"
+
+# Replaces every occurrence of the secret with a placeholder. Parameter
+# expansion rather than sed, whose script would carry the secret in an argv any
+# process on the guest can read.
+redact_stream() {
+    _secret="$1"
+    while IFS= read -r _line || [ -n "${_line}" ]; do
+        _out=""
+        while [ -n "${_secret}" ]; do
+            case "${_line}" in
+                *"${_secret}"*)
+                    _out="${_out}${_line%%"${_secret}"*}[REDACTED]"
+                    _line="${_line#*"${_secret}"}"
+                    ;;
+                *) break ;;
+            esac
+        done
+        printf '%s\n' "${_out}${_line}"
+    done
+}
+
 # Identifiers and the password ride the environment and are re-quoted by psql,
-# never reaching a shell word or argv.
+# never reaching a shell word or argv. Both streams are redacted before they
+# reach the caller: psql echoes the statement it failed on, and the initd sends
+# everything here to /dev/console, which the host captures off ttyS0.
 psql_bootstrap() {
-    RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
-    RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
-    RDS_DB_NAME="${RDS_DB_NAME}" \
-    RDS_GROUP_ROLE="${MASTER_GROUP_ROLE}" \
-        "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
-            -v ON_ERROR_STOP=1 \
-            -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f -
+    # A pipeline's status is its last command's and POSIX sh has no pipefail, so
+    # psql's own status leaves the subshell through the filesystem. The guard
+    # shifts psql's <stdin> line numbers by the number of lines it adds.
+    _status_file="${BOOTSTRAP_DIR}/psql.status"
+    rm -f "${_status_file}"
+    {
+        _psql_rc=0
+        { printf '%s\n' "${BOOTSTRAP_LOG_GUARD}"; cat; } |
+            RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME}" \
+            RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD}" \
+            RDS_DB_NAME="${RDS_DB_NAME}" \
+            RDS_GROUP_ROLE="${MASTER_GROUP_ROLE}" \
+                "${PG_BIN}/psql" --no-psqlrc --quiet --no-align --tuples-only \
+                    -v ON_ERROR_STOP=1 \
+                    -h "${BOOTSTRAP_DIR}" -p "${RDS_PORT}" -U "${PG_USER}" -d postgres -f - ||
+            _psql_rc=$?
+        printf '%s\n' "${_psql_rc}" > "${_status_file}"
+    } 2>&1 | redact_stream "${RDS_MASTER_PASSWORD}"
+
+    # Every way of not recovering psql's status is a failed bootstrap rather
+    # than a silent success, and each says so in its own words: blaming psql for
+    # a status file that could not be written would send an operator looking at
+    # a PostgreSQL that did exactly what it was asked.
+    #
+    # A torn write leaves the file created but empty, so the value is checked
+    # before it is returned: `return ""` is fatal in the guest's ash, and would
+    # kill rds-init here — past the sweep, before the diagnostics.
+    _psql_status=1
+    if [ -f "${_status_file}" ]; then
+        _psql_status=$(cat "${_status_file}" 2>/dev/null) || _psql_status=""
+        case "${_psql_status}" in
+            '' | *[!0-9]*)
+                echo "[rds-init] ERROR: psql ran but its exit status could not be read back from ${_status_file} (got '${_psql_status}'); treating the bootstrap as failed" >&2
+                _psql_status=1
+                ;;
+        esac
+        rm -f "${_status_file}"
+    else
+        echo "[rds-init] ERROR: psql ran but its exit status was never recorded at ${_status_file}; treating the bootstrap as failed" >&2
+    fi
+    return "${_psql_status}"
 }
 
 # Runs on a freshly initialised cluster only.
@@ -334,6 +432,10 @@ bootstrap_master() {
         fail "bootstrapping the master role/database failed (rc=${_rc})"
     fi
 
+    # Proof written while the traps are still armed, so a receipt that cannot be
+    # made durable clears the datadir instead of leaving one it cannot vouch for.
+    write_completion_receipt
+
     # The master role exists from here, so the datadir is complete and nothing
     # may clear it — including on the stop failure reported below.
     mark_bootstrap_complete
@@ -343,6 +445,61 @@ bootstrap_master() {
     if [ "${_stop_rc}" -ne 0 ]; then
         fail "the bootstrap server did not stop (rc=${_stop_rc}) and still holds ${PGDATA}; the postgresql service cannot start until it is gone"
     fi
+}
+
+# The value of one receipt key. Never sourced: the receipt is on the data volume,
+# so a restored volume can carry one written by another instance, and executing
+# it would run whatever that instance's control plane put there.
+receipt_value() {
+    [ -f "${RECEIPT_FILE}" ] || return 0
+    sed -n "s/^$1=//p" "${RECEIPT_FILE}" 2>/dev/null | head -n 1
+}
+
+# Written between the master role and the retirement of the traps, so a receipt
+# that cannot be made durable still clears the datadir rather than leaving a
+# bootstrapped one nobody can prove.
+#
+# Fatal on failure, the mirror image of the sentinel removal below: a healthy
+# engine whose receipt never landed would come up available while the agent
+# blocked forever on a receipt that will never appear, leaving a working database
+# that can never accept a password change or a parameter reload.
+write_completion_receipt() {
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${RECEIPT_DIR}" ||
+        fail "the master role exists but the bootstrap receipt directory ${RECEIPT_DIR} could not be created"
+
+    _tmp="${RECEIPT_FILE}.new"
+    {
+        echo "# Written by rds-init once the master role was applied. Holds no secrets."
+        echo "RDS_RECEIPT_PAYLOAD_ID=${RDS_PAYLOAD_ID}"
+        echo "RDS_RECEIPT_DB_INSTANCE_IDENTIFIER=${RDS_DB_INSTANCE_IDENTIFIER}"
+        echo "RDS_RECEIPT_VM_GENERATION=${RDS_VM_GENERATION}"
+        echo "RDS_RECEIPT_COMPLETED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "${_tmp}" ||
+        fail "the master role exists but the bootstrap receipt ${RECEIPT_FILE} could not be written"
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+
+    # A receipt still in the page cache is lost by exactly the crash it exists to
+    # survive, so it is on disk before it is renamed into place.
+    sync "${_tmp}" 2>/dev/null || sync
+    mv -f "${_tmp}" "${RECEIPT_FILE}" ||
+        fail "the master role exists but the bootstrap receipt ${RECEIPT_FILE} could not be installed"
+    sync "${RECEIPT_DIR}" 2>/dev/null || sync
+}
+
+# PG_VERSION with no sentinel and no receipt is ambiguous from the datadir alone:
+# either a legacy instance that bootstrapped before receipts existed, which must
+# attach, or one that applied the master role and crashed before the receipt was
+# durable, which must not. Only the control plane's view of whether the payload
+# is still staged separates the two, and that is what RDS_BOOTSTRAP_PENDING says.
+require_bootstrap_receipt() {
+    [ "${RDS_BOOTSTRAP_PENDING}" = "1" ] || return 0
+    if [ -n "${RDS_PAYLOAD_ID}" ] &&
+        [ "$(receipt_value RDS_RECEIPT_PAYLOAD_ID)" = "${RDS_PAYLOAD_ID}" ] &&
+        [ "$(receipt_value RDS_RECEIPT_DB_INSTANCE_IDENTIFIER)" = "${RDS_DB_INSTANCE_IDENTIFIER}" ]; then
+        return 0
+    fi
+    fail "the control plane has no record of a completed bootstrap for this datadir; refusing to attach to a datadir whose master role cannot be proven. Recover the volume out of band, or delete and recreate the instance."
 }
 
 # Retires the guards armed at initdb, in an order where no signal in between can
@@ -414,8 +571,9 @@ if [ -s "${PGDATA}/PG_VERSION" ]; then
     # probe with no master role to log in as. The sentinel says the bootstrap did
     # not finish, not that the volume is empty, so nothing here clears it.
     if [ -e "${BOOTSTRAP_SENTINEL}" ]; then
-        fail "datadir ${PGDATA} carries ${BOOTSTRAP_SENTINEL}: an earlier bootstrap was interrupted before the master role existed, and the one-shot master password is spent; recover the data volume out of band rather than starting the engine"
+        fail "datadir ${PGDATA} carries ${BOOTSTRAP_SENTINEL}: an earlier bootstrap was interrupted before the master role existed; recover the data volume out of band rather than starting the engine"
     fi
+    require_bootstrap_receipt
     log "datadir ${PGDATA} is already initialised — attaching"
     install_runtime_config
 else

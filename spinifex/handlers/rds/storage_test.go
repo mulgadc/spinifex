@@ -175,15 +175,47 @@ func TestGrowInstanceStorage_ProceedsWhenTheEngineWillNotStop(t *testing.T) {
 	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
 }
 
-// A grow that fails leaves the VM down rather than restarting it onto a volume
-// whose size nobody knows: the reconciler resumes from the recorded request.
-func TestGrowInstanceStorage_DoesNotRestartTheVMWhenTheGrowFails(t *testing.T) {
+// A rejected grow must not turn a failed modification into an outage. The VM
+// restarts on its unchanged volume before the original error is returned.
+func TestGrowInstanceStorage_RestartsTheVMWhenTheGrowFails(t *testing.T) {
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
 	rec := modifiableRecord()
 
 	err := h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the volume store is unavailable")
+	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
+}
+
+// Both failures matter when the grow and its recovery fail: the first explains
+// the unchanged storage and the second explains the continuing outage.
+func TestGrowInstanceStorage_ReportsTheGrowAndRestartFailures(t *testing.T) {
+	h := newModifyHarness(t)
+	h.storage.modifyErr = errors.New("the volume store is unavailable")
+	h.storage.onModify = func() { h.cmdr.err = errors.New("the node did not answer") }
+	rec := modifiableRecord()
+
+	err := h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the volume store is unavailable")
+	assert.Contains(t, err.Error(), "restart the DB VM after the storage grow failed")
+	assert.Contains(t, err.Error(), "the node did not answer")
+	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
+}
+
+// Recovery belongs to the new lease holder after a takeover. The stale holder
+// must not restart the VM while its replacement may be retrying the grow.
+func TestGrowInstanceStorage_DoesNotRestartAfterLosingTheModifyLease(t *testing.T) {
+	h := newModifyHarness(t)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	h.storage.modifyErr = errors.New("the volume store is unavailable")
+	h.storage.onModify = func() { cancel(errModifyLeaseLost) }
+	rec := modifiableRecord()
+
+	err := h.svc.growInstanceStorage(ctx, testAccountID, &rec, 50)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the volume store is unavailable")
 	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls)
 }
 

@@ -6,6 +6,13 @@
 // ListFoundationModels/GetFoundationModel against any running cluster and
 // gates real Converse calls on backend availability (self-host GPU or a live
 // Anthropic key), so CI parity holds without requiring either to be present.
+//
+// Model access is deny-by-default, so the cluster's test account must hold
+// grants or every assertion here reduces to "empty catalog, access denied".
+// awsgw seeds the platform admin account with the full catalog on first
+// start, so a suite running as that account needs no setup; running as a
+// tenant account needs
+// `spx admin ochre access grant --account-id <id> --all-models` first.
 package bedrock
 
 import (

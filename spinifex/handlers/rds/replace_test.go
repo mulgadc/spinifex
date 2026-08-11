@@ -132,7 +132,7 @@ func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
 	require.NotNil(t, current)
 	assert.Equal(t, testDBID, current.DBInstanceIdentifier)
 	assert.Equal(t, testAccountID, current.AccountID)
-	assert.Equal(t, int64(1), current.VMGeneration)
+	assert.Equal(t, int64(2), current.VMGeneration)
 }
 
 // The record names the new VM and forgets the old one's health, while every
@@ -140,6 +140,7 @@ func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
 func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 	h := newModifyHarness(t)
 	seed := modifiableRecord()
+	seed.FormatAuthorized = true
 	beat := time.Now().UTC()
 	seed.Agent = AgentState{InstanceID: testInstance, EngineHealth: EngineHealthHealthy, LastSeen: &beat}
 	rec := seedReplaceable(t, h, seed)
@@ -148,7 +149,7 @@ func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 
 	stored := h.record(t)
 	assert.Equal(t, testReplacementInstance, stored.InstanceID)
-	assert.Equal(t, int64(1), stored.VMGeneration)
+	assert.Equal(t, int64(2), stored.VMGeneration)
 	assert.NotEqual(t, "eni-sys01", stored.SystemENIID)
 	// The old VM's health must not read as the new one's, or the reconciler
 	// calls the replace finished before the replacement has said anything.
@@ -159,11 +160,14 @@ func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 	assert.Equal(t, seed.ENIPrivateIP, stored.ENIPrivateIP)
 	assert.Equal(t, seed.DNSName, stored.DNSName)
 	assert.Equal(t, testDataVolume, stored.DataVolumeID)
+	assert.Equal(t, "volrdsdata01", stored.DataVolumeSerial)
+	assert.False(t, stored.FormatAuthorized, "replacement must revoke an initial-create grant")
 
 	// The caller's copy is kept in step, so its own record write cannot
 	// resurrect the old VM's identity on top of this one.
 	assert.Equal(t, testReplacementInstance, rec.InstanceID)
-	assert.Equal(t, int64(1), rec.VMGeneration)
+	assert.Equal(t, int64(2), rec.VMGeneration)
+	assert.False(t, rec.FormatAuthorized)
 }
 
 // A grow riding a class change takes the only window in which nothing holds the
@@ -263,7 +267,7 @@ func TestReplaceInstanceVM_LeavesTheRecordRecoverableOnEveryFailure(t *testing.T
 
 			stored := h.record(t)
 			assert.Equal(t, testInstance, stored.InstanceID)
-			assert.Zero(t, stored.VMGeneration)
+			assert.Equal(t, int64(firstVMGeneration), stored.VMGeneration)
 			assert.Equal(t, testEndpointENI, stored.ENIID)
 			assert.Equal(t, testDataVolume, stored.DataVolumeID)
 

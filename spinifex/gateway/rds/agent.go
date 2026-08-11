@@ -28,6 +28,7 @@ type agentIdentity struct {
 	AccountID            string
 	DBInstanceIdentifier string
 	InstanceID           string
+	VMGeneration         int64
 }
 
 // requestedID, from the request body, is only ever used to reject a mismatch —
@@ -63,6 +64,7 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 		AccountID:            entry.AccountID,
 		DBInstanceIdentifier: entry.DBInstanceIdentifier,
 		InstanceID:           caller.SessionName,
+		VMGeneration:         entry.VMGeneration,
 	}, nil
 }
 
@@ -144,7 +146,8 @@ type GetDBBootstrapConfigInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 }
 
-// Serves boot material, including the master password on the first fetch only.
+// Serves boot material, replaying the master password for as long as the staged
+// payload bound to this VM generation has not been acknowledged.
 func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -153,6 +156,33 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 	return handlers_rds.NewNATSService(nc).GetDBBootstrapConfig(ctx, &handlers_rds.GetDBBootstrapConfigInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
+		VMGeneration:         id.VMGeneration,
+	}, id.AccountID)
+}
+
+// PayloadId, VMGeneration and DataVolumeId are the guest's assertions about the
+// payload it applied; the control plane checks each against the record.
+type AcknowledgeDBBootstrapInput struct {
+	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
+	PayloadId            string `locationName:"PayloadId"`
+	VMGeneration         int64  `locationName:"VMGeneration"`
+	DataVolumeId         string `locationName:"DataVolumeId"`
+}
+
+// The only agent call whose side effect destroys key material, so it is a
+// distinct action rather than a field on the heartbeat: it has to be denied on
+// an identity mismatch, which would break liveness reporting if a beat carried it.
+func AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapInput, nc *nats.Conn, caller Caller) (any, error) {
+	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	return handlers_rds.NewNATSService(nc).AcknowledgeDBBootstrap(ctx, &handlers_rds.AcknowledgeDBBootstrapInput{
+		DBInstanceIdentifier: id.DBInstanceIdentifier,
+		InstanceID:           id.InstanceID,
+		PayloadID:            input.PayloadId,
+		VMGeneration:         input.VMGeneration,
+		DataVolumeID:         input.DataVolumeId,
 	}, id.AccountID)
 }
 

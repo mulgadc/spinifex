@@ -55,8 +55,12 @@ type catalogEntry struct {
 	PriceKnown                    bool     // provider entries only; self-host is always known-zero
 }
 
-// catalog is the static Phase-1 model set: one self-hosted open model and one
+// catalog is the static model set: two self-hosted open models and one
 // Anthropic-direct model. Later phases extend this list.
+//
+// Both self-host entries are Meta models on purpose: self-host InvokeModel
+// dispatch picks llamaInvokeAdapter for every self-host entry, so a model of
+// another family would be served with Llama's native request schema.
 var catalog = []catalogEntry{
 	{
 		ModelID:                    "meta.llama3-2-1b-instruct-v1:0",
@@ -75,6 +79,25 @@ var catalog = []catalogEntry{
 		VLLMArgs:     []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.6"},
 	},
 	{
+		ModelID:                    "meta.llama3-2-3b-instruct-v1:0",
+		ModelName:                  "Llama 3.2 3B Instruct",
+		ProviderName:               "Meta",
+		Provider:                   tierSelfHost,
+		InputModalities:            []string{"TEXT"},
+		OutputModalities:           []string{"TEXT"},
+		ResponseStreamingSupported: false,
+		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		// 3.21B params at bf16 is roughly 6124 MiB of weights, so on an 8188 MiB
+		// card the budget is tight: --enforce-eager skips CUDA graph capture to
+		// free several hundred MiB, and max-model-len is half the 1B entry's.
+		MinVRAMMiB:   7168,
+		InstanceType: "g5.xlarge",
+		VLLMArgs: []string{
+			"--dtype=bfloat16", "--max-model-len=4096", "--gpu-memory-utilization=0.92",
+			"--max-num-seqs=8", "--enforce-eager",
+		},
+	},
+	{
 		ModelID:                    "anthropic.claude-3-5-sonnet-20240620-v1:0",
 		ModelName:                  "Claude 3.5 Sonnet",
 		ProviderName:               "Anthropic",
@@ -90,6 +113,18 @@ var catalog = []catalogEntry{
 	},
 }
 
+// CatalogModelIDs returns every model ID the platform knows about, ignoring
+// grants and credential tiering. It exists for administration — granting an
+// account the whole catalog — and must not be used to answer an account's own
+// ListFoundationModels, which is grant-filtered.
+func CatalogModelIDs() []string {
+	ids := make([]string, 0, len(catalog))
+	for _, entry := range catalog {
+		ids = append(ids, entry.ModelID)
+	}
+	return ids
+}
+
 // CredentialResolver resolves accountID's usable provider credential for
 // vendor: a per-account key, else an optional platform default. key is only
 // meaningful when ok is true.
@@ -97,14 +132,20 @@ type CredentialResolver interface {
 	Resolve(ctx context.Context, accountID, vendor string) (key string, ok bool, err error)
 }
 
-// tieredCatalog returns the catalog entries advertised to accountID:
-// self-host entries only where a weights snapshot resolves, provider entries
-// only when resolver finds a usable credential. A resolve error (as opposed
-// to a clean not-found) is an internal fault, not a servability verdict, and
-// aborts the whole list rather than silently thinning it out.
-func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver) ([]catalogEntry, error) {
+// tieredCatalog returns the catalog entries advertised to accountID: those the
+// account holds a grant on, and among those, self-host entries only where a
+// weights snapshot resolves and provider entries only where resolver finds a
+// usable credential. Access is checked first, so a model the account was never
+// granted stays hidden even when a platform-default credential would otherwise
+// serve it. A weights resolve error is an internal fault, not a servability
+// verdict, and aborts the whole list rather than silently thinning it out.
+func tieredCatalog(ctx context.Context, accountID string, resolver CredentialResolver, access AccessResolver) ([]catalogEntry, error) {
 	var out []catalogEntry
 	for _, entry := range catalog {
+		granted, err := access.Granted(ctx, accountID, entry.ModelID)
+		if err != nil || !granted {
+			continue
+		}
 		if entry.Provider == tierSelfHost {
 			_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
 			if err != nil {
@@ -161,8 +202,9 @@ func modelARN(modelID string) string {
 	return fmt.Sprintf(modelARNFormat, modelID)
 }
 
-// lookupCatalogEntry finds a catalog entry by exact modelId, ignoring tier
-// gating (used by the runtime router, which returns its own error class).
+// lookupCatalogEntry finds a catalog entry by exact modelId, ignoring both
+// tier gating and access grants. Callers on a request path must use
+// grantedCatalogEntry instead; this is the raw table lookup underneath it.
 func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 	for _, entry := range catalog {
 		if entry.ModelID == modelID {
@@ -203,11 +245,36 @@ func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) 
 	}, true, true
 }
 
-// ListFoundationModels returns the deployment-tiered catalog: self-host
-// entries where a weights snapshot resolves, provider entries where a
-// credential resolves.
-func ListFoundationModels(ctx context.Context, accountID string, resolver CredentialResolver, _ *bedrock.ListFoundationModelsInput) (*bedrock.ListFoundationModelsOutput, error) {
-	entries, err := tieredCatalog(ctx, accountID, resolver)
+// grantedCatalogEntry resolves modelID to its catalog entry and checks
+// accountID's grant on it. Every runtime path shares this one gate so the four
+// routers cannot drift apart on who may invoke what.
+//
+// An unknown model and an ungranted one are deliberately distinguishable here
+// (ResourceNotFoundException vs AccessDeniedException) because the caller has
+// already been told the model exists by its own catalog listing; the describe
+// path collapses both to ResourceNotFoundException instead, where that is not
+// true.
+func grantedCatalogEntry(ctx context.Context, accountID, modelID string, access AccessResolver) (catalogEntry, error) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return catalogEntry{}, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+	granted, err := access.Granted(ctx, accountID, modelID)
+	if err != nil {
+		return catalogEntry{}, err
+	}
+	if !granted {
+		return catalogEntry{}, errors.New(awserrors.ErrorAccessDeniedException)
+	}
+	return entry, nil
+}
+
+// ListFoundationModels returns the catalog visible to accountID: models it
+// holds a grant on, with self-host entries further filtered to those whose
+// weights snapshot resolves and provider entries to those whose credential
+// resolves.
+func ListFoundationModels(ctx context.Context, accountID string, resolver CredentialResolver, access AccessResolver, _ *bedrock.ListFoundationModelsInput) (*bedrock.ListFoundationModelsOutput, error) {
+	entries, err := tieredCatalog(ctx, accountID, resolver, access)
 	if err != nil {
 		return nil, err
 	}
@@ -218,13 +285,26 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 	return &bedrock.ListFoundationModelsOutput{ModelSummaries: summaries}, nil
 }
 
-// GetFoundationModel looks up a single model by exact modelId. Unknown
-// models, and self-host models with no resolvable weights snapshot, return
-// ResourceNotFoundException. A weights resolve error is an internal fault,
-// not a not-found verdict, and is surfaced (and logged) as such.
-func GetFoundationModel(ctx context.Context, _ string, modelID string) (*bedrock.GetFoundationModelOutput, error) {
+// GetFoundationModel looks up a single model by exact modelId, gated by the
+// caller's grant. An ungranted model, and a self-host model with no resolvable
+// weights snapshot, are both reported as ResourceNotFoundException rather than
+// AccessDeniedException so describe agrees with list: a model the account
+// cannot see does not exist as far as this API is concerned, and the error does
+// not confirm the model's existence to an account probing for it. A weights
+// resolve error is an internal fault, not a not-found verdict, and is surfaced
+// (and logged) as such.
+func GetFoundationModel(ctx context.Context, accountID string, modelID string, access AccessResolver) (*bedrock.GetFoundationModelOutput, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
+		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+	// Grant first: an ungranted account must not learn whether the model is
+	// servable, only that it is not there.
+	granted, err := access.Granted(ctx, accountID, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if !granted {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 	if entry.Provider == tierSelfHost {

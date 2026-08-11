@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/pkg/iampolicy"
+	"github.com/mulgadc/predastore/pkg/sigv4"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
@@ -121,9 +122,14 @@ type GatewayConfig struct {
 	BedrockCredentials *gateway_bedrock.CredentialStore
 	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
 	// URL. These endpoints are pinned/always-resident, so this is static
-	// config; a future implementation can back it with the daemon's dynamic endpoint
-	// registry. Nil/empty means no self-hosted models are reachable.
+	// config, and they resolve ahead of the dynamic registry so a pinned
+	// endpoint bypasses the lifecycle entirely.
 	BedrockEndpoints map[string]string
+	// BedrockEndpointResolver resolves self-host endpoints through the daemon's
+	// registry, requesting a launch for a model that has no endpoint yet. Nil
+	// falls back to BedrockEndpoints alone, under which a model that was never
+	// pinned is never reachable.
+	BedrockEndpointResolver gateway_bedrock.EndpointResolver
 	// BedrockLoggingConfig persists per-account invocation-logging preferences
 	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
 	// an unconfigured store, under which reads/writes error rather than panic.
@@ -132,6 +138,23 @@ type GatewayConfig struct {
 	// to a no-op recorder, so routes stay safe to exercise before the
 	// invocation stream is wired in (e.g. unit tests of unrelated routes).
 	BedrockRecorder gateway_bedrock.Recorder
+	// BedrockAccess resolves per-account model-access grants. Access is
+	// deny-by-default, so nil means no account may list or invoke any model.
+	// It is the AccessResolver interface rather than the concrete store so a
+	// test can inject a fixed grant set without standing up JetStream.
+	BedrockAccess gateway_bedrock.AccessResolver
+	// BedrockAccessAdmin is the writable side of the same grant store, used by
+	// the spinifex admin actions. Nil disables grant administration, which is
+	// how a gateway with an injected read-only resolver behaves.
+	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
+	// BedrockProvisioned persists provisioned-throughput commitments and
+	// drives the pinned endpoint underneath each one. Nil falls back to an
+	// unconfigured store, under which reads/writes error rather than panic.
+	BedrockProvisioned *gateway_bedrock.ProvisionedStore
+	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
+	// and friends). Nil falls back to an unconfigured store, under which
+	// reads/writes error rather than panic.
+	BedrockGuardrails *gateway_bedrock.GuardrailStore
 }
 
 var supportedServices = map[string]bool{
@@ -341,7 +364,8 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	svc, err := gw.GetService(r)
-	slog.Info("Request", "service", svc, "method", r.Method, "path", r.URL.Path)
+	action, _ := r.Context().Value(ctxAction).(string)
+	slog.Info("Request", "service", svc, "action", action, "method", r.Method, "path", r.URL.Path)
 
 	if err != nil {
 		slog.Error("GetService error", "error", err)
@@ -388,10 +412,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		slog.Error("Service request error", "service", svc, "error", err)
+		slog.Error("Service request error", "service", svc, "action", action, "error", err)
 		gw.ErrorHandler(w, r, err)
 	} else {
-		slog.Info("Service request completed", "service", svc)
+		slog.Info("Service request completed", "service", svc, "action", action)
 	}
 }
 
@@ -403,10 +427,10 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	// bedrock and bedrock-runtime share the SigV4 signing name "bedrock", so the
 	// credential scope alone cannot tell the control plane from the data plane —
 	// AWS separates them by endpoint hostname, but the gateway serves one
-	// endpoint. The request path is the discriminator: /model/... is exclusive to
-	// the data plane (Converse/InvokeModel and their streaming variants), so a
-	// "bedrock"-scoped call to it is really bedrock-runtime.
-	if svc == "bedrock" && strings.HasPrefix(r.URL.Path, "/model/") {
+	// endpoint. The request path is the discriminator: /model/... and singular
+	// /guardrail/... are exclusive to the data plane; control-plane guardrail
+	// CRUD uses the plural /guardrails, so the prefixes never collide.
+	if svc == "bedrock" && (strings.HasPrefix(r.URL.Path, "/model/") || strings.HasPrefix(r.URL.Path, "/guardrail/")) {
 		svc = "bedrock-runtime"
 	}
 	if !supportedServices[svc] {
@@ -431,9 +455,10 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 }
 
 // checkPolicyResource evaluates IAM policies against a specific resource ARN.
-// Root users bypass evaluation. Nil IAMService, or a request with no SigV4
-// auth context, allows (pre-IAM compatibility). Used by EC2 paths that
-// enforce iam:PassRole before attaching an instance profile.
+// Root users bypass evaluation. A nil IAMService is a server fault and an
+// unauthenticated request is denied — neither can reach a gated handler through
+// the route tree. Used by EC2 paths that enforce iam:PassRole before attaching
+// an instance profile.
 func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
 	// point with its resolved action, so telemetry enrichment lives here
@@ -442,15 +467,14 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 	recordResolvedAction(r.Context(), service, action)
 
 	if gw.IAMService == nil {
-		slog.Warn("checkPolicy: IAM service not available, skipping policy check",
-			"service", service, "action", action)
-		return nil
+		slog.Error("checkPolicy: IAM service not available", "service", service, "action", action)
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
 	identityVal := r.Context().Value(ctxIdentity)
 	if identityVal == nil {
-		// No auth context — pre-IAM compatibility
-		return nil
+		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
+		return errors.New(awserrors.ErrorAccessDenied)
 	}
 	identity, ok := identityVal.(string)
 	if !ok {
@@ -458,9 +482,9 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 	if identity == "" {
-		// Pre-IAM compatibility: an authenticated request with no identity name
-		// predates per-principal policy enforcement.
-		return nil
+		slog.Warn("checkPolicy: authenticated request carries no identity name",
+			"service", service, "action", action)
+		return errors.New(awserrors.ErrorAccessDenied)
 	}
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
@@ -490,9 +514,7 @@ func mustCtxString(r *http.Request, key contextKey) string {
 // enforcement: given an already-resolved principal (from SigV4 or, for /v2/*
 // ECR requests, a freshly rehydrated token identity), it resolves the
 // principal's current policies and evaluates iamAction against resource.
-// Unlike checkPolicyResource, a nil IAMService fails closed here — callers
-// that want pre-IAM-compatibility bypass behavior must check for that before
-// calling in, exactly as checkPolicyResource does.
+// A nil IAMService fails closed here, matching checkPolicyResource.
 func (gw *GatewayConfig) evaluatePrincipalPolicy(principal principalContext, iamAction, resource string) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
@@ -622,9 +644,14 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 	if args, ok := r.Context().Value(ctxQueryArgs).(map[string]string); ok {
 		return args, nil
 	}
-	body, err := io.ReadAll(r.Body)
+	// Same cap as the signed path: this fallback only runs when the context
+	// carries no pre-parsed args, so the body has not been bounded upstream.
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
 	}
 	return ParseAWSQueryArgs(string(body))
 }

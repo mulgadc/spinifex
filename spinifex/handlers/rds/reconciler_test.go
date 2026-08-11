@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -88,14 +90,29 @@ func (h *reconcileHarness) statusOf(t *testing.T, id string) (Status, string) {
 
 func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T) {
 	h := newReconcileHarness(t)
-	seedInstance(t, h.svc, healthyRecord())
+	rec := healthyRecord()
+	rec.FormatAuthorized = true
+	seedInstance(t, h.svc, rec)
 
 	require.NoError(t, h.rec.reconcileOnce(t.Context()))
 
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
 	assert.Empty(t, reason)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	stored, _, err := h.svc.getDBInstance(t.Context(), kv, testDBID)
+	require.NoError(t, err)
+	assert.False(t, stored.FormatAuthorized, "a completed create must not retain a reusable grant")
 	assert.Equal(t, []string{testInstance}, h.state.calls)
+
+	events := describeEvents(t, h.svc, &rds.DescribeEventsInput{
+		SourceType:       aws.String(EventSourceTypeDBInstance),
+		SourceIdentifier: aws.String(testDBID),
+	})
+	require.Len(t, events, 1)
+	assert.Equal(t, "DB instance is available.", aws.StringValue(events[0].Message))
+	assert.Equal(t, []string{EventCategoryAvailability}, aws.StringValueSlice(events[0].EventCategories))
 }
 
 // Both halves must hold. A healthy beat from a VM that is not running means the
@@ -123,8 +140,10 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 		// A beat from a VM other than the record's current one is a superseded VM
 		// still running after a replace; it must not report the instance ready.
 		{"BeatFromASupersededVM", func(rec *DBInstanceRecord) { rec.Agent.InstanceID = "i-oldvm" }},
+		// Silent for longer than even the slack a persisted beat earns, so no
+		// source could have seen this agent recently.
 		{"StaleHeartbeat", func(rec *DBInstanceRecord) {
-			stale := time.Now().UTC().Add(-2 * HeartbeatStaleAfter)
+			stale := time.Now().UTC().Add(-2 * (HeartbeatStaleAfter + HeartbeatPersistFloor))
 			rec.Agent.LastSeen = &stale
 		}},
 	}
@@ -144,12 +163,35 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 	}
 }
 
+// The transitional states judge freshness by the same rule as the health
+// classifier. A leader handling none of an instance's beats sees them only
+// through KV, which a healthy agent refreshes no more often than the persist
+// floor; judging that beat by the raw stale window failed a live database at the
+// transition timeout.
+func TestReconciler_CompletesACreateOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	// Older than the stale window, younger than the window plus the floor: what a
+	// perfectly healthy instance looks like to a leader that has seen no beat.
+	persisted := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Minute)
+	rec.Agent.LastSeen = &persisted
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+
+	status, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusAvailable, status)
+}
+
 // A create that never comes up has to end somewhere: the customer sees a broken
 // instance either way, and failed is the state they can act on.
 func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 	h := newReconcileHarness(t, func(d *Deps) { d.BootstrapTimeout = time.Minute })
 	rec := healthyRecord()
-	rec.Agent = AgentState{}
+	rec.Agent = AgentState{
+		EngineHealth: EngineHealthStarting,
+		Message:      "bootstrap fetch failed: 403 AccessDenied",
+	}
 	rec.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	seedInstance(t, h.svc, rec)
 
@@ -158,6 +200,7 @@ func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusFailed, status)
 	assert.Contains(t, reason, "did not report healthy")
+	assert.Contains(t, reason, "bootstrap fetch failed: 403 AccessDenied")
 }
 
 // Inside the window a slow bootstrap is still a bootstrap: a false failed is

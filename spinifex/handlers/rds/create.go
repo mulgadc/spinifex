@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -77,6 +78,13 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 		s.rollbackDBInstanceReservation(ctx, kv, key, req.Identifier, rec.DbiResourceID, rollbackRev)
 	}()
 
+	// Staged before the launch so no VM can boot ahead of the password it needs,
+	// and bound to the first generation the record will carry. The rollback above
+	// removes it with the reservation.
+	if _, err = s.writeBootstrapPayload(ctx, kv, accountID, &rec, req.MasterPassword); err != nil {
+		return nil, err
+	}
+
 	launched, err := LaunchDBInstanceVM(ctx, s.deps.Launch, LaunchInput{
 		DBInstanceIdentifier: req.Identifier,
 		AccountID:            accountID,
@@ -104,7 +112,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 
 	// The launch already unwound everything on failure, so from here the resources
 	// exist and the record has to catch up with them.
-	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched)
+	stored, launchRev, err := s.recordLaunch(ctx, kv, key, accountID, rec.DbiResourceID, launched, true)
 	if err != nil {
 		s.unwindLaunched(ctx, launched)
 		return nil, err
@@ -127,6 +135,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// gates connectivity until then.
 	s.publishDNS(ctx, accountID, stored, handlers_dns.ActionUpsert)
 
+	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, req.Identifier,
+		"DB instance created.", EventCategoryCreation)
 	slog.InfoContext(ctx, "rds: DB instance created",
 		"dbInstance", req.Identifier, "accountId", accountID, "instanceId", launched.InstanceID,
 		"endpoint", stored.EndpointAddress, "class", req.InstanceClass)
@@ -135,7 +145,8 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 }
 
 // The record as it stands before any resource exists: everything the request
-// determined, plus the staged master password the first bootstrap fetch consumes.
+// determined. The master password is never on the record — it is staged
+// encrypted under its own key, bound to the generation set here.
 func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endpointPlacement, parameters []Parameter) DBInstanceRecord {
 	now := time.Now().UTC()
 	return DBInstanceRecord{
@@ -143,6 +154,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		DbiResourceID:        utils.GenerateResourceID(dbiResourceIDPrefix),
 		AccountID:            accountID,
 		Status:               StatusCreating,
+		VMGeneration:         firstVMGeneration,
 		Engine:               req.Engine.Name,
 		EngineVersion:        req.EngineVersion,
 		DBInstanceClass:      req.InstanceClass,
@@ -169,7 +181,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 
 		Tags: req.Tags,
 		Bootstrap: BootstrapState{
-			MasterUserPassword: req.MasterPassword,
+			State:              BootstrapStatePending,
 			ResolvedParameters: parameters,
 		},
 		CreatedAt: now,
@@ -181,7 +193,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 // The endpoint is settled here because the ENI IP — and so the vanity name — is
 // only known now.
 func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID,
-	expectedResourceID string, launched *LaunchOutput) (*DBInstanceRecord, uint64, error) {
+	expectedResourceID string, launched *LaunchOutput, initialCreate bool) (*DBInstanceRecord, uint64, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
 	if err != nil {
@@ -193,6 +205,10 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	if rec.DbiResourceID != expectedResourceID {
 		return nil, 0, fmt.Errorf("rds: DB instance reservation %s changed ownership during launch", key)
 	}
+	if launched.DataVolumeID == "" || launched.DataVolumeSerial == "" ||
+		launched.DataVolumeSerial != vm.VolumeSerial(launched.DataVolumeID) {
+		return nil, 0, fmt.Errorf("rds: DB instance launch %s returned invalid data volume identity", key)
+	}
 
 	rec.InstanceID = launched.InstanceID
 	rec.VMGeneration = firstVMGeneration
@@ -200,6 +216,11 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	rec.ENIID = launched.CustomerENIID
 	rec.ENIPrivateIP = launched.CustomerENIIP
 	rec.DataVolumeID = launched.DataVolumeID
+	rec.DataVolumeSerial = launched.DataVolumeSerial
+	// Formatting is a create-only grant bound to this launch's exact fresh
+	// volume and first VM generation. Restore and every existing-volume launch
+	// pass false and cannot infer permission from an empty filesystem.
+	rec.FormatAuthorized = initialCreate && launched.CreatedDataVolume && rec.VMGeneration == firstVMGeneration
 	// Only a launch that made the volume can report its encryption; a restore
 	// attaches one it created itself, whose encryption the record already carries.
 	if launched.CreatedDataVolume {
@@ -225,6 +246,20 @@ func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstrea
 	key, identifier, resourceID string, rev uint64) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
+
+	// Before the record, so a failure below cannot leave ciphertext behind with
+	// nothing naming it. Retried like the record delete: a payload left staged is
+	// ciphertext at rest that nothing else reclaims.
+	var payloadErr error
+	for range rollbackDeleteAttempts {
+		if payloadErr = deleteBootstrapPayload(rbCtx, kv, identifier); payloadErr == nil {
+			break
+		}
+	}
+	if payloadErr != nil {
+		slog.WarnContext(rbCtx, "rds: rollback delete of the staged bootstrap payload failed",
+			"dbInstance", identifier, "err", payloadErr)
+	}
 
 	var rollbackErr error
 	for range rollbackDeleteAttempts {

@@ -49,7 +49,7 @@ const (
 // which is bounded by the dirty set rather than by anything the caller knows.
 const (
 	setPasswordTimeout = 30 * time.Second
-	applyParamsTimeout = 60 * time.Second
+	applyParamsTimeout = 120 * time.Second
 	stopEngineTimeout  = 120 * time.Second
 	// growpart plus an online resize2fs/xfs_growfs. Both scale with the
 	// filesystem's metadata rather than with the volume, so this is generous

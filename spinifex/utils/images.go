@@ -405,6 +405,28 @@ var AvailableImages = map[string]Images{
 		Tags:         map[string]string{"gpu-vendor": "nvidia"},
 	},
 
+	// Bedrock self-host serving AMI. Resolved by spinifex:managed-by=bedrock +
+	// spinifex:bedrock-role=vllm-serving tags — LaunchServingVM's
+	// resolveServingAMI filters on both, never by name.
+	"ubuntu-26.04-vllm-serving-x86_64": {
+		Name:         "ubuntu-26.04-vllm-serving-x86_64",
+		Description:  "Ubuntu 26.04 vLLM self-host serving image — NVIDIA GPU base + vLLM OpenAI-compatible server baked into a uv-managed venv, served by vllm-serve.service against a read-only weights mount",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+		Tags: map[string]string{
+			"spinifex:managed-by":   "bedrock",
+			"spinifex:bedrock-role": "vllm-serving",
+			"gpu-vendor":            "nvidia",
+		},
+	},
+
 	"ubuntu-26.04-amd-gpu-x86_64": {
 		Name:         "ubuntu-26.04-amd-gpu-x86_64",
 		Description:  "Ubuntu 26.04 AMD GPU base image — linux-firmware, ROCm CLI, Python toolchain, Docker",
@@ -507,7 +529,10 @@ var AvailableImages = map[string]Images{
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
 		BootMode:     "bios",
-		Tags:         map[string]string{"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18"},
+		Tags: map[string]string{
+			"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18",
+			"rds-data-volume-contract": "format-auth-v1",
+		},
 	},
 }
 

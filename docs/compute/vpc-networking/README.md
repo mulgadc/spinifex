@@ -16,10 +16,7 @@ tags:
 
 ## Overview
 
-Spinifex provides AWS-compatible VPC networking on bare-metal. Every EC2 instance
-runs inside an isolated virtual network backed by OVN (Open Virtual Network).
-Instances can operate in two modes: **private** (overlay-only, no WAN access) or
-**public** (routable from the WAN with a unique public IP).
+Spinifex provides AWS-compatible VPC networking on bare-metal. Every EC2 instance runs inside an isolated virtual network backed by OVN (Open Virtual Network). Instances can operate in two modes: **private** (overlay-only, no WAN access) or **public** (routable from the WAN with a unique public IP).
 
 ## Instructions
 
@@ -42,35 +39,25 @@ Spinifex maps AWS VPC concepts directly to OVN constructs:
   <img src="../../../.github/assets/diagrams/vpc-network-path.svg" alt="VPC logical topology — WAN, br-wan, VPC logical router, subnets, ENIs" width="900">
 </p>
 
-Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overlay
-NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int`
-(the integration bridge where all VM TAP devices connect).
+Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overlay NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int` (the integration bridge where all VM TAP devices connect).
 
 ## Private vs Public Subnets
 
-A subnet's behavior depends on three things: whether the VPC has an Internet
-Gateway, whether the subnet's route table has a default route to that IGW, and
-whether the subnet has `MapPublicIpOnLaunch` enabled.
+A subnet's behavior depends on three things: whether the VPC has an Internet Gateway, whether the subnet's route table has a default route to that IGW, and whether the subnet has `MapPublicIpOnLaunch` enabled.
 
 ## Private Subnet (Default)
 
-Instances get a private IP only. They can communicate with other instances in the
-same VPC (even across subnets and hosts via the overlay). They cannot reach the
-internet or be reached from the WAN.
+Instances get a private IP only. They can communicate with other instances in the same VPC (even across subnets and hosts via the overlay). They cannot reach the internet or be reached from the WAN.
 
 <p align="center">
   <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="900">
 </p>
 
-Private subnet instances reach the internet only if their route table has a
-default route to the IGW (shared SNAT, outbound only — they share the gateway
-IP) or to a NAT gateway. With no default route, egress is dropped. Either way
-they cannot be reached from the WAN because they have no public IP.
+Private subnet instances reach the internet only if their route table has a default route to the IGW (shared SNAT, outbound only — they share the gateway IP) or to a NAT gateway. With no default route, egress is dropped. Either way they cannot be reached from the WAN because they have no public IP.
 
 ## Public Subnet
 
-Instances get both a private IP and a public IP. The public IP is a 1:1 NAT
-managed by OVN — the instance OS only sees its private IP.
+Instances get both a private IP and a public IP. The public IP is a 1:1 NAT managed by OVN — the instance OS only sees its private IP.
 
 <p align="center">
   <img src="../../../.github/assets/diagrams/vpc-public-subnet-flow.svg" alt="Public subnet — outbound SNAT and inbound DNAT between private and public IPs" width="900">
@@ -83,14 +70,7 @@ managed by OVN — the instance OS only sees its private IP.
 3. Subnet has `MapPublicIpOnLaunch = true`
 4. External IP pool configured in `spinifex.toml`
 
-Spinifex follows AWS route-table semantics: a subnet is only "public" if its
-effective route table carries a default route to the IGW. A new VPC's main
-route table has the local route only — Spinifex does **not** add the IGW route
-for you. Without it, the subnet's egress is gated with a drop policy, so
-instances cannot reach the internet (and inbound connections cannot complete
-because return traffic is dropped) even with a public IP and an attached IGW.
-Add the route explicitly — either to the main route table, or to a custom route
-table associated with the subnet (see [Quick Start](#3-create-vpc-with-public-subnet)).
+Spinifex follows AWS route-table semantics: a subnet is only "public" if its effective route table carries a default route to the IGW. A new VPC's main route table has the local route only — Spinifex does **not** add the IGW route for you. Without it, the subnet's egress is gated with a drop policy, so instances cannot reach the internet (and inbound connections cannot complete because return traffic is dropped) even with a public IP and an attached IGW. Add the route explicitly — either to the main route table, or to a custom route table associated with the subnet (see [Quick Start](#3-create-vpc-with-public-subnet)).
 
 ## Comparison
 
@@ -105,14 +85,11 @@ table associated with the subnet (see [Quick Start](#3-create-vpc-with-public-su
 
 ## External Connectivity Modes
 
-The `[network]` section in `spinifex.toml` controls how VMs reach the outside
-world. There are three modes, and pool mode has two IP sources (static or DHCP).
+The `[network]` section in `spinifex.toml` controls how VMs reach the outside world. There are three modes, and pool mode has two IP sources (static or DHCP).
 
 ## `pool` — Full Public Networking (Recommended)
 
-Each VM in a public subnet gets its own public IP with bidirectional 1:1 NAT.
-Supports the full AWS feature set: public subnets, auto-assign public IPs,
-Elastic IPs, and security groups.
+Each VM in a public subnet gets its own public IP with bidirectional 1:1 NAT. Supports the full AWS feature set: public subnets, auto-assign public IPs, Elastic IPs, and security groups.
 
 Pool mode supports two ways to obtain public IPs:
 
@@ -120,11 +97,9 @@ Pool mode supports two ways to obtain public IPs:
 
 The admin defines a range of routable IPs that Spinifex manages exclusively.
 
-**Use when:** You have a block of IPs you control — datacenter ISP allocation,
-homelab range carved out of your router's DHCP scope, enterprise DMZ range.
+**Use when:** You have a block of IPs you control — datacenter ISP allocation, homelab range carved out of your router's DHCP scope, enterprise DMZ range.
 
-**Requirement:** The IP range must NOT be served by any other DHCP server. In a
-homelab, shrink your router's DHCP scope to exclude the Spinifex range.
+**Requirement:** The IP range must NOT be served by any other DHCP server. In a homelab, shrink your router's DHCP scope to exclude the Spinifex range.
 
 ```toml
 [network]
@@ -141,17 +116,11 @@ dns_servers = ["192.168.1.1", "8.8.8.8"]
 
 ### DHCP Source
 
-Instead of a static range, public IPs come from the upstream router's DHCP
-server. When a VM launches, Spinifex requests a DHCP lease from the router
-on behalf of the VM. When the VM terminates, the lease is released.
+Instead of a static range, public IPs come from the upstream router's DHCP server. When a VM launches, Spinifex requests a DHCP lease from the router on behalf of the VM. When the VM terminates, the lease is released.
 
-The VM itself never talks to the router's DHCP — it only sees its private
-VPC IP (from OVN's internal DHCP). The host-side DHCP conversation is
-invisible to the guest.
+The VM itself never talks to the router's DHCP — it only sees its private VPC IP (from OVN's internal DHCP). The host-side DHCP conversation is invisible to the guest.
 
-**Use when:** You don't control a static IP block but the router's DHCP
-server has enough leases. Homelabs where you don't want to carve out a range.
-Environments where IPs are managed centrally by the network team's DHCP.
+**Use when:** You don't control a static IP block but the router's DHCP server has enough leases. Homelabs where you don't want to carve out a range. Environments where IPs are managed centrally by the network team's DHCP.
 
 **Requirement:** `dhclient` or `dhcpcd-base` installed on the host.
 
@@ -170,8 +139,7 @@ dns_servers = ["192.168.1.1", "8.8.8.8"]
 
 ### How Pool Mode Works (Both Sources)
 
-Regardless of whether IPs come from a static range or DHCP, the OVN behavior
-is identical:
+Regardless of whether IPs come from a static range or DHCP, the OVN behavior is identical:
 
 <p align="center">
   <img src="../../../.github/assets/diagrams/vpc-dhcp-conversations.svg" alt="Two independent DHCP conversations — host-to-router and VM-to-OVN" width="900">
@@ -188,15 +156,11 @@ is identical:
 | **Best for**          | Datacenters, ISP blocks, production          | Homelabs, dev environments, shared networks      |
 | **Capacity**          | Exact: `range_end - range_start` IPs         | Limited by router's DHCP pool size               |
 
-Both support the same AWS features: public subnets, Elastic IPs, security groups,
-DescribeInstances showing public IPs.
+Both support the same AWS features: public subnets, Elastic IPs, security groups, DescribeInstances showing public IPs.
 
 ## `nat` — Shared SNAT (Simple)
 
-All VMs share a single external IP for outbound SNAT. By default there are no
-public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as
-private subnets with internet access. On routed-NAT nodes, adding a public pool
-restores full public IP parity (see below).
+All VMs share a single external IP for outbound SNAT. By default there are no public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as private subnets with internet access. On routed-NAT nodes, adding a public pool restores full public IP parity (see below).
 
 > **Limitation (routed-NAT v1):** System instances (ECS/EKS/load-balancer
 > agents) source egress from ExternalIPAM pool IPs, which do not exist in
@@ -204,12 +168,9 @@ restores full public IP parity (see below).
 > either allocate transit IPs for system instances or reject the feature at the
 > API level in nat mode.
 
-The `gateway_ip` is the IP that OVN uses for SNAT. You can set it statically or
-use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
-DHCP — not Spinifex's internal OVN DHCP for VMs.
+The `gateway_ip` is the IP that OVN uses for SNAT. You can set it statically or use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's DHCP — not Spinifex's internal OVN DHCP for VMs.
 
-**Use when:** VMs only need outbound access (apt update, pulling images). Edge
-deployments behind ISP NAT. Single WAN IP available.
+**Use when:** VMs only need outbound access (apt update, pulling images). Edge deployments behind ISP NAT. Single WAN IP available.
 
 ```toml
 [network]
@@ -224,13 +185,9 @@ prefix_len = 24
 
 ### Host access to instances (jumpbox pattern)
 
-The spinifex host automatically reaches every instance's **private IP**: IGW
-attach installs a host route into OVN (`<vpc-cidr> via <gateway-transit-ip>
-dev spx-nat-host`) and exempts the transit net from SNAT, so replies to
-host-initiated connections come back un-NATted. No per-instance setup.
+The spinifex host automatically reaches every instance's **private IP**: IGW attach installs a host route into OVN (`<vpc-cidr> via <gateway-transit-ip> dev spx-nat-host`) and exempts the transit net from SNAT, so replies to host-initiated connections come back un-NATted. No per-instance setup.
 
-Security groups still apply and the default SG is closed to the host, same as
-AWS — open SSH/ICMP from the transit net first:
+Security groups still apply and the default SG is closed to the host, same as AWS — open SSH/ICMP from the transit net first:
 
 ```bash
 aws ec2 authorize-security-group-ingress --group-id $SG \
@@ -243,19 +200,11 @@ Then use the host as a jumpbox for remote access:
 ssh -J admin@<spinifex-host> ubuntu@<instance-private-ip>
 ```
 
-Extra networks that must reach instances without SNAT (e.g. a management LAN)
-can be added via `[network] nat_exempt_cidrs = ["192.168.50.0/24"]`.
+Extra networks that must reach instances without SNAT (e.g. a management LAN) can be added via `[network] nat_exempt_cidrs = ["192.168.50.0/24"]`.
 
 ### Public IPs in NAT mode (public pool)
 
-A routed-NAT node (`setup-ovn.sh --nat-uplink` + `spx admin init
---external-mode=nat`) can carry a public pool alongside the internal
-`nat-transit` pool. With one configured, nat mode behaves like pool mode for
-public IPs: `MapPublicIpOnLaunch` on the default subnet, auto-assigned public
-IPs, and Elastic IPs all work. Spinifex delivers each public IP at the host —
-a `/32` route steers it into OVN and a proxy-ARP neighbor entry answers for it
-on the uplink (L3 only, same MAC, so it works on WiFi and other non-bridgeable
-uplinks).
+A routed-NAT node (`setup-ovn.sh --nat-uplink` + `spx admin init --external-mode=nat`) can carry a public pool alongside the internal `nat-transit` pool. With one configured, nat mode behaves like pool mode for public IPs: `MapPublicIpOnLaunch` on the default subnet, auto-assigned public IPs, and Elastic IPs all work. Spinifex delivers each public IP at the host — a `/32` route steers it into OVN and a proxy-ARP neighbor entry answers for it on the uplink (L3 only, same MAC, so it works on WiFi and other non-bridgeable uplinks).
 
 Static range carved out of the router's DHCP scope:
 
@@ -272,11 +221,7 @@ spx admin init --external-mode=nat --external-source=dhcp \
   --external-bind-bridge wlan0
 ```
 
-On WiFi/WWAN uplinks the leases are requested with the interface's own MAC
-(`dhcp_mac = "interface"`, written automatically) and distinguished by DHCP
-client-id. Some routers key leases by MAC and ignore the client-id — Spinifex
-detects this (the router hands the same IP to two client-ids) and fails the
-allocation with advice to switch to a static range.
+On WiFi/WWAN uplinks the leases are requested with the interface's own MAC (`dhcp_mac = "interface"`, written automatically) and distinguished by DHCP client-id. Some routers key leases by MAC and ignore the client-id — Spinifex detects this (the router hands the same IP to two client-ids) and fails the allocation with advice to switch to a static range.
 
 Resulting config:
 
@@ -298,18 +243,11 @@ gateway     = "192.168.1.1"
 prefix_len  = 24
 ```
 
-**Caveat — reaching an EIP from the spinifex host itself.** Host-sourced
-traffic enters OVN from the transit net, which is exempt from NAT (that is what
-makes the jumpbox pattern work) — so a host connection to an EIP that carries
-the transit source IP would skip DNAT. Spinifex stamps the EIP route with the
-uplink's LAN IP as source to avoid this, but if no uplink address can be
-determined, connect to the instance's **private IP** from the host instead.
-Other machines on the LAN are unaffected.
+**Caveat — reaching an EIP from the spinifex host itself.** Host-sourced traffic enters OVN from the transit net, which is exempt from NAT (that is what makes the jumpbox pattern work) — so a host connection to an EIP that carries the transit source IP would skip DNAT. Spinifex stamps the EIP route with the uplink's LAN IP as source to avoid this, but if no uplink address can be determined, connect to the instance's **private IP** from the host instead. Other machines on the LAN are unaffected.
 
 ## Disabled (Empty/Omitted)
 
-VPC networking is overlay-only. No external connectivity. Instances can only
-communicate within their VPC.
+VPC networking is overlay-only. No external connectivity. Instances can only communicate within their VPC.
 
 ## Mode Comparison
 
@@ -325,17 +263,11 @@ communicate within their VPC.
 | Admin must reserve IP range       | Yes             | No            | Only static pool  | No       |
 | Needs router DHCP                 | No              | Yes           | Optional          | No       |
 
-If you start with `nat` and later need public subnets: on a bridgeable uplink
-switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT
-node just add a public pool alongside `nat-transit` — no data migration needed.
+If you start with `nat` and later need public subnets: on a bridgeable uplink switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT node just add a public pool alongside `nat-transit` — no data migration needed.
 
 ## Bridge Setup — Physical Network Wiring
 
-The WAN NIC **must** be enslaved to a Linux bridge. This is a hard requirement —
-`setup-ovn.sh` will not attach a physical NIC directly to OVS, and macvlan is
-no longer supported. The Linux bridge owns the host IP, default route, and any
-DHCP lease, so SSH and management traffic stay up while OVS/OVN are configured
-underneath.
+The WAN NIC **must** be enslaved to a Linux bridge. This is a hard requirement — `setup-ovn.sh` will not attach a physical NIC directly to OVS, and macvlan is no longer supported. The Linux bridge owns the host IP, default route, and any DHCP lease, so SSH and management traffic stay up while OVS/OVN are configured underneath.
 
 The full datapath chain looks like this:
 
@@ -350,16 +282,9 @@ physical NIC (e.g. `wan`)
                                                             └─▶ TAP devices  (VM NICs)
 ```
 
-`setup-ovn.sh` auto-detects the Linux bridge that owns the default route
-(typically `br-wan`, provisioned by cloud-init / netplan / systemd-networkd).
-You can override the detection with `--wan-bridge=<name>`. Once detected, the
-script creates the OVS bridge `br-ext` and links it to the WAN bridge with a
-veth pair. The Linux bridge keeps its IP and routes — no interruption.
-Bridge-mapping is set to `external:br-ext`.
+`setup-ovn.sh` auto-detects the Linux bridge that owns the default route (typically `br-wan`, provisioned by cloud-init / netplan / systemd-networkd). You can override the detection with `--wan-bridge=<name>`. Once detected, the script creates the OVS bridge `br-ext` and links it to the WAN bridge with a veth pair. The Linux bridge keeps its IP and routes — no interruption. Bridge-mapping is set to `external:br-ext`.
 
-If the default route is on a bare physical NIC (no bridge), `setup-ovn.sh`
-stops and prints guidance on how to convert the NIC to a bridge before
-re-running.
+If the default route is on a bare physical NIC (no bridge), `setup-ovn.sh` stops and prints guidance on how to convert the NIC to a bridge before re-running.
 
 ### Example: Required `br-wan` State
 
@@ -374,8 +299,7 @@ The host must have something resembling this before `setup-ovn.sh` is run:
        valid_lft forever preferred_lft forever
 ```
 
-The physical NIC (e.g. `wan`, `eth0`, `eno1`) is enslaved to `br-wan` and has
-no IP of its own — all L3 state lives on the bridge.
+The physical NIC (e.g. `wan`, `eth0`, `eno1`) is enslaved to `br-wan` and has no IP of its own — all L3 state lives on the bridge.
 
 Example netplan that produces this:
 
@@ -401,14 +325,9 @@ Every Spinifex node has three bridges in the datapath:
 | `br-ext` | OVS bridge   | `setup-ovn.sh`              | OVN external uplink (`localnet`)              | veth peer to `br-wan`        |
 | `br-int` | OVS bridge   | `setup-ovn.sh`              | VM overlay traffic (Geneve tunnels)           | VM TAP devices, tunnel ports |
 
-`br-wan` is provisioned by your distro's network configuration (cloud-init,
-netplan, systemd-networkd, ifupdown). The name is configurable; `br-wan` is
-the convention. `br-int` and `br-ext` are always created by `setup-ovn.sh`.
+`br-wan` is provisioned by your distro's network configuration (cloud-init, netplan, systemd-networkd, ifupdown). The name is configurable; `br-wan` is the convention. `br-int` and `br-ext` are always created by `setup-ovn.sh`.
 
-The link between `br-ext` and the VM datapath is logical, not physical: OVN's
-`localnet` port type maps the logical external switch to `br-ext` via
-`ovn-bridge-mappings`. Frames egressing a VM travel TAP → `br-int` → OVN
-pipeline → `br-ext` → veth → `br-wan` → physical NIC → wire.
+The link between `br-ext` and the VM datapath is logical, not physical: OVN's `localnet` port type maps the logical external switch to `br-ext` via `ovn-bridge-mappings`. Frames egressing a VM travel TAP → `br-int` → OVN pipeline → `br-ext` → veth → `br-wan` → physical NIC → wire.
 
 <p align="center">
   <img src="../../../.github/assets/diagrams/vpc-datapath-localnet.svg" alt="Data path — VM TAP through br-int, OVN pipeline, br-ext, veth pair, br-wan, physical NIC" width="900">
@@ -424,17 +343,13 @@ sudo setup-ovn.sh
 sudo setup-ovn.sh --wan-bridge=br-wan
 ```
 
-In environments where the WAN IP comes from a router's DHCP server (homelab,
-small office), add `--dhcp` to obtain a gateway IP from the router
-automatically:
+In environments where the WAN IP comes from a router's DHCP server (homelab, small office), add `--dhcp` to obtain a gateway IP from the router automatically:
 
 ```bash
 sudo setup-ovn.sh --dhcp
 ```
 
-This requests an IP from the **router's DHCP** (e.g., 192.168.1.1 serving
-addresses on the LAN). This is not Spinifex's internal OVN DHCP that assigns
-private IPs to VMs — it's your network's existing DHCP server.
+This requests an IP from the **router's DHCP** (e.g., 192.168.1.1 serving addresses on the LAN). This is not Spinifex's internal OVN DHCP that assigns private IPs to VMs — it's your network's existing DHCP server.
 
 | Flags                          | Result                                                                |
 | ------------------------------ | --------------------------------------------------------------------- |
@@ -442,8 +357,7 @@ private IPs to VMs — it's your network's existing DHCP server.
 | `--wan-bridge=<name>`          | Use the specified Linux bridge as the WAN uplink                      |
 | `--dhcp`                       | Obtain the OVN gateway IP from the router's DHCP                      |
 
-If no Linux bridge owns the default route, `setup-ovn.sh` exits with guidance
-rather than silently breaking host connectivity.
+If no Linux bridge owns the default route, `setup-ovn.sh` exits with guidance rather than silently breaking host connectivity.
 
 ## Per-Node Configuration
 
@@ -460,10 +374,7 @@ external_interface = "br-public"
 external_interface = "br-wan"      # br-wan enslaving bond0
 ```
 
-`external_interface` is the **Linux bridge** that owns the WAN uplink on this
-node — not the physical NIC. The physical NIC lives underneath the bridge.
-Each node runs `setup-ovn.sh` with its own WAN bridge name (or relies on
-auto-detection). OVN only requires `ovn-bridge-mappings` to point at `br-ext`.
+`external_interface` is the **Linux bridge** that owns the WAN uplink on this node — not the physical NIC. The physical NIC lives underneath the bridge. Each node runs `setup-ovn.sh` with its own WAN bridge name (or relies on auto-detection). OVN only requires `ovn-bridge-mappings` to point at `br-ext`.
 
 ## Bridge Verification
 
@@ -500,8 +411,7 @@ ip -d link show wan
 
 ## Configuration Reference
 
-All network configuration lives in `spinifex.toml`. Settings are split into three
-levels: cluster-wide mode, IP pool definitions, and per-node NIC settings.
+All network configuration lives in `spinifex.toml`. Settings are split into three levels: cluster-wide mode, IP pool definitions, and per-node NIC settings.
 
 ## Configuration Levels
 
@@ -524,8 +434,7 @@ external_mode = "pool"    # "pool", "nat", or "" (disabled)
 
 ## IP Pools: network.external_pools
 
-Each pool defines where external IPs come from. You can have one pool (homelab)
-or many (multi-region datacenter).
+Each pool defines where external IPs come from. You can have one pool (homelab) or many (multi-region datacenter).
 
 ```toml
 [[network.external_pools]]
@@ -559,19 +468,14 @@ dns_servers = ["8.8.8.8"]           # DNS for VMs (optional)
 
 ### Why range_start/range_end Instead of CIDR?
 
-Customer IP ranges rarely align to CIDR boundaries. A datacenter might have
-`203.0.113.10-203.0.113.200` from their ISP. Start/end avoids forcing admins to
-calculate CIDR blocks.
+Customer IP ranges rarely align to CIDR boundaries. A datacenter might have `203.0.113.10-203.0.113.200` from their ISP. Start/end avoids forcing admins to calculate CIDR blocks.
 
 ### Gateway vs Gateway_IP
 
 These are different things:
 
-- **`gateway`** = Your network's default gateway (e.g., 192.168.1.1). This is
-  where OVN sends packets destined for the internet. It's your router.
-- **`gateway_ip`** = The IP that OVN uses for outbound SNAT. In pool mode,
-  defaults to the first IP in the range. In NAT mode, set this explicitly.
-  Must be on the same subnet as the gateway.
+- **`gateway`** = Your network's default gateway (e.g., 192.168.1.1). This is where OVN sends packets destined for the internet. It's your router.
+- **`gateway_ip`** = The IP that OVN uses for outbound SNAT. In pool mode, defaults to the first IP in the range. In NAT mode, set this explicitly. Must be on the same subnet as the gateway.
 
 ## Per-Node: nodes.NAME.vpcd
 
@@ -598,15 +502,11 @@ When an instance needs a public IP:
 3. **Unscoped fallback**: Pool with no `region`/`az` (global, homelab configs)
 4. **Exhausted**: All pools full → `InsufficientAddressCapacity` error
 
-`AllocateAddress` accepts optional pool name to target a specific block
-(maps to AWS `PublicIpv4Pool`).
+`AllocateAddress` accepts optional pool name to target a specific block (maps to AWS `PublicIpv4Pool`).
 
 ## IPAM Storage
 
-Pool allocation state is stored durably in the cluster (NATS KV bucket
-`spinifex-external-ipam`, one entry per pool) and survives restarts. Each
-allocation records the ENI and instance holding the address. Pools are
-initialized from `spinifex.toml` on vpcd startup (idempotent).
+Pool allocation state is stored durably in the cluster (NATS KV bucket `spinifex-external-ipam`, one entry per pool) and survives restarts. Each allocation records the ENI and instance holding the address. Pools are initialized from `spinifex.toml` on vpcd startup (idempotent).
 
 ## Deployment Examples
 
@@ -633,10 +533,7 @@ prefix_len  = 24
 external_interface = "br-wan"
 ```
 
-**Setup:** Configure `br-wan` to enslave your physical WAN NIC (netplan,
-cloud-init, or systemd-networkd). Change your router's DHCP range to end
-at .149. Run `sudo setup-ovn.sh` — it auto-detects the WAN bridge from the
-default route, or specify it with `--wan-bridge=br-wan`.
+**Setup:** Configure `br-wan` to enslave your physical WAN NIC (netplan, cloud-init, or systemd-networkd). Change your router's DHCP range to end at .149. Run `sudo setup-ovn.sh` — it auto-detects the WAN bridge from the default route, or specify it with `--wan-bridge=br-wan`.
 
 ## Homelab / Dev (DHCP Pool — No Range Reservation)
 
@@ -661,9 +558,7 @@ dns_servers = ["192.168.1.1", "8.8.8.8"]
 external_interface = "br-wan"
 ```
 
-**Setup:** No router changes needed. Spinifex requests IPs from the router's
-DHCP server when VMs launch and releases them on terminate. Requires `dhclient`
-on the host (`apt install isc-dhcp-client`).
+**Setup:** No router changes needed. Spinifex requests IPs from the router's DHCP server when VMs launch and releases them on terminate. Requires `dhclient` on the host (`apt install isc-dhcp-client`).
 
 ## Host-Local Subnet (No Upstream Router)
 
@@ -673,9 +568,7 @@ Host WAN: 198.51.100.10/24 on br-wan (existing address — unchanged)
 Gateway: 192.168.10.1 — second address added to br-wan
 ```
 
-Add the VM pool gateway as a second address on `br-wan` alongside the existing WAN
-IP. The host acts as the gateway for the pool — no upstream router or DHCP server
-needed for this range.
+Add the VM pool gateway as a second address on `br-wan` alongside the existing WAN IP. The host acts as the gateway for the pool — no upstream router or DHCP server needed for this range.
 
 ```yaml
 # /etc/netplan/…
@@ -703,8 +596,7 @@ prefix_len  = 24
 dns_servers = ["8.8.8.8"]
 ```
 
-**Setup:** Apply with `sudo netplan apply`. VMs are reachable from the host at
-`192.168.10.x`. For internet access through the host's WAN interface:
+**Setup:** Apply with `sudo netplan apply`. VMs are reachable from the host at `192.168.10.x`. For internet access through the host's WAN interface:
 
 ```bash
 sysctl -w net.ipv4.ip_forward=1
@@ -744,9 +636,7 @@ external_interface = "br-public"   # br-public enslaves eno1
 
 ## Enterprise On-Prem (VLAN)
 
-The Linux WAN bridge enslaves a VLAN sub-interface (e.g. `eth1.200`) instead
-of a raw NIC. From OVN's perspective nothing changes — `external_interface`
-still points at the bridge.
+The Linux WAN bridge enslaves a VLAN sub-interface (e.g. `eth1.200`) instead of a raw NIC. From OVN's perspective nothing changes — `external_interface` still points at the bridge.
 
 ```toml
 [network]
@@ -817,21 +707,15 @@ prefix_len  = 23
 region      = "eu-west-1"
 ```
 
-Spinifex allocates from the correct pool based on where the instance launches.
-An instance in `us-east-1a` gets an IP from `us-east-1a` first; if exhausted,
-falls back to `us-east-overflow`.
+Spinifex allocates from the correct pool based on where the instance launches. An instance in `us-east-1a` gets an IP from `us-east-1a` first; if exhausted, falls back to `us-east-overflow`.
 
 ## Security Groups
 
-Security groups are stateful firewalls enforced at the OVS datapath level on
-each hypervisor. Traffic is filtered before it reaches the wire — equivalent to
-AWS Nitro card enforcement. The VM never sees dropped packets.
+Security groups are stateful firewalls enforced at the OVS datapath level on each hypervisor. Traffic is filtered before it reaches the wire — equivalent to AWS Nitro card enforcement. The VM never sees dropped packets.
 
 ## How Security Groups Work
 
-Each security group maps to an OVN **Port Group**. When an instance launches,
-its ENI port is added to the port group(s) for its security groups. ACL rules
-on the port group control traffic:
+Each security group maps to an OVN **Port Group**. When an instance launches, its ENI port is added to the port group(s) for its security groups. ACL rules on the port group control traffic:
 
 - **Default deny**: All inbound traffic dropped at priority 900
 - **Allow rules**: Specific ports/protocols allowed at priority 1000 (overrides deny)
@@ -881,9 +765,7 @@ Rule changes take effect immediately — no instance restart needed.
 
 ## Elastic IPs
 
-Elastic IPs are static public IPs that persist across instance stop/start cycles.
-Unlike auto-assigned public IPs (which change on stop/start), an Elastic IP stays
-with your instance.
+Elastic IPs are static public IPs that persist across instance stop/start cycles. Unlike auto-assigned public IPs (which change on stop/start), an Elastic IP stays with your instance.
 
 ```bash
 # Allocate
@@ -901,8 +783,7 @@ aws ec2 disassociate-address --association-id $ASSOC_ID
 aws ec2 release-address --allocation-id $EIP
 ```
 
-When you associate an Elastic IP with an instance that already has an
-auto-assigned public IP, the auto-assigned IP is released and replaced.
+When you associate an Elastic IP with an instance that already has an auto-assigned public IP, the auto-assigned IP is released and replaced.
 
 ## OVN Reference
 
@@ -945,10 +826,7 @@ ovn-nbctl lr-nat-add vpc-{vpcId} dnat_and_snat {public_ip} {private_ip} \
   port-{eniId} {vm_mac}
 ```
 
-With the WAN NIC on a Linux bridge wired to OVS via veth, OVS sees every frame
-on the wire regardless of MAC, so OVN can use distributed NAT. The DNAT is
-processed on the chassis hosting the VM rather than hairpinning through a
-single gateway chassis.
+With the WAN NIC on a Linux bridge wired to OVS via veth, OVS sees every frame on the wire regardless of MAC, so OVN can use distributed NAT. The DNAT is processed on the chassis hosting the VM rather than hairpinning through a single gateway chassis.
 
 ## Security Group
 
@@ -1004,8 +882,7 @@ sudo ovn-nbctl pg-get-ports sg-{groupId}
 
 ## 1. Set Up OVN Bridges
 
-Make sure the WAN NIC is enslaved to a Linux bridge (e.g. `br-wan`) and that
-bridge owns the default route. Then run:
+Make sure the WAN NIC is enslaved to a Linux bridge (e.g. `br-wan`) and that bridge owns the default route. Then run:
 
 ```bash
 sudo setup-ovn.sh                       # auto-detect WAN bridge
@@ -1078,8 +955,7 @@ aws ec2 describe-instances --instance-ids $INSTANCE \
 
 ### Debugging Toolkit
 
-These commands are used throughout the troubleshooting sections below. Learn
-them — they cover 90% of VPC networking issues.
+These commands are used throughout the troubleshooting sections below. Learn them — they cover 90% of VPC networking issues.
 
 ### OVN Northbound (Logical Topology)
 
@@ -1129,9 +1005,7 @@ sudo ovn-trace ext-vpc-{vpcId} \
 
 ### OVN DB RAFT cluster (NB/SB replication)
 
-The NB and SB databases run clustered across the first three nodes via native
-OVSDB RAFT. A 3-node quorum tolerates the loss of one DB node; check status when
-the control plane stalls.
+The NB and SB databases run clustered across the first three nodes via native OVSDB RAFT. A 3-node quorum tolerates the loss of one DB node; check status when the control plane stalls.
 
 ```bash
 # NB cluster status: expect 3 servers and exactly one "Role: leader"
@@ -1144,9 +1018,7 @@ sudo ovn-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound
 sudo ovn-nbctl --db=tcp:10.1.3.181:6641,tcp:10.1.3.182:6641,tcp:10.1.3.183:6641 show
 ```
 
-A node showing only itself under `Servers:` never joined the cluster — confirm
-it was bootstrapped with `--db-cluster-remote-addr` pointing at the creator and
-that RAFT ports 6643/6644 are reachable between DB nodes.
+A node showing only itself under `Servers:` never joined the cluster — confirm it was bootstrapped with `--db-cluster-remote-addr` pointing at the creator and that RAFT ports 6643/6644 are reachable between DB nodes.
 
 ### OVS (datapath / physical wiring)
 
@@ -1272,10 +1144,7 @@ ip route show
 
 ### Instance Has Public IP But No Internet
 
-The instance shows a public IP in `describe-instances` but cannot reach the
-internet, and inbound connections hang. The usual cause is a missing default
-route: the subnet's effective route table has no `0.0.0.0/0` route to the IGW,
-so Spinifex gates the subnet with a drop policy.
+The instance shows a public IP in `describe-instances` but cannot reach the internet, and inbound connections hang. The usual cause is a missing default route: the subnet's effective route table has no `0.0.0.0/0` route to the IGW, so Spinifex gates the subnet with a drop policy.
 
 ```bash
 # Find the route table that applies to the subnet and check its routes
@@ -1285,16 +1154,14 @@ aws ec2 describe-route-tables \
 # Expect a route with DestinationCidrBlock 0.0.0.0/0 and a GatewayId of igw-...
 ```
 
-If the subnet has no explicit association it falls back to the VPC's main route
-table — check that one too, then add the route to whichever table applies:
+If the subnet has no explicit association it falls back to the VPC's main route table — check that one too, then add the route to whichever table applies:
 
 ```bash
 aws ec2 create-route --route-table-id $RT \
   --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW
 ```
 
-On the host, the drop policy installed when a subnet lacks an IGW route appears
-as a `Logical_Router_Policy` on the VPC router:
+On the host, the drop policy installed when a subnet lacks an IGW route appears as a `Logical_Router_Policy` on the VPC router:
 
 ```bash
 sudo ovn-nbctl lr-policy-list vpc-$VPC
@@ -1387,9 +1254,7 @@ sudo tcpdump -i br-wan -n "host {public_ip}"
 sudo tcpdump -i br-ext -n -e "host {public_ip}"
 ```
 
-If traffic arrives on the physical NIC but not br-wan, the NIC is not
-enslaved to the bridge. If it reaches br-wan but not br-ext, the veth
-pair between them is missing or down — re-run `setup-ovn.sh`.
+If traffic arrives on the physical NIC but not br-wan, the NIC is not enslaved to the bridge. If it reaches br-wan but not br-ext, the veth pair between them is missing or down — re-run `setup-ovn.sh`.
 
 ### 6. Use ovn-trace for pipeline debugging
 
@@ -1402,8 +1267,7 @@ sudo ovn-trace --ct=new ext-vpc-{vpcId} \
    arp.tpa=={public_ip}'
 ```
 
-The output shows every table the packet passes through and what action is
-taken. Look for `drop` actions or unexpected paths.
+The output shows every table the packet passes through and what action is taken. Look for `drop` actions or unexpected paths.
 
 ### OVN SB Commit Failure Loop
 
@@ -1415,9 +1279,7 @@ OVNSB commit failed, force recompute next time.
 
 Repeated millions of times. Port binding never happens (`up: false`).
 
-**Cause:** Stale entries in the OVN Southbound DB (old chassis records, port
-bindings, datapath bindings) conflict with ovn-controller's expected state,
-typically after an ungraceful shutdown.
+**Cause:** Stale entries in the OVN Southbound DB (old chassis records, port bindings, datapath bindings) conflict with ovn-controller's expected state, typically after an ungraceful shutdown.
 
 **Fix:** Delete both OVN DB files and restart:
 
@@ -1431,15 +1293,11 @@ sudo systemctl start ovn-central ovn-controller
 
 ### WAN NIC Not Enslaved to a Bridge
 
-**Symptom:** `setup-ovn.sh` exits with an error like "default route is on a
-physical NIC, not a bridge" and refuses to continue.
+**Symptom:** `setup-ovn.sh` exits with an error like "default route is on a physical NIC, not a bridge" and refuses to continue.
 
-**Cause:** Spinifex requires the WAN NIC to be enslaved to a Linux bridge
-(typically `br-wan`). Macvlan is no longer supported, and attaching the NIC
-directly to OVS would break SSH and any other host services using the NIC.
+**Cause:** Spinifex requires the WAN NIC to be enslaved to a Linux bridge (typically `br-wan`). Macvlan is no longer supported, and attaching the NIC directly to OVS would break SSH and any other host services using the NIC.
 
-**Fix:** Move the host IP and default route onto a Linux bridge. Example
-netplan:
+**Fix:** Move the host IP and default route onto a Linux bridge. Example netplan:
 
 ```yaml
 network:
@@ -1453,13 +1311,11 @@ network:
       dhcp4: true
 ```
 
-Apply (`sudo netplan apply`), confirm the host IP is now on `br-wan`
-(`ip -br addr show br-wan`), and re-run `setup-ovn.sh`.
+Apply (`sudo netplan apply`), confirm the host IP is now on `br-wan` (`ip -br addr show br-wan`), and re-run `setup-ovn.sh`.
 
 ### Stale ARP on Remote Hosts
 
-**Symptom:** Ping from a LAN host to a VM public IP fails after a reset, but
-worked before. The remote host has a stale ARP entry with the old MAC.
+**Symptom:** Ping from a LAN host to a VM public IP fails after a reset, but worked before. The remote host has a stale ARP entry with the old MAC.
 
 **Fix:** Flush the ARP entry on the remote host:
 
@@ -1469,8 +1325,7 @@ sudo ip neigh flush dev {nic} {public_ip}
 ping {public_ip}   # should work now
 ```
 
-OVN sends periodic gratuitous ARPs from the chassis hosting the VM that will
-eventually update remote ARP caches, but flushing is faster for testing.
+OVN sends periodic gratuitous ARPs from the chassis hosting the VM that will eventually update remote ARP caches, but flushing is faster for testing.
 
 ### Security Group Rules Not Taking Effect
 

@@ -63,6 +63,7 @@ var v1Actions = []string{
 	"SubmitDBStateChange",
 	"PollDBCommands",
 	"GetDBBootstrapConfig",
+	"AcknowledgeDBBootstrap",
 }
 
 // outOfScopeActions are recognised but deliberately not offered in v1.

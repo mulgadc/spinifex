@@ -49,7 +49,7 @@ else
   _SECQ  = 2>&1 | tee
 endif
 
-build: go_build build-installer build-lb-agent
+build: go_build build-installer build-lb-agent generate-aws-model-coverage
 
 # Build spinifex-ui frontend (requires pnpm)
 build-ui:
@@ -146,9 +146,22 @@ test-harness:
 
 # In-process integration tier: the real gateway router against embedded NATS
 # JetStream, with only the daemon-side NATS subjects stubbed.
+AWS_MODEL_CONFORMANCE_REPORT ?= $(CURDIR)/.cache/aws-model-conformance-report.txt
+AWS_MODEL_CONFORMANCE_MODE ?= fail
+AWS_MODEL_OPERATION_COVERAGE_REPORT ?= $(CURDIR)/docs/aws-model-operation-coverage.md
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
-	$(_Q)LOG_IGNORE=1 go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+	@cat $(AWS_MODEL_CONFORMANCE_REPORT)
+	@$(MAKE) --no-print-directory generate-aws-model-coverage
+	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_REPORT)"
+
+generate-aws-model-coverage:
+	@mkdir -p $(dir $(AWS_MODEL_OPERATION_COVERAGE_REPORT))
+	@go run ./cmd/aws-model-coverage > $(AWS_MODEL_OPERATION_COVERAGE_REPORT)
+
+aws-model-coverage: generate-aws-model-coverage
+	@cat $(AWS_MODEL_OPERATION_COVERAGE_REPORT)
 
 # Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
 # checked out alongside spinifex (see spinifex/testutil/segscanoracle), which
@@ -199,18 +212,37 @@ test-actions:
 	@echo -e "\n....Running action tests...."
 	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
 
-# Shell suites + shellcheck for scripts/images/ helpers baked into system
-# images. Kept out of `preflight` (a dedicated CI job gates it on
-# scripts/images/** changes instead) so image-asset churn doesn't run on
-# every Go contributor's commit.
+# Shell suites + shellcheck for scripts/images/ and images/mkosi.profiles/
+# helpers baked into system images. Kept out of `preflight` (a dedicated CI
+# job gates it on scripts/images/**+images/mkosi.profiles/** changes instead)
+# so image-asset churn doesn't run on every Go contributor's commit.
+#
+# images/mkosi.profiles/ ships scripts with no .sh suffix (mkosi's own
+# mkosi.*.chroot lifecycle hooks, and wrapper binaries like vllm-serve under
+# mkosi.extra/) so a plain `-name '*.sh'` glob silently skips exactly the
+# files most worth linting. Sources there are found by shebang instead of
+# name; this also means a profile that ships no scripts at all yields an
+# empty match rather than an error.
 test-images:
 	@echo -e "\n....Running scripts/images/**/*_test.sh...."
 	@for t in $$(find scripts/images -name '*_test.sh' | sort); do \
 		echo "-- $$t"; \
 		bash "$$t" || exit 1; \
 	done
+	@echo -e "\n....Running images/mkosi.profiles/**/*_test.sh...."
+	@for t in $$(find images/mkosi.profiles -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		bash "$$t" || exit 1; \
+	done
 	@echo -e "\n....Running shellcheck over scripts/images/**/*.sh...."
 	shellcheck -S warning $$(find scripts/images -name '*.sh' | sort)
+	@echo -e "\n....Running shellcheck over images/mkosi.profiles/** shell sources...."
+	@srcs="$$(grep -rlIE '^#!/bin/(bash|sh)' images/mkosi.profiles 2>/dev/null | sort)"; \
+	if [ -n "$$srcs" ]; then \
+		shellcheck -S warning $$srcs; \
+	else \
+		echo "  (no shell sources found under images/mkosi.profiles)"; \
+	fi
 	@echo "  test-images ok"
 
 # Check that new/changed code meets coverage threshold (runs tests first)
@@ -228,6 +260,20 @@ bench:
 # `make install-microvm` explicitly the first time.
 deploy: build
 	sudo install -m 755 bin/spx /usr/local/bin/spx
+	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
+		if ! sudo /usr/local/bin/spx admin preflight; then \
+			echo ""; \
+			echo "[deploy] host-asset preflight failed: this node's helper scripts or sudoers"; \
+			echo "  grants don't match the binary just installed. Remediate with:"; \
+			echo "    scripts/update-nodes.sh   (from the mulga root)"; \
+			echo "  or:"; \
+			echo "    make reinstall"; \
+			echo "  Set SKIP_ASSET_PREFLIGHT=1 to bypass for a deliberate binary-only push."; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[deploy] SKIP_ASSET_PREFLIGHT=1 — skipping host-asset preflight"; \
+	fi
 	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
 		$(MAKE) install-microvm; \
 	else \
@@ -342,7 +388,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

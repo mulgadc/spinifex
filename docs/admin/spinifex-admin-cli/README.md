@@ -116,10 +116,7 @@ To run EKS, import the prebuilt node image from the catalog:
 spx admin images import --name spinifex-eks-node
 ```
 
-This pulls the Alpine + K3s node AMI from `iso.mulgadc.com`, verifies its
-checksum, and registers it tagged `spinifex:managed-by=eks`. `eks create-cluster`
-and `eks create-nodegroup` resolve the boot AMI by that tag, so no further
-configuration is needed.
+This pulls the Alpine + K3s node AMI from `iso.mulgadc.com`, verifies its checksum, and registers it tagged `spinifex:managed-by=eks`. `eks create-cluster` and `eks create-nodegroup` resolve the boot AMI by that tag, so no further configuration is needed.
 
 ## Cluster Shutdown
 

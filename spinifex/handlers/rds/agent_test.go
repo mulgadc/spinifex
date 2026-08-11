@@ -66,11 +66,12 @@ func newTestCA(t *testing.T) CALoader {
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	return NewService(nc, testRegion).WithDeps(Deps{LoadCA: newTestCA(t)})
+	return NewService(nc, testRegion).WithDeps(Deps{LoadCA: newTestCA(t), MasterKey: testMasterKey})
 }
 
-// seedInstance writes a DB instance record in the shape CreateDBInstance will
-// leave it: bootstrap config pending, marker unset.
+// seedInstance writes a DB instance record without the payload a pending
+// bootstrap also needs, which is what an instance past its bootstrap looks like.
+// seedPending is the pair for a create that has not been acknowledged yet.
 func seedInstance(t *testing.T, svc *Service, rec DBInstanceRecord) {
 	t.Helper()
 	kv, err := svc.bucket(context.Background(), testAccountID)
@@ -81,6 +82,7 @@ func seedInstance(t *testing.T, svc *Service, rec DBInstanceRecord) {
 func defaultRecord() DBInstanceRecord {
 	return DBInstanceRecord{
 		DBInstanceIdentifier: testDBID,
+		DbiResourceID:        testDbiResourceID,
 		AccountID:            testAccountID,
 		Status:               StatusCreating,
 		Engine:               "postgres",
@@ -89,12 +91,23 @@ func defaultRecord() DBInstanceRecord {
 		MasterUsername:       "postgres",
 		Port:                 5432,
 		InstanceID:           testInstance,
+		VMGeneration:         firstVMGeneration,
 		ENIPrivateIP:         "10.20.30.40",
 		DNSName:              "orders-db.123456789012.ap-southeast-2.rds.example.internal",
 		Bootstrap: BootstrapState{
-			MasterUserPassword: "s3cr3t-master-pw",
+			State:              BootstrapStatePending,
 			ResolvedParameters: []Parameter{{Name: "shared_buffers", Value: "128MB"}},
 		},
+	}
+}
+
+// The generation-bound fetch a current VM's agent makes. Cases that only need
+// attach material build their own input and leave the generation off.
+func bootstrapInput() *GetDBBootstrapConfigInput {
+	return &GetDBBootstrapConfigInput{
+		DBInstanceIdentifier: testDBID,
+		InstanceID:           testInstance,
+		VMGeneration:         firstVMGeneration,
 	}
 }
 
@@ -111,66 +124,74 @@ func readRecord(t *testing.T, svc *Service) (DBInstanceRecord, string) {
 	return rec, string(entry.Value())
 }
 
-func TestGetDBBootstrapConfig_InitializeThenAttach(t *testing.T) {
+func TestGetDBBootstrapConfig_ServesTheFullBootMaterial(t *testing.T) {
 	svc := newTestService(t)
-	seedInstance(t, svc, defaultRecord())
-	ctx := context.Background()
-	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+	rec := defaultRecord()
+	rec.DataVolumeID = "vol-data-01"
+	rec.DataVolumeSerial = "voldata01"
+	seedPending(t, svc, rec)
 
-	first, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
+	out, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, BootstrapModeInitialize, first.Mode)
-	require.NotNil(t, first.MasterUserPassword)
-	assert.Equal(t, "s3cr3t-master-pw", *first.MasterUserPassword)
+	assert.Equal(t, BootstrapModeInitialize, out.Mode)
 
 	// The rest of the payload has to survive into attach: a fresh VM booting
 	// against an existing datadir gets no password but still needs all of it.
-	assert.Equal(t, int64(5432), first.Port)
-	assert.Equal(t, "orders", first.DBName)
-	assert.Equal(t, []Parameter{{Name: "shared_buffers", Value: "128MB"}}, first.Parameters)
+	assert.Equal(t, int64(5432), out.Port)
+	assert.Equal(t, "orders", out.DBName)
+	assert.Equal(t, []Parameter{{Name: "shared_buffers", Value: "128MB"}}, out.Parameters)
+	assert.Equal(t, "vol-data-01", out.DataVolumeID)
+	assert.Equal(t, "voldata01", out.DataVolumeSerial)
+	assert.Equal(t, int64(firstVMGeneration), out.VMGeneration)
+	assert.False(t, out.FormatAuthorized)
+}
 
-	for i := range 3 {
-		next, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
-		require.NoError(t, err, "fetch %d", i)
-		assert.Equal(t, BootstrapModeAttach, next.Mode)
-		assert.Nil(t, next.MasterUserPassword, "the password must never be re-served")
-		assert.Equal(t, int64(5432), next.Port)
-		assert.Equal(t, "orders", next.DBName)
-		assert.Equal(t, first.Parameters, next.Parameters)
+func TestGetDBBootstrapConfig_FormatGrantRequiresExactCurrentIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		generation int64
+		mutate     func(*DBInstanceRecord)
+		wantGrant  bool
+		wantErr    bool
+	}{
+		{name: "matching current generation", generation: 1, wantGrant: true},
+		{name: "stale generation", generation: 2, wantErr: true},
+		{name: "generation omitted by old gateway", wantErr: true},
+		{name: "serial does not match volume", generation: 1, mutate: func(rec *DBInstanceRecord) {
+			rec.DataVolumeSerial = "volwrong"
+		}, wantErr: true},
 	}
-}
 
-func TestGetDBBootstrapConfig_PasswordGoneFromKVAfterConsumption(t *testing.T) {
-	svc := newTestService(t)
-	seedInstance(t, svc, defaultRecord())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService(t)
+			rec := defaultRecord()
+			rec.DataVolumeID = "vol-data-01"
+			rec.DataVolumeSerial = "voldata01"
+			rec.FormatAuthorized = true
+			if tc.mutate != nil {
+				tc.mutate(&rec)
+			}
+			seedPending(t, svc, rec)
 
-	_, raw := readRecord(t, svc)
-	require.Contains(t, raw, "s3cr3t-master-pw", "seed must actually contain the cleartext")
-
-	_, err := svc.GetDBBootstrapConfig(context.Background(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
-	require.NoError(t, err)
-
-	rec, raw := readRecord(t, svc)
-	assert.NotContains(t, raw, "s3cr3t-master-pw", "cleartext must not remain anywhere in the stored record")
-	assert.Empty(t, rec.Bootstrap.MasterUserPassword)
-	assert.True(t, rec.Bootstrap.Consumed, "only the one-way marker remains")
-	assert.NotNil(t, rec.Bootstrap.ConsumedAt)
-}
-
-// A restore seeds the marker already flipped, so its very first fetch is an
-// attach and no separate restore flag is needed.
-func TestGetDBBootstrapConfig_PreConsumedRecordAttachesImmediately(t *testing.T) {
-	svc := newTestService(t)
-	rec := defaultRecord()
-	rec.Bootstrap = BootstrapState{Consumed: true, ResolvedParameters: rec.Bootstrap.ResolvedParameters}
-	seedInstance(t, svc, rec)
-
-	out, err := svc.GetDBBootstrapConfig(context.Background(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, BootstrapModeAttach, out.Mode)
-	assert.Nil(t, out.MasterUserPassword)
+			out, err := svc.GetDBBootstrapConfig(t.Context(), &GetDBBootstrapConfigInput{
+				DBInstanceIdentifier: testDBID,
+				InstanceID:           testInstance,
+				VMGeneration:         tc.generation,
+			}, testAccountID)
+			if tc.wantErr {
+				require.Error(t, err)
+				envelope, _ := storedPayload(t, svc, testDBID)
+				assert.NotNil(t, envelope, "a rejected caller must leave the payload staged for the real one")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantGrant, out.FormatAuthorized)
+			assert.Equal(t, rec.DataVolumeID, out.DataVolumeID)
+			assert.Equal(t, rec.DataVolumeSerial, out.DataVolumeSerial)
+			assert.Equal(t, rec.VMGeneration, out.VMGeneration)
+		})
+	}
 }
 
 func TestGetDBBootstrapConfig_MintsFreshCertEachFetch(t *testing.T) {
@@ -234,11 +255,10 @@ func TestGetDBBootstrapConfig_NoDNSNameStillMintsIPOnlyCert(t *testing.T) {
 // boot a database rather than failing the fetch.
 func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion)
-	seedInstance(t, svc, defaultRecord())
+	svc := NewService(nc, testRegion).WithDeps(Deps{MasterKey: testMasterKey})
+	seedPending(t, svc, defaultRecord())
 
-	out, err := svc.GetDBBootstrapConfig(context.Background(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	out, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, BootstrapModeInitialize, out.Mode)
 	assert.Empty(t, out.ServingCertificate)
@@ -249,40 +269,41 @@ func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.ENIPrivateIP = ""
-	seedInstance(t, svc, rec)
+	seedPending(t, svc, rec)
 
-	_, err := svc.GetDBBootstrapConfig(t.Context(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	_, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "configured TLS requires an ENI private IP")
 
-	stored, raw := readRecord(t, svc)
-	assert.False(t, stored.Bootstrap.Consumed)
-	assert.Contains(t, raw, "s3cr3t-master-pw")
+	envelope, _ := storedPayload(t, svc, testDBID)
+	assert.NotNil(t, envelope, "a failed fetch must leave the payload replayable")
 }
 
 func TestGetDBBootstrapConfig_PartialCAConfigurationFailsClosed(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion).WithDeps(Deps{CACertPath: "/etc/spinifex/ca.pem"})
-	seedInstance(t, svc, defaultRecord())
+	svc := NewService(nc, testRegion).WithDeps(Deps{
+		CACertPath: "/etc/spinifex/ca.pem",
+		MasterKey:  testMasterKey,
+	})
+	seedPending(t, svc, defaultRecord())
 
-	_, err := svc.GetDBBootstrapConfig(t.Context(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	_, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "incomplete cluster CA configuration")
 
-	stored, _ := readRecord(t, svc)
-	assert.False(t, stored.Bootstrap.Consumed)
+	envelope, _ := storedPayload(t, svc, testDBID)
+	assert.NotNil(t, envelope)
 }
 
-// A configured CA that cannot be loaded must fail the fetch *without* consuming
-// the password. Leaving the bootstrap state untouched is what makes the agent's
+// A configured CA that cannot be loaded fails the fetch before the payload is
+// ever read. The staged password is untouched, which is what makes the agent's
 // retry succeed once the CA is readable again.
 func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	loadErr := errors.New("read CA key /etc/spinifex/ca.key: permission denied")
 	broken := true
 	svc := NewService(nc, testRegion).WithDeps(Deps{
+		MasterKey: testMasterKey,
 		LoadCA: func() (*x509.Certificate, *rsa.PrivateKey, error) {
 			if broken {
 				return nil, nil, loadErr
@@ -290,66 +311,30 @@ func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T
 			return newTestCA(t)()
 		},
 	})
-	seedInstance(t, svc, defaultRecord())
-	ctx := context.Background()
-	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+	seedPending(t, svc, defaultRecord())
 
-	_, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
+	_, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.Error(t, err)
-
-	rec, raw := readRecord(t, svc)
-	require.False(t, rec.Bootstrap.Consumed, "a failed mint must not flip the one-way marker")
-	require.Contains(t, raw, "s3cr3t-master-pw", "the password must still be there to retry against")
+	envelope, _ := storedPayload(t, svc, testDBID)
+	require.NotNil(t, envelope, "the password must still be staged to retry against")
 
 	// Once the CA is readable the retry bootstraps normally.
 	broken = false
-	out, err := svc.GetDBBootstrapConfig(ctx, in, testAccountID)
+	out, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, BootstrapModeInitialize, out.Mode)
 	require.NotNil(t, out.MasterUserPassword)
-	assert.Equal(t, "s3cr3t-master-pw", *out.MasterUserPassword)
+	assert.Equal(t, testMasterPassword, *out.MasterUserPassword)
 	assert.NotEmpty(t, out.ServingCertificate)
 }
 
-func TestGetDBBootstrapConfig_RetriesCASConflictFromUnrelatedUpdate(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	baseCA := newTestCA(t)
-	svc := NewService(nc, testRegion)
-	var once sync.Once
-	svc.WithDeps(Deps{LoadCA: func() (*x509.Certificate, *rsa.PrivateKey, error) {
-		once.Do(func() {
-			kv, err := svc.bucket(t.Context(), testAccountID)
-			require.NoError(t, err)
-			var rec DBInstanceRecord
-			rev, found, err := getJSONRevision(t.Context(), kv, DBInstanceKey(testDBID), &rec)
-			require.NoError(t, err)
-			require.True(t, found)
-			rec.Agent.Message = "concurrent health update"
-			require.NoError(t, updateJSON(t.Context(), kv, DBInstanceKey(testDBID), rev, &rec))
-		})
-		return baseCA()
-	}})
-	seedInstance(t, svc, defaultRecord())
-
-	out, err := svc.GetDBBootstrapConfig(t.Context(),
-		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, BootstrapModeInitialize, out.Mode)
-	require.NotNil(t, out.MasterUserPassword)
-	assert.Equal(t, "s3cr3t-master-pw", *out.MasterUserPassword)
-
-	rec, _ := readRecord(t, svc)
-	assert.Equal(t, "concurrent health update", rec.Agent.Message)
-	assert.True(t, rec.Bootstrap.Consumed)
-}
-
-// Concurrent bootstrap fetches must resolve to exactly one password holder, and
-// every caller must still be served TLS material. The CAS provides the first
-// half: a plain put would hand the same password to two agents silently.
-func TestGetDBBootstrapConfig_ConcurrentFetchesYieldOnePassword(t *testing.T) {
+// Under consume-on-fetch, concurrent fetches racing for a one-shot password was
+// the whole problem. A replay has no race to lose: every caller bound to the
+// generation is served the same password and none of them writes.
+func TestGetDBBootstrapConfig_ConcurrentFetchesAllReplayTheSamePassword(t *testing.T) {
 	svc := newTestService(t)
-	seedInstance(t, svc, defaultRecord())
-	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+	payloadID := seedPending(t, svc, defaultRecord())
+	_, beforeRaw := readRecord(t, svc)
 
 	const fetches = 4
 	outs := make([]*GetDBBootstrapConfigOutput, fetches)
@@ -359,29 +344,25 @@ func TestGetDBBootstrapConfig_ConcurrentFetchesYieldOnePassword(t *testing.T) {
 	for i := range fetches {
 		wg.Go(func() {
 			<-start
-			outs[i], errs[i] = svc.GetDBBootstrapConfig(context.Background(), in, testAccountID)
+			outs[i], errs[i] = svc.GetDBBootstrapConfig(context.Background(), bootstrapInput(), testAccountID)
 		})
 	}
 	close(start)
 	wg.Wait()
 
-	withPassword := 0
 	for i := range fetches {
 		require.NoError(t, errs[i])
-		require.NotNil(t, outs[i])
-		if outs[i].MasterUserPassword != nil {
-			withPassword++
-			assert.Equal(t, BootstrapModeInitialize, outs[i].Mode)
-		}
-		// A caller that loses the race still boots an engine, and it must not
-		// boot it with ssl=off while the winner got TLS.
-		assert.NotEmpty(t, outs[i].ServingCertificate, "every fetch must be served a cert")
+		require.NotNil(t, outs[i].MasterUserPassword, "fetch %d", i)
+		assert.Equal(t, testMasterPassword, *outs[i].MasterUserPassword)
+		assert.Equal(t, payloadID, outs[i].PayloadID)
+		// Serving material is minted per call, so no caller boots with ssl=off
+		// while another got TLS.
+		assert.NotEmpty(t, outs[i].ServingCertificate)
 		assert.NotEmpty(t, outs[i].ServingPrivateKey)
 	}
-	assert.Equal(t, 1, withPassword, "exactly one fetch may carry the master password")
 
-	_, raw := readRecord(t, svc)
-	assert.NotContains(t, raw, "s3cr3t-master-pw")
+	_, afterRaw := readRecord(t, svc)
+	assert.Equal(t, beforeRaw, afterRaw)
 }
 
 func TestGetDBBootstrapConfig_UnknownInstance(t *testing.T) {
@@ -494,6 +475,38 @@ func TestSubmitDBStateChange_PersistsOnChangeAndOnFloor(t *testing.T) {
 	assert.Equal(t, EngineHealthHealthy, rec.Agent.EngineHealth)
 	assert.Equal(t, "replication lag", rec.Agent.Message)
 	assert.NotNil(t, rec.Agent.LastSeen)
+}
+
+func TestSubmitDBStateChange_RecordsParameterRollback(t *testing.T) {
+	svc := newTestService(t)
+	rec := defaultRecord()
+	rec.DBParameterGroupName = "customer-params"
+	seedInstance(t, svc, rec)
+
+	out, err := svc.SubmitDBStateChange(t.Context(), &SubmitDBStateChangeInput{
+		DBInstanceIdentifier: testDBID,
+		InstanceID:           testInstance,
+		EngineHealth:         EngineHealthUnhealthy,
+		Message:              ParameterRollbackMessage,
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, out.Persisted)
+
+	stored, _ := readRecord(t, svc)
+	assert.True(t, stored.ParametersRolledBack)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", *groups[0].ParameterApplyStatus)
+
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var ring eventRing
+	found, err := getJSON(t.Context(), kv, EventRingKey(EventSourceTypeDBInstance, testDBID), &ring)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, ring.Events, 1)
+	assert.Contains(t, ring.Events[0].Categories, EventCategoryConfigurationChange)
+	assert.Contains(t, ring.Events[0].Categories, EventCategoryFailure)
 }
 
 // In-memory liveness is fresher than the record between persists, which is what

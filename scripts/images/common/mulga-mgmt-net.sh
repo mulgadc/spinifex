@@ -8,7 +8,9 @@
 #   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (retrying
 #     one-shots on a budget until the cross-host datapath is up) so the Ec2 IMDS
 #     datasource can reach 169.254.169.254, and pin a /32 to it so a link-local
-#     169.254.0.0/16 route on another NIC cannot hijack IMDS.
+#     169.254.0.0/16 route on another NIC cannot hijack IMDS. A DHCP NIC with
+#     NIC<n>_DEFAULT=0 (an RDS DB VM's customer ENI) instead loses its leased
+#     default route and gets a source-based policy table for its replies.
 #   - NIC<n>_CIDR: a static NIC (mgmt0 on br-mgmt, which has no DHCP). Applied
 #     address-only; NIC<n>_DEFAULT is 0, so mgmt0 is never the default route.
 #
@@ -23,8 +25,9 @@
 #     cloud-init's network stage re-renders every ENI from IMDS and re-DHCPs
 #     them, which puts back the default route the setup pass deleted from a
 #     NIC<n>_DEFAULT=0 interface — leaving the guest with two default routes and
-#     the customer ENI able to capture egress and IMDS. Nothing re-leases or
-#     re-addresses an interface in this pass.
+#     the customer ENI able to capture egress and IMDS. It also rewrites that
+#     NIC's policy table, whose routes went down with the bounced interface.
+#     Nothing re-leases or re-addresses an interface in this pass.
 set -eu
 
 NETCFG="${MULGA_NETCFG:-/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw}"
@@ -55,7 +58,10 @@ dhcp_oneshot() {
     if command -v udhcpc >/dev/null 2>&1 && [ -x /usr/share/udhcpc/default.script ]; then
         udhcpc -i "$iface" -f -q -n -t 8 -T 2 >/dev/null 2>&1
     elif command -v dhcpcd >/dev/null 2>&1; then
-        dhcpcd -q -t 20 "$iface" >/dev/null 2>&1
+        # -q is only quiet; -1 is what exits, and -p keeps the address on the
+        # way out. A surviving daemon owns the control socket, so cloud-init's
+        # own dhcpcd is forwarded to it and never writes the pid file it waits on.
+        dhcpcd -q -1 -p -t 20 "$iface" >/dev/null 2>&1
     else
         echo "[mulga-mgmt-net] no DHCP client (udhcpc/dhcpcd) for $iface" >&2
         return 1
@@ -94,6 +100,65 @@ drop_default_route() {
         ip route del default dev "$iface" 2>/dev/null || break
         attempt=$(( attempt + 1 ))
     done
+}
+
+# Network address of a leased CIDR, computed rather than read back from
+# `ip route show`, so the policy table's contents do not depend on how a given
+# `ip` renders a connected route.
+cidr_network() {
+    echo "$1" | awk -F/ '{
+        split($1, o, ".")
+        v = o[1] * 16777216 + o[2] * 65536 + o[3] * 256 + o[4]
+        blk = 2 ^ (32 - $2)
+        n = int(v / blk) * blk
+        printf "%d.%d.%d.%d/%d\n", int(n / 16777216) % 256, int(n / 65536) % 256, \
+            int(n / 256) % 256, n % 256, $2
+    }'
+}
+
+# A NIC<n>_DEFAULT=0 DHCP NIC (an RDS DB VM's customer ENI) has its leased
+# default route deleted, so a reply to a client outside its own subnet leaves by
+# the primary ENI with this NIC's source address and is dropped. Give it a
+# private table and steer its replies at it by source address.
+#
+# Matching on source needs no knowledge of the customer VPC's CIDR: the engine
+# binds its socket to this address, so every reply carries it whoever the client
+# is. Every command reports its own failure — a `set -e` trip here is silent and
+# would leave every later NIC in the blob unconfigured.
+install_return_policy() {
+    iface="$1"
+    tid=$(( 100 + $2 ))
+
+    addr=$(ip -4 addr show dev "$iface" 2>/dev/null | awk '$1 == "inet" { print $2; exit }')
+    if [ -z "$addr" ]; then
+        echo "[mulga-mgmt-net] ERROR: no address on $iface; no return-path policy" >&2
+        return 0
+    fi
+    ip4="${addr%%/*}"
+    net=$(cidr_network "$addr")
+    # The lease's gateway is OVN's per-subnet router IP, which reaches every
+    # subnet of the VPC. Read it before the default route is dropped from main.
+    gw=$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')
+
+    # Both passes rewrite the table, not just the rule: a rule survives an
+    # interface bounce but the routes go down with the device, and a rule whose
+    # table is empty falls through to main — the asymmetry this exists to fix.
+    ip route replace "$net" dev "$iface" scope link src "$ip4" table "$tid" || \
+        echo "[mulga-mgmt-net] ERROR: failed to add $net to table $tid on $iface" >&2
+    if [ -n "$gw" ]; then
+        ip route replace default via "$gw" dev "$iface" table "$tid" || \
+            echo "[mulga-mgmt-net] ERROR: failed to add default via $gw to table $tid on $iface" >&2
+    else
+        echo "[mulga-mgmt-net] no lease gateway on $iface; leaving table $tid's default as-is"
+    fi
+
+    # A rule added twice is listed twice, so drop it by priority first. The
+    # delete is expected to fail on the first pass of a boot.
+    ip rule del pref "$tid" 2>/dev/null || true
+    ip rule add from "$ip4" table "$tid" pref "$tid" || \
+        echo "[mulga-mgmt-net] ERROR: failed to add rule from $ip4 to table $tid" >&2
+
+    echo "[mulga-mgmt-net] return-path policy on $iface: from $ip4 lookup $tid"
 }
 
 for n in 0 1 2 3 4 5; do
@@ -138,6 +203,7 @@ for n in 0 1 2 3 4 5; do
         # its own default route and, left alone, would both blackhole egress and
         # steal IMDS from the primary ENI.
         if [ "$isdefault" != "1" ]; then
+            install_return_policy "$iface" "$n"
             drop_default_route "$iface"
             if [ "$MODE" = "enforce" ]; then
                 echo "[mulga-mgmt-net] re-asserted no default route on $iface ($mac)"

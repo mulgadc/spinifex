@@ -158,9 +158,11 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	// Kept in step so the caller decides on the set this apply produced rather
 	// than on the one the instance carried in.
 	rec.PendingRebootParameters = pendingReboot
+	rec.ParametersRolledBack = false
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.Bootstrap.ResolvedParameters = resolved
 		stored.PendingRebootParameters = pendingReboot
+		stored.ParametersRolledBack = false
 	})
 }
 

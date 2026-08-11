@@ -258,6 +258,7 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:        newTestCA(t),
+		MasterKey:     testMasterKey,
 		Instances:     h.cmdr,
 		Snapshots:     h.snaps,
 		InstanceState: h.vmState,
@@ -310,7 +311,9 @@ func (h *lifecycleHarness) events(t *testing.T) []Event {
 // checkpointed cluster rather than a crash it has to replay.
 func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 	h := newLifecycleHarness(t, false)
-	seedInstance(t, h.svc, availableRecord())
+	rec := availableRecord()
+	rec.FormatAuthorized = true
+	seedInstance(t, h.svc, rec)
 
 	out, err := h.svc.RebootDBInstance(t.Context(),
 		&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
@@ -324,7 +327,9 @@ func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 	// Reported as rebooting, not available: the engine has to come back and say
 	// so before the reconciler calls it that.
 	assert.Equal(t, string(StatusRebooting), aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, StatusRebooting, h.record(t).Status)
+	stored := h.record(t)
+	assert.Equal(t, StatusRebooting, stored.Status)
+	assert.False(t, stored.FormatAuthorized, "reboot must revoke create-time formatting")
 }
 
 // The static parameters are already in the engine's config, so the restart
@@ -470,7 +475,9 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 // so a start comes back on the same datadir at the same address.
 func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 	h := newLifecycleHarness(t, false)
-	seedInstance(t, h.svc, availableRecord())
+	seed := availableRecord()
+	seed.FormatAuthorized = true
+	seedInstance(t, h.svc, seed)
 
 	_, err := h.svc.StopDBInstance(t.Context(),
 		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
@@ -482,6 +489,7 @@ func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 	rec := h.record(t)
 	assert.Equal(t, "vol-rdsdata01", rec.DataVolumeID)
 	assert.Equal(t, "eni-cust01", rec.ENIID)
+	assert.False(t, rec.FormatAuthorized, "stop must leave no grant for a later start")
 }
 
 // A pre-stop snapshot is a later phase's. Accepting it here would report a
@@ -503,6 +511,7 @@ func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusStopped
+	rec.FormatAuthorized = true
 	seedInstance(t, h.svc, rec)
 
 	out, err := h.svc.StartDBInstance(t.Context(),
@@ -511,7 +520,9 @@ func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
 
 	assert.Equal(t, []string{"start:" + testInstance}, h.cmdr.calls)
 	assert.Equal(t, string(StatusStarting), aws.StringValue(out.DBInstance.DBInstanceStatus))
-	assert.Equal(t, StatusStarting, h.record(t).Status)
+	stored := h.record(t)
+	assert.Equal(t, StatusStarting, stored.Status)
+	assert.False(t, stored.FormatAuthorized, "start must never restore format permission")
 }
 
 // A node restart drops the VM from memory, so the start relaunches it from the
@@ -624,6 +635,21 @@ func TestReconciler_CompletesARestartOnAHeartbeatFromTheRestartedEngine(t *testi
 			assert.Equal(t, StatusAvailable, rec.Status)
 		})
 	}
+}
+
+// The beat that ends a restart usually reaches the leader through KV, where it
+// is at most a persist floor behind the engine. Judging it by the raw stale
+// window left a database that came back cleanly rebooting until it timed out.
+func TestReconciler_CompletesARestartOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	h := newLifecycleHarness(t, false)
+	// Older than the stale window, younger than the window plus the floor, and
+	// still after the transition it proves finished.
+	persisted := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Minute)
+	seedInstance(t, h.svc, restartingRecord(StatusRebooting, persisted.Add(-time.Second), persisted))
+
+	require.NoError(t, NewReconciler(h.svc, "node-a").reconcileOnce(t.Context()))
+
+	assert.Equal(t, StatusAvailable, h.record(t).Status)
 }
 
 // The VM keeps its instance ID across a restart, so a beat sent before the

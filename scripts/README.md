@@ -1,7 +1,6 @@
 # Spinifex Scripts
 
-Node installation, dev-environment lifecycle, guest image builds, and verification
-tooling for Spinifex.
+Node installation, dev-environment lifecycle, guest image builds, and verification tooling for Spinifex.
 
 ## Install and node setup
 
@@ -47,9 +46,7 @@ tooling for Spinifex.
 
 ### `images/` — per-image build inputs
 
-Each subdirectory holds a `manifest.conf`, init scripts, and a `setup.sh` that
-`build-system-image.sh` runs inside the libguestfs appliance after packages and files are
-placed. `*_test.sh` files are shell unit tests for the helper of the same name.
+Each subdirectory holds a `manifest.conf`, init scripts, and a `setup.sh` that `build-system-image.sh` runs inside the libguestfs appliance after packages and files are placed. `*_test.sh` files are shell unit tests for the helper of the same name.
 
 | Path | What it builds |
 |---|---|
@@ -62,8 +59,7 @@ placed. `*_test.sh` files are shell unit tests for the helper of the same name.
 
 ### `images/eks-node/` — in-guest helpers
 
-Installed into the EKS node AMI and run at boot or on a timer. All host communication
-goes through the AWS gateway over SigV4; the VM never speaks NATS directly.
+Installed into the EKS node AMI and run at boot or on a timer. All host communication goes through the AWS gateway over SigV4; the VM never speaks NATS directly.
 
 | Script | What it does |
 |---|---|

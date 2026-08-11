@@ -22,8 +22,9 @@ type fakeEndpointService struct {
 	listErr     error
 	deleteErr   error
 
-	describeCalls int
-	deleteCalls   int
+	describeCalls  int
+	deleteCalls    int
+	describeInputs []*handlers_bedrock.DescribeEndpointInput
 }
 
 func (f *fakeEndpointService) Ensure(_ context.Context, _ *handlers_bedrock.EnsureEndpointInput, _ string) (*handlers_bedrock.EnsureEndpointOutput, error) {
@@ -33,7 +34,8 @@ func (f *fakeEndpointService) Ensure(_ context.Context, _ *handlers_bedrock.Ensu
 	return &handlers_bedrock.EnsureEndpointOutput{Endpoint: f.ensure}, nil
 }
 
-func (f *fakeEndpointService) Describe(_ context.Context, _ *handlers_bedrock.DescribeEndpointInput, _ string) (*handlers_bedrock.DescribeEndpointOutput, error) {
+func (f *fakeEndpointService) Describe(_ context.Context, in *handlers_bedrock.DescribeEndpointInput, _ string) (*handlers_bedrock.DescribeEndpointOutput, error) {
+	f.describeInputs = append(f.describeInputs, in)
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
@@ -71,6 +73,10 @@ func fakeClock(now *time.Time) endpointWaitClock {
 }
 
 const testModelID = "meta.llama3-2-1b-instruct-v1:0"
+
+// testAccountID stands in for a caller's real (non-Global) account, mirroring
+// handlers_bedrock's own testAccountID.
+const testAccountID = "111111111111"
 
 func TestWaitForEndpointReady_ReachesReadyAndReportsElapsed(t *testing.T) {
 	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
@@ -215,6 +221,24 @@ func TestListEndpointsOutput_ListsEndpoints(t *testing.T) {
 	require.Contains(t, msg, "STARTING")
 }
 
+// TestListEndpointsOutput_ShowsAccountAndPinnedColumns is Bug 2's list seam:
+// a pinned, account-scoped endpoint must render its own account and a PINNED
+// indicator, while a bare GlobalAccountID endpoint keeps listing unchanged
+// (its ACCOUNT cell just reads GlobalAccountID, PINNED empty).
+func TestListEndpointsOutput_ShowsAccountAndPinnedColumns(t *testing.T) {
+	svc := &fakeEndpointService{list: []handlers_bedrock.EndpointRecord{
+		{ModelID: testModelID, State: handlers_bedrock.StateReady, AccountID: "000000000001"},
+		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: handlers_bedrock.StateReady, AccountID: testAccountID, Pinned: true},
+	}}
+
+	msg, err := listEndpointsOutput(context.Background(), svc)
+	require.NoError(t, err)
+	require.Contains(t, msg, "ACCOUNT")
+	require.Contains(t, msg, "PINNED")
+	require.Contains(t, msg, "000000000001")
+	require.Contains(t, msg, testAccountID)
+}
+
 func TestListEndpointsOutput_ErrorSurfaces(t *testing.T) {
 	svc := &fakeEndpointService{listErr: errors.New("nats: no responders")}
 	_, err := listEndpointsOutput(context.Background(), svc)
@@ -310,6 +334,50 @@ func TestRunOchreEndpointDescribe_PrintsRecord(t *testing.T) {
 	require.Contains(t, out, "i-abc")
 }
 
+// TestRunOchreEndpointDescribe_DefaultAccountIsEmpty covers the regression
+// guard: a bare (GlobalAccountID) describe, with no --account flag set, must
+// still send an empty AccountID — resolveAccountID's own GlobalAccountID
+// fallback, unchanged from before --account existed.
+func TestRunOchreEndpointDescribe_DefaultAccountIsEmpty(t *testing.T) {
+	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
+		{ModelID: testModelID, State: handlers_bedrock.StateReady},
+	}}
+	withEndpointService(t, svc, nil)
+
+	cmd := *ochreEndpointDescribeCmd
+	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
+
+	withOchreExitCapture(t, func() {
+		captureStdout(t, func() { runOchreEndpointDescribe(&cmd, nil) })
+	})
+	require.Len(t, svc.describeInputs, 1)
+	require.Empty(t, svc.describeInputs[0].AccountID)
+}
+
+// TestRunOchreEndpointDescribe_AccountFlagScopesLookup is Bug 2's describe
+// seam: --account must reach DescribeEndpointInput.AccountID, which is how an
+// operator sees a pinned, account-scoped endpoint the GlobalAccountID lookup
+// would otherwise report ABSENT.
+func TestRunOchreEndpointDescribe_AccountFlagScopesLookup(t *testing.T) {
+	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
+		{ModelID: testModelID, State: handlers_bedrock.StateReady, AccountID: testAccountID, Pinned: true},
+	}}
+	withEndpointService(t, svc, nil)
+
+	cmd := *ochreEndpointDescribeCmd
+	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
+	require.NoError(t, cmd.Flags().Set("account", testAccountID))
+
+	var out string
+	withOchreExitCapture(t, func() {
+		out = captureStdout(t, func() { runOchreEndpointDescribe(&cmd, nil) })
+	})
+	require.Len(t, svc.describeInputs, 1)
+	require.Equal(t, testAccountID, svc.describeInputs[0].AccountID)
+	require.Contains(t, out, testAccountID)
+	require.Contains(t, out, "Pinned")
+}
+
 func TestRunOchreEndpointDescribe_ErrorExits1(t *testing.T) {
 	withEndpointService(t, &fakeEndpointService{describeErr: errors.New("nats: timeout")}, nil)
 
@@ -364,4 +432,62 @@ func TestRunOchreEndpointDelete_ErrorExits1(t *testing.T) {
 
 	code := withOchreExitCapture(t, func() { runOchreEndpointDelete(&cmd, nil) })
 	require.Equal(t, 1, code)
+}
+
+// The reclaim inputs are what an operator needs to answer "why was this
+// endpoint reaped" or "why was it not", so a READY record must show them.
+func TestFormatEndpointRecord_ShowsReclaimInputs(t *testing.T) {
+	ready := time.Now().UTC().Add(-30 * time.Minute)
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID:      testModelID,
+		State:        handlers_bedrock.StateReady,
+		ReadyAt:      ready,
+		LastActiveAt: ready.Add(20 * time.Minute),
+		InFlight:     3,
+	})
+
+	require.Contains(t, out, "In flight:")
+	require.Contains(t, out, "3")
+	require.Contains(t, out, "Last active:")
+	require.Contains(t, out, "Idle for:")
+}
+
+// An endpoint quiet since launch is idle since launch, not since the zero
+// time: the fallback is what keeps the reported figure meaningful.
+func TestFormatEndpointRecord_NeverActiveFallsBackToReadyAt(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID: testModelID,
+		State:   handlers_bedrock.StateReady,
+		ReadyAt: time.Now().UTC().Add(-90 * time.Second),
+	})
+
+	require.Contains(t, out, "Idle for:")
+	require.NotContains(t, out, "0001-01-01", "an unsampled record must not report the zero time")
+	require.NotContains(t, out, "Scrape failures", "a healthy endpoint must not carry a failure row")
+}
+
+func TestFormatEndpointRecord_SurfacesPinnedAndScrapeFailures(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID:        testModelID,
+		State:          handlers_bedrock.StateReady,
+		ReadyAt:        time.Now().UTC().Add(-time.Hour),
+		Pinned:         true,
+		ScrapeFailures: 2,
+	})
+
+	require.Contains(t, out, "Pinned:")
+	require.Contains(t, out, "Scrape failures:")
+	require.Contains(t, out, "2")
+}
+
+// Only READY endpoints are swept, so reclaim rows on any other state would be
+// reporting a decision nothing is making.
+func TestFormatEndpointRecord_NoReclaimRowsWhenNotReady(t *testing.T) {
+	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+		ModelID: testModelID,
+		State:   handlers_bedrock.StateStarting,
+	})
+
+	require.NotContains(t, out, "In flight")
+	require.NotContains(t, out, "Idle for")
 }

@@ -364,6 +364,7 @@ func (s *Service) runMaintenanceWindow(ctx context.Context, kv jetstream.KeyValu
 
 	rec.LastMaintenanceWindowAt = &now
 	rec.TransitionStartedAt = &now
+	rec.FormatAuthorized = false
 	rec.Status = StatusModifying
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {

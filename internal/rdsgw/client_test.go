@@ -123,6 +123,10 @@ func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 		MasterUsername:       "master",
 		MasterUserPassword:   &password,
 		Port:                 5432,
+		DataVolumeID:         "vol-data-01",
+		DataVolumeSerial:     "voldata01",
+		VMGeneration:         3,
+		FormatAuthorized:     true,
 		Parameters: []handlers_rds.Parameter{
 			{Name: "max_connections", Value: "100"},
 			{Name: "work_mem", Value: "4MB"},
@@ -150,6 +154,12 @@ func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 	if got.ServingCertificate != want.ServingCertificate {
 		t.Errorf("ServingCertificate = %q, want the seeded PEM", got.ServingCertificate)
 	}
+	if got.DataVolumeID != want.DataVolumeID || got.DataVolumeSerial != want.DataVolumeSerial ||
+		got.VMGeneration != want.VMGeneration || got.FormatAuthorized != want.FormatAuthorized {
+		t.Errorf("volume contract = %q/%q/%d/%t, want %q/%q/%d/%t",
+			got.DataVolumeID, got.DataVolumeSerial, got.VMGeneration, got.FormatAuthorized,
+			want.DataVolumeID, want.DataVolumeSerial, want.VMGeneration, want.FormatAuthorized)
+	}
 }
 
 // An absent optional field must decode as nil, not as an empty value: attach
@@ -169,6 +179,9 @@ func TestCall_AbsentOptionalStaysNil(t *testing.T) {
 	}
 	if got.MasterUserPassword != nil {
 		t.Errorf("MasterUserPassword = %q, want nil in attach mode", *got.MasterUserPassword)
+	}
+	if got.DataVolumeID != "" || got.DataVolumeSerial != "" || got.VMGeneration != 0 || got.FormatAuthorized {
+		t.Errorf("absent volume contract decoded as %+v, want zero values", got)
 	}
 }
 

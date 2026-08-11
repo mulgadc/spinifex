@@ -23,23 +23,30 @@ type invokeStreamSource interface {
 // InvokeModelWithResponseStream is the bedrock-runtime
 // InvokeModelWithResponseStream entry point used by the gateway route table.
 // Unlike the JSON-dispatch handlers it owns w directly: a pre-stream failure
-// (unknown model, unresolved credential, upstream connect error) returns an
-// awserrors code for the normal ErrorHandler envelope. Once the first frame
-// is written it always returns nil — any later failure is an in-band
-// exception event, since the HTTP status can no longer change.
+// (unknown model, ungranted model, unresolved credential, upstream connect
+// error) returns an awserrors code for the normal ErrorHandler envelope. Once
+// the first frame is written it always returns nil — any later failure is an
+// in-band exception event, since the HTTP status can no longer change.
 // requestContentType is the client's declared Content-Type, logged only.
-// resolver, endpointResolver, and recorder may be nil; NewInvokeStreamRouter
-// and the internal NoopRecorder fallback keep this call safe either way.
-func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder) error {
+// resolver, endpointResolver, recorder and access may be nil;
+// NewInvokeStreamRouter and the internal NoopRecorder fallback keep this call
+// safe either way. provisioned may be nil, disabling PT ARN acceptance (any
+// PT ARN then reads as an unknown modelId). guardrailIdent/guardrailVersion
+// come from the request's X-Amzn-Bedrock-Guardrail* headers.
+func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
 	requestID := uuid.NewString()
 	start := time.Now()
 
-	entry, _ := lookupCatalogEntry(modelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
+	// Resolved here too (InvokeStreamRouter below resolves it again for
+	// routing) purely so entry's Provider tag reflects a PT ARN's target
+	// model, not the raw ARN, for the InvocationRecord's Backend field.
+	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
+	entry, _ := lookupCatalogEntry(recordModelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
 
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver).InvokeModelWithResponseStream(ctx, accountID, modelID, body)
+	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access, provisioned, guardrails).InvokeModelWithResponseStream(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
 	if err != nil {
 		return err
 	}

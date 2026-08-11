@@ -65,6 +65,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/preflight"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -153,6 +154,7 @@ type Daemon struct {
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
 	bedrockService        *handlers_bedrock.Service
+	bedrockReaper         *handlers_bedrock.Reaper
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
@@ -1059,6 +1061,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.rdsService.RegisterDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.rdsService.SubmitDBStateChange), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{handlers_rds.SubjectAcknowledgeDBBootstrap, handleNATSRequest(d.rdsService.AcknowledgeDBBootstrap), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.rdsService.CreateDBInstance), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.rdsService.DescribeDBInstances), "spinifex-workers"},
 			natsSub{handlers_rds.SubjectRebootDBInstance, handleNATSRequest(d.rdsService.RebootDBInstance), "spinifex-workers"},
@@ -1243,6 +1246,17 @@ func (d *Daemon) startLocal() error {
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
 	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
+	}
+
+	// Warn on host assets this build expects but that are missing, stale, or
+	// ungranted, so drift surfaces as a named log line rather than a later
+	// cryptic failure. Never fatal — unrelated asset problems must not ground a node.
+	for _, r := range preflight.CheckHost() {
+		if r.Status != preflight.OK {
+			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
+				"status", r.Status.String(), "detail", r.Detail,
+				"remediation", "run scripts/update-nodes.sh or make reinstall")
+		}
 	}
 
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
@@ -1662,7 +1676,21 @@ func (d *Daemon) startCluster() error {
 	// RDS control plane: KV-backed agent-protocol handlers plus the customer
 	// actions. The cluster CA signs the per-instance serving certs, minted per
 	// bootstrap fetch and never persisted; ca.key sits beside the configured ca.pem.
-	d.rdsService = handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(d.buildRDSDeps())
+	//
+	// The master key is mandatory, as it is for ACM and ELBv2 above: the staged
+	// bootstrap password is encrypted under it, and the fetch is answered by
+	// whichever node the queue group picks, so a node without it would make the
+	// first boot of a DB instance fail intermittently rather than not at all.
+	d.rdsService, err = initServiceWithRetry("RDS service", func() (*handlers_rds.Service, error) {
+		deps, depsErr := d.buildRDSDeps()
+		if depsErr != nil {
+			return nil, depsErr
+		}
+		return handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(deps), nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize RDS service: %w", err)
+	}
 
 	// One leader across the cluster derives DB instance status from the agent
 	// heartbeat; every node keeps serving the API.
@@ -1676,11 +1704,23 @@ func (d *Daemon) startCluster() error {
 		d.rdsReconciler.Run(d.ctx)
 	})
 
-	// Bedrock serving-endpoint lifecycle: no reconciler yet (no idle-reclaim or
-	// health sweep), just the request-driven
-	// ensure/describe/list/delete surface RDS-style, constructed synchronously
-	// since it touches no JetStream KV until its first request.
+	// Bedrock serving-endpoint lifecycle: the request-driven
+	// ensure/describe/list/delete surface, constructed synchronously since it
+	// touches no JetStream KV until its first request.
 	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())
+
+	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
+	// and hands an idle GPU back; every node keeps serving the API. Without it a
+	// launched model owns its device until an operator deletes the endpoint.
+	d.bedrockReaper = handlers_bedrock.NewReaper(d.bedrockService, d.node, handlers_bedrock.ReaperDeps{})
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Bedrock reaper goroutine panicked", "recover", r)
+			}
+		}()
+		d.bedrockReaper.Run(d.ctx)
+	})
 
 	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
 	// (which degrades to "feature disabled" without a master key) there is no

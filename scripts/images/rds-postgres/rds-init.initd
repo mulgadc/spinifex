@@ -9,10 +9,20 @@
 
 description="Spinifex RDS PostgreSQL bootstrap"
 
+AGENT_ENV="/etc/spinifex-rds/agent.env"
+
 depend() {
     need net
-    after rds-agent
+    after rds-agent rds-datadir
     before postgresql
+}
+
+start_pre() {
+    if [ -f "${AGENT_ENV}" ]; then
+        # shellcheck disable=SC1090
+        . "${AGENT_ENV}"
+        export RDS_HANDOFF_DIR RDS_DATA_MOUNT
+    fi
 }
 
 start() {

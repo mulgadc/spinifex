@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -22,6 +23,24 @@ const KVBucketEndpoints = "bedrock-endpoints"
 // KVBucketEndpointsHistory pins one revision per key: a superseded state is
 // not meaningful to retain, only the current one CAS-guards against races.
 const KVBucketEndpointsHistory = 1
+
+// KVBucketLeader holds the reaper's leader lease. Its TTL is what makes the
+// lease self-healing: a leader that dies without releasing it is replaced
+// within one TTL rather than never.
+const (
+	KVBucketLeader    = "bedrock-leader"
+	KVBucketLeaderTTL = 60 * time.Second
+	leaderKey         = "reaper"
+)
+
+// GetOrCreateLeaderBucket returns the reaper's TTL-backed leader bucket.
+func GetOrCreateLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
+	kv, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, KVBucketLeader, 1, KVBucketLeaderTTL)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: create leader KV bucket: %w", err)
+	}
+	return kv, nil
+}
 
 // EndpointKey returns the KV key for accountID's modelID endpoint record.
 // Model IDs contain ':' (e.g. "meta.llama3-2-1b-instruct-v1:0"), which NATS
@@ -117,7 +136,27 @@ func deleteJSON(ctx context.Context, kv jetstream.KeyValue, key string) error {
 }
 
 // ListEndpoints returns every endpoint record under accountID's key prefix.
+// Used by the reaper and eviction candidate search, both of which only ever
+// act on the shared platform account's endpoints; ListAllEndpoints is the
+// cross-account view an operator listing needs instead.
 func ListEndpoints(ctx context.Context, kv jetstream.KeyValue, accountID string) ([]EndpointRecord, error) {
+	prefix := endpointsPrefix(accountID)
+	return listEndpointRecords(ctx, kv, func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	})
+}
+
+// ListAllEndpoints returns every endpoint record in the bucket regardless of
+// which account it is keyed under, so an operator listing sees a pinned,
+// account-scoped endpoint alongside the shared platform ones.
+func ListAllEndpoints(ctx context.Context, kv jetstream.KeyValue) ([]EndpointRecord, error) {
+	return listEndpointRecords(ctx, kv, func(string) bool { return true })
+}
+
+// listEndpointRecords reads every KV key that satisfies keep, decoding each
+// into an EndpointRecord, and is the shared body of ListEndpoints and
+// ListAllEndpoints.
+func listEndpointRecords(ctx context.Context, kv jetstream.KeyValue, keep func(key string) bool) ([]EndpointRecord, error) {
 	keys, err := kvutil.Keys(ctx, kv)
 	if err != nil {
 		// An empty bucket is the normal state before any endpoint has ever
@@ -127,10 +166,9 @@ func ListEndpoints(ctx context.Context, kv jetstream.KeyValue, accountID string)
 		}
 		return nil, fmt.Errorf("bedrock: list endpoint keys: %w", err)
 	}
-	prefix := endpointsPrefix(accountID)
 	out := make([]EndpointRecord, 0, len(keys))
 	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
+		if !keep(key) {
 			continue
 		}
 		var rec EndpointRecord

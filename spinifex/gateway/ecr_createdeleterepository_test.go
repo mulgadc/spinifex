@@ -30,6 +30,7 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	serveECRMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
 	gw := &GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
+		IAMService: allowAllIAMService(),
 	}
 	return gw, nc
 }

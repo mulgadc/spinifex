@@ -220,6 +220,123 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, awserrors.ValidErrorCodeFromError(err))
 }
 
+// TestDelete_ResumesFromDraining covers a teardown that failed partway: the
+// record is already DRAINING and its VM may be gone. Without a resume the
+// record is stranded, since nothing else moves it and the resolver treats
+// DRAINING as neither servable nor relaunchable.
+func TestDelete_ResumesFromDraining(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
+		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
+		InstanceID: "i-stranded", Generation: 2,
+	})
+	require.NoError(t, err)
+
+	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+	assert.Contains(t, h.launcher.terminated, "i-stranded", "the resume must still tear the VM down")
+}
+
+// testAccountID is a non-Global account, distinct from utils.GlobalAccountID,
+// standing in for a real tenant across the account-scoping tests below.
+const testAccountID = "111111111111"
+
+// TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned pins down existing-caller
+// behaviour under the widened input: an Ensure that leaves AccountID and
+// Pinned at their zero values must still land under GlobalAccountID,
+// unpinned, exactly as every pre-existing caller relies on.
+func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, utils.GlobalAccountID, out.Endpoint.AccountID)
+	assert.False(t, out.Endpoint.Pinned)
+	s.WaitLaunches()
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	var rec EndpointRecord
+	found, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &rec)
+	require.NoError(t, err)
+	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
+	assert.False(t, rec.Pinned)
+}
+
+// TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned is the PT shape:
+// a real AccountID plus Pinned:true must key the record away from the shared
+// GlobalAccountID endpoint and persist Pinned on it.
+func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	assert.Equal(t, testAccountID, out.Endpoint.AccountID)
+	assert.True(t, out.Endpoint.Pinned)
+	s.WaitLaunches()
+
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
+	require.NoError(t, err)
+	var rec EndpointRecord
+	found, err := getJSON(t.Context(), kv, EndpointKey(testAccountID, testModelID), &rec)
+	require.NoError(t, err)
+	require.True(t, found, "a real AccountID must key the record under that account, not Global")
+	assert.True(t, rec.Pinned)
+
+	// Nothing must have landed under the shared Global key.
+	var globalRec EndpointRecord
+	foundGlobal, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &globalRec)
+	require.NoError(t, err)
+	assert.False(t, foundGlobal)
+}
+
+// TestDescribeDelete_AccountScopedRoundTrip covers Describe/Delete resolving
+// the same account-scoped key an account-scoped Ensure wrote.
+func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, desc.Endpoint.State)
+	assert.Equal(t, testAccountID, desc.Endpoint.AccountID)
+	assert.True(t, desc.Endpoint.Pinned)
+
+	// The Global account never had an endpoint created, so it must read ABSENT.
+	globalDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, globalDesc.Endpoint.State)
+
+	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+
+	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+}
+
 func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
@@ -232,4 +349,41 @@ func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Endpoints, 1)
 	assert.Equal(t, testModelID, out.Endpoints[0].ModelID)
+}
+
+// TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned is Bug 2's core
+// regression guard: a pinned, account-scoped endpoint must appear in List
+// alongside the shared GlobalAccountID one, carrying its own AccountID and
+// Pinned — an operator listing must not key on GlobalAccountID only.
+func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+
+	pinnedModelID := "meta.llama3-2-3b-instruct-v1:0"
+	_, err = s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: pinnedModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	out, err := s.List(t.Context(), &ListEndpointsInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, out.Endpoints, 2)
+
+	byModel := map[string]EndpointRecord{}
+	for _, e := range out.Endpoints {
+		byModel[e.ModelID] = e
+	}
+	global, ok := byModel[testModelID]
+	require.True(t, ok, "the shared GlobalAccountID endpoint must still list unchanged")
+	assert.Equal(t, utils.GlobalAccountID, global.AccountID)
+	assert.False(t, global.Pinned)
+
+	pinned, ok := byModel[pinnedModelID]
+	require.True(t, ok, "a pinned, account-scoped endpoint must appear in List")
+	assert.Equal(t, testAccountID, pinned.AccountID)
+	assert.True(t, pinned.Pinned)
 }

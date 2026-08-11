@@ -59,13 +59,27 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	if err != nil {
 		return err
 	}
+	if rec.FormatAuthorized {
+		if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+			stored.FormatAuthorized = false
+		}); err != nil {
+			return fmt.Errorf("revoke the data-volume format grant before replacing %s: %w", rec.DBInstanceIdentifier, err)
+		}
+		rec.FormatAuthorized = false
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	// The generation this replace bumps is what the staged payload is bound to,
+	// and it is never rebound. Withdrawn before the VM is touched, so the
+	// ciphertext is gone even if the replace fails half-way.
+	if err := s.discardPendingBootstrap(ctx, kv, accountID, rec); err != nil {
+		return err
+	}
 
 	// Checkpointed first so the replacement boots on a clean datadir rather than
 	// one it has to replay a WAL over. A wedged agent degrades this rather than
 	// blocking the replace, exactly as a stop does.
-	if err := context.Cause(ctx); err != nil {
-		return err
-	}
 	s.stopEngineOrRecordFallback(ctx, accountID, rec, "replacing its VM")
 
 	oldInstanceID := rec.InstanceID
@@ -118,7 +132,9 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.InstanceID = launched.InstanceID
 		stored.SystemENIID = launched.SystemENIID
+		stored.DataVolumeSerial = launched.DataVolumeSerial
 		stored.VMGeneration++
+		stored.FormatAuthorized = false
 		// The new VM has never reported, so the old VM's health must not read as
 		// this one's — the reconciler would call the replace finished at once.
 		stored.Agent = AgentState{}
@@ -129,7 +145,9 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	// VM's identity on top of this one.
 	rec.InstanceID = launched.InstanceID
 	rec.SystemENIID = launched.SystemENIID
+	rec.DataVolumeSerial = launched.DataVolumeSerial
 	rec.VMGeneration++
+	rec.FormatAuthorized = false
 	rec.Agent = AgentState{}
 
 	slog.InfoContext(ctx, "rds: DB VM replaced",

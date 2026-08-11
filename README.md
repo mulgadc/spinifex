@@ -171,15 +171,15 @@ aws ec2 describe-instance-types
 
 ### Development Setup
 
-For a complete development environment see the [Source Install](https://docs.mulgadc.com/docs/install-source) documentation
+For a complete development environment see the [Source Install](https://docs.mulgadc.com/docs/install-source) documentation.
 
 ### Component Repositories
 
 Spinifex coordinates these independent components:
 
-- **[Predastore](https://github.com/mulgadc/predastore)** - S3 compatible object storage
-- **[Viperblock](https://github.com/mulgadc/viperblock)** - EBS compatible block storage
-- **[Northstar](https://github/mulgadc/northstar)** - Authoritative DNS server
+- **[Predastore](https://github.com/mulgadc/predastore)** - S3-compatible object storage
+- **[Viperblock](https://github.com/mulgadc/viperblock)** - EBS-compatible block storage
+- **[Northstar](https://github.com/mulgadc/northstar)** - Authoritative DNS server
 
 Each component can be developed independently. See component-specific documentation for focused development guides.
 

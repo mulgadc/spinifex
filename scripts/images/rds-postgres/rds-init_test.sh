@@ -160,11 +160,15 @@ EOF
 
 # sync stub: a no-op, except that SYNC_KILL_PARENT signals rds-init from the
 # directory sync that follows the receipt rename. That is the one window where
-# an installed receipt and an armed sweep coexist.
+# an installed receipt and an armed sweep coexist. Matched on the receipt
+# directory by name: the engine stamp syncs its directory too, long before the
+# traps are armed, and killing there would leave the window untested.
 cat > "${STUBBIN}/sync" <<'EOF'
 #!/bin/sh
-if [ "${SYNC_KILL_PARENT:-0}" = "1" ] && [ -d "${1:-}" ]; then
-    kill -TERM "$(cat "${KILL_PID_FILE}")"
+if [ "${SYNC_KILL_PARENT:-0}" = "1" ]; then
+    case "${1:-}" in
+        */bootstrap) kill -TERM "$(cat "${KILL_PID_FILE}")" ;;
+    esac
 fi
 exit 0
 EOF
@@ -182,6 +186,7 @@ PGDATA="${DATA_MOUNT}/18/data"
 SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
 RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
 RECEIPT="${RECEIPT_DIR}/receipt.env"
+STAMP="${DATA_MOUNT}/.spinifex-rds/engine"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
 KILL_PID_FILE="${WORK}/rds-init.pid"
@@ -242,7 +247,7 @@ reset_state() {
     : > "${PGCTL_CALLS}"
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
-    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT || true
+    unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT STAMP_OVERRIDE || true
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -255,6 +260,7 @@ run_env() {
         RDS_LOG_DIR="${WORK}/log" \
         RDS_MOUNTS_FILE="${MOUNTS}" \
         RDS_RECEIPT_DIR="${RECEIPT_DIR_OVERRIDE:-${RECEIPT_DIR}}" \
+        RDS_ENGINE_STAMP="${STAMP_OVERRIDE:-${STAMP}}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
         PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
@@ -838,6 +844,97 @@ if run_ok "dbname-at-the-limit"; then
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && pass "dbname-at-the-limit: accepted" || fail "dbname-at-the-limit: no CREATE DATABASE"
 fi
+
+# --- Case 11: the data volume records which engine wrote it ---
+# Another engine's datadir mounts cleanly and reads as uninitialised here, so
+# without the stamp rds-init would initdb beside the customer's data and serve
+# an empty database that passes every health probe while the real data sits
+# unreferenced — until the first automated snapshot captures the wrong one.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+if run_ok "stamp-absent-empty"; then
+    [ "$(cat "${STAMP}" 2>/dev/null)" = "postgres" ] \
+        && pass "stamp-absent-empty: fresh volume stamped postgres" \
+        || fail "stamp-absent-empty: no stamp written at initialisation"
+    case "${STAMP}" in
+        "${PGDATA}"/*) fail "stamp-absent-empty: written inside the datadir the traps clear" ;;
+        *) pass "stamp-absent-empty: written outside PGDATA" ;;
+    esac
+
+    # --- Case 11a: a matching stamp attaches ---
+    : > "${INITDB_CALLS}"
+    write_handoff attach '' appdb
+    if run_ok "stamp-match"; then
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "stamp-match: re-ran initdb" || pass "stamp-match: attached"
+    fi
+
+    # --- Case 11b: a disagreeing stamp is fatal and touches nothing ---
+    echo 'customer table data' > "${PGDATA}/base-relation"
+    printf 'mariadb\n' > "${STAMP}"
+    : > "${INITDB_CALLS}"
+    run_fails "stamp-mismatch"
+    [ -s "${INITDB_CALLS}" ] \
+        && fail "stamp-mismatch: initdb ran on another engine's volume" \
+        || pass "stamp-mismatch: no initdb"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "stamp-mismatch: datadir preserved" || fail "stamp-mismatch: datadir cleared"
+    [ "$(cat "${STAMP}")" = "mariadb" ] \
+        && pass "stamp-mismatch: the other engine's stamp is left as it stands" \
+        || fail "stamp-mismatch: stamp overwritten"
+    grep -q "holds a 'mariadb' datadir" "${WORK}/out" \
+        && pass "stamp-mismatch: refusal names both engines" \
+        || fail "stamp-mismatch: no refusal naming the stamped engine"
+
+    # --- Case 11c: a stamp that cannot be read is not an absent one ---
+    # Reading it as absent would backfill our own engine over a volume whose
+    # engine was never established, turning the check into a rubber stamp.
+    rm -f "${STAMP}"
+    mkdir "${STAMP}"
+    run_fails "stamp-unreadable"
+    grep -q 'could not be read' "${WORK}/out" \
+        && pass "stamp-unreadable: refusal names the unreadable stamp" \
+        || fail "stamp-unreadable: no refusal message"
+    rmdir "${STAMP}"
+
+    # --- Case 11c2: a zero-length stamp does not read as a match ---
+    : > "${STAMP}"
+    run_fails "stamp-empty"
+    [ -f "${PGDATA}/base-relation" ] \
+        && pass "stamp-empty: datadir preserved" || fail "stamp-empty: datadir cleared"
+
+    # --- Case 11d: an unstamped datadir with data in it is backfilled ---
+    # PostgreSQL volumes predate the stamp, so the check becomes total over time
+    # rather than refusing every instance created before it existed.
+    rm -f "${STAMP}"
+    : > "${INITDB_CALLS}"
+    if run_ok "stamp-absent-nonempty"; then
+        [ "$(cat "${STAMP}" 2>/dev/null)" = "postgres" ] \
+            && pass "stamp-absent-nonempty: existing datadir gains a stamp" \
+            || fail "stamp-absent-nonempty: stamp not backfilled"
+        [ -s "${INITDB_CALLS}" ] \
+            && fail "stamp-absent-nonempty: re-ran initdb" || pass "stamp-absent-nonempty: attached"
+        [ -f "${PGDATA}/base-relation" ] \
+            && pass "stamp-absent-nonempty: datadir preserved" \
+            || fail "stamp-absent-nonempty: datadir cleared"
+    fi
+fi
+
+# --- Case 11e: a stamp that cannot be written is fatal, before initdb ---
+# The refusal is before the one-shot password is spent, so the create is still
+# retryable; continuing would leave a volume the next boot cannot identify.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+: > "${WORK}/not-a-dir-stamp"
+STAMP_OVERRIDE="${WORK}/not-a-dir-stamp/engine"
+export STAMP_OVERRIDE
+run_fails "stamp-unwritable"
+[ -s "${INITDB_CALLS}" ] \
+    && fail "stamp-unwritable: initdb ran before the stamp was recorded" \
+    || pass "stamp-unwritable: refused before initdb"
+grep -q 'engine stamp' "${WORK}/out" \
+    && pass "stamp-unwritable: refusal names the stamp" || fail "stamp-unwritable: no refusal message"
+unset STAMP_OVERRIDE
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"

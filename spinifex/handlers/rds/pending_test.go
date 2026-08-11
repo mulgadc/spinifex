@@ -382,7 +382,7 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 	for _, param := range issued[0].Parameters {
 		applied[param.Name] = param.Value
 	}
-	workMem, _ := LookupParameter("work_mem")
+	workMem, _ := enginePostgres.LookupParameter("work_mem")
 	assert.Equal(t, workMem.Default, applied["work_mem"],
 		"the old group's value should have reverted to the catalog default")
 	assert.False(t, h.record(t).ParametersRolledBack, "a successful corrected apply clears the rollback state")

@@ -23,10 +23,37 @@ type Engine struct {
 	reservedUsernames []string
 	// Prefixes the engine reserves for internal roles.
 	reservedUsernamePrefixes []string
+	// The engine's own identifier limit for a role name. The character rule is
+	// shared across engines; the length is not.
+	maxUsernameLen int
+
+	// The engine's parameter table, keyed by parameter name. The generic spec
+	// machinery is shared; only the table and its formulas are per-engine.
+	catalog map[string]ParameterSpec
+	// Cross-parameter checks a resolved set must satisfy, which are the
+	// combinations the engine itself would refuse to start under.
+	validateCombinations func([]Parameter) error
 }
 
 var engines = map[string]Engine{
 	enginePostgres.Name: enginePostgres,
+}
+
+// The same registry keyed by parameter-group family, for the callers that hold
+// only a family string and have no instance to derive an engine from. Family
+// and engine are 1:1 by construction, so one registry serves both.
+var enginesByFamily = indexEnginesByFamily()
+
+func indexEnginesByFamily() map[string]Engine {
+	out := make(map[string]Engine, len(engines))
+	for _, engine := range engines {
+		family := engine.ParameterGroupFamily()
+		if _, exists := out[family]; exists {
+			panic("rds: parameter group family " + family + " is claimed by two engines")
+		}
+		out[family] = engine
+	}
+	return out
 }
 
 // The pinned version an AMI lookup resolves against, which is the major alone:
@@ -78,9 +105,9 @@ func (e Engine) ValidateMasterUsername(username string) error {
 	if username == "" {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername is required")
 	}
-	if len(username) > maxMasterUsernameLen {
+	if len(username) > e.maxUsernameLen {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"MasterUsername must be at most %d characters", maxMasterUsernameLen)
+			"MasterUsername must be at most %d characters", e.maxUsernameLen)
 	}
 	if !isLetter(rune(username[0])) {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername must begin with a letter")
@@ -140,7 +167,6 @@ func ValidateMasterUserPassword(password string) error {
 }
 
 const (
-	maxMasterUsernameLen = 63
 	minMasterPasswordLen = 8
 	maxMasterPasswordLen = 128
 )

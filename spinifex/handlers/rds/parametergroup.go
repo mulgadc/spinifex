@@ -153,7 +153,7 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 			"at most %d parameters may be modified in one request, got %d", maxParametersPerModify, len(input.Parameters))
 	}
 
-	updates, err := validateParameterUpdates(input.Parameters)
+	updates, err := validateParameterUpdates(enginePostgres, input.Parameters)
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +253,8 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	}
 
 	out := &rds.DescribeDBParametersOutput{}
-	for _, param := range CatalogParameterNames() {
-		spec, _ := LookupParameter(param)
+	for _, param := range enginePostgres.CatalogParameterNames() {
+		spec, _ := enginePostgres.LookupParameter(param)
 		override, isOverride := overrides[param]
 		value := override.Value
 		if !isOverride {
@@ -331,13 +331,13 @@ type parameterUpdate struct {
 
 // Every entry is checked before any is written. A name repeated in one request
 // keeps its last value, as AWS does.
-func validateParameterUpdates(params []*rds.Parameter) ([]parameterUpdate, error) {
+func validateParameterUpdates(engine Engine, params []*rds.Parameter) ([]parameterUpdate, error) {
 	byName := make(map[string]parameterUpdate, len(params))
 	for _, param := range params {
 		if param == nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "a parameter entry is empty")
 		}
-		spec, err := validateParameterValue(aws.StringValue(param.ParameterName), aws.StringValue(param.ParameterValue))
+		spec, err := engine.validateParameterValue(aws.StringValue(param.ParameterName), aws.StringValue(param.ParameterValue))
 		if err != nil {
 			return nil, err
 		}
@@ -437,10 +437,8 @@ func validateParameterGroupFamily(family string) (string, error) {
 	if trimmed == "" {
 		return enginePostgres.ParameterGroupFamily(), nil
 	}
-	for _, engine := range engines {
-		if trimmed == engine.ParameterGroupFamily() {
-			return engine.ParameterGroupFamily(), nil
-		}
+	if engine, ok := enginesByFamily[trimmed]; ok {
+		return engine.ParameterGroupFamily(), nil
 	}
 	return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 		"DBParameterGroupFamily %q is not offered; %s is the only supported family", family, enginePostgres.ParameterGroupFamily())
@@ -508,5 +506,5 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyVa
 	for name, override := range overrides {
 		values[name] = override.Value
 	}
-	return ResolveEffectiveParameters(instanceClass, values)
+	return enginePostgres.ResolveEffectiveParameters(instanceClass, values)
 }

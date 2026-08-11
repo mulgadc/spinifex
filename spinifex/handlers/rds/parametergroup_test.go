@@ -80,7 +80,7 @@ func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
 	// A fresh group and the default group resolve to the same effective set,
 	// because a group holds overrides rather than a copy of the catalog.
 	params := describedParameters(t, h, testParameterGroup)
-	require.Len(t, params, len(CatalogParameterNames()))
+	require.Len(t, params, len(enginePostgres.CatalogParameterNames()))
 	for _, param := range params {
 		assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(param.Source))
 	}
@@ -441,7 +441,7 @@ func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {
 		Source:               aws.String(ParameterSourceEngineDefault),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, defaults.Parameters, len(CatalogParameterNames())-1)
+	assert.Len(t, defaults.Parameters, len(enginePostgres.CatalogParameterNames())-1)
 }
 
 func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
@@ -527,7 +527,7 @@ func TestCreateDBInstance_ResolvesTheNamedGroupIntoTheBootstrapSet(t *testing.T)
 
 	rec := h.record(t, testDBInstanceID)
 	assert.Equal(t, testParameterGroup, rec.DBParameterGroupName)
-	require.Len(t, rec.Bootstrap.ResolvedParameters, len(CatalogParameterNames()))
+	require.Len(t, rec.Bootstrap.ResolvedParameters, len(enginePostgres.CatalogParameterNames()))
 
 	values := map[string]string{}
 	for _, param := range rec.Bootstrap.ResolvedParameters {
@@ -551,7 +551,7 @@ func TestCreateDBInstance_ResolvesTheDefaultGroupWhenNoneIsNamed(t *testing.T) {
 
 	rec := h.record(t, testDBInstanceID)
 	assert.Equal(t, testDefaultPG, rec.DBParameterGroupName)
-	assert.Len(t, rec.Bootstrap.ResolvedParameters, len(CatalogParameterNames()))
+	assert.Len(t, rec.Bootstrap.ResolvedParameters, len(enginePostgres.CatalogParameterNames()))
 }
 
 func TestCreateDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {

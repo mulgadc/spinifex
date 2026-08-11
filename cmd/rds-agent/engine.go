@@ -116,6 +116,10 @@ func lookupCredential(username string) (*syscall.Credential, error) {
 // The engine is reached over its unix socket under peer authentication, so the
 // agent drops to the postgres OS user rather than holding a password of its own.
 type postgresEngine struct {
+	// The control plane's own metadata for this engine, resolved once at
+	// startup: the live password apply runs as the cluster superuser, so it
+	// re-checks the role name against the same reserved set the API validates.
+	meta      handlers_rds.Engine
 	run       commandRunner
 	startSess sessionRunner
 	psql      string
@@ -152,8 +156,22 @@ const (
 	parameterRepairPoll    = time.Second
 )
 
+// Resolved once, under the name the control plane knows this implementation by.
+// A lookup failure is a mismatch between the agent and the control plane it was
+// built against, so it fails at startup rather than at the first rotation.
+var postgresEngineMeta = mustLookupEngine("postgres")
+
+func mustLookupEngine(name string) handlers_rds.Engine {
+	engine, err := handlers_rds.LookupEngine(name)
+	if err != nil {
+		panic("rds-agent: " + err.Error())
+	}
+	return engine
+}
+
 func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	e := &postgresEngine{
+		meta:          postgresEngineMeta,
 		run:           run,
 		startSess:     startSess,
 		psql:          filepath.Join(cfg.PGBin, "psql"),
@@ -184,7 +202,7 @@ func (e *postgresEngine) SetPassword(ctx context.Context, username, password str
 	// The statement below runs as the cluster superuser over the socket under
 	// peer auth, so a reserved name in the command payload would hand the
 	// customer the bootstrap superuser rather than rotate their own role.
-	if err := handlers_rds.EnginePostgres().ValidateUsernameNotReserved(username); err != nil {
+	if err := e.meta.ValidateUsernameNotReserved(username); err != nil {
 		return fmt.Errorf("refusing to set the password of a role the engine reserves: %w", err)
 	}
 	// psql interpolates the password into the ALTER ROLE before the server sees

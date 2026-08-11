@@ -54,7 +54,7 @@ func TestEngineValidateMasterUsername(t *testing.T) {
 		"empty":          "",
 		"leading digit":  "1user",
 		"hyphen":         "app-user",
-		"too long":       strings.Repeat("a", maxMasterUsernameLen+1),
+		"too long":       strings.Repeat("a", enginePostgres.maxUsernameLen+1),
 		"reserved":       "rdsadmin",
 		"reserved cased": "RDSAdmin",
 		// The cluster superuser and the group role the master's administrative

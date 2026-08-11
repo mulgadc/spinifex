@@ -15,6 +15,7 @@ const (
 	CapabilitiesSubject   = "ebs.provider.v1.capabilities"
 	CreateVolumeSubject   = "ebs.provider.v1.volume.create"
 	GetVolumeSubject      = "ebs.provider.v1.volume.describe"
+	ListVolumesSubject    = "ebs.provider.v1.volume.list"
 	ExpandVolumeSubject   = "ebs.provider.v1.volume.expand"
 	DeleteVolumeSubject   = "ebs.provider.v1.volume.delete"
 	DeleteSnapshotSubject = "ebs.provider.v1.snapshot.delete"
@@ -190,6 +191,23 @@ func (p *NATSProvider) GetVolume(ctx context.Context, req GetVolumeRequest) (*Vo
 		return nil, fmt.Errorf("ebs.describe returned no volume")
 	}
 	return response.Volume, nil
+}
+
+// ListVolumes asks the provider what it holds. It is not owner-routed: the
+// question is about the whole provider, not one volume, so it goes to the
+// queue group rather than to any single volume's mounting node.
+func (p *NATSProvider) ListVolumes(ctx context.Context, req ListVolumesRequest) (*ListVolumesResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	var response ListVolumesResponse
+	if err := p.request(ctx, ListVolumesSubject, req, &response); err != nil {
+		return nil, err
+	}
+	if err := responseError(response.SchemaVersion, response.Error); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (p *NATSProvider) ExpandVolume(ctx context.Context, req ExpandVolumeRequest) (*Volume, error) {

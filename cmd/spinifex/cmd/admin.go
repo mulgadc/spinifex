@@ -197,6 +197,25 @@ takes effect immediately. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesPromoteCmd,
 }
 
+var volumesCmd = &cobra.Command{
+	Use:   "volumes",
+	Short: "Inspect block storage volumes",
+	Long:  `Inspect the volumes the storage provider holds, independently of the EC2 API.`,
+}
+
+var volumesOrphansCmd = &cobra.Command{
+	Use:   "orphans",
+	Short: "Report volumes the provider holds with no control-plane record",
+	Long: `List volumes the storage provider holds that the control plane has no record
+of. Their blocks are consuming space but they have no API handle, so they
+cannot be described or deleted through the EC2 API.
+
+This command only reports. It never deletes: the evidence that an orphan is
+still wanted is the record that went missing, so removal is an operator
+decision made per volume.`,
+	Run: runVolumesOrphansCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -294,6 +313,9 @@ func init() {
 	imagesCmd.AddCommand(imagesListCmd)
 	imagesCmd.AddCommand(imagesRemoveCmd)
 	imagesCmd.AddCommand(imagesPromoteCmd)
+
+	adminCmd.AddCommand(volumesCmd)
+	volumesCmd.AddCommand(volumesOrphansCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -756,6 +778,49 @@ func bakeCACertIntoImage(imagePath, caCertPath string) {
 		slog.Warn("CA bake skipped: virt-customize could not customize image; imported image will not auto-trust the gateway", "err", err, "output", string(out))
 		return
 	}
+}
+
+func runVolumesOrphansCmd(_ *cobra.Command, _ []string) {
+	appConfig, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	orphans, err := admin.FindOrphanVolumes(
+		context.Background(),
+		ebsprovider.NewNATSProvider(nc, imageImportTimeout),
+		ebsmetadata.NewStore(store, node.Predastore.Bucket),
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Orphan scan failed:", err)
+		os.Exit(1)
+	}
+	if len(orphans) == 0 {
+		fmt.Println("No orphaned volumes: every volume the provider holds has a control-plane record.")
+		return
+	}
+
+	fmt.Printf("%d orphaned volume(s) — held by the provider, unknown to the control plane:\n\n", len(orphans))
+	for _, orphan := range orphans {
+		fmt.Printf("  %s\n", orphan.VolumeID)
+		fmt.Printf("    handle:  %s\n", orphan.Handle)
+		if orphan.Derived {
+			fmt.Println("    note:    derived volume; its base volume is also unknown")
+		}
+	}
+	fmt.Println()
+	fmt.Println("Nothing was deleted. Each of these holds data that cannot be reached")
+	fmt.Println("through the EC2 API; removing one is a per-volume operator decision.")
 }
 
 func runimagesRemoveCmd(cmd *cobra.Command, args []string) {

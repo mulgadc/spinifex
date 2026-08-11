@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		{ebsprovider.CapabilitiesSubject, handleProviderCapabilities},
 		{ebsprovider.CreateVolumeSubject, func(msg *nats.Msg) { handleCreateVolume(cfg, msg) }},
 		{ebsprovider.GetVolumeSubject, func(msg *nats.Msg) { handleGetVolume(cfg, msg) }},
+		{ebsprovider.ListVolumesSubject, func(msg *nats.Msg) { handleListVolumes(cfg, msg) }},
 		{ebsprovider.ExpandVolumeSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
 		{ebsprovider.DeleteVolumeSubject, func(msg *nats.Msg) { handleDeleteVolume(cfg, nc, msg) }},
 		{ebsprovider.DeleteSnapshotSubject, func(msg *nats.Msg) { handleDeleteSnapshot(cfg, msg) }},
@@ -202,8 +204,83 @@ func handleProviderCapabilities(msg *nats.Msg) {
 			// mountVolume registers ebs.provider.v1.owner.{volumeID}.* for
 			// every mounted volume (see subscribeOwnerSubjects).
 			OwnerRouting: true,
+			// Volumes are top-level prefixes in the bucket, so the object
+			// store can be walked for what exists without any control-plane
+			// metadata to consult.
+			VolumeEnumeration: true,
 		},
 	})
+}
+
+// reservedListPrefix is the control plane's own metadata prefix. It is not a
+// volume, and enumeration must not report it as one.
+const reservedListPrefix = "spinifex/"
+
+// listVolumePrefixes returns every top-level prefix in the bucket that names a
+// volume, sorted. It reports what storage actually holds, which is the point:
+// a volume whose control-plane document is gone still appears here.
+func listVolumePrefixes(ctx context.Context, store objectstore.ObjectStore, bucket string) ([]string, error) {
+	var ids []string
+	var continuationToken *string
+	for {
+		listOutput, err := store.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+			Bucket:            awssdk.String(bucket),
+			Delimiter:         awssdk.String("/"),
+			ContinuationToken: continuationToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list volume prefixes: %w", err)
+		}
+		for _, commonPrefix := range listOutput.CommonPrefixes {
+			prefix := awssdk.StringValue(commonPrefix.Prefix)
+			if prefix == "" || prefix == reservedListPrefix {
+				continue
+			}
+			if id := strings.TrimSuffix(prefix, "/"); validVolumeName(id) {
+				ids = append(ids, id)
+			}
+		}
+		if !awssdk.BoolValue(listOutput.IsTruncated) {
+			break
+		}
+		continuationToken = listOutput.NextContinuationToken
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func handleListVolumes(cfg *Config, msg *nats.Msg) {
+	var req ebsprovider.ListVolumesRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		slog.Error("ebs.provider.volume.list: bad request", "err", err)
+		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		return
+	}
+	if req.SchemaVersion != ebsprovider.SchemaVersion {
+		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		return
+	}
+
+	ids, err := listVolumePrefixes(context.Background(), providerObjectStoreFactory(cfg), cfg.Bucket)
+	if err != nil {
+		slog.Error("ebs.provider.volume.list: failed to enumerate volumes", "err", err)
+		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("enumerate volumes: %v", err)})
+		return
+	}
+
+	response := ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned()}
+	pageSize := int(req.PageSize())
+	for _, id := range ids {
+		if id <= req.StartingToken {
+			continue
+		}
+		if len(response.Volumes) == pageSize {
+			response.NextToken = response.Volumes[pageSize-1].ID
+			break
+		}
+		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{ID: id, Handle: volumeHandle(id)})
+	}
+	respondJSON(msg, response)
 }
 
 // buildProviderVBConfig assembles the viperblock.VB config CreateVolume hands

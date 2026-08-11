@@ -97,6 +97,7 @@ func Serve(ctx context.Context, nc *nats.Conn, provider ebsprovider.EBSProvider,
 		{ebsprovider.CapabilitiesSubject, handleCapabilities(ctx, provider)},
 		{ebsprovider.CreateVolumeSubject, handleCreateVolume(ctx, provider)},
 		{ebsprovider.GetVolumeSubject, handleGetVolume(ctx, provider)},
+		{ebsprovider.ListVolumesSubject, handleListVolumes(ctx, provider)},
 		{ebsprovider.ExpandVolumeSubject, handleExpandVolume(ctx, provider)},
 		{ebsprovider.DeleteVolumeSubject, handleDeleteVolume(ctx, provider)},
 		{ebsprovider.DeleteSnapshotSubject, handleDeleteSnapshot(ctx, provider)},
@@ -258,6 +259,26 @@ func handleGetVolume(ctx context.Context, provider ebsprovider.EBSProvider) nats
 			return
 		}
 		respond(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Volume: vol})
+	}
+}
+
+func handleListVolumes(ctx context.Context, provider ebsprovider.EBSProvider) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		var req ebsprovider.ListVolumesRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			respond(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+			return
+		}
+		if req.SchemaVersion != ebsprovider.SchemaVersion {
+			respond(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
+			return
+		}
+		resp, err := provider.ListVolumes(ctx, req)
+		if err != nil {
+			respond(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: classifyError(err)})
+			return
+		}
+		respond(msg, *resp)
 	}
 }
 

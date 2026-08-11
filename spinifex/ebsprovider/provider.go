@@ -29,6 +29,7 @@ type EBSProvider interface {
 	GetCapabilities(context.Context, GetCapabilitiesRequest) (*GetCapabilitiesResponse, error)
 	CreateVolume(context.Context, CreateVolumeRequest) (*Volume, error)
 	GetVolume(context.Context, GetVolumeRequest) (*Volume, error)
+	ListVolumes(context.Context, ListVolumesRequest) (*ListVolumesResponse, error)
 	ExpandVolume(context.Context, ExpandVolumeRequest) (*Volume, error)
 	DeleteVolume(context.Context, DeleteVolumeRequest) error
 	CreateSnapshot(context.Context, CreateSnapshotRequest) (*Snapshot, error)
@@ -55,6 +56,11 @@ type Capabilities struct {
 	// exporting the volume read-only. A provider leaving this false must
 	// refuse a ReadOnly request, never hand back a writable export instead.
 	ReadOnlyPublish bool `json:"read_only_publish"`
+
+	// VolumeEnumeration advertises that ListVolumes answers with what the
+	// provider actually holds. Without it the control plane's only index of
+	// volumes is its own metadata, so a lost document strands the blocks.
+	VolumeEnumeration bool `json:"volume_enumeration"`
 
 	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
 	// and GetVolume are answered directly by a volume's mounting node over
@@ -151,6 +157,47 @@ type GetVolumeResponse struct {
 
 	Volume *Volume        `json:"volume,omitempty"`
 	Error  *ProviderError `json:"error,omitempty"`
+}
+
+// VolumeRef identifies a volume the provider holds. It is deliberately not a
+// Volume: enumeration answers "what exists", and a provider must not have to
+// open every volume's engine to answer that.
+type VolumeRef struct {
+	ID     string `json:"id"`
+	Handle string `json:"handle,omitempty"`
+}
+
+// MaxListResults bounds one page of ListVolumes. The reply rides a NATS
+// message, so the page must fit the cluster's max_payload; a VolumeRef encodes
+// to well under 1KB, leaving headroom at this count.
+const MaxListResults int32 = 1000
+
+// ListVolumesRequest pages through the volumes a provider holds. A MaxResults
+// above MaxListResults is clamped rather than refused: a caller asking for
+// more than fits should get a page and a token, not an error.
+type ListVolumesRequest struct {
+	Versioned
+
+	MaxResults    int32  `json:"max_results,omitempty"`
+	StartingToken string `json:"starting_token,omitempty"`
+}
+
+// ListVolumesResponse carries one page. An empty NextToken means the last
+// page; an empty Volumes list with no error means the provider holds none.
+type ListVolumesResponse struct {
+	Versioned
+
+	Volumes   []VolumeRef    `json:"volumes,omitempty"`
+	NextToken string         `json:"next_token,omitempty"`
+	Error     *ProviderError `json:"error,omitempty"`
+}
+
+// PageSize is the number of refs a provider should return for this request.
+func (r ListVolumesRequest) PageSize() int32 {
+	if r.MaxResults <= 0 || r.MaxResults > MaxListResults {
+		return MaxListResults
+	}
+	return r.MaxResults
 }
 
 type ExpandVolumeRequest struct {

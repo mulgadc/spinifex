@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -139,6 +140,39 @@ func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Vo
 		return nil, fmt.Errorf("%w: volume %s", ErrNotFound, req.VolumeID)
 	}
 	return cloneVolume(&volume.volume), nil
+}
+
+// ListVolumes pages through the volumes this provider holds, ordered by ID so
+// a token stays meaningful across calls. The token is the ID to resume after,
+// which keeps paging correct when volumes are created or deleted mid-walk.
+func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) (*ListVolumesResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if !m.capabilities.VolumeEnumeration {
+		return nil, fmt.Errorf("%w: volume enumeration", ErrUnsupportedCapability)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.volumes))
+	for id := range m.volumes {
+		if id > req.StartingToken {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	pageSize := int(req.PageSize())
+	response := &ListVolumesResponse{Versioned: NewVersioned()}
+	if len(ids) > pageSize {
+		response.NextToken = ids[pageSize-1]
+		ids = ids[:pageSize]
+	}
+	for _, id := range ids {
+		response.Volumes = append(response.Volumes, VolumeRef{ID: id, Handle: m.volumes[id].volume.Handle})
+	}
+	return response, nil
 }
 
 func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest) (*Volume, error) {

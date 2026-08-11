@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -38,6 +39,7 @@ var capabilities = ebsprovider.Capabilities{
 	VolumeSeeding:           true,
 	ReadOnlyPublish:         true,
 	OwnerRouting:            false,
+	VolumeEnumeration:       true,
 }
 
 // volumeMeta carries the request attributes CreateVolume's idempotency check
@@ -328,6 +330,40 @@ func (p *Provider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeReque
 	defer p.mu.Unlock()
 	meta := p.volumeMeta[req.VolumeID]
 	return p.buildVolume(req.VolumeID, info.VirtualSize, meta.availabilityZone), nil
+}
+
+// ListVolumes reads the volumes directory rather than the in-memory maps.
+// The qcow2 files are what actually exists: volumeMeta does not survive a
+// restart, and a volume the provider has forgotten is exactly what a caller
+// enumerating is looking for.
+func (p *Provider) ListVolumes(_ context.Context, req ebsprovider.ListVolumesRequest) (*ebsprovider.ListVolumesResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(p.baseDir, "volumes"))
+	if err != nil {
+		return nil, fmt.Errorf("qemunbdd: read volumes directory: %w", err)
+	}
+
+	pageSize := int(req.PageSize())
+	response := &ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned()}
+	// ReadDir returns entries sorted by filename, so resuming after the token
+	// walks the same order the previous page ended on.
+	for _, entry := range entries {
+		volumeID := strings.TrimSuffix(entry.Name(), ".qcow2")
+		if entry.IsDir() || volumeID == entry.Name() || volumeID <= req.StartingToken {
+			continue
+		}
+		if len(response.Volumes) == pageSize {
+			response.NextToken = response.Volumes[pageSize-1].ID
+			break
+		}
+		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{
+			ID:     volumeID,
+			Handle: p.volumePath(volumeID),
+		})
+	}
+	return response, nil
 }
 
 func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolumeRequest) (*ebsprovider.Volume, error) {

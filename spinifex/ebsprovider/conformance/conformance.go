@@ -24,6 +24,7 @@ var ReferenceCapabilities = ebsprovider.Capabilities{
 	CrashConsistentSnapshot: true,
 	VolumeSeeding:           true,
 	ReadOnlyPublish:         true,
+	VolumeEnumeration:       true,
 }
 
 // capabilitiesOf reads what a provider advertises, so the suite can branch on
@@ -34,6 +35,36 @@ func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	return resp.Capabilities
+}
+
+// maxListPages bounds a drain so a provider whose token fails to advance
+// fails the test instead of hanging it.
+const maxListPages = 100
+
+// drainVolumeIDs walks every page of ListVolumes and returns the IDs in the
+// order they arrived, duplicates included: detecting a token that replays or
+// overshoots a boundary is the point, so this must not deduplicate.
+func drainVolumeIDs(t *testing.T, provider ebsprovider.EBSProvider, maxResults int32) []string {
+	t.Helper()
+	var ids []string
+	var token string
+	for pages := 0; ; pages++ {
+		require.Lessf(t, pages, maxListPages, "ListVolumes did not terminate within %d pages; the next token is not advancing", maxListPages)
+		resp, err := provider.ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{
+			Versioned:     ebsprovider.NewVersioned(),
+			MaxResults:    maxResults,
+			StartingToken: token,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		for _, ref := range resp.Volumes {
+			ids = append(ids, ref.ID)
+		}
+		if resp.NextToken == "" {
+			return ids
+		}
+		token = resp.NextToken
+	}
 }
 
 // SuiteConfig tunes a run for the provider it is pointed at.
@@ -301,6 +332,76 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			provider := newProvider(t)
 			_, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+		})
+	})
+
+	t.Run("ListVolumes", func(t *testing.T) {
+		capabilities := capabilitiesOf(t, newProvider(t))
+
+		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
+			if capabilities.VolumeEnumeration {
+				t.Skip("provider advertises volume enumeration")
+			}
+			_, err := newProvider(t).ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{Versioned: ebsprovider.NewVersioned()})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
+		})
+
+		if !capabilities.VolumeEnumeration {
+			return
+		}
+
+		t.Run("a created volume is enumerated and a deleted one is not", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-list-visible")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			assert.Contains(t, drainVolumeIDs(t, provider, 0), volumeID,
+				"enumeration must report a volume the provider holds; it is the only way to find one whose control-plane document is lost")
+
+			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}))
+			assert.NotContains(t, drainVolumeIDs(t, provider, 0), volumeID,
+				"a deleted volume must stop being enumerated, or the report it feeds accuses storage of holding blocks it released")
+		})
+
+		t.Run("pagination returns every volume exactly once", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			want := []string{cfg.id("vol-list-page-a"), cfg.id("vol-list-page-b"), cfg.id("vol-list-page-c")}
+			for _, volumeID := range want {
+				_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+				require.NoError(t, err)
+			}
+
+			// One volume per page forces every token boundary to be exercised.
+			paged := drainVolumeIDs(t, provider, 1)
+			seen := make(map[string]int, len(paged))
+			for _, id := range paged {
+				seen[id]++
+			}
+			for id, count := range seen {
+				assert.Equalf(t, 1, count, "volume %s appeared %d times across pages; a duplicate means the token replays a boundary", id, count)
+			}
+			for _, volumeID := range want {
+				assert.Containsf(t, paged, volumeID, "volume %s was skipped across pages; a gap means the token overshoots", volumeID)
+			}
+		})
+
+		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
+			provider := newProvider(t)
+			resp, err := provider.ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{
+				Versioned:  ebsprovider.NewVersioned(),
+				MaxResults: ebsprovider.MaxListResults * 10,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.LessOrEqual(t, len(resp.Volumes), int(ebsprovider.MaxListResults),
+				"a page must never exceed MaxListResults; the reply has to fit one NATS message")
+		})
+
+		t.Run("unsupported_version", func(t *testing.T) {
+			_, err := newProvider(t).ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion + 1}})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
 	})
 

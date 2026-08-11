@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,17 +18,69 @@ import (
 type fakeExec struct {
 	calls []string
 	fail  func(name string, args []string) error
+
+	// parts is the kernel's partition view per disk. Seeded by the test and then
+	// moved by the sgdisk calls the installer makes, so the partition-table
+	// assertions can run without a block device.
+	parts map[string][]string
+
+	// stale marks disks whose view never moves however many tables are written
+	// to them: something holds the disk open, BLKRRPART returns EBUSY, and the
+	// kernel keeps serving the old table while sgdisk reports success.
+	stale map[string]bool
+}
+
+// holdOpen makes a disk keep its current partition view forever.
+func (f *fakeExec) holdOpen(disk string) { f.stale[disk] = true }
+
+// seedPartitions gives a disk a pre-existing partition table — the state a
+// drive is in when the node has been installed on before.
+func (f *fakeExec) seedPartitions(disk string, nums ...int) {
+	for _, n := range nums {
+		f.parts[disk] = append(f.parts[disk], filepath.Base(partitionPath(disk, n)))
+	}
+}
+
+// applySgdisk moves the fake kernel view in step with a table rewrite, the way
+// a kernel that honoured every BLKRRPART would: -Z empties it, each -n adds the
+// partition it creates.
+func (f *fakeExec) applySgdisk(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	disk := args[len(args)-1]
+	if f.stale[disk] {
+		return
+	}
+	for i, a := range args {
+		switch {
+		case a == "-Z":
+			f.parts[disk] = nil
+		case a == "-n" && i+1 < len(args):
+			num, _, _ := strings.Cut(args[i+1], ":")
+			n, err := strconv.Atoi(num)
+			if err != nil {
+				continue
+			}
+			f.parts[disk] = append(f.parts[disk], filepath.Base(partitionPath(disk, n)))
+		}
+	}
 }
 
 func fakeCommands(t *testing.T) *fakeExec {
 	t.Helper()
-	f := &fakeExec{}
-	prevRun, prevQuiet, prevEnv := run, runQuiet, runEnv
+	f := &fakeExec{parts: map[string][]string{}, stale: map[string]bool{}}
+	prevRun, prevQuiet, prevEnv, prevParts := run, runQuiet, runEnv, kernelPartitions
 
 	record := func(name string, args ...string) error {
 		f.calls = append(f.calls, strings.TrimSpace(name+" "+strings.Join(args, " ")))
 		if f.fail != nil {
-			return f.fail(name, args)
+			if err := f.fail(name, args); err != nil {
+				return err
+			}
+		}
+		if name == "sgdisk" {
+			f.applySgdisk(args)
 		}
 		return nil
 	}
@@ -35,8 +89,21 @@ func fakeCommands(t *testing.T) *fakeExec {
 	runEnv = func(env []string, name string, args ...string) error {
 		return record(name, append(env, args...)...)
 	}
+	kernelPartitions = func(disk string) ([]string, error) {
+		got := slices.Clone(f.parts[disk])
+		slices.Sort(got)
+		return got, nil
+	}
 
-	t.Cleanup(func() { run, runQuiet, runEnv = prevRun, prevQuiet, prevEnv })
+	// A short settle so a test asserting the stale-table failure does not wait
+	// out the install's real budget.
+	prevTimeout := partitionSettleTimeout
+	partitionSettleTimeout = 10 * time.Millisecond
+
+	t.Cleanup(func() {
+		run, runQuiet, runEnv, kernelPartitions = prevRun, prevQuiet, prevEnv, prevParts
+		partitionSettleTimeout = prevTimeout
+	})
 	return f
 }
 
@@ -114,6 +181,24 @@ func targetSkeleton(t *testing.T, root string) {
 
 // tempDisks builds disks whose device nodes are real files, so the steps that
 // wait for partition nodes to appear can complete.
+// fakeProcTables points the mount and swap readers at fixture tables for the
+// duration of a test.
+func fakeProcTables(t *testing.T, mounts, swaps string) {
+	t.Helper()
+	dir := t.TempDir()
+	point := func(dst *string, name, content string) {
+		prev := *dst
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		*dst = p
+		t.Cleanup(func() { *dst = prev })
+	}
+	point(&procMountsPath, "mounts", mounts)
+	point(&procSwapsPath, "swaps", swaps)
+}
+
 func tempDisks(t *testing.T, n int, gib int64) []Disk {
 	t.Helper()
 	dir := t.TempDir()
@@ -237,21 +322,154 @@ func TestEspSizeMiB(t *testing.T) {
 	}
 }
 
-func TestClearDiskOnlyLabelclearsAnExistingPartition(t *testing.T) {
+// A drive arriving with a previous install's layout must have every partition
+// cleared, not just the one the root filesystem used to be on: a data drive's
+// partition is p1, so a p3-only labelclear leaves a former pool member's ZFS
+// label in place at both ends of the device.
+func TestClearDiskWipesEveryPartitionItFinds(t *testing.T) {
 	f := fakeCommands(t)
-	disks := tempDisks(t, 1, 40)
-	if err := clearDisk(disks[0]); err != nil {
+	d := tempDisks(t, 1, 40)[0]
+	f.seedPartitions(d.Path, biosPartNum, espPartNum, rootPartNum)
+
+	if err := clearDisk(d); err != nil {
 		t.Fatalf("clearDisk: %v", err)
 	}
-	f.mustRun(t, "zpool labelclear -f "+disks[0].PartitionPath(rootPartNum))
+	for _, n := range []int{biosPartNum, espPartNum, rootPartNum} {
+		f.mustRun(t, "zpool labelclear -f "+d.PartitionPath(n))
+		f.mustRun(t, "wipefs -a "+d.PartitionPath(n))
+	}
+	f.mustRun(t, "wipefs -a "+d.Path)
+	f.mustRun(t, "sgdisk -Z "+d.Path)
+}
 
-	f2 := fakeCommands(t)
+func TestClearDiskProbesNoPartitionsOnABlankDrive(t *testing.T) {
+	f := fakeCommands(t)
 	blank := Disk{Path: filepath.Join(t.TempDir(), "sdb")}
+
 	if err := clearDisk(blank); err != nil {
 		t.Fatalf("clearDisk: %v", err)
 	}
-	f2.mustNotRun(t, "labelclear")
-	f2.mustRun(t, "wipefs -a "+blank.Path)
+	f.mustNotRun(t, "labelclear")
+	f.mustRun(t, "wipefs -a "+blank.Path)
+}
+
+// The reported field failure: a drive whose old table the kernel never dropped.
+// Proceeding would format the previous layout's offsets, so the install must
+// stop, and the message must say the table is stale rather than blaming the
+// device node that did not appear.
+func TestClearDiskFailsWhenTheKernelKeepsTheOldTable(t *testing.T) {
+	f := fakeCommands(t)
+	d := tempDisks(t, 1, 40)[0]
+	f.seedPartitions(d.Path, biosPartNum, espPartNum, rootPartNum)
+	// sgdisk writes to the platters and exits 0, but BLKRRPART returned EBUSY,
+	// so the kernel's view never changes.
+	f.holdOpen(d.Path)
+
+	err := clearDisk(d)
+	if err == nil {
+		t.Fatal("clearDisk succeeded against a stale partition table")
+	}
+	for _, want := range []string{d.Path, "still shows partitions", "previous layout"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestClearDiskReleasesMountsAndSwapFirst(t *testing.T) {
+	f := fakeCommands(t)
+	d := tempDisks(t, 1, 40)[0]
+	f.seedPartitions(d.Path, biosPartNum, espPartNum, rootPartNum)
+
+	root, esp := d.PartitionPath(rootPartNum), d.PartitionPath(espPartNum)
+	swapDev := d.PartitionPath(biosPartNum)
+	fakeProcTables(t,
+		fmt.Sprintf("%s /oldroot ext4 rw 0 0\n%s /oldroot/boot/efi vfat rw 0 0\n", root, esp),
+		fmt.Sprintf("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n%s partition 1000 0 -2\n", swapDev),
+	)
+
+	if err := clearDisk(d); err != nil {
+		t.Fatalf("clearDisk: %v", err)
+	}
+	f.mustRun(t, "swapoff "+swapDev)
+
+	// Deepest mountpoint first: unmounting /oldroot while /oldroot/boot/efi is
+	// still attached fails with EBUSY and leaves the disk held.
+	var order []string
+	for _, c := range f.calls {
+		if c == "umount "+root || c == "umount "+esp {
+			order = append(order, c)
+		}
+	}
+	if want := []string{"umount " + esp, "umount " + root}; !slices.Equal(order, want) {
+		t.Errorf("unmount order:\n got %v\nwant %v", order, want)
+	}
+}
+
+// A drive held by md or LVM cannot be released — the ISO ships neither tool —
+// so the operator has to be told what is holding it.
+func TestStaleTableErrorNamesTheHolder(t *testing.T) {
+	f := newFakeSysfs(t, fakeDisk{name: "sda", sectors: 1 << 20, partitions: []string{"sda1"}})
+	f.addHolder("sda", "sda1", "md0")
+
+	prev := kernelPartitions
+	kernelPartitions = readKernelPartitions
+	t.Cleanup(func() { kernelPartitions = prev })
+
+	err := staleTableError(Disk{Path: "/dev/sda"}, nil, []string{"sda1"})
+	if err == nil || !strings.Contains(err.Error(), "held by md0") {
+		t.Fatalf("err = %v, want it to name the md0 holder", err)
+	}
+}
+
+// The reported field failure as a unit test: two drives arrive carrying a
+// previous install's partitions and the third has never been partitioned. All
+// three must be taken over, and the blank one must not be the only one to get
+// a new table.
+func TestPartitionDisksTakesOverDrivesThatAlreadyHavePartitions(t *testing.T) {
+	f := fakeCommands(t)
+	nodes := tempDisks(t, 3, 200)
+	f.seedPartitions(nodes[0].Path, biosPartNum, espPartNum, rootPartNum) // held an OS
+	f.seedPartitions(nodes[1].Path, dataPartNum)                          // held data
+	// nodes[2] arrives blank.
+
+	cfg := DiskConfig{FS: FSExt4}.WithRoles([]RoleMount{
+		{Role: RoleOS, Disk: nodes[0]},
+		{Role: RoleSpinifex, Disk: nodes[1]},
+		{Role: RolePredastore, Disk: nodes[2]},
+	})
+	if err := partitionDisks(cfg); err != nil {
+		t.Fatalf("partitionDisks: %v", err)
+	}
+	for _, d := range nodes {
+		f.mustRun(t, "sgdisk -Z "+d.Path)
+	}
+	f.mustRun(t, "sgdisk", nodes[0].Path, "-n 3:0:-1024M")
+	for _, d := range nodes[1:] {
+		f.mustRun(t, "sgdisk", d.Path, "-n 1:1M:-1024M", "-t 1:8300")
+	}
+}
+
+// A previous OS install leaves p1, p2, p3 — exactly the numbering the boot
+// layout writes. Asserting the expected partitions exist would pass on those
+// stale nodes and the install would format the old offsets, so the erase-stage
+// assertion on an empty table is what has to catch it.
+func TestPartitionOneStopsWhenAnOldTableHasTheSameLayout(t *testing.T) {
+	f := fakeCommands(t)
+	d := tempDisks(t, 1, 200)[0]
+	f.seedPartitions(d.Path, biosPartNum, espPartNum, rootPartNum)
+	f.holdOpen(d.Path)
+
+	err := partitionOne(d, typeLinuxFS)
+	if err == nil {
+		t.Fatal("partitionOne succeeded against a stale partition table")
+	}
+	// Specifically the erase-stage message: reaching the post-write check would
+	// mean the stale nodes had already been accepted.
+	if !strings.Contains(err.Error(), "still shows partitions") {
+		t.Errorf("err = %q, want the erase-stage stale-table message", err)
+	}
+	f.mustNotRun(t, "sgdisk -n")
 }
 
 func TestFormatESPsLabelsEveryMember(t *testing.T) {

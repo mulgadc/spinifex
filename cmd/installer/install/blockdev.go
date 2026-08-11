@@ -45,6 +45,7 @@ var (
 	sysClassBlockDir = "/sys/class/block"
 	devByIDDir       = "/dev/disk/by-id"
 	procMountsPath   = "/proc/mounts"
+	procSwapsPath    = "/proc/swaps"
 )
 
 // ListDisks enumerates install-candidate disks from /sys/block. It reads sysfs
@@ -130,6 +131,144 @@ func partitionPath(disk string, n int) string {
 		return fmt.Sprintf("%sp%d", disk, n)
 	}
 	return fmt.Sprintf("%s%d", disk, n)
+}
+
+// readKernelPartitions returns the partition device names the kernel currently
+// publishes for a disk, sorted.
+//
+// It reads sysfs rather than /dev deliberately. A partition device node
+// outlives the table that created it, so a stale node is indistinguishable
+// from a fresh one by existence alone — which is how a disk whose old table
+// the kernel never dropped passes every check and then gets formatted at the
+// previous layout's offsets.
+func readKernelPartitions(disk string) ([]string, error) {
+	name := filepath.Base(disk)
+	entries, err := os.ReadDir(filepath.Join(sysBlockDir, name))
+	if err != nil {
+		return nil, fmt.Errorf("read the kernel's partition list for %s: %w", disk, err)
+	}
+	var out []string
+	for _, e := range entries {
+		// Partitions are the child directories carrying a "partition" attribute.
+		// "queue", "device" and the plain attribute files sit alongside them.
+		if _, err := os.Stat(filepath.Join(sysBlockDir, name, e.Name(), "partition")); err != nil {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// kernelPartitions is indirected so tests can drive the partition-table
+// assertions without a real block device.
+var kernelPartitions = readKernelPartitions
+
+// partitionDevice maps a kernel partition name back to its device node,
+// resolved alongside the disk it belongs to rather than assuming /dev.
+func partitionDevice(disk, part string) string {
+	return filepath.Join(filepath.Dir(disk), part)
+}
+
+// diskHolders names the md, LVM or device-mapper devices claiming this disk or
+// one of its partitions. A holder is the usual reason the kernel refuses to
+// re-read a partition table, so it is what the operator needs told when the
+// installer gives up on a disk.
+func diskHolders(disk string) []string {
+	name := filepath.Base(disk)
+	dirs := []string{filepath.Join(sysBlockDir, name, "holders")}
+	parts, _ := kernelPartitions(disk)
+	for _, p := range parts {
+		dirs = append(dirs, filepath.Join(sysBlockDir, name, p, "holders"))
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if seen[e.Name()] {
+				continue
+			}
+			seen[e.Name()] = true
+			out = append(out, e.Name())
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// diskMount is one filesystem mounted from a disk the installer is about to
+// erase.
+type diskMount struct {
+	Device     string
+	Mountpoint string
+}
+
+// devicesOnDisk is the set of device paths belonging to a disk: the whole disk
+// and every partition the kernel currently publishes. Matching /proc tables
+// against a set rather than a string prefix keeps /dev/nvme0n1 from claiming
+// /dev/nvme0n11.
+func devicesOnDisk(disk string) map[string]bool {
+	out := map[string]bool{disk: true}
+	parts, _ := kernelPartitions(disk)
+	for _, p := range parts {
+		out[partitionDevice(disk, p)] = true
+	}
+	return out
+}
+
+// mountsOnDisk returns the filesystems mounted from a disk, deepest mountpoint
+// first so a nested mount is released before the one it sits inside.
+func mountsOnDisk(disk string) []diskMount {
+	devs := devicesOnDisk(disk)
+	var out []diskMount
+	for _, fields := range procTable(procMountsPath, 0) {
+		if len(fields) >= 2 && devs[fields[0]] {
+			out = append(out, diskMount{Device: fields[0], Mountpoint: fields[1]})
+		}
+	}
+	slices.SortFunc(out, func(a, b diskMount) int {
+		return strings.Count(b.Mountpoint, "/") - strings.Count(a.Mountpoint, "/")
+	})
+	return out
+}
+
+// swapsOnDisk returns the active swap areas backed by a disk.
+func swapsOnDisk(disk string) []string {
+	devs := devicesOnDisk(disk)
+	var out []string
+	// The first line of /proc/swaps is a column header, not an entry.
+	for _, fields := range procTable(procSwapsPath, 1) {
+		if len(fields) >= 1 && devs[fields[0]] {
+			out = append(out, fields[0])
+		}
+	}
+	return out
+}
+
+// procTable splits a whitespace-delimited /proc table into fields per line,
+// dropping the first skip lines and any blank ones.
+func procTable(path string, skip int) [][]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out [][]string
+	n := 0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		n++
+		if n <= skip {
+			continue
+		}
+		if fields := strings.Fields(line); len(fields) > 0 {
+			out = append(out, fields)
+		}
+	}
+	return out
 }
 
 // byIDPreference orders the /dev/disk/by-id/ namespaces we prefer to name a

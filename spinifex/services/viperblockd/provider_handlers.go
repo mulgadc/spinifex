@@ -60,27 +60,27 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	subs := []struct {
 		subject string
-		handler nats.MsgHandler
+		handler providerMsgHandler
 	}{
 		{ebsprovider.CapabilitiesSubject, handleProviderCapabilities},
-		{ebsprovider.CreateVolumeSubject, func(msg *nats.Msg) { handleCreateVolume(cfg, msg) }},
-		{ebsprovider.GetVolumeSubject, func(msg *nats.Msg) { handleGetVolume(cfg, msg) }},
-		{ebsprovider.ListVolumesSubject, func(msg *nats.Msg) { handleListVolumes(cfg, msg) }},
-		{ebsprovider.ExpandVolumeSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
-		{ebsprovider.DeleteVolumeSubject, func(msg *nats.Msg) { handleDeleteVolume(cfg, nc, msg) }},
-		{ebsprovider.DeleteSnapshotSubject, func(msg *nats.Msg) { handleDeleteSnapshot(cfg, msg) }},
-		{ebsprovider.CopySnapshotSubject, func(msg *nats.Msg) { handleCopySnapshot(cfg, msg) }},
+		{ebsprovider.CreateVolumeSubject, func(ctx context.Context, msg *nats.Msg) { handleCreateVolume(ctx, cfg, msg) }},
+		{ebsprovider.GetVolumeSubject, func(ctx context.Context, msg *nats.Msg) { handleGetVolume(ctx, cfg, msg) }},
+		{ebsprovider.ListVolumesSubject, func(ctx context.Context, msg *nats.Msg) { handleListVolumes(ctx, cfg, msg) }},
+		{ebsprovider.ExpandVolumeSubject, func(ctx context.Context, msg *nats.Msg) { handleExpandVolume(ctx, cfg, msg) }},
+		{ebsprovider.DeleteVolumeSubject, func(ctx context.Context, msg *nats.Msg) { handleDeleteVolume(ctx, cfg, nc, msg) }},
+		{ebsprovider.DeleteSnapshotSubject, func(ctx context.Context, msg *nats.Msg) { handleDeleteSnapshot(ctx, cfg, msg) }},
+		{ebsprovider.CopySnapshotSubject, func(ctx context.Context, msg *nats.Msg) { handleCopySnapshot(ctx, cfg, msg) }},
 	}
 	for _, s := range subs {
-		if _, err := nc.QueueSubscribe(s.subject, "spinifex-workers", s.handler); err != nil {
+		if _, err := nc.QueueSubscribe(s.subject, "spinifex-workers", tracedProviderHandler(s.handler)); err != nil {
 			return fmt.Errorf("subscribe to %s: %w", s.subject, err)
 		}
 	}
 
 	snapshotCreateWildcard := ebsprovider.SnapshotCreateSubjectPrefix + "*"
-	if _, err := nc.QueueSubscribe(snapshotCreateWildcard, "spinifex-workers", func(msg *nats.Msg) {
-		handleCreateSnapshot(cfg, nc, msg)
-	}); err != nil {
+	if _, err := nc.QueueSubscribe(snapshotCreateWildcard, "spinifex-workers", tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+		handleCreateSnapshot(ctx, cfg, nc, msg)
+	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", snapshotCreateWildcard, err)
 	}
 
@@ -93,7 +93,9 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	if err != nil {
 		return fmt.Errorf("build publish subject: %w", err)
 	}
-	if _, err := nc.Subscribe(publishSubject, func(msg *nats.Msg) { handlePublishVolume(cfg, nc, msg) }); err != nil {
+	if _, err := nc.Subscribe(publishSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+		handlePublishVolume(ctx, cfg, nc, msg)
+	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", publishSubject, err)
 	}
 
@@ -101,11 +103,43 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	if err != nil {
 		return fmt.Errorf("build unpublish subject: %w", err)
 	}
-	if _, err := nc.Subscribe(unpublishSubject, func(msg *nats.Msg) { handleUnpublishVolume(cfg, msg) }); err != nil {
+	if _, err := nc.Subscribe(unpublishSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+		handleUnpublishVolume(ctx, cfg, msg)
+	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", unpublishSubject, err)
 	}
 
 	return nil
+}
+
+// providerMsgHandler takes the per-message context so the server span opened
+// for the message reaches the object-store and engine work the handler does.
+type providerMsgHandler func(ctx context.Context, msg *nats.Msg)
+
+// tracedProviderHandler opens a server span per message, joining the caller's
+// trace from its headers, and ends it when the handler returns.
+func tracedProviderHandler(handler providerMsgHandler) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		ctx, span := ebsprovider.StartServerSpan(context.Background(), msg)
+		defer span.End()
+		handler(ctx, msg)
+	}
+}
+
+// respondProvider marshals a wire response, marks this message's span with
+// any error it carries, and sends it. A failed verb must not look like a
+// successful round trip in the trace.
+func respondProvider(ctx context.Context, msg *nats.Msg, data any) {
+	response, err := json.Marshal(data)
+	if err != nil {
+		slog.Error("Failed to marshal response", "type", fmt.Sprintf("%T", data), "err", err)
+		_ = msg.Respond([]byte(`{"Error":"internal marshal failure"}`))
+		return
+	}
+	ebsprovider.RecordResponseError(trace.SpanFromContext(ctx), response)
+	if err := msg.Respond(response); err != nil {
+		slog.Error("Failed to respond to NATS request", "err", err)
+	}
 }
 
 // badRequestError maps a JSON decode failure to the wire error shape.
@@ -168,19 +202,19 @@ func findMountedVolume(cfg *Config, volumeID string) (MountedVolume, bool) {
 	return MountedVolume{}, false
 }
 
-func handleProviderCapabilities(msg *nats.Msg) {
+func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 	var req ebsprovider.GetCapabilitiesRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.capabilities: bad request", "err", err)
-		respondJSON(msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
 		slog.Error("ebs.provider.capabilities: unsupported schema version", "version", req.SchemaVersion)
-		respondJSON(msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
-	respondJSON(msg, ebsprovider.GetCapabilitiesResponse{
+	respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Capabilities: ebsprovider.Capabilities{
 			// Clones read chunks straight out of the source volume's S3
@@ -253,22 +287,22 @@ func listVolumePrefixes(ctx context.Context, store objectstore.ObjectStore, buck
 	return ids, nil
 }
 
-func handleListVolumes(cfg *Config, msg *nats.Msg) {
+func handleListVolumes(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.ListVolumesRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.list: bad request", "err", err)
-		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 
-	ids, err := listVolumePrefixes(context.Background(), providerObjectStoreFactory(cfg), cfg.Bucket)
+	ids, err := listVolumePrefixes(ctx, providerObjectStoreFactory(cfg), cfg.Bucket)
 	if err != nil {
 		slog.Error("ebs.provider.volume.list: failed to enumerate volumes", "err", err)
-		respondJSON(msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("enumerate volumes: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("enumerate volumes: %v", err)})
 		return
 	}
 
@@ -284,7 +318,7 @@ func handleListVolumes(cfg *Config, msg *nats.Msg) {
 		}
 		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{ID: id, Handle: volumeHandle(id)})
 	}
-	respondJSON(msg, response)
+	respondProvider(ctx, msg, response)
 }
 
 // buildProviderVBConfig assembles the viperblock.VB config CreateVolume hands
@@ -316,42 +350,42 @@ func buildProviderVBConfig(cfg *Config, volumeID string, volumeSizeBytes uint64,
 	return vbconfig
 }
 
-func handleCreateVolume(cfg *Config, msg *nats.Msg) {
+func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.CreateVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.create: bad request", "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
 		slog.Error("ebs.provider.volume.create: unsupported schema version", "version", req.SchemaVersion)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
 		slog.Error("ebs.provider.volume.create: invalid volume id", "volume", req.VolumeID)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 	if req.CapacityRange.RequiredBytes <= 0 || (req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid capacity range")})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid capacity range")})
 		return
 	}
 	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("source_snapshot_volume_id is required with source_snapshot_id")})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("source_snapshot_volume_id is required with source_snapshot_id")})
 		return
 	}
 	if err := ebsprovider.ValidateSeedData(req.SeedData); err != nil {
 		slog.Error("ebs.provider.volume.create: seed data rejected", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
 		return
 	}
 	if int64(len(req.SeedData)) > req.CapacityRange.RequiredBytes {
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data is larger than the requested capacity")})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data is larger than the requested capacity")})
 		return
 	}
 	if len(req.SeedData) > 0 && req.SourceSnapshotID != "" {
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data cannot be combined with a source snapshot")})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("seed data cannot be combined with a source snapshot")})
 		return
 	}
 
@@ -360,16 +394,16 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 	case err == nil:
 		if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
 			slog.Error("ebs.provider.volume.create: volume exists with different capacity", "volume", req.VolumeID)
-			respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
 			return
 		}
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Volume: existing})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Volume: existing})
 		return
 	case errors.Is(err, viperblock.ErrStateNotFound):
 		// Volume does not exist yet: fall through and create it.
 	default:
 		slog.Error("ebs.provider.volume.create: existence check failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("check existing volume: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("check existing volume: %v", err)})
 		return
 	}
 
@@ -385,7 +419,7 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
 		slog.Error("ebs.provider.volume.create: new viperblock failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("new viperblock: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("new viperblock: %v", err)})
 		return
 	}
 	defer func() {
@@ -396,30 +430,30 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 
 	if err := vb.Backend.Init(); err != nil {
 		slog.Error("ebs.provider.volume.create: backend init failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("backend init: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("backend init: %v", err)})
 		return
 	}
 	if req.SourceSnapshotID != "" {
 		if perr := verifySourceSnapshot(vb, req.SourceSnapshotID, req.SourceSnapshotVolumeID); perr != nil {
 			slog.Error("ebs.provider.volume.create: source snapshot rejected", "volume", req.VolumeID, "snapshot", req.SourceSnapshotID, "err", perr.Message)
-			respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: perr})
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: perr})
 			return
 		}
 	}
 	if len(req.SeedData) > 0 {
 		if err := seedVolume(vb, req.SeedData); err != nil {
 			slog.Error("ebs.provider.volume.create: seed failed", "volume", req.VolumeID, "bytes", len(req.SeedData), "err", err)
-			respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("seed volume: %v", err)})
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("seed volume: %v", err)})
 			return
 		}
 	} else if err := vb.SaveState(); err != nil {
 		slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
 		return
 	}
 
 	slog.Info("ebs.provider.volume.create: created", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes, "seedBytes", len(req.SeedData))
-	respondJSON(msg, ebsprovider.CreateVolumeResponse{
+	respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Volume: &ebsprovider.Volume{
 			ID:            req.VolumeID,
@@ -514,69 +548,69 @@ func describeVolumeEngine(cfg *Config, volumeID string) (*ebsprovider.Volume, er
 	}, nil
 }
 
-func handleGetVolume(cfg *Config, msg *nats.Msg) {
+func handleGetVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.GetVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.describe: bad request", "err", err)
-		respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 
 	volume, err := describeVolumeEngine(cfg, req.VolumeID)
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
-			respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
 			return
 		}
 		slog.Error("ebs.provider.volume.describe: failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("describe volume: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("describe volume: %v", err)})
 		return
 	}
-	respondJSON(msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Volume: volume})
+	respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Volume: volume})
 }
 
-func handleExpandVolume(cfg *Config, msg *nats.Msg) {
+func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.ExpandVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.expand: bad request", "err", err)
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 	if req.CapacityRange.RequiredBytes <= 0 {
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid capacity range")})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid capacity range")})
 		return
 	}
 
 	if mv, ok := findMountedVolume(cfg, req.VolumeID); ok && mv.VB != nil {
 		slog.Error("ebs.provider.volume.expand: volume is mounted", "volume", req.VolumeID)
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is mounted; detach before expanding", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is mounted; detach before expanding", req.VolumeID)})
 		return
 	}
 
 	vb, err := openVolumeVB(cfg, req.VolumeID)
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
-			respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
 			return
 		}
 		slog.Error("ebs.provider.volume.expand: open volume failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("open volume: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("open volume: %v", err)})
 		return
 	}
 	defer func() {
@@ -586,7 +620,7 @@ func handleExpandVolume(cfg *Config, msg *nats.Msg) {
 
 	currentBytes := utils.SafeUint64ToInt64(vb.GetVolumeSize())
 	if req.CapacityRange.RequiredBytes < currentBytes {
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume expansion is grow-only")})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume expansion is grow-only")})
 		return
 	}
 
@@ -595,17 +629,17 @@ func handleExpandVolume(cfg *Config, msg *nats.Msg) {
 	rawConfig, err := json.Marshal(vc)
 	if err != nil {
 		slog.Error("ebs.provider.volume.expand: marshal volume config failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("marshal volume config: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("marshal volume config: %v", err)})
 		return
 	}
 	if err := applyConfigUpdate(vb, types.EBSConfigUpdateRequest{Volume: req.VolumeID, VolumeConfig: rawConfig}); err != nil {
 		slog.Error("ebs.provider.volume.expand: apply config update failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("apply config update: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("apply config update: %v", err)})
 		return
 	}
 
 	slog.Info("ebs.provider.volume.expand: expanded", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes)
-	respondJSON(msg, ebsprovider.ExpandVolumeResponse{
+	respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Volume: &ebsprovider.Volume{
 			ID:            req.VolumeID,
@@ -673,19 +707,19 @@ func deleteObjectPrefix(ctx context.Context, store objectstore.ObjectStore, buck
 	return nil
 }
 
-func handleDeleteVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
+func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.DeleteVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.delete: bad request", "err", err)
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 
@@ -694,20 +728,19 @@ func handleDeleteVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	// under them turns a refusable API call into later corruption.
 	if _, mounted := findMountedVolume(cfg, req.VolumeID); mounted || volumeMountedElsewhere(nc, req.VolumeID) {
 		slog.Error("ebs.provider.volume.delete: volume is published", "volume", req.VolumeID)
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is published; unpublish it before deleting", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is published; unpublish it before deleting", req.VolumeID)})
 		return
 	}
 
 	store := providerObjectStoreFactory(cfg)
-	ctx := context.Background()
 	if err := deleteObjectPrefix(ctx, store, cfg.Bucket, req.VolumeID+"-efi/"); err != nil {
 		slog.Error("ebs.provider.volume.delete: failed to delete aux objects", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete aux objects: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete aux objects: %v", err)})
 		return
 	}
 	if err := deleteObjectPrefix(ctx, store, cfg.Bucket, req.VolumeID+"/"); err != nil {
 		slog.Error("ebs.provider.volume.delete: failed to delete volume objects", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete volume objects: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete volume objects: %v", err)})
 		return
 	}
 
@@ -720,34 +753,34 @@ func handleDeleteVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	}
 
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
-	respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 }
 
-func handleDeleteSnapshot(cfg *Config, msg *nats.Msg) {
+func handleDeleteSnapshot(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.DeleteSnapshotRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.snapshot.delete: bad request", "err", err)
-		respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.SnapshotID) {
-		respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid snapshot id %q", req.SnapshotID)})
+		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid snapshot id %q", req.SnapshotID)})
 		return
 	}
 
 	store := providerObjectStoreFactory(cfg)
-	if err := deleteObjectPrefix(context.Background(), store, cfg.Bucket, req.SnapshotID+"/"); err != nil {
+	if err := deleteObjectPrefix(ctx, store, cfg.Bucket, req.SnapshotID+"/"); err != nil {
 		slog.Error("ebs.provider.snapshot.delete: failed", "snapshot", req.SnapshotID, "err", err)
-		respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete snapshot objects: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete snapshot objects: %v", err)})
 		return
 	}
 
 	slog.Info("ebs.provider.snapshot.delete: deleted", "snapshot", req.SnapshotID)
-	respondJSON(msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned()})
+	respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned()})
 }
 
 // handleCopySnapshot serves ebs.provider.v1.snapshot.copy. Unlike
@@ -755,23 +788,23 @@ func handleDeleteSnapshot(cfg *Config, msg *nats.Msg) {
 // snapshot's metadata is a couple of small object writes, not a
 // flush-drain-upload sequence slow enough to warrant the accept-then-publish
 // pattern.
-func handleCopySnapshot(cfg *Config, msg *nats.Msg) {
+func handleCopySnapshot(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.CopySnapshotRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.snapshot.copy: bad request", "err", err)
-		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.SourceSnapshotID) || !validVolumeName(req.DestinationSnapshotID) || !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid source snapshot, destination snapshot, or volume id")})
+		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid source snapshot, destination snapshot, or volume id")})
 		return
 	}
 	if req.SourceSnapshotID == req.DestinationSnapshotID {
-		respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("destination snapshot %q must differ from the source", req.DestinationSnapshotID)})
+		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("destination snapshot %q must differ from the source", req.DestinationSnapshotID)})
 		return
 	}
 
@@ -779,20 +812,20 @@ func handleCopySnapshot(cfg *Config, msg *nats.Msg) {
 	if err != nil {
 		switch {
 		case errors.Is(err, errSnapshotDestinationExists):
-			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("snapshot %s already exists", req.DestinationSnapshotID)})
+			respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("snapshot %s already exists", req.DestinationSnapshotID)})
 		case errors.Is(err, viperblock.ErrSnapshotVolumeMismatch):
-			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
+			respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
 		case errors.Is(err, viperblock.ErrStateNotFound), errors.Is(err, os.ErrNotExist):
-			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("source snapshot %s not found on volume %s", req.SourceSnapshotID, req.VolumeID)})
+			respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("source snapshot %s not found on volume %s", req.SourceSnapshotID, req.VolumeID)})
 		default:
 			slog.Error("ebs.provider.snapshot.copy: failed", "volume", req.VolumeID, "source", req.SourceSnapshotID, "destination", req.DestinationSnapshotID, "err", err)
-			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("copy snapshot: %v", err)})
+			respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("copy snapshot: %v", err)})
 		}
 		return
 	}
 
 	slog.Info("ebs.provider.snapshot.copy: copied", "volume", req.VolumeID, "source", req.SourceSnapshotID, "destination", req.DestinationSnapshotID)
-	respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Snapshot: snapshot})
+	respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Snapshot: snapshot})
 }
 
 // snapshotConfigExists probes whether snapshotID's config object is already
@@ -855,15 +888,15 @@ func copySnapshotMetaWithVB(vb *viperblock.VB, volumeID, srcSnapshotID, dstSnaps
 	}, nil
 }
 
-func handleCreateSnapshot(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
+func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.CreateSnapshotRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.snapshot.create: bad request", "err", err)
-		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
-		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 
@@ -878,22 +911,22 @@ func handleCreateSnapshot(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	}
 	if !validVolumeName(subjectVolumeID) || subjectVolumeID != req.VolumeID {
 		slog.Error("ebs.provider.snapshot.create: subject/volume mismatch", "subject", msg.Subject, "volume", req.VolumeID)
-		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume id %q in subject does not match request volume id %q", subjectVolumeID, req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume id %q in subject does not match request volume id %q", subjectVolumeID, req.VolumeID)})
 		return
 	}
 	if !validVolumeName(req.SnapshotID) {
-		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid snapshot id %q", req.SnapshotID)})
+		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid snapshot id %q", req.SnapshotID)})
 		return
 	}
 
 	completionSubject, err := ebsprovider.SnapshotCompletionSubject(req.SnapshotID)
 	if err != nil {
-		respondJSON(msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%s", err.Error())})
+		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%s", err.Error())})
 		return
 	}
 
 	operationID := utils.GenerateResourceID("op")
-	respondJSON(msg, ebsprovider.CreateSnapshotResponse{
+	respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{
 		Versioned:         ebsprovider.NewVersioned(),
 		OperationID:       operationID,
 		CompletionSubject: completionSubject,
@@ -1049,10 +1082,18 @@ func ownerVerbHandlers(cfg *Config, nc *nats.Conn) []struct {
 		subjectFn func(string) (string, error)
 		handler   nats.MsgHandler
 	}{
-		{ebsprovider.SnapshotCreateOwnerSubject, func(msg *nats.Msg) { handleCreateSnapshot(cfg, nc, msg) }},
-		{ebsprovider.SnapshotCopyOwnerSubject, func(msg *nats.Msg) { handleCopySnapshot(cfg, msg) }},
-		{ebsprovider.ExpandVolumeOwnerSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
-		{ebsprovider.GetVolumeOwnerSubject, func(msg *nats.Msg) { handleGetVolume(cfg, msg) }},
+		{ebsprovider.SnapshotCreateOwnerSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+			handleCreateSnapshot(ctx, cfg, nc, msg)
+		})},
+		{ebsprovider.SnapshotCopyOwnerSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+			handleCopySnapshot(ctx, cfg, msg)
+		})},
+		{ebsprovider.ExpandVolumeOwnerSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+			handleExpandVolume(ctx, cfg, msg)
+		})},
+		{ebsprovider.GetVolumeOwnerSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+			handleGetVolume(ctx, cfg, msg)
+		})},
 	}
 }
 
@@ -1502,26 +1543,20 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 // front for the same nbdkit mount path ebs.mount uses. It is node-addressed
 // (registerProviderSubjects only subscribes it when cfg.NodeName is set), so
 // unlike the legacy handler there is no queue-group fallback to reason about.
-func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
-	// Carry the caller's trace context into the mount span, as ebs.mount does.
-	// Attach latency is the thing this boundary exists to measure, so an
-	// orphaned span here would lose exactly the timing that matters.
-	ctx, span := utils.StartConsumerSpan(msg)
-	defer span.End()
-
+func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.PublishVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.publish: bad request", "err", err)
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
 		slog.Error("ebs.provider.volume.publish: unsupported schema version", "version", req.SchemaVersion)
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 	// Idempotent republish: a volume this node already has mounted must not
@@ -1531,11 +1566,11 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 		// Access mode is fixed when nbdkit starts, so a republish asking for
 		// the other mode cannot be answered with the running export.
 		if mv.ReadOnly != req.ReadOnly {
-			respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is already published read_only=%t on this node", req.VolumeID, mv.ReadOnly)})
+			respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is already published read_only=%t on this node", req.VolumeID, mv.ReadOnly)})
 			return
 		}
 		slog.Info("ebs.provider.volume.publish: already published, returning existing attachment", "volume", req.VolumeID)
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{
 			Versioned: ebsprovider.NewVersioned(),
 			Published: &ebsprovider.PublishedVolume{
 				VolumeID: req.VolumeID,
@@ -1548,18 +1583,17 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 
 	mountResp, err := mountVolume(ctx, cfg, nc, req.VolumeID, req.ReadOnly)
 	if err != nil {
-		utils.MarkSpanError(span, err)
 		if errors.Is(err, viperblock.ErrStateNotFound) {
-			respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
 			return
 		}
 		slog.Error("ebs.provider.volume.publish: mount failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("mount volume: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("mount volume: %v", err)})
 		return
 	}
 
 	slog.Info("ebs.provider.volume.publish: published", "volume", req.VolumeID, "node", cfg.NodeName)
-	respondJSON(msg, ebsprovider.PublishVolumeResponse{
+	respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Published: &ebsprovider.PublishedVolume{
 			VolumeID: req.VolumeID,
@@ -1573,23 +1607,20 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 // same seal-decision path ebs.unmount uses. A failed seal is reported as an
 // error while leaving the volume in cfg.MountedVolumes (see unmountVolume),
 // never as success.
-func handleUnpublishVolume(cfg *Config, msg *nats.Msg) {
-	ctx, span := utils.StartConsumerSpan(msg)
-	defer span.End()
-
+func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.UnpublishVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.unpublish: bad request", "err", err)
-		respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
 	if req.SchemaVersion != ebsprovider.SchemaVersion {
 		slog.Error("ebs.provider.volume.unpublish: unsupported schema version", "version", req.SchemaVersion)
-		respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
 	if !validVolumeName(req.VolumeID) {
-		respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
 
@@ -1600,15 +1631,14 @@ func handleUnpublishVolume(cfg *Config, msg *nats.Msg) {
 		// than erroring, matching the legacy path's unmountResponseError.
 		if unmountResp.NotFound {
 			slog.Info("ebs.provider.volume.unpublish: already unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
-			respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+			respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 			return
 		}
-		utils.MarkSpanError(span, err)
 		slog.Error("ebs.provider.volume.unpublish: unmount failed", "volume", req.VolumeID, "err", err)
-		respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("unmount volume: %v", err)})
+		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("unmount volume: %v", err)})
 		return
 	}
 
 	slog.Info("ebs.provider.volume.unpublish: unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
-	respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+	respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 }

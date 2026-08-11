@@ -11,6 +11,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// subjectPrefix is common to every subject in the contract, including the
+// per-node mount/unmount subjects that have no constant of their own.
+const subjectPrefix = "ebs.provider.v1."
+
 const (
 	CapabilitiesSubject   = "ebs.provider.v1.capabilities"
 	CreateVolumeSubject   = "ebs.provider.v1.volume.create"
@@ -50,19 +54,19 @@ func PublishSubject(nodeID string) (string, error) {
 	if err := validateSubjectToken(nodeID); err != nil {
 		return "", err
 	}
-	return "ebs.provider.v1." + nodeID + ".mount", nil
+	return subjectPrefix + nodeID + ".mount", nil
 }
 
 func UnpublishSubject(nodeID string) (string, error) {
 	if err := validateSubjectToken(nodeID); err != nil {
 		return "", err
 	}
-	return "ebs.provider.v1." + nodeID + ".unmount", nil
+	return subjectPrefix + nodeID + ".unmount", nil
 }
 
 // ownerSubjectPrefix is common to every owner-routed subject OwnerSubject
 // builds: ebs.provider.v1.owner.{volumeID}.{verb}.
-const ownerSubjectPrefix = "ebs.provider.v1.owner."
+const ownerSubjectPrefix = subjectPrefix + "owner."
 
 // Owner verbs are a closed set: only these four operations have an
 // owner-routed variant, so callers use the named wrapper functions below
@@ -288,10 +292,14 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 		return nil, fmt.Errorf("snapshot completion subject mismatch: got %q, want %q", accepted.CompletionSubject, completionSubject)
 	}
 
-	msg, err := completionSub.NextMsgWithContext(ctx)
+	waitCtx, waitSpan := startCompletionSpan(ctx, verbSnapshotCreate, completionSubject)
+	defer waitSpan.End()
+	msg, err := completionSub.NextMsgWithContext(waitCtx)
 	if err != nil {
+		RecordSpanError(waitSpan, err)
 		return nil, fmt.Errorf("wait for snapshot %s completion: %w", req.SnapshotID, err)
 	}
+	RecordResponseError(waitSpan, msg.Data)
 	var completed CreateSnapshotResponse
 	if err := json.Unmarshal(msg.Data, &completed); err != nil {
 		return nil, fmt.Errorf("decode snapshot completion: %w", err)
@@ -388,15 +396,23 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", subject, err)
 	}
+
+	request := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
+	ctx, span := startClientSpan(ctx, subject, request.Header)
+	defer span.End()
+
 	requestCtx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
-	msg, err := p.conn.RequestWithContext(requestCtx, subject, payload)
+	msg, err := p.conn.RequestMsgWithContext(requestCtx, request)
 	if err != nil {
+		RecordSpanError(span, err)
 		return fmt.Errorf("request %s: %w", subject, err)
 	}
 	if err := json.Unmarshal(msg.Data, output); err != nil {
+		RecordSpanError(span, err)
 		return fmt.Errorf("decode %s response: %w", subject, err)
 	}
+	RecordResponseError(span, msg.Data)
 	return nil
 }
 

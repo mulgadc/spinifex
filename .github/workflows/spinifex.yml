@@ -80,9 +80,11 @@ jobs:
       # side of the boundary: qemu-img/qemu-nbd/qemu-io back qemunbdd, which
       # shares no code with viperblock, and nbdkit plus viperblock's plugin
       # back viperblockd, the provider production actually uses. Without them
-      # the suite runs against MemoryProvider alone.
+      # the suite runs against MemoryProvider alone. libnbd-bin supplies the
+      # third-party NBD client (nbdinfo/nbdcopy) that judges the published
+      # export by something outside this codebase.
       - name: Install conformance tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils nbdkit
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils nbdkit libnbd-bin
 
       - name: Build viperblock nbdkit plugin
         run: make -C viperblock go_build_nbd

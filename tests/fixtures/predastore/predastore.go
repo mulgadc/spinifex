@@ -166,11 +166,15 @@ func Start(t *testing.T) *Fixture {
 
 	// SSL_CERT_FILE injects the cert into the OS trust store for clients that
 	// verify it rather than skipping verification (objectstore's S3 client,
-	// for one). t.Setenv reverts when this test ends, while the cluster lives
-	// on for the whole binary, so the pool is loaded here and now: crypto/x509
-	// caches it behind a sync.Once, and this call is what fixes our cert in it
-	// for every later test in the process.
-	t.Setenv("SSL_CERT_FILE", certPath)
+	// for one). Set for the life of the process, not the calling test: the
+	// daemon outlives that test, and child processes started by later tests
+	// (nbdkit, whose plugin talks to this daemon) read the environment when
+	// they are spawned, long after a t.Setenv would have reverted it.
+	if err := os.Setenv("SSL_CERT_FILE", certPath); err != nil { //nolint:usetesting // must outlive the calling test, like the daemon
+		t.Fatalf("predastore fixture: set SSL_CERT_FILE: %v", err)
+	}
+	// crypto/x509 caches the pool behind a sync.Once, so this call is what
+	// fixes our cert in it for every in-process client that follows.
 	if _, err := x509.SystemCertPool(); err != nil {
 		t.Fatalf("predastore fixture: load system cert pool: %v", err)
 	}

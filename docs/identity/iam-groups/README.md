@@ -1,6 +1,6 @@
 ---
-title: "IAM Groups"
-description: "Organise IAM users into groups and manage permissions once for the whole team."
+title: "AWS IAM Groups for Shared User Permissions"
+description: "Organise AWS IAM users into groups, manage membership, and attach managed or inline policies once for the whole team instead of granting them user by user."
 category: "Identity"
 tags:
   - iam
@@ -15,9 +15,9 @@ resources:
     url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_groups.html"
 ---
 
-# IAM Groups
+# AWS IAM Groups for Shared User Permissions
 
-> Organise IAM users into groups and manage permissions once for the whole team.
+> Organise AWS IAM users into groups, manage membership, and attach managed or inline policies once for the whole team instead of granting them user by user.
 
 ## Table of Contents
 
@@ -33,11 +33,11 @@ resources:
 
 ## Overview
 
-A group is a collection of IAM users. Policies attached to a group apply to every member, so instead of attaching the same policy to each developer individually, you attach it once to a `developers` group and manage membership.
+A group is a collection of [IAM users](/docs/iam-users-and-policies). Policies attached to a group apply to every member, so instead of attaching the same policy to each developer individually, you attach it once to a `developers` group and manage membership.
 
 Members inherit both the group's **attached managed policies** and its **inline policies**, combined with any policies on the user itself. Policy evaluation is the same as everywhere else: an explicit `Deny` in any applicable policy wins, and anything not allowed is denied.
 
-Groups cannot be nested, and a group is not a principal — it cannot sign requests or own access keys. Like all IAM resources, groups are scoped to the account that creates them.
+Groups cannot be nested, and a group is not a principal — it cannot sign requests or own access keys. The identity you assume to get credentials is an [IAM role](/docs/iam-roles-and-instance-profiles), not a group. Like all IAM resources, groups are scoped to the account that creates them.
 
 ## Prerequisites
 

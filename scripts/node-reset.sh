@@ -181,6 +181,14 @@ for dir in "${WIPE_DIRS[@]}"; do
         ! \( "${KEEP_TOP[@]}" \) -delete 2>/dev/null || true
 done
 
+# The wipe above keeps directories, so the pre-cutover cluster/host-N/node-M
+# skeleton would survive beside the node-<id> dirs written now. predastore owns
+# this tree, not setup.sh, so removing it outright loses no installed ownership.
+if ! $KEEP_DATA && [ -d "$DATA_DIR/predastore/cluster" ]; then
+    log "removing the predastore cluster tree"
+    run sudo rm -rf "$DATA_DIR/predastore/cluster"
+fi
+
 # Directories may survive — a mountpoint cannot be removed, and neither can the
 # path leading down to one. Files may not: a surviving file is state that would
 # carry into the new cluster, which is the exact failure this script exists to

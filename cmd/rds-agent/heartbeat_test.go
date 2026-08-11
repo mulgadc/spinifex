@@ -17,7 +17,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
 	content := []byte("work_mem = '4096'\n")
-	if err := os.WriteFile(engine.parametersPath(), content, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), content, 0o600); err != nil {
 		t.Fatalf("write installed parameters: %v", err)
 	}
 
@@ -25,7 +25,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	h := newHeartbeater(cp, engine.probe, engine, 0)
 	h.beat(context.Background())
 
-	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read last known good: %v", err)
 	}

@@ -15,10 +15,11 @@ import (
 	"time"
 )
 
-// PostgreSQL's non-exclusive backup API ties the backup to the session that
-// started it: when that session ends, for any reason, the backup is aborted.
-// That is what makes the hold self-expiring — a control plane that dies mid
-// snapshot cannot leave the engine in backup mode forever.
+// Both engines tie a backup hold to the session that took it: PostgreSQL aborts
+// a non-exclusive backup when its session ends, and MariaDB releases a BACKUP
+// STAGE with the connection that started it. That is what makes the hold
+// self-expiring — a control plane that dies mid snapshot cannot leave the engine
+// in backup mode forever.
 type engineSession interface {
 	// Runs sql and waits for the engine to finish it.
 	Exec(ctx context.Context, sql string) error
@@ -31,7 +32,8 @@ type engineSession interface {
 type sessionRunner func(ctx context.Context, c command) (engineSession, error)
 
 // Written after every statement so the reader knows the engine is done with it.
-// The statements this carries return LSNs, so it cannot appear in a result.
+// The statements this carries return LSNs and backup stages, so it cannot appear
+// in a result.
 const sessionSentinel = "--rds-agent-ready--"
 
 // The backup mode currently held, and the timer that ends it regardless of what
@@ -42,98 +44,65 @@ type quiesceHold struct {
 	expiry  *time.Timer
 }
 
-// Puts the engine into backup mode: the datadir is checkpointed and the engine
-// stops writing over the pages a snapshot is about to read. The hold is released
-// by Unquiesce, or by its own deadline, whichever comes first.
-func (e *postgresEngine) Quiesce(ctx context.Context, label string, hold time.Duration) error {
+// The hold bookkeeping, which is the same for both engines: only the statements
+// that take and release it differ, not the single-hold rule or the deadline that
+// releases it whatever happens to the caller.
+type quiesceState struct {
+	// Guarded because the expiry timer releases the hold on its own goroutine.
+	mu   sync.Mutex
+	held *quiesceHold
+}
+
+// The two things every quiesce needs, checked before a session is opened so a
+// malformed command costs the engine nothing.
+func validateQuiesceRequest(label string, hold time.Duration) error {
 	if label == "" {
 		return errors.New("quiesce requires a backup label")
 	}
 	if hold <= 0 {
 		return errors.New("quiesce requires a positive hold deadline")
 	}
+	return nil
+}
 
-	// Held across the whole start, so a second quiesce waits and then finds the
-	// first one's hold rather than opening a concurrent backup alongside it.
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.held != nil {
-		return fmt.Errorf("the engine is already quiesced for backup %s", e.held.label)
-	}
-
-	// Deliberately not the command's context: the session has to outlive the call
-	// that started it, and its own deadline is what bounds it instead.
-	session, err := e.startSess(context.WithoutCancel(ctx), command{
-		Name:  e.psql,
-		Args:  e.psqlArgs(),
-		Env:   []string{"PATH=" + defaultGuestPath, "RDS_BACKUP_LABEL=" + label},
-		Stdin: "",
-		User:  e.osUser,
-	})
-	if err != nil {
-		return fmt.Errorf("open a backup session: %w", err)
-	}
-
-	// fast forces an immediate checkpoint rather than spreading it over the
-	// checkpoint interval, which would hold the snapshot open for minutes.
-	const sql = `\getenv label RDS_BACKUP_LABEL
-SELECT pg_backup_start(:'label', fast => true);
-`
-	if err := session.Exec(ctx, sql); err != nil {
-		if closeErr := session.Close(); closeErr != nil {
-			slog.Warn("rds-agent: closing a failed backup session", "err", closeErr)
-		}
-		return fmt.Errorf("put the engine into backup mode: %w", err)
-	}
-
-	e.held = &quiesceHold{
+// Records the hold and arms its deadline. Called with mu held, so a second
+// quiesce waits and then finds this hold rather than opening a concurrent
+// backup alongside it.
+func (q *quiesceState) beginHoldLocked(label string, session engineSession, hold time.Duration) {
+	q.held = &quiesceHold{
 		label:   label,
 		session: session,
-		expiry:  time.AfterFunc(hold, func() { e.expireQuiesce(label) }),
+		expiry:  time.AfterFunc(hold, func() { q.expire(label) }),
 	}
 	slog.Info("rds-agent: engine quiesced for backup", "label", label, "hold", hold)
-	return nil
 }
 
-// Ends the backup cleanly. A missing hold is an error rather than a silent
-// success: it means the deadline fired first, so the snapshot the control plane
-// just took was not taken against a held checkpoint.
-func (e *postgresEngine) Unquiesce(ctx context.Context) error {
-	e.mu.Lock()
-	held := e.held
-	e.held = nil
-	e.mu.Unlock()
+// Takes the hold off the engine, if one is still there, and disarms its
+// deadline. The caller ends the session, because the statement that releases the
+// backup has to run on it first.
+func (q *quiesceState) takeHold() *quiesceHold {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	if held == nil {
-		return errors.New("the engine is not quiesced; the backup hold had already expired")
+	held := q.held
+	q.held = nil
+	if held != nil {
+		held.expiry.Stop()
 	}
-	held.expiry.Stop()
-
-	// The stop has to run on the session that started the backup, and the session
-	// is closed either way — the engine aborts an unstopped backup with it.
-	execErr := held.session.Exec(ctx, "SELECT pg_backup_stop();\n")
-	closeErr := held.session.Close()
-	if execErr != nil {
-		return fmt.Errorf("take the engine out of backup mode: %w", errors.Join(execErr, closeErr))
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close the backup session: %w", closeErr)
-	}
-	slog.Info("rds-agent: engine released from backup mode", "label", held.label)
-	return nil
+	return held
 }
 
-// The deadline. Ending the session is enough — the engine aborts the backup it
-// was holding — so this never has to reach the engine itself.
-func (e *postgresEngine) expireQuiesce(label string) {
-	e.mu.Lock()
-	held := e.held
+// The deadline. Ending the session is enough — both engines release the hold
+// with it — so this never has to reach the engine itself.
+func (q *quiesceState) expire(label string) {
+	q.mu.Lock()
+	held := q.held
 	if held == nil || held.label != label {
-		e.mu.Unlock()
+		q.mu.Unlock()
 		return
 	}
-	e.held = nil
-	e.mu.Unlock()
+	q.held = nil
+	q.mu.Unlock()
 
 	slog.Warn("rds-agent: backup hold expired; releasing the engine", "label", label)
 	if err := held.session.Close(); err != nil {
@@ -141,21 +110,27 @@ func (e *postgresEngine) expireQuiesce(label string) {
 	}
 }
 
-// A psql child with its stdin held open, so statements can be fed to it one at a
-// time and the engine keeps seeing a single session.
-type psqlSession struct {
+// A client child with its stdin held open, so statements can be fed to it one at
+// a time and the engine keeps seeing a single session.
+type clientSession struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	stderr *bytes.Buffer
+	// The statement that makes this client print the sentinel, which is the only
+	// part of a held session that differs between engines.
+	sentinel string
 
 	mu     sync.Mutex
 	closed bool
 }
 
-var _ engineSession = (*psqlSession)(nil)
+var _ engineSession = (*clientSession)(nil)
 
 func execSessionRunner(ctx context.Context, c command) (engineSession, error) {
+	if c.SentinelStatement == "" {
+		return nil, fmt.Errorf("%s was started as a session with no sentinel statement", c.Name)
+	}
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Env = c.Env
 	if c.User != "" {
@@ -180,24 +155,30 @@ func execSessionRunner(ctx context.Context, c command) (engineSession, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", c.Name, err)
 	}
-	return &psqlSession{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: &stderr}, nil
+	return &clientSession{
+		cmd:      cmd,
+		stdin:    stdin,
+		stdout:   bufio.NewReader(stdout),
+		stderr:   &stderr,
+		sentinel: c.SentinelStatement,
+	}, nil
 }
 
-// Feeds sql and waits for the sentinel that follows it. ON_ERROR_STOP makes psql
-// exit on a failed statement, so a sentinel that never arrives is the failure
-// itself and the engine's own message is on stderr.
-func (s *psqlSession) Exec(ctx context.Context, sql string) error {
+// Feeds sql and waits for the sentinel that follows it. Both clients are run in
+// a mode that exits on a failed statement, so a sentinel that never arrives is
+// the failure itself and the engine's own message is on stderr.
+func (s *clientSession) Exec(ctx context.Context, sql string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return errors.New("the backup session is closed")
 	}
-	if _, err := io.WriteString(s.stdin, sql+"\\echo "+sessionSentinel+"\n"); err != nil {
+	if _, err := io.WriteString(s.stdin, sql+s.sentinel); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(s.stderr.String()))
 	}
 
-	// Read on its own goroutine so a psql that never answers costs the caller its
-	// deadline rather than blocking it forever.
+	// Read on its own goroutine so a client that never answers costs the caller
+	// its deadline rather than blocking it forever.
 	done := make(chan error, 1)
 	go func() { done <- s.awaitSentinel() }()
 	select {
@@ -208,7 +189,7 @@ func (s *psqlSession) Exec(ctx context.Context, sql string) error {
 	}
 }
 
-func (s *psqlSession) awaitSentinel() error {
+func (s *clientSession) awaitSentinel() error {
 	for {
 		line, err := s.stdout.ReadString('\n')
 		if strings.TrimSpace(line) == sessionSentinel {
@@ -226,7 +207,7 @@ func (s *psqlSession) awaitSentinel() error {
 // Closing stdin ends the script, and the wait reaps the child. A session that
 // will not end is killed, because leaving it is what would keep the engine in
 // backup mode.
-func (s *psqlSession) Close() error {
+func (s *clientSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

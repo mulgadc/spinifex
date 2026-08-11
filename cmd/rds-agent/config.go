@@ -57,6 +57,10 @@ type config struct {
 	EngineUser    string
 	RCService     string
 	EngineService string
+	// Where the engine records the pid its probe checks for liveness, for an
+	// engine whose own client cannot tell a server still recovering from one that
+	// is not running at all.
+	EnginePidFile string
 
 	// Where the data volume is mounted, and the two kernel surfaces a storage
 	// grow resolves its device from. Overridable so a test can point them at
@@ -86,6 +90,7 @@ func loadConfig(envFile string) config {
 		EngineUser:           get("RDS_ENGINE_USER"),
 		RCService:            get("RDS_RC_SERVICE"),
 		EngineService:        get("RDS_ENGINE_SERVICE"),
+		EnginePidFile:        get("RDS_ENGINE_PIDFILE"),
 		DataMount:            get("RDS_DATA_MOUNT"),
 		PollWait:             defaultPollWait,
 	}
@@ -147,6 +152,9 @@ func (c *config) applyLayout(layout engineLayout) {
 	}
 	if c.EngineService == "" {
 		c.EngineService = layout.service
+	}
+	if c.EnginePidFile == "" {
+		c.EnginePidFile = layout.pidFile
 	}
 	if c.DataMount == "" {
 		c.DataMount = layout.dataMount

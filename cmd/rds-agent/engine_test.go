@@ -372,7 +372,7 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
 		t.Errorf("third call = %+v, want the pending-restart read", runner.calls[2])
 	}
-	installed, err := os.ReadFile(engine.parametersPath())
+	installed, err := os.ReadFile(engine.params.installedPath())
 	if err != nil {
 		t.Fatalf("read installed parameters: %v", err)
 	}
@@ -392,32 +392,11 @@ func TestPostgresEngine_ApplyParametersKeepsRepairSetWhenRestartTimesOut(t *test
 	if err == nil || !strings.Contains(err.Error(), "wait for the engine") {
 		t.Fatalf("ApplyParameters error = %v, want the repair wait failure", err)
 	}
-	installed, readErr := os.ReadFile(engine.parametersPath())
+	installed, readErr := os.ReadFile(engine.params.installedPath())
 	if readErr != nil {
 		t.Fatalf("read installed parameters: %v", readErr)
 	}
 	if !strings.Contains(string(installed), "work_mem = '8192'") {
 		t.Errorf("installed parameters = %q, want the checked repair set retained", installed)
-	}
-}
-
-// Through the service manager, so the supervisor records the engine as stopped
-// and does not restart it underneath a VM that is going down.
-func TestPostgresEngine_StopGoesThroughTheServiceManager(t *testing.T) {
-	runner := &recordingRunner{}
-	engine := newTestEngine(t, runner.run)
-
-	if err := engine.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("ran %d commands, want 1", len(runner.calls))
-	}
-	call := runner.calls[0]
-	if filepath.Base(call.Name) != "rc-service" {
-		t.Errorf("ran %q, want rc-service", call.Name)
-	}
-	if len(call.Args) != 2 || call.Args[0] != "postgresql" || call.Args[1] != "stop" {
-		t.Errorf("args = %v, want [postgresql stop]", call.Args)
 	}
 }

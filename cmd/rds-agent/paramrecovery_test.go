@@ -49,7 +49,7 @@ func TestPostgresEngine_ApplyParametersRollsBackAValueTheEngineRejects(t *testin
 		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
 	}
 
-	installed, err := os.ReadFile(engine.parametersPath())
+	installed, err := os.ReadFile(engine.params.installedPath())
 	if err != nil {
 		t.Fatalf("read the installed parameters: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestPostgresEngine_ApplyParametersWithdrawsTheFirstRejectedSet(t *testing.T
 		[]handlers_rds.Parameter{{Name: "work_mem", Value: "0"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
 	}
-	if _, err := os.Stat(engine.parametersPath()); !os.IsNotExist(err) {
+	if _, err := os.Stat(engine.params.installedPath()); !os.IsNotExist(err) {
 		t.Errorf("the rejected include is still installed (stat err = %v)", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestPostgresEngine_ApplyBeforeFirstHeartbeatSeedsLastKnownGood(t *testing.T
 	runner := &pendingAfterReloadRunner{}
 	engine := newTestEngine(t, runner.run)
 	first := []byte("shared_buffers = '32768'\n")
-	if err := os.WriteFile(engine.parametersPath(), first, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), first, 0o600); err != nil {
 		t.Fatalf("write serving parameter set: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestPostgresEngine_ApplyBeforeFirstHeartbeatSeedsLastKnownGood(t *testing.T
 	if !slices.Equal(pending, []string{"shared_buffers"}) {
 		t.Errorf("pending = %v, want shared_buffers", pending)
 	}
-	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read last known good: %v", err)
 	}
@@ -152,10 +152,10 @@ func TestPostgresEngine_ServingSnapshotWaitsForParameterApply(t *testing.T) {
 	}
 	engine := newTestEngine(t, runner.run)
 	first := []byte("shared_buffers = '32768'\n")
-	if err := os.WriteFile(engine.parametersPath(), first, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), first, 0o600); err != nil {
 		t.Fatalf("write serving parameter set: %v", err)
 	}
-	if err := os.WriteFile(engine.lastGoodPath(), first, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.lastGoodPath(), first, 0o600); err != nil {
 		t.Fatalf("write last known good: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestPostgresEngine_ServingSnapshotWaitsForParameterApply(t *testing.T) {
 		t.Error("serving snapshot completed while the parameter apply held its transaction")
 	}
 
-	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read last known good: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPostgresEngine_LastKnownGoodTracksTheServingSet(t *testing.T) {
 	}
 	assertLastGood := func(value string) {
 		t.Helper()
-		lastGood, err := os.ReadFile(engine.lastGoodPath())
+		lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 		if err != nil {
 			t.Fatalf("read the last known good parameters: %v", err)
 		}
@@ -239,8 +239,8 @@ func TestPostgresEngine_LastKnownGoodTracksTheServingSet(t *testing.T) {
 	apply("16384")
 	assertLastGood("8192")
 
-	if strings.HasSuffix(engine.lastGoodPath(), ".conf") {
-		t.Errorf("the rollback copy at %s would be included by the engine", engine.lastGoodPath())
+	if strings.HasSuffix(engine.params.lastGoodPath(), ".conf") {
+		t.Errorf("the rollback copy at %s would be included by the engine", engine.params.lastGoodPath())
 	}
 }
 
@@ -248,7 +248,7 @@ func TestPostgresEngine_RecordServingParametersSkipsPendingRestart(t *testing.T)
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
 	first := []byte("shared_buffers = '32768'\n")
-	if err := os.WriteFile(engine.parametersPath(), first, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), first, 0o600); err != nil {
 		t.Fatalf("write first parameter set: %v", err)
 	}
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
@@ -256,14 +256,14 @@ func TestPostgresEngine_RecordServingParametersSkipsPendingRestart(t *testing.T)
 	}
 
 	second := []byte("shared_buffers = '65536'\n")
-	if err := os.WriteFile(engine.parametersPath(), second, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), second, 0o600); err != nil {
 		t.Fatalf("write pending parameter set: %v", err)
 	}
 	runner.out = "shared_buffers\n"
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
 		t.Fatalf("record with a pending restart: %v", err)
 	}
-	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read last known good: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestPostgresEngine_RecordServingParametersSkipsPendingRestart(t *testing.T)
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
 		t.Fatalf("record the restarted parameter set: %v", err)
 	}
-	lastGood, err = os.ReadFile(engine.lastGoodPath())
+	lastGood, err = os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read advanced last known good: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestPostgresEngine_RestoreLastKnownGoodParameters(t *testing.T) {
 	if !restored {
 		t.Fatal("did not restore a set that differs from the last known good")
 	}
-	installed, err := os.ReadFile(engine.parametersPath())
+	installed, err := os.ReadFile(engine.params.installedPath())
 	if err != nil {
 		t.Fatalf("read the installed parameters: %v", err)
 	}

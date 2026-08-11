@@ -71,6 +71,18 @@ grep -q '^rc_need="rds-init"' /etc/conf.d/mariadb || {
     exit 1
 }
 
+# rds-agent's health probe reads this pid to tell a server replaying its redo log
+# from one that is not running at all. Nothing generated can move the path: the
+# packaged service passes --pid-file on mysqld_safe's command line, which beats
+# any option file. A package that renamed it would leave every instance reporting
+# an engine that is not there, and the rollback guard restarting a healthy one.
+grep -q '^pidfile="/run/mysqld/\$RC_SVCNAME.pid"$' /etc/init.d/mariadb &&
+    grep -q -- '--pid-file=\$pidfile' /etc/init.d/mariadb || {
+    echo "[rds-mariadb-setup] /etc/init.d/mariadb no longer starts the engine with its pidfile at /run/mysqld/mariadb.pid"
+    grep -nE 'pidfile|command_args' /etc/init.d/mariadb
+    exit 1
+}
+
 # Bind /dev/console to the serial port so userspace boot output reaches ttyS0,
 # which the orchestrator captures host-side. Linux makes the last console= the
 # controlling one, and stock Alpine lists tty0 last — reorder so ttyS0 wins.

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // Stamps the engine a real image bakes and loads the configuration against it,
@@ -74,14 +76,57 @@ func TestNewEngine_RefusesAnImageWithNoEngineStamp(t *testing.T) {
 }
 
 func TestNewEngine_RefusesAnEngineItDoesNotImplement(t *testing.T) {
-	cfg := testLoadConfig(t, "mariadb")
+	cfg := testLoadConfig(t, "oracle")
 
 	_, err := newEngine(cfg, nil, nil, nil)
 	if err == nil {
 		t.Fatal("newEngine built an engine this agent does not implement")
 	}
-	if !strings.Contains(err.Error(), "mariadb") {
+	if !strings.Contains(err.Error(), "oracle") {
 		t.Errorf("error = %v, want it to name the engine the image bakes", err)
+	}
+}
+
+// The implementation is the agent's, but the definition it validates names and
+// classifies parameters against is the control plane's. An agent whose control
+// plane offers no definition for the engine its image bakes refuses rather than
+// inventing one.
+func TestNewEngine_FollowsWhetherTheControlPlaneOffersTheBakedEngine(t *testing.T) {
+	cfg := testLoadConfig(t, engineMariaDB)
+	probe, err := newProbe(cfg, staticProbe(0))
+	if err != nil {
+		t.Fatalf("newProbe: %v", err)
+	}
+
+	built, err := newEngine(cfg, nil, nil, probe)
+	if _, offered := handlers_rds.LookupEngine(engineMariaDB); offered != nil {
+		if err == nil {
+			t.Fatal("built a MariaDB engine while the control plane offers no definition for it")
+		}
+		if !strings.Contains(err.Error(), engineMariaDB) {
+			t.Errorf("error = %v, want it to name the engine the image bakes", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("newEngine: %v", err)
+	}
+	if _, ok := built.(*mariadbEngine); !ok {
+		t.Errorf("newEngine built %T for a MariaDB image", built)
+	}
+}
+
+// The probe reads the pidfile Alpine's packaged service starts mariadbd with,
+// because nothing in the generated configuration can move it: the service passes
+// --pid-file on the command line, which beats an option file.
+func TestLoadConfig_TakesTheMariaDBPidfileFromTheLayout(t *testing.T) {
+	cfg := testLoadConfig(t, engineMariaDB)
+
+	if cfg.EnginePidFile != engineLayouts[engineMariaDB].pidFile {
+		t.Errorf("pidfile = %q, want the MariaDB layout's", cfg.EnginePidFile)
+	}
+	if cfg.EnginePidFile == "" {
+		t.Error("an engine whose probe needs a pidfile was given none")
 	}
 }
 

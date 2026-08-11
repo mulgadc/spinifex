@@ -2,6 +2,7 @@ package viperblockd
 
 import (
 	"crypto/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,12 +26,13 @@ type recordingS3 struct {
 
 	mu       sync.Mutex
 	requests []string
+	conns    map[net.Conn]struct{}
 }
 
 func newRecordingS3(t *testing.T, configPath string, config []byte) *recordingS3 {
 	t.Helper()
-	r := &recordingS3{}
-	r.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	r := &recordingS3{conns: map[net.Conn]struct{}{}}
+	r.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.requests = append(r.requests, req.Method+" "+req.URL.RequestURI())
 		r.mu.Unlock()
@@ -53,8 +55,23 @@ func newRecordingS3(t *testing.T, configPath string, config []byte) *recordingS3
 		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
+	r.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state != http.StateNew {
+			return
+		}
+		r.mu.Lock()
+		r.conns[c] = struct{}{}
+		r.mu.Unlock()
+	}
+	r.Start()
 	t.Cleanup(r.Close)
 	return r
+}
+
+func (r *recordingS3) connCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.conns)
 }
 
 func (r *recordingS3) matching(pred func(string) bool) []string {
@@ -128,4 +145,27 @@ func TestDescribeVolume_ReadsWithoutOpeningTheVolume(t *testing.T) {
 		"a describe wrote to the volume it was only asked about")
 	require.Empty(t, server.matching(func(r string) bool { return strings.Contains(r, "list-type=2") }),
 		"a describe paid for a reachability list it did not need")
+}
+
+// TestDescribeVolume_ReusesOneConnection is what makes the single request a
+// describe now issues cheap. Each viperblock backend builds its own HTTP client
+// unless handed one, and a client per describe is a connection pool per
+// describe — so the one request pays for the handshake every time.
+func TestDescribeVolume_ReusesOneConnection(t *testing.T) {
+	const volume = "vol-describeconn001"
+	key := testMasterKey(t)
+	server := newRecordingS3(t, "/"+volume+"/config.json", seedVolumeConfig(t, volume, key))
+
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.S3Host = server.URL
+	cfg.masterKey = key
+
+	for range 3 {
+		_, err := describeVolumeEngine(t.Context(), cfg, volume)
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 1, server.connCount(),
+		"three describes opened three connections, so each one paid its own setup")
 }

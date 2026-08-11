@@ -22,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	vbtypes "github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
-	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -408,14 +407,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, utils.SafeInt64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
-	s3cfg := vbs3.S3Config{
-		VolumeName: req.VolumeID,
-		Bucket:     cfg.Bucket,
-		Region:     cfg.Region,
-		AccessKey:  cfg.AccessKey,
-		SecretKey:  cfg.SecretKey,
-		Host:       admin.DialTarget(cfg.S3Host),
-	}
+	s3cfg := cfg.volumeS3Config(req.VolumeID)
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
 		slog.Error("ebs.provider.volume.create: new viperblock failed", "volume", req.VolumeID, "err", err)
@@ -1021,14 +1013,7 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 		}, nil
 	}
 
-	s3cfg := vbs3.S3Config{
-		VolumeName: volumeID,
-		Bucket:     cfg.Bucket,
-		Region:     cfg.Region,
-		AccessKey:  cfg.AccessKey,
-		SecretKey:  cfg.SecretKey,
-		Host:       admin.DialTarget(cfg.S3Host),
-	}
+	s3cfg := cfg.volumeS3Config(volumeID)
 	vbconfig := &viperblock.VB{
 		VolumeName:        volumeID,
 		VolumeSize:        1, // Recalculated on LoadState.
@@ -1135,14 +1120,7 @@ func unsubscribeOwnerSubjects(volumeName string, subs []*nats.Subscription) {
 // sizing (0 for -efi), StopChunkUploader (nbdkit owns the data path),
 // Backend.Init, LoadState. Shared by mountVolume and startup recovery.
 func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, int, error) {
-	s3cfg := vbs3.S3Config{
-		VolumeName: volumeName,
-		Bucket:     cfg.Bucket,
-		Region:     cfg.Region,
-		AccessKey:  cfg.AccessKey,
-		SecretKey:  cfg.SecretKey,
-		Host:       admin.DialTarget(cfg.S3Host),
-	}
+	s3cfg := cfg.volumeS3Config(volumeName)
 
 	// TODO: Improve based on system availability. Default 128MB cache
 	defaultCache := (128 * 1024 * 1024) / int(viperblock.DefaultBlockSize)

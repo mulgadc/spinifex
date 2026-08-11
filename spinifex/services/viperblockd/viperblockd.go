@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -144,6 +145,12 @@ type Config struct {
 
 	masterKey *masterkey.Key
 
+	// s3HTTPClient is shared by every viperblock backend this service builds.
+	// One client per volume would be one connection pool per volume, so every
+	// engine open and state read would pay its own TLS handshake.
+	s3HTTPClientOnce sync.Once
+	s3HTTPClient     *http.Client
+
 	// sealVolume overrides how a detached volume is sealed to predastore.
 	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
 	// inject here rather than pointing S3Host at an unreachable endpoint: the
@@ -238,26 +245,35 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 	}
 }
 
+// volumeS3Config builds the backend config for one volume. Every viperblock
+// backend this service constructs goes through here so they all share one
+// connection pool.
+func (cfg *Config) volumeS3Config(volumeName string) s3.S3Config {
+	cfg.s3HTTPClientOnce.Do(func() { cfg.s3HTTPClient = s3.NewHTTPClient() })
+	return s3.S3Config{
+		VolumeName: volumeName,
+		Bucket:     cfg.Bucket,
+		Region:     cfg.Region,
+		AccessKey:  cfg.AccessKey,
+		SecretKey:  cfg.SecretKey,
+		Host:       admin.DialTarget(cfg.S3Host),
+		HTTPClient: cfg.s3HTTPClient,
+	}
+}
+
 // volumeVBConfig builds the engine and backend config for one volume. Shared
 // by the read-write open and the read-only state read so the two cannot drift
 // on encryption, bucket or base directory.
 func volumeVBConfig(cfg *Config, volumeName string) (viperblock.VB, s3.S3Config) {
 	return viperblock.VB{
-			VolumeName:        volumeName,
-			VolumeSize:        1, // Recalculated on LoadState.
-			BaseDir:           cfg.BaseDir,
-			VolumeConfig:      viperblock.VolumeConfig{},
-			MasterKey:         cfg.masterKey,
-			EncryptionEnabled: cfg.masterKey != nil,
-			GCEnabled:         cfg.GCEnabled,
-		}, s3.S3Config{
-			VolumeName: volumeName,
-			Bucket:     cfg.Bucket,
-			Region:     cfg.Region,
-			AccessKey:  cfg.AccessKey,
-			SecretKey:  cfg.SecretKey,
-			Host:       admin.DialTarget(cfg.S3Host),
-		}
+		VolumeName:        volumeName,
+		VolumeSize:        1, // Recalculated on LoadState.
+		BaseDir:           cfg.BaseDir,
+		VolumeConfig:      viperblock.VolumeConfig{},
+		MasterKey:         cfg.masterKey,
+		EncryptionEnabled: cfg.masterKey != nil,
+		GCEnabled:         cfg.GCEnabled,
+	}, cfg.volumeS3Config(volumeName)
 }
 
 // readVolumeState reads and verifies a volume's persisted state without

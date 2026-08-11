@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +22,15 @@ import (
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/assert"
 )
+
+// TestMain drains the shared predastore fixture once every test has run. The
+// fixture outlives any single test on purpose, so this is the only point at
+// which its cluster goroutines can be stopped rather than abandoned.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	testpredastore.Stop()
+	os.Exit(code)
+}
 
 // Test credentials from config, mirrored from the shared fixture
 // (testpredastore.AccessKey etc.) so this file has a single source of truth

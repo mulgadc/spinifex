@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 )
 
 // TestMain amortises the embedded NATS+JetStream server across every test in
@@ -48,6 +50,10 @@ func TestMain(m *testing.M) {
 	sharedNATSHarness = h
 
 	code := m.Run()
+
+	// The predastore fixture outlives any single test on purpose, so this is
+	// the only point at which its cluster goroutines can be drained.
+	testpredastore.Stop()
 
 	report := suiteConformance.report(policy, mode)
 	fmt.Fprintln(os.Stderr, report)

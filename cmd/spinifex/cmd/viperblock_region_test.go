@@ -36,7 +36,7 @@ func TestPredastoreTemplateBucketsUseConfiguredRegion(t *testing.T) {
 		Buckets []struct {
 			Name   string `toml:"name"`
 			Region string `toml:"region"`
-		} `toml:"buckets"`
+		} `toml:"bucket"`
 	}
 	require.NoError(t, toml.Unmarshal([]byte(content), &parsed))
 

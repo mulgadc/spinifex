@@ -17,10 +17,10 @@ import (
 )
 
 // segscanOracleNode is the fixture node this test scans. The fixture's RS
-// config is data=3/parity=2 across all 5 configured nodes (see
-// tests/fixtures/predastore.Start's config), so every PutObject places
-// exactly one shard — one live extent — on every node, node-1 included.
-const segscanOracleNode = "node-1"
+// config is data=3/parity=2 across exactly 5 blob nodes (see
+// tests/fixtures/predastore's topology), so every PutObject places exactly
+// one shard — one live extent — on every one of them, node-2 included.
+const segscanOracleNode = "node-2"
 
 // TestSegscanOracle_PutOverwriteDelete drives real S3 writes against the
 // predastore fixture and asserts scripts/segscan's live / dead-tombstoned /
@@ -50,7 +50,7 @@ func TestSegscanOracle_PutOverwriteDelete(t *testing.T) {
 		_, _ = cli.DeleteBucket(&s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 	})
 
-	nodeDir := filepath.Join(fixture.DataDir, "store", segscanOracleNode)
+	nodeDir := filepath.Join(fixture.DataDir, segscanOracleNode)
 	const key = "segscan-oracle/object"
 
 	scan := func() *segscanoracle.Report {

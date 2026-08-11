@@ -7,8 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useAdmin } from "@/contexts/admin-context"
 import {
   adminStorageStatusQueryOptions,
-  type DBNodeStatus,
-  type ShardNode,
+  type BlobNode,
+  type MetaNodeStatus,
 } from "@/queries/admin"
 
 export const Route = createFileRoute("/_auth/s3/service-metrics")({
@@ -31,11 +31,11 @@ function ServiceMetricsPage() {
   }
 
   const encoding = data?.encoding
-  const dbNodes = data?.db_nodes ?? []
-  const shardNodes = data?.shard_nodes ?? []
+  const metaNodes = data?.meta_nodes ?? []
+  const blobNodes = data?.blob_nodes ?? []
 
-  const allHealthy = dbNodes.length > 0 && dbNodes.every((n) => n.healthy)
-  const anyUnhealthy = dbNodes.some((n) => !n.healthy)
+  const allHealthy = metaNodes.length > 0 && metaNodes.every((n) => n.healthy)
+  const anyUnhealthy = metaNodes.some((n) => !n.healthy)
 
   return (
     <>
@@ -62,22 +62,22 @@ function ServiceMetricsPage() {
                 </div>
               </div>
               <div>
-                <span className="text-muted-foreground">DB Nodes</span>
+                <span className="text-muted-foreground">Meta Nodes</span>
                 <div className="mt-1 font-mono font-medium">
-                  {dbNodes.length}
+                  {metaNodes.length}
                 </div>
               </div>
               <div>
-                <span className="text-muted-foreground">Shard Nodes</span>
+                <span className="text-muted-foreground">Blob Nodes</span>
                 <div className="mt-1 font-mono font-medium">
-                  {shardNodes.length}
+                  {blobNodes.length}
                 </div>
               </div>
               <div>
                 <span className="text-muted-foreground">Cluster Health</span>
                 <div className="mt-1">
                   <ClusterHealthBadge
-                    nodeCount={dbNodes.length}
+                    nodeCount={metaNodes.length}
                     allHealthy={allHealthy}
                     anyUnhealthy={anyUnhealthy}
                   />
@@ -97,32 +97,32 @@ function ServiceMetricsPage() {
           </CardContent>
         </Card>
 
-        {/* Section 2: DB Consensus Nodes */}
+        {/* Section 2: Meta Consensus Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">DB Consensus Nodes (Raft)</CardTitle>
+            <CardTitle className="text-sm">
+              Meta Consensus Nodes (Raft)
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            {dbNodes.length === 0 ? (
+            {metaNodes.length === 0 ? (
               <p className="text-xs text-muted-foreground">No data</p>
             ) : (
-              <DBNodesTable nodes={dbNodes} />
+              <MetaNodesTable nodes={metaNodes} />
             )}
           </CardContent>
         </Card>
 
-        {/* Section 3: Shard Nodes */}
+        {/* Section 3: Blob Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">
-              Object Storage Shard Nodes
-            </CardTitle>
+            <CardTitle className="text-sm">Object Storage Blob Nodes</CardTitle>
           </CardHeader>
           <CardContent>
-            {shardNodes.length === 0 ? (
+            {blobNodes.length === 0 ? (
               <p className="text-xs text-muted-foreground">No data</p>
             ) : (
-              <ShardNodesTable nodes={shardNodes} />
+              <BlobNodesTable nodes={blobNodes} />
             )}
           </CardContent>
         </Card>
@@ -152,7 +152,7 @@ function ClusterHealthBadge({
   return <Badge variant="secondary">Unknown</Badge>
 }
 
-function DBNodesTable({ nodes }: { nodes: DBNodeStatus[] }) {
+function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
@@ -209,7 +209,7 @@ function DBNodesTable({ nodes }: { nodes: DBNodeStatus[] }) {
   )
 }
 
-function ShardNodesTable({ nodes }: { nodes: ShardNode[] }) {
+function BlobNodesTable({ nodes }: { nodes: BlobNode[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">

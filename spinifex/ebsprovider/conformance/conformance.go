@@ -187,6 +187,30 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			assert.Equal(t, ebsprovider.VolumeStateAvailable, restored.State)
 		})
 
+		// The snapshot records its own origin, so a request naming a different
+		// one is checkable and wrong. Accepting it resolves the snapshot's
+		// blocks against a volume they were never written to.
+		t.Run("invalid_argument on a source volume the snapshot did not come from", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-wrongorigin-src"),
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+			})
+			require.NoError(t, err)
+			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
+				Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-wrongorigin"), VolumeID: cfg.id("vol-wrongorigin-src"),
+			})
+			require.NoError(t, err)
+
+			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-wrongorigin-restored"),
+				CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+				SourceSnapshotID: snap.ID, SourceSnapshotVolumeID: cfg.id("vol-wrongorigin-other"),
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+		})
+
 		t.Run("unsupported_version", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{

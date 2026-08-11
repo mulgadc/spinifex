@@ -224,6 +224,13 @@ func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolum
 		if req.CapacityRange.RequiredBytes < snapInfo.VirtualSize {
 			return nil, fmt.Errorf("%w: requested capacity is smaller than snapshot %s", ebsprovider.ErrInvalidArgument, req.SourceSnapshotID)
 		}
+		// Only refuse an origin we can disprove: a snapshot file left by an
+		// earlier process has no snapshotMeta entry, so its origin is unknown
+		// rather than mismatched.
+		if snapMeta, ok := p.snapshotMeta[req.SourceSnapshotID]; ok && snapMeta.sourceVolumeID != req.SourceSnapshotVolumeID {
+			return nil, fmt.Errorf("%w: snapshot %s was taken from volume %q, not %q",
+				ebsprovider.ErrInvalidArgument, req.SourceSnapshotID, snapMeta.sourceVolumeID, req.SourceSnapshotVolumeID)
+		}
 		if _, err := p.run.Run(ctx, "qemu-img", "create", "-f", "qcow2", "-b", snapPath, "-F", "qcow2", volPath, sizeArg); err != nil {
 			return nil, fmt.Errorf("create volume %s from snapshot %s: %w", req.VolumeID, req.SourceSnapshotID, err)
 		}

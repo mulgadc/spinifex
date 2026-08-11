@@ -238,6 +238,22 @@ Object storage used for:
 - SSH public key storage (`/bucket/ec2/{key-name}.pub`)
 - Volume metadata and configuration
 
+Spinifex runs Predastore in-process: `spx service predastore start` loads `/etc/spinifex/predastore/predastore.toml`, selects the `[[host]]` naming this machine, and serves it until the process is signalled. The topology is written by `spx admin init` / `join` from the servers that form the cluster.
+
+One `[[host]]` is one process. The nodes pinned to it under `[[host.node]]` carry the roles:
+
+| Role | Port | Responsibility |
+|------|------|----------------|
+| `gate` | TCP 8443 | The S3 API. Holds no cluster state; dials the meta and blob nodes to serve a request. |
+| `blob` | UDP 6660 | Erasure-coded object shards, encrypted at rest under this host's master key. |
+| `meta` | UDP 7660 | Raft replica of global state — buckets and the object index. |
+
+Ports are unique within a host but repeat across the cluster, so a multi-node cluster puts one node of each role on every machine and every machine uses the same three ports. Nodes sharing a host talk over an in-process pipe and bind no socket; nodes on other hosts are reached over QUIC, authenticated by the cluster CA.
+
+A single-node install is the same arrangement with one host: seven nodes — a gate, three blob and three meta — colocated in one process, needing seven distinct ports (8443, 6660–6662, 7660–7662) to stay unique within the host even though only the gate opens a listener. It has no code path of its own.
+
+The daemon reports the topology on `spinifex.storage.config` by parsing the config file. It does not connect to Predastore to do so, and no Predastore node exposes a status endpoint.
+
 ## Configuration
 
 Cluster configuration (`spinifex/config/config.go`):

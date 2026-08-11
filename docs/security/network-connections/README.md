@@ -85,9 +85,9 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 | 4432 | Formation server | HTTPS | External (bootstrap only) | Cluster join coordination; active only while a join token is valid. See *Formation port lifecycle* below. | Short-lived bearer token + TLS¹ |
 | 4222 | spinifex-nats (client) | NATS + TLS | Cluster | Internal service bus for EC2/EBS/VPC/S3 handlers | Token + mutual TLS (cluster CA) |
 | 4248 | spinifex-nats (cluster) | NATS + TLS | Cluster | Inter-node NATS federation | Token + mutual TLS (cluster CA) |
-| 8443 | spinifex-predastore | HTTPS | Cluster | S3-compatible object storage (AMIs, snapshots, user objects) | AWS SigV4 + TLS |
-| 6660–6662 | predastore (Raft) | TCP | Cluster | Metadata consensus (3 nodes) | Cluster network only |
-| 9991–9993 | predastore (data shards) | TCP | Cluster | Erasure-coded data shard transport | Cluster network only |
+| 8443 | spinifex-predastore (gate) | HTTPS | Cluster | S3-compatible object storage (AMIs, snapshots, user objects) | AWS SigV4 + TLS |
+| 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
+| 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
 | 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd | Cluster network only; TLS planned |
 | 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state | Cluster network only; TLS planned |
 | 6643 | OVN Northbound DB (RAFT) | OVSDB/TCP | Cluster | NB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
@@ -96,6 +96,10 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 | socket / dynamic TCP | nbdkit (Viperblock) | NBD | Host-local / cluster | Block device transport for guest EBS volumes | Unix socket by default; TCP only in remote/DPU mode |
 
 ¹ **Formation port lifecycle.** 4432 opens during `spx admin init` / `spx admin join` while a bootstrap token is outstanding and closes once the cluster is formed (token TTL default 30 min, `--token-ttl`). The server presents an ephemeral self-signed cert that pre-dates trust bootstrap, so the joining node does not verify the certificate chain for this single dial. Authenticity rests on the operator supplying the leader address out-of-band plus possession of the bearer token. Document in the security plan so reviewers do not flag 4432 as a persistent open port.
+
+**Predastore ports.** A Predastore cluster is described in `/etc/spinifex/predastore/predastore.toml` as a set of `[[host]]` blocks — one per machine, each running a single process — with the nodes pinned to it declared under `[[host.node]]`. There are three roles: a `gate` serving the S3 API, a `blob` node holding erasure-coded object shards, and a `meta` node in the Raft quorum over global state. Ports must be unique within a host but are not unique across the cluster, so **every machine uses the same three ports** — 8443, 6660 and 7660. It is three fixed ports per machine, not a range, and adding machines does not widen it.
+
+Nodes on the same host talk over an in-process pipe and bind no socket at all, so a single-node install opens only 8443; 6660 and 7660 appear only once a second host exists. The gate is dialled by S3 clients but never by peer nodes, so it binds no QUIC socket of its own — it takes an ephemeral UDP port to dial out with.
 
 **Development-only listeners.** When `dev_networking=true`, QEMU opens arbitrary host TCP ports for SSH port-forwarding into guest VMs. Production installs (the `/etc/spinifex` layout) do not enable this; it must not appear on compliance nodes.
 
@@ -114,7 +118,7 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 | `https://d2yp8ipz5jfqcw.cloudfront.net` | Alpine image for managed HAProxy load-balancer | HTTPS | TLS + checksum verification |
 | `https://install.mulgadc.com/install` | One-shot install telemetry POST on `spx admin init` / `join`. | HTTPS | TLS |
 
-**To peer nodes (cluster-internal):** NATS federation (4248), Predastore S3 (8443), OVN NB/SB (6641/6642) — see [§3](#3-cross-node-internal-connections) for encryption and verification of each. The daemon also probes local Predastore Raft status at `<bind IP>:6660/status` (TLS, cluster CA) and local NATS monitoring at `127.0.0.1:8222/varz` (loopback HTTP).
+**To peer nodes (cluster-internal):** NATS federation (4248), Predastore S3 (8443), OVN NB/SB (6641/6642) — see [§3](#3-cross-node-internal-connections) for encryption and verification of each. The daemon also polls local NATS monitoring at `127.0.0.1:8222/varz` (loopback HTTP). It opens no connection to Predastore for status: the storage topology it reports comes from reading `predastore.toml`, and no Predastore node serves a status endpoint.
 
 **Update checks and metadata.** Spinifex does not check for updates and does not consume a cloud metadata service (`169.254.169.254` is served *by* the cluster to guest VMs). Node software updates come from the operator's OS package channel. The install-telemetry endpoint above is the only vendor-operated destination contacted by a node; closed-egress deployments should disable it and record the opt-out in the security plan.
 
@@ -127,14 +131,14 @@ Control-plane and data-plane traffic between Spinifex nodes, for completeness an
 | Connection | Port(s) | Encryption / Auth | Notes |
 |-----------|---------|-------------------|-------|
 | NATS cluster routes | 4248 | Mutual TLS + cluster token | Full mesh between NATS servers |
-| Predastore S3 | 8443 | TLS + AWS SigV4 | Cross-node object reads/writes |
-| Predastore Raft | 6660–6662 | Cluster network only | Metadata consensus |
-| Predastore shards | 9991–9993 | Cluster network only | Erasure-coded data shards |
+| Predastore S3 (gate) | TCP 8443 | TLS + AWS SigV4 | Cross-node object reads/writes |
+| Predastore blob | UDP 6660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Erasure-coded object shards. Same port on every machine. |
+| Predastore meta | UDP 7660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Raft consensus over buckets and the object index. Same port on every machine. |
 | OVN NB/SB (client) | 6641 / 6642 | Cluster network only (TLS planned) | Network control plane; vpcd and ovn-controller dial the quorum |
 | OVN NB/SB (RAFT) | 6643 / 6644 | Cluster network only (TLS planned) | NB/SB database replication across the 3 quorum nodes |
 | OVN tunnels (Geneve) | UDP 6081 | None | Tenant traffic overlay between chassis, inside the cluster subnet |
 
-Nodes **must** sit on a network segment that is not routed to tenant/guest VMs or to the internet. Predastore Raft/shards and OVN DBs are cluster-internal and must not be reachable from anywhere else.
+Nodes **must** sit on a network segment that is not routed to tenant/guest VMs or to the internet. The Predastore blob and meta transports and the OVN DBs are cluster-internal and must not be reachable from anywhere else.
 
 ## 4. Limiting Controls
 
@@ -145,8 +149,8 @@ Default external surface is three listeners — **9999** (AWS API), **3000** (UI
 tcp dport { 22, 9999, 3000 } accept
 
 # Cluster-only: replace 10.0.1.0/24 with your cluster CIDR
-ip saddr 10.0.1.0/24 tcp dport { 4222, 4248, 8443, 6641-6644, 6660-6662, 9991-9993 } accept
-ip saddr 10.0.1.0/24 udp dport 6081 accept
+ip saddr 10.0.1.0/24 tcp dport { 4222, 4248, 8443, 6641-6644 } accept
+ip saddr 10.0.1.0/24 udp dport { 6081, 6660, 7660 } accept
 
 # Default deny
 tcp dport 0-65535 drop
@@ -163,7 +167,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 |------|------|----------|
 | `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. |
 | `/etc/spinifex/nats.conf` | `listen`, `cluster.listen`, `cluster.routes`, `http`, `tls`, `cluster.authorization` | NATS client/cluster/monitoring listeners, peer routes, TLS, cluster token. |
-| `/etc/spinifex/predastore.toml` | `[[host]].bind_addr`, `[[host]].public_addr`, `[[node]].role`, `tls.*` | Predastore intra-cluster listener (one socket per host, carrying every node pinned to it), node placement, TLS certs. The S3 listener itself is set by the service's `--host`/`--port`. |
+| `/etc/spinifex/predastore/predastore.toml` | `[[host]].bind_addr`, `[[host]].addr`, `[[host]].tls_cert`, `[[host]].tls_key`, `[[host.node]].role`, `[[host.node]].port` | Predastore host and node layout: `bind_addr` is the address the host's sockets bind, `addr` is the address peer hosts dial it on, and both carry no port — the nodes pinned to the host supply their own. The service's `--host`/`--port` override the bind address and the gate's S3 port. |
 | OVN packages (`ovn-central`, `ovn-host`) | `ovn-nb-db`, `ovn-sb-db` (via `ovs-vsctl set open_vswitch …`) | OVN DB bind addresses. |
 | Spinifex UI service | Built-in defaults: `host = "0.0.0.0"`, `port = 3000`. No `spinifex.toml` block today. | UI listener. |
 | `spx admin init` / `spx admin join` | `--port`, `--token-ttl`, `--no-telemetry` (or `SPX_NO_TELEMETRY=1`) | Formation port, token TTL, telemetry opt-out. |

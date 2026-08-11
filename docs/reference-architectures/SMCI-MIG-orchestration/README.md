@@ -138,7 +138,9 @@ sudo systemctl status spinifex.target
 
 ### 4. Attach Predastore storage
 
-Spinifex distributes the Predastore object storage volume across multiple nodes using Reed–Solomon encoding for data redundancy. This chassis has four NVMe drives — one for the OS, three dedicated to data — so we back each Predastore storage node with its own physical drive, giving us fault-tolerant distributed storage on a single machine — conceptually similar to RAID 5, where data and parity are spread across drives so a single drive failure is recoverable.
+Spinifex spreads Predastore's object shards across multiple blob nodes using Reed–Solomon encoding for data redundancy. This chassis has four NVMe drives — one for the OS, three dedicated to data — so we back each blob node with its own physical drive, giving us fault-tolerant storage on a single machine — conceptually similar to RAID 5, where data and parity are spread across drives so a single drive failure is recoverable.
+
+A single-node install is one Predastore host running seven nodes, each with a directory named for its node ID under `/var/lib/spinifex/predastore/cluster`. The three blob nodes are `node-2`, `node-3` and `node-4`, and they are the ones worth their own drive: the gate keeps no data, and the three meta nodes hold only the Raft log for buckets and the object index.
 
 Confirm drive assignments with `lsblk` before proceeding, as device names vary between systems.
 
@@ -148,20 +150,17 @@ lsblk   # identify the OS drive and the three data drives
 # Stop services so Predastore isn't writing while we relocate its data directories
 sudo systemctl stop spinifex.target
 
-# --- Repeat the block below for each data drive (node-1/nvme-1, node-2/nvme-2, node-3/nvme-3) ---
+# --- Repeat the block below for each data drive (node-2/nvme-1, node-3/nvme-2, node-4/nvme-3) ---
 
 # Mount the physical drive at a stable path
 sudo mkdir -p /mnt/nvme-1
 sudo mount /dev/nvme1n1 /mnt/nvme-1
-sudo mkdir -p /mnt/nvme-1/nodes /mnt/nvme-1/db
 
-# Move Predastore's node data and metadata off the OS drive onto the physical NVMe
-sudo mv /var/lib/spinifex/predastore/distributed/nodes/node-1 /mnt/nvme-1/nodes/node-1
-sudo mv /var/lib/spinifex/predastore/distributed/db/node-1    /mnt/nvme-1/db/node-1
+# Move the blob node's data off the OS drive onto the physical NVMe
+sudo mv /var/lib/spinifex/predastore/cluster/node-2 /mnt/nvme-1/node-2
 
-# Symlink the original paths back so Predastore finds its data unchanged
-sudo ln -s /mnt/nvme-1/nodes/node-1 /var/lib/spinifex/predastore/distributed/nodes/node-1
-sudo ln -s /mnt/nvme-1/db/node-1    /var/lib/spinifex/predastore/distributed/db/node-1
+# Symlink the original path back so Predastore finds its data unchanged
+sudo ln -s /mnt/nvme-1/node-2 /var/lib/spinifex/predastore/cluster/node-2
 
 # Persist the mount across reboots
 echo "/dev/nvme1n1  /mnt/nvme-1  auto  defaults  0  2" | sudo tee -a /etc/fstab

@@ -22,7 +22,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/northstar v1.15.1-0.20260810233215-04fade67fb2c
-	github.com/mulgadc/predastore v1.15.1-0.20260811050847-9195a584281f
+	github.com/mulgadc/predastore v1.15.1-0.20260811065833-4de8654e083d
 	github.com/mulgadc/viperblock v1.15.0
 	github.com/nats-io/nats-server/v2 v2.14.4
 	github.com/nats-io/nats.go v1.52.0

@@ -44,7 +44,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// does not exist leaves no record behind. The set is literals only: the
 	// class's memory has already been folded into every size-derived default, so
 	// the agent never sees a formula.
-	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.DBParameterGroupName, req.InstanceClass)
+	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
 	}

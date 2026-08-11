@@ -153,16 +153,24 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 			"at most %d parameters may be modified in one request, got %d", maxParametersPerModify, len(input.Parameters))
 	}
 
-	updates, err := validateParameterUpdates(enginePostgres, input.Parameters)
-	if err != nil {
-		return nil, err
-	}
-
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := getDBParameterGroup(ctx, kv, accountID, name); err != nil {
+	// The group is read before its values are checked because the engine that
+	// owns them comes from the group's family. Validating against anything else
+	// would store one engine's parameter into another's group and defer the
+	// failure to whichever instance next attached it.
+	rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+	if err != nil {
+		return nil, err
+	}
+	engine, err := engineForFamily(rec.Family)
+	if err != nil {
+		return nil, err
+	}
+	updates, err := validateParameterUpdates(engine, input.Parameters)
+	if err != nil {
 		return nil, err
 	}
 
@@ -240,7 +248,14 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := getDBParameterGroup(ctx, kv, accountID, name); err != nil {
+	rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+	if err != nil {
+		return nil, err
+	}
+	// The catalog listed is the one the group's family names, so a group of one
+	// engine never reports another engine's settings.
+	engine, err := engineForFamily(rec.Family)
+	if err != nil {
 		return nil, err
 	}
 	overrides, err := ListDBParameterOverrides(ctx, kv, name)
@@ -253,8 +268,8 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	}
 
 	out := &rds.DescribeDBParametersOutput{}
-	for _, param := range enginePostgres.CatalogParameterNames() {
-		spec, _ := enginePostgres.LookupParameter(param)
+	for _, param := range engine.CatalogParameterNames() {
+		spec, _ := engine.LookupParameter(param)
 		override, isOverride := overrides[param]
 		value := override.Value
 		if !isOverride {
@@ -429,19 +444,19 @@ func engineForDefaultParameterGroup(name string) (Engine, bool) {
 	return Engine{}, false
 }
 
-// v1 pins one engine major, so the family is the pinned one or nothing. An empty
-// family takes the pin rather than failing, since a client that omits it can
-// only mean the one family this platform offers.
+// An omitted family takes PostgreSQL's rather than failing, which AWS clients
+// that predate a second engine depend on. The cost is that a group meant for
+// another engine is created as a PostgreSQL one and is only refused a call
+// later, when an instance of that engine tries to attach it.
 func validateParameterGroupFamily(family string) (string, error) {
-	trimmed := strings.ToLower(strings.TrimSpace(family))
-	if trimmed == "" {
+	if normaliseFamily(family) == "" {
 		return enginePostgres.ParameterGroupFamily(), nil
 	}
-	if engine, ok := enginesByFamily[trimmed]; ok {
-		return engine.ParameterGroupFamily(), nil
+	engine, err := engineForFamily(family)
+	if err != nil {
+		return "", err
 	}
-	return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-		"DBParameterGroupFamily %q is not offered; %s is the only supported family", family, enginePostgres.ParameterGroupFamily())
+	return engine.ParameterGroupFamily(), nil
 }
 
 func parameterSource(isOverride bool) string {
@@ -494,9 +509,19 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 // defaults evaluated at the class, overlaid with the group's stored overrides.
 // A group that does not exist fails here rather than silently resolving to the
 // bare defaults, which would run a database on settings nobody asked for.
-func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyValue, accountID, group, instanceClass string) ([]Parameter, error) {
-	if _, _, err := getDBParameterGroup(ctx, kv, accountID, group); err != nil {
+//
+// Every path that binds a group to an instance comes through here — create,
+// modify, restore, the deferred apply and group propagation — so the
+// cross-engine refusal is one check rather than five.
+func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyValue, accountID string, engine Engine, group, instanceClass string) ([]Parameter, error) {
+	rec, _, err := getDBParameterGroup(ctx, kv, accountID, group)
+	if err != nil {
 		return nil, err
+	}
+	if !strings.EqualFold(rec.Family, engine.ParameterGroupFamily()) {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"DB parameter group %s is of family %s, which cannot be used by a %s DB instance; it requires a group of family %s",
+			group, rec.Family, engine.Name, engine.ParameterGroupFamily())
 	}
 	overrides, err := ListDBParameterOverrides(ctx, kv, group)
 	if err != nil {
@@ -506,5 +531,5 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyVa
 	for name, override := range overrides {
 		values[name] = override.Value
 	}
-	return enginePostgres.ResolveEffectiveParameters(instanceClass, values)
+	return engine.ResolveEffectiveParameters(instanceClass, values)
 }

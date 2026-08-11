@@ -143,7 +143,14 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 // the new group's overrides, so a parameter the old group set and the new one
 // does not reverts to its default rather than lingering.
 func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group, instanceClass string) error {
-	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, group, instanceClass)
+	engine, err := LookupEngine(rec.Engine)
+	if err != nil {
+		return err
+	}
+	// Reached from a deferred modify, whose group was checked at request time,
+	// and from group propagation, where the binding was checked at attach. A
+	// family mismatch here is corrupt state rather than a bad request.
+	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, engine, group, instanceClass)
 	if err != nil {
 		return err
 	}

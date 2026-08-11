@@ -58,7 +58,9 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	if err != nil {
 		return nil, err
 	}
-	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.DBParameterGroupName, req.InstanceClass)
+	// resolveRestoreRequest forces the engine to the snapshot's, so a group of
+	// another engine is refused here however the request named it.
+	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
 	}

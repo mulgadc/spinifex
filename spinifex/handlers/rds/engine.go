@@ -89,6 +89,27 @@ func SupportedEngines() []string {
 	return slices.Sorted(maps.Keys(engines))
 }
 
+// The engine a parameter group's family belongs to, for the paths that hold a
+// group and no instance. A family naming no engine is a group written by a build
+// that offered an engine this one does not.
+func engineForFamily(family string) (Engine, error) {
+	engine, ok := enginesByFamily[normaliseFamily(family)]
+	if !ok {
+		return Engine{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"DBParameterGroupFamily %q is not offered; supported families are %s",
+			family, strings.Join(SupportedParameterGroupFamilies(), ", "))
+	}
+	return engine, nil
+}
+
+func SupportedParameterGroupFamilies() []string {
+	return slices.Sorted(maps.Keys(enginesByFamily))
+}
+
+func normaliseFamily(family string) string {
+	return strings.ToLower(strings.TrimSpace(family))
+}
+
 // An empty version takes the pin. A supplied one must name the pinned major
 // exactly, since the image does not promise any particular minor version.
 func (e Engine) ValidateVersion(version string) error {

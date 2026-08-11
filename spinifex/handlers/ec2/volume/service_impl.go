@@ -66,8 +66,8 @@ func (s *VolumeServiceImpl) EBSProvider() ebsprovider.EBSProvider {
 	return s.provider
 }
 
-// MetadataStore returns the control-plane metadata store, so the composition
-// root can wire a legacy read fallback (see ebsmetadata.Store.SetLegacyVolumeFallback).
+// MetadataStore returns the control-plane metadata store. Primarily for
+// composition-root tests to observe wiring.
 func (s *VolumeServiceImpl) MetadataStore() *ebsmetadata.Store {
 	return s.metadata
 }
@@ -789,9 +789,6 @@ type volumeFetchResult struct {
 // directly via GetVolume, instead of enumerating every volume in the bucket
 // via ListVolumes. A missing document or a cross-tenant volume both surface as
 // InvalidVolume.NotFound; any other store error surfaces as ErrorServerInternal.
-// GetVolume already applies the legacy-volume fallback (see
-// ebsmetadata.Store.SetLegacyVolumeFallback), so a pre-provider volume resolves
-// here the same way it does through ListVolumes.
 func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeFetchResult {
 	results := make([]volumeFetchResult, len(volumeIDs))
 	var wg sync.WaitGroup

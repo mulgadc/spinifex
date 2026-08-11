@@ -58,8 +58,8 @@ func (s *ImageServiceImpl) EBSProvider() ebsprovider.EBSProvider {
 	return s.provider
 }
 
-// MetadataStore returns the control-plane metadata store, so the composition
-// root can wire a legacy read fallback (see ebsmetadata.Store.SetLegacyAMIFallback).
+// MetadataStore returns the control-plane metadata store. Primarily for
+// composition-root tests to observe wiring.
 func (s *ImageServiceImpl) MetadataStore() *ebsmetadata.Store {
 	return s.metadata
 }
@@ -527,13 +527,8 @@ func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool
 	return false, nil
 }
 
-// ErrCorruptAMIConfig wraps JSON decode failures on AMI config.json so callers
-// can distinguish a truly-missing AMI from one whose config exists but can't
-// be parsed.
-var ErrCorruptAMIConfig = errors.New("corrupt AMI config")
-
 // GetAMIConfig reads an AMI's control-plane document. Errors come from the
-// metadata store, including its legacy-AMI read fallback.
+// metadata store.
 func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (ebsmetadata.AMI, error) {
 	return s.metadata.GetAMI(ctx, imageID)
 }
@@ -544,7 +539,7 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (eb
 func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID string) (string, error) {
 	meta, err := s.GetAMIConfig(ctx, imageID)
 	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ErrCorruptAMIConfig) {
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return "", errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 		slog.ErrorContext(ctx, "GetAMISourceVolumeID: failed to read AMI config", "imageId", imageID, "err", err)
@@ -723,7 +718,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if err != nil {
 		// Corrupt source is treated as NotFound so callers can't tell which
 		// half of the AMI/snapshot pair is broken.
-		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ErrCorruptAMIConfig) {
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 		slog.ErrorContext(ctx, "CopyImage: failed to read source AMI config", "sourceImageId", sourceImageID, "err", err)

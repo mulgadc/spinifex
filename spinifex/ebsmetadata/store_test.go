@@ -150,193 +150,76 @@ func TestListAMIs_NotConfigured(t *testing.T) {
 }
 
 // --- Legacy fallback tests ---
-//
-// A stub LegacyVolumeReader/LegacyAMIReader stands in for the real decoder in
-// migrate/ebsmetadatabackfill (which this package must not import — that
-// would be a cycle, since the real decoder imports ebsmetadata).
-
-// stubLegacyVolumes backs a LegacyVolumeReader with a fixed id->Volume map,
-// so tests can assert exactly which IDs the fallback is consulted for.
-func stubLegacyVolumes(byID map[string]Volume) LegacyVolumeReader {
-	return func(_ context.Context, _ objectstore.ObjectStore, _ string, volumeID string) (Volume, bool, error) {
-		v, ok := byID[volumeID]
-		return v, ok, nil
-	}
-}
-
-func stubLegacyAMIs(byID map[string]AMI) LegacyAMIReader {
-	return func(_ context.Context, _ objectstore.ObjectStore, _ string, imageID string) (AMI, bool, error) {
-		a, ok := byID[imageID]
-		return a, ok, nil
-	}
-}
-
-// TestGetVolume_FallsBackWhenDocumentAbsent covers the read path fixing the
-// invisibility bug: a volume with no ebsmetadata document is still readable
-// via the legacy fallback.
-func TestGetVolume_FallsBackWhenDocumentAbsent(t *testing.T) {
-	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	store.SetLegacyVolumeFallback(stubLegacyVolumes(map[string]Volume{
-		"vol-legacy": {VolumeID: "vol-legacy", CapacityGiB: 5, State: "available"},
-	}))
-
-	got, err := store.GetVolume(context.Background(), "vol-legacy")
-	require.NoError(t, err)
-	assert.Equal(t, "vol-legacy", got.VolumeID)
-	assert.Equal(t, uint64(5), got.CapacityGiB)
-}
-
-// TestGetVolume_PrefersDocumentOverFallback covers precedence: once a
-// document exists, it wins even though a (stale) fallback entry also exists.
-func TestGetVolume_PrefersDocumentOverFallback(t *testing.T) {
-	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	require.NoError(t, store.PutVolume(context.Background(), Volume{VolumeID: "vol-both", CapacityGiB: 99}))
-	store.SetLegacyVolumeFallback(stubLegacyVolumes(map[string]Volume{
-		"vol-both": {VolumeID: "vol-both", CapacityGiB: 1},
-	}))
-
-	got, err := store.GetVolume(context.Background(), "vol-both")
-	require.NoError(t, err)
-	assert.Equal(t, uint64(99), got.CapacityGiB, "the ebsmetadata document must win over the legacy fallback")
-}
-
-// TestGetVolume_NoFallbackConfigured_NotFoundUnchanged locks the "switched
-// off" state: with no fallback wired, a missing document surfaces the
-// original not-found error exactly as before this feature existed.
-func TestGetVolume_NoFallbackConfigured_NotFoundUnchanged(t *testing.T) {
+// TestGetVolume_MissingDocumentIsNotFound locks the only answer a volume with
+// no document gets: it does not exist as far as the control plane is
+// concerned, reported as the object store's not-found rather than a zero value.
+func TestGetVolume_MissingDocumentIsNotFound(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
 	_, err := store.GetVolume(context.Background(), "vol-missing")
 	require.Error(t, err)
 	assert.True(t, objectstore.IsNoSuchKeyError(err))
 }
 
-// TestGetVolume_FallbackMiss_ReturnsOriginalNotFound covers a volume ID that
-// exists in neither the document store nor the legacy layout.
-func TestGetVolume_FallbackMiss_ReturnsOriginalNotFound(t *testing.T) {
+// TestGetAMI_MissingDocumentIsNotFound mirrors TestGetVolume_MissingDocumentIsNotFound.
+func TestGetAMI_MissingDocumentIsNotFound(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	store.SetLegacyVolumeFallback(stubLegacyVolumes(nil))
-
-	_, err := store.GetVolume(context.Background(), "vol-nowhere")
+	_, err := store.GetAMI(context.Background(), "ami-missing")
 	require.Error(t, err)
 	assert.True(t, objectstore.IsNoSuchKeyError(err))
 }
 
-// TestGetAMI_FallsBackWhenDocumentAbsent mirrors TestGetVolume_FallsBackWhenDocumentAbsent.
-func TestGetAMI_FallsBackWhenDocumentAbsent(t *testing.T) {
-	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	store.SetLegacyAMIFallback(stubLegacyAMIs(map[string]AMI{
-		"ami-legacy": {ImageID: "ami-legacy", Name: "legacy-image"},
-	}))
-
-	got, err := store.GetAMI(context.Background(), "ami-legacy")
-	require.NoError(t, err)
-	assert.Equal(t, "legacy-image", got.Name)
-}
-
-// TestGetAMI_PrefersDocumentOverFallback mirrors TestGetVolume_PrefersDocumentOverFallback.
-func TestGetAMI_PrefersDocumentOverFallback(t *testing.T) {
-	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	require.NoError(t, store.PutAMI(context.Background(), AMI{ImageID: "ami-both", Name: "document"}))
-	store.SetLegacyAMIFallback(stubLegacyAMIs(map[string]AMI{
-		"ami-both": {ImageID: "ami-both", Name: "legacy"},
-	}))
-
-	got, err := store.GetAMI(context.Background(), "ami-both")
-	require.NoError(t, err)
-	assert.Equal(t, "document", got.Name)
-}
-
-// TestListVolumes_UnionsAndDeduplicatesWithFallback is the Store-level
-// assertion behind the DescribeVolumes invisibility fix: ListVolumes must
-// enumerate legacy-only volumes, not just ebsmetadata documents, and prefer
-// the document where both exist.
-func TestListVolumes_UnionsAndDeduplicatesWithFallback(t *testing.T) {
+// TestGet_CorruptDocumentIsDistinguishable is what lets the admin tooling tell
+// salvage from not-found: an undecodable document must not read as absent, or
+// a --force removal would refuse the one case it exists for.
+func TestGet_CorruptDocumentIsDistinguishable(t *testing.T) {
 	objects := objectstore.NewMemoryObjectStore()
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-doc-only", CapacityGiB: 10}))
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-both", CapacityGiB: 99}))
-	// vol-legacy-only and vol-both are discoverable as legacy prefixes: seed a
-	// marker object under each so legacyPrefixIDs' bucket-root scan finds them.
-	seedLegacyPrefix(t, objects, "vol-legacy-only")
-	seedLegacyPrefix(t, objects, "vol-both")
-	seedLegacyPrefix(t, objects, "vol-legacy-only-efi") // must be excluded
-
-	store.SetLegacyVolumeFallback(stubLegacyVolumes(map[string]Volume{
-		"vol-legacy-only":     {VolumeID: "vol-legacy-only", CapacityGiB: 7},
-		"vol-both":            {VolumeID: "vol-both", CapacityGiB: 1}, // must lose to the document
-		"vol-legacy-only-efi": {VolumeID: "vol-legacy-only-efi", CapacityGiB: 1},
-	}))
-
-	got, err := store.ListVolumes(ctx)
+	volKey, err := VolumeKey("vol-corrupt")
 	require.NoError(t, err)
+	writeRaw(t, objects, volKey, []byte("{not json"))
+	amiKey, err := AMIKey("ami-corrupt")
+	require.NoError(t, err)
+	writeRaw(t, objects, amiKey, []byte("{not json"))
 
-	byID := make(map[string]Volume, len(got))
-	for _, v := range got {
-		byID[v.VolumeID] = v
-	}
-	require.Len(t, got, 3, "vol-doc-only, vol-both (deduplicated), vol-legacy-only; the -efi sub-volume must be excluded")
-	assert.Equal(t, uint64(10), byID["vol-doc-only"].CapacityGiB)
-	assert.Equal(t, uint64(99), byID["vol-both"].CapacityGiB, "the document must win over the legacy fallback")
-	assert.Equal(t, uint64(7), byID["vol-legacy-only"].CapacityGiB)
-	_, hasEFI := byID["vol-legacy-only-efi"]
-	assert.False(t, hasEFI)
+	_, err = store.GetVolume(ctx, "vol-corrupt")
+	require.ErrorIs(t, err, ErrCorruptDocument)
+	assert.False(t, objectstore.IsNoSuchKeyError(err), "corrupt must not read as absent")
+
+	_, err = store.GetAMI(ctx, "ami-corrupt")
+	require.ErrorIs(t, err, ErrCorruptDocument)
+	assert.False(t, objectstore.IsNoSuchKeyError(err), "corrupt must not read as absent")
 }
 
-// TestListVolumes_NoFallbackConfigured_DocumentsOnlyUnchanged locks the
-// "switched off" state: with no fallback wired, ListVolumes behaves exactly
-// as it did before this feature existed.
-func TestListVolumes_NoFallbackConfigured_DocumentsOnlyUnchanged(t *testing.T) {
+// writeRaw puts bytes at key without going through Marshal, so a test can
+// store a document the store cannot decode.
+func writeRaw(t *testing.T, objects objectstore.ObjectStore, key string, data []byte) {
+	t.Helper()
+	_, err := objects.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("control-plane"), Key: aws.String(key), Body: bytes.NewReader(data),
+	})
+	require.NoError(t, err)
+}
+
+// TestListAMIs_SkipsCorruptButStrictDoesNot pins the blast radius of one bad
+// document: DescribeImages keeps working and loses only the unreadable image,
+// while a caller that cannot answer partially still gets the error.
+func TestListAMIs_SkipsCorruptButStrictDoesNot(t *testing.T) {
 	objects := objectstore.NewMemoryObjectStore()
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-doc-only", CapacityGiB: 10}))
-	seedLegacyPrefix(t, objects, "vol-legacy-only")
-
-	got, err := store.ListVolumes(ctx)
+	require.NoError(t, store.PutAMI(ctx, AMI{ImageID: "ami-good", Name: "readable"}))
+	badKey, err := AMIKey("ami-bad")
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, "vol-doc-only", got[0].VolumeID)
-}
-
-// TestListAMIs_UnionsAndDeduplicatesWithFallback mirrors
-// TestListVolumes_UnionsAndDeduplicatesWithFallback.
-func TestListAMIs_UnionsAndDeduplicatesWithFallback(t *testing.T) {
-	objects := objectstore.NewMemoryObjectStore()
-	store := NewStore(objects, "control-plane")
-	ctx := context.Background()
-
-	require.NoError(t, store.PutAMI(ctx, AMI{ImageID: "ami-doc-only", Name: "doc"}))
-	require.NoError(t, store.PutAMI(ctx, AMI{ImageID: "ami-both", Name: "doc-wins"}))
-	seedLegacyPrefix(t, objects, "ami-legacy-only")
-	seedLegacyPrefix(t, objects, "ami-both")
-
-	store.SetLegacyAMIFallback(stubLegacyAMIs(map[string]AMI{
-		"ami-legacy-only": {ImageID: "ami-legacy-only", Name: "legacy"},
-		"ami-both":        {ImageID: "ami-both", Name: "legacy-loses"},
-	}))
+	writeRaw(t, objects, badKey, []byte("{not json"))
 
 	got, err := store.ListAMIs(ctx)
 	require.NoError(t, err)
+	require.Len(t, got, 1, "the readable AMI must survive its neighbour being corrupt")
+	assert.Equal(t, "ami-good", got[0].ImageID)
 
-	byID := make(map[string]AMI, len(got))
-	for _, a := range got {
-		byID[a.ImageID] = a
-	}
-	require.Len(t, got, 3)
-	assert.Equal(t, "doc", byID["ami-doc-only"].Name)
-	assert.Equal(t, "doc-wins", byID["ami-both"].Name)
-	assert.Equal(t, "legacy", byID["ami-legacy-only"].Name)
-}
-
-// seedLegacyPrefix writes a marker object so the id shows up as a top-level
-// bucket prefix, the way a real vol-*/config.json or ami-*/config.json would.
-func seedLegacyPrefix(t *testing.T, objects objectstore.ObjectStore, id string) {
-	t.Helper()
-	_, err := objects.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("control-plane"), Key: aws.String(id + "/config.json"), Body: bytes.NewReader([]byte("{}")),
-	})
-	require.NoError(t, err)
+	_, err = store.ListAMIsStrict(ctx)
+	require.ErrorIs(t, err, ErrCorruptDocument)
 }

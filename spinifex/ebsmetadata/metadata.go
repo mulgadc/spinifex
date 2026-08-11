@@ -4,12 +4,18 @@ package ebsmetadata
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
 const SchemaVersion uint16 = 1
+
+// ErrCorruptDocument wraps decode and schema-version failures so callers can
+// tell a document that exists but cannot be read from one that is absent. The
+// two deserve different answers: salvage versus not-found.
+var ErrCorruptDocument = errors.New("corrupt EBS metadata document")
 
 // Volume is the control-plane record used for EC2 Describe/Modify/attachment
 // operations. ProviderHandle is opaque and is never decoded by the API layer.
@@ -94,10 +100,10 @@ func MarshalVolume(volume Volume) ([]byte, error) {
 func UnmarshalVolume(data []byte) (Volume, error) {
 	var volume Volume
 	if err := json.Unmarshal(data, &volume); err != nil {
-		return Volume{}, err
+		return Volume{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
 	}
 	if volume.SchemaVersion != SchemaVersion {
-		return Volume{}, fmt.Errorf("unsupported volume metadata schema version %d", volume.SchemaVersion)
+		return Volume{}, fmt.Errorf("%w: unsupported volume metadata schema version %d", ErrCorruptDocument, volume.SchemaVersion)
 	}
 	return volume, nil
 }
@@ -110,10 +116,10 @@ func MarshalAMI(ami AMI) ([]byte, error) {
 func UnmarshalAMI(data []byte) (AMI, error) {
 	var ami AMI
 	if err := json.Unmarshal(data, &ami); err != nil {
-		return AMI{}, err
+		return AMI{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
 	}
 	if ami.SchemaVersion != SchemaVersion {
-		return AMI{}, fmt.Errorf("unsupported AMI metadata schema version %d", ami.SchemaVersion)
+		return AMI{}, fmt.Errorf("%w: unsupported AMI metadata schema version %d", ErrCorruptDocument, ami.SchemaVersion)
 	}
 	return ami, nil
 }

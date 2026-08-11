@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,24 +132,4 @@ func TestDescribeVolumes_Provider_NoIDs_StillEnumerates(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Volumes, 1)
 	assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
-}
-
-// TestDescribeVolumes_Provider_FastPath_ResolvesLegacyOnlyVolume covers
-// requirement 4: GetVolume must apply the same legacy-volume fallback as
-// ListVolumes, or a pre-provider volume that is visible today (via the
-// slow/no-IDs path) would go invisible under the new direct-fetch fast path.
-func TestDescribeVolumes_Provider_FastPath_ResolvesLegacyOnlyVolume(t *testing.T) {
-	svc := newTestVolumeService("ap-southeast-2a")
-	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
-	ctx := context.Background()
-
-	volumeID := "vol-legacy0000003"
-	seedLegacyVolumeConfig(t, svc, volumeID, "acct-legacy")
-
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String(volumeID)}}, "acct-legacy")
-	require.NoError(t, err, "a pre-provider volume must resolve by ID under the provider fast path")
-	require.Len(t, out.Volumes, 1)
-	assert.Equal(t, volumeID, aws.StringValue(out.Volumes[0].VolumeId))
-	assert.Equal(t, int64(8), aws.Int64Value(out.Volumes[0].Size))
 }

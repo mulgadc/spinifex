@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,14 +70,15 @@ func TestApplyRecordTags_AttachedVolumePersistsForTagFilterDiscovery(t *testing.
 	assert.Equal(t, volumeID, aws.StringValue(out.Volumes[0].VolumeId))
 }
 
-// A tag written against a pre-migration volume must survive the live nbdkit VB
-// rewriting config.json from its own mount-time state: the tag lives in the
-// control-plane document, which that writer does not own.
+// A tag must survive the live nbdkit VB rewriting config.json from its own
+// mount-time state: the tag lives in the control-plane document, which that
+// writer does not own.
 func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-staleconfigtag"
-	seedLegacyVolumeConfig(t, svc, volumeID, testVolAccountID)
+	seedVolume(t, svc, volumeID, "available", "")
+	seedProviderConfig(t, store, volumeID)
 	staleConfig := getStoredConfig(t, store, volumeID)
 
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
@@ -107,13 +109,17 @@ func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	assert.Equal(t, volumeID, aws.StringValue(out.Volumes[0].VolumeId))
 }
 
-// The first control-plane tag write on a pre-migration volume must merge with
-// the tags embedded in its legacy config.json, not replace them.
-func TestApplyRecordTags_FirstWriteSeedsEmbeddedTags(t *testing.T) {
+// A tag write must merge into the tags already on the document rather than
+// replacing the set wholesale.
+func TestApplyRecordTags_MergesWithExistingTags(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-seedembedded"
-	seedLegacyVolumeConfigWithTags(t, svc, volumeID, testVolAccountID, map[string]string{"created-with": "volume"})
+	seedVolume(t, svc, volumeID, "available", "")
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 8, State: "available",
+		Tags: map[string]string{"created-with": "volume"},
+	})
 
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String(volumeID)},
@@ -128,14 +134,17 @@ func TestApplyRecordTags_FirstWriteSeedsEmbeddedTags(t *testing.T) {
 	}, meta.Tags)
 }
 
-// Removing the last tag must leave an authoritative empty tag set on the
-// document rather than falling back to the tags still embedded in the legacy
-// config.json, which would resurrect the deleted tag.
-func TestRemoveRecordTags_EmptyDocumentTagsOverrideEmbeddedTags(t *testing.T) {
+// Removing the last tag must leave an authoritative empty tag set rather than
+// any other source of tags resurrecting the deleted one.
+func TestRemoveRecordTags_LastTagLeavesEmptySet(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-emptytagsjson"
-	seedLegacyVolumeConfigWithTags(t, svc, volumeID, testVolAccountID, map[string]string{"legacy": "tag"})
+	seedVolume(t, svc, volumeID, "available", "")
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 8, State: "available",
+		Tags: map[string]string{"legacy": "tag"},
+	})
 
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(volumeID)},
@@ -144,7 +153,7 @@ func TestRemoveRecordTags_EmptyDocumentTagsOverrideEmbeddedTags(t *testing.T) {
 
 	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.Empty(t, meta.Tags, "an empty document tag set must not fall back to embedded tags")
+	assert.Empty(t, meta.Tags, "the deleted tag must not come back from anywhere")
 }
 
 func TestVolumeRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {

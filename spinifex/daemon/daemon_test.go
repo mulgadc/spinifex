@@ -28,9 +28,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
@@ -47,14 +47,11 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -173,18 +170,15 @@ func getTestInstanceType(t *testing.T) string {
 	return "t3.micro" // Default fallback
 }
 
-// seedTestAMI creates a minimal AMI config in the memory store so that
+// seedTestAMI creates a minimal AMI document in the memory store so that
 // handleEC2RunInstances AMI validation passes.
 func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, imageID string) {
 	t.Helper()
-	amiConfig := `{"VolumeConfig":{"AMIMetadata":{"ImageID":"` + imageID + `","Name":"test"}}}`
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        strings.NewReader(amiConfig),
-		ContentType: aws.String("application/json"),
-	})
-	require.NoError(t, err)
+	require.NoError(t, ebsmetadata.NewStore(store, bucket).PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID: imageID,
+		Name:    "test",
+		State:   "available",
+	}))
 }
 
 // TestResourceManager tests resource manager functionality.
@@ -1576,13 +1570,12 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	require.NoError(t, err)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
-	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-root-attached"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-test-boot-delete", // stale: never cleared by Stop/shutdownAndUnmount's Boot carve-out
 	})
@@ -1617,10 +1610,10 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-root-nondot-attached"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-test-boot-detach", // stale: never cleared by Unmount's Boot carve-out
 	})
@@ -1657,10 +1650,10 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-data-nondot-attached"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: "i-test-data-detach", // stale: Unmount's seal failed or never ran
 	})
@@ -1712,14 +1705,13 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	require.NoError(t, err)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
-	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-root-self-heal"
 	instanceID := "i-self-heal"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: instanceID, // stale, left by the earlier failed terminate
 	})
@@ -1777,10 +1769,10 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 
 	volumeID := "vol-data-self-heal"
 	instanceID := "i-self-heal-detach"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: instanceID, // stale, left by the earlier failed terminate
 	})
@@ -1838,10 +1830,10 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 
 	const instanceID = "i-wedged-terminate"
 	volumeID := "vol-data-wedged"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
 		TenantID:         testAccountID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: instanceID, // never cleared: Unmount never ran on this path
 	})
@@ -4511,12 +4503,8 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 // --- configureEBSProvider ---
 
 // newEBSProviderTestDaemon builds a daemon with real (constructor-built, not
-// zero-valued) EBS services so configureEBSProvider's fallback wiring has a
-// non-nil metadata store to call, plus a real JetStream handle so the
-// viperblockd path's backfill migration can stamp its version. The bucket is
-// pre-stamped to TargetVersion so the migration is a no-op here — this
-// fixture tests provider wiring, not backfill correctness (covered in
-// migrate/ebsmetadatabackfill).
+// zero-valued) EBS services, so configureEBSProvider has something to wire the
+// provider into rather than a set of zero values that would accept anything.
 func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 	t.Helper()
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -4527,10 +4515,6 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	versionKV, err := kvutil.GetOrCreateBucket(ctx, jsManager.js, ebsMetadataMigrationBucket, 1)
-	require.NoError(t, err)
-	require.NoError(t, kvutil.WriteVersion(ctx, versionKV, ebsmetadatabackfill.TargetVersion))
-
 	cfg := &config.Config{
 		EBS:        config.EBSConfig{Provider: provider},
 		Predastore: config.PredastoreConfig{Bucket: "test-bucket"},

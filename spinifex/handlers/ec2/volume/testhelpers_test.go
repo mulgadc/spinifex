@@ -2,7 +2,6 @@ package handlers_ec2_volume
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -10,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -40,29 +39,34 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	return nc
 }
 
-// seedEncryptedConfig writes a sealed (EncryptionEnabled=true) VBState to the store.
+// seedVolumeDocument writes the control-plane document that makes a volume
+// exist as far as the control plane is concerned.
+func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), volume))
+}
+
+// seedProviderConfig writes provider-owned state at the volume's config.json.
+// Its contents are deliberately opaque here: the control plane must neither
+// read nor rewrite them, so the tests only care that the bytes survive.
+func seedProviderConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
+	t.Helper()
+	putProviderConfig(t, store, volumeID, `{"VolumeName":"`+volumeID+`","VolumeSize":10737418240,"BlockSize":4096,"SeqNum":7,"State":"available"}`)
+}
+
+// seedEncryptedConfig writes a sealed provider config.json: an opaque
+// ciphertext blob a rewrite would corrupt rather than merely overwrite.
 func seedEncryptedConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
 	t.Helper()
-	state := vblegacy.VBState{
-		VolumeName:        volumeID,
-		VolumeSize:        10 * 1024 * 1024 * 1024,
-		BlockSize:         4096,
-		EncryptionEnabled: true,
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				VolumeID: volumeID,
-				TenantID: testVolAccountID,
-				SizeGiB:  10,
-				State:    "available",
-			},
-		},
-	}
-	data, err := json.Marshal(state)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
+	putProviderConfig(t, store, volumeID, `{"EncryptionEnabled":true,"StateSeqNum":7,"Sealed":"3q2+7wAAAAAAAAAAAAAAAA=="}`)
+}
+
+func putProviderConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID, body string) {
+	t.Helper()
+	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+		Body:   strings.NewReader(body),
 	})
 	require.NoError(t, err)
 }

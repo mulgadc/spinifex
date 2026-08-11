@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,18 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -1364,68 +1357,4 @@ func TestJoinRetryable(t *testing.T) {
 			}
 		})
 	}
-}
-
-// seedAMIConfigJSON writes a legacy config.json for imageID with the given
-// SnapshotID, matching the shape ImportDiskImage's SaveState produces after
-// it fills in AMIMetadata (including the zero-copy clone snapshot) on its own
-// VB instance -- the authoritative post-import state.
-func seedAMIConfigJSON(t *testing.T, store objectstore.ObjectStore, bucket, imageID, snapshotID string) {
-	t.Helper()
-	state := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:      imageID,
-				Name:         "ami-debian-13-x86_64",
-				SnapshotID:   snapshotID,
-				Architecture: "x86_64",
-			},
-		},
-	}
-	data, err := json.Marshal(state)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(bucket), Key: aws.String(imageID + "/config.json"), Body: bytes.NewReader(data),
-	})
-	require.NoError(t, err)
-}
-
-// writeImportedAMIMetadata must rebuild the ebsmetadata document from the
-// config.json ImportDiskImage just wrote, not from the caller's pre-import
-// manifest. Before the fix, admin.go persisted vblegacy.AMIToDocument(manifest.AMIMetadata)
-// straight from the local manifest variable, whose SnapshotID is never
-// populated -- ImportDiskImage assigns the AMI snapshot only onto the fresh
-// *VB it constructs internally, never back onto the caller's copy. That wrote
-// an empty-SnapshotID document which permanently shadows the correct
-// config.json value, since GetAMI only falls back to config.json when no
-// document exists at all.
-func TestWriteImportedAMIMetadata_CarriesSnapshotIDFromConfigJSON(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	const bucket = "test-bucket"
-	const imageID = "ami-test1"
-	const snapshotID = "snap-vol-abc123"
-
-	seedAMIConfigJSON(t, store, bucket, imageID, snapshotID)
-
-	err := writeImportedAMIMetadata(context.Background(), store, bucket, imageID)
-	require.NoError(t, err)
-
-	got, err := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
-	require.NoError(t, err)
-	assert.Equal(t, snapshotID, got.SnapshotID, "ebsmetadata document must carry the SnapshotID ImportDiskImage wrote to config.json")
-}
-
-// A missing or unreadable config.json must not fall back to writing anything:
-// a missing document still resolves correctly through GetAMI's legacy
-// fallback, while a wrongly-derived document would permanently shadow it.
-func TestWriteImportedAMIMetadata_MissingConfigSkipsWrite(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	const bucket = "test-bucket"
-	const imageID = "ami-missing"
-
-	err := writeImportedAMIMetadata(context.Background(), store, bucket, imageID)
-	require.Error(t, err)
-
-	_, err = ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
-	assert.Error(t, err, "no ebsmetadata document must have been written for a missing config.json")
 }

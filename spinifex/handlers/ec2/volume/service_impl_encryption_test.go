@@ -3,38 +3,32 @@ package handlers_ec2_volume
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// A legacy config.json that decodes as neither a VBState nor a config wrapper
-// must surface as an error rather than resolving to an empty volume.
+// A document that does not decode must surface as an error rather than
+// resolving to an empty volume, which would read as a volume that exists with
+// no owner, no size and no attachment.
 func TestGetVolumeMetadata_CorruptJSON(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	const volumeID = "vol-bad-json"
-	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader("not valid json {{{"),
-	})
-	require.NoError(t, err)
+	putRawVolumeDocument(t, store, volumeID, "not valid json {{{")
 
-	_, err = svc.GetVolumeMetadata(volumeID)
+	_, err := svc.GetVolumeMetadata(volumeID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unmarshal config")
+	assert.ErrorIs(t, err, ebsmetadata.ErrCorruptDocument)
 }
 
 // newTestVolumeServiceWithEncryptionKey wires CreateVolume to a configured
@@ -54,7 +48,6 @@ func newTestVolumeServiceWithEncryptionKey(az, keyFile string) *VolumeServiceImp
 	}
 	svc := NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	return svc
 }
 

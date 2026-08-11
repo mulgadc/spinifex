@@ -18,6 +18,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -31,7 +32,6 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
@@ -39,7 +39,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -82,9 +81,8 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	return daemon, memStore
 }
 
-// wireTestEBSProvider mirrors configureEBSProvider for the test daemon: an
-// in-memory provider plus the legacy read fallbacks, so fixtures seeded as
-// legacy config.json still resolve.
+// wireTestEBSProvider mirrors configureEBSProvider for the test daemon: one
+// in-memory provider behind every EBS-adjacent service.
 func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
 	provider := ebsfake.New(store, daemon.config.Predastore.Bucket)
 	daemon.ebsProvider = provider
@@ -92,9 +90,14 @@ func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
 	daemon.imageService.SetEBSProvider(provider)
 	daemon.snapshotService.SetEBSProvider(provider)
 	daemon.volumeService.SetEBSProvider(provider)
-	daemon.volumeService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
-	daemon.snapshotService.MetadataStore().SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
-	daemon.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
+}
+
+// seedVolumeDocument registers a volume the only way the control plane knows
+// one: as an ebsmetadata document. Tests that need a volume to exist seed it
+// here rather than writing storage state the control plane never reads.
+func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(t.Context(), volume))
 }
 
 // createFullTestDaemon creates a test daemon with ALL services initialized (including
@@ -583,7 +586,6 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	memStore := objectstore.NewMemoryObjectStore()
 	bucket := daemon.config.Predastore.Bucket
 	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, bucket)
-	daemon.imageService.MetadataStore().SetLegacyAMIFallback(ebsmetadatabackfill.LegacyAMIFromLegacyState)
 	daemon.keyService = handlers_ec2_key.NewKeyServiceImplWithStore(memStore, bucket)
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
@@ -1489,24 +1491,12 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	// Create a volume in a different AZ
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID:         volumeID,
-				SizeGiB:          10,
-				State:            "available",
-				AvailabilityZone: "us-west-2a",
-				TenantID:         testAccountID,
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:         volumeID,
+		CapacityGiB:      10,
+		State:            "available",
+		AvailabilityZone: "us-west-2a",
+		TenantID:         testAccountID,
 	})
 
 	// Subscribe handler
@@ -2690,11 +2680,11 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 
 	// Seed a volume in the store
 	volumeID := "vol-modify-success"
-	seedVolumeConfig(t, daemon, store, volumeID, viperblock.VolumeMetadata{
-		VolumeID:   volumeID,
-		SizeGiB:    10,
-		State:      "available",
-		VolumeType: "gp3",
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "available",
+		VolumeType:  "gp3",
 	})
 
 	// Subscribe a dummy ebs.sync handler so the NATS Request doesn't time out
@@ -2817,22 +2807,10 @@ func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
 	sourceImageID := "ami-source-001"
 
 	// Seed a root volume config
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID: rootVolumeID,
-				SizeGiB:  8,
-				State:    "in-use",
-			},
-		},
-	}
-	volData, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(rootVolumeID + "/config.json"),
-		Body:   strings.NewReader(string(volData)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:    rootVolumeID,
+		CapacityGiB: 8,
+		State:       "in-use",
 	})
 
 	daemon.vmMgr.Insert(&vm.VM{
@@ -3018,23 +2996,11 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	// Seed a volume that is already in-use
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID: volumeID,
-				SizeGiB:  10,
-				State:    "in-use",
-				TenantID: testAccountID,
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "in-use",
+		TenantID:    testAccountID,
 	})
 
 	sub, err := daemon.natsConn.Subscribe(

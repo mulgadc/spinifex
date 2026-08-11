@@ -8,7 +8,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,21 +75,4 @@ func TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound(t *testing.T) {
 	_, err := svc.GetVolumeMetadata("vol-doesnotexist0")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
-}
-
-// A volume created before the provider switch has only the legacy layout, and
-// attach must still resolve it. Routing through ebsmetadata.Store is what puts
-// this path behind the legacy fallback; the old direct read never was.
-func TestGetVolumeMetadata_Provider_ResolvesLegacyOnlyVolume(t *testing.T) {
-	svc := newProviderVolumeService(t)
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
-
-	volumeID := "vol-legacy0000002"
-	seedLegacyVolumeConfig(t, svc, volumeID, "acct-legacy")
-
-	meta, err := svc.GetVolumeMetadata(volumeID)
-	require.NoError(t, err, "a pre-provider volume must remain attachable under the provider")
-	assert.Equal(t, volumeID, meta.VolumeID)
-	assert.Equal(t, "acct-legacy", meta.TenantID)
-	assert.Equal(t, "available", meta.State)
 }

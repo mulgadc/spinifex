@@ -31,18 +31,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/mulgadc/viperblock/viperblock/backends/s3"
-	"github.com/mulgadc/viperblock/viperblock/v_utils"
 	"github.com/nats-io/nats.go"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -405,6 +402,10 @@ func init() {
 
 const bytesPerGiB = 1024 * 1024 * 1024
 
+// imageImportTimeout bounds each provider call the import makes. Generous
+// because the snapshot at the end runs over the whole imported volume.
+const imageImportTimeout = 30 * time.Minute
+
 // amiVolumeSizeGiB returns the smallest whole GiB that still holds sizeBytes.
 //
 // Rounding up is load-bearing. The image is copied into a root volume of
@@ -432,15 +433,9 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	var imageStat os.FileInfo
 	var err error
 
-	cfgFile, _ := cmd.Flags().GetString("config")
 	forceCmd, _ := cmd.Flags().GetBool("force")
 	skipVerify, _ := cmd.Flags().GetBool("skip-verify")
 	ostmpDir, _ := cmd.Flags().GetString("tmp-dir")
-
-	// Use default config path
-	if cfgFile == "" {
-		cfgFile = DefaultConfigFile()
-	}
 
 	//configDir, _ := cmd.Flags().GetString("config-dir")
 	baseDir, _ := cmd.Flags().GetString("spinifex-dir")
@@ -612,57 +607,46 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Create the specified manifest file to describe the image/AMI
-	manifest := viperblock.VolumeConfig{}
-
-	// Calculate the size
-
-	manifest.AMIMetadata.Name = fmt.Sprintf("ami-%s-%s-%s", image.Distro, image.Version, image.Arch)
-	if amiNameOverride != "" {
-		manifest.AMIMetadata.Name = amiNameOverride
-	}
+	// Describe the image/AMI as the control-plane document it will become.
 	volumeId := utils.GenerateResourceID("ami")
-	manifest.AMIMetadata.ImageID = volumeId
+	amiName := fmt.Sprintf("ami-%s-%s-%s", image.Distro, image.Version, image.Arch)
+	if amiNameOverride != "" {
+		amiName = amiNameOverride
+	}
 
-	manifest.AMIMetadata.Description = fmt.Sprintf("%s cloud image prepared for Spinifex", manifest.AMIMetadata.Name)
-	manifest.AMIMetadata.Architecture = image.Arch
-	manifest.AMIMetadata.PlatformDetails = image.Platform
-	manifest.AMIMetadata.CreationDate = time.Now()
-	manifest.AMIMetadata.RootDeviceType = "ebs"
-	manifest.AMIMetadata.Virtualization = "hvm"
-	manifest.AMIMetadata.ImageOwnerAlias = "system"
-	manifest.AMIMetadata.VolumeSizeGiB = amiVolumeSizeGiB(imageStat.Size())
-	manifest.AMIMetadata.BootMode = image.BootMode
-	manifest.AMIMetadata.Distro = image.Distro
-	manifest.AMIMetadata.DistroFamily = utils.DistroFamily(image.Distro)
+	ami := ebsmetadata.AMI{
+		ImageID:         volumeId,
+		Name:            amiName,
+		Description:     fmt.Sprintf("%s cloud image prepared for Spinifex", amiName),
+		Architecture:    image.Arch,
+		PlatformDetails: image.Platform,
+		CreationDate:    time.Now(),
+		RootDeviceType:  "ebs",
+		Virtualization:  "hvm",
+		ImageOwnerAlias: "system",
+		VolumeSizeGiB:   amiVolumeSizeGiB(imageStat.Size()),
+		SnapshotID:      admin.SnapPrefix(volumeId),
+		BootMode:        image.BootMode,
+		Distro:          image.Distro,
+		DistroFamily:    utils.DistroFamily(image.Distro),
+	}
 
 	// Copy catalog-provided tags (e.g. spinifex:managed-by for system AMIs)
 	// onto the imported AMI so the UI can filter them out.
 	if len(image.Tags) > 0 {
-		manifest.AMIMetadata.Tags = make(map[string]string, len(image.Tags))
-		maps.Copy(manifest.AMIMetadata.Tags, image.Tags)
+		ami.Tags = make(map[string]string, len(image.Tags))
+		maps.Copy(ami.Tags, image.Tags)
 	}
-
-	// Volume Data
-	manifest.VolumeMetadata.VolumeID = volumeId // TODO: Confirm if unique, e.g vol-, if ami- used
-	manifest.VolumeMetadata.VolumeName = manifest.AMIMetadata.Name
-	manifest.VolumeMetadata.TenantID = "system"
-	manifest.VolumeMetadata.SizeGiB = manifest.AMIMetadata.VolumeSizeGiB
-	manifest.VolumeMetadata.State = "available"
-	manifest.VolumeMetadata.AvailabilityZone = "" // TODO: Confirm
-	manifest.VolumeMetadata.CreatedAt = time.Now()
-	manifest.VolumeMetadata.VolumeType = "gp3"
-	manifest.VolumeMetadata.IOPS = 1000
 
 	// Write the manifest to disk
 	// Save as JSON
-	jsonData, err := json.Marshal(manifest)
+	jsonData, err := json.Marshal(ami)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not marshal manifest: %v\n", err)
 		os.Exit(1)
 	}
 
-	manifestFilename := fmt.Sprintf("%s/%s.json", imagePath, manifest.AMIMetadata.Name)
+	manifestFilename := fmt.Sprintf("%s/%s.json", imagePath, ami.Name)
 	// Write to file
 	err = os.WriteFile(manifestFilename, jsonData, 0600)
 	if err != nil {
@@ -670,51 +654,15 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Upload the image to S3 (predastore)
+	defer os.RemoveAll(tmpDir)
 
-	appConfig, err := config.LoadConfig(cfgFile)
-
+	appConfig, nc, err := loadConfigAndConnect()
 	if err != nil {
-		fmt.Println("Error loading config file:", err)
-		return
-	}
-
-	s3Config := s3.S3Config{
-		VolumeName: volumeId,
-		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
-		Bucket:     appConfig.Nodes[appConfig.Node].Predastore.Bucket,
-		Region:     appConfig.Nodes[appConfig.Node].Predastore.Region,
-		AccessKey:  appConfig.Nodes[appConfig.Node].Predastore.AccessKey,
-		SecretKey:  appConfig.Nodes[appConfig.Node].Predastore.SecretKey,
-		Host:       appConfig.Nodes[appConfig.Node].Predastore.Host,
-	}
-
-	mkey, err := utils.LoadViperblockMasterKey(appConfig.Nodes[appConfig.Node].Viperblock.EncryptionKeyFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not load viperblock encryption key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Import is an interactive command whose output is a progress bar, so the
-	// volume's routine mount chatter is noise here: a fresh import has no prior
-	// state, making the "no state found" / 404 lines expected rather than
-	// notable. Scoping the logger to this VB (New copies it onto the backend
-	// too) keeps it off the process-wide default. Errors still surface, both
-	// through this logger and as the returned error the caller prints.
-	vbConfig := viperblock.VB{
-		VolumeName: volumeId,
-		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
-		BaseDir:    tmpDir,
-		Cache: viperblock.Cache{
-			Config: viperblock.CacheConfig{
-				Size: 0,
-			},
-		},
-		VolumeConfig:      manifest,
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-	}
+	defer nc.Close()
+	node := appConfig.Nodes[appConfig.Node]
 
 	// Bake the deployment CA into the image trust store so a stock cloud image
 	// trusts the gateway from first boot. Best-effort: never fails the import.
@@ -723,59 +671,33 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// command, which would collapse the path to a relative config/ca.pem.
 	bakeCACertIntoImage(extractedImagePath, filepath.Join(baseDir, "config", "ca.pem"))
 
-	// Render the flush bar here rather than inside viperblock, which stays a
-	// pure storage library. The bar is built lazily on the first update so it is
-	// never drawn if the import fails before any bytes flush; viperblock
-	// throttles the callback to ≤101 invocations, so the human-readable title
-	// renders without the per-block render-frequency regression.
-	var flushBar *pterm.ProgressbarPrinter
-	var flushUpdate func(current uint64)
-	progress := func(current, total uint64) {
-		if flushBar == nil {
-			flushBar, flushUpdate = utils.NewByteProgressBar("Flushing image to storage", total)
-		}
-		flushUpdate(current)
-	}
-
-	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath, progress)
-
-	if flushBar != nil {
-		_, _ = flushBar.Stop()
-	}
-
+	fmt.Println("Writing image to storage ...")
+	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
+	err = admin.ImportImage(context.Background(), provider, admin.ImportOpts{
+		VolumeID:         volumeId,
+		NodeID:           appConfig.Node,
+		SizeBytes:        utils.SafeUint64ToInt64(ami.VolumeSizeGiB * bytesPerGiB),
+		AvailabilityZone: node.AZ,
+		SourcePath:       extractedImagePath,
+		Snapshot:         true,
+		Progress:         os.Stdout,
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not import image to predastore: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Could not import image: %v\n", err)
 		os.Exit(1)
 	}
 
-	defer os.RemoveAll(tmpDir)
-
-	// Best-effort: also write an ebsmetadata document, so this AMI is found
-	// directly by the provider path's ListAMIs instead of only ever being
-	// decoded from config.json through the legacy fallback. config.json,
-	// written above by ImportDiskImage, remains the source of truth and the
-	// import is already complete regardless of this call's outcome.
-	node := appConfig.Nodes[appConfig.Node]
+	// The document is what DescribeImages enumerates, so it is written last:
+	// until it exists the AMI is not launchable, and an import that failed
+	// partway leaves no half-registered image behind.
+	ami.State = "available"
 	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
-	if err := writeImportedAMIMetadata(context.Background(), metaStore, node.Predastore.Bucket, volumeId); err != nil {
-		slog.Warn("Could not write ebsmetadata document for imported AMI; it remains visible via the legacy fallback", "imageId", volumeId, "err", err)
+	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), ami); err != nil {
+		fmt.Fprintf(os.Stderr, "Imported %s but could not register it: %v\n", volumeId, err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
-}
-
-// writeImportedAMIMetadata rebuilds the AMI document from the config.json the
-// import just wrote, since the pre-import manifest never receives fields like
-// SnapshotID. A missing config is skipped: the legacy fallback still serves it.
-func writeImportedAMIMetadata(ctx context.Context, objects objectstore.ObjectStore, bucket, imageID string) error {
-	ami, found, err := ebsmetadatabackfill.LegacyAMIFromLegacyState(ctx, objects, bucket, imageID)
-	if err != nil {
-		return fmt.Errorf("read back imported AMI config: %w", err)
-	}
-	if !found {
-		return fmt.Errorf("imported AMI config.json not found at %s/config.json", imageID)
-	}
-	return ebsmetadata.NewStore(objects, bucket).PutAMI(ctx, ami)
 }
 
 // caBakeRunCommand installs the uploaded CA into the guest trust store across

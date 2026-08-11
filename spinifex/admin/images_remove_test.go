@@ -2,15 +2,14 @@ package admin
 
 import (
 	"bytes"
-	"encoding/json"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,27 +19,30 @@ const (
 	testRemoveAccountID = "000000000001"
 )
 
-// putAMI writes an ami-<id>/config.json with the given owner. Owner "" produces
-// a corrupt config (empty ImageOwnerAlias is treated as corrupt by readers).
+// putAMI registers an AMI the only way the control plane knows one: as an
+// ebsmetadata document. It writes nothing under ami-<id>/, so an object count
+// taken over that prefix sees blocks alone.
 func putAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string) {
 	t.Helper()
-	state := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         imageID,
-				Name:            name,
-				ImageOwnerAlias: owner,
-				SnapshotID:      snapshotID,
-				VolumeSizeGiB:   8,
-			},
-		},
-	}
-	data, err := json.Marshal(state)
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID:         imageID,
+		Name:            name,
+		ImageOwnerAlias: owner,
+		SnapshotID:      snapshotID,
+		VolumeSizeGiB:   8,
+	}))
+}
+
+// putCorruptAMI writes an undecodable document at the AMI's key, the state the
+// salvage path exists for: present, so not not-found, but unreadable.
+func putCorruptAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
+	t.Helper()
+	key, err := ebsmetadata.AMIKey(imageID)
 	require.NoError(t, err)
 	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
 		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(imageID + "/config.json"),
-		Body:   bytes.NewReader(data),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader([]byte("{not valid json")),
 	})
 	require.NoError(t, err)
 }
@@ -86,26 +88,14 @@ func putSnapMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapID,
 	require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, testRemoveBucket, snapID, cfg))
 }
 
-// putVolume writes vol-<id>/config.json with the given SnapshotID reference.
+// putVolume registers a volume document carrying the given SnapshotID.
 func putVolume(t *testing.T, store *objectstore.MemoryObjectStore, volID, snapshotID string) {
 	t.Helper()
-	wrapper := volumeConfigWrapper{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID:   volID,
-				SnapshotID: snapshotID,
-				SizeGiB:    8,
-			},
-		},
-	}
-	data, err := json.Marshal(wrapper)
-	require.NoError(t, err)
-	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(volID + "/config.json"),
-		Body:   bytes.NewReader(data),
-	})
-	require.NoError(t, err)
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutVolume(t.Context(), ebsmetadata.Volume{
+		VolumeID:    volID,
+		SnapshotID:  snapshotID,
+		CapacityGiB: 8,
+	}))
 }
 
 func TestRemoveSystemImage_HappyPath(t *testing.T) {
@@ -120,8 +110,8 @@ func TestRemoveSystemImage_HappyPath(t *testing.T) {
 	assert.True(t, preview.ConfigPresent)
 	assert.True(t, preview.IsSystemOwned)
 	assert.Equal(t, "system", preview.Owner)
-	// config.json + 3 chunks = 4 ami-prefix objects.
-	assert.Equal(t, 4, preview.AMIObjectCount)
+	// Only the 3 chunks: the document lives outside the ami-<id>/ prefix.
+	assert.Equal(t, 3, preview.AMIObjectCount)
 	assert.Equal(t, 2, preview.SnapObjectCount)
 	assert.True(t, preview.Dependents.Empty())
 
@@ -173,14 +163,9 @@ func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
 func TestRemoveSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt"
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-		Body:   bytes.NewReader([]byte("{not valid json")),
-	})
-	require.NoError(t, err)
+	putCorruptAMI(t, store, id)
 
-	_, err = RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -245,16 +230,11 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
 	assert.Positive(t, res.ObjectsDeleted)
-	// vol-orphan/config.json remains; the AMI is gone.
-	_, err = store.GetObject(t.Context(), &awss3.GetObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-	})
+	// The dependent volume's document remains; the AMI's is gone.
+	metadata := ebsmetadata.NewStore(store, testRemoveBucket)
+	_, err = metadata.GetAMI(t.Context(), id)
 	require.Error(t, err)
-	_, err = store.GetObject(t.Context(), &awss3.GetObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String("vol-orphan/config.json"),
-	})
+	_, err = metadata.GetVolume(t.Context(), "vol-orphan")
 	require.NoError(t, err)
 }
 
@@ -280,23 +260,19 @@ func TestRemoveSystemImage_Salvage_MissingConfig_ForceCleans(t *testing.T) {
 func TestRemoveSystemImage_Salvage_CorruptConfig_ForceCleans(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-salvage-2"
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-		Body:   bytes.NewReader([]byte("garbage")),
-	})
-	require.NoError(t, err)
+	putCorruptAMI(t, store, id)
 	putAMIBlocks(t, store, id, 1, 8)
 
 	// Without --force.
-	_, err = RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 
-	// With --force: corrupt config + blocks all go.
+	// With --force: the corrupt document and the blocks all go. Only the
+	// block is counted; the document is deleted by key, not by prefix walk.
 	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, 2, res.ObjectsDeleted)
+	assert.Equal(t, 1, res.ObjectsDeleted)
 	assert.Equal(t, 0, store.Count())
 }
 
@@ -344,12 +320,7 @@ func TestPreviewRemoveSystemImage_Salvage(t *testing.T) {
 func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-preview"
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-		Body:   bytes.NewReader([]byte("{nope")),
-	})
-	require.NoError(t, err)
+	putCorruptAMI(t, store, id)
 
 	preview, err := PreviewRemoveSystemImage(store, testRemoveBucket, id)
 	require.NoError(t, err)

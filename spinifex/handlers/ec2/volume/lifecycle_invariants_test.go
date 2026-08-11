@@ -106,6 +106,9 @@ func TestVolumeTagMirror_WritesOnlyControlPlaneDocument(t *testing.T) {
 	svc.natsConn = startTestNATS(t)
 	volumeID := "vol-enc-tag-writer"
 	seedEncryptedConfig(t, memoryStore, volumeID)
+	seedVolumeDocument(t, memoryStore, ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 10, State: "available",
+	})
 	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-live0000000000", "/dev/nbd0"))
 	before := getStoredConfig(t, memoryStore, volumeID)
 	store := &recordingObjectStore{ObjectStore: memoryStore}

@@ -1,11 +1,8 @@
 package admin
 
 import (
-	"bytes"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
@@ -21,8 +18,8 @@ func TestPromoteSystemImage_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, testRemoveAccountID, result.PreviousOwner)
 
-	// Verify the persisted config now carries the system alias.
-	meta, err := readAMIConfig(store, testRemoveBucket, id)
+	// Verify the persisted document now carries the system alias.
+	meta, err := readAMI(store, testRemoveBucket, id)
 	require.NoError(t, err)
 	assert.Equal(t, SystemOwnerAlias, meta.ImageOwnerAlias)
 	// Other fields must be preserved.
@@ -71,14 +68,9 @@ func TestPromoteSystemImage_InvalidPrefix_Malformed(t *testing.T) {
 func TestPromoteSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-promote"
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-		Body:   bytes.NewReader([]byte("{not valid json")),
-	})
-	require.NoError(t, err)
+	putCorruptAMI(t, store, id)
 
-	_, err = PromoteSystemImage(store, testRemoveBucket, PromoteImageOpts{ImageID: id})
+	_, err := PromoteSystemImage(store, testRemoveBucket, PromoteImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
@@ -105,14 +97,9 @@ func TestGetAMIMetadata_MissingConfig_NotFound(t *testing.T) {
 func TestGetAMIMetadata_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-meta"
-	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String(testRemoveBucket),
-		Key:    aws.String(id + "/config.json"),
-		Body:   bytes.NewReader([]byte("not json {")),
-	})
-	require.NoError(t, err)
+	putCorruptAMI(t, store, id)
 
-	_, err = GetAMIMetadata(store, testRemoveBucket, id)
+	_, err := GetAMIMetadata(store, testRemoveBucket, id)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }

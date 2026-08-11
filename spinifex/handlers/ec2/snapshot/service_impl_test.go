@@ -13,9 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata/vblegacy"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/migrate/ebsmetadatabackfill"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -40,34 +38,25 @@ func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.
 
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 	return svc, store
 }
 
-// createTestVolume creates a test volume in the mock store
-// The real S3 stores VBState (which wraps VolumeConfig), so we match that format.
+// createTestVolume seeds a volume on both sides: the provider holds the blocks
+// a snapshot copies, the document is what the control plane resolves.
 func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	t.Helper()
 	seedProviderVolume(t, svc, volumeID, sizeGiB)
-	volumeState := vblegacy.VBState{
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				VolumeID:         volumeID,
-				SizeGiB:          uint64(sizeGiB),
-				AvailabilityZone: "us-east-1a",
-			},
-		},
-	}
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket:      aws.String("test-bucket"),
-		Key:         aws.String(volumeID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:         volumeID,
+		CapacityGiB:      uint64(sizeGiB),
+		AvailabilityZone: "us-east-1a",
 	})
-	require.NoError(t, err)
+}
+
+// seedVolumeDocument writes the control-plane document for a volume.
+func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), volume))
 }
 
 // seedProviderVolume gives the service's provider a volume to snapshot. A
@@ -149,44 +138,22 @@ func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
 }
 
-// createEncryptedTestVolume seeds config.json as an at-rest encryption envelope
-// ({payload, authtag}) wrapping a VBState, matching what an encrypted volume
-// persists. The snapshot handler must unwrap it via StateBody, not decode raw.
+// createEncryptedTestVolume seeds an encrypted volume. Encryption is a fact
+// the document records; the provider's own at-rest envelope is its business.
 func createEncryptedTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	t.Helper()
 	seedProviderVolume(t, svc, volumeID, sizeGiB)
-	inner := vblegacy.VBState{
-		BlockSize:         4096,
-		EncryptionEnabled: true,
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				VolumeID:         volumeID,
-				SizeGiB:          uint64(sizeGiB),
-				AvailabilityZone: "us-east-1a",
-			},
-		},
-	}
-	payload, err := json.Marshal(inner)
-	require.NoError(t, err)
-
-	envelope, err := json.Marshal(map[string]any{
-		"payload": json.RawMessage(payload),
-		"authtag": "deadbeefdeadbeefdeadbeefdeadbeef",
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:         volumeID,
+		CapacityGiB:      uint64(sizeGiB),
+		AvailabilityZone: "us-east-1a",
+		Encrypted:        true,
 	})
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(envelope)),
-	})
-	require.NoError(t, err)
 }
 
-// TestCreateSnapshot_EncryptedVolumeEnvelope verifies an encrypted volume (whose
-// config.json is an envelope) snapshots successfully instead of 500ing on a
-// zero-decoded VBState.
-func TestCreateSnapshot_EncryptedVolumeEnvelope(t *testing.T) {
+// TestCreateSnapshot_EncryptedVolume verifies an encrypted volume snapshots
+// successfully and carries its Encrypted flag onto the snapshot.
+func TestCreateSnapshot_EncryptedVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	volumeID := "vol-enc-snap"
@@ -201,32 +168,15 @@ func TestCreateSnapshot_EncryptedVolumeEnvelope(t *testing.T) {
 	assert.True(t, *result.Encrypted)
 }
 
-// TestSnapshotInUseByVolumes_EncryptedVolume verifies the membership scan sees an
-// encrypted volume's source SnapshotID through the envelope (a raw decode would
-// miss it, letting an in-use snapshot be deleted).
+// TestSnapshotInUseByVolumes_EncryptedVolume verifies the membership scan sees
+// an encrypted clone's source SnapshotID, without which an in-use snapshot
+// could be deleted out from under the volume built on it.
 func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	inner := vblegacy.VBState{
-		BlockSize:         4096,
-		EncryptionEnabled: true,
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{VolumeID: "vol-fromsnap", SizeGiB: 50, SnapshotID: "snap-src"},
-		},
-	}
-	payload, err := json.Marshal(inner)
-	require.NoError(t, err)
-	envelope, err := json.Marshal(map[string]any{
-		"payload": json.RawMessage(payload),
-		"authtag": "deadbeefdeadbeefdeadbeefdeadbeef",
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-fromsnap", CapacityGiB: 50, SnapshotID: "snap-src", Encrypted: true,
 	})
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-fromsnap/config.json"),
-		Body:   strings.NewReader(string(envelope)),
-	})
-	require.NoError(t, err)
 
 	inUse, err := svc.snapshotInUseByVolumes(context.Background(), "snap-src")
 	require.NoError(t, err)
@@ -465,23 +415,9 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a volume that references this snapshot (simulates CreateVolume from snapshot)
-	volumeState := vblegacy.VBState{
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				VolumeID:   "vol-cloned",
-				SizeGiB:    50,
-				SnapshotID: *snap.SnapshotId,
-			},
-		},
-	}
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-cloned/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-cloned", CapacityGiB: 50, SnapshotID: *snap.SnapshotId,
 	})
-	require.NoError(t, err)
 
 	// Attempt to delete the snapshot — should fail
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
@@ -706,7 +642,6 @@ func TestCreateSnapshot_WritesKVEntry(t *testing.T) {
 	}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil, kv)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-kvtest"
 	createTestVolume(t, svc, store, volumeID, 10)
@@ -740,7 +675,6 @@ func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
 	}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil, kv)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	svc.metadata.SetLegacyVolumeFallback(ebsmetadatabackfill.LegacyVolumeFromLegacyState)
 
 	volumeID := "vol-kvdelete"
 	createTestVolume(t, svc, store, volumeID, 10)
@@ -768,28 +702,16 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 
 	// Create a volume owned by testAccountID (via TenantID)
 	volumeID := "vol-owned-by-alpha"
-	volumeState := vblegacy.VBState{
-		VolumeConfig: vblegacy.VolumeConfig{
-			VolumeMetadata: vblegacy.VolumeMetadata{
-				VolumeID:         volumeID,
-				SizeGiB:          100,
-				TenantID:         testAccountID,
-				AvailabilityZone: "us-east-1a",
-			},
-		},
-	}
 	seedProviderVolume(t, svc, volumeID, 100)
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:         volumeID,
+		CapacityGiB:      100,
+		TenantID:         testAccountID,
+		AvailabilityZone: "us-east-1a",
 	})
-	require.NoError(t, err)
 
 	// Another account tries to snapshot the volume — should fail
-	_, err = svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String(volumeID),
 	}, otherAccountID)
 	require.Error(t, err)

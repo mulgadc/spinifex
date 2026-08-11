@@ -15,8 +15,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DBNodeStatus is a single DB node's live status merged with its config.
-type DBNodeStatus struct {
+// MetaNodeStatus is a single meta node's live status merged with its config.
+type MetaNodeStatus struct {
 	ID         int    `json:"id"`
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
@@ -32,10 +32,10 @@ type DBNodeStatus struct {
 
 // StorageStatusOutput is the response for GetStorageStatus.
 type StorageStatusOutput struct {
-	Encoding   StorageEncodingOutput    `json:"encoding"`
-	DBNodes    []DBNodeStatus           `json:"db_nodes"`
-	ShardNodes []types.StorageShardNode `json:"shard_nodes"`
-	Buckets    []types.StorageBucket    `json:"buckets"`
+	Encoding  StorageEncodingOutput   `json:"encoding"`
+	MetaNodes []MetaNodeStatus        `json:"meta_nodes"`
+	BlobNodes []types.StorageBlobNode `json:"blob_nodes"`
+	Buckets   []types.StorageBucket   `json:"buckets"`
 }
 
 // StorageEncodingOutput adds the type label to the encoding config.
@@ -49,8 +49,8 @@ var storageHTTPClient = &http.Client{
 	Timeout: 1 * time.Second,
 }
 
-// GetStorageStatus fetches predastore topology via NATS, then queries each DB
-// node's /status and /health endpoints in parallel.
+// GetStorageStatus fetches predastore topology via NATS, then queries each
+// meta node's /status and /health endpoints in parallel.
 func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 	msg, err := nc.Request("spinifex.storage.config", []byte("{}"), 3*time.Second)
 	if err != nil {
@@ -62,22 +62,22 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 		return nil, fmt.Errorf("parse storage config: %w", err)
 	}
 
-	dbStatuses := make([]DBNodeStatus, len(cfg.DBNodes))
+	metaStatuses := make([]MetaNodeStatus, len(cfg.MetaNodes))
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	for i, db := range cfg.DBNodes {
-		dbStatuses[i] = DBNodeStatus{
-			ID:   db.ID,
-			Host: db.Host,
-			Port: db.Port,
+	for i, meta := range cfg.MetaNodes {
+		metaStatuses[i] = MetaNodeStatus{
+			ID:   meta.ID,
+			Host: meta.Host,
+			Port: meta.Port,
 		}
 		wg.Add(1)
 		go func(idx int, host string, port int) {
 			defer wg.Done()
-			queryDBNodeStatus(ctx, &dbStatuses[idx], host, port)
-		}(i, db.Host, db.Port)
+			queryMetaNodeStatus(ctx, &metaStatuses[idx], host, port)
+		}(i, meta.Host, meta.Port)
 	}
 	wg.Wait()
 
@@ -87,9 +87,9 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 			DataShards:   cfg.Encoding.DataShards,
 			ParityShards: cfg.Encoding.ParityShards,
 		},
-		DBNodes:    dbStatuses,
-		ShardNodes: cfg.ShardNodes,
-		Buckets:    cfg.Buckets,
+		MetaNodes: metaStatuses,
+		BlobNodes: cfg.BlobNodes,
+		Buckets:   cfg.Buckets,
 	}, nil
 }
 
@@ -105,7 +105,7 @@ type predastoreStatusResponse struct {
 	IsLeader   bool   `json:"is_leader"`
 }
 
-func queryDBNodeStatus(ctx context.Context, out *DBNodeStatus, host string, port int) {
+func queryMetaNodeStatus(ctx context.Context, out *MetaNodeStatus, host string, port int) {
 	// Resolve 0.0.0.0 to a routable address for HTTPS.
 	queryHost := host
 	if queryHost == "0.0.0.0" {
@@ -119,7 +119,7 @@ func queryDBNodeStatus(ctx context.Context, out *DBNodeStatus, host string, port
 	}
 	resp, err := storageHTTPClient.Do(req)
 	if err != nil {
-		slog.Debug("queryDBNodeStatus: health check failed", "host", host, "port", port, "err", err)
+		slog.Debug("queryMetaNodeStatus: health check failed", "host", host, "port", port, "err", err)
 		return
 	}
 	resp.Body.Close()
@@ -132,14 +132,14 @@ func queryDBNodeStatus(ctx context.Context, out *DBNodeStatus, host string, port
 	}
 	resp, err = storageHTTPClient.Do(req)
 	if err != nil {
-		slog.Debug("queryDBNodeStatus: status check failed", "host", host, "port", port, "err", err)
+		slog.Debug("queryMetaNodeStatus: status check failed", "host", host, "port", port, "err", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	var status predastoreStatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		slog.Debug("queryDBNodeStatus: failed to decode status", "host", host, "port", port, "err", err)
+		slog.Debug("queryMetaNodeStatus: failed to decode status", "host", host, "port", port, "err", err)
 		return
 	}
 

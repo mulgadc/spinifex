@@ -1064,14 +1064,14 @@ func FindNodeIDByIP(nodes []PredastoreNodeConfig, ip string) int {
 }
 
 // ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
-// the ID of the [[host]] whose public address matches the given IP, or 0 if
-// not found. The host is what an operator places on a machine; the nodes
-// pinned to it follow from the topology.
+// the ID of the [[host]] whose addr matches the given IP, or 0 if not found.
+// A host addr names one machine and never carries a port; the ports belong to
+// the nodes pinned to it.
 func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 	var cfg struct {
 		Hosts []struct {
-			ID         int    `toml:"id"`
-			PublicAddr string `toml:"public_addr"`
+			ID   int    `toml:"id"`
+			Addr string `toml:"addr"`
 		} `toml:"host"`
 	}
 	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
@@ -1079,12 +1079,7 @@ func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 		return 0
 	}
 	for _, h := range cfg.Hosts {
-		host, _, err := net.SplitHostPort(h.PublicAddr)
-		if err != nil {
-			// A bare address without a port is still a usable match.
-			host = h.PublicAddr
-		}
-		if host == ip {
+		if h.Addr == ip {
 			return h.ID
 		}
 	}

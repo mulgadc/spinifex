@@ -80,6 +80,40 @@ func (d *Daemon) startOchreVector() {
 	service := handlers_ochrevector.NewService(registry, backend)
 	ingest := handlers_ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
 
-	d.ochreVectorService = handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder)
+	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder)
+
+	// A shutdown that lands in the gap between Connect succeeding above and
+	// this check does not leave anything to unwind: nothing has been
+	// registered yet, so there are no subjects or map entries to clean up --
+	// this is a best-effort skip of a subscribe attempt that would very
+	// likely fail on a closing NATS connection anyway, not a correctness
+	// requirement.
+	if d.ctx.Err() != nil {
+		slog.Warn("Ochre vector store: daemon shutting down before appliance came up; not registering subjects")
+		return
+	}
+
+	// Registered here rather than in subscribeAll: these six subjects only
+	// exist once the appliance above is actually connected, which can be
+	// minutes after subscribeAll already ran. registerNatsSubs is the same
+	// table-driven mechanism subscribeAll itself uses, so a queue-group
+	// registration here is indistinguishable from one made at boot.
+	subs := []natsSub{
+		{handlers_ochrevector.SubjectCreateIndex, handleNATSRequest(vectorService.CreateIndex), "spinifex-workers"},
+		{handlers_ochrevector.SubjectDeleteIndex, handleNATSRequest(vectorService.DeleteIndex), "spinifex-workers"},
+		{handlers_ochrevector.SubjectListIndexes, handleNATSRequest(vectorService.ListIndexes), "spinifex-workers"},
+		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
+		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
+		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
+	}
+	if err := d.registerNatsSubs(subs); err != nil {
+		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)
+		return
+	}
+
+	// Assigned last, and only after every subject above is live: a reader
+	// (there is none today beyond observability) must never see a non-nil
+	// service whose subjects are not yet actually serving.
+	d.ochreVectorService = vectorService
 	slog.Info("Ochre vector store enabled")
 }

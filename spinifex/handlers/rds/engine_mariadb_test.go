@@ -5,28 +5,70 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// The engine exists but is not offered: its image and guest implementation land
-// after it, and a create that resolved an AMI nothing builds would leave a
-// volume and an ENI behind for an instance that can never become available.
-func TestMariaDB_IsNotOfferedUntilItsImageExists(t *testing.T) {
-	_, err := LookupEngine("mariadb")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
-	assert.NotContains(t, SupportedEngines(), "mariadb")
+// Offered only now that the image and the guest implementation exist: until
+// they did, a create would have resolved an AMI nothing builds and left a volume
+// and an ENI behind for an instance that could never become available.
+func TestMariaDB_IsOffered(t *testing.T) {
+	engine, err := LookupEngine("  MariaDB ")
+	require.NoError(t, err, "the engine name is matched case-insensitively and trimmed")
+	assert.Equal(t, engineMariaDB.Name, engine.Name)
+	assert.Contains(t, SupportedEngines(), "mariadb")
 
-	_, err = engineForFamily(engineMariaDB.ParameterGroupFamily())
-	require.Error(t, err, "no parameter group may name a family whose engine is not offered")
-	assert.NotContains(t, SupportedParameterGroupFamilies(), "mariadb11.8")
+	byFamily, err := engineForFamily(engineMariaDB.ParameterGroupFamily())
+	require.NoError(t, err)
+	assert.Equal(t, engineMariaDB.Name, byFamily.Name)
+	assert.Contains(t, SupportedParameterGroupFamilies(), "mariadb11.8")
 
 	// mysql is a distinct AWS engine this platform does not offer, and MariaDB is
-	// deliberately not aliased onto it.
+	// deliberately not aliased onto it: the alias would report an engine and a
+	// version the instance is not running.
 	_, err = LookupEngine("mysql")
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+}
+
+// The whole point of registering the engine: a request naming it has to reach
+// the MariaDB AMI carrying MariaDB's own port, family and guest configuration,
+// not PostgreSQL's defaults with a different name on them.
+func TestCreateDBInstance_LaunchesMariaDB(t *testing.T) {
+	h := newCreateHarness(t, testBaseDomain)
+	input := validCreateInput()
+	input.Engine = aws.String("mariadb")
+
+	out, err := h.svc.CreateDBInstance(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.DBInstance)
+	assert.Equal(t, "mariadb", aws.StringValue(out.DBInstance.Engine))
+	assert.Equal(t, "11.8", aws.StringValue(out.DBInstance.EngineVersion))
+	require.NotNil(t, out.DBInstance.Endpoint)
+	assert.Equal(t, int64(3306), aws.Int64Value(out.DBInstance.Endpoint.Port),
+		"the engine's default port applies when the request names none")
+
+	rec := h.record(t, testDBInstanceID)
+	assert.Equal(t, "mariadb", rec.Engine)
+	assert.Equal(t, int64(3306), rec.Port)
+	assert.Equal(t, engineMariaDB.DefaultParameterGroupName(), rec.DBParameterGroupName)
+
+	// The AMI is selected by the engine's own tags, so a MariaDB create can never
+	// land on the PostgreSQL image however the two are published.
+	amiFilters := map[string]string{}
+	for _, f := range h.launch.images.filters {
+		amiFilters[aws.StringValue(f.Name)] = aws.StringValue(f.Values[0])
+	}
+	assert.Equal(t, "mariadb", amiFilters["tag:"+engineTagKey])
+	assert.Equal(t, "11.8", amiFilters["tag:"+engineVersionTagKey])
+
+	// The guest builds its engine implementation from the image, and refuses to
+	// run when cloud-init disagrees with what the image bakes.
+	require.NotNil(t, h.launch.launcher.input)
+	assert.Contains(t, h.launch.launcher.input.UserData, "RDS_ENGINE=mariadb")
+	assert.Contains(t, h.launch.launcher.input.UserData, "RDS_ENGINE_PORT=3306")
 }
 
 func TestMariaDB_Identity(t *testing.T) {

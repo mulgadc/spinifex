@@ -22,7 +22,7 @@ func TestLookupEngine(t *testing.T) {
 	_, err = LookupEngine("mysql")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
-	assert.Equal(t, []string{"postgres"}, SupportedEngines())
+	assert.Equal(t, []string{"mariadb", "postgres"}, SupportedEngines())
 }
 
 // A version other than the pinned one would be served by an image that is

@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // Stamps the engine a real image bakes and loads the configuration against it,
@@ -88,10 +86,8 @@ func TestNewEngine_RefusesAnEngineItDoesNotImplement(t *testing.T) {
 }
 
 // The implementation is the agent's, but the definition it validates names and
-// classifies parameters against is the control plane's. An agent whose control
-// plane offers no definition for the engine its image bakes refuses rather than
-// inventing one.
-func TestNewEngine_FollowsWhetherTheControlPlaneOffersTheBakedEngine(t *testing.T) {
+// classifies parameters against is the control plane's, which now offers MariaDB.
+func TestNewEngine_BuildsMariaDBForAMariaDBImage(t *testing.T) {
 	cfg := testLoadConfig(t, engineMariaDB)
 	probe, err := newProbe(cfg, staticProbe(0))
 	if err != nil {
@@ -99,15 +95,6 @@ func TestNewEngine_FollowsWhetherTheControlPlaneOffersTheBakedEngine(t *testing.
 	}
 
 	built, err := newEngine(cfg, nil, nil, probe)
-	if _, offered := handlers_rds.LookupEngine(engineMariaDB); offered != nil {
-		if err == nil {
-			t.Fatal("built a MariaDB engine while the control plane offers no definition for it")
-		}
-		if !strings.Contains(err.Error(), engineMariaDB) {
-			t.Errorf("error = %v, want it to name the engine the image bakes", err)
-		}
-		return
-	}
 	if err != nil {
 		t.Fatalf("newEngine: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 const (
 	testParameterGroup = "tuned-pg"
 	testDefaultPG      = "default.postgres18"
+	testDefaultMariaDB = "default.mariadb11.8"
 )
 
 func parameterGroupInput(name string) *rds.CreateDBParameterGroupInput {
@@ -139,10 +140,20 @@ func TestDescribeDBParameterGroups_ReportsTheImplicitDefault(t *testing.T) {
 	require.Len(t, named.DBParameterGroups, 1)
 	assert.Equal(t, testDefaultPG, aws.StringValue(named.DBParameterGroups[0].DBParameterGroupName))
 
+	// One per registered engine, as AWS does: an account that has never touched
+	// MariaDB still sees its default group, because the group is the engine's.
 	listed, err := h.svc.DescribeDBParameterGroups(t.Context(), &rds.DescribeDBParameterGroupsInput{}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, listed.DBParameterGroups, 1, "the default group is reported even with nothing created")
-	assert.Equal(t, testDefaultPG, aws.StringValue(listed.DBParameterGroups[0].DBParameterGroupName))
+	assert.Equal(t, []string{testDefaultMariaDB, testDefaultPG}, parameterGroupNames(listed),
+		"the default groups are reported even with nothing created")
+}
+
+func parameterGroupNames(out *rds.DescribeDBParameterGroupsOutput) []string {
+	var names []string
+	for _, group := range out.DBParameterGroups {
+		names = append(names, aws.StringValue(group.DBParameterGroupName))
+	}
+	return names
 }
 
 // Synthesised rather than stored, so it must appear exactly once alongside the
@@ -156,12 +167,7 @@ func TestDescribeDBParameterGroups_ListsCustomerGroupsBesideTheDefault(t *testin
 
 	listed, err := h.svc.DescribeDBParameterGroups(t.Context(), &rds.DescribeDBParameterGroupsInput{}, testAccountID)
 	require.NoError(t, err)
-
-	var names []string
-	for _, group := range listed.DBParameterGroups {
-		names = append(names, aws.StringValue(group.DBParameterGroupName))
-	}
-	assert.Equal(t, []string{"alpha", testDefaultPG, "zeta"}, names)
+	assert.Equal(t, []string{"alpha", testDefaultMariaDB, testDefaultPG, "zeta"}, parameterGroupNames(listed))
 }
 
 func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {

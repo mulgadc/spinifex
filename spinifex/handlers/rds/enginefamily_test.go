@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Only PostgreSQL ships, so a cross-engine refusal has nothing to be refused
-// against without a second engine. This one exists solely inside the test
-// binary: nothing about its catalog matters beyond being distinguishable from
-// PostgreSQL's.
+// A second engine that exists solely inside the test binary, so the cross-engine
+// refusal is proven against the seam rather than against whichever engines the
+// build happens to offer. Nothing about its catalog matters beyond being
+// distinguishable from the shipped ones.
 const (
 	testEngineName  = "testdb"
 	testEngineGroup = "tuned-testdb"
@@ -41,6 +41,7 @@ var engineUnderTest = Engine{
 		},
 	),
 	validateCombinations: func([]Parameter) error { return nil },
+	crashRecoveryNote:    "It will recover when it is restored.",
 }
 
 // Registers the second engine for one test. Both indexes are rebuilt, because a
@@ -205,6 +206,9 @@ func TestCreateDBParameterGroup_RejectionNamesEverySupportedFamily(t *testing.T)
 	for _, family := range SupportedParameterGroupFamilies() {
 		assert.Contains(t, err.Error(), family)
 	}
-	assert.Equal(t, []string{enginePostgres.ParameterGroupFamily(), engineUnderTest.ParameterGroupFamily()},
-		SupportedParameterGroupFamilies())
+	assert.Equal(t, []string{
+		engineMariaDB.ParameterGroupFamily(),
+		enginePostgres.ParameterGroupFamily(),
+		engineUnderTest.ParameterGroupFamily(),
+	}, SupportedParameterGroupFamilies())
 }

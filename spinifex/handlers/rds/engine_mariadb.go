@@ -12,9 +12,6 @@ import (
 // Alpine base. MajorVersion is the version series the API pins to rather than an
 // integer major — PostgreSQL's version axis is one integer and MariaDB's is two
 // — so the family reads mariadb11.8, as AWS RDS's own family naming does.
-//
-// Deliberately absent from engines: MariaDB registers only once its image and
-// guest implementation exist, so no create can resolve an AMI nothing builds.
 var engineMariaDB = Engine{
 	Name:         "mariadb",
 	MajorVersion: "11.8",
@@ -35,6 +32,10 @@ var engineMariaDB = Engine{
 	validateDBName:       dbNameRule(64),
 	catalog:              mariadbParameterCatalog,
 	validateCombinations: validateMariaDBParameterCombinations,
+	// Only InnoDB keeps a redo log. Aria and MyISAM have none, so a datadir torn
+	// mid-write can leave one of their tables inconsistent with no way back.
+	crashRecoveryNote: "InnoDB tables will recover from the redo log when it is restored; " +
+		"non-transactional tables such as Aria and MyISAM may be left inconsistent.",
 }
 
 // The curated MariaDB 11.8 table, the same shape and approximate size as the

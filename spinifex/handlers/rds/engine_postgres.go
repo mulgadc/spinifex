@@ -29,6 +29,8 @@ var enginePostgres = Engine{
 	validateDBName:       dbNameRule(63),
 	catalog:              postgresParameterCatalog,
 	validateCombinations: validatePostgresParameterCombinations,
+	// Every table is WAL-logged, so a torn datadir recovers in full.
+	crashRecoveryNote: "It will recover from its write-ahead log when it is restored.",
 }
 
 // The curated PostgreSQL 18 table: a genuinely validated subset rather than the

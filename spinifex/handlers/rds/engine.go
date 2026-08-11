@@ -36,10 +36,15 @@ type Engine struct {
 	// Cross-parameter checks a resolved set must satisfy, which are the
 	// combinations the engine itself would refuse to start under.
 	validateCombinations func([]Parameter) error
+
+	// What a snapshot taken without a quiesce actually recovers on restore, which
+	// is the engine's own guarantee and not a shared one.
+	crashRecoveryNote string
 }
 
 var engines = map[string]Engine{
 	enginePostgres.Name: enginePostgres,
+	engineMariaDB.Name:  engineMariaDB,
 }
 
 // The same registry keyed by parameter-group family, for the callers that hold
@@ -54,6 +59,11 @@ func indexEnginesByFamily() map[string]Engine {
 		// create that names a database, rather than here where every build sees it.
 		if engine.validateDBName == nil {
 			panic("rds: engine " + engine.Name + " registers no DBName rule")
+		}
+		// An engine without one would tell a customer nothing about what a
+		// crash-consistent snapshot of it recovers, on the one event that says so.
+		if engine.crashRecoveryNote == "" {
+			panic("rds: engine " + engine.Name + " registers no crash-recovery note")
 		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {

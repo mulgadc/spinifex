@@ -58,7 +58,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		{ebsprovider.CreateVolumeSubject, func(msg *nats.Msg) { handleCreateVolume(cfg, msg) }},
 		{ebsprovider.GetVolumeSubject, func(msg *nats.Msg) { handleGetVolume(cfg, msg) }},
 		{ebsprovider.ExpandVolumeSubject, func(msg *nats.Msg) { handleExpandVolume(cfg, msg) }},
-		{ebsprovider.DeleteVolumeSubject, func(msg *nats.Msg) { handleDeleteVolume(cfg, msg) }},
+		{ebsprovider.DeleteVolumeSubject, func(msg *nats.Msg) { handleDeleteVolume(cfg, nc, msg) }},
 		{ebsprovider.DeleteSnapshotSubject, func(msg *nats.Msg) { handleDeleteSnapshot(cfg, msg) }},
 		{ebsprovider.CopySnapshotSubject, func(msg *nats.Msg) { handleCopySnapshot(cfg, msg) }},
 	}
@@ -137,6 +137,11 @@ func internalError(format string, args ...any) *ebsprovider.ProviderError {
 // viperblock.CopySnapshotMeta's error text, which carries no sentinel of
 // its own.
 var errSnapshotDestinationExists = errors.New("snapshot destination already exists")
+
+// errSnapshotExistsElsewhere marks a snapshot ID already taken against a
+// different volume. That is a conflicting recreate, not the idempotent repeat
+// a matching source volume would make it.
+var errSnapshotExistsElsewhere = errors.New("snapshot already exists on another volume")
 
 // volumeHandle and snapshotHandle produce the opaque handle strings this
 // provider returns, mirroring memory.go's "memory://..." convention so
@@ -310,6 +315,13 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("backend init: %v", err)})
 		return
 	}
+	if req.SourceSnapshotID != "" {
+		if perr := verifySourceSnapshot(vb, req.SourceSnapshotID, req.SourceSnapshotVolumeID); perr != nil {
+			slog.Error("ebs.provider.volume.create: source snapshot rejected", "volume", req.VolumeID, "snapshot", req.SourceSnapshotID, "err", perr.Message)
+			respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: perr})
+			return
+		}
+	}
 	if len(req.SeedData) > 0 {
 		if err := seedVolume(vb, req.SeedData); err != nil {
 			slog.Error("ebs.provider.volume.create: seed failed", "volume", req.VolumeID, "bytes", len(req.SeedData), "err", err)
@@ -332,6 +344,29 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 			Handle:        volumeHandle(req.VolumeID),
 		},
 	})
+}
+
+// verifySourceSnapshot reads the snapshot a new volume is being cloned from,
+// before the volume is written. Without this a missing snapshot yields a
+// blank volume and a wrong source volume is discovered only at mount.
+// Snapshot metadata authenticates under its own recorded identity, so any VB
+// sharing the backend and master key can read it.
+func verifySourceSnapshot(vb *viperblock.VB, snapshotID, sourceVolumeID string) *ebsprovider.ProviderError {
+	exists, err := snapshotConfigExists(vb, snapshotID)
+	if err != nil {
+		return internalError("probe source snapshot %s: %v", snapshotID, err)
+	}
+	if !exists {
+		return notFoundError("source snapshot %s not found", snapshotID)
+	}
+	_, ident, err := vb.LoadSnapshotBlockMap(snapshotID)
+	if err != nil {
+		return internalError("read source snapshot %s: %v", snapshotID, err)
+	}
+	if ident.SourceVolumeName != sourceVolumeID {
+		return invalidArgumentError("source snapshot %s was taken from volume %q, not %q", snapshotID, ident.SourceVolumeName, sourceVolumeID)
+	}
+	return nil
 }
 
 // seedVolume writes seed at offset 0 of a freshly created volume. Only
@@ -497,48 +532,30 @@ func handleExpandVolume(cfg *Config, msg *nats.Msg) {
 	})
 }
 
-// stopMountedVolumeForDelete removes volumeID from cfg.MountedVolumes if this
-// node has it mounted and stops its resources: config subscription,
-// background goroutines, nbdkit process, socket file. This mirrors (rather
-// than calls into) launchService's ebs.delete cleanup closure — extracting a
-// shared helper would touch viperblockd.go beyond the single registration
-// line this change is scoped to.
-func stopMountedVolumeForDelete(cfg *Config, volumeID string) {
-	cfg.mu.Lock()
-	var matched MountedVolume
-	matchIdx := -1
-	for i, volume := range cfg.MountedVolumes {
-		if volume.Name == volumeID {
-			matched = volume
-			matchIdx = i
-			cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
-			break
-		}
-	}
-	cfg.mu.Unlock()
+// ownerProbeTimeout bounds the wait for a volume's owner subject to answer.
+// A mounted volume's owner is on the same NATS as the deleting node, so a
+// reply is a round trip away; no reply within this means nobody holds it.
+const ownerProbeTimeout = 2 * time.Second
 
-	if matchIdx < 0 {
-		return
+// volumeMountedElsewhere asks volumeID's owner subject whether anyone answers
+// for it. Only a node with the volume mounted subscribes that subject, so a
+// reply means a live mount on some node, not necessarily this one.
+func volumeMountedElsewhere(nc *nats.Conn, volumeID string) bool {
+	if nc == nil {
+		return false
 	}
-
-	if matched.ConfigSub != nil {
-		if err := matched.ConfigSub.Unsubscribe(); err != nil {
-			slog.Error("ebs.provider.volume.delete: failed to unsubscribe config topic", "volume", volumeID, "err", err)
-		}
+	subject, err := ebsprovider.GetVolumeOwnerSubject(volumeID)
+	if err != nil {
+		return false
 	}
-	unsubscribeOwnerSubjects(volumeID, matched.OwnerSubs)
-	if matched.VB != nil {
-		matched.VB.StopChunkUploader()
-		matched.VB.StopWALSyncer()
+	payload, err := json.Marshal(ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})
+	if err != nil {
+		return false
 	}
-	if err := utils.KillProcess(matched.PID); err != nil {
-		slog.Error("ebs.provider.volume.delete: failed to kill nbdkit process", "pid", matched.PID, "err", err)
+	if _, err := nc.Request(subject, payload, ownerProbeTimeout); err != nil {
+		return false
 	}
-	if matched.Socket != "" {
-		if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
-			slog.Error("ebs.provider.volume.delete: failed to delete nbd socket", "socket", matched.Socket, "err", err)
-		}
-	}
+	return true
 }
 
 // deleteObjectPrefix deletes every object under prefix in bucket, paginating
@@ -572,7 +589,7 @@ func deleteObjectPrefix(ctx context.Context, store objectstore.ObjectStore, buck
 	return nil
 }
 
-func handleDeleteVolume(cfg *Config, msg *nats.Msg) {
+func handleDeleteVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.DeleteVolumeRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("ebs.provider.volume.delete: bad request", "err", err)
@@ -588,7 +605,14 @@ func handleDeleteVolume(cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	stopMountedVolumeForDelete(cfg, req.VolumeID)
+	// A published volume must outlive a delete: the nbdkit export and the
+	// guest writing through it survive the metadata going away, so deleting
+	// under them turns a refusable API call into later corruption.
+	if _, mounted := findMountedVolume(cfg, req.VolumeID); mounted || volumeMountedElsewhere(nc, req.VolumeID) {
+		slog.Error("ebs.provider.volume.delete: volume is published", "volume", req.VolumeID)
+		respondJSON(msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is published; unpublish it before deleting", req.VolumeID)})
+		return
+	}
 
 	store := providerObjectStoreFactory(cfg)
 	ctx := context.Background()
@@ -672,6 +696,8 @@ func handleCopySnapshot(cfg *Config, msg *nats.Msg) {
 		switch {
 		case errors.Is(err, errSnapshotDestinationExists):
 			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: alreadyExistsError("snapshot %s already exists", req.DestinationSnapshotID)})
+		case errors.Is(err, viperblock.ErrSnapshotVolumeMismatch):
+			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("%v", err)})
 		case errors.Is(err, viperblock.ErrStateNotFound), errors.Is(err, os.ErrNotExist):
 			respondJSON(msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("source snapshot %s not found on volume %s", req.SourceSnapshotID, req.VolumeID)})
 		default:
@@ -815,8 +841,11 @@ func completeCreateSnapshot(cfg *Config, nc *nats.Conn, req ebsprovider.CreateSn
 	if err != nil {
 		slog.Error("ebs.provider.snapshot.create: snapshot failed", "volume", req.VolumeID, "snapshot", req.SnapshotID, "err", err)
 		code := ebsprovider.ErrorCodeInternal
-		if errors.Is(err, viperblock.ErrStateNotFound) {
+		switch {
+		case errors.Is(err, viperblock.ErrStateNotFound):
 			code = ebsprovider.ErrorCodeNotFound
+		case errors.Is(err, errSnapshotExistsElsewhere):
+			code = ebsprovider.ErrorCodeAlreadyExists
 		}
 		completion.Error = &ebsprovider.ProviderError{Code: code, Message: err.Error()}
 	} else {
@@ -833,12 +862,32 @@ func completeCreateSnapshot(cfg *Config, nc *nats.Conn, req ebsprovider.CreateSn
 	}
 }
 
+// checkSnapshotIDFree refuses a snapshot ID that already exists unless this
+// volume is the one it was taken from. An existing snapshot whose identity
+// cannot be read is refused too: unprovable ownership must not overwrite it.
+func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
+	exists, err := snapshotConfigExists(vb, snapshotID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, ident, err := vb.LoadSnapshotBlockMap(snapshotID); err == nil && ident.SourceVolumeName == volumeID {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+}
+
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
 // preferring an already-mounted VB over opening a second engine on the same
 // volume. Draining the volume so the checkpoint is current is the caller's
 // responsibility (see handleCreateSnapshot).
 func snapshotVolumeEngine(cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
+		if err := checkSnapshotIDFree(mv.VB, volumeID, snapshotID); err != nil {
+			return nil, err
+		}
 		if err := mv.VB.LoadLiveCheckpoint(); err != nil {
 			return nil, fmt.Errorf("load live checkpoint: %w", err)
 		}
@@ -885,6 +934,9 @@ func snapshotVolumeEngine(cfg *Config, volumeID, snapshotID string) (*ebsprovide
 	}
 	if err := loadStateWithRetry(vb, volumeID); err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
+	}
+	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
+		return nil, err
 	}
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return nil, fmt.Errorf("load live checkpoint: %w", err)
@@ -1459,11 +1511,15 @@ func handleUnpublishVolume(cfg *Config, msg *nats.Msg) {
 
 	unmountResp, err := unmountVolume(ctx, cfg, req.VolumeID)
 	if err != nil {
-		utils.MarkSpanError(span, err)
+		// Nothing mounted here is already the state unpublish asks for, so a
+		// retry after a request that completed server-side converges rather
+		// than erroring, matching the legacy path's unmountResponseError.
 		if unmountResp.NotFound {
-			respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			slog.Info("ebs.provider.volume.unpublish: already unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
+			respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 			return
 		}
+		utils.MarkSpanError(span, err)
 		slog.Error("ebs.provider.volume.unpublish: unmount failed", "volume", req.VolumeID, "err", err)
 		respondJSON(msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("unmount volume: %v", err)})
 		return

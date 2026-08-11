@@ -670,12 +670,12 @@ func TestBuildProviderVBConfig(t *testing.T) {
 	assert.Equal(t, "vol-src", fromSnapshot.SourceVolumeName)
 }
 
-// TestProviderHandlers_DeleteVolume_MountedVolumeStopsResources covers
-// handleDeleteVolume's mounted-volume path end to end: stopMountedVolumeForDelete
-// must remove the entry from cfg.MountedVolumes, stop the VB's background
-// goroutines, and delete the NBD socket file, all without touching an S3
-// backend (providerObjectStoreFactory is overridden to a MemoryObjectStore).
-func TestProviderHandlers_DeleteVolume_MountedVolumeStopsResources(t *testing.T) {
+// TestProviderHandlers_DeleteVolume_MountedVolumeRefused covers
+// handleDeleteVolume's mounted-volume path: a published volume is undeletable,
+// so the request must be refused with volume_in_use and the mount left exactly
+// as it was. Deleting under a live export leaves the guest writing into
+// storage whose metadata has gone.
+func TestProviderHandlers_DeleteVolume_MountedVolumeRefused(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	nc := startProviderSubjects(t, cfg, natsURL)
@@ -702,17 +702,22 @@ func TestProviderHandlers_DeleteVolume_MountedVolumeStopsResources(t *testing.T)
 
 	var resp ebsprovider.DeleteVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Nil(t, resp.Error)
+	require.NotNil(t, resp.Error, "deleting a published volume must be refused")
+	assert.Equal(t, ebsprovider.ErrorCodeVolumeInUse, resp.Error.Code)
 
 	cfg.mu.Lock()
 	remaining := cfg.MountedVolumes
 	cfg.mu.Unlock()
+	var stillMounted bool
 	for _, v := range remaining {
-		assert.NotEqual(t, volumeName, v.Name, "deleted volume must be removed from MountedVolumes")
+		if v.Name == volumeName {
+			stillMounted = true
+		}
 	}
+	assert.True(t, stillMounted, "a refused delete must leave the mount in place")
 
 	_, statErr := os.Stat(socketPath)
-	assert.True(t, os.IsNotExist(statErr), "the NBD socket file must be removed")
+	assert.NoError(t, statErr, "a refused delete must leave the NBD socket alone")
 }
 
 // TestProviderHandlers_PublishVolume_IdempotentRepublish covers the double-
@@ -820,11 +825,11 @@ func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 	}
 }
 
-// TestProviderHandlers_UnpublishVolume_NotFound mirrors
-// TestIntegration_EBSUnmountNonExistentVolume: unpublishing a volume this
-// node never mounted must come back not_found, matching the legacy handler's
-// NotFound flag rather than a generic internal error.
-func TestProviderHandlers_UnpublishVolume_NotFound(t *testing.T) {
+// TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent covers a volume this
+// node never mounted. The legacy path treats that as a successful seal (see
+// unmountResponseError), and so must this one: a retry after a request that
+// timed out client-side but completed server-side has to converge.
+func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	nc := startProviderSubjects(t, cfg, natsURL)
@@ -840,8 +845,7 @@ func TestProviderHandlers_UnpublishVolume_NotFound(t *testing.T) {
 
 	var resp ebsprovider.UnpublishVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	require.NotNil(t, resp.Error)
-	assert.Equal(t, ebsprovider.ErrorCodeNotFound, resp.Error.Code)
+	assert.Nil(t, resp.Error, "unpublishing a volume this node never mounted must succeed")
 }
 
 // TestProviderHandlers_PublishUnpublish_RequireNodeName covers

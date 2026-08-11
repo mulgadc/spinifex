@@ -33,7 +33,7 @@ Updating Spinifex is the same command used to install it. The installer detects 
 For operators who want to review migrations before they are applied, a manual upgrade path is also supported.
 
 > [!WARNING]
-> **Object storage is exempt.** Predastore's configuration schema and on-disk layout changed with the object storage cutover, and no migration converts an installation from before it. `spx admin upgrade` will not report anything pending for `predastore.toml`, and updating the binary over such an installation leaves Predastore unable to start. Those clusters have to be re-initialised from scratch, which discards their stored objects — export anything you need first.
+> **Object storage is exempt when upgrading from v1.15.0 or earlier to v1.16.0.** Predastore's configuration schema and on-disk layout changed with the object storage cutover in v1.16.0, and no migration converts an installation from before it. `spx admin upgrade` will not report anything pending for `predastore.toml`, and updating the binary over such an installation leaves Predastore unable to start. Those clusters have to be re-initialised from scratch, which discards their stored objects — export anything you need first. Upgrades between v1.16.0 and later releases are unaffected.
 
 ## Instructions
 

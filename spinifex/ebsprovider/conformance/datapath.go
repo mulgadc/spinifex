@@ -106,12 +106,6 @@ func DefaultDataPathProfiles() []DataPathProfile {
 	}
 }
 
-// dataPathSettle is waited out between profiles. Each profile is its own NBD
-// connection, and the viperblock nbdkit plugin tears an engine down per
-// disconnect, removing the volume's local directory as it goes. A connection
-// opened while the previous one is still closing fails the handshake.
-const dataPathSettle = 2 * time.Second
-
 // RequireDataPathTools skips when qemu-img is absent rather than reporting a
 // data path nothing measured.
 func RequireDataPathTools(t *testing.T) {
@@ -181,8 +175,10 @@ func RunDataPathSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.E
 	require.Equalf(t, cfg.VolumeBytes, export.Size, "export size does not match the volume that was created")
 
 	results := make([]DataPathResult, 0, len(DefaultDataPathProfiles()))
+	// Profiles run back to back deliberately. Each is its own NBD connection,
+	// so a run that gets this far has also shown that an arriving connection
+	// waits out the previous one's close rather than racing it.
 	for _, profile := range DefaultDataPathProfiles() {
-		time.Sleep(dataPathSettle)
 		result := runDataPathProfile(t, uri, profile)
 		require.Positivef(t, result.Elapsed, "%s completed in no measurable time", profile.Name)
 		results = append(results, result)

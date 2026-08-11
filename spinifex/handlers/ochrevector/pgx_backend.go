@@ -243,6 +243,84 @@ func (b *pgxBackend) ReplaceDocument(ctx context.Context, accountID, indexID, so
 	})
 }
 
+// Query runs a k-nearest-neighbour cosine similarity search against
+// indexID's embedding column under accountID's schema (D8), optionally
+// narrowed by filter (D9). The query vector is always bound param $1; a
+// non-nil filter's own bound params continue contiguously from $2, and the
+// LIMIT is the last param, so numbering matches the compiled WHERE clause
+// exactly regardless of whether a filter is present.
+func (b *pgxBackend) Query(ctx context.Context, accountID, indexID string, queryVector []float32, k int, filter *Filter) ([]QueryResult, error) {
+	if err := validateIndexID(indexID); err != nil {
+		return nil, err
+	}
+	if len(queryVector) == 0 {
+		return nil, fmt.Errorf("ochrevector: query %s: empty query vector", indexID)
+	}
+	table := sanitizeIdent(tableName(indexID))
+
+	args := []any{encodeVector(queryVector)}
+	whereSQL := ""
+	limitParam := 2
+	if filter != nil {
+		sql, filterArgs, next, err := filter.compile(2)
+		if err != nil {
+			return nil, fmt.Errorf("ochrevector: query %s: compile filter: %w", indexID, err)
+		}
+		whereSQL = " WHERE " + sql
+		args = append(args, filterArgs...)
+		limitParam = next
+	}
+	args = append(args, clampQueryK(k))
+
+	// #nosec G201 -- table is a sanitized, validated identifier; whereSQL
+	// comes only from filter.compile, whose metadata keys pass an
+	// identifier allowlist before ever reaching SQL text and whose values
+	// are always appended to args as bound params, never interpolated here.
+	query := fmt.Sprintf(
+		`SELECT chunk, metadata, source_key, source_offset, 1 - (embedding <=> $1::vector) AS score FROM %s%s ORDER BY embedding <=> $1::vector LIMIT $%d`,
+		table, whereSQL, limitParam)
+
+	var results []QueryResult
+	err := b.withAccountTx(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		if filter != nil {
+			// A selective filter under HNSW needs iterative scan to still
+			// surface k results rather than stopping short on the index's
+			// default candidate list (D9); with no filter the default
+			// (non-iterative) scan is left in place.
+			if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+				return fmt.Errorf("set iterative scan: %w", err)
+			}
+		}
+
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("query: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				res      QueryResult
+				metaJSON []byte
+			)
+			if err := rows.Scan(&res.Chunk, &metaJSON, &res.SourceKey, &res.SourceOffset, &res.Score); err != nil {
+				return fmt.Errorf("scan row: %w", err)
+			}
+			if len(metaJSON) > 0 {
+				if err := json.Unmarshal(metaJSON, &res.Metadata); err != nil {
+					return fmt.Errorf("decode metadata: %w", err)
+				}
+			}
+			results = append(results, res)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ochrevector: query %s: %w", indexID, err)
+	}
+	return results, nil
+}
+
 // encodeVector renders embedding in pgvector's own text input format
 // ("[v1,v2,...]"). Bound as an ordinary string parameter and cast
 // server-side via ::vector, so no pgvector client dependency is needed for

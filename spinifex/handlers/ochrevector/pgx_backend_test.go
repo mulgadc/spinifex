@@ -124,6 +124,62 @@ func TestPgxBackend_ReplaceDocument_Integration(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+// TestPgxBackend_Query_Integration proves Query against a real pgvector
+// instance: nearest-first ordering, a score in [0,1] (D8), and a metadata
+// filter (D9) narrowing the result set correctly.
+func TestPgxBackend_Query_Integration(t *testing.T) {
+	dsn := os.Getenv(testDSNEnv)
+	if dsn == "" {
+		t.Skipf("%s not set; skipping pgvector integration test", testDSNEnv)
+	}
+
+	ctx := context.Background()
+	backend, err := NewPgxBackend(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(backend.Close)
+
+	require.NoError(t, backend.Init(ctx))
+	require.NoError(t, backend.EnsureAccount(ctx, pgTestAccountA))
+
+	const indexID = "idx-querytest01"
+	t.Cleanup(func() {
+		_ = backend.DropIndex(context.Background(), pgTestAccountA, indexID)
+	})
+	require.NoError(t, backend.CreateIndex(ctx, pgTestAccountA, IndexSpec{ID: indexID, Dimension: 3}))
+
+	rows := []struct {
+		key string
+		row VectorRow
+	}{
+		{"docs/near.txt", VectorRow{Embedding: []float32{1, 0, 0}, Chunk: "closest to the query", Metadata: map[string]any{"category": "handbook"}}},
+		{"docs/mid.txt", VectorRow{Embedding: []float32{0.7, 0.7, 0}, Chunk: "somewhat related", Metadata: map[string]any{"category": "faq"}}},
+		{"docs/far.txt", VectorRow{Embedding: []float32{0, 0, 1}, Chunk: "unrelated", Metadata: map[string]any{"category": "faq"}}},
+	}
+	for _, r := range rows {
+		require.NoError(t, backend.ReplaceDocument(ctx, pgTestAccountA, indexID, r.key, []VectorRow{r.row}))
+	}
+
+	// Unfiltered: nearest first, every score in [0,1].
+	results, err := backend.Query(ctx, pgTestAccountA, indexID, []float32{1, 0, 0}, 3, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	assert.Equal(t, "docs/near.txt", results[0].SourceKey, "the identical vector must rank first")
+	for _, res := range results {
+		assert.GreaterOrEqual(t, res.Score, float32(0))
+		assert.LessOrEqual(t, res.Score, float32(1))
+	}
+	assert.GreaterOrEqual(t, results[0].Score, results[1].Score, "results must be nearest-first")
+	assert.GreaterOrEqual(t, results[1].Score, results[2].Score, "results must be nearest-first")
+
+	// Filtered: category=faq narrows to the two faq-tagged rows only.
+	filtered, err := backend.Query(ctx, pgTestAccountA, indexID, []float32{1, 0, 0}, 10, Equals("category", "faq"))
+	require.NoError(t, err)
+	require.Len(t, filtered, 2)
+	for _, res := range filtered {
+		assert.Equal(t, "faq", res.Metadata["category"])
+	}
+}
+
 // countDocumentRows counts sourceKey's rows in indexID's table under
 // accountID's schema, using the account's own role (as query paths will).
 func countDocumentRows(ctx context.Context, t *testing.T, backend *pgxBackend, accountID, indexID, sourceKey string) (int, error) {

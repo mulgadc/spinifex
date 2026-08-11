@@ -21,6 +21,11 @@ type fakeBackend struct {
 	failCreateIndex        error
 	failReplaceDocument    error
 	failReplaceDocumentFor map[string]error // key: accountID+"/"+indexID+"/"+sourceKey -> error, for per-key failure injection
+
+	failQuery       error
+	queryResults    []QueryResult // canned results Query returns, truncated to the clamped k
+	lastQueryK      int           // the clamped k from the most recent Query call
+	lastQueryFilter *Filter       // the filter from the most recent Query call, for assertions
 }
 
 var _ VectorBackend = (*fakeBackend)(nil)
@@ -117,6 +122,27 @@ func (f *fakeBackend) replaceDocumentCallCount(accountID, indexID, sourceKey str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.replaceDocumentCalls[accountID+"/"+indexID+"/"+sourceKey]
+}
+
+// Query returns f.queryResults truncated to k's clamped value, recording k
+// and filter for assertions -- it does not evaluate filter against
+// queryResults, since exercising the real filter SQL semantics is the
+// pgvector-backed integration test's job, not this in-memory double's.
+func (f *fakeBackend) Query(_ context.Context, _, _ string, _ []float32, k int, filter *Filter) ([]QueryResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.lastQueryK = clampQueryK(k)
+	f.lastQueryFilter = filter
+	if f.failQuery != nil {
+		return nil, f.failQuery
+	}
+
+	results := f.queryResults
+	if len(results) > f.lastQueryK {
+		results = results[:f.lastQueryK]
+	}
+	return append([]QueryResult(nil), results...), nil
 }
 
 // errFakeBackend is a stand-in backend failure for rollback/error-path tests.

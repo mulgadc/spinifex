@@ -128,8 +128,15 @@ func (s *IngestService) RunJob(ctx context.Context, job JobRecord) error {
 		done++
 	}
 
-	if len(keys) > 0 && embedFailures == len(keys) {
-		return s.failJob(ctx, job, fmt.Errorf("ochrevector: embedder unavailable for all %d documents", len(keys)))
+	// A job that ingests nothing must not report READY, regardless of why:
+	// an all-embedder-down job gets the specific message, but any other
+	// all-failing reason (every GetObject failing, etc.) fails the job too
+	// rather than reaching READY with done==0.
+	if len(keys) > 0 && done == 0 {
+		if embedFailures == len(keys) {
+			return s.failJob(ctx, job, fmt.Errorf("ochrevector: embedder unavailable for all %d documents", len(keys)))
+		}
+		return s.failJob(ctx, job, fmt.Errorf("ochrevector: no documents ingested out of %d", len(keys)))
 	}
 
 	if err := s.Registry.AppendSourceSpec(ctx, job.AccountID, job.IndexID, job.Source); err != nil {
@@ -243,7 +250,7 @@ func (s *IngestService) ingestObject(ctx context.Context, accountID, indexID, ke
 
 	rows := make([]VectorRow, len(chunks))
 	for i, c := range chunks {
-		rows[i] = VectorRow{Embedding: vectors[i], Chunk: c.Text, Metadata: map[string]any{}, SourceOffset: c.Offset}
+		rows[i] = VectorRow{Embedding: vectors[i], Chunk: c.Text, Metadata: rowMetadata(source, key), SourceOffset: c.Offset}
 	}
 
 	if err := s.Backend.ReplaceDocument(ctx, accountID, indexID, key, rows); err != nil {
@@ -273,6 +280,20 @@ func (s *IngestService) embedWithRetry(ctx context.Context, modelID string, inpu
 		}
 	}
 	return nil, lastErr
+}
+
+// rowMetadata stamps source's static per-source tags onto one ingested
+// row's metadata, plus the originating source key -- without this, D9
+// filters have nothing to match against, since a row's metadata would
+// otherwise always be empty. Returns a fresh map per call so rows never
+// alias the same underlying map.
+func rowMetadata(source SourceSpec, key string) map[string]any {
+	meta := make(map[string]any, len(source.Metadata)+1)
+	for k, v := range source.Metadata {
+		meta[k] = v
+	}
+	meta["sourceKey"] = key
+	return meta
 }
 
 // listObjectKeys pages through job.Source's bucket/prefix via

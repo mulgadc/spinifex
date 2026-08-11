@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -51,6 +52,23 @@ type SourceSpec struct {
 	ChunkOverlap   int    `json:"chunkOverlap"`
 	EmbeddingModel string `json:"embeddingModel"`
 	Dimension      int    `json:"dimension"`
+	// Metadata is a static set of per-source tags stamped onto every row
+	// ingested from this source (see ingestObject), giving D9 filters
+	// something to match against beyond the source key.
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// sourceSpecEqual reports whether a and b are the same source spec.
+// SourceSpec carries a map (Metadata), so it is not comparable with ==;
+// AppendSourceSpec's dedup check uses this instead of slices.Contains.
+func sourceSpecEqual(a, b SourceSpec) bool {
+	return a.Bucket == b.Bucket &&
+		a.Prefix == b.Prefix &&
+		a.ChunkSize == b.ChunkSize &&
+		a.ChunkOverlap == b.ChunkOverlap &&
+		a.EmbeddingModel == b.EmbeddingModel &&
+		a.Dimension == b.Dimension &&
+		maps.Equal(a.Metadata, b.Metadata)
 }
 
 // Record is the authoritative registry entry for one vector index (D4).
@@ -254,7 +272,7 @@ func (reg *Registry) AppendSourceSpec(ctx context.Context, accountID, indexID st
 	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 		return fmt.Errorf("ochrevector: decode %s: %w", key, err)
 	}
-	if slices.Contains(rec.SourceSpecs, spec) {
+	if slices.ContainsFunc(rec.SourceSpecs, func(s SourceSpec) bool { return sourceSpecEqual(s, spec) }) {
 		return nil
 	}
 	rec.SourceSpecs = append(rec.SourceSpecs, spec)

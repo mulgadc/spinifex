@@ -342,6 +342,107 @@ func TestIngestService_Reconcile_LeavesFreshRunningJobAlone(t *testing.T) {
 	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", key))
 }
 
+// failingGetObjectStore wraps a MemoryObjectStore so ListObjectsV2 lists
+// real objects but every GetObject call fails, simulating a
+// non-embedder-related reason every document fails for (e.g. a source
+// bucket gone unreachable mid-job).
+type failingGetObjectStore struct {
+	*objectstore.MemoryObjectStore
+}
+
+func (f *failingGetObjectStore) GetObject(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	return nil, errors.New("simulated GetObject failure")
+}
+
+// TestRunJob_AllDocumentsFailNonEmbedReason_FailsJob proves a job whose
+// every document fails for a reason other than the embedder (every
+// GetObject failing here) reaches FAILED, not READY with done==0 -- the
+// old check only caught the all-embed-failures case, so a job that ingests
+// literally nothing for any other reason used to sail through to READY.
+func TestRunJob_AllDocumentsFailNonEmbedReason_FailsJob(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+
+	registry := NewRegistry(js)
+	now := time.Now().UTC()
+	require.NoError(t, registry.Reserve(ctx, ingestAccountA, Record{
+		ID: "idx-one", Dimension: 2, EmbeddingModel: "stub-embed", State: StateCreating, CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, registry.SetState(ctx, ingestAccountA, "idx-one", StateReady))
+
+	mem := objectstore.NewMemoryObjectStore()
+	putObject(t, mem, ingestPrefix+"doc1.txt", "one")
+	putObject(t, mem, ingestPrefix+"doc2.txt", "two")
+	store := &failingGetObjectStore{MemoryObjectStore: mem}
+
+	backend := newFakeBackend()
+	embedder := &stubEmbedder{}
+	jobs := NewJobStore(js)
+	svc := NewIngestService(jobs, registry, backend, store, embedder)
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+
+	err = svc.RunJob(ctx, *job)
+	require.Error(t, err)
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStateFailed, got.State)
+	assert.NotEmpty(t, got.Error)
+	assert.Equal(t, 0, got.DocumentsDone)
+
+	idxRec, err := registry.Get(ctx, ingestAccountA, "idx-one")
+	require.NoError(t, err)
+	require.NotNil(t, idxRec)
+	assert.Empty(t, idxRec.SourceSpecs, "a job that ingested nothing must not append its source spec")
+
+	// The embedder was never even reached -- these are GetObject failures.
+	assert.Equal(t, 0, embedder.callCount())
+}
+
+// TestRunJob_StampsSourceMetadataOntoRows proves ingestObject stamps
+// SourceSpec.Metadata's static per-source tags, plus the source key, onto
+// every ingested row -- without this, D9 filters have nothing to match.
+func TestRunJob_StampsSourceMetadataOntoRows(t *testing.T) {
+	svc, _, backend, store, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+	key := ingestPrefix + "doc1.txt"
+	putObject(t, store, key, "a document with static tags to filter on")
+
+	source := testSource()
+	source.Metadata = map[string]string{"category": "handbook", "team": "platform"}
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source)
+	require.NoError(t, err)
+	require.NoError(t, svc.RunJob(ctx, *job))
+
+	rows := backend.documentRows(ingestAccountA, "idx-one", key)
+	require.NotEmpty(t, rows)
+	for _, row := range rows {
+		assert.Equal(t, "handbook", row.Metadata["category"])
+		assert.Equal(t, "platform", row.Metadata["team"])
+		assert.Equal(t, key, row.Metadata["sourceKey"], "the source key must also be stamped, for a filter to narrow by originating document")
+	}
+
+	// A second document's rows carry the same source tags but its own key --
+	// a filter on category=handbook selects both; a filter on sourceKey
+	// selects the one document.
+	otherKey := ingestPrefix + "doc2.txt"
+	putObject(t, store, otherKey, "a second document, same source tags")
+	job2, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source)
+	require.NoError(t, err)
+	require.NoError(t, svc.RunJob(ctx, *job2))
+
+	otherRows := backend.documentRows(ingestAccountA, "idx-one", otherKey)
+	require.NotEmpty(t, otherRows)
+	for _, row := range otherRows {
+		assert.Equal(t, "handbook", row.Metadata["category"], "both documents share the source's static tags")
+		assert.Equal(t, otherKey, row.Metadata["sourceKey"], "each document's rows carry its own source key")
+	}
+}
+
 func TestIngestService_Reconcile_IgnoresPendingAndTerminalJobs(t *testing.T) {
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()

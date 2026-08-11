@@ -23,6 +23,36 @@ type VectorRow struct {
 	SourceOffset int
 }
 
+// QueryResult is one nearest-neighbour hit from Query: its chunk text,
+// stored metadata, source provenance, and cosine similarity Score in [0,1]
+// (D8; 1 - cosine_distance).
+type QueryResult struct {
+	Chunk        string
+	Metadata     map[string]any
+	SourceKey    string
+	SourceOffset int
+	Score        float32
+}
+
+// defaultQueryK and maxQueryK bound Query's k (D8/D10): k<=0 defaults to
+// defaultQueryK, and any k above maxQueryK is silently clamped rather than
+// rejected.
+const (
+	defaultQueryK = 10
+	maxQueryK     = 100
+)
+
+// clampQueryK applies Query's k default/clamp rule (D8).
+func clampQueryK(k int) int {
+	if k <= 0 {
+		return defaultQueryK
+	}
+	if k > maxQueryK {
+		return maxQueryK
+	}
+	return k
+}
+
 // VectorBackend is the swap-out seam behind every Postgres/pgvector
 // operation: a future HA or replicated backend implements this interface
 // without any caller change. Only the operations this stage needs are
@@ -52,4 +82,11 @@ type VectorBackend interface {
 	// chunks (D7). An empty rows deletes the key's existing rows and inserts
 	// nothing.
 	ReplaceDocument(ctx context.Context, accountID, indexID, sourceKey string, rows []VectorRow) error
+
+	// Query runs a k-nearest-neighbour cosine similarity search against
+	// indexID's embeddings under accountID's schema, ranked nearest first
+	// (D8). k<=0 defaults to defaultQueryK; k is always clamped to
+	// maxQueryK, never errored on. A nil filter matches every row; a
+	// non-nil filter narrows results per its compiled WHERE clause (D9).
+	Query(ctx context.Context, accountID, indexID string, queryVector []float32, k int, filter *Filter) ([]QueryResult, error)
 }

@@ -96,6 +96,11 @@ type MountedVolume struct {
 	// random spinifex-workers member. Registered in mountVolume, dropped
 	// alongside ConfigSub whenever this entry leaves cfg.MountedVolumes.
 	OwnerSubs []*nats.Subscription
+
+	// ReadOnly records the access mode nbdkit was started with. It is fixed
+	// for the life of the export, so a republish asking for the other mode
+	// cannot reuse this one.
+	ReadOnly bool
 }
 type Config struct {
 	ConfigPath     string
@@ -812,7 +817,7 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		ebsResponse, _ := mountVolume(ctx, cfg, nc, ebsRequest.Name)
+		ebsResponse, _ := mountVolume(ctx, cfg, nc, ebsRequest.Name, false)
 		respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 		if ebsResponse.Mounted {
 			slog.Debug("Sent ebs.mount response")

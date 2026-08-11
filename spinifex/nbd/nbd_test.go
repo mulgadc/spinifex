@@ -33,8 +33,12 @@ func TestBuildArgs_TCPTransport(t *testing.T) {
 	expected := []string{
 		"-f",
 		"--pidfile", "/tmp/nbd.pid",
+		"--filter=blocksize-policy",
 		"-p", "10809",
 		"/usr/lib/nbdkit/plugins/vb.so",
+		"blocksize-minimum=1",
+		"blocksize-preferred=4096",
+		"blocksize-maximum=33554432",
 		"size=1073741824",
 		"volume=vol-abc123",
 		"bucket=my-bucket",
@@ -76,8 +80,12 @@ func TestBuildArgs_UnixSocketTransport(t *testing.T) {
 	expected := []string{
 		"-f",
 		"--pidfile", "/tmp/nbd.pid",
+		"--filter=blocksize-policy",
 		"--unix", "/tmp/nbd.sock",
 		"/usr/lib/nbdkit/plugins/vb.so",
+		"blocksize-minimum=1",
+		"blocksize-preferred=4096",
+		"blocksize-maximum=33554432",
 		"size=536870912",
 		"volume=vol-def456",
 		"bucket=bucket-2",
@@ -376,5 +384,46 @@ func assertArgs(t *testing.T, expected, got []string) {
 		if expected[i] != got[i] {
 			t.Errorf("args[%d] = %q, want %q", i, got[i], expected[i])
 		}
+	}
+}
+
+// TestBuildArgs_ReadOnly checks -r reaches nbdkit before the plugin path, so
+// it is parsed as an nbdkit flag rather than a plugin parameter.
+func TestBuildArgs_ReadOnly(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		ReadOnly:   true,
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	readOnlyIdx := slices.Index(args, "-r")
+	if readOnlyIdx < 0 {
+		t.Fatalf("expected -r in args, got: %v", args)
+	}
+	if pluginIdx := slices.Index(args, "/plugin.so"); readOnlyIdx > pluginIdx {
+		t.Errorf("-r must precede the plugin path, got: %v", args)
+	}
+}
+
+func TestBuildArgs_ReadOnlyOmittedByDefault(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if slices.Index(args, "-r") >= 0 {
+		t.Errorf("-r must be absent unless ReadOnly is set, got: %v", args)
 	}
 }

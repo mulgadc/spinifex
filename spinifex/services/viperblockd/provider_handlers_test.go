@@ -765,19 +765,30 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 	assert.Equal(t, 424242, pid, "republish must not spawn a second nbdkit (PID must be unchanged)")
 }
 
-// TestProviderHandlers_PublishVolume_ReadOnlyRejected covers the ReadOnly
-// field against a provider that does not advertise ReadOnlyPublish: the
-// request must be refused as unsupported, never silently attached read-write.
-func TestProviderHandlers_PublishVolume_ReadOnlyRejected(t *testing.T) {
+// TestProviderHandlers_PublishVolume_ReadOnlyModeMismatchRefused covers the
+// half of read-only publishing that is not visible to an NBD client: the
+// access mode is fixed when nbdkit starts, so a republish asking for the other
+// mode must be refused rather than answered with the running export.
+func TestProviderHandlers_PublishVolume_ReadOnlyModeMismatchRefused(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-readonlypub001"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name:     volumeName,
+		VB:       vb,
+		PID:      424243,
+		NBDURI:   "nbd:unix:/fake/vol-readonlypub001.sock",
+		ReadOnly: false,
+	})
 
 	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
 	require.NoError(t, err)
 	body := marshalRequest(t, map[string]any{
 		"schema_version": ebsprovider.SchemaVersion,
-		"volume_id":      "vol-readonlypub001",
+		"volume_id":      volumeName,
 		"node_id":        cfg.NodeName,
 		"read_only":      true,
 	})
@@ -785,8 +796,13 @@ func TestProviderHandlers_PublishVolume_ReadOnlyRejected(t *testing.T) {
 
 	var resp ebsprovider.PublishVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	require.NotNil(t, resp.Error)
-	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedCap, resp.Error.Code)
+	require.NotNil(t, resp.Error, "a read-only republish of a writable export must not succeed")
+	assert.Equal(t, ebsprovider.ErrorCodeVolumeInUse, resp.Error.Code)
+
+	cfg.mu.Lock()
+	count := len(cfg.MountedVolumes)
+	cfg.mu.Unlock()
+	assert.Equal(t, 1, count, "a refused republish must not add a second entry")
 }
 
 // TestProviderHandlers_UnpublishVolume_RemovesMountedVolume mirrors

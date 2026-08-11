@@ -124,10 +124,6 @@ func volumeInUseError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: fmt.Sprintf(format, args...)}
 }
 
-func unsupportedCapabilityError(format string, args ...any) *ebsprovider.ProviderError {
-	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedCap, Message: fmt.Sprintf(format, args...)}
-}
-
 func internalError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: fmt.Sprintf(format, args...)}
 }
@@ -193,9 +189,9 @@ func handleProviderCapabilities(msg *nats.Msg) {
 			// extents callback, so the export cannot report base:allocation.
 			OnlineExpansion:       false,
 			SparseExtentReporting: false,
-			// The nbdkit mount path is never started with -r, so a read-only
-			// request is refused rather than answered with a writable export.
-			ReadOnlyPublish: false,
+			// A read-only publish starts nbdkit with -r, which sets the NBD
+			// read-only transmission flag and makes the plugin refuse writes.
+			ReadOnlyPublish: true,
 			// mountVolume registers ebs.provider.v1.owner.{volumeID}.* for
 			// every mounted volume (see subscribeOwnerSubjects).
 			OwnerRouting: true,
@@ -1099,7 +1095,7 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 // starts (or fails to start) nbdkit for volumeName and registers the result
 // in cfg.MountedVolumes; it does not publish a response, that stays with the
 // caller.
-func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string) (types.EBSMountResponse, error) {
+func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (types.EBSMountResponse, error) {
 	// Clear any receipt left by a previous mount before anything else can
 	// return early, so a stale receipt can never survive into this mount.
 	clearStaleSealReceipt(cfg.BaseDir, volumeName)
@@ -1182,6 +1178,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		ShardWAL:          cfg.ShardWAL,
 		GCEnabled:         cfg.GCEnabled,
 		EncryptionKeyFile: cfg.EncryptionKeyFile,
+		ReadOnly:          readOnly,
 	}
 
 	// Create a unique error channel for this specific mount request
@@ -1284,6 +1281,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		VB:        vb,
 		ConfigSub: configSub,
 		OwnerSubs: ownerSubs,
+		ReadOnly:  readOnly,
 	})
 	cfg.mu.Unlock()
 
@@ -1438,18 +1436,16 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", req.VolumeID)})
 		return
 	}
-	// The mount path never passes nbdkit -r, so there is no read-only export
-	// to hand back. Refuse rather than silently return a writable one; the
-	// capability advertises the same fact up front.
-	if req.ReadOnly {
-		respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedCapabilityError("viperblockd does not support read-only attachments")})
-		return
-	}
-
 	// Idempotent republish: a volume this node already has mounted must not
 	// start a second nbdkit against it (the double-writer hazard this
 	// provider boundary exists to prevent). Match memory.go's behaviour.
 	if mv, ok := findMountedVolume(cfg, req.VolumeID); ok {
+		// Access mode is fixed when nbdkit starts, so a republish asking for
+		// the other mode cannot be answered with the running export.
+		if mv.ReadOnly != req.ReadOnly {
+			respondJSON(msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is already published read_only=%t on this node", req.VolumeID, mv.ReadOnly)})
+			return
+		}
 		slog.Info("ebs.provider.volume.publish: already published, returning existing attachment", "volume", req.VolumeID)
 		respondJSON(msg, ebsprovider.PublishVolumeResponse{
 			Versioned: ebsprovider.NewVersioned(),
@@ -1462,7 +1458,7 @@ func handlePublishVolume(cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 		return
 	}
 
-	mountResp, err := mountVolume(ctx, cfg, nc, req.VolumeID)
+	mountResp, err := mountVolume(ctx, cfg, nc, req.VolumeID, req.ReadOnly)
 	if err != nil {
 		utils.MarkSpanError(span, err)
 		if errors.Is(err, viperblock.ErrStateNotFound) {

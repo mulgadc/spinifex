@@ -5,9 +5,10 @@ set -eu
 # the libguestfs appliance under build-system-image.sh, after packages and
 # INSTALL_FILES are placed.
 
-# INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-datadir
-# is executed directly by its service.
-chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-agent /usr/local/sbin/rds-datadir
+# INSTALL_FILES land 0644; OpenRC requires 0755 on init scripts, and rds-init
+# and rds-datadir are executed directly by their services.
+chmod 0755 /etc/init.d/rds-datadir /etc/init.d/rds-init /etc/init.d/rds-agent \
+    /usr/local/sbin/rds-datadir /usr/local/sbin/rds-init
 chmod 0755 /etc/init.d/mulga-mgmt-net /etc/init.d/mulga-mgmt-net-routes \
     /usr/local/sbin/mulga-mgmt-net
 
@@ -60,6 +61,15 @@ if grep -rEq '^[[:space:]]*skip[-_]networking' /etc/my.cnf /etc/my.cnf.d; then
     grep -rEn '^[[:space:]]*skip[-_]networking' /etc/my.cnf /etc/my.cnf.d
     exit 1
 fi
+
+# The packaged service starts on a warning when the datadir is empty, so the
+# dependency is what keeps it off an unbootstrapped volume. Asserted here, since
+# an image whose engine can come up beside a failed bootstrap is the one failure
+# this preset must not have.
+grep -q '^rc_need="rds-init"' /etc/conf.d/mariadb || {
+    echo "[rds-mariadb-setup] /etc/conf.d/mariadb does not make the engine need rds-init"
+    exit 1
+}
 
 # Bind /dev/console to the serial port so userspace boot output reaches ttyS0,
 # which the orchestrator captures host-side. Linux makes the last console= the

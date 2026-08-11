@@ -7,8 +7,8 @@ set -eu
 # the control plane launches instances with. A drift between them launches the
 # wrong image, refuses the right one, or reports a version the VM is not running.
 #
-# This preset carries no bootstrap yet, so the datadir stamp and the agent's
-# layout table are checked by the postgres preset's copy of this test only.
+# The agent's layout table is checked by the postgres preset's copy of this test
+# only, until this engine has a guest implementation to key it by.
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH='' cd -- "${SCRIPT_DIR}/../../.." && pwd)
@@ -30,6 +30,11 @@ fi
 
 if ! grep -q "Name: *\"${ENGINE}\"" "${ENGINE_GO}"; then
     fail "the control plane has no engine named ${ENGINE}"
+fi
+
+if ! grep -q "^ENGINE=\"${ENGINE}\"\$" "${SCRIPT_DIR}/rds-init"; then
+    fail "rds-init does not stamp the data volume '${ENGINE}'"
+    grep '^ENGINE=' "${SCRIPT_DIR}/rds-init" >&2
 fi
 
 # The tag is what an instance's recorded EngineVersion resolves an AMI by, so it

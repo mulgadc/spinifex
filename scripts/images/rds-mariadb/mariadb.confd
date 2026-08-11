@@ -1,0 +1,15 @@
+# /etc/conf.d/mariadb — Spinifex RDS overrides for the stock Alpine mariadb
+# service. The package ships no conf.d file of its own, so this adds one rather
+# than replacing one.
+
+# The packaged service's start_pre only prints "Datadir is empty or invalid" and
+# starts anyway, so an rds-init that failed — an unreachable gateway, a data
+# volume that did not attach, a datadir stamped for another engine — would be
+# answered by launching mysqld_safe against whatever is mounted. OpenRC reads
+# rc_need from here, so the engine depends on the bootstrap without the packaged
+# init script being patched.
+rc_need="rds-init"
+
+# Everything else the service resolves from the configuration itself: datadir,
+# socket and port come from the platform drop-in rds-init writes onto the data
+# volume, which the packaged !includedir reads last.

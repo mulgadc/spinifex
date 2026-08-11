@@ -48,10 +48,11 @@ func newSnapshotSourceProvider() *snapshotSourceProvider {
 }
 
 // writeSnapshotMetadata publishes the control-plane record CreateVolume reads
-// to learn which volume a snapshot was taken from.
-func writeSnapshotMetadata(t *testing.T, store objectstore.ObjectStore, snapshotID, sourceVolumeID string, sizeGiB int64) {
+// to learn which volume a snapshot was taken from. The owner must be set:
+// CreateVolume fails closed on a snapshot whose owner it cannot match.
+func writeSnapshotMetadata(t *testing.T, store objectstore.ObjectStore, snapshotID, sourceVolumeID, ownerID string, sizeGiB int64) {
 	t.Helper()
-	data, err := json.Marshal(snapshotMetadata{VolumeID: sourceVolumeID, VolumeSize: sizeGiB})
+	data, err := json.Marshal(snapshotMetadata{VolumeID: sourceVolumeID, VolumeSize: sizeGiB, OwnerID: ownerID})
 	require.NoError(t, err)
 	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
@@ -71,7 +72,7 @@ func TestCreateVolume_Provider_FromSnapshotSendsSourceVolumeID(t *testing.T) {
 	provider := newSnapshotSourceProvider()
 	svc.SetEBSProvider(provider)
 
-	writeSnapshotMetadata(t, store, "snap-src", "vol-origin", 8)
+	writeSnapshotMetadata(t, store, "snap-src", "vol-origin", "acct-1", 8)
 
 	created, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size: aws.Int64(8), AvailabilityZone: aws.String(providerTestAZ), SnapshotId: aws.String("snap-src"),

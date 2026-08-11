@@ -5,18 +5,28 @@ region = "{{.Region}}"
 
 # Reed-Solomon erasure code. data + parity must not exceed the number of blob
 # nodes in the cluster.
-# RS(2,1), 2 data, 1 parity. Minimum
-# RS(3,2), 3 data, 2 parity. Recommended for production
+#
+# RS(1,0) is one shard on one node: no split, no parity encode and no fan-out.
+# Every shard of a wider code would land on this one machine anyway, so parity
+# buys nothing a second copy of the same disk failure would not take with it.
+# Redundancy here is the pool's job — ZFS raidz or a mirror under the data
+# directory. Multi-node installs get a real erasure code from the multi-node
+# template: RS(2,1) minimum, RS(3,2) recommended.
 [rs]
-data = 2
-parity = 1
+data = 1
+parity = 0
 
 # A host is one predastore process: it owns a data directory, a TLS identity
 # and the nodes pinned to it. Everything is colocated here, so the nodes talk
 # over the in-process pipe and only the gate binds a socket.
+#
+# bind_addr is the cluster plane — raft and blob traffic. A single-host install
+# opens no socket for it at all, but it is set to the loopback address rather
+# than left wide, so adding a second host later cannot quietly publish
+# replication to every interface.
 [[host]]
 id = 1
-bind_addr = "0.0.0.0"
+bind_addr = "127.0.0.1"
 addr = "127.0.0.1"
 data_dir = "{{.PredastoreDataDir}}"
 tls_cert = "{{.ConfigDir}}/server.pem"
@@ -24,44 +34,30 @@ tls_key = "{{.ConfigDir}}/server.key"
 encryption_key = "{{.ConfigDir}}/predastore/encryption.key"
 
 # The gate serves the S3 API. Without one the host answers no S3 request.
+# S3 is the public plane, so it binds every interface while the host's
+# bind_addr above keeps everything else private. Only a gate may set this.
 [[host.node]]
 id = 1
 role = "gate"
 port = 8443
+bind_addr = "0.0.0.0"
 
-# Blob nodes hold erasure-coded object shards; a stripe spreads over distinct
-# ones, so RS(2,1) needs 3. Colocated nodes bind no socket, but each still
-# needs a port unique within its host.
+# One blob node holds every object. Extra blob nodes would only hash-partition
+# the keys across more segment files and more badger indexes on the same drive,
+# which costs memory and compaction work and buys no redundancy. Colocated
+# nodes bind no socket, but each still needs a port unique within its host.
 [[host.node]]
 id = 2
 role = "blob"
 port = 6660
 
+# One meta node is the whole Raft quorum. Replicas here would share the disk
+# they are meant to survive, so each commit would pay their fsyncs for a quorum
+# that fails together.
 [[host.node]]
 id = 3
-role = "blob"
-port = 6661
-
-[[host.node]]
-id = 4
-role = "blob"
-port = 6662
-
-# Meta nodes form the Raft quorum over global state (buckets, object index).
-[[host.node]]
-id = 5
 role = "meta"
 port = 7660
-
-[[host.node]]
-id = 6
-role = "meta"
-port = 7661
-
-[[host.node]]
-id = 7
-role = "meta"
-port = 7662
 
 [[bucket]]
 name = "predastore"

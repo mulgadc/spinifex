@@ -15,8 +15,13 @@ parity = 1
 {{- end}}
 
 # One host per machine: a predastore process owning a data directory, a TLS
-# identity and the nodes pinned to it. bind_addr binds every interface; addr is
-# what the other hosts dial, so it carries no port and names one machine.
+# identity and the nodes pinned to it. addr is what the other hosts dial, so it
+# carries no port and names one machine.
+#
+# bind_addr is the cluster plane: raft consensus and blob shard traffic listen
+# there and nowhere else. It is the address peers dial rather than a wildcard,
+# so on a multi-homed machine replication never reaches the public interface.
+# The gate below binds the public plane separately.
 #
 # Each machine runs a gate for the S3 API, a blob node for erasure-coded object
 # shards and a meta node for the Raft quorum over global state. Ports are
@@ -25,7 +30,7 @@ parity = 1
 
 [[host]]
 id = {{$host.ID}}
-bind_addr = "0.0.0.0"
+bind_addr = "{{$host.Host}}"
 addr = "{{$host.Host}}"
 data_dir = "{{$.PredastoreDataDir}}"
 tls_cert = "{{$.ConfigDir}}/server.pem"
@@ -38,6 +43,11 @@ encryption_key = "{{$.ConfigDir}}/predastore/encryption.key"
 id = {{.ID}}
 role = "{{.Role}}"
 port = {{.Port}}
+{{- if eq .Role "gate"}}
+# S3 is the public plane and answers on every interface; the host's bind_addr
+# above keeps raft and blob traffic off them. Only a gate may set this.
+bind_addr = "0.0.0.0"
+{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}

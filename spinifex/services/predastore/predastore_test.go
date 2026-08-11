@@ -174,12 +174,41 @@ func TestMergeHostFlagsBeatFile(t *testing.T) {
 	merged, err := mergeHost(t, cfg)
 
 	require.NoError(t, err)
-	assert.Equal(t, "0.0.0.0", merged.Hosts[0].BindAddr)
 	assert.Equal(t, cfg.TlsCert, merged.Hosts[0].TLSCert)
 	assert.Equal(t, cfg.TlsKey, merged.Hosts[0].TLSKey)
 	assert.Equal(t, 19443, gateOf(t, merged).Port)
 	// The dial address is the cluster's business, not this host's flags.
 	assert.Equal(t, "10.0.0.1", merged.Hosts[0].Addr)
+}
+
+// TestMergeHostBindsTheGateNotTheCluster is the plane split: the address
+// spinifex.toml carries is the public S3 endpoint, so settling it on the host
+// would put raft and blob traffic on the public interface along with it.
+func TestMergeHostBindsTheGateNotTheCluster(t *testing.T) {
+	dir := t.TempDir()
+
+	merged, err := mergeHost(t, &Config{
+		ConfigPath: singleHost(t, dir),
+		Host:       "0.0.0.0",
+		HostID:     1,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", gateOf(t, merged).BindAddr, "S3 answers on every interface")
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr, "raft and blob stay on the host address")
+}
+
+// TestMergeHostWithoutAnS3AddressLeavesBothPlanesOnTheHost covers the
+// single-homed case: nothing to split, so the gate follows the host and the
+// file alone decides.
+func TestMergeHostWithoutAnS3AddressLeavesBothPlanesOnTheHost(t *testing.T) {
+	dir := t.TempDir()
+
+	merged, err := mergeHost(t, &Config{ConfigPath: singleHost(t, dir), HostID: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, gateOf(t, merged).BindAddr, "the gate names no address of its own")
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr)
 }
 
 // TestMergeHostReturnsTheResolvedHostID pins what Start hands predastore.Run:
@@ -213,19 +242,21 @@ func TestMergeHostKeepsFileValues(t *testing.T) {
 	assert.Equal(t, 8443, gateOf(t, merged).Port)
 }
 
-// TestMergeHostBindAddrFallsBackToAddr covers the last resort: a file that
-// names only the dial address leaves this host listening on it, rather than on
-// nothing.
-func TestMergeHostBindAddrFallsBackToAddr(t *testing.T) {
+// TestMergeHostLeavesTheClusterPlaneToTheFile covers the one host-local field
+// no service flag owns. There is no flag for the cluster plane, so a file that
+// names only the dial address is left alone here and resolved by predastore,
+// which is the single place that decides what an empty bind address means.
+func TestMergeHostLeavesTheClusterPlaneToTheFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTopology(t, dir,
 		hostSpec{id: 1, addr: "10.0.0.1", dataDir: filepath.Join(dir, "data")},
 		[]nodeSpec{{id: 1, role: "gate", port: 8443}, {id: 2, role: "blob", port: 6660}})
 
-	merged, err := mergeHost(t, &Config{ConfigPath: path, HostID: 1})
+	merged, err := mergeHost(t, &Config{ConfigPath: path, Host: "0.0.0.0", HostID: 1})
 
 	require.NoError(t, err)
-	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr)
+	assert.Empty(t, merged.Hosts[0].BindAddr, "the S3 address must not settle on the host")
+	assert.Equal(t, "10.0.0.1", pds.HostBindAddr(merged.Hosts[0]), "predastore resolves it to the dial address")
 }
 
 // TestMergeHostRejectsMissingHostID covers the one field with no default: the

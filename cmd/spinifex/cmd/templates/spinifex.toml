@@ -127,8 +127,9 @@ bridge_mode = "{{.BridgeMode}}"
 
 [nodes.{{.Node}}.predastore]
 # Wildcard rather than the bind IP: S3 is a public service and has to answer on
-# the wan plane. The service binds this address and serves S3 on this port,
-# leaving [[host]].addr — the address peer hosts dial — as predastore.toml has it.
+# the wan plane. This settles the gate node's own bind address and port, and
+# nothing else: raft and blob traffic bind [[host]].bind_addr from
+# predastore.toml, which is the private plane and stays there.
 #
 # This doubles as the local dial target, and 0.0.0.0 is not one: config loading
 # rewrites it to 127.0.0.1 for this node, and admin.DialTarget does the same for

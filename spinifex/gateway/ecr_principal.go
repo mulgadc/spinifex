@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/predastore/auth"
+	"github.com/mulgadc/predastore/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"

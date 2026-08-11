@@ -96,16 +96,17 @@ type Config struct {
 	DataDir     string   `json:"DataDir" mapstructure:"data_dir"`
 	Services    []string `json:"Services" mapstructure:"services"` // Which services this node runs locally
 
-	Daemon     DaemonConfig     `json:"Daemon" mapstructure:"daemon"`
-	NATS       NATSConfig       `json:"NATS" mapstructure:"nats"`
-	Predastore PredastoreConfig `json:"Predastore" mapstructure:"predastore"`
-	Viperblock ViperblockConfig `json:"Viperblock" mapstructure:"viperblock"`
-	AWSGW      AWSGWConfig      `json:"AWSGW" mapstructure:"awsgw"`
-	VPCD       VPCDConfig       `json:"VPCD" mapstructure:"vpcd"`
-	Northstar  NorthstarConfig  `json:"Northstar" mapstructure:"northstar"`
-	RDS        RDSConfig        `json:"RDS" mapstructure:"rds"`
-	ACM        ACMConfig        `json:"ACM" mapstructure:"acm"`
-	Bedrock    BedrockConfig    `json:"Bedrock" mapstructure:"bedrock"`
+	Daemon      DaemonConfig      `json:"Daemon" mapstructure:"daemon"`
+	NATS        NATSConfig        `json:"NATS" mapstructure:"nats"`
+	Predastore  PredastoreConfig  `json:"Predastore" mapstructure:"predastore"`
+	Viperblock  ViperblockConfig  `json:"Viperblock" mapstructure:"viperblock"`
+	AWSGW       AWSGWConfig       `json:"AWSGW" mapstructure:"awsgw"`
+	VPCD        VPCDConfig        `json:"VPCD" mapstructure:"vpcd"`
+	Northstar   NorthstarConfig   `json:"Northstar" mapstructure:"northstar"`
+	RDS         RDSConfig         `json:"RDS" mapstructure:"rds"`
+	ACM         ACMConfig         `json:"ACM" mapstructure:"acm"`
+	Bedrock     BedrockConfig     `json:"Bedrock" mapstructure:"bedrock"`
+	OchreVector OchreVectorConfig `json:"OchreVector" mapstructure:"ochre_vector"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -219,6 +220,26 @@ type BedrockConfig struct {
 // space at 10.244.0.0/14, immediately below and disjoint from both the RDS
 // (10.248.0.0/14) and EKS control-plane (10.252.0.0/14) supernets.
 const BedrockDefaultSystemVPCSupernet = "10.244.0.0/14"
+
+// OchreVectorConfig gates the Ochre vector store's platform Postgres
+// appliance and VectorService NATS surface. Disabled by default: an unset
+// section constructs nothing and registers no ochre.vector.* subjects, so an
+// existing deployment is unaffected until an operator opts in.
+type OchreVectorConfig struct {
+	Enabled bool `json:"Enabled" mapstructure:"enabled"`
+	// EmbeddingsEndpoint is the base URL of the self-hosted OpenAI/TEI-
+	// compatible embeddings endpoint (gateway_bedrock.Embedder) serving
+	// EmbeddingModel.
+	EmbeddingsEndpoint string `json:"EmbeddingsEndpoint" mapstructure:"embeddings_endpoint"`
+	// EmbeddingModel is the model id sent to EmbeddingsEndpoint and stamped
+	// on every index record. Empty takes gateway_bedrock.DefaultEmbeddingModel
+	// ("nomic-embed-text-v1.5").
+	EmbeddingModel string `json:"EmbeddingModel" mapstructure:"embedding_model"`
+	// PostgresImage names the appliance's Postgres image. Currently
+	// informational only: RDS's CreateDBInstanceInput has no image-selection
+	// field, so this is not yet threaded into the appliance launch.
+	PostgresImage string `json:"PostgresImage" mapstructure:"postgres_image"`
+}
 
 // ACMConfig holds the operator-level ACM certificate-issuance configuration.
 // Deliberately small: four keys, nothing deployment-specific and nothing

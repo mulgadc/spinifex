@@ -67,6 +67,13 @@ func newEmbeddingsProvider(endpointResolver EndpointResolver) *embeddingsProvide
 	}
 }
 
+// NewEmbedder is newEmbeddingsProvider's exported constructor, for callers
+// outside this package (e.g. the daemon's Ochre vector store wiring) that
+// need an Embedder without reaching into gateway_bedrock's unexported types.
+func NewEmbedder(endpointResolver EndpointResolver) Embedder {
+	return newEmbeddingsProvider(endpointResolver)
+}
+
 // Embed resolves modelID's endpoint and batch-embeds inputs in a single
 // request, returning vectors ordered to match inputs regardless of the order
 // the endpoint's response lists them in. An empty inputs slice returns an

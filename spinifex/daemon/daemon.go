@@ -57,6 +57,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -157,6 +158,7 @@ type Daemon struct {
 	bedrockReaper         *handlers_bedrock.Reaper
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
+	ochreVectorService    handlers_ochrevector.VectorService
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -1122,6 +1124,21 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Ochre vector store tenant surface (index CRUD, ingest, job status,
+	// query). nil when OchreVector.Enabled is false or the platform appliance
+	// failed to come up at boot (see startOchreVector) — either way no
+	// ochre.vector.* subject is registered.
+	if d.ochreVectorService != nil {
+		subs = append(subs,
+			natsSub{handlers_ochrevector.SubjectCreateIndex, handleNATSRequest(d.ochreVectorService.CreateIndex), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectDeleteIndex, handleNATSRequest(d.ochreVectorService.DeleteIndex), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectListIndexes, handleNATSRequest(d.ochreVectorService.ListIndexes), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectIngest, handleNATSRequest(d.ochreVectorService.Ingest), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(d.ochreVectorService.DescribeJob), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectQuery, handleNATSRequest(d.ochreVectorService.Query), "spinifex-workers"},
+		)
+	}
+
 	// ECR gateway → daemon subscriptions. The daemon owns the per-account
 	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
 	if d.ecrMetaService != nil {
@@ -1789,6 +1806,12 @@ func (d *Daemon) startCluster() error {
 		}()
 		d.acmRenewalWorker.Run(d.ctx)
 	})
+
+	// Ochre vector store platform appliance + VectorService. Gated on
+	// config.OchreVector.Enabled (default off); a boot-time failure is
+	// logged and leaves d.ochreVectorService nil rather than failing
+	// startCluster (see startOchreVector).
+	d.startOchreVector()
 
 	// ECR metadata service: owns per-account JetStream KV for repos, tags,
 	// manifest records and upload-state CAS. Disabled (gateway returns NATS

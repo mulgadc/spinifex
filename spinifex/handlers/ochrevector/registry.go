@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -228,6 +229,42 @@ func (reg *Registry) SetState(ctx context.Context, accountID, indexID, state str
 	}
 	if _, err := kv.Update(ctx, key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("ochrevector: update state for index %s: %w", indexID, err)
+	}
+	return nil
+}
+
+// AppendSourceSpec adds spec to accountID's indexID record's SourceSpecs
+// unless an identical spec is already present, so a repeated ingest against
+// an unchanged source never accumulates duplicate entries (D4: the stored
+// source-spec set drives auto-repopulation after a Postgres rebuild).
+func (reg *Registry) AppendSourceSpec(ctx context.Context, accountID, indexID string, spec SourceSpec) error {
+	kv, err := reg.bucket(ctx)
+	if err != nil {
+		return err
+	}
+	key := registryKey(accountID, indexID)
+	entry, err := kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrIndexNotFound
+		}
+		return fmt.Errorf("ochrevector: kv get %s: %w", key, err)
+	}
+	var rec Record
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return fmt.Errorf("ochrevector: decode %s: %w", key, err)
+	}
+	if slices.Contains(rec.SourceSpecs, spec) {
+		return nil
+	}
+	rec.SourceSpecs = append(rec.SourceSpecs, spec)
+	rec.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("ochrevector: encode index record %s: %w", rec.ID, err)
+	}
+	if _, err := kv.Update(ctx, key, data, entry.Revision()); err != nil {
+		return fmt.Errorf("ochrevector: append source spec for index %s: %w", indexID, err)
 	}
 	return nil
 }

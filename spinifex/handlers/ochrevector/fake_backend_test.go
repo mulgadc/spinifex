@@ -14,16 +14,23 @@ type fakeBackend struct {
 	accounts map[string]bool
 	indexes  map[string]IndexSpec // key: accountID+"/"+indexID
 
-	failEnsureAccount error
-	failCreateIndex   error
+	docs                 map[string]map[string][]VectorRow // key: accountID+"/"+indexID -> sourceKey -> rows
+	replaceDocumentCalls map[string]int                    // key: accountID+"/"+indexID+"/"+sourceKey -> call count
+
+	failEnsureAccount      error
+	failCreateIndex        error
+	failReplaceDocument    error
+	failReplaceDocumentFor map[string]error // key: accountID+"/"+indexID+"/"+sourceKey -> error, for per-key failure injection
 }
 
 var _ VectorBackend = (*fakeBackend)(nil)
 
 func newFakeBackend() *fakeBackend {
 	return &fakeBackend{
-		accounts: map[string]bool{},
-		indexes:  map[string]IndexSpec{},
+		accounts:             map[string]bool{},
+		indexes:              map[string]IndexSpec{},
+		docs:                 map[string]map[string][]VectorRow{},
+		replaceDocumentCalls: map[string]int{},
 	}
 }
 
@@ -67,6 +74,49 @@ func (f *fakeBackend) hasAccount(accountID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.accounts[accountID]
+}
+
+// ReplaceDocument records rows under accountID+"/"+indexID+"/"+sourceKey,
+// overwriting whatever was there before -- mirroring pgxBackend's
+// delete-then-reinsert semantics without a real transaction, since a Go map
+// assignment is already all-or-nothing from the caller's perspective.
+func (f *fakeBackend) ReplaceDocument(_ context.Context, accountID, indexID, sourceKey string, rows []VectorRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	docKey := accountID + "/" + indexID
+	callKey := docKey + "/" + sourceKey
+	f.replaceDocumentCalls[callKey]++
+
+	if f.failReplaceDocument != nil {
+		return f.failReplaceDocument
+	}
+	if err, ok := f.failReplaceDocumentFor[callKey]; ok {
+		return err
+	}
+
+	if f.docs[docKey] == nil {
+		f.docs[docKey] = map[string][]VectorRow{}
+	}
+	f.docs[docKey][sourceKey] = append([]VectorRow(nil), rows...)
+	return nil
+}
+
+// documentRows returns the current row set stored for sourceKey, or nil if
+// ReplaceDocument was never called for it.
+func (f *fakeBackend) documentRows(accountID, indexID, sourceKey string) []VectorRow {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.docs[accountID+"/"+indexID][sourceKey]
+}
+
+// replaceDocumentCallCount reports how many times ReplaceDocument was called
+// for sourceKey, so a re-run test can assert "called again" without the row
+// set having doubled.
+func (f *fakeBackend) replaceDocumentCallCount(accountID, indexID, sourceKey string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.replaceDocumentCalls[accountID+"/"+indexID+"/"+sourceKey]
 }
 
 // errFakeBackend is a stand-in backend failure for rollback/error-path tests.

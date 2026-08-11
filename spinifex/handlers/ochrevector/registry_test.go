@@ -120,6 +120,46 @@ func TestRegistry_ListAccountScoped(t *testing.T) {
 	assert.Equal(t, "b1", listB[0].Name)
 }
 
+func TestRegistry_AppendSourceSpecIsIdempotent(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, reg.Reserve(ctx, regAccountA, Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+
+	spec := SourceSpec{Bucket: "docs", Prefix: "kb/", ChunkSize: 512, ChunkOverlap: 64, EmbeddingModel: "nomic-embed-text-v1.5", Dimension: 768}
+	require.NoError(t, reg.AppendSourceSpec(ctx, regAccountA, "idx-one", spec))
+
+	got, err := reg.Get(ctx, regAccountA, "idx-one")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.SourceSpecs, 1)
+	assert.Equal(t, spec, got.SourceSpecs[0])
+
+	// Appending the identical spec again must not duplicate it.
+	require.NoError(t, reg.AppendSourceSpec(ctx, regAccountA, "idx-one", spec))
+	got, err = reg.Get(ctx, regAccountA, "idx-one")
+	require.NoError(t, err)
+	require.Len(t, got.SourceSpecs, 1)
+
+	// A distinct spec (different prefix) is a second entry.
+	other := spec
+	other.Prefix = "kb2/"
+	require.NoError(t, reg.AppendSourceSpec(ctx, regAccountA, "idx-one", other))
+	got, err = reg.Get(ctx, regAccountA, "idx-one")
+	require.NoError(t, err)
+	require.Len(t, got.SourceSpecs, 2)
+}
+
+func TestRegistry_AppendSourceSpecNotFound(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	ctx := context.Background()
+
+	err := reg.AppendSourceSpec(ctx, regAccountA, "does-not-exist", SourceSpec{Bucket: "docs"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrIndexNotFound)
+}
+
 func TestRegistry_ListAll(t *testing.T) {
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()

@@ -2,7 +2,10 @@ package handlers_ochrevector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -200,4 +203,59 @@ func (b *pgxBackend) DropIndex(ctx context.Context, accountID, indexID string) e
 		}
 		return nil
 	})
+}
+
+// ReplaceDocument deletes every row for sourceKey then reinserts rows, in one
+// transaction (D7): a query mid-ingest never sees a half-replaced document,
+// and a re-ingest of the same key replaces rather than accumulates.
+func (b *pgxBackend) ReplaceDocument(ctx context.Context, accountID, indexID, sourceKey string, rows []VectorRow) error {
+	if err := validateIndexID(indexID); err != nil {
+		return err
+	}
+	table := sanitizeIdent(tableName(indexID))
+
+	return b.withAccountTx(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		// #nosec G201 -- table is a sanitized, validated identifier; sourceKey
+		// is bound as a parameter.
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s WHERE source_key = $1`, table), sourceKey); err != nil {
+			return fmt.Errorf("ochrevector: delete existing rows for %s: %w", sourceKey, err)
+		}
+
+		// #nosec G201 -- table is a sanitized, validated identifier; every
+		// value below is bound as a parameter. The embedding has no pgx
+		// native type here, so it is bound as pgvector's own "[v1,v2,...]"
+		// text form and cast server-side via ::vector.
+		insert := fmt.Sprintf(`INSERT INTO %s (embedding, chunk, metadata, source_key, source_offset) VALUES ($1::vector, $2, $3::jsonb, $4, $5)`, table)
+		for _, row := range rows {
+			metadata := row.Metadata
+			if metadata == nil {
+				metadata = map[string]any{}
+			}
+			metaJSON, err := json.Marshal(metadata)
+			if err != nil {
+				return fmt.Errorf("ochrevector: encode metadata for %s: %w", sourceKey, err)
+			}
+			if _, err := tx.Exec(ctx, insert, encodeVector(row.Embedding), row.Chunk, metaJSON, sourceKey, row.SourceOffset); err != nil {
+				return fmt.Errorf("ochrevector: insert row for %s: %w", sourceKey, err)
+			}
+		}
+		return nil
+	})
+}
+
+// encodeVector renders embedding in pgvector's own text input format
+// ("[v1,v2,...]"). Bound as an ordinary string parameter and cast
+// server-side via ::vector, so no pgvector client dependency is needed for
+// this one value encoding.
+func encodeVector(embedding []float32) string {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, v := range embedding {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(strconv.FormatFloat(float64(v), 'f', -1, 32))
+	}
+	sb.WriteByte(']')
+	return sb.String()
 }

@@ -174,6 +174,9 @@ func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolum
 	if req.VolumeID == "" || !validCapacityRange(req.CapacityRange) {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ebsprovider.ErrInvalidArgument)
 	}
+	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
+		return nil, fmt.Errorf("%w: source_snapshot_volume_id is required with source_snapshot_id", ebsprovider.ErrInvalidArgument)
+	}
 	if err := ebsprovider.ValidateSeedData(req.SeedData); err != nil {
 		return nil, err
 	}
@@ -223,30 +226,6 @@ func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolum
 		}
 		if _, err := p.run.Run(ctx, "qemu-img", "create", "-f", "qcow2", "-b", snapPath, "-F", "qcow2", volPath, sizeArg); err != nil {
 			return nil, fmt.Errorf("create volume %s from snapshot %s: %w", req.VolumeID, req.SourceSnapshotID, err)
-		}
-
-	case req.SourceVolumeID != "":
-		srcPath := p.volumePath(req.SourceVolumeID)
-		if _, err := os.Stat(srcPath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.SourceVolumeID)
-			}
-			return nil, err
-		}
-		if _, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", srcPath, volPath); err != nil {
-			return nil, fmt.Errorf("create volume %s from volume %s: %w", req.VolumeID, req.SourceVolumeID, err)
-		}
-		// qemu-img convert sizes the copy to its source, not to
-		// CapacityRange.RequiredBytes, so a copy into a larger volume needs a
-		// follow-on resize the contract does not separately account for.
-		srcInfo, err := p.imgInfo(ctx, volPath)
-		if err != nil {
-			return nil, err
-		}
-		if req.CapacityRange.RequiredBytes > srcInfo.VirtualSize {
-			if _, err := p.run.Run(ctx, "qemu-img", "resize", volPath, sizeArg); err != nil {
-				return nil, fmt.Errorf("expand volume %s copy to requested capacity: %w", req.VolumeID, err)
-			}
 		}
 
 	default:

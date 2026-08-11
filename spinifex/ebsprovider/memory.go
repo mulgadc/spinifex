@@ -53,6 +53,9 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
+	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
+		return nil, fmt.Errorf("%w: source snapshot volume ID is required with a source snapshot", ErrInvalidArgument)
+	}
 	if err := ValidateSeedData(req.SeedData); err != nil {
 		return nil, err
 	}
@@ -84,6 +87,13 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 		}
 		if req.CapacityRange.RequiredBytes < snapshot.SizeBytes {
 			return nil, fmt.Errorf("%w: requested capacity is smaller than snapshot %s", ErrInvalidArgument, req.SourceSnapshotID)
+		}
+		// The caller names the snapshot's origin volume, so a wrong name is a
+		// caller bug the reference provider refuses rather than resolving
+		// blocks against a volume the snapshot never came from.
+		if req.SourceSnapshotVolumeID != snapshot.SourceVolumeID {
+			return nil, fmt.Errorf("%w: snapshot %s was taken from volume %s, not %s",
+				ErrInvalidArgument, req.SourceSnapshotID, snapshot.SourceVolumeID, req.SourceSnapshotVolumeID)
 		}
 	}
 

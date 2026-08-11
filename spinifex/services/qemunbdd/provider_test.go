@@ -134,10 +134,11 @@ func TestCreateVolume_FromSnapshotArgv(t *testing.T) {
 	fr.infoResponses[snapPath] = `{"virtual-size":536870912}`
 
 	vol, err := p.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-		Versioned:        versioned(),
-		VolumeID:         "vol-clone",
-		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		SourceSnapshotID: "snap-1",
+		Versioned:              versioned(),
+		VolumeID:               "vol-clone",
+		CapacityRange:          ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+		SourceSnapshotID:       "snap-1",
+		SourceSnapshotVolumeID: "vol-origin",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, vol)
@@ -152,47 +153,27 @@ func TestCreateVolume_FromSnapshotArgv(t *testing.T) {
 func TestCreateVolume_FromMissingSnapshotNotFound(t *testing.T) {
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-		Versioned:        versioned(),
-		VolumeID:         "vol-orphan",
-		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		SourceSnapshotID: "snap-missing",
+		Versioned:              versioned(),
+		VolumeID:               "vol-orphan",
+		CapacityRange:          ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+		SourceSnapshotID:       "snap-missing",
+		SourceSnapshotVolumeID: "vol-origin",
 	})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 }
 
-func TestCreateVolume_FromVolumeArgvAndResize(t *testing.T) {
-	p, fr := newTestProvider(t)
-	ctx := context.Background()
-
-	srcPath := p.volumePath("vol-src")
-	require.NoError(t, os.WriteFile(srcPath, nil, 0o640))
-	dstPath := p.volumePath("vol-copy")
-	fr.infoResponses[dstPath] = `{"virtual-size":536870912}`
-
-	_, err := p.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-		Versioned:      versioned(),
-		VolumeID:       "vol-copy",
-		CapacityRange:  ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		SourceVolumeID: "vol-src",
-	})
-	require.NoError(t, err)
-
-	calls := fr.callsSnapshot()
-	require.Len(t, calls, 3)
-	assert.Equal(t, []string{"convert", "-O", "qcow2", srcPath, dstPath}, calls[0].args)
-	assert.Equal(t, []string{"info", "--output=json", "--force-share", dstPath}, calls[1].args)
-	assert.Equal(t, []string{"resize", dstPath, "1073741824"}, calls[2].args)
-}
-
-func TestCreateVolume_FromMissingSourceVolumeNotFound(t *testing.T) {
+// TestCreateVolume_SnapshotSourceRequiresOriginVolume covers the contract rule
+// that a snapshot source must name the volume it was taken from, so a provider
+// needing it to resolve blocks gets it rather than guessing.
+func TestCreateVolume_SnapshotSourceRequiresOriginVolume(t *testing.T) {
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
-		Versioned:      versioned(),
-		VolumeID:       "vol-copy",
-		CapacityRange:  ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		SourceVolumeID: "vol-never-existed",
+		Versioned:        versioned(),
+		VolumeID:         "vol-noorigin",
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+		SourceSnapshotID: "snap-any",
 	})
-	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
+	require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 }
 
 func TestCreateVolume_IdempotentRepeatSameParameters(t *testing.T) {

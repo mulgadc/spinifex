@@ -88,9 +88,45 @@ func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvid
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-from-missing-snap",
-				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}, SourceSnapshotID: "snap-missing",
+				CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+				SourceSnapshotID: "snap-missing", SourceSnapshotVolumeID: "vol-missing-origin",
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
+		})
+
+		// SourceSnapshotVolumeID names the volume the snapshot came from, which
+		// a provider may need to resolve the snapshot's blocks. Omitting it is a
+		// malformed request, not a request for behaviour the provider lacks.
+		t.Run("invalid_argument when a source snapshot has no source volume", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-noorigin",
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}, SourceSnapshotID: "snap-any",
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+		})
+
+		t.Run("volume is created from a snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-origin",
+				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+			})
+			require.NoError(t, err)
+			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
+				Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-snapsrc", VolumeID: "vol-snapsrc-origin",
+			})
+			require.NoError(t, err)
+			require.Equal(t, "vol-snapsrc-origin", snap.SourceVolumeID, "a snapshot must report the volume it was taken from")
+
+			restored, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+				Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-snapsrc-restored",
+				CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+				SourceSnapshotID: snap.ID, SourceSnapshotVolumeID: snap.SourceVolumeID,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, ebsprovider.VolumeStateAvailable, restored.State)
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {

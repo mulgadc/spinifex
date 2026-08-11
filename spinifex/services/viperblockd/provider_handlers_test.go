@@ -911,12 +911,12 @@ func TestProviderHandlers_CreateVolume_SeedValidation(t *testing.T) {
 	// overwrite the cloned image rather than initialise a blank volume.
 	t.Run("seed with a source snapshot is invalid_argument", func(t *testing.T) {
 		err := requestError(t, marshalRequest(t, map[string]any{
-			"schema_version":     ebsprovider.SchemaVersion,
-			"volume_id":          "vol-seedwithsnap01",
-			"capacity_range":     map[string]any{"required_bytes": int64(bytesPerGiB)},
-			"source_snapshot_id": "snap-0000000000001",
-			"source_volume_id":   "vol-source00000001",
-			"seed_data":          make([]byte, 16),
+			"schema_version":            ebsprovider.SchemaVersion,
+			"volume_id":                 "vol-seedwithsnap01",
+			"capacity_range":            map[string]any{"required_bytes": int64(bytesPerGiB)},
+			"source_snapshot_id":        "snap-0000000000001",
+			"source_snapshot_volume_id": "vol-source00000001",
+			"seed_data":                 make([]byte, 16),
 		}))
 		assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, err.Code)
 	})

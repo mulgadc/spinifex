@@ -248,8 +248,8 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid capacity range")})
 		return
 	}
-	if req.SourceSnapshotID != "" && req.SourceVolumeID == "" {
-		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("source_volume_id is required with source_snapshot_id")})
+	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
+		respondJSON(msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("source_snapshot_volume_id is required with source_snapshot_id")})
 		return
 	}
 	if err := ebsprovider.ValidateSeedData(req.SeedData); err != nil {
@@ -284,7 +284,7 @@ func handleCreateVolume(cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, utils.SafeInt64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceVolumeID)
+	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, utils.SafeInt64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
 	s3cfg := vbs3.S3Config{
 		VolumeName: req.VolumeID,
 		Bucket:     cfg.Bucket,

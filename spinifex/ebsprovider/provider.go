@@ -109,8 +109,12 @@ type CreateVolumeRequest struct {
 	CapacityRange    CapacityRange   `json:"capacity_range"`
 	AvailabilityZone string          `json:"availability_zone,omitempty"`
 	SourceSnapshotID string          `json:"source_snapshot_id,omitempty"`
-	SourceVolumeID   string          `json:"source_volume_id,omitempty"`
 	Parameters       json.RawMessage `json:"parameters,omitempty"`
+
+	// SourceSnapshotVolumeID names the volume SourceSnapshotID was taken from,
+	// matching that snapshot's Snapshot.SourceVolumeID. It is required with
+	// SourceSnapshotID and meaningless without it: this is not a clone source.
+	SourceSnapshotVolumeID string `json:"source_snapshot_volume_id,omitempty"`
 
 	// SeedData is written at offset 0 of a newly created volume. It exists so
 	// the caller can supply host-local bytes, such as a firmware VARS template

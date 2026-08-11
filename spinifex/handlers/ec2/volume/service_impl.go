@@ -213,12 +213,12 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	// base blocks against the source volume's prefix, and the provider rejects
 	// a snapshot source without it.
 	created, err := s.provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-		Versioned:        ebsprovider.NewVersioned(),
-		VolumeID:         volumeID,
-		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: size * 1024 * 1024 * 1024},
-		AvailabilityZone: *input.AvailabilityZone,
-		SourceSnapshotID: snapshotID,
-		SourceVolumeID:   sourceVolumeName,
+		Versioned:              ebsprovider.NewVersioned(),
+		VolumeID:               volumeID,
+		CapacityRange:          ebsprovider.CapacityRange{RequiredBytes: size * 1024 * 1024 * 1024},
+		AvailabilityZone:       *input.AvailabilityZone,
+		SourceSnapshotID:       snapshotID,
+		SourceSnapshotVolumeID: sourceVolumeName,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)

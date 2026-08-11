@@ -34,8 +34,8 @@ type snapshotSourceProvider struct {
 
 func (p *snapshotSourceProvider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolumeRequest) (*ebsprovider.Volume, error) {
 	p.lastRequest = req
-	if req.SourceSnapshotID != "" && req.SourceVolumeID == "" {
-		return nil, fmt.Errorf("%w: source_volume_id is required with source_snapshot_id", ebsprovider.ErrInvalidArgument)
+	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
+		return nil, fmt.Errorf("%w: source_snapshot_volume_id is required with source_snapshot_id", ebsprovider.ErrInvalidArgument)
 	}
 	// The snapshot exists only in the control plane's metadata for this test,
 	// so bypass the in-memory provider's own snapshot bookkeeping.
@@ -80,7 +80,7 @@ func TestCreateVolume_Provider_FromSnapshotSendsSourceVolumeID(t *testing.T) {
 	require.NotNil(t, created)
 
 	assert.Equal(t, "snap-src", provider.lastRequest.SourceSnapshotID)
-	assert.Equal(t, "vol-origin", provider.lastRequest.SourceVolumeID,
+	assert.Equal(t, "vol-origin", provider.lastRequest.SourceSnapshotVolumeID,
 		"the snapshot's source volume must travel with the snapshot ID")
 }
 
@@ -99,7 +99,7 @@ func TestCreateVolume_Provider_WithoutSnapshotSendsNoSource(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Empty(t, provider.lastRequest.SourceSnapshotID)
-	assert.Empty(t, provider.lastRequest.SourceVolumeID)
+	assert.Empty(t, provider.lastRequest.SourceSnapshotVolumeID)
 }
 
 // fixedAMILoader resolves one AMI to a snapshot on a known source volume.

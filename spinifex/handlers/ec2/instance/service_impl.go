@@ -1529,12 +1529,12 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		"imageId", spec.amiID, "volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "sourceVolumeId", sourceVolumeID)
 
 	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-		Versioned:        ebsprovider.NewVersioned(),
-		VolumeID:         spec.volumeID,
-		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(spec.sizeBytes)},
-		AvailabilityZone: s.config.AZ,
-		SourceSnapshotID: amiConfig.SnapshotID,
-		SourceVolumeID:   sourceVolumeID,
+		Versioned:              ebsprovider.NewVersioned(),
+		VolumeID:               spec.volumeID,
+		CapacityRange:          ebsprovider.CapacityRange{RequiredBytes: int64(spec.sizeBytes)},
+		AvailabilityZone:       s.config.AZ,
+		SourceSnapshotID:       amiConfig.SnapshotID,
+		SourceSnapshotVolumeID: sourceVolumeID,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Provider root volume creation failed",

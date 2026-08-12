@@ -24,7 +24,7 @@ require (
 	github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3
 	github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059
 	github.com/mulgadc/predastore v1.16.1-0.20260812012531-12c90bd2e14a
-	github.com/mulgadc/viperblock v1.16.1-0.20260812033921-fc825c93eff6
+	github.com/mulgadc/viperblock v1.16.1-0.20260812124023-7e0df2323c75
 	github.com/nats-io/nats-server/v2 v2.14.4
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/runtime-spec v1.3.0

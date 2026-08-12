@@ -1,11 +1,13 @@
 package viperblockd
 
 import (
+	"fmt"
 	"net"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // alive reports whether pid is still a live process.
@@ -48,6 +50,48 @@ func TestShutdownVolumes_IdleKilled(t *testing.T) {
 
 	if alive(pid) {
 		t.Fatal("idle nbdkit was not reaped on SIGTERM")
+	}
+}
+
+// TestShutdownVolumes_ReapsConcurrently proves the idle-volume reap fans out
+// rather than running serially: N volumes whose fake nbdkit each take
+// `delay` to die must all be reaped in about one delay's worth of wall time,
+// not delay*N — a serial loop is what let one slow nbdkit blow the unit's
+// TimeoutStopSec budget on a node with several mounted volumes.
+func TestShutdownVolumes_ReapsConcurrently(t *testing.T) {
+	const n = 3
+	const delay = 150 * time.Millisecond
+
+	volumes := make([]MountedVolume, n)
+	for i := range n {
+		// Idle-spin so the process only ever dies via its TERM trap, ~delay
+		// after SIGTERM actually arrives — standing in for nbdkit's own
+		// bounded shutdown drain (never dies on its own schedule).
+		script := fmt.Sprintf("trap 'sleep %f; exit 0' TERM; while true; do sleep 0.01; done", delay.Seconds())
+		cmd := exec.Command("sh", "-c", script)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleeper %d: %v", i, err)
+		}
+		pid := cmd.Process.Pid
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		go func() { _, _ = cmd.Process.Wait() }()
+		volumes[i] = MountedVolume{Name: fmt.Sprintf("vol-%d", i), PID: pid}
+	}
+
+	start := time.Now()
+	shutdownVolumes(volumes, func(MountedVolume) bool { return false })
+	elapsed := time.Since(start)
+
+	for _, v := range volumes {
+		if alive(v.PID) {
+			t.Fatalf("volume %s was not reaped", v.Name)
+		}
+	}
+
+	// Concurrent reap: ~one delay plus poll jitter. Serial reap of n volumes
+	// would take ~n*delay (450ms here) — well past this bound.
+	if bound := 2 * delay; elapsed > bound {
+		t.Fatalf("shutdownVolumes took %v to reap %d volumes at %v each (bound %v) — looks serial, not concurrent", elapsed, n, delay, bound)
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unitsDir locates build/systemd by walking up from this test file.
@@ -51,6 +53,23 @@ func unitFiles(t *testing.T, dir string) []string {
 		}
 	}
 	return out
+}
+
+// timeoutStopSec parses a unit's TimeoutStopSec= value (this repo always
+// writes plain seconds, no unit suffix) into a time.Duration.
+func timeoutStopSec(t *testing.T, unit string) time.Duration {
+	t.Helper()
+	for l := range strings.SplitSeq(unit, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(l), "TimeoutStopSec="); ok {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("parse TimeoutStopSec=%q: %v", v, err)
+			}
+			return time.Duration(n) * time.Second
+		}
+	}
+	t.Fatal("unit has no TimeoutStopSec=")
+	return 0
 }
 
 // hasDirective reports whether unit carries an exact directive line (trimmed).
@@ -235,6 +254,14 @@ func TestGracefulDrainOrdering(t *testing.T) {
 	viperblock := readUnit(t, dir, "spinifex-viperblock.service")
 	if !hasDirective(viperblock, "KillMode=process") {
 		t.Error("spinifex-viperblock.service must keep KillMode=process — in-use nbdkit survives a viperblock restart (DDIL)")
+	}
+
+	// shutdownVolumes reaps idle nbdkit concurrently, so the unit only has to
+	// outlive the single slowest utils.KillProcess grace (120s), not that
+	// grace summed across every mounted volume.
+	const killProcessGracePeriod = 120 * time.Second
+	if got := timeoutStopSec(t, viperblock); got <= killProcessGracePeriod {
+		t.Errorf("spinifex-viperblock.service TimeoutStopSec=%v must strictly exceed the %v KillProcess grace period", got, killProcessGracePeriod)
 	}
 
 	target := readUnit(t, dir, "spinifex.target")

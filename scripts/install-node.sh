@@ -37,6 +37,10 @@
 #                            Confirmed separately from --yes; unattended runs
 #                            must set SPX_WIPE_CONFIRM=wipe.
 #   --smoke                  Run smoke-test.sh --create-vpc on the first host
+#   --no-firewall            Do not enable the host firewall. The cluster ports
+#                            then stay reachable from anything that can route to
+#                            the node; only use it if the policy conflicts with
+#                            a site firewall that already scopes them.
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
 #
@@ -69,6 +73,7 @@ EMAIL=""
 PORT=4432
 TOKEN_TTL="30m"
 RUN_SMOKE=false
+INSTALL_FIREWALL=true
 WIPE=false
 ASSUME_YES=false
 DRY_RUN=false
@@ -101,8 +106,9 @@ while [[ $# -gt 0 ]]; do
             done <"$2"
             shift 2
             ;;
-        --smoke)    RUN_SMOKE=true; shift ;;
-        --wipe)     WIPE=true; shift ;;
+        --smoke)        RUN_SMOKE=true; shift ;;
+        --no-firewall)  INSTALL_FIREWALL=false; shift ;;
+        --wipe)         WIPE=true; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
         -h|--help)  sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -182,6 +188,8 @@ out() {
 }
 
 SETUP_OVN="/usr/local/share/spinifex/setup-ovn.sh"
+FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
+FIREWALL_PEERS="/etc/spinifex/firewall/peers.nft"
 
 # --- Preflight -------------------------------------------------------------
 #
@@ -232,6 +240,16 @@ for i in $(seq 0 $((N - 1))); do
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "test -x $SETUP_OVN" 2>/dev/null ||
         fail "$host: $SETUP_OVN is missing — this node predates the clustered-OVN
        installer. Update it before forming a cluster."
+
+    # Checked here rather than at the end: the firewall is applied once the
+    # cluster is up, and discovering then that one node cannot take it would
+    # leave a formed cluster with its ports open on exactly one host.
+    if $INSTALL_FIREWALL; then
+        ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "test -x $FIREWALL_APPLY && command -v nft" >/dev/null 2>&1 ||
+            fail "$host: no host firewall support ($FIREWALL_APPLY or nft is missing).
+       Update the node's install, or re-run with --no-firewall to form the
+       cluster with its ports unrestricted."
+    fi
 
     version=$(out "$host" "spx version 2>/dev/null | head -1")
     version="${version//[$'\r\n']/}"
@@ -595,6 +613,54 @@ for name in "${NODE_NAMES[@]}"; do
        still be registering — if it persists, IPsec will fail to authenticate.
        Check 'sudo ovs-vsctl get Open_vSwitch . external_ids:system-id' on that host."
 done
+
+# --- Host firewall ---------------------------------------------------------
+#
+# Applied here, not at install time. This is the only component that resolves
+# every node's planes, and a drop policy whose peer set is still empty would cut
+# the first node that applied it out of the formation it is part of.
+
+if $INSTALL_FIREWALL; then
+    echo ""
+    log "applying the host firewall to $N host(s)"
+
+    # Cluster ports are scoped by source address, so the set has to hold every
+    # address a peer might send FROM. vpcd's DNS shim forwards guest queries to
+    # peer WAN addresses on 5300, which sources from the WAN plane, so the wan
+    # and lan planes both belong here. Encap stays narrower: Geneve and IPsec
+    # only ever use --encap-ip.
+    peer_set=$(printf '%s\n' "${WAN_IPS[@]}" "${LAN_IPS[@]}" | sort -u | paste -sd, -)
+    encap_set=$(printf '%s\n' "${VPC_IPS[@]}" | sort -u | paste -sd, -)
+
+    peers_file="# Managed by install-node.sh. Cluster members' resolved plane addresses.
+# Regenerated on every run; edits are overwritten.
+define spinifex_peers = { ${peer_set} }
+define spinifex_encap_peers = { ${encap_set} }"
+
+    # base64 so the content survives the trip through ssh's argument
+    # concatenation without any quoting of its own.
+    peers_b64=$(printf '%s\n' "$peers_file" | base64 -w0)
+
+    for i in $(seq 0 $((N - 1))); do
+        host="${HOSTS[$i]}"
+        on "$host" "sudo install -d -m 0755 /etc/spinifex/firewall &&
+            echo '$peers_b64' | base64 -d | sudo tee $FIREWALL_PEERS >/dev/null &&
+            sudo chmod 0644 $FIREWALL_PEERS &&
+            sudo systemctl enable spinifex-firewall.service >/dev/null 2>&1 &&
+            sudo systemctl restart spinifex-firewall.service" ||
+            fail "$host: could not apply the host firewall. The ruleset is applied in one
+       transaction, so the node is still reachable — check
+       'sudo systemctl status spinifex-firewall.service' there."
+        log "  ${HOSTS[$i]}: firewall active"
+    done
+
+    log "cluster ports restricted to: $peer_set"
+    log "encap ports restricted to:   $encap_set"
+    log "drops are logged, rate-limited, with prefix 'spinifex-fw drop:'"
+else
+    log "WARNING: --no-firewall, so cluster ports stay reachable from anything that"
+    log "         can route to these nodes."
+fi
 
 # The pool is the one thing the operator supplied by hand and the one thing
 # nothing else validates, so print what actually landed. dns_servers in

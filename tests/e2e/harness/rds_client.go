@@ -154,25 +154,24 @@ func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 	t.Helper()
 	deadline := time.Now().Add(rdsClientSetupTimeout)
 	var lastErr error
+	status := "pending"
 	for {
-		status, err := GuestExec(tgt, "cat "+rdsClientStatusFile+" 2>/dev/null || echo pending")
-		if err != nil {
-			// A transient SSH fault mid-install is normal; only its persistence
-			// past the deadline is a failure, so it is carried, not swallowed.
+		// A transient SSH fault mid-install is normal; only its persistence past
+		// the deadline is a failure, so it is carried, not swallowed — and neither
+		// sentinel is read at all unless the read that produced it succeeded.
+		readStatus, code, err := readRDSClientSentinels(tgt)
+		switch {
+		case err != nil:
 			lastErr = err
-		}
-		code, err := GuestExec(tgt, "cat "+rdsClientExitCodeFile+" 2>/dev/null || true")
-		if err != nil {
-			lastErr = err
-		}
-		status, code = strings.TrimSpace(status), strings.TrimSpace(code)
-
-		if code != "" && code != "0" {
-			log, _ := GuestExec(tgt, "tail -40 /var/log/cloud-init-output.log 2>/dev/null || true")
-			return fmt.Errorf("client VM database-client install exited %s (status=%q):\n%s", code, status, log)
-		}
-		if code == "0" && status == "done" {
-			return nil
+		default:
+			status = readStatus
+			if code != "" && code != "0" {
+				log, _ := GuestExec(tgt, "tail -40 /var/log/cloud-init-output.log 2>/dev/null || true")
+				return fmt.Errorf("client VM database-client install exited %s (status=%q):\n%s", code, status, log)
+			}
+			if code == "0" && status == "done" {
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("client VM database-client install still %q after %s (last ssh error: %v)",
@@ -180,6 +179,21 @@ func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// Both sentinels, or neither. GuestExec returns the combined output, so ssh's
+// own error text on a failed connection is indistinguishable from a sentinel's
+// contents — reading one after a failure would take that text for an exit code.
+func readRDSClientSentinels(tgt SSHTarget) (status, code string, err error) {
+	status, err = GuestExec(tgt, "cat "+rdsClientStatusFile+" 2>/dev/null || echo pending")
+	if err != nil {
+		return "", "", err
+	}
+	code, err = GuestExec(tgt, "cat "+rdsClientExitCodeFile+" 2>/dev/null || true")
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(status), strings.TrimSpace(code), nil
 }
 
 // pushClusterCA copies the cluster CA into the guest so psql can be asked for

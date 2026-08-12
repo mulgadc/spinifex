@@ -372,17 +372,79 @@ RULES
     $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
 #!/bin/sh
 # Applies the spinifex host firewall. Fails without changing the ruleset when
-# the peer file is missing, so a node that has not been through install-node.sh
-# is left reachable rather than cut off from a cluster it cannot yet name.
+# the peer file is missing, so a node whose daemon has not yet resolved cluster
+# membership is left reachable rather than cut off from a cluster it cannot name.
 set -eu
 
 RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
 
 [ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
+
+# set-peers reads two comma-separated address lists on stdin (cluster peers,
+# then encap peers) and rewrites the peer file before applying. Every address is
+# re-validated here as a bare dotted quad: this runs as root under a NOPASSWD
+# grant, so a caller must not be able to inject nft syntax through it.
+# disable removes spinifex's own table and the peer file, leaving every other
+# table alone. Idempotent, so it is safe on a node that never had the policy.
+if [ "${1:-}" = "disable" ]; then
+    nft delete table inet spinifex_filter 2>/dev/null || true
+    rm -f "$PEERS"
+    systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
+    exit 0
+fi
+
+if [ "${1:-}" = "set-peers" ]; then
+    read -r peers_in || peers_in=""
+    read -r encap_in || encap_in=""
+
+    # Octet ranges are checked, not just the shape: nft rejects 10.0.0.999 and
+    # the whole transaction with it, which would leave a peer file that fails on
+    # every boot. A loop, not a pipeline — a rejection in a `while read` subshell
+    # cannot fail the function.
+    OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    validate() {
+        _out=""
+        for a in $(echo "$1" | tr ',' ' '); do
+            echo "$a" | grep -Eq "^${OCTET}(\.${OCTET}){3}$" || {
+                echo "address not permitted: $a" >&2
+                return 2
+            }
+            if [ -z "$_out" ]; then _out="$a"; else _out="$_out, $a"; fi
+        done
+        printf '%s' "$_out"
+    }
+
+    peers=$(validate "$peers_in") || exit 2
+    encap=$(validate "$encap_in") || exit 2
+    [ -n "$peers" ] && [ -n "$encap" ] || {
+        echo "set-peers needs a non-empty peer and encap list" >&2
+        exit 2
+    }
+
+    tmp=$(mktemp)
+    bak=$(mktemp)
+    printf '%s\n' \
+        '# Managed by spinifex-daemon. Regenerated from cluster membership.' \
+        "define spinifex_peers = { $peers }" \
+        "define spinifex_encap_peers = { $encap }" > "$tmp"
+    if [ -r "$PEERS" ]; then cp "$PEERS" "$bak"; fi
+    install -m 0644 "$tmp" "$PEERS"
+
+    # Roll the peer file back if the ruleset will not load, so the boot-time
+    # unit never inherits a file already known to fail.
+    if ! nft -f "$RULES"; then
+        if [ -s "$bak" ]; then install -m 0644 "$bak" "$PEERS"; else rm -f "$PEERS"; fi
+        rm -f "$tmp" "$bak"
+        exit 1
+    fi
+    rm -f "$tmp" "$bak"
+    exit 0
+fi
+
 if [ ! -r "$PEERS" ]; then
-    echo "no peer file at $PEERS: run install-node.sh to resolve the cluster's" >&2
-    echo "planes before enabling the firewall. Ruleset left unchanged." >&2
+    echo "no peer file at $PEERS: the daemon writes it once cluster membership" >&2
+    echo "resolves. Ruleset left unchanged." >&2
     exit 1
 fi
 
@@ -391,7 +453,7 @@ APPLY
     $SUDO chown root:root "$FIREWALL_APPLY"
     $SUDO chmod 0755 "$FIREWALL_APPLY"
     info "  $FIREWALL_APPLY"
-    info "Host firewall installed (enabled by install-node.sh once peers resolve)"
+    info "Host firewall installed (applied by spinifex-daemon once peers resolve)"
 }
 
 install_sudoers() {
@@ -444,6 +506,7 @@ SUDOERS
     $SUDO tee -a /etc/sudoers.d/spinifex-network > /dev/null << SUDOERS
 spinifex-daemon ALL=(root) NOPASSWD: ${ENDPOINT_SYSCTL_HELPER}
 spinifex-daemon ALL=(root) NOPASSWD: ${IPSEC_STATE_HELPER}
+spinifex-daemon ALL=(root) NOPASSWD: ${FIREWALL_APPLY}
 SUDOERS
     $SUDO chmod 0440 /etc/sudoers.d/spinifex-network
     $SUDO visudo -cf /etc/sudoers.d/spinifex-network || fatal "Invalid sudoers syntax in spinifex-network"
@@ -925,6 +988,10 @@ EOF
     # takes effect once enabled) — without this the JetStream ENOSPC-latch
     # watchdog is inert and a full disk requires a manual restart forever.
     $SUDO systemctl enable --now spinifex-nats-watchdog.timer
+    # Enabled, not started: its ConditionPathExists holds it inert until the
+    # daemon writes a peer file, so this only decides that a node which has one
+    # gets the policy back at boot, before any service opens a socket.
+    $SUDO systemctl enable spinifex-firewall.service
     info "Systemd units installed and enabled (per-service users)"
 }
 

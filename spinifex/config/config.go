@@ -68,6 +68,9 @@ type NetworkConfig struct {
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
+	// FirewallEnabled toggles the host firewall that scopes cluster ports to cluster
+	// members. Default true; disable only where a site firewall already scopes them.
+	FirewallEnabled bool `mapstructure:"firewall_enabled"`
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
 	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
 	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
@@ -359,6 +362,9 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
+
+	// Default firewall_enabled to true; operators must explicitly set false to disable.
+	viper.SetDefault("network.firewall_enabled", true)
 
 	// Cluster-wide AWS-parity defaults so existing deployments keep working.
 	viper.SetDefault("aws.region", DefaultAWSRegion)

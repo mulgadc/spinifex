@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -340,4 +341,108 @@ func TestWarnIfGuestsLeftRunningConnectFailureWarnsNotFails(t *testing.T) {
 
 	out := captureSlog(t, warnIfGuestsLeftRunning)
 	assert.Contains(t, out, "could not connect")
+}
+
+// stubCollectShutdownACKsFn swaps collectShutdownACKsFn for fn and restores
+// the original on cleanup, so collectLocalShutdownACK's retry loop can be
+// driven deterministically without a real NATS round trip.
+func stubCollectShutdownACKsFn(t *testing.T, fn func(nc *nats.Conn, topic string, reqData []byte, nodeCount int, nodeFilter string, timeout time.Duration) ([]daemon.ShutdownACK, error)) {
+	t.Helper()
+	orig := collectShutdownACKsFn
+	t.Cleanup(func() { collectShutdownACKsFn = orig })
+	collectShutdownACKsFn = fn
+}
+
+// shrinkLocalShutdownACKBackoff overrides the GATE/DRAIN retry backoff to
+// millisecond-scale values for the duration of the test so retry tests do
+// not pay for the real 250ms-2s production backoff.
+func shrinkLocalShutdownACKBackoff(t *testing.T) {
+	t.Helper()
+	origBase, origCap := localShutdownACKRetryBaseDelay, localShutdownACKRetryMaxDelay
+	localShutdownACKRetryBaseDelay = time.Millisecond
+	localShutdownACKRetryMaxDelay = 5 * time.Millisecond
+	t.Cleanup(func() {
+		localShutdownACKRetryBaseDelay = origBase
+		localShutdownACKRetryMaxDelay = origCap
+	})
+}
+
+// TestCollectLocalShutdownACKRetriesUntilACK covers the actual bug: the
+// daemon may not have re-subscribed right after a restart, so the first
+// attempt(s) get no ACK. The ACK on the third attempt must still succeed.
+func TestCollectLocalShutdownACKRetriesUntilACK(t *testing.T) {
+	shrinkLocalShutdownACKBackoff(t)
+
+	var calls int
+	stubCollectShutdownACKsFn(t, func(nc *nats.Conn, topic string, reqData []byte, nodeCount int, nodeFilter string, timeout time.Duration) ([]daemon.ShutdownACK, error) {
+		calls++
+		if calls < 3 {
+			return nil, nil // daemon not re-subscribed yet: no ACK, no error
+		}
+		return []daemon.ShutdownACK{{Node: nodeFilter, Phase: "gate"}}, nil
+	})
+
+	ack, err := collectLocalShutdownACK(nil, "spinifex.cluster.shutdown.gate", []byte(`{}`), "node1", time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "node1", ack.Node)
+	assert.Equal(t, 3, calls)
+}
+
+// TestCollectLocalShutdownACKExhaustedReturnsWithinBudget covers a daemon
+// that never re-subscribes: the call must return promptly once the budget
+// elapses, not hang, with a non-nil error so the failure path fires.
+func TestCollectLocalShutdownACKExhaustedReturnsWithinBudget(t *testing.T) {
+	shrinkLocalShutdownACKBackoff(t)
+
+	var calls int
+	stubCollectShutdownACKsFn(t, func(nc *nats.Conn, topic string, reqData []byte, nodeCount int, nodeFilter string, timeout time.Duration) ([]daemon.ShutdownACK, error) {
+		calls++
+		return nil, nil // daemon never comes back within the budget
+	})
+
+	budget := 60 * time.Millisecond
+	start := time.Now()
+	ack, err := collectLocalShutdownACK(nil, "spinifex.cluster.shutdown.gate", []byte(`{}`), "node1", budget)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Equal(t, daemon.ShutdownACK{}, ack)
+	assert.Contains(t, err.Error(), "node1")
+	assert.Greater(t, calls, 1, "must have retried, not failed on the first miss")
+	// The retry loop must not run appreciably past the configured budget.
+	assert.Less(t, elapsed, budget+150*time.Millisecond)
+}
+
+// TestReportGuestsLeftRunningSevereLogsErrorAndNamesGuests covers the
+// "drain failed" path sharing warnIfGuestsLeftRunning's enumeration: severe
+// must log at ERROR, not WARN, and still name only the running instance.
+func TestReportGuestsLeftRunningSevereLogsErrorAndNamesGuests(t *testing.T) {
+	origTimeout := guestEnumerationTimeout
+	guestEnumerationTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { guestEnumerationTimeout = origTimeout })
+
+	_, nc, _ := testutil.StartTestJetStream(t)
+	stubConnect(t, &config.ClusterConfig{Node: "node1"}, nc, nil)
+
+	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
+		resp := types.NodeVMsResponse{
+			Node: "node1",
+			VMs: []types.VMInfo{
+				{InstanceID: "i-abandoned", Status: vmStatusRunning},
+				{InstanceID: "i-stopped", Status: "stopped"},
+			},
+		}
+		body, _ := json.Marshal(resp)
+		_ = msg.Respond(body)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	out := captureSlog(t, func() {
+		reportGuestsLeftRunning(true, "drain failed: guests left running with storage about to be torn down")
+	})
+
+	assert.Contains(t, out, "ERROR")
+	assert.Contains(t, out, "i-abandoned")
+	assert.NotContains(t, out, "i-stopped")
 }

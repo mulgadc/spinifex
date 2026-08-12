@@ -328,7 +328,12 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 
 		ack, err := collectLocalShutdownACK(nc, topic, reqData, node, timeout)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] %v\n", strings.ToUpper(phase), err)
+			// Non-zero marks spinifex-shutdown.service failed (visible via
+			// `systemctl --failed`) without blocking the target's teardown;
+			// exiting 0 would hide guests left running as storage vanishes.
+			slog.Error("drain phase failed: no ACK from local daemon before timeout; guests may be left running while storage is about to be torn down",
+				"phase", phase, "node", node, "timeout", timeout, "error", err)
+			reportGuestsLeftRunning(true, fmt.Sprintf("[%s] drain failed: guests left running with storage about to be torn down", strings.ToUpper(phase)))
 			os.Exit(1)
 		}
 		if ack.Error != "" {
@@ -357,16 +362,13 @@ var guestEnumerationTimeout = 3 * time.Second
 // a plain string.
 const vmStatusRunning = "running"
 
-// warnIfGuestsLeftRunning names, at WARN level, every guest still running on
-// this node when the drain gate has just decided to skip a stop. It reuses
-// the spinifex.node.vms fan-out that `spx get vms` already relies on for
-// per-node VM state, rather than adding a second enumeration path. Failures
-// to connect or enumerate are themselves warned about, never fatal — a
-// skipped drain must not block the stop.
-func warnIfGuestsLeftRunning() {
+// reportGuestsLeftRunning names, at the given severity, every guest still
+// running on this node, reusing the spinifex.node.vms fan-out `spx get vms`
+// already relies on. Enumeration failures always warn, never escalate.
+func reportGuestsLeftRunning(severe bool, msg string) {
 	cfg, nc, err := loadConfigAndConnectFn()
 	if err != nil {
-		slog.Warn("skipped drain: could not connect to check for guests left running", "error", err)
+		slog.Warn("could not connect to check for guests left running", "error", err)
 		return
 	}
 	defer nc.Close()
@@ -374,7 +376,7 @@ func warnIfGuestsLeftRunning() {
 
 	responses, err := collectResponses(nc, "spinifex.node.vms", guestEnumerationTimeout)
 	if err != nil {
-		slog.Warn("skipped drain: could not enumerate local guests", "node", node, "error", err)
+		slog.Warn("could not enumerate local guests", "node", node, "error", err)
 		return
 	}
 
@@ -398,22 +400,81 @@ func warnIfGuestsLeftRunning() {
 		return
 	}
 	sort.Strings(running)
-	slog.Warn("skipped drain leaves guests running unsupervised; they will lose their data path if the spinifex stack does not come back",
-		"node", node, "instances", running)
+	if severe {
+		slog.Error(msg, "node", node, "instances", running)
+	} else {
+		slog.Warn(msg, "node", node, "instances", running)
+	}
 }
 
-// collectLocalShutdownACK publishes a shutdown-phase request and returns the ACK
-// from the local node, ignoring ACKs from any other node. Returns an error if
-// the local node does not respond within timeout.
+// warnIfGuestsLeftRunning reports, at WARN level, every guest still running
+// on this node when the drain gate has just decided to skip a stop because a
+// restart is already queued.
+func warnIfGuestsLeftRunning() {
+	reportGuestsLeftRunning(false, "skipped drain leaves guests running unsupervised; they will lose their data path if the spinifex stack does not come back")
+}
+
+// localShutdownACKRetryBaseDelay/MaxDelay set the backoff between GATE/DRAIN
+// ACK attempts: NATS bounces a request instantly when nothing is subscribed
+// yet, so a single miss right after a daemon restart is not a real failure.
+var (
+	localShutdownACKRetryBaseDelay = 250 * time.Millisecond
+	localShutdownACKRetryMaxDelay  = 2 * time.Second
+)
+
+// collectShutdownACKsFn indirects collectShutdownACKs so tests can simulate a
+// slow-to-resubscribe daemon without a real NATS round trip.
+var collectShutdownACKsFn = collectShutdownACKs
+
+// collectLocalShutdownACK publishes a shutdown-phase request and returns the
+// ACK from the local node, retrying with backoff bounded by timeout as a
+// whole. Returns an error once the budget is exhausted with no ACK.
 func collectLocalShutdownACK(nc *nats.Conn, topic string, reqData []byte, node string, timeout time.Duration) (daemon.ShutdownACK, error) {
-	acks, err := collectShutdownACKs(nc, topic, reqData, 1, node, timeout)
-	if err != nil {
-		return daemon.ShutdownACK{}, err
+	deadline := time.Now().Add(timeout)
+	delay := localShutdownACKRetryBaseDelay
+	attempts := 0
+	loggedRetry := false
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		attempts++
+
+		acks, err := collectShutdownACKsFn(nc, topic, reqData, 1, node, remaining)
+		if err != nil {
+			return daemon.ShutdownACK{}, fmt.Errorf("collecting ACK from local node %q: %w", node, err)
+		}
+		if len(acks) > 0 {
+			return acks[0], nil
+		}
+
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		// Log once, not per attempt: this runs in ExecStop, so its output
+		// lands in the journal on every single stop, and most stops recover
+		// within the first attempt or two.
+		if !loggedRetry {
+			slog.Warn("no ACK yet for local node, retrying (daemon may still be re-subscribing)",
+				"node", node, "topic", topic)
+			loggedRetry = true
+		}
+
+		sleep := min(delay, remaining)
+		time.Sleep(sleep)
+		delay *= 2
+		if delay > localShutdownACKRetryMaxDelay {
+			delay = localShutdownACKRetryMaxDelay
+		}
 	}
-	if len(acks) == 0 {
-		return daemon.ShutdownACK{}, fmt.Errorf("timeout waiting for local node %q ACK", node)
+
+	if attempts == 0 {
+		return daemon.ShutdownACK{}, fmt.Errorf("no time budget to wait for local node %q ACK (timeout=%s)", node, timeout)
 	}
-	return acks[0], nil
+	return daemon.ShutdownACK{}, fmt.Errorf("no ACK from local node %q after %d attempt(s) within %s", node, attempts, timeout)
 }
 
 // runClusterDrainDHCP asks every vpcd to DHCPRELEASE all external-pool leases

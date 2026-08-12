@@ -795,7 +795,9 @@ func deleteObjectPrefix(ctx context.Context, store objectstore.ObjectStore, buck
 			break
 		}
 		for _, obj := range listOutput.Contents {
-			if _, err := store.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: awssdk.String(bucket), Key: obj.Key}); err != nil {
+			// A concurrent sweep may have deleted the object between the list
+			// and here. It is gone either way, which is what this asked for.
+			if _, err := store.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: awssdk.String(bucket), Key: obj.Key}); err != nil && !objectstore.IsNoSuchKeyError(err) {
 				return fmt.Errorf("delete object %s: %w", awssdk.StringValue(obj.Key), err)
 			}
 		}

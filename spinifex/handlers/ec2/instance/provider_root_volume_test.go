@@ -77,12 +77,12 @@ func rootVolumeAMILoader() *fakeAMILoader {
 }
 
 // TestPrepareRootVolume_Provider_CreatesFromAMISnapshot locks that an injected
-// provider owns root-volume creation: the volume is cloned from the AMI's
+// provider owns root-volume creation: the volume is restored from the AMI's
 // snapshot rather than copied block-by-block by the control plane.
 func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{CopyOnWriteClone: true})
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{CrashConsistentSnapshot: true})
 	seedProviderSnapshot(t, provider, "vol-origin", "snap-source")
 	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), objectstore.NewMemoryObjectStore())
 

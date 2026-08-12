@@ -11,7 +11,7 @@ import (
 )
 
 func TestMemoryProviderLifecycleAndIdempotency(t *testing.T) {
-	provider := NewMemoryProvider(Capabilities{CopyOnWriteClone: true})
+	provider := NewMemoryProvider(Capabilities{CrashConsistentSnapshot: true})
 	createdAt := time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)
 	provider.now = func() time.Time { return createdAt }
 	ctx := context.Background()

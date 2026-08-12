@@ -28,11 +28,10 @@ const nbdSharedClients = 1
 // reason rather than with qemu-nbd's raw exit status.
 const maxUnixSocketPath = 108
 
-// capabilities is fixed: this provider offers real CoW clones and crash
-// consistent snapshots but, unlike viperblockd, cannot expand a published
-// volume or report sparse extents.
+// capabilities is fixed: this provider offers crash consistent snapshots and
+// base:allocation extents but, unlike viperblockd, cannot expand a published
+// volume or answer for a volume over an owner subject.
 var capabilities = ebsprovider.Capabilities{
-	CopyOnWriteClone:        true,
 	CrashConsistentSnapshot: true,
 	OnlineExpansion:         false,
 	SparseExtentReporting:   true,

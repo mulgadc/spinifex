@@ -45,8 +45,11 @@ type Provider = EBSProvider
 
 // Capabilities advertises optional provider behavior. Callers must branch on
 // these values instead of assuming all implementations behave like viperblock.
+//
+// Every field must name behaviour some request in this interface can ask for.
+// A capability no verb reaches tells a caller a feature is available and then
+// gives them no way to use it.
 type Capabilities struct {
-	CopyOnWriteClone        bool `json:"copy_on_write_clone"`
 	OnlineExpansion         bool `json:"online_expansion"`
 	SparseExtentReporting   bool `json:"sparse_extent_reporting"`
 	CrashConsistentSnapshot bool `json:"crash_consistent_snapshot"`

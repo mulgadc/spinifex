@@ -22,7 +22,6 @@ import (
 // makes optional is on: the point is to price the verbs, and a capability
 // turned off is a verb that returns early instead of being measured.
 var Capabilities = ebsprovider.Capabilities{
-	CopyOnWriteClone:        true,
 	OnlineExpansion:         true,
 	SparseExtentReporting:   true,
 	CrashConsistentSnapshot: true,

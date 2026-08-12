@@ -18,7 +18,6 @@ import (
 // only a convenience for callers constructing a MemoryProvider; the suite
 // itself never assumes any implementation reports this set.
 var ReferenceCapabilities = ebsprovider.Capabilities{
-	CopyOnWriteClone:        true,
 	OnlineExpansion:         false,
 	SparseExtentReporting:   true,
 	CrashConsistentSnapshot: true,

@@ -653,7 +653,6 @@ func TestGetCapabilities_Fixed(t *testing.T) {
 	resp, err := p.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: versioned()})
 	require.NoError(t, err)
 	assert.Equal(t, capabilities, resp.Capabilities)
-	assert.True(t, resp.Capabilities.CopyOnWriteClone)
 	assert.True(t, resp.Capabilities.CrashConsistentSnapshot)
 	assert.True(t, resp.Capabilities.VolumeSeeding)
 	assert.True(t, resp.Capabilities.SparseExtentReporting, "qemu-nbd advertises base:allocation")

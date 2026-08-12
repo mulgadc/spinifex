@@ -88,8 +88,8 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 | 8443 | spinifex-predastore (gate) | HTTPS | Cluster | S3-compatible object storage (AMIs, snapshots, user objects) | AWS SigV4 + TLS |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
-| 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd | Cluster network only; TLS planned |
-| 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state | Cluster network only; TLS planned |
+| 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
+| 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6643 | OVN Northbound DB (RAFT) | OVSDB/TCP | Cluster | NB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
 | 6644 | OVN Southbound DB (RAFT) | OVSDB/TCP | Cluster | SB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
 | 8222 | spinifex-nats (monitoring) | HTTP | Localhost | `varz`/`subsz` metrics consumed by the daemon | Loopback only |

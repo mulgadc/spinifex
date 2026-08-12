@@ -18,6 +18,11 @@ const (
 	hnswEfConstruction = 64
 )
 
+// extensionsSchema holds pgvector, out of public and out of every account
+// schema. Account roles get USAGE (read-only) on it and carry it on their
+// search_path so the vector type and its opclasses resolve unqualified.
+const extensionsSchema = "extensions"
+
 // pgxBackend is the pgx/v5 VectorBackend implementation. One pool is shared
 // by every account (D3); it never carries a pool-wide search_path, since a
 // shared pool serves every account and a stale connection-level setting
@@ -45,11 +50,15 @@ func (b *pgxBackend) Close() {
 	b.pool.Close()
 }
 
-// Init creates the vector extension if it does not already exist. The
-// extension is database-scoped, so this runs once at daemon boot rather than
-// per account.
+// Init ensures the vector extension exists in the extensions schema. Both are
+// database-scoped, so this runs once at daemon boot. In production the appliance
+// bootstrap has already installed them as the superuser, so these IF-NOT-EXISTS
+// statements are a no-op; against a superuser test DSN they create them.
 func (b *pgxBackend) Init(ctx context.Context) error {
-	if _, err := b.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+	if _, err := b.pool.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, extensionsSchema)); err != nil {
+		return fmt.Errorf("ochrevector: create extensions schema: %w", err)
+	}
+	if _, err := b.pool.Exec(ctx, fmt.Sprintf(`CREATE EXTENSION IF NOT EXISTS vector SCHEMA %s`, extensionsSchema)); err != nil {
 		return fmt.Errorf("ochrevector: create vector extension: %w", err)
 	}
 	return nil
@@ -132,9 +141,11 @@ func (b *pgxBackend) withAccountTx(ctx context.Context, accountID string, fn fun
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`SET LOCAL ROLE %s`, role)); err != nil {
 		return fmt.Errorf("ochrevector: set local role for account %s: %w", accountID, err)
 	}
-	// #nosec G201 -- schema is a sanitized, validated identifier; SET does not
-	// accept bound parameters.
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`SET LOCAL search_path = %s`, schema)); err != nil {
+	// #nosec G201 -- schema is a sanitized, validated identifier and
+	// extensionsSchema is a fixed constant; SET does not accept bound parameters.
+	// extensions trails the account schema so the account's own objects win name
+	// resolution and only the shared vector type falls through to it.
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`SET LOCAL search_path = %s, %s`, schema, extensionsSchema)); err != nil {
 		return fmt.Errorf("ochrevector: set local search_path for account %s: %w", accountID, err)
 	}
 

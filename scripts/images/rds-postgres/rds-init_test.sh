@@ -310,6 +310,9 @@ if run_ok "initialize"; then
     grep -q 'GRANT CREATE ON DATABASE' "${PSQL_CALLS}" \
         && fail "initialize: a tenant instance was granted database CREATE" \
         || pass "initialize: tenant instance gets no platform database grant"
+    grep -q 'createrole_self_grant' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant master got createrole_self_grant" \
+        || pass "initialize: tenant master gets no createrole_self_grant"
 
     # The master role is administrative but not a PostgreSQL superuser: a
     # superuser reaches outside the database (COPY FROM PROGRAM, pg_read_file,
@@ -374,12 +377,18 @@ MASTER_USER=ochre_vector_admin
 write_handoff initialize 's3cr3t' ''
 write_parameters
 if run_ok "ochre-appliance"; then
-    grep -q 'CREATE EXTENSION IF NOT EXISTS vector' "${PSQL_CALLS}" \
-        && pass "ochre-appliance: pgvector installed for the platform appliance" \
-        || fail "ochre-appliance: pgvector not installed"
+    grep -q 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: pgvector installed into the extensions schema" \
+        || fail "ochre-appliance: pgvector not installed into the extensions schema"
+    grep -q 'GRANT USAGE ON SCHEMA extensions TO PUBLIC' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: extensions schema readable by account roles" \
+        || fail "ochre-appliance: extensions schema not granted to PUBLIC"
     grep -q 'GRANT CREATE ON DATABASE postgres TO "ochre_vector_admin"' "${PSQL_CALLS}" \
         && pass "ochre-appliance: master granted CREATE on the database" \
         || fail "ochre-appliance: master not granted CREATE on the database"
+    grep -q 'createrole_self_grant' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: master can set into the roles it creates" \
+        || fail "ochre-appliance: master missing createrole_self_grant"
 fi
 unset MASTER_USER
 

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/mulgadc/predastore/pkg/iampolicy"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"

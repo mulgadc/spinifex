@@ -3,7 +3,7 @@ package handlers_iam
 import (
 	"encoding/json"
 
-	"github.com/mulgadc/predastore/pkg/iampolicy"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 )
 
 const (

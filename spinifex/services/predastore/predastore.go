@@ -10,8 +10,8 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

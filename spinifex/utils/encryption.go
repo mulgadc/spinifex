@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mulgadc/predastore/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 )
 
 // viperblockKeyCache memoises masterkey.LoadShared by path. The *Key holds an AEAD safe for concurrent use.

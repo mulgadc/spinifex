@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/predastore/pkg/ratelimit"
+	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"

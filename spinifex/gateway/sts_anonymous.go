@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/mulgadc/predastore/pkg/sigv4"
+	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
 // anonymousSTSInterceptor routes unsigned IRSA bootstrap actions

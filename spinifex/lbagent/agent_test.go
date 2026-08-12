@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/predastore/pkg/sigv4"
+	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
 func TestNew(t *testing.T) {

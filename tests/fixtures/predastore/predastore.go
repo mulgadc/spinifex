@@ -37,8 +37,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 )
 

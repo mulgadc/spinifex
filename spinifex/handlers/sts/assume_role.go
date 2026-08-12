@@ -21,7 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/predastore/pkg/auth"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"

@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/predastore/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/nbd"
 	"github.com/mulgadc/spinifex/spinifex/types"

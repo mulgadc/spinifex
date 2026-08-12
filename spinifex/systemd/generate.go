@@ -3,8 +3,6 @@
 // Command generate regenerates units_gen.go from build/systemd, the single
 // source of truth for spinifex unit files. go:embed cannot reach outside
 // this package directory, so the contents are baked in as a Go map instead.
-//
-//go:generate go run generate.go
 package main
 
 import (

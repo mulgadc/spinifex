@@ -1402,6 +1402,13 @@ func (d *Daemon) startCluster() error {
 		slog.Warn("Failed to reconcile OVN native IPsec", "err", err)
 	}
 
+	// Keep the host firewall's peer sets in step with cluster membership. Every
+	// formation path reaches this, which none of the installers do. Runs in the
+	// background because the first attempt routinely loses the race with
+	// ovn-controller registering its chassis, and blocking startup on that would
+	// hold up every service below.
+	go host.MaintainFirewall(d.ctx, d.configPath, d.clusterConfig)
+
 	// Write service manifest so other nodes know what this node runs
 	if d.jsManager != nil {
 		if err := d.jsManager.WriteServiceManifest(

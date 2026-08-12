@@ -79,6 +79,12 @@ func TestMultinodeOVNRaft(t *testing.T) {
 	runOVNRaft(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeFirewallChassisQuorum is sequential: it edits one node's config
+// and restarts that node's daemon, restoring both before it returns.
+func TestMultinodeFirewallChassisQuorum(t *testing.T) {
+	runFirewallChassisQuorum(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeSpread is sequential after NodeRecovery; owns 10.100.0.0/16 + EIP pool.
 func TestMultinodeSpread(t *testing.T) {
 	runSpread(t, requireMultiNodeFixture(t))

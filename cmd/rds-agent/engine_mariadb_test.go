@@ -146,6 +146,44 @@ func TestMariaDBEngine_SetPasswordKeepsTheSecretOutOfArgvAndEnv(t *testing.T) {
 	}
 }
 
+// The serving engine offers TLS whose cert names the endpoint rather than this
+// socket, so a client that verifies is refused during the handshake and every
+// statement the agent issues fails. The probe and the statement client are
+// separate argv sites, and only one of them carrying the flag is the bug.
+func TestMariaDBEngine_EveryLocalClientDeclinesTLS(t *testing.T) {
+	engine := newTestMariaDBEngine(t, (&recordingRunner{}).run)
+	cfg := mariadbTestProbeConfig(t)
+
+	sites := map[string][]string{
+		"statement client": engine.clientArgs(),
+		"probe":            mariadbSocketConnectArgs(mariadbSocketPath(cfg)),
+	}
+	for name, args := range sites {
+		t.Run(name, func(t *testing.T) {
+			if !slices.Contains(args, "--skip-ssl") {
+				t.Errorf("%s args = %v, want TLS declined on the unix socket", name, args)
+			}
+			if !slices.Contains(args, "--no-defaults") {
+				t.Errorf("%s args = %v, want no option file able to move the connection", name, args)
+			}
+		})
+	}
+}
+
+// The shared constructor hands each caller its own slice, so one appending its
+// own flags cannot reach into what another already holds.
+func TestMariaDBSocketConnectArgsDoNotAlias(t *testing.T) {
+	first := mariadbSocketConnectArgs("/run/mysqld/mysqld.sock")
+	appended := append(mariadbSocketConnectArgs("/run/mysqld/mysqld.sock"), "--connect-timeout=3")
+
+	if slices.Contains(first, "--connect-timeout=3") {
+		t.Errorf("args = %v, want the second caller's flag kept out of the first's slice", first)
+	}
+	if len(appended) != len(first)+1 {
+		t.Errorf("appended = %v, want exactly one flag more than %v", appended, first)
+	}
+}
+
 // ValidateMasterUserPassword permits both of these, and the client offers no
 // equivalent of psql's parameter quoting, so the escaping here is what keeps a
 // password from ending the literal it is inside.

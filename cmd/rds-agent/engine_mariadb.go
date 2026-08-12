@@ -175,6 +175,22 @@ func mariadbSocketPath(cfg config) string {
 	return filepath.Join(cfg.SocketDir, mariadbSocketFile)
 }
 
+// What every connection this agent makes to the local engine has in common, from
+// the probe's ping to a held quiesce session. One constructor because a client
+// this list misses reaches the engine on different terms than the rest.
+//
+// --no-defaults so no option file can move the connection. --skip-ssl because
+// the platform drop-in offers TLS a local socket gains nothing from, and whose
+// serving cert names the endpoint rather than this path, so a verifying client
+// is refused outright. No password: root is what the datadir's unix_socket
+// plugin authenticates, and the agent is root.
+func mariadbSocketConnectArgs(socket string) []string {
+	return []string{
+		"--no-defaults", "--protocol=socket", "--socket=" + socket,
+		"--user=" + mariadbSuperuser, "--skip-ssl",
+	}
+}
+
 // Nothing this implementation runs needs the assigned port: every connection it
 // makes is over the engine's unix socket, and the platform drop-in rds-init
 // writes is what puts the server on the port. The probe follows it separately.
@@ -214,15 +230,10 @@ func newMariaDBProbe(cfg config, run probeRunner) *engineProbe {
 func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) probeStateFn {
 	pidFile, socket := cfg.EnginePidFile, mariadbSocketPath(cfg)
 	admin, client := filepath.Join(cfg.EngineBinDir, mariadbAdminBinary), filepath.Join(cfg.EngineBinDir, mariadbClientBinary)
-	connect := []string{
-		"--no-defaults", "--protocol=socket", "--socket=" + socket,
-		"--user=" + mariadbSuperuser,
-		fmt.Sprintf("--connect-timeout=%d", mariadbProbeConnectTimeoutSeconds),
-		// The platform drop-in offers TLS, and a client that verifies it by default
-		// cannot: the serving cert names the endpoint, not this socket. A local
-		// unix socket gains nothing from TLS, so the probe declines it outright.
-		"--skip-ssl",
-	}
+	// The probe alone bounds the connect: it must come back and report, where a
+	// statement the agent issues is allowed to take as long as the engine needs.
+	connect := append(mariadbSocketConnectArgs(socket),
+		fmt.Sprintf("--connect-timeout=%d", mariadbProbeConnectTimeoutSeconds))
 	probeTimeout := cfg.EngineProbeTimeout
 	if probeTimeout <= 0 {
 		probeTimeout = defaultEngineProbeTimeout
@@ -764,13 +775,10 @@ func (e *mariadbEngine) clientRun(ctx context.Context, sql string) (string, erro
 	})
 }
 
-// --no-defaults so no option file can move the connection this agent makes, and
 // --unbuffered so a held session's output reaches the reader as each statement
-// finishes rather than when a pipe buffer fills. No User: the agent is root, and
-// root is what the datadir's unix_socket plugin authenticates.
+// finishes rather than when a pipe buffer fills. No User on the command: the
+// connection args carry it, and the agent runs as the account they name.
 func (e *mariadbEngine) clientArgs() []string {
-	return []string{
-		"--no-defaults", "--batch", "--skip-column-names", "--unbuffered",
-		"--protocol=socket", "--socket=" + e.socket, "--user=" + mariadbSuperuser,
-	}
+	return append(mariadbSocketConnectArgs(e.socket),
+		"--batch", "--skip-column-names", "--unbuffered")
 }

@@ -17,10 +17,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -1733,21 +1733,7 @@ func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID
 // ebs.delete path inside TerminateStoppedInstance.
 func embeddedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
-	opts := &server.Options{
-		Host:   "127.0.0.1",
-		Port:   -1,
-		NoLog:  true,
-		NoSigs: true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc := testutil.StartTestNATS(t)
 	return nc
 }
 

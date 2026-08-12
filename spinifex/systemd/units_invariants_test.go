@@ -1,4 +1,4 @@
-package systemd
+package systemd_test
 
 import (
 	"os"

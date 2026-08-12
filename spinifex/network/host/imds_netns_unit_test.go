@@ -1,4 +1,4 @@
-package host
+package host_test
 
 import (
 	"os"

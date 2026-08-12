@@ -39,9 +39,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -137,22 +135,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 // using an isolated embedded NATS JetStream server per test to avoid shared KV state.
 func initAccountServiceForTest(t *testing.T, daemon *Daemon) {
 	t.Helper()
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
@@ -2286,22 +2269,7 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 
 	daemon := createTestDaemon(t, sharedNATSURL)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -2604,22 +2572,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	// Create an isolated JetStream NATS server for the EIGW service
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
@@ -3520,25 +3473,8 @@ func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
 func TestDelegateHandlers_EIP(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
+	_, nc, js := testutil.StartTestJetStream(t)
 
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	js, err := jetstream.New(nc)
-	require.NoError(t, err)
 	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
@@ -3713,22 +3649,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	// Route table service needs its own JetStream for KV buckets
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
@@ -3846,22 +3767,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)

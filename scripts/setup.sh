@@ -24,8 +24,9 @@ set -e
 INSTALL_SPINIFEX_CHANNEL="${INSTALL_SPINIFEX_CHANNEL:-latest}"
 INSTALL_BASE_URL="${INSTALL_BASE_URL:-https://install.mulgadc.com}"
 
-# Referenced by both the sudoers grant and the daemon, so the path is fixed here.
+# Referenced by both the sudoers grant and the daemon, so the paths are fixed here.
 ENDPOINT_SYSCTL_HELPER="/usr/local/lib/spinifex/spinifex-set-endpoint-sysctl"
+IPSEC_STATE_HELPER="/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -234,9 +235,54 @@ HELPER
     $SUDO chmod 0755 "${ENDPOINT_SYSCTL_HELPER}"
 }
 
+# The daemon turns OVN IPsec on and off as the cluster topology resolves, so it
+# needs unit control. A NOPASSWD systemctl grant takes an arbitrary unit name and
+# is root-equivalent, so the units are fixed here and only the state is an input.
+install_ipsec_state_helper() {
+    $SUDO install -d -m 0755 /usr/local/lib/spinifex
+    $SUDO tee "${IPSEC_STATE_HELPER}" > /dev/null << 'HELPER'
+#!/bin/sh
+# Turns the host's OVN IPsec services on or off. Runs as root under a NOPASSWD
+# grant, so it must never act on a unit the caller names.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: $0 <on|off>" >&2
+    exit 2
+fi
+
+# mask/unmask rather than disable/enable. The daemon's unit sets
+# ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
+# and disabling a unit that also ships a SysV script shells out to update-rc.d
+# there and fails. Masking is done by PID 1 over D-Bus and is unaffected.
+
+# ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
+# this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
+# states. Absent on a host without strongswan, which is not an error.
+systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+
+case "$1" in
+    on)
+        systemctl unmask openvswitch-ipsec.service
+        exec systemctl start openvswitch-ipsec.service
+        ;;
+    off)
+        exec systemctl mask --now openvswitch-ipsec.service
+        ;;
+    *)
+        echo "state not permitted: $1" >&2
+        exit 2
+        ;;
+esac
+HELPER
+    $SUDO chown root:root "${IPSEC_STATE_HELPER}"
+    $SUDO chmod 0755 "${IPSEC_STATE_HELPER}"
+}
+
 install_sudoers() {
     stage "installing scoped sudoers rules"
     install_endpoint_sysctl_helper
+    install_ipsec_state_helper
 
     if sudo_is_sudo_rs; then
         $SUDO tee /etc/sudoers.d/spinifex-network > /dev/null << 'SUDOERS'
@@ -282,6 +328,7 @@ SUDOERS
     # backticks that an expanding one would run as command substitution.
     $SUDO tee -a /etc/sudoers.d/spinifex-network > /dev/null << SUDOERS
 spinifex-daemon ALL=(root) NOPASSWD: ${ENDPOINT_SYSCTL_HELPER}
+spinifex-daemon ALL=(root) NOPASSWD: ${IPSEC_STATE_HELPER}
 SUDOERS
     $SUDO chmod 0440 /etc/sudoers.d/spinifex-network
     $SUDO visudo -cf /etc/sudoers.d/spinifex-network || fatal "Invalid sudoers syntax in spinifex-network"

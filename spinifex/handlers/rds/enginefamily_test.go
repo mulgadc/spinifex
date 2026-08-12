@@ -135,6 +135,9 @@ func TestApplyPendingModifications_RefusesAGroupOfAnotherEnginesFamily(t *testin
 	err = h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec)
 	requireFamilyMismatch(t, err)
 	assert.Empty(t, h.agent.received(), "nothing may reach the engine")
+	// A set that never resolves is as unapplied as one the guest refused, and
+	// reports the same way.
+	assert.True(t, h.record(t).ParameterApplyFailed)
 }
 
 // A restore takes its engine from the snapshot rather than the request, so the

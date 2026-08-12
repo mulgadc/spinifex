@@ -363,4 +363,14 @@ func TestProjectDBInstance_ReportsTheParameterGroupApplyStatus(t *testing.T) {
 
 	rec.PendingModifiedValues = &PendingModifiedValues{DBParameterGroupName: "default.postgres18"}
 	assert.Equal(t, "applying", statusOf(rec))
+
+	// A recorded failure outranks the request still outstanding above, however
+	// the engine came to refuse the set: a live apply it rejected, or a boot it
+	// rolled back on.
+	rec.ParameterApplyFailed = true
+	assert.Equal(t, "failed-to-apply", statusOf(rec))
+
+	rec.ParameterApplyFailed = false
+	rec.ParametersRolledBack = true
+	assert.Equal(t, "failed-to-apply", statusOf(rec))
 }

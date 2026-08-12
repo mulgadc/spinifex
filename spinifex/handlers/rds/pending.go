@@ -2,6 +2,7 @@ package handlers_rds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -152,11 +153,12 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	// family mismatch here is corrupt state rather than a bad request.
 	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, engine, group, instanceClass)
 	if err != nil {
-		return err
+		return s.recordParameterApplyFailure(ctx, kv, accountID, rec, group, err)
 	}
 	pendingReboot, err := s.applyParameters(ctx, accountID, rec.DBInstanceIdentifier, resolved)
 	if err != nil {
-		return fmt.Errorf("apply the parameters of %s to %s: %w", group, rec.DBInstanceIdentifier, err)
+		return s.recordParameterApplyFailure(ctx, kv, accountID, rec, group,
+			fmt.Errorf("apply the parameters of %s to %s: %w", group, rec.DBInstanceIdentifier, err))
 	}
 	// Stored so a later VM replace boots against the same set the engine is
 	// already running, rather than re-deriving it from a group that may since
@@ -166,11 +168,42 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	// than on the one the instance carried in.
 	rec.PendingRebootParameters = pendingReboot
 	rec.ParametersRolledBack = false
+	rec.ParameterApplyFailed = false
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.Bootstrap.ResolvedParameters = resolved
 		stored.PendingRebootParameters = pendingReboot
 		stored.ParametersRolledBack = false
+		stored.ParameterApplyFailed = false
 	})
+}
+
+// The group keeps the value the engine refused, so the disagreement has to land
+// on the instance: without this the API reports in-sync against a set that was
+// never adopted, and a later terraform plan comes back clean.
+//
+// The event is deduped off the stored flag because the reconciler retries a
+// failed modify every pass. A failure to persist joins the cause rather than
+// replacing it — the apply is what the caller asked about.
+func (s *Service) recordParameterApplyFailure(ctx context.Context, kv jetstream.KeyValue, accountID string,
+	rec *DBInstanceRecord, group string, cause error,
+) error {
+	first := false
+	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		first = !stored.ParameterApplyFailed
+		stored.ParameterApplyFailed = true
+	}); err != nil {
+		return errors.Join(cause, err)
+	}
+	rec.ParameterApplyFailed = true
+
+	slog.WarnContext(ctx, "rds: applying a parameter group to a DB instance failed",
+		"dbInstance", rec.DBInstanceIdentifier, "dbParameterGroup", group, "err", cause)
+	if first {
+		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
+			fmt.Sprintf("The parameters of %s could not be applied; the engine is still running the last accepted set.", group),
+			EventCategoryConfigurationChange, EventCategoryFailure)
+	}
+	return cause
 }
 
 // The last step of a grow, run once the restarted or replaced agent is back:

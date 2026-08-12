@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -247,6 +248,87 @@ func TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstan
 		require.Len(t, groups, 1)
 		assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
 	}
+}
+
+// The override is stored before it is propagated, so a guest that refuses it
+// leaves the group holding a value the engine never adopted. That has to reach
+// the instance's apply status rather than being reported as in-sync.
+func TestModifyDBParameterGroup_RecordsAFailedApplyOnTheInstance(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.Error(t, err)
+
+	stored := h.record(t)
+	assert.True(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", aws.StringValue(groups[0].ParameterApplyStatus))
+	assert.Contains(t, strings.Join(h.eventMessages(t), "\n"), "could not be applied")
+}
+
+// A later apply the engine accepts is what clears it, so the instance does not
+// keep reporting a failure it has recovered from.
+func TestModifyDBParameterGroup_ASuccessfulApplyClearsTheRecordedFailure(t *testing.T) {
+	h := newModifyHarness(t)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	rec.ParameterApplyFailed = true
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.NoError(t, err)
+
+	stored := h.record(t)
+	assert.False(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
+}
+
+// Propagation marks the instances that refused the set, not the group: an
+// instance that took the same values stays in-sync.
+func TestModifyDBParameterGroup_MarksOnlyTheInstancesWhoseApplyFailed(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	refusing := modifiableRecord()
+	refusing.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, refusing)
+
+	acceptingID := testDBID + "-second"
+	accepting := modifiableRecord()
+	accepting.DBInstanceIdentifier = acceptingID
+	accepting.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, accepting)
+	newStubAgent(t, h.nc, testAccountID, acceptingID, false)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.Error(t, err)
+
+	assert.True(t, storedDBInstance(t, h.svc, testDBID).ParameterApplyFailed)
+
+	stored := storedDBInstance(t, h.svc, acceptingID)
+	assert.False(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
 }
 
 func TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot(t *testing.T) {

@@ -1338,6 +1338,22 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 // in cfg.MountedVolumes; it does not publish a response, that stays with the
 // caller.
 func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (types.EBSMountResponse, error) {
+	// A volume this node already exports must not get a second nbdkit, which
+	// is the double-writer hazard the provider boundary exists to prevent.
+	// The guard lives here rather than in one handler because the legacy
+	// ebs.mount subject is the route production actually takes: a retried
+	// attach racing a fresh one would otherwise start two real exports.
+	if mv, ok := findMountedVolume(cfg, volumeName); ok {
+		// Access mode is fixed when nbdkit starts, so a remount asking for the
+		// other mode cannot be answered with the running export.
+		if mv.ReadOnly != readOnly {
+			err := fmt.Errorf("volume %s is already mounted read_only=%t on this node", volumeName, mv.ReadOnly)
+			return types.EBSMountResponse{Error: err.Error()}, err
+		}
+		slog.InfoContext(ctx, "ebs.mount: already mounted, returning existing export", "volume", volumeName, "uri", mv.NBDURI)
+		return types.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
+	}
+
 	// Clear any receipt left by a previous mount before anything else can
 	// return early, so a stale receipt can never survive into this mount.
 	clearStaleSealReceipt(cfg.BaseDir, volumeName)

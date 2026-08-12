@@ -50,32 +50,49 @@ func requireExportTools(t *testing.T) string {
 	return pluginPath
 }
 
-// inProcessProvider stands the provider handlers up over an embedded NATS and
-// a real predastore, and returns a client for them plus the node they answer
-// as. Everything is torn down with the test.
-func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string) {
+// inProcessProvider stands two nodes of the provider handlers up over one
+// embedded NATS and one predastore, and returns a client for them plus both
+// node names. Everything is torn down with the test.
+//
+// Two nodes rather than one because the exclusion this provider advertises is
+// cluster-scoped, and a single node cannot exercise it: the second publish
+// would go to a subject nobody serves and time out instead of being refused.
+// Both share the NATS the volume leases live in and the bucket the volumes
+// live in, so a second opener is refused by the lease, not by the harness.
+func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string, string) {
 	t.Helper()
 	pluginPath := requireExportTools(t)
 
 	fixture := testpredastore.Start(t)
 	_, natsURL := setupEmbeddedNATS(t)
 
-	cfg := setupTestConfig(t, natsURL)
-	cfg.S3Host = "https://" + fixture.Host
-	cfg.Bucket = testpredastore.DefaultBucket
-	cfg.Region = fixture.Region
-	cfg.AccessKey = fixture.AccessKey
-	cfg.SecretKey = fixture.SecretKey
-	cfg.PluginPath = pluginPath
-	cfg.NBDTransport = types.NBDTransportTCP
-	cfg.NodeName = "node-1"
+	newNode := func(name string) *Config {
+		cfg := setupTestConfig(t, natsURL)
+		cfg.S3Host = "https://" + fixture.Host
+		cfg.Bucket = testpredastore.DefaultBucket
+		cfg.Region = fixture.Region
+		cfg.AccessKey = fixture.AccessKey
+		cfg.SecretKey = fixture.SecretKey
+		cfg.PluginPath = pluginPath
+		cfg.NBDTransport = types.NBDTransportTCP
+		cfg.NodeName = name
+		// The lease owner is derived from NodeName, and setupTestConfig built
+		// the store before this function could set it. Rebuild it, or both
+		// nodes claim as the same owner and each reclaims the other's lease
+		// as if it were its own stale entry.
+		installTestVolumeLeases(t, cfg, natsURL)
+		return cfg
+	}
 
-	nc := startProviderSubjects(t, cfg, natsURL)
+	first := newNode("node-1")
+	second := newNode("node-2")
+	nc := startProviderSubjects(t, first, natsURL)
+	startProviderSubjects(t, second, natsURL)
 
 	return func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		return ebsprovider.NewNATSProvider(nc, 60*time.Second)
-	}, cfg.NodeName
+	}, first.NodeName, second.NodeName
 }
 
 // runPrefix names one run's volumes so it cannot meet an earlier run's
@@ -87,10 +104,11 @@ func runPrefix() string {
 // TestViperblockdConformance judges the provider handlers by the same suite
 // MemoryProvider and qemunbdd answer to.
 func TestViperblockdConformance(t *testing.T) {
-	newProvider, nodeID := inProcessProvider(t)
+	newProvider, nodeID, otherNodeID := inProcessProvider(t)
 	conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{
-		NamePrefix: runPrefix(),
-		NodeID:     nodeID,
+		NamePrefix:  runPrefix(),
+		NodeID:      nodeID,
+		OtherNodeID: otherNodeID,
 	})
 }
 
@@ -98,7 +116,7 @@ func TestViperblockdConformance(t *testing.T) {
 // cannot: whether the nbdkit export viperblockd publishes is usable by libnbd,
 // which knows nothing about this codebase.
 func TestViperblockdNBDClient(t *testing.T) {
-	newProvider, nodeID := inProcessProvider(t)
+	newProvider, nodeID, _ := inProcessProvider(t)
 	conformance.RunNBDClientSuiteWithConfig(t, newProvider, conformance.NBDClientConfig{
 		NodeID:       nodeID,
 		VolumePrefix: "vol-" + runPrefix() + "nbd",

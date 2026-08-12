@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
@@ -25,6 +26,10 @@ var ReferenceCapabilities = ebsprovider.Capabilities{
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
 	SnapshotEnumeration:     true,
+	// MemoryProvider keeps publication in one process's map, so node is the
+	// honest answer. A reference set that claimed cluster would make the
+	// suite's concurrency subtests pass against something that cannot hold.
+	Exclusion: ebsprovider.ExclusionSemantics{Scope: ebsprovider.ExclusionScopeNode},
 }
 
 // capabilitiesOf reads what a provider advertises, so the suite can branch on
@@ -809,6 +814,120 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			provider := newProvider(t)
 			err := provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+		})
+	})
+
+	t.Run("Exclusion", func(t *testing.T) {
+		exclusion := capabilities.Exclusion
+
+		// An advertised guarantee that contradicts itself is worse than a
+		// missing one: a caller reads it and plans around something the
+		// provider never claimed to do.
+		t.Run("advertised semantics are self-consistent", func(t *testing.T) {
+			switch exclusion.Scope {
+			case ebsprovider.ExclusionScopeNone, ebsprovider.ExclusionScopeNode, ebsprovider.ExclusionScopeCluster:
+			default:
+				t.Fatalf("unknown exclusion scope %q; a caller cannot branch on a scope it does not recognise", exclusion.Scope)
+			}
+			if exclusion.Scope == ebsprovider.ExclusionScopeNone {
+				assert.Zero(t, exclusion.ClaimTTLSeconds, "a provider that excludes nothing holds no claim, so a TTL on it means nothing")
+				assert.False(t, exclusion.FencesLostClaim, "there is no claim to lose, so nothing can be fenced on losing it")
+			}
+			assert.GreaterOrEqual(t, exclusion.ClaimTTLSeconds, 0, "a negative TTL is not a duration")
+			if exclusion.FencesLostClaim {
+				assert.NotEqual(t, ebsprovider.ExclusionScopeNone, exclusion.Scope,
+					"fencing a lost claim requires there to be a claim")
+			}
+			assert.Equal(t, exclusion.Scope == ebsprovider.ExclusionScopeCluster, exclusion.SingleWriter(),
+				"SingleWriter must agree with Scope, or callers branching on it get a different answer from callers reading the scope")
+		})
+
+		if exclusion.Scope == ebsprovider.ExclusionScopeNone {
+			return
+		}
+
+		t.Run("a second publish elsewhere is refused while the first holds", func(t *testing.T) {
+			if cfg.otherNode() == "" {
+				t.Skip("no second node configured")
+			}
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-excl-second")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
+			require.ErrorIsf(t, err, ebsprovider.ErrVolumeInUse,
+				"scope %q promises a second writer is refused; letting this through is the two-writer case the guarantee exists to prevent", exclusion.Scope)
+
+			// Releasing the claim must make the volume publishable again, or
+			// the guarantee is indistinguishable from a permanent lock.
+			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
+			require.NoError(t, err, "a released claim must be reclaimable, or an unpublish strands the volume")
+		})
+
+		// Concurrent publishes settle to one winner. Both succeeding is the
+		// corruption case; both failing means the claim was lost by neither
+		// and the volume is stranded.
+		t.Run("racing publishes from two nodes produce exactly one winner", func(t *testing.T) {
+			if cfg.otherNode() == "" {
+				t.Skip("no second node configured")
+			}
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-excl-race")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+
+			nodes := []string{cfg.node(), cfg.otherNode()}
+			errs := make([]error, len(nodes))
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for i, node := range nodes {
+				wg.Go(func() {
+					<-start
+					_, errs[i] = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
+						Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: node,
+					})
+				})
+			}
+			close(start)
+			wg.Wait()
+
+			var winners int
+			for i, err := range errs {
+				if err == nil {
+					winners++
+					continue
+				}
+				assert.ErrorIsf(t, err, ebsprovider.ErrVolumeInUse,
+					"the loser of a publish race must be told the volume is in use, not %v; node %s cannot retry sensibly otherwise", err, nodes[i])
+			}
+			assert.Equalf(t, 1, winners, "%d of %d racing publishes succeeded; two winners is the two-writer case, zero strands the volume", winners, len(nodes))
+		})
+
+		// A delete arriving while a volume is published must lose to the
+		// publication, not race it. Deleting under a live writer destroys
+		// blocks the writer still believes it owns.
+		t.Run("delete racing a live publication is refused", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-excl-delrace")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})
+			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse,
+				"deleting a published volume must be refused; the export is still serving reads and writes against it")
+
+			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
+			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}),
+				"once unpublished the delete must go through, or a volume can never be removed after being used")
 		})
 	})
 }

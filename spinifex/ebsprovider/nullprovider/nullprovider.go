@@ -29,6 +29,7 @@ var Capabilities = ebsprovider.Capabilities{
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
 	SnapshotEnumeration:     true,
+	Exclusion:               ebsprovider.ExclusionSemantics{Scope: ebsprovider.ExclusionScopeNode},
 }
 
 // New returns an in-process null provider. Calls against it skip NATS

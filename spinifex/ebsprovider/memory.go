@@ -31,6 +31,13 @@ type memoryVolume struct {
 var _ EBSProvider = (*MemoryProvider)(nil)
 
 func NewMemoryProvider(capabilities Capabilities) *MemoryProvider {
+	// Publication lives in this process's map, so node is what this provider
+	// does whatever the caller passed. An unset scope is filled rather than
+	// left empty: the contract has no valid empty scope, and a caller reading
+	// one would have to guess.
+	if capabilities.Exclusion.Scope == "" {
+		capabilities.Exclusion.Scope = ExclusionScopeNode
+	}
 	return &MemoryProvider{
 		capabilities: capabilities,
 		volumes:      make(map[string]*memoryVolume),

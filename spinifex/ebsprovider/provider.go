@@ -77,6 +77,59 @@ type Capabilities struct {
 	// its OwnerSubject when one exists, instead of always fanning out to the
 	// spinifex-workers queue group.
 	OwnerRouting bool `json:"owner_routing"`
+
+	// Exclusion states how strongly this provider prevents two writers from
+	// holding one volume at once. It is not optional behaviour a caller may
+	// ignore: a caller that assumes cluster-wide exclusion from a provider
+	// that only excludes within a node will corrupt the volume.
+	Exclusion ExclusionSemantics `json:"exclusion"`
+}
+
+// ExclusionScope names how far a provider's single-writer guarantee reaches.
+type ExclusionScope string
+
+const (
+	// ExclusionScopeNone means nothing prevents two writers. Two opens of one
+	// volume both succeed and both write.
+	ExclusionScopeNone ExclusionScope = "none"
+
+	// ExclusionScopeNode means a second writer is refused on the same node and
+	// nowhere else. A different node opening the same backing store is not
+	// seen, so this is a guarantee about a process, not about a volume.
+	ExclusionScopeNode ExclusionScope = "node"
+
+	// ExclusionScopeCluster means a second writer is refused wherever it runs,
+	// because the claim is held somewhere both nodes must consult.
+	ExclusionScopeCluster ExclusionScope = "cluster"
+)
+
+// ExclusionSemantics is the single-writer guarantee, stated so a caller can
+// tell what it actually gets. Three questions have distinct answers and the
+// contract used to conflate them: how far exclusion reaches, whether a dead
+// owner's claim ever clears, and whether a writer that lost its claim is
+// actually stopped.
+type ExclusionSemantics struct {
+	Scope ExclusionScope `json:"scope"`
+
+	// ClaimTTLSeconds is how long a claim outlives the writer holding it.
+	// Zero means it never expires: a node that dies holding one strands the
+	// volume until an operator clears it. Meaningless when Scope is none.
+	ClaimTTLSeconds int `json:"claim_ttl_seconds,omitempty"`
+
+	// FencesLostClaim reports whether a writer whose claim lapsed is stopped
+	// from writing, rather than merely finding out. False is the dangerous
+	// case and the reason this is not a bool on its own: exclusion refuses
+	// the *second* opener, fencing stops the *first* one. Without fencing, a
+	// partitioned node whose claim expired keeps writing, and the claim
+	// expiring is precisely what lets a second writer in beside it.
+	FencesLostClaim bool `json:"fences_lost_claim"`
+}
+
+// SingleWriter reports whether opening a volume twice anywhere is refused.
+// Callers branch on this rather than comparing Scope, so adding a scope later
+// does not need every call site found again.
+func (e ExclusionSemantics) SingleWriter() bool {
+	return e.Scope == ExclusionScopeCluster
 }
 
 type GetCapabilitiesRequest struct{ Versioned }

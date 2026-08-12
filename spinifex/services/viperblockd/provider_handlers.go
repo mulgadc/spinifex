@@ -259,6 +259,16 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 			// without any control-plane metadata to consult.
 			VolumeEnumeration:   true,
 			SnapshotEnumeration: true,
+			// Every engine open takes a JetStream KV lease keyed by volume and
+			// the KV create is the compare-and-swap, so a second opener on any
+			// node is refused rather than racing. Losing the lease is logged
+			// and not enforced: until the object store can refuse a stale
+			// writer's PUT, a partitioned node keeps writing.
+			Exclusion: ebsprovider.ExclusionSemantics{
+				Scope:           ebsprovider.ExclusionScopeCluster,
+				ClaimTTLSeconds: int(volumeLeaseTTL / time.Second),
+				FencesLostClaim: false,
+			},
 		},
 	})
 }
@@ -1692,6 +1702,13 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
 			respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			return
+		}
+		// Another node holds the volume's lease. This is the exclusion working,
+		// not a failure: reporting it as internal tells the caller something
+		// broke when the answer is that someone else has the volume.
+		if errors.Is(err, errVolumeLeaseHeld) {
+			respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is held by another node: %v", req.VolumeID, err)})
 			return
 		}
 		slog.Error("ebs.provider.volume.publish: mount failed", "volume", req.VolumeID, "err", err)

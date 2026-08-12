@@ -95,6 +95,11 @@ const (
 	// rds-init keeps for the platform and never hands to the customer.
 	mariadbSuperuser                  = "root"
 	mariadbProbeConnectTimeoutSeconds = 3
+	// How much of the engine's error log a probe reason carries. The server names
+	// what it refused on in its last few lines, and the reason reaches a customer
+	// through StatusInfos, so this quotes the tail rather than the whole file.
+	mariadbErrorLogTailBytes = 4096
+	mariadbErrorLogTailLines = 4
 	// Named by the platform drop-in rds-init writes, so both halves reach the
 	// same socket without either asserting it to the other.
 	mariadbSocketFile = "mysqld.sock"
@@ -230,7 +235,12 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
 		case code != 0:
-			return engineRecovering, "engine is not answering on its socket yet (startup or crash recovery)"
+			// A server that is genuinely recovering and one that refused to start
+			// are indistinguishable from the socket, and the difference is only
+			// ever stated in the engine's own log.
+			return engineRecovering, withEngineLogTail(
+				"engine is not answering on its socket yet (startup or crash recovery)",
+				cfg.EngineErrorLog)
 		}
 
 		// ping answers successfully even on ER_ACCESS_DENIED, so on its own it
@@ -246,6 +256,53 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		}
 		return engineServing, ""
 	}
+}
+
+// Appends the last few lines of the engine's error log to reason. An unset path,
+// an unreadable file or an empty one leaves reason alone: the probe's own
+// statement is still true, and a guessed cause would be worse than none.
+func withEngineLogTail(reason, path string) string {
+	tail := engineLogTail(path)
+	if tail == "" {
+		return reason
+	}
+	return reason + "; the engine's log ends: " + tail
+}
+
+func engineLogTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := max(info.Size()-mariadbErrorLogTailBytes, 0)
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(buf), "\n")
+	// A read that started mid-file almost certainly started mid-line, and half a
+	// line is more misleading than one fewer.
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	kept := make([]string, 0, mariadbErrorLogTailLines)
+	for i := len(lines) - 1; i >= 0 && len(kept) < mariadbErrorLogTailLines; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			kept = append(kept, line)
+		}
+	}
+	slices.Reverse(kept)
+	return strings.Join(kept, " | ")
 }
 
 func readPidFile(path string) (int, error) {

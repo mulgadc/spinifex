@@ -63,6 +63,10 @@ type config struct {
 	// is not running at all.
 	EnginePidFile      string
 	EngineProbeTimeout time.Duration
+	// Where the engine records why it would not start, which the probe quotes
+	// when the server is up but not serving. Overridable so a test can point it
+	// at a fixture.
+	EngineErrorLog string
 
 	// Where the data volume is mounted, and the two kernel surfaces a storage
 	// grow resolves its device from. Overridable so a test can point them at
@@ -93,6 +97,7 @@ func loadConfig(envFile string) config {
 		RCService:            get("RDS_RC_SERVICE"),
 		EngineService:        get("RDS_ENGINE_SERVICE"),
 		EnginePidFile:        get("RDS_ENGINE_PIDFILE"),
+		EngineErrorLog:       get("RDS_ENGINE_LOG"),
 		DataMount:            get("RDS_DATA_MOUNT"),
 		PollWait:             defaultPollWait,
 		EngineProbeTimeout:   defaultEngineProbeTimeout,
@@ -163,6 +168,9 @@ func (c *config) applyLayout(layout engineLayout) {
 	}
 	if c.EnginePidFile == "" {
 		c.EnginePidFile = layout.pidFile
+	}
+	if c.EngineErrorLog == "" {
+		c.EngineErrorLog = layout.errorLog
 	}
 	if c.DataMount == "" {
 		c.DataMount = layout.dataMount

@@ -92,6 +92,11 @@ SOCKET="${SOCKET_DIR}/mysqld.sock"
 TLS_DIR="${RDS_TLS_DIR:-${SOCKET_DIR}/tls}"
 LOG_DIR="${RDS_LOG_DIR:-/var/log/mysql}"
 
+# Where the serving engine records why it would not start. The agent reads it to
+# turn "not answering on its socket" into the server's own refusal, so this path
+# is also compiled into the agent's layout and the two must agree.
+ENGINE_LOG="${RDS_ENGINE_LOG:-${LOG_DIR}/error.log}"
+
 # The bootstrap server listens on a unix socket in this directory and nowhere
 # else. It is 0700 and mysql-owned, so only mysql and root can reach the short
 # window before the master user exists.
@@ -502,6 +507,11 @@ skip-log-bin
 # directory that stays empty.
 secure_file_priv = ${SECURE_FILE_DIR}
 skip-symbolic-links
+
+# Without this mysqld_safe sends the server's own errors to syslog, so a server
+# that refuses to start says why somewhere nothing collects. The bootstrap server
+# already logs to this directory, which keeps both halves of a boot in one place.
+log_error = ${ENGINE_LOG}
 EOF
     if [ "${_ssl}" = "on" ]; then
         # Offered, not enforced, matching the PostgreSQL image's pg_hba: clients

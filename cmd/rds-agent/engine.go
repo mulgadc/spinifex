@@ -78,6 +78,10 @@ type engineLayout struct {
 	// Where the engine records the pid the probe checks for liveness. Empty for
 	// an engine whose probe answers without one.
 	pidFile string
+	// Where the engine records why it would not start. Empty for an engine whose
+	// image does not direct one, which leaves the probe reporting its own reason
+	// alone rather than guessing at a path.
+	errorLog string
 	// The engine's own liveness signal, which is the only part of engineProbe
 	// that is not shared.
 	newProbe func(cfg config, run probeRunner) *engineProbe
@@ -121,7 +125,11 @@ var engineLayouts = map[string]engineLayout{
 		// the configuration file, so this is the path rather than anything the
 		// platform drop-in could name. setup.sh asserts it against the packaged
 		// init script at build time.
-		pidFile:   "/run/mysqld/mariadb.pid",
+		pidFile: "/run/mysqld/mariadb.pid",
+		// log_error in the platform drop-in rds-init writes. Without it
+		// mysqld_safe would send the server's errors to syslog, which nothing
+		// collects off a guest that has no SSH.
+		errorLog:  "/var/log/mysql/error.log",
 		newProbe:  newMariaDBProbe,
 		newEngine: newMariaDBEngineFromCatalog,
 	},

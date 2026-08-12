@@ -231,6 +231,8 @@ RECEIPT="${RECEIPT_DIR}/receipt.env"
 STAMP="${DATA_MOUNT}/.spinifex-rds/engine"
 HANDOFF="${WORK}/run/spinifex-rds"
 SECURE_FILE_DIR="${WORK}/mysql-files"
+LOG_DIR="${WORK}/log"
+ENGINE_LOG="${LOG_DIR}/error.log"
 MOUNTS="${WORK}/mounts"
 KILL_PID_FILE="${WORK}/rds-init.pid"
 MARIADBD_TEST_PID_FILE="${WORK}/mariadbd.pid"
@@ -485,6 +487,12 @@ if run_ok "initialize"; then
     [ -d "${SECURE_FILE_DIR}" ] \
         && pass "initialize: the secure_file_priv directory exists" \
         || fail "initialize: secure_file_priv points at nothing"
+    # Without it mysqld_safe logs to syslog, and a server that refuses to start
+    # says why somewhere nothing collects off a guest with no SSH. The agent
+    # reads this exact path to quote the refusal back to the control plane.
+    grep -q "^log_error = ${ENGINE_LOG}" "${PLATFORM_FILE}" \
+        && pass "initialize: the engine records its refusals where the agent reads them" \
+        || fail "initialize: log_error unset, so a failed start goes to syslog"
     grep -q "^ssl_cert = " "${PLATFORM_FILE}" && grep -q "^ssl_key = " "${PLATFORM_FILE}" \
         && pass "initialize: TLS offered" || fail "initialize: TLS not configured"
     grep -q "require_secure_transport" "${PLATFORM_FILE}" \

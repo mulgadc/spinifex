@@ -1065,7 +1065,7 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 	if _, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(configKey),
-	}); err != nil {
+	}); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.ErrorContext(ctx, "DeregisterImage: failed to delete legacy AMI config", "imageId", imageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

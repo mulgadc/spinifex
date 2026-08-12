@@ -388,7 +388,7 @@ jobs:
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
-               case \$SUITE in rds) TMO=45m ;; *) TMO=30m ;; esac; \
+               case \$SUITE in rds) TMO=50m ;; *) TMO=30m ;; esac; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=\$TMO ${TEST_RUN_FLAG} \

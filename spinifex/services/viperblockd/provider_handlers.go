@@ -497,10 +497,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("new viperblock: %v", err)})
 		return
 	}
-	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
-	}()
+	defer vb.Detach()
 	vb.SetDebug(false)
 
 	if err := vb.Backend.InitCtx(ctx); err != nil {
@@ -699,8 +696,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
+		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 	}()
 
@@ -979,8 +975,7 @@ func copySnapshotOnVolume(ctx context.Context, cfg *Config, volumeID, srcSnapsho
 		return nil, err
 	}
 	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
+		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 	}()
 	return copySnapshotMetaWithVB(vb, volumeID, srcSnapshotID, dstSnapshotID)
@@ -1162,10 +1157,7 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 	if err != nil {
 		return nil, fmt.Errorf("new viperblock: %w", err)
 	}
-	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
-	}()
+	defer vb.Detach()
 	if err := vb.Backend.InitCtx(ctx); err != nil {
 		return nil, fmt.Errorf("backend init: %w", err)
 	}
@@ -1287,8 +1279,7 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 	opened := false
 	defer func() {
 		if !opened {
-			vb.StopChunkUploader()
-			vb.StopWALSyncer()
+			vb.Detach()
 		}
 	}()
 
@@ -1603,8 +1594,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 		// Actual I/O is in the nbdkit plugin process; sealVolumeVB below
 		// opens a fresh VB and calls Close() for the proper seal.
 		if matched.VB != nil {
-			matched.VB.StopChunkUploader()
-			matched.VB.StopWALSyncer()
+			matched.VB.Detach()
 		}
 
 		if err := utils.KillProcess(matched.PID); err != nil {

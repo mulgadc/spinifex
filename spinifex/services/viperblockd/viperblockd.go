@@ -355,8 +355,7 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 	opened := false
 	defer func() {
 		if !opened {
-			vb.StopChunkUploader()
-			vb.StopWALSyncer()
+			vb.Detach()
 			cfg.releaseVolumeLease(ctx, lease)
 		}
 	}()
@@ -494,7 +493,7 @@ func clearStaleSealReceipt(baseDir, volume string) {
 // RecoverLocalWALs. Skipping LoadBlockState would leave an empty in-memory block
 // map that Close() then flushes over the good checkpoint in predastore — silent
 // data loss (a reattach then finds an empty map, bad superblock). The caller
-// MUST Close the returned VB; on error the WAL syncer is stopped and no VB is
+// MUST Close the returned VB; on error the engine is detached and no VB is
 // returned. The caller MUST ensure no nbdkit process is writing the shared
 // BaseDir first (post-KillProcess, or volume detached).
 func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, *volumeLease, error) {
@@ -503,14 +502,14 @@ func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		return nil, nil, err
 	}
 	if err := vb.LoadBlockStateCtx(ctx); err != nil {
-		vb.StopWALSyncer()
+		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 		return nil, nil, fmt.Errorf("load block state: %w", err)
 	}
 	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
 	// state itself; on failure retain the local WAL (no Close) for retry.
 	if err := vb.RecoverLocalWALs(); err != nil {
-		vb.StopWALSyncer()
+		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 		return nil, nil, fmt.Errorf("recover local WALs: %w", err)
 	}
@@ -688,8 +687,7 @@ func launchService(cfg *Config) (err error) {
 			}
 			// Stop background goroutines and kill nbdkit process
 			if matched.VB != nil {
-				matched.VB.StopChunkUploader()
-				matched.VB.StopWALSyncer()
+				matched.VB.Detach()
 			}
 			if err := utils.KillProcess(matched.PID); err != nil {
 				slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
@@ -973,8 +971,7 @@ func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 	var wg sync.WaitGroup
 	for _, volume := range volumes {
 		if volume.VB != nil {
-			volume.VB.StopChunkUploader()
-			volume.VB.StopWALSyncer()
+			volume.VB.Detach()
 		}
 		if inUse(volume) {
 			slog.Warn("nbdkit still serving a guest; leaving it for the drain/unmount path",

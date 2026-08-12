@@ -95,6 +95,8 @@ Migrations modify config files on disk but do not restart running services. Appl
 sudo systemctl restart spinifex.target
 ```
 
+A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](/docs/admin/host-lifecycle) for the full contract.
+
 ## Troubleshooting
 
 ### No Pending Config Migrations
@@ -125,3 +127,5 @@ Migrations edit config files on disk but the running daemons continue to use the
 ```bash
 sudo systemctl restart spinifex.target
 ```
+
+A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](/docs/admin/host-lifecycle) for the full contract.

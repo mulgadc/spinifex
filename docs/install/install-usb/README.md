@@ -83,6 +83,15 @@ In console mode, follow the installation prompts to set the required networking 
 
 The installer will default to the most sensible disk to install on depending on system configuration — ensure this default is correct before installation, as the process will wipe the disk.
 
+> [!WARNING]
+> **Selected drives are erased unconditionally.**
+>
+> Every drive you select is taken over whatever it currently holds — an existing partition table, a filesystem with data on it, a ZFS pool member, or a previous Spinifex install. The installer unmounts anything mounted from those drives, disables swap on them, clears ZFS labels and filesystem signatures from every partition, and erases the partition table. There is no prompt beyond the confirmation screen and there is no rollback once it begins.
+>
+> Drives you do not select are never touched. The confirmation screen lists each selected drive with its current contents, and that list is the last point at which the install can be stopped.
+>
+> If a drive cannot be taken over — because md, LVM or device-mapper still claims it, and the ISO ships no tooling to dismantle those — the install aborts and names the drive and its holder rather than continuing against the old layout.
+
 For network configuration, it is recommended to use automatic IP (DHCP), but this can also be configured manually.
 
 Network interfaces will be automatically detected. In the event that none are detected, the user can manually input the name of the network interface. In the event that multiple network interfaces are detected, the installer will prompt for WAN selection first, followed by LAN.

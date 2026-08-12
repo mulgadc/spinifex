@@ -1609,7 +1609,9 @@ func (s *VolumeServiceImpl) deleteS3Prefix(ctx context.Context, prefix string) e
 				Bucket: aws.String(bucket),
 				Key:    obj.Key,
 			})
-			if err != nil {
+			// A concurrent sweep may have deleted the object between the list
+			// and here. It is gone either way, which is what this asked for.
+			if err != nil && !objectstore.IsNoSuchKeyError(err) {
 				return fmt.Errorf("failed to delete object %s: %w", *obj.Key, err)
 			}
 		}

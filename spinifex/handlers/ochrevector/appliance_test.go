@@ -389,6 +389,99 @@ func TestConnect_NotAvailable(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// seedAvailableAppliance seeds an AVAILABLE record so Connect gets past its
+// state checks and reaches the host-port/dial path.
+func seedAvailableAppliance(t *testing.T, appliance *Appliance, masterKey []byte, endpoint string, port int) {
+	t.Helper()
+	password, err := generateMasterPassword()
+	require.NoError(t, err)
+	encrypted, err := handlers_iam.EncryptSecret(password, masterKey)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	seed := ApplianceRecord{
+		Identifier:        ApplianceIdentifier,
+		MasterUsername:    applianceMasterUsername,
+		EncryptedPassword: encrypted,
+		Endpoint:          endpoint,
+		Port:              port,
+		State:             ApplianceStateAvailable,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	data, err := json.Marshal(seed)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	kv, err := appliance.bucket(ctx)
+	require.NoError(t, err)
+	_, err = kv.Create(ctx, appliancePostgresKey, data)
+	require.NoError(t, err)
+}
+
+// TestConnect_NoHostPortDepsSkipsEnsure proves an Appliance that never calls
+// WithHostPort performs no host-port work: Connect fails on the (unreachable
+// in this test) pgx dial, not on anything host-port related, and the ENI
+// side is left untouched.
+func TestConnect_NoHostPortDepsSkipsEnsure(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "127.0.0.1", 1)
+
+	_, err = appliance.Connect(context.Background())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "ensure daemon host port")
+}
+
+// TestConnect_EnsuresHostPortBeforeDialing_PropagatesFailure proves Connect
+// drives the daemon's VPC host port before it ever builds a DSN or dials
+// Postgres: a host-port failure surfaces as that failure, not as a pgx
+// connection error, and the ENI is still minted along the way.
+func TestConnect_EnsuresHostPortBeforeDialing_PropagatesFailure(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, testApplianceEndpoint, 5432)
+
+	h := newHostPortHarness()
+	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
+	h.putApplianceENI(ApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
+	h.hostPort.failEnsure = errors.New("ovs-vsctl exploded")
+	appliance.WithHostPort(h.deps())
+
+	_, err = appliance.Connect(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ensure daemon host port")
+	assert.Contains(t, err.Error(), "ovs-vsctl exploded")
+	assert.Len(t, h.vpc.created, 1, "the ENI is minted before the host port install that then fails")
+}
+
+// TestAppliance_TeardownHostPort proves TeardownHostPort removes the port
+// Connect last installed, and is a no-op both before any Connect and for an
+// Appliance that never opted into host-port management at all.
+func TestAppliance_TeardownHostPort(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
+	require.NoError(t, err)
+
+	assert.NoError(t, appliance.TeardownHostPort(), "never having connected must be a harmless no-op")
+
+	h := newHostPortHarness()
+	appliance.WithHostPort(h.deps())
+	assert.NoError(t, appliance.TeardownHostPort(), "no ENI ensured yet: still a no-op")
+	assert.Empty(t, h.hostPort.removals())
+
+	appliance.mu.Lock()
+	appliance.eniID = "eni-installed"
+	appliance.mu.Unlock()
+
+	require.NoError(t, appliance.TeardownHostPort())
+	assert.Equal(t, []string{"eni-installed"}, h.hostPort.removals())
+}
+
 // TestBucket_RequiresJetStream proves bucket fails fast on a zero-value
 // Appliance rather than panicking on a nil JetStream client.
 func TestBucket_RequiresJetStream(t *testing.T) {

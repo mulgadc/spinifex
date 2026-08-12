@@ -159,6 +159,7 @@ type Daemon struct {
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
 	ochreVectorService    handlers_ochrevector.VectorService
+	ochreAppliance        *handlers_ochrevector.Appliance
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -1888,6 +1889,24 @@ func (d *Daemon) startCluster() error {
 		}()
 		d.startOchreVector()
 	})
+
+	// Remove this node's appliance-VPC host port on shutdown. Same config gate
+	// as startOchreVector, so a disabled daemon spawns nothing. d.ochreAppliance
+	// stays nil until the retry loop succeeds, so early shutdown tears down nothing.
+	if d.config.OchreVector.Enabled {
+		d.shutdownWg.Go(func() {
+			<-d.ctx.Done()
+			d.mu.Lock()
+			appliance := d.ochreAppliance
+			d.mu.Unlock()
+			if appliance == nil {
+				return
+			}
+			if err := appliance.TeardownHostPort(); err != nil {
+				slog.Warn("Ochre vector store: daemon host port teardown failed", "err", err)
+			}
+		})
+	}
 
 	// DNS record writer: a queue-group consumer of dns.recordset.change. Every
 	// node subscribes, so the writer locks each zone before its

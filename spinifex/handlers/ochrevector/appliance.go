@@ -114,6 +114,12 @@ type Appliance struct {
 
 	mu sync.Mutex
 	kv jetstream.KeyValue
+
+	// hostPortDeps and eniID back this daemon's routed presence in the
+	// appliance's VPC. A nil hostPortDeps.HostPort (WithHostPort never called)
+	// makes Connect skip all host-port work, so existing callers are unaffected.
+	hostPortDeps HostPortDeps
+	eniID        string
 }
 
 // NewAppliance constructs an Appliance over js, encrypting/decrypting the
@@ -128,6 +134,53 @@ func NewAppliance(js jetstream.JetStream, masterKey []byte, launcher ApplianceLa
 		return nil, errors.New("ochrevector: appliance requires an ApplianceLauncher")
 	}
 	return &Appliance{js: js, masterKey: masterKey, launcher: launcher}, nil
+}
+
+// WithHostPort attaches this daemon's VPC host-port collaborators, so every
+// future Connect first ensures a routed presence in the appliance's VPC
+// before dialing it. Optional: an Appliance that never calls this performs
+// no host-port work, which is what every caller not wired for the VPC fix
+// (and every test that constructs an Appliance directly) gets by default.
+func (a *Appliance) WithHostPort(deps HostPortDeps) *Appliance {
+	a.mu.Lock()
+	a.hostPortDeps = deps
+	a.mu.Unlock()
+	return a
+}
+
+// TeardownHostPort removes this daemon's own VPC host port, if Connect ever
+// installed one. Not per-endpoint -- the port belongs to this node, not to
+// any one Connect call -- so this is meant for daemon shutdown, not for
+// unwinding every failed or short-lived Connect.
+func (a *Appliance) TeardownHostPort() error {
+	a.mu.Lock()
+	deps := a.hostPortDeps
+	eniID := a.eniID
+	a.mu.Unlock()
+	return removeApplianceHostPort(deps, eniID)
+}
+
+// ensureHostPort gives this daemon a routed presence in the appliance's VPC,
+// called from Connect strictly before the DSN is built and dialed: the port
+// binds an iface-id only after the ENI's logical switch port is programmed,
+// which ensureDaemonENI does first. Returns the appliance's real dial IP, or
+// "" as a no-op when WithHostPort was never called, so Connect's pre-VPC-fix
+// dial path (rec.Endpoint) is unchanged for those callers.
+func (a *Appliance) ensureHostPort(ctx context.Context, rec *ApplianceRecord) (string, error) {
+	a.mu.Lock()
+	deps := a.hostPortDeps
+	a.mu.Unlock()
+	if deps.HostPort == nil {
+		return "", nil
+	}
+	dialIP, eniID, err := ensureApplianceHostPort(ctx, deps, rec.Identifier)
+	if err != nil {
+		return "", fmt.Errorf("ochrevector: ensure daemon host port: %w", err)
+	}
+	a.mu.Lock()
+	a.eniID = eniID
+	a.mu.Unlock()
+	return dialIP, nil
 }
 
 // bucket lazily opens (or creates) the appliance KV bucket, caching the
@@ -285,11 +338,23 @@ func (a *Appliance) Connect(ctx context.Context) (*pgxBackend, error) {
 		return nil, fmt.Errorf("ochrevector: appliance not available (state %q)", rec.State)
 	}
 
+	dialIP, err := a.ensureHostPort(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+
 	password, err := a.decryptPassword(rec)
 	if err != nil {
 		return nil, err
 	}
-	dsn := buildDSN(rec.Endpoint, rec.Port, rec.MasterUsername, password)
+	// dialIP is only ever non-empty when the host-port path actually ran
+	// (WithHostPort configured); otherwise this is the unchanged pre-fix
+	// dial target.
+	dialHost := rec.Endpoint
+	if dialIP != "" {
+		dialHost = dialIP
+	}
+	dsn := buildDSN(dialHost, rec.Port, rec.MasterUsername, password)
 
 	backend, err := NewPgxBackend(ctx, dsn)
 	if err != nil {

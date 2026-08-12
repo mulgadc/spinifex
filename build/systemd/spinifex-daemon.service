@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target

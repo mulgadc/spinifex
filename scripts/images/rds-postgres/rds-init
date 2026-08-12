@@ -71,6 +71,11 @@ MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 # AWS, so a customer's `GRANT rds_superuser TO ...` works here too.
 MASTER_GROUP_ROLE="rds_superuser"
 
+# The Ochre vector store appliance is the one platform (non-tenant) consumer of
+# this image, provisioned with this fixed master name. Tenant instances take a
+# different master, so the pgvector install below is scoped to the appliance.
+OCHRE_APPLIANCE_MASTER="ochre_vector_admin"
+
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
 
@@ -133,6 +138,11 @@ load_handoff() {
             fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
             ;;
     esac
+
+    # Scopes the platform pgvector install to the appliance; a tenant master
+    # takes a different name and skips it.
+    RDS_IS_OCHRE_APPLIANCE=0
+    [ "${_master_lower}" = "${OCHRE_APPLIANCE_MASTER}" ] && RDS_IS_OCHRE_APPLIANCE=1
 
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
@@ -418,6 +428,9 @@ bootstrap_master() {
     if [ "${_rc}" -eq 0 ] && [ -n "${RDS_DB_NAME}" ]; then
         create_database || _rc=$?
     fi
+    if [ "${_rc}" -eq 0 ]; then
+        create_platform_extensions || _rc=$?
+    fi
 
     # `set -e` is suspended for a function called from an AND-OR list, so the
     # stop status is captured rather than propagated. A failed stop must also not
@@ -550,6 +563,17 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dbname') AS creat
 \if :create_db
 CREATE DATABASE :"dbname" OWNER :"master";
 \endif
+SQL
+}
+
+# pgvector is baked in but left uninstalled so tenant databases stay free of it.
+# The appliance master is NOSUPERUSER and the extension is untrusted, so the
+# bootstrap superuser installs it here, scoped to the appliance master alone.
+create_platform_extensions() {
+    [ "${RDS_IS_OCHRE_APPLIANCE:-0}" = "1" ] || return 0
+    log "installing pgvector for the Ochre vector appliance"
+    psql_bootstrap <<'SQL'
+CREATE EXTENSION IF NOT EXISTS vector;
 SQL
 }
 

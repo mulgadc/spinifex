@@ -304,6 +304,9 @@ if run_ok "initialize"; then
         && pass "initialize: password passed through the environment" || fail "initialize: password not in psql env"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && pass "initialize: initial database created" || fail "initialize: no CREATE DATABASE"
+    grep -q 'CREATE EXTENSION' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant instance installed a platform extension" \
+        || pass "initialize: tenant instance installs no platform extension"
 
     # The master role is administrative but not a PostgreSQL superuser: a
     # superuser reaches outside the database (COPY FROM PROGRAM, pg_read_file,
@@ -359,6 +362,20 @@ if run_ok "attach"; then
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "attach: TLS survives a handoff without a new cert" || fail "attach: TLS turned off"
 fi
+
+# --- Case 3b: the Ochre appliance master installs pgvector ---
+# No DBName, as the appliance is launched: create_database is skipped and the
+# gated extension install is the only platform-specific bootstrap step.
+reset_state
+MASTER_USER=ochre_vector_admin
+write_handoff initialize 's3cr3t' ''
+write_parameters
+if run_ok "ochre-appliance"; then
+    grep -q 'CREATE EXTENSION IF NOT EXISTS vector' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: pgvector installed for the platform appliance" \
+        || fail "ochre-appliance: pgvector not installed"
+fi
+unset MASTER_USER
 
 # --- Case 3a: a parameter group cannot log the master password ---
 # The customer's parameters are installed before the master role is applied and

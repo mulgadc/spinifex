@@ -107,7 +107,11 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 		return fmt.Errorf("secure handoff dir %s: %w", dir, err)
 	}
 
-	if err := writeHandoffFile(dir, handoffParamsFile, renderParameters(cfg.Parameters)); err != nil {
+	params, err := renderParameters(cfg.Engine, cfg.Parameters)
+	if err != nil {
+		return err
+	}
+	if err := writeHandoffFile(dir, handoffParamsFile, params); err != nil {
 		return err
 	}
 	// Cert and key are written as a pair; half of one would start the engine
@@ -177,18 +181,27 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// postgresql.conf syntax. Values are quoted so a setting with a space or unit
-// suffix survives; the engine accepts quoted numerics and booleans too.
-func renderParameters(params []handlers_rds.Parameter) string {
+// postgresql.conf syntax, which MariaDB's option files also parse. Values are
+// quoted so a setting with a space or unit suffix survives; the engine accepts
+// quoted numerics and booleans too.
+//
+// Names are the engine's rather than the customer's: a setting the server takes
+// only through SET has a different spelling at startup, and writing the wrong one
+// leaves the engine refusing to boot on a file already on the data volume.
+func renderParameters(engineName string, params []handlers_rds.Parameter) (string, error) {
+	engine, err := handlers_rds.LookupEngine(engineName)
+	if err != nil {
+		return "", fmt.Errorf("render the resolved parameters: %w", err)
+	}
 	var b strings.Builder
 	b.WriteString("# Resolved parameter group, written by rds-agent.\n")
 	for _, p := range params {
 		if p.Name == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s = '%s'\n", p.Name, strings.ReplaceAll(p.Value, "'", "''"))
+		fmt.Fprintf(&b, "%s = '%s'\n", engine.OptionFileName(p.Name), strings.ReplaceAll(p.Value, "'", "''"))
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // Atomic: a temp file in the same directory, renamed over the target. The mode

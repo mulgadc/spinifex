@@ -28,9 +28,22 @@ type controlPlaneRules struct {
 	// Whether a setting takes effect only at a restart. Already customer-facing
 	// and authoritative, since the API refuses ApplyMethod=immediate on one.
 	isStatic func(name string) bool
+	// The catalog name behind a spelling read back out of an option file. Only a
+	// setting whose startup spelling differs from the customer's moves.
+	catalogName func(optionFileName string) string
 }
 
 func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
+	// Built once per engine: everything read back out of a generated file has to
+	// return to the catalog's namespace before it is classified or reported, or a
+	// startup spelling would read as an unknown name.
+	catalogNames := map[string]string{}
+	for _, name := range meta.CatalogParameterNames() {
+		if optionFileName := meta.OptionFileName(name); optionFileName != name {
+			catalogNames[optionFileName] = name
+		}
+	}
+
 	return controlPlaneRules{
 		validateUsername: meta.ValidateMasterUsername,
 		isStatic: func(name string) bool {
@@ -38,6 +51,12 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 			// A name the catalog does not carry cannot be shown to have been adopted
 			// without a restart, and is never issued as a live SET GLOBAL either.
 			return !ok || spec.ApplyType == handlers_rds.ApplyTypeStatic
+		},
+		catalogName: func(optionFileName string) string {
+			if name, ok := catalogNames[optionFileName]; ok {
+				return name
+			}
+			return optionFileName
 		},
 	}
 }
@@ -127,6 +146,7 @@ func newMariaDBEngine(cfg config, rules controlPlaneRules, run commandRunner, st
 			serving:   mariadbServingFile,
 			header:    mariadbParametersHeader,
 			osUser:    cfg.EngineUser,
+			engine:    engineMariaDB,
 		},
 		repairTimeout: parameterRepairTimeout,
 		repairPoll:    parameterRepairPoll,
@@ -420,6 +440,11 @@ func (e *mariadbEngine) pendingRestartParameters(context.Context) ([]string, err
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read the parameters the engine started on: %w", err)
 	}
+	// Back to the catalog's names before anything is classified or reported: the
+	// files are written in the engine's startup spellings, and the answer is a
+	// customer-facing list the API refuses ApplyMethod=immediate against.
+	installed = e.catalogKeyed(installed)
+	serving = e.catalogKeyed(serving)
 
 	// An absent serving copy is a set the engine has not started on: rds-init
 	// writes the two together on every boot, so the whole static half counts as
@@ -463,6 +488,17 @@ func (e *mariadbEngine) RestoreLastKnownGoodParameters(ctx context.Context) (boo
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
 	return restoreLastGood(ctx, e.params, e.probe)
+}
+
+// The same settings under the names the catalog and the API know them by, since
+// a file is written in the engine's startup spellings and those are not always
+// the customer's.
+func (e *mariadbEngine) catalogKeyed(values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for name, value := range values {
+		out[e.rules.catalogName(name)] = value
+	}
+	return out
 }
 
 // The subset of MariaDB's option-file syntax the generated drop-ins are written

@@ -340,10 +340,15 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 	},
 	// The image loads no time zone tables, so a named zone would resolve to
 	// nothing; SYSTEM and a fixed offset are what the server can actually apply.
+	//
+	// MariaDB has no time_zone startup option — the name only exists for SET — so
+	// an option file naming it aborts the server before it opens the datadir.
+	// default_time_zone is the same setting spelt the way startup accepts.
 	ParameterSpec{
 		Name: "time_zone", DataType: paramTypeString, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Default: "SYSTEM", Validate: validateMariaDBTimeZone,
-		Description: "Server time zone, as SYSTEM or a fixed offset such as +10:00.",
+		optionFileName: "default_time_zone",
+		Description:    "Server time zone, as SYSTEM or a fixed offset such as +10:00.",
 	},
 	ParameterSpec{
 		Name: "transaction_isolation", DataType: paramTypeEnum, ApplyType: ApplyTypeDynamic,

@@ -262,7 +262,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	if err != nil {
 		return nil, err
 	}
-	memoryMiB, err := classMemoryMiB(smallestInstanceClass())
+	memoryMiB, err := classMemoryMiB(SmallestInstanceClass())
 	if err != nil {
 		return nil, err
 	}

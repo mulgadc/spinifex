@@ -26,6 +26,7 @@ func testMariaDBRules() controlPlaneRules {
 		"innodb_log_file_size":    handlers_rds.ApplyTypeStatic,
 		"max_connections":         handlers_rds.ApplyTypeDynamic,
 		"long_query_time":         handlers_rds.ApplyTypeDynamic,
+		"time_zone":               handlers_rds.ApplyTypeDynamic,
 	}
 	reserved := []string{"root", "mysql", "mariadb.sys", "rdsadmin", "public"}
 
@@ -45,6 +46,12 @@ func testMariaDBRules() controlPlaneRules {
 		isStatic: func(name string) bool {
 			applyType, ok := applyTypes[name]
 			return !ok || applyType == handlers_rds.ApplyTypeStatic
+		},
+		catalogName: func(optionFileName string) string {
+			if optionFileName == "default_time_zone" {
+				return "time_zone"
+			}
+			return optionFileName
 		},
 	}
 }
@@ -705,5 +712,85 @@ func TestMariaDBEngine_UnquiesceEndsTheBackupAndTheSession(t *testing.T) {
 	}
 	if session.closes() != 1 {
 		t.Errorf("closed %d times, want the session ended exactly once", session.closes())
+	}
+}
+
+// The two halves of a time_zone apply use different names: SET GLOBAL takes the
+// customer's, the option file the server's startup spelling. Getting either
+// backwards is a statement the server refuses or a boot it refuses.
+func TestMariaDBEngine_TimeZoneAppliesLiveByItsCustomerFacingName(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+		{Name: "time_zone", Value: "+10:00"},
+	}); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("ran %d commands, want the one live apply", len(runner.calls))
+	}
+	sql := runner.calls[0].Stdin
+	if !strings.Contains(sql, "SET GLOBAL time_zone = '+10:00';") {
+		t.Errorf("SQL %q does not set time_zone under the name MariaDB accepts for SET", sql)
+	}
+	if strings.Contains(sql, "default_time_zone") {
+		t.Errorf("SQL %q names the startup spelling, which is not a settable variable", sql)
+	}
+
+	installed, err := os.ReadFile(engine.params.installedPath())
+	if err != nil {
+		t.Fatalf("read the installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "default_time_zone = '+10:00'") {
+		t.Errorf("installed parameters = %q, want the startup spelling", installed)
+	}
+}
+
+// A dynamic setting applied live deliberately leaves the serving copy alone, so
+// the two files differ by design. Read back under the startup spelling the
+// catalog does not carry, that difference would classify as static and report a
+// pending restart that nothing could ever clear.
+func TestMariaDBEngine_ALiveTimeZoneChangeLeavesNothingPendingRestart(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+
+	if err := os.WriteFile(engine.params.servingPath(),
+		[]byte("[mysqld]\ndefault_time_zone = 'SYSTEM'\n"), 0o600); err != nil {
+		t.Fatalf("seed the serving copy: %v", err)
+	}
+
+	pending, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+		{Name: "time_zone", Value: "+10:00"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending = %v, want nothing: time_zone is dynamic and was applied live", pending)
+	}
+}
+
+// The list is customer-facing, so a static setting still has to be reported
+// under the name the customer set rather than the engine's startup spelling.
+func TestMariaDBEngine_PendingRestartReportsCatalogNames(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+
+	if err := os.WriteFile(engine.params.servingPath(),
+		[]byte("[mysqld]\ninnodb_buffer_pool_size = '536870912'\ndefault_time_zone = 'SYSTEM'\n"), 0o600); err != nil {
+		t.Fatalf("seed the serving copy: %v", err)
+	}
+
+	pending, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+		{Name: "innodb_buffer_pool_size", Value: "1073741824"},
+		{Name: "time_zone", Value: "SYSTEM"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if !slices.Equal(pending, []string{"innodb_buffer_pool_size"}) {
+		t.Errorf("pending = %v, want only the static setting under its catalog name", pending)
 	}
 }

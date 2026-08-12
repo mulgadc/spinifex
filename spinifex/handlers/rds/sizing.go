@@ -40,7 +40,7 @@ func SupportedInstanceClasses() []string {
 // The supported class with the least memory. Deliberately computed from the
 // footprints rather than taken as the first name SupportedInstanceClasses
 // reports: that list is sorted alphabetically, so its head is db.m5.large.
-func smallestInstanceClass() string {
+func SmallestInstanceClass() string {
 	smallest, least := "", int64(0)
 	for _, class := range SupportedInstanceClasses() {
 		memoryMiB, err := classMemoryMiB(class)

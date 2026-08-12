@@ -33,6 +33,8 @@ type parameterStore struct {
 	// The engine parses its own configuration, so a root-owned file would be
 	// unreadable to it.
 	osUser string
+	// Names the engine whose option-file spellings these files are written in.
+	engine string
 }
 
 func (s parameterStore) installedPath() string { return filepath.Join(s.dir, s.installed) }
@@ -41,8 +43,12 @@ func (s parameterStore) servingPath() string   { return filepath.Join(s.dir, s.s
 
 // Byte-for-byte what rds-init writes for the same set, so the copies compared
 // against it are comparing values rather than formatting.
-func (s parameterStore) render(params []handlers_rds.Parameter) []byte {
-	return []byte(s.header + renderParameters(params))
+func (s parameterStore) render(params []handlers_rds.Parameter) ([]byte, error) {
+	body, err := renderParameters(s.engine, params)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(s.header + body), nil
 }
 
 // Installs the resolved set at the path rds-init uses, so a later boot
@@ -57,7 +63,11 @@ func (s parameterStore) install(params []handlers_rds.Parameter) (restore func()
 	}
 	existed := readErr == nil
 
-	if err := s.write(path, s.render(params)); err != nil {
+	rendered, err := s.render(params)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.write(path, rendered); err != nil {
 		return nil, err
 	}
 	return func() error {

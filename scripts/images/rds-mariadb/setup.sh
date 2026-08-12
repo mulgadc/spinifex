@@ -62,6 +62,29 @@ if grep -rEq '^[[:space:]]*skip[-_]networking' /etc/my.cnf /etc/my.cnf.d; then
     exit 1
 fi
 
+# The resolved defaults checked against this image's own mariadbd. A name the
+# server refuses at startup is not a rejected setting: it aborts the boot with the
+# generated file already on the data volume. cmd/rds-agent keeps this file in step.
+#
+# --verbose --help parses the option files and exits without touching a datadir,
+# so it is the whole check. defaults-extra-file rather than the include directory,
+# which stays empty in the image; it must be the first option mariadbd sees.
+default_params=/usr/local/share/spinifex-rds/default-parameters.cnf
+if [ ! -f "${default_params}" ]; then
+    echo "[rds-mariadb-setup] the catalog's default parameter set was not delivered to ${default_params}"
+    exit 1
+fi
+if ! mariadbd --defaults-extra-file="${default_params}" --user=mysql --verbose --help \
+    >/dev/null 2>/tmp/rds-defaults.err; then
+    echo "[rds-mariadb-setup] mariadbd refuses the catalog's default parameter set"
+    cat /tmp/rds-defaults.err
+    exit 1
+fi
+# Build-time only: nothing at runtime reads it, and an include the server could
+# find twice is a way for a stale copy to shadow the customer's own set.
+rm -f /tmp/rds-defaults.err "${default_params}"
+rmdir /usr/local/share/spinifex-rds 2>/dev/null || true
+
 # The packaged service starts on a warning when the datadir is empty, so the
 # dependency is what keeps it off an unbootstrapped volume. Asserted here, since
 # an image whose engine can come up beside a failed bootstrap is the one failure

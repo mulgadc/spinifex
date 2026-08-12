@@ -229,7 +229,7 @@ func TestMariaDBCatalog_MaxConnectionsFollowsTheRDSFormula(t *testing.T) {
 
 	// The floor keeps the smallest class above what the platform's own probe,
 	// parameter apply and password rotation sessions need.
-	smallest, err := classMemoryMiB(smallestInstanceClass())
+	smallest, err := classMemoryMiB(SmallestInstanceClass())
 	require.NoError(t, err)
 	connections, err := strconv.ParseInt(mariadbMaxConnectionsFor(smallest), 10, 64)
 	require.NoError(t, err)
@@ -414,4 +414,42 @@ func TestMariaDBCatalog_ResolvesEveryParameterAsALiteral(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, innodbBufferPoolSizeFor(memoryMiB), values["innodb_buffer_pool_size"],
 		"a parameter the group does not set should carry its computed default")
+}
+
+// The bug that kept every MariaDB instance from booting: mariadbd has no
+// time_zone startup option, so an option file naming it aborts the server before
+// it opens the datadir.
+func TestMariaDBCatalog_TimeZoneUsesItsStartupSpellingInTheOptionFile(t *testing.T) {
+	assert.Equal(t, "default_time_zone", engineMariaDB.OptionFileName("time_zone"))
+
+	// The customer-facing name is what the API reports and what a live SET GLOBAL
+	// names, so the catalog must still carry it.
+	spec, ok := engineMariaDB.LookupParameter("time_zone")
+	require.True(t, ok)
+	assert.Equal(t, "time_zone", spec.Name)
+	assert.True(t, spec.IsModifiable)
+}
+
+func TestMariaDBCatalog_EveryOtherParameterKeepsItsName(t *testing.T) {
+	for _, name := range engineMariaDB.CatalogParameterNames() {
+		if name == "time_zone" {
+			continue
+		}
+		assert.Equal(t, name, engineMariaDB.OptionFileName(name),
+			"%s was given an option-file spelling but the fixture asserts none", name)
+	}
+}
+
+// PostgreSQL sets every one of its settings under the name the customer knows,
+// so a mapping there would be a bug rather than a fix.
+func TestPostgresCatalog_NoParameterIsRenamedForTheOptionFile(t *testing.T) {
+	for _, name := range enginePostgres.CatalogParameterNames() {
+		assert.Equal(t, name, enginePostgres.OptionFileName(name))
+	}
+}
+
+// A name the catalog does not carry is the customer's own, and the option file
+// takes it unchanged rather than silently dropping it.
+func TestMariaDBCatalog_OptionFileNamePassesAnUnknownNameThrough(t *testing.T) {
+	assert.Equal(t, "not_a_parameter", engineMariaDB.OptionFileName("not_a_parameter"))
 }

@@ -118,6 +118,7 @@ func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, p
 			installed: postgresParametersFile,
 			lastGood:  postgresLastGoodFile,
 			osUser:    cfg.EngineUser,
+			engine:    enginePostgres,
 		},
 		repairTimeout: parameterRepairTimeout,
 		repairPoll:    parameterRepairPoll,

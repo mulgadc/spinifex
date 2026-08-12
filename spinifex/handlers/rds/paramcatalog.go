@@ -82,6 +82,11 @@ type ParameterSpec struct {
 	// express, such as a zone name that must resolve or a comma-separated list of
 	// engine mode names. Runs last, on the trimmed value.
 	Validate func(value string) error
+
+	// The spelling the engine accepts for this setting in its option file, when
+	// that differs from the name the customer sets. Empty means the two are the
+	// same, which is every parameter but MariaDB's time_zone.
+	optionFileName string
 }
 
 // Indexes the specs by name and fails the build-equivalent — process start — on
@@ -112,6 +117,17 @@ func buildParameterCatalog(specs ...ParameterSpec) map[string]ParameterSpec {
 func (e Engine) LookupParameter(name string) (ParameterSpec, bool) {
 	spec, ok := e.catalog[strings.ToLower(strings.TrimSpace(name))]
 	return spec, ok
+}
+
+// The spelling to write into the engine's option file for a parameter the
+// customer set. A name the server does not accept there is a boot loop with the
+// bad file already on the data volume, so the two names are kept apart.
+func (e Engine) OptionFileName(name string) string {
+	spec, ok := e.LookupParameter(name)
+	if !ok || spec.optionFileName == "" {
+		return name
+	}
+	return spec.optionFileName
 }
 
 // Sorted, so a describe returns the same order on every call and Terraform does

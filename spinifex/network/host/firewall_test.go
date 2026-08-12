@@ -249,6 +249,56 @@ func TestReconcileFirewall_ExtraEncapStillWrites(t *testing.T) {
 	require.Len(t, env.helperRuns(), 1)
 }
 
+// Expanding a single-node ISO install into a cluster. The loaded policy names
+// only this node, so the joiner cannot reach the Southbound DB to register its
+// chassis, so the chassis list can never complete. Waiting for it deadlocks:
+// the peer set has to widen on the tunnel set already loaded.
+func TestReconcileFirewall_ArmedForSmallerClusterWidensOnHeldOverEncap(t *testing.T) {
+	env := newFirewallTestEnv(t, "10.9.8.21\n")
+	require.NoError(t, os.WriteFile(env.peersPath,
+		[]byte(renderPeersFile([]string{"10.9.7.21", "192.168.1.21"}, []string{"10.9.8.21"})), 0644))
+
+	err := ReconcileFirewall(env.configPath, firewallClusterConfig(true))
+	require.Error(t, err, "not converged until every chassis has registered")
+	assert.Contains(t, err.Error(), "1 of 2 chassis")
+
+	require.Len(t, env.helperRuns(), 1, "the peer set must widen despite the partial chassis list")
+	lines := strings.Split(strings.TrimSpace(env.helperStdin(t)), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[0], "10.9.7.22", "the joining node must be let in")
+	assert.Equal(t, "10.9.8.21", lines[1], "the tunnel set must be held, not narrowed or guessed")
+}
+
+// The other side of the same branch: a converged cluster whose Southbound DB is
+// briefly unreadable must not be touched at all.
+func TestReconcileFirewall_UnreadableEncapOnConvergedClusterIsANoOp(t *testing.T) {
+	env := newFirewallTestEnv(t, "")
+	peers := []string{"10.9.7.21", "10.9.7.22", "10.9.8.21", "10.9.8.22", "192.168.1.21", "192.168.1.22"}
+	require.NoError(t, os.WriteFile(env.peersPath,
+		[]byte(renderPeersFile(peers, []string{"10.9.8.21", "10.9.8.22"})), 0644))
+	ovnEncapCommand = func(string) *exec.Cmd { return exec.Command("false") }
+
+	require.NoError(t, ReconcileFirewall(env.configPath, firewallClusterConfig(true)))
+	assert.Empty(t, env.helperRuns(), "an unreadable Southbound DB must not rewrite a converged policy")
+}
+
+func TestLoadedEncapPeers(t *testing.T) {
+	env := newFirewallTestEnv(t, "")
+
+	_, ok := loadedEncapPeers()
+	assert.False(t, ok, "no peer file means this node is not armed")
+
+	require.NoError(t, os.WriteFile(env.peersPath, []byte("define spinifex_peers = { 10.9.7.21 }\n"), 0644))
+	_, ok = loadedEncapPeers()
+	assert.False(t, ok, "a file with no tunnel set is not something to hold over")
+
+	require.NoError(t, os.WriteFile(env.peersPath,
+		[]byte(renderPeersFile([]string{"10.9.7.21"}, []string{"10.9.8.21", "10.9.8.22"})), 0644))
+	got, ok := loadedEncapPeers()
+	require.True(t, ok)
+	assert.Equal(t, []string{"10.9.8.21", "10.9.8.22"}, got)
+}
+
 // The reconcile must recover on its own. Before this, a node that lost the race
 // with ovn-controller stayed unprotected until something restarted the daemon.
 func TestMaintainFirewall_RetriesUntilChassisRegister(t *testing.T) {

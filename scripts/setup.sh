@@ -35,6 +35,7 @@ FIREWALL_DIR="/etc/spinifex/firewall"
 FIREWALL_RULES="${FIREWALL_DIR}/spinifex.nft"
 FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
+FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
 FIREWALL_MODE_FILE="${FIREWALL_DIR}/mode"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
 
@@ -346,6 +347,7 @@ install_firewall() {
 # per-tap policy routing.
 
 include "/etc/spinifex/firewall/local.nft"
+include "/etc/spinifex/firewall/open-ports.nft"
 include "/etc/spinifex/firewall/peers.nft"
 
 # Create-then-delete so the replace is atomic and the delete cannot fail on a
@@ -385,6 +387,13 @@ table inet spinifex_filter {
         tcp dport $spinifex_ssh_ports accept
         tcp dport { 443, 3000, 8443, 9999 } accept
 
+        # Transiently open to any source, for cluster formation. A node dialling
+        # in to join is not a peer yet, so the peer-scoped rule below cannot let
+        # it in; `spx admin init` opens the formation port here for the length of
+        # the formation window and closes it again afterwards. Normally holds
+        # only the sentinel, which no packet can match.
+        tcp dport $spinifex_open_ports accept
+
         # 53 is open on every node, deliberately: northstar serves public
         # authoritative DNS and binds its advertise address. A node running no
         # public zone answers here too, which is the accepted cost of not
@@ -394,7 +403,10 @@ table inet spinifex_filter {
 
         # Cluster plane, peer-scoped. On a single-NIC node the planes collapse
         # onto the public address, which is why these are peer addresses rather
-        # than an interface or a CIDR.
+        # than an interface or a CIDR. 4432 stays here rather than joining the
+        # public rule above: outside formation it is the daemon cluster manager,
+        # whose /health and /local/* routes report node topology, service
+        # inventory and running instances to anyone who asks.
         ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
@@ -425,6 +437,15 @@ LOCAL
     $SUDO chmod 0644 "$FIREWALL_LOCAL"
     info "  $FIREWALL_LOCAL (sshd ports: ${_ssh_ports})"
 
+    # Reset closed on every run, so an install or upgrade that interrupts a
+    # formation window cannot leave the port open indefinitely.
+    $SUDO tee "$FIREWALL_OPEN" > /dev/null << 'OPENPORTS'
+# Managed by spinifex-firewall-apply. Rewritten for the formation window only.
+define spinifex_open_ports = { 0 }
+OPENPORTS
+    $SUDO chmod 0644 "$FIREWALL_OPEN"
+    info "  $FIREWALL_OPEN (closed)"
+
     # Armed or merely installed. The daemon reads this when the config carries no
     # explicit firewall_enabled, which is the normal case on both install paths.
     printf '%s\n' "$INSTALL_SPINIFEX_FIREWALL" | $SUDO tee "$FIREWALL_MODE_FILE" > /dev/null
@@ -440,8 +461,20 @@ set -eu
 
 RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
+OPEN="/etc/spinifex/firewall/open-ports.nft"
 
 [ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
+
+# 0 is a sentinel that keeps the set non-empty, because nft rejects an empty
+# one. No packet can match it: the kernel has no destination port 0.
+write_open_ports() {
+    _tmp=$(mktemp)
+    printf '%s\n' \
+        '# Managed by spinifex-firewall-apply. Rewritten for the formation window only.' \
+        "define spinifex_open_ports = { $1 }" > "$_tmp"
+    install -m 0644 "$_tmp" "$OPEN"
+    rm -f "$_tmp"
+}
 
 # set-peers reads two comma-separated address lists on stdin (cluster peers,
 # then encap peers) and rewrites the peer file before applying. Every address is
@@ -454,6 +487,28 @@ if [ "${1:-}" = "disable" ]; then
     rm -f "$PEERS"
     systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
+fi
+
+# open-port and close-port hold a single port open to any source while a cluster
+# forms. One slot, not a list: the only caller is `spx admin init` opening its
+# formation port, and a set that can only ever hold one entry cannot be grown
+# into a general-purpose hole in the policy.
+if [ "${1:-}" = "open-port" ] || [ "${1:-}" = "close-port" ]; then
+    port="${2:-}"
+    case "$port" in
+        '' | *[!0-9]*) echo "port must be a number: '$port'" >&2; exit 2 ;;
+    esac
+    [ "$port" -gt 0 ] && [ "$port" -lt 65536 ] || {
+        echo "port out of range: $port" >&2
+        exit 2
+    }
+
+    if [ "$1" = "open-port" ]; then write_open_ports "0, $port"; else write_open_ports "0"; fi
+
+    # Nothing to reload on a node that is installed but not armed: the table is
+    # not loaded, so every port is already open and the file is enough.
+    [ -r "$PEERS" ] || exit 0
+    exec nft -f "$RULES"
 fi
 
 if [ "${1:-}" = "set-peers" ]; then

@@ -1861,6 +1861,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
+	// The host firewall scopes this port to known peers, and a node joining is
+	// not one yet. Closed again on every exit below.
+	closeFormationPort := openFormationPort(port)
+
 	fmt.Printf("\n📡 Formation server started on %s\n", formationAddr)
 	fmt.Printf("   Waiting for %d more node(s) to join...\n", expectedNodes-1)
 	fmt.Printf("   Token expires in %s\n\n", tokenTTL)
@@ -1871,6 +1875,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	if err := fs.WaitForCompletion(formationTimeout); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		fs.Shutdown(context.Background())
+		closeFormationPort()
 		os.Remove(tokenPath)
 		os.Exit(1)
 	}
@@ -1989,6 +1994,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	// Shutdown formation server
 	fs.Shutdown(context.Background())
+	closeFormationPort()
 	if err := os.Remove(tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Warn("Failed to remove join token file", "path", tokenPath, "error", err)
 	}

@@ -330,6 +330,9 @@ func init() {
 
 	adminCmd.AddCommand(upgradeCmd)
 	upgradeCmd.Flags().Bool("yes", false, "Apply migrations without prompting")
+	upgradeCmd.Flags().Bool("dry-run", false, "Report pending config and unit changes without applying them")
+	upgradeCmd.Flags().Bool("units-only", false, "Reconcile systemd units only, skip config migrations")
+	upgradeCmd.Flags().Bool("skip-units", false, "Apply config migrations only, skip systemd unit reconciliation")
 	certRenewCmd.Flags().StringSlice("extra-ip", nil, "Additional IP addresses to include in SANs")
 	certRenewCmd.Flags().StringSlice("extra-dns", nil, "Additional DNS names to include in SANs")
 	accountCreateCmd.Flags().String("name", "", "Account name (required)")

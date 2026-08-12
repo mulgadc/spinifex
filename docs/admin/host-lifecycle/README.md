@@ -72,7 +72,15 @@ skipped the drain and logged `Host is not shutting down; skipping guest
 drain.` The gate now also reads systemd's pending job list, which does
 distinguish the two.
 
-To check which behaviour a node has, look at its unit:
+The fastest way to check is `spx admin upgrade --dry-run`, which reports every
+unit's status against the one shipped in the running binary — including
+`spinifex-shutdown.service` — without changing anything. See
+[Checking for Unit Drift](/docs/admin/update#checking-for-unit-drift). A node
+reported stale or missing for that unit predates this fix; reconcile it with
+`sudo spx admin upgrade --units-only --yes` (this only rewrites the unit and
+runs `daemon-reload` — it does not restart anything or drain guests itself).
+
+To check by hand instead, look at the unit directly:
 
 ```bash
 systemctl cat spinifex-shutdown.service | grep ExecStop

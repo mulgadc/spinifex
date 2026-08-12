@@ -1,3 +1,9 @@
+// The generate directive lives here, not in generate.go: that file is
+// //go:build ignore, so go generate never scans it and the regeneration
+// every failure message asks for would silently do nothing.
+//
+//go:generate go run generate.go
+
 package systemd
 
 import (

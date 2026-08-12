@@ -1,4 +1,4 @@
-package systemd_test
+package systemd
 
 import (
 	"crypto/sha256"
@@ -416,21 +416,25 @@ func TestGeneratedUnitsMatchSource(t *testing.T) {
 var unitBodyHashes = map[string]map[int]string{
 	"regenerate-ssh-host-keys.service": {1: "5b2cf4c2ba5d5799c790e32896928c235db92a069583a87004801f58df390e55"},
 	"spinifex-awsgw.service":           {1: "dd662cebca19acca9dbcd0a6f29e6a40125805bdfeabcb94c02fbae07d1f2d6e"},
-	"spinifex-daemon.service":          {1: "04b0f23b9cda322e4012d589acc196abe466b619dec5ac0d832897b9af2f926c"},
-	"spinifex-guests.slice":            {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
-	"spinifex-nats-watchdog.service":   {1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8"},
-	"spinifex-nats-watchdog.timer":     {1: "9d43a8d2aa4fd80ab5f944d7620c666fd2a255850de2e6494479b8746922c979"},
-	"spinifex-nats.service":            {1: "f7f9900b95e364dc2575684a9bf16fa1f96a903a3a4aa773a34c04d761106838"},
-	"spinifex-northstar.service":       {1: "030c382aed20f4383acdb7df7a830d48dd76dc29be5965b595cc3842ae43a3f1"},
-	"spinifex-predastore.service":      {1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8"},
-	"spinifex-qmp-collector.service":   {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
-	"spinifex-shutdown.service":        {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},
-	"spinifex-system.slice":            {1: "ca450c2b28a8b13dd767957fa9469bd74bd222d7abed79945e83d564d5ce16dd"},
-	"spinifex-ui.service":              {1: "9d5ec3785bf730405f23ec9df79675bf65ecbca9df47c15f5a4b4639393afbc5"},
-	"spinifex-viperblock.service":      {1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9"},
-	"spinifex-vpcd.service":            {1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965"},
-	"spinifex.slice":                   {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
-	"spinifex.target":                  {1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078"},
+	"spinifex-daemon.service": {
+		1: "04b0f23b9cda322e4012d589acc196abe466b619dec5ac0d832897b9af2f926c",
+		2: "97a2d4c72967a9bdf9545ff74593de532e8469568bb717c9958d33b77e62d0ed",
+	},
+	"spinifex-firewall.service":      {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
+	"spinifex-guests.slice":          {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-nats-watchdog.service": {1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8"},
+	"spinifex-nats-watchdog.timer":   {1: "9d43a8d2aa4fd80ab5f944d7620c666fd2a255850de2e6494479b8746922c979"},
+	"spinifex-nats.service":          {1: "f7f9900b95e364dc2575684a9bf16fa1f96a903a3a4aa773a34c04d761106838"},
+	"spinifex-northstar.service":     {1: "030c382aed20f4383acdb7df7a830d48dd76dc29be5965b595cc3842ae43a3f1"},
+	"spinifex-predastore.service":    {1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8"},
+	"spinifex-qmp-collector.service": {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
+	"spinifex-shutdown.service":      {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},
+	"spinifex-system.slice":          {1: "ca450c2b28a8b13dd767957fa9469bd74bd222d7abed79945e83d564d5ce16dd"},
+	"spinifex-ui.service":            {1: "9d5ec3785bf730405f23ec9df79675bf65ecbca9df47c15f5a4b4639393afbc5"},
+	"spinifex-viperblock.service":    {1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9"},
+	"spinifex-vpcd.service":          {1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965"},
+	"spinifex.slice":                 {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
+	"spinifex.target":                {1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078"},
 }
 
 // TestUnitBodyPinnedToVersion asserts each unit's body hash matches the

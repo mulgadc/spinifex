@@ -24,6 +24,11 @@ type firewallTestEnv struct {
 	configPath string
 	peersPath  string
 	stdinPath  string
+	modePath   string
+
+	// tableLoaded stands in for the loaded ruleset. Default true, so a test that
+	// says nothing about it exercises the steady state rather than a reboot.
+	tableLoaded atomic.Bool
 
 	mu   sync.Mutex
 	runs [][]string
@@ -50,14 +55,20 @@ func newFirewallTestEnv(t *testing.T, encap string) *firewallTestEnv {
 		configPath: filepath.Join(dir, "spinifex.toml"),
 		peersPath:  filepath.Join(dir, "peers.nft"),
 		stdinPath:  filepath.Join(dir, "stdin"),
+		modePath:   filepath.Join(dir, "mode"),
 	}
+	env.tableLoaded.Store(true)
 
 	origPeers, origHelper, origEncap := firewallPeersPath, firewallApplyHelper, ovnEncapCommand
+	origMode, origTable := firewallModePath, firewallTableCheck
 	firewallPeersPath = env.peersPath
+	firewallModePath = env.modePath
 	firewallApplyHelper = "/usr/local/lib/spinifex/spinifex-firewall-apply"
 	ovnEncapCommand = func(string) *exec.Cmd { return exec.Command("printf", "%s", encap) }
+	firewallTableCheck = env.tableLoaded.Load
 	t.Cleanup(func() {
 		firewallPeersPath, firewallApplyHelper, ovnEncapCommand = origPeers, origHelper, origEncap
+		firewallModePath, firewallTableCheck = origMode, origTable
 	})
 
 	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
@@ -98,7 +109,7 @@ func firewallClusterConfig(enabled bool) *config.ClusterConfig {
 			"node2": {Host: "10.9.7.22", AdvertiseIP: "192.168.1.22"},
 		},
 	}
-	cfg.Network.FirewallEnabled = enabled
+	cfg.Network.FirewallEnabled = &enabled
 	for name, node := range cfg.Nodes {
 		node.VPCD.OVNSBAddr = "tcp:10.9.7.21:6642"
 		cfg.Nodes[name] = node
@@ -131,6 +142,79 @@ func TestReconcileFirewall_NoOpWhenPeersUnchanged(t *testing.T) {
 
 	require.NoError(t, ReconcileFirewall(env.configPath, firewallClusterConfig(true)))
 	assert.Empty(t, env.helperRuns(), "an unchanged peer set must not re-apply the policy")
+}
+
+// The reboot case. A ruleset is runtime state, so the peer file survives and the
+// table does not. Treating "peer set unchanged" as "policy applied" left the node
+// open until something changed the membership, which on a healthy cluster is never.
+func TestReconcileFirewall_ReappliesWhenTableMissing(t *testing.T) {
+	env := newFirewallTestEnv(t, "10.9.8.21\n10.9.8.22\n")
+	desired := renderPeersFile(
+		[]string{"10.9.7.21", "10.9.7.22", "10.9.8.21", "10.9.8.22", "192.168.1.21", "192.168.1.22"},
+		[]string{"10.9.8.21", "10.9.8.22"})
+	require.NoError(t, os.WriteFile(env.peersPath, []byte(desired), 0644))
+	env.tableLoaded.Store(false)
+
+	require.NoError(t, ReconcileFirewall(env.configPath, firewallClusterConfig(true)))
+	require.Len(t, env.helperRuns(), 1, "an unchanged peer set with no loaded table must re-apply")
+
+	// And having reapplied, it goes quiet again rather than re-applying on every tick.
+	env.tableLoaded.Store(true)
+	require.NoError(t, ReconcileFirewall(env.configPath, firewallClusterConfig(true)))
+	assert.Len(t, env.helperRuns(), 1)
+}
+
+// A node installed before the mode file existed has neither it nor the config
+// key, and must keep the policy it already has.
+func TestFirewallWanted_DefaultsOnWhenNothingSaysOtherwise(t *testing.T) {
+	env := newFirewallTestEnv(t, "")
+	_ = env
+
+	cfg := &config.ClusterConfig{}
+	assert.True(t, firewallWanted(cfg))
+}
+
+// The curl-to-bash install path writes "off" so a machine that was already
+// running services does not get a default-deny policy uninvited.
+func TestFirewallWanted_ModeFile(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{"off", false},
+		{"on", true},
+		{"on\n", true},
+		{" off \n", false},
+	} {
+		t.Run(strings.TrimSpace(tc.mode), func(t *testing.T) {
+			env := newFirewallTestEnv(t, "")
+			require.NoError(t, os.WriteFile(env.modePath, []byte(tc.mode), 0644))
+			assert.Equal(t, tc.want, firewallWanted(&config.ClusterConfig{}))
+		})
+	}
+}
+
+// An operator's explicit choice outranks whatever the installer decided, in both
+// directions.
+func TestFirewallWanted_ConfigOverridesModeFile(t *testing.T) {
+	env := newFirewallTestEnv(t, "")
+	require.NoError(t, os.WriteFile(env.modePath, []byte("off"), 0644))
+	assert.True(t, firewallWanted(firewallClusterConfig(true)))
+
+	require.NoError(t, os.WriteFile(env.modePath, []byte("on"), 0644))
+	assert.False(t, firewallWanted(firewallClusterConfig(false)))
+}
+
+// A brownfield install must not have a policy torn down or applied behind it: an
+// "off" mode file with no peer file is the normal state there, and must be quiet.
+func TestReconcileFirewall_ModeOffSkipsSilently(t *testing.T) {
+	env := newFirewallTestEnv(t, "10.9.8.21\n10.9.8.22\n")
+	require.NoError(t, os.WriteFile(env.modePath, []byte("off"), 0644))
+
+	cfg := firewallClusterConfig(true)
+	cfg.Network.FirewallEnabled = nil
+	require.NoError(t, ReconcileFirewall(env.configPath, cfg))
+	assert.Empty(t, env.helperRuns(), "a disarmed node must not invoke the root helper")
 }
 
 // A missing Southbound answer must not narrow the set onto a guess: a peer file

@@ -69,8 +69,9 @@ type NetworkConfig struct {
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
 	// FirewallEnabled toggles the host firewall that scopes cluster ports to cluster
-	// members. Default true; disable only where a site firewall already scopes them.
-	FirewallEnabled bool `mapstructure:"firewall_enabled"`
+	// members. Three-state on purpose: nil means the install path decides, via the
+	// mode file setup.sh writes. An explicit false tears down an existing policy.
+	FirewallEnabled *bool `mapstructure:"firewall_enabled"`
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
 	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
 	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
@@ -439,8 +440,9 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
 
-	// Default firewall_enabled to true; operators must explicitly set false to disable.
-	viper.SetDefault("network.firewall_enabled", true)
+	// No default for network.firewall_enabled on purpose. Setting one here would
+	// make the key always present and hide the difference between "unset" and
+	// "explicitly false"; the install path's mode file resolves the unset case.
 
 	// Cluster-wide AWS-parity defaults so existing deployments keep working.
 	viper.SetDefault("aws.region", DefaultAWSRegion)

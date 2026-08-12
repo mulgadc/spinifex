@@ -26,6 +26,18 @@ var firewallApplyHelper = "/usr/local/lib/spinifex/spinifex-firewall-apply"
 // firewallPeersPath is read (not written) here to skip a no-op reconcile.
 var firewallPeersPath = "/etc/spinifex/firewall/peers.nft"
 
+// firewallModePath records the choice the install path made: "on" for the ISO,
+// "off" for a curl-to-bash install onto a machine that was already doing
+// something. Absent on every node installed before the flag existed, which is
+// why its absence means "on" rather than "off".
+var firewallModePath = "/etc/spinifex/firewall/mode"
+
+// firewallTableCheck reports whether spinifex's own table is loaded. A var so
+// tests can stand in for the ruleset. Read-only, so it needs no sudo grant.
+var firewallTableCheck = func() bool {
+	return exec.Command("nft", "list", "table", "inet", "spinifex_filter").Run() == nil
+}
+
 // natsRoutePattern pulls the address out of a nats-route:// URL, whose userinfo
 // carries the cluster token and must not be mistaken for the host.
 var natsRoutePattern = regexp.MustCompile(`nats-route://(?:[^@/]*@)?([0-9.]+):\d+`)
@@ -92,7 +104,7 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 	// Off means off on a node that was previously on, not merely "skip": leaving
 	// a stale drop policy loaded after an operator disables it would be the kind
 	// of surprise the toggle exists to avoid.
-	if !clusterConfig.Network.FirewallEnabled {
+	if !firewallWanted(clusterConfig) {
 		return disableFirewall()
 	}
 
@@ -121,8 +133,12 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 		return nil
 	}
 
+	// An unchanged peer file is only a reason to skip if the policy it describes
+	// is actually loaded. A ruleset is runtime state and does not survive a
+	// reboot, so on a node whose boot-time unit is absent, masked or failed this
+	// is the only thing that puts the policy back.
 	desired := renderPeersFile(peers, encap)
-	if current, err := os.ReadFile(firewallPeersPath); err == nil && string(current) == desired {
+	if current, err := os.ReadFile(firewallPeersPath); err == nil && string(current) == desired && firewallTableCheck() {
 		return nil
 	}
 
@@ -134,6 +150,24 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 
 	slog.Info("firewall: peer sets reconciled", "peers", len(peers), "encap_peers", len(encap))
 	return nil
+}
+
+// firewallWanted resolves whether the policy should be armed on this node.
+// Explicit config wins, then the install path's choice, then on.
+//
+// The order matters in one direction in particular: a node installed before the
+// mode file existed has neither, and must keep the policy it already has. That
+// is why the final fallback is on and not off.
+func firewallWanted(clusterConfig *config.ClusterConfig) bool {
+	if v := clusterConfig.Network.FirewallEnabled; v != nil {
+		return *v
+	}
+
+	mode, err := os.ReadFile(firewallModePath)
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(mode)) != "off"
 }
 
 // disableFirewall removes only spinifex's own table. A no-op when it was never

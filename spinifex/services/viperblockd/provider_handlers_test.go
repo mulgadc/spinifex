@@ -286,7 +286,9 @@ func TestProviderHandlers_DeleteVolume_UnansweredOwnerProbeRefuses(t *testing.T)
 	var resp ebsprovider.DeleteVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	require.NotNil(t, resp.Error, "a delete that could not establish ownership must refuse, not proceed")
-	assert.Equal(t, ebsprovider.ErrorCodeInternal, resp.Error.Code)
+	assert.Equal(t, ebsprovider.ErrorCodeUnavailable, resp.Error.Code)
+	assert.True(t, resp.Error.Code.Retryable(),
+		"an owner that did not answer may answer later, so this refusal must read as retryable; a permanent code strands the volume")
 }
 
 func TestProviderHandlers_DeleteSnapshot_AbsentIsIdempotent(t *testing.T) {

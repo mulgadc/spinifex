@@ -182,6 +182,13 @@ func internalError(format string, args ...any) *ebsprovider.ProviderError {
 	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: fmt.Sprintf(format, args...)}
 }
 
+// unavailableError reports that the request could not be answered now and may
+// succeed later. Reserved for conditions that genuinely pass: a peer that did
+// not reply, not a request this provider will always refuse.
+func unavailableError(format string, args ...any) *ebsprovider.ProviderError {
+	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: fmt.Sprintf(format, args...)}
+}
+
 // errSnapshotDestinationExists lets handleCopySnapshot map a pre-existing
 // destination to ErrorCodeAlreadyExists without string-matching
 // viperblock.CopySnapshotMeta's error text, which carries no sentinel of
@@ -228,11 +235,8 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 	respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{
 		Versioned: ebsprovider.NewVersioned(),
 		Capabilities: ebsprovider.Capabilities{
-			// Clones read chunks straight out of the source volume's S3
-			// prefix (copy-on-write via SourceVolumeName/BaseBlockMap), and
-			// every snapshot freezes the live checkpoint rather than
+			// Every snapshot freezes the live checkpoint rather than
 			// depending on a guest-coordinated quiesce.
-			CopyOnWriteClone:        true,
 			CrashConsistentSnapshot: true,
 			// CreateVolume can write a caller-supplied seed at offset 0 in the
 			// engine it already builds, which is how an EFI variable store gets
@@ -770,7 +774,7 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 	// retry once the owner is reachable.
 	if ownership == ownershipUnknown {
 		slog.Error("ebs.provider.volume.delete: could not establish whether the volume is published", "volume", req.VolumeID)
-		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("volume %s: could not establish whether it is published; retry when its owner is reachable", req.VolumeID)})
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unavailableError("volume %s: could not establish whether it is published; retry when its owner is reachable", req.VolumeID)})
 		return
 	}
 

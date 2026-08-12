@@ -19,6 +19,8 @@ func TestProviderErrorUnwrapTable(t *testing.T) {
 		{ErrorCodeNotFound, ErrNotFound},
 		{ErrorCodeUnsupportedVersion, ErrUnsupportedVersion},
 		{ErrorCodeVolumeInUse, ErrVolumeInUse},
+		{ErrorCodeUnsupportedCap, ErrUnsupportedCapability},
+		{ErrorCodeUnavailable, ErrUnavailable},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.code), func(t *testing.T) {
@@ -43,6 +45,30 @@ func TestProviderErrorUnwrapTable(t *testing.T) {
 		assert.NoError(t, err.Unwrap())
 		assert.Empty(t, err.Error())
 	})
+}
+
+// TestErrorCodeRetryable pins which refusals a caller may repeat. Every code
+// here is named, so adding one without deciding its retry meaning fails rather
+// than defaulting to permanent and stranding whatever the caller was doing.
+func TestErrorCodeRetryable(t *testing.T) {
+	retryable := []ErrorCode{ErrorCodeUnavailable}
+	permanent := []ErrorCode{
+		ErrorCodeAlreadyExists,
+		ErrorCodeInvalidArgument,
+		ErrorCodeNotFound,
+		ErrorCodeUnsupportedVersion,
+		ErrorCodeVolumeInUse,
+		ErrorCodeUnsupportedCap,
+		ErrorCodeInternal,
+	}
+
+	for _, code := range retryable {
+		assert.Truef(t, code.Retryable(), "%s must read as retryable, or a caller gives up on a request that would have succeeded", code)
+	}
+	for _, code := range permanent {
+		assert.Falsef(t, code.Retryable(), "%s must read as permanent, or a caller retries a request that can never succeed", code)
+	}
+	assert.False(t, ErrorCode("bogus").Retryable(), "an unrecognised code must not invite a retry loop")
 }
 
 func TestCheckVersion(t *testing.T) {

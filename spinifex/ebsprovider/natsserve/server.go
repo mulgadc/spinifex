@@ -215,6 +215,8 @@ func classifyError(err error) *ebsprovider.ProviderError {
 		return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: err.Error()}
 	case errors.Is(err, ebsprovider.ErrUnsupportedCapability):
 		return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedCap, Message: err.Error()}
+	case errors.Is(err, ebsprovider.ErrUnavailable):
+		return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: err.Error()}
 	default:
 		return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: err.Error()}
 	}

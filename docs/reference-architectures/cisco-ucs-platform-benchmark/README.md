@@ -235,3 +235,5 @@ for CPU-bound concurrent work is 2 worker processes per 8-vCPU instance before l
 degrades — confirmed as compute contention rather than a storage or network ceiling —
 while the GPU instance shows no strain through the full sweep, consistent with the L4
 sitting at 22–35% utilisation under a single worker.
+
+All benchmark instances were provisioned through Spinifex's EC2-compatible endpoint using standard `aws ec2` CLI calls — the same instance types, placement groups, and security groups that work on AWS work here unchanged. Teams already operating AWS infrastructure can point their existing tooling at a Spinifex node with a single profile swap.

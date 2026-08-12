@@ -237,3 +237,5 @@ enough that dedicated GPU compute would sit largely idle between bursts, the CPU
 deployable option rather than a fallback of last resort. The GPU wins clearly on
 latency and throughput at scale; AMX makes the CPU competitive enough that the choice is
 meaningful rather than obvious.
+
+Both serving instances were provisioned through Spinifex's EC2-compatible endpoint as standard EC2 instance types — `m8i.2xlarge` for the CPU path, `g6.2xlarge` for the GPU path — with standard `aws ec2` CLI calls. Teams already operating AWS infrastructure can point their existing tooling at a Spinifex node with a single profile swap.

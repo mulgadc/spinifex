@@ -233,12 +233,15 @@ model artefacts worth keeping should be copied to Predastore before running this
 
 ### 6. Conclusion
 
-This pipeline demonstrates a genuinely mixed CPU/GPU edge-AI workload — Intel
+This pipeline demonstrates a mixed CPU/GPU edge-AI workload — Intel
 AMX-accelerated detection and NVIDIA L4-accelerated captioning, running as independent
 EC2-compatible instances against a shared S3-compatible object store, on Cisco Unified Edge
 hardware managed entirely through standard AWS tooling. AMX delivers a real,
 accuracy-neutral 2.4–3x throughput gain on this hardware; the L4 leaves significant
 headroom at this workload's current scale; and streaming from a central bucket rather
-than a private local volume costs 59–62% throughput, precisely because each frame is a
-small, latency- rather than bandwidth-bound request — a concrete, measured answer to
-what "the edge-AI pipeline is S3-backed" actually costs, not just a claim that it works.
+than a private local volume costs 59–62% throughput, because each frame is a
+small, latency- rather than bandwidth-bound request. Teams already operating
+AWS infrastructure can point their existing tooling at a Spinifex node with a
+single profile swap — EC2 instances, Viperblock EBS volumes, Predastore S3
+buckets, and OVN VPC networking all provisioned from the same Terraform
+resources that work on AWS.

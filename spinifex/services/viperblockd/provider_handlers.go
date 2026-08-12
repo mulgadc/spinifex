@@ -521,10 +521,18 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("seed volume: %v", err)})
 			return
 		}
-	} else if err := vb.SaveStateCtx(ctx); err != nil {
-		slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
-		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
-		return
+	} else {
+		if err := vb.SaveStateCtx(ctx); err != nil {
+			slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("save state: %v", err)})
+			return
+		}
+		// A state read prefers a local copy over the backend, so state left on
+		// whichever node served the create answers describe even after another
+		// node deletes the volume. The seeded path removes it for this reason.
+		if err := vb.RemoveLocalFiles(); err != nil {
+			slog.Warn("ebs.provider.volume.create: could not remove local files", "volume", req.VolumeID, "err", err)
+		}
 	}
 
 	slog.Info("ebs.provider.volume.create: created", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes, "seedBytes", len(req.SeedData))

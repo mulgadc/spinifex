@@ -1,3 +1,7 @@
+// Package otelsetup carries spinifex's HTTP request instrumentation: a tracing
+// middleware and the request counter/duration histogram it feeds. The OTel
+// bootstrap itself lives in bluebottle/pkg/otelsetup, which service entrypoints
+// call directly.
 package otelsetup
 
 import (

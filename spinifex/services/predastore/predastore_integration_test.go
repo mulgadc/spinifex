@@ -45,8 +45,10 @@ const (
 	testRegion       = testpredastore.Region
 )
 
-// createS3Client creates an AWS S3 client for testing.
-func createS3Client(accessKey, secretKey string) *s3.S3 {
+// createS3Client creates an AWS S3 client for testing. The endpoint comes
+// from the fixture rather than a constant: its port is picked at startup, so
+// test binaries running concurrently cannot end up on each other's cluster.
+func createS3Client(fixture *testpredastore.Fixture, accessKey, secretKey string) *s3.S3 {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
@@ -54,7 +56,7 @@ func createS3Client(accessKey, secretKey string) *s3.S3 {
 
 	sess := session.Must(session.NewSession(&aws.Config{
 		Region:           aws.String(testRegion),
-		Endpoint:         aws.String("https://" + testpredastore.Host),
+		Endpoint:         aws.String("https://" + fixture.Host),
 		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
 		S3ForcePathStyle: aws.Bool(true),
 		DisableSSL:       aws.Bool(false),
@@ -71,10 +73,10 @@ func TestIntegration_BucketListing(t *testing.T) {
 	}
 
 	// Start server (only starts once)
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
 	// Create S3 client
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// List all buckets
 	result, err := client.ListBuckets(&s3.ListBucketsInput{})
@@ -99,10 +101,10 @@ func TestIntegration_Authentication_Valid(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
 	// Create client with valid credentials
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Try to list buckets
 	result, err := client.ListBuckets(&s3.ListBucketsInput{})
@@ -119,10 +121,10 @@ func TestIntegration_Authentication_Invalid(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
 	// Create client with invalid credentials
-	client := createS3Client(invalidAccessKey, invalidSecretKey)
+	client := createS3Client(fixture, invalidAccessKey, invalidSecretKey)
 
 	// Try to list buckets - should fail
 	_, err := client.ListBuckets(&s3.ListBucketsInput{})
@@ -144,9 +146,9 @@ func TestIntegration_FileUpload_TestBucket(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Upload test file
 	key := "test1.txt"
@@ -186,9 +188,9 @@ func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Upload test file
 	key := "test1.txt"
@@ -227,9 +229,9 @@ func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	time.Sleep(1 * time.Second)
 
@@ -273,9 +275,9 @@ func TestIntegration_FileOperations_Complete(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Test with both buckets
 	buckets := []string{testBucket, publicBucket}
@@ -365,9 +367,9 @@ func TestIntegration_MultipleFiles(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Upload multiple files to test-bucket
 	fileCount := 5
@@ -414,9 +416,9 @@ func TestIntegration_LargeFile(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	testpredastore.Start(t)
+	fixture := testpredastore.Start(t)
 
-	client := createS3Client(validAccessKey, validSecretKey)
+	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
 	// Create 1MB file
 	size := 1024 * 1024

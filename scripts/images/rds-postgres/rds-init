@@ -567,13 +567,16 @@ SQL
 }
 
 # pgvector is baked in but left uninstalled so tenant databases stay free of it.
-# The appliance master is NOSUPERUSER and the extension is untrusted, so the
-# bootstrap superuser installs it here, scoped to the appliance master alone.
+# The appliance master is NOSUPERUSER and does not own the postgres database, so
+# the bootstrap superuser installs the extension and grants the master CREATE on
+# the database — the privilege its daemon needs to create a per-account schema.
+# Scoped to the appliance master alone; tenant masters skip this entirely.
 create_platform_extensions() {
     [ "${RDS_IS_OCHRE_APPLIANCE:-0}" = "1" ] || return 0
-    log "installing pgvector for the Ochre vector appliance"
-    psql_bootstrap <<'SQL'
+    log "configuring pgvector and platform privileges for the Ochre vector appliance"
+    psql_bootstrap <<SQL
 CREATE EXTENSION IF NOT EXISTS vector;
+GRANT CREATE ON DATABASE postgres TO "${OCHRE_APPLIANCE_MASTER}";
 SQL
 }
 

@@ -307,6 +307,9 @@ if run_ok "initialize"; then
     grep -q 'CREATE EXTENSION' "${PSQL_CALLS}" \
         && fail "initialize: a tenant instance installed a platform extension" \
         || pass "initialize: tenant instance installs no platform extension"
+    grep -q 'GRANT CREATE ON DATABASE' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant instance was granted database CREATE" \
+        || pass "initialize: tenant instance gets no platform database grant"
 
     # The master role is administrative but not a PostgreSQL superuser: a
     # superuser reaches outside the database (COPY FROM PROGRAM, pg_read_file,
@@ -374,6 +377,9 @@ if run_ok "ochre-appliance"; then
     grep -q 'CREATE EXTENSION IF NOT EXISTS vector' "${PSQL_CALLS}" \
         && pass "ochre-appliance: pgvector installed for the platform appliance" \
         || fail "ochre-appliance: pgvector not installed"
+    grep -q 'GRANT CREATE ON DATABASE postgres TO "ochre_vector_admin"' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: master granted CREATE on the database" \
+        || fail "ochre-appliance: master not granted CREATE on the database"
 fi
 unset MASTER_USER
 

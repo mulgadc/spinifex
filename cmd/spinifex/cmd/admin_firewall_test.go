@@ -1,4 +1,4 @@
-package cmd
+package cmd_test
 
 import (
 	"os"
@@ -6,11 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/cmd/spinifex/cmd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// stubFirewallHelper points openFormationPort at a script that logs its
+// stubFirewallHelper points the firewall helper at a script that logs its
 // arguments, and returns the path of that log.
 func stubFirewallHelper(t *testing.T, body string) string {
 	t.Helper()
@@ -19,10 +20,7 @@ func stubFirewallHelper(t *testing.T, body string) string {
 	helper := filepath.Join(dir, "spinifex-firewall-apply")
 	script := "#!/bin/sh\necho \"$*\" >> " + log + "\n" + body
 	require.NoError(t, os.WriteFile(helper, []byte(script), 0o755))
-
-	orig := firewallApplyHelper
-	firewallApplyHelper = helper
-	t.Cleanup(func() { firewallApplyHelper = orig })
+	t.Cleanup(cmd.SetFirewallApplyHelper(helper))
 	return log
 }
 
@@ -39,7 +37,7 @@ func helperCalls(t *testing.T, log string) []string {
 func TestOpenFormationPort(t *testing.T) {
 	log := stubFirewallHelper(t, "exit 0\n")
 
-	closePort := openFormationPort(4432)
+	closePort := cmd.OpenFormationPort(4432)
 	assert.Equal(t, []string{"open-port", "4432"}, helperCalls(t, log))
 
 	closePort()
@@ -50,11 +48,9 @@ func TestOpenFormationPort(t *testing.T) {
 // A machine with no policy installed has nothing to open, and formation must not
 // be held up by looking for a helper that was never installed.
 func TestOpenFormationPort_NoHelperInstalled(t *testing.T) {
-	orig := firewallApplyHelper
-	firewallApplyHelper = filepath.Join(t.TempDir(), "absent")
-	t.Cleanup(func() { firewallApplyHelper = orig })
+	t.Cleanup(cmd.SetFirewallApplyHelper(filepath.Join(t.TempDir(), "absent")))
 
-	closePort := openFormationPort(4432)
+	closePort := cmd.OpenFormationPort(4432)
 	require.NotNil(t, closePort)
 	closePort()
 }
@@ -65,7 +61,7 @@ func TestOpenFormationPort_NoHelperInstalled(t *testing.T) {
 func TestOpenFormationPort_FailureDoesNotBlockFormation(t *testing.T) {
 	log := stubFirewallHelper(t, "exit 1\n")
 
-	closePort := openFormationPort(4432)
+	closePort := cmd.OpenFormationPort(4432)
 	require.NotNil(t, closePort)
 	closePort()
 

@@ -556,6 +556,12 @@ if [ "${1:-}" = "set-peers" ]; then
         exit 1
     fi
     rm -f "$tmp" "$bak"
+
+    # The policy is loaded, so make it survive a reboot too. `disable` turns this
+    # unit off, and forming a cluster means disabling the firewall on every node
+    # first; without this, re-arming would look complete while silently leaving
+    # the node bare after its next boot. Idempotent and quiet in the normal case.
+    systemctl enable spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
 fi
 

@@ -137,6 +137,45 @@ sudo systemctl start spinifex.target
 
 **Multi-node cluster** — install Spinifex from the ISO on **every** server first, following this guide on each one. Once all servers are installed and reachable, follow [Multi-Node Install](/docs/install-multi-node) from Step 2. Do not configure any node until all of them are installed: the first node's `spx admin init` waits for the others to join, and the join must happen while it is waiting.
 
+Read [Joining ISO-installed servers into a cluster](#joining-iso-installed-servers-into-a-cluster) below before you start — the firewall needs turning off while the cluster forms, and back on afterwards.
+
+### Joining ISO-Installed Servers Into a Cluster
+
+Every ISO install comes up as a **standalone cluster of one**, with a firewall that allows cluster traffic only from servers it recognises as cluster members. Right after installation, the only member each server knows about is itself.
+
+That is exactly what you want for a single server, and it is what gets in the way of building a cluster. Servers cannot recognise each other until the cluster is formed, and they cannot form the cluster until they can talk to each other. So the order is:
+
+1. **Turn the firewall off** on every server.
+2. **Form the cluster.**
+3. **Turn the firewall back on.** Each server now knows its peers and scopes itself to them automatically.
+
+**Step 1 — before you begin, on every server:**
+
+```bash
+sudo /usr/local/lib/spinifex/spinifex-firewall-apply disable
+```
+
+Public ports — SSH, 443, 3000 (console), 8443 (S3), 9999 (AWS gateway) and 53 (DNS) — were already open and stay open. What this removes is the restriction on the internal cluster ports: OVN, NATS and the rest. Do this on **every** server, not just the first, because the servers talk to each other in both directions.
+
+> [!WARNING]
+> This leaves the internal cluster ports open to anything that can reach the server. On a machine facing the public internet, form the cluster promptly and complete step 3 as soon as it is up.
+
+**Step 2 — form the cluster:** follow [Multi-Node Install](/docs/install-multi-node) from Step 2 onwards.
+
+**Step 3 — once the cluster is up and verified, on every server:**
+
+```bash
+sudo systemctl restart spinifex-daemon
+```
+
+The node rewrites its peer list from the cluster it is now part of and re-arms itself, including at boot. Confirm every server can see the others:
+
+```bash
+sudo nft list table inet spinifex_filter | grep spinifex_peers
+```
+
+The addresses of **all** your servers should appear. If one is missing, that server's cluster traffic will be blocked — see [Firewall and cluster membership](/docs/install-multi-node#firewall-and-cluster-membership).
+
 ### Setup Complete
 
 **Congratulations! Spinifex is installed.**

@@ -137,6 +137,15 @@ type Config struct {
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool
 
+	// Threads is nbdkit's -t for every volume this service exports: worker
+	// threads per NBD connection, and so the per-volume in-flight ceiling.
+	// 0 leaves nbdkit on its own default.
+	Threads int
+
+	// CacheSizeMB is the plaintext read cache each mounted main volume gets,
+	// in MiB. 0 disables it. Auxiliary -efi volumes are uncached regardless.
+	CacheSizeMB int
+
 	// GCEnabled turns on viperblock chunk garbage collection for every VB this
 	// service constructs: the nbdkit plugin backing each mounted volume, and
 	// the short-lived detached VBs opened for config updates and sealing.
@@ -616,7 +625,8 @@ func launchService(cfg *Config) (err error) {
 		slog.Warn("Viperblock at-rest encryption disabled (no EncryptionKeyFile configured)")
 	}
 
-	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled)
+	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled,
+		"nbdkit_threads", cfg.Threads, "cache_size_mb", cfg.CacheSizeMB)
 
 	// Bound before recovery, which opens engines: without the store every
 	// engine open refuses, and the daemon would come up unable to adopt the

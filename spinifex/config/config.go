@@ -151,13 +151,42 @@ const (
 	EBSProviderQEMUNBD     = "qemunbd"
 )
 
-// EBSConfig selects which provider backs EBS. Not nested under
-// ViperblockConfig: it names the provider boundary, not one provider's
-// settings, so a second provider never needs a rename.
+// Per-volume export tunables. Both are applied per nbdkit process, and
+// spinifex runs one of those per volume, so the host-level cost of each is
+// the value multiplied by the volume count.
+const (
+	// DefaultNBDKitThreads matches nbdkit's own default for a
+	// thread_model=parallel plugin. Passing it explicitly rather than
+	// omitting -t keeps the effective value visible in the process argv.
+	DefaultNBDKitThreads = 16
+
+	// MaxNBDKitThreads is a sanity ceiling, not a tuned limit.
+	MaxNBDKitThreads = 256
+
+	// DefaultCacheSizeMB is the per-volume plaintext read cache.
+	DefaultCacheSizeMB = 128
+)
+
+// EBSConfig selects which provider backs EBS and carries the per-volume
+// export tunables. Not nested under ViperblockConfig: it names the provider
+// boundary, not one provider's settings, so a second provider never needs a
+// rename.
 type EBSConfig struct {
 	// Provider is "viperblockd" or "qemunbd" and may be left unset. Volumes
 	// are persisted in ebsmetadata.
 	Provider string `json:"Provider" mapstructure:"provider"`
+
+	// DefaultThreads is nbdkit's -t: worker threads per NBD connection, which
+	// bounds how many requests are in flight inside viperblock for one volume.
+	// QEMU opens a single connection per volume, so this is the whole
+	// per-volume concurrency ceiling. 0 uses DefaultNBDKitThreads.
+	DefaultThreads int `json:"DefaultThreads" mapstructure:"default_threads"`
+
+	// CacheSizeMB is the per-volume plaintext read cache in MiB. A pointer so
+	// an explicit 0 (cache disabled) stays distinguishable from an unset key
+	// (DefaultCacheSizeMB), the same way ViperblockConfig treats its toggles.
+	// Auxiliary -efi volumes are always uncached regardless of this value.
+	CacheSizeMB *int `json:"CacheSizeMB" mapstructure:"cache_size_mb"`
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
@@ -167,6 +196,23 @@ func (c EBSConfig) ResolvedProvider() string {
 		return EBSProviderViperblockd
 	}
 	return c.Provider
+}
+
+// ResolvedThreads normalizes an unset DefaultThreads to DefaultNBDKitThreads.
+func (c EBSConfig) ResolvedThreads() int {
+	if c.DefaultThreads == 0 {
+		return DefaultNBDKitThreads
+	}
+	return c.DefaultThreads
+}
+
+// ResolvedCacheSizeMB normalizes an unset CacheSizeMB to DefaultCacheSizeMB.
+// An explicit 0 is honoured and disables the cache.
+func (c EBSConfig) ResolvedCacheSizeMB() int {
+	if c.CacheSizeMB == nil {
+		return DefaultCacheSizeMB
+	}
+	return *c.CacheSizeMB
 }
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.
@@ -463,6 +509,15 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q has been removed; set provider = %q or remove the key (this is a one-way switch: volumes move to ebsmetadata)", nodeName, EBSProviderEmbedded, EBSProviderViperblockd)
 		default:
 			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or %q, or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd, EBSProviderQEMUNBD)
+		}
+		// Range checks only. Both settings are deliberately unbounded above by
+		// anything host-aware: they are operator tunables, and the host cost is
+		// the value times the volume count for the operator to weigh.
+		if t := nodeCfg.EBS.DefaultThreads; t < 0 || t > MaxNBDKitThreads {
+			return fmt.Errorf("config: [nodes.%s.ebs] default_threads=%d out of range; use 1-%d, or remove the key for the default of %d", nodeName, t, MaxNBDKitThreads, DefaultNBDKitThreads)
+		}
+		if c := nodeCfg.EBS.CacheSizeMB; c != nil && *c < 0 {
+			return fmt.Errorf("config: [nodes.%s.ebs] cache_size_mb=%d must not be negative; use 0 to disable the cache, or remove the key for the default of %d", nodeName, *c, DefaultCacheSizeMB)
 		}
 	}
 

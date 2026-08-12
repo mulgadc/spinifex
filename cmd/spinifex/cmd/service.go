@@ -393,6 +393,8 @@ var viperblockStartCmd = &cobra.Command{
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
 			EncryptionKeyFile: encryptionKeyFile,
+			Threads:           nodeConfig.EBS.ResolvedThreads(),
+			CacheSizeMB:       nodeConfig.EBS.ResolvedCacheSizeMB(),
 			Debug:             debug,
 		})
 

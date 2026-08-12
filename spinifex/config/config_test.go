@@ -1036,3 +1036,82 @@ provider = "bogus"
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `provider="bogus"`)
 }
+
+func TestEBSConfig_ResolvedTunablesDefault(t *testing.T) {
+	var c EBSConfig
+	assert.Equal(t, DefaultNBDKitThreads, c.ResolvedThreads())
+	assert.Equal(t, DefaultCacheSizeMB, c.ResolvedCacheSizeMB())
+}
+
+func TestEBSConfig_ResolvedTunablesExplicit(t *testing.T) {
+	zero, big := 0, 512
+	assert.Equal(t, 32, EBSConfig{DefaultThreads: 32}.ResolvedThreads())
+	assert.Equal(t, big, EBSConfig{CacheSizeMB: &big}.ResolvedCacheSizeMB())
+
+	// An explicit 0 disables the cache and must not read as "unset", which is
+	// the whole reason CacheSizeMB is a pointer.
+	assert.Equal(t, 0, EBSConfig{CacheSizeMB: &zero}.ResolvedCacheSizeMB())
+}
+
+func TestLoadConfig_EBSTunablesParsed(t *testing.T) {
+	resetViper(t)
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.ebs]
+default_threads = 32
+cache_size_mb = 256
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, 32, cfg.Nodes["n1"].EBS.ResolvedThreads())
+	assert.Equal(t, 256, cfg.Nodes["n1"].EBS.ResolvedCacheSizeMB())
+}
+
+func TestLoadConfig_EBSThreadsOutOfRangeRejected(t *testing.T) {
+	for _, threads := range []int{-1, MaxNBDKitThreads + 1} {
+		t.Run(fmt.Sprintf("threads=%d", threads), func(t *testing.T) {
+			resetViper(t)
+			path := filepath.Join(t.TempDir(), "spinifex.toml")
+			toml := fmt.Sprintf(`
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.ebs]
+default_threads = %d
+`, threads)
+			require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+			_, err := LoadConfig(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "default_threads")
+		})
+	}
+}
+
+func TestLoadConfig_EBSNegativeCacheRejected(t *testing.T) {
+	resetViper(t)
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+
+[nodes.n1.ebs]
+cache_size_mb = -1
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cache_size_mb")
+}

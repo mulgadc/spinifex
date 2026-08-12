@@ -53,6 +53,13 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: northstar
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -60,7 +67,7 @@ jobs:
           go-version-file: "spinifex/go.mod"
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        run: go work init ./spinifex ./viperblock ./predastore ./northstar
 
       - name: Build Spinifex
         run: make -C spinifex build
@@ -114,6 +121,13 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: northstar
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -121,7 +135,7 @@ jobs:
           go-version-file: "spinifex/go.mod"
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        run: go work init ./spinifex ./viperblock ./predastore ./northstar
 
       - name: Run Integration Tests
         run: make -C spinifex test-integration
@@ -157,6 +171,13 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: northstar
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -164,7 +185,7 @@ jobs:
           go-version-file: "spinifex/go.mod"
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        run: go work init ./spinifex ./viperblock ./predastore ./northstar
 
       - name: Run Tests with Race Detector
         run: make -C spinifex test-race
@@ -200,6 +221,13 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: northstar
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -207,7 +235,7 @@ jobs:
           go-version-file: "spinifex/go.mod"
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        run: go work init ./spinifex ./viperblock ./predastore ./northstar
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9

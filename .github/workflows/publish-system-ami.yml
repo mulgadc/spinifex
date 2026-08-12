@@ -99,6 +99,13 @@ jobs:
           ref: dev
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: dev
+          path: northstar
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -116,7 +123,7 @@ jobs:
         # "go.work already exists".
         run: |
           rm -f go.work go.work.sum
-          go work init ./spinifex ./viperblock ./predastore
+          go work init ./spinifex ./viperblock ./predastore ./northstar
 
       - name: Install build + upload tooling
         run: |

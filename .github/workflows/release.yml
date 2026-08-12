@@ -28,6 +28,12 @@ jobs:
           repository: mulgadc/viperblock
           path: viperblock
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          path: northstar
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -72,6 +78,12 @@ jobs:
         with:
           repository: mulgadc/viperblock
           path: viperblock
+
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          path: northstar
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -268,6 +280,12 @@ jobs:
           repository: mulgadc/viperblock
           path: viperblock
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          path: northstar
+
       - name: Checkout Mulga iso-builder
         uses: actions/checkout@v7
         with:
@@ -286,7 +304,7 @@ jobs:
           cache: false
 
       - name: Configure Go workspace
-        run: go work init ./spinifex ./predastore ./viperblock
+        run: go work init ./spinifex ./predastore ./viperblock ./northstar
 
       - name: Install ISO builder dependencies
         run: |

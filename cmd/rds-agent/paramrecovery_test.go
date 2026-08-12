@@ -369,8 +369,8 @@ func (f *fakeRecovery) Restart(context.Context) error {
 func stubProbe(t *testing.T, code int, err error) *engineProbe {
 	t.Helper()
 	cfg := testLoadConfig(t, enginePostgres)
-	return newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
-		return code, err
+	return newPostgresProbe(cfg, func(context.Context, string, ...string) (int, string, error) {
+		return code, "", err
 	})
 }
 

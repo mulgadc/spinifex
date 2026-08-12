@@ -110,6 +110,9 @@ const (
 	// through StatusInfos, so this quotes the tail rather than the whole file.
 	mariadbErrorLogTailBytes = 4096
 	mariadbErrorLogTailLines = 4
+	// How much of the probe client's stderr a reason carries, on the same grounds
+	// as the log tail above.
+	mariadbProbeStderrMaxBytes = 512
 	// Named by the platform drop-in rds-init writes, so both halves reach the
 	// same socket without either asserting it to the other.
 	mariadbSocketFile = "mysqld.sock"
@@ -215,12 +218,16 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		"--no-defaults", "--protocol=socket", "--socket=" + socket,
 		"--user=" + mariadbSuperuser,
 		fmt.Sprintf("--connect-timeout=%d", mariadbProbeConnectTimeoutSeconds),
+		// The platform drop-in offers TLS, and a client that verifies it by default
+		// cannot: the serving cert names the endpoint, not this socket. A local
+		// unix socket gains nothing from TLS, so the probe declines it outright.
+		"--skip-ssl",
 	}
 	probeTimeout := cfg.EngineProbeTimeout
 	if probeTimeout <= 0 {
 		probeTimeout = defaultEngineProbeTimeout
 	}
-	runBounded := func(ctx context.Context, name string, args ...string) (int, error) {
+	runBounded := func(ctx context.Context, name string, args ...string) (int, string, error) {
 		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		defer cancel()
 		return run(probeCtx, name, args...)
@@ -241,16 +248,16 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		// that is not serving yet rather than one that is gone — including a probe
 		// binary that will not run at all. Reporting absent against a live server
 		// would have the rollback guard restart one that is making progress.
-		switch code, err := runBounded(ctx, admin, append(slices.Clone(connect), "ping")...); {
+		switch code, stderr, err := runBounded(ctx, admin, append(slices.Clone(connect), "ping")...); {
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
 		case code != 0:
-			// A server that is genuinely recovering and one that refused to start
-			// are indistinguishable from the socket, and the difference is only
-			// ever stated in the engine's own log.
-			return engineRecovering, withEngineLogTail(
+			// A server that is genuinely recovering and one that refused the client
+			// are indistinguishable from the socket. The server states its side in
+			// its own log, and the client states its side on stderr.
+			return engineRecovering, withProbeStderr(withEngineLogTail(
 				"engine is not answering on its socket yet (startup or crash recovery)",
-				cfg.EngineErrorLog)
+				cfg.EngineErrorLog), stderr)
 		}
 
 		// ping answers successfully even on ER_ACCESS_DENIED, so on its own it
@@ -258,14 +265,36 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		// statement is a literal in the argv rather than on stdin because it
 		// carries nothing secret and a probe reads no result back.
 		query := append(slices.Clone(connect), "--batch", "--skip-column-names", "--execute=SELECT 1")
-		switch code, err := runBounded(ctx, client, query...); {
+		switch code, stderr, err := runBounded(ctx, client, query...); {
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
 		case code != 0:
-			return engineRecovering, "engine answered its socket but would not execute a statement"
+			return engineRecovering, withProbeStderr(
+				"engine answered its socket but would not execute a statement", stderr)
 		}
 		return engineServing, ""
 	}
+}
+
+// Appends what the probe client said on stderr. A client that fails during the
+// handshake is refused by the server without the server ever logging why, so
+// this is the only account of that half of the exchange.
+func withProbeStderr(reason, stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return reason
+	}
+	return reason + "; the probe client reported: " + collapseProbeStderr(stderr)
+}
+
+// One line, bounded: the reason reaches a customer through StatusInfos, and a
+// client that repeats itself per attempt would otherwise crowd out the rest.
+func collapseProbeStderr(stderr string) string {
+	line := strings.Join(strings.Fields(strings.ReplaceAll(stderr, "\n", " ")), " ")
+	if len(line) > mariadbProbeStderrMaxBytes {
+		return line[:mariadbProbeStderrMaxBytes] + "..."
+	}
+	return line
 }
 
 // Appends the last few lines of the engine's error log to reason. An unset path,

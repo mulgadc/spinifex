@@ -192,7 +192,7 @@ func newTestAgent(t *testing.T, cfg config, cp controlPlane, run probeRunner) *A
 
 // staticProbe is a probeRunner that always reports the same exit code.
 func staticProbe(code int) probeRunner {
-	return func(context.Context, string, ...string) (int, error) { return code, nil }
+	return func(context.Context, string, ...string) (int, string, error) { return code, "", nil }
 }
 
 func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput {

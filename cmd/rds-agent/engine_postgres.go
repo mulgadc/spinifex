@@ -60,7 +60,7 @@ func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
 func postgresProbeState(host string, run probeRunner) probeStateFn {
 	return func(ctx context.Context, port int64) (engineState, string) {
 		portArg := strconv.FormatInt(port, 10)
-		code, err := run(ctx, postgresProbeBinary, "-h", host, "-p", portArg, "-q")
+		code, _, err := run(ctx, postgresProbeBinary, "-h", host, "-p", portArg, "-q")
 		switch {
 		case err != nil:
 			// A missing binary or broken image. Reporting healthy on the strength of

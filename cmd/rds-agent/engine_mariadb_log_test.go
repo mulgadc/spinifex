@@ -34,7 +34,7 @@ func TestMariaDBProbe_QuotesTheEngineLogWhenTheSocketIsSilent(t *testing.T) {
 	writePid(t, cfg.EnginePidFile, os.Getpid())
 
 	state, message := mariadbProbeState(cfg,
-		func(context.Context, string, ...string) (int, error) { return 1, nil },
+		func(context.Context, string, ...string) (int, string, error) { return 1, "", nil },
 		func(int) bool { return true })(t.Context(), int64(cfg.EnginePort))
 
 	if state != engineRecovering {
@@ -51,7 +51,7 @@ func TestMariaDBProbe_SurvivesAnAbsentEngineLog(t *testing.T) {
 	writePid(t, cfg.EnginePidFile, os.Getpid())
 
 	state, message := mariadbProbeState(cfg,
-		func(context.Context, string, ...string) (int, error) { return 1, nil },
+		func(context.Context, string, ...string) (int, string, error) { return 1, "", nil },
 		func(int) bool { return true })(t.Context(), int64(cfg.EnginePort))
 
 	if state != engineRecovering {
@@ -59,6 +59,64 @@ func TestMariaDBProbe_SurvivesAnAbsentEngineLog(t *testing.T) {
 	}
 	if message != "engine is not answering on its socket yet (startup or crash recovery)" {
 		t.Errorf("message = %q, want the bare reason when there is no log to quote", message)
+	}
+}
+
+// A client refused during the handshake is closed by the server without the
+// server ever logging a cause, so the engine log alone leaves the failure
+// unexplained and only the client's own stderr names it.
+func TestMariaDBProbe_QuotesTheProbeClientWhenItIsRefused(t *testing.T) {
+	cfg := mariadbTestProbeConfig(t)
+	cfg.EngineErrorLog = writeEngineLog(t, "2026-08-12  4:32:39 148 [Warning] Aborted connection 148\n")
+	writePid(t, cfg.EnginePidFile, os.Getpid())
+
+	state, message := mariadbProbeState(cfg,
+		func(context.Context, string, ...string) (int, string, error) {
+			return 1, "ERROR 2026 (HY000): TLS/SSL error: self-signed certificate\n", nil
+		},
+		func(int) bool { return true })(t.Context(), int64(cfg.EnginePort))
+
+	if state != engineRecovering {
+		t.Errorf("state = %v, want recovering", state)
+	}
+	if !strings.Contains(message, "self-signed certificate") {
+		t.Errorf("message = %q, want the probe client's own error quoted", message)
+	}
+	if !strings.Contains(message, "Aborted connection") {
+		t.Errorf("message = %q, want the engine log kept alongside the client's error", message)
+	}
+}
+
+func TestCollapseProbeStderr(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "folds to one line", in: "ERROR 2026:\n  TLS error\n", want: "ERROR 2026: TLS error"},
+		{name: "empty stays empty", in: "   \n", want: ""},
+		{
+			name: "bounded",
+			in:   strings.Repeat("y", mariadbProbeStderrMaxBytes+50),
+			want: strings.Repeat("y", mariadbProbeStderrMaxBytes) + "...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := collapseProbeStderr(tt.in); got != tt.want {
+				t.Errorf("collapseProbeStderr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A probe that says nothing must not append an empty clause: the reason reaches
+// a customer, and a dangling "reported:" would read as truncated output.
+func TestWithProbeStderrLeavesReasonAloneWhenTheClientIsSilent(t *testing.T) {
+	const reason = "engine is not answering on its socket yet"
+	if got := withProbeStderr(reason, "  \n "); got != reason {
+		t.Errorf("withProbeStderr() = %q, want the reason unchanged", got)
 	}
 }
 

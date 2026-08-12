@@ -572,13 +572,14 @@ func writePid(t *testing.T, path string, pid int) {
 // distinguishes a server replaying its redo log from no server at all.
 func TestMariaDBProbe_SeparatesRecoveringFromAbsent(t *testing.T) {
 	tests := []struct {
-		name     string
-		writePid bool
-		alive    bool
-		pingCode int
-		pingErr  error
-		execCode int
-		want     engineState
+		name       string
+		writePid   bool
+		alive      bool
+		pingCode   int
+		pingStderr string
+		pingErr    error
+		execCode   int
+		want       engineState
 	}{
 		{name: "no pidfile at all", want: engineAbsent},
 		{name: "pidfile names a dead process", writePid: true, want: engineAbsent},
@@ -594,14 +595,14 @@ func TestMariaDBProbe_SeparatesRecoveringFromAbsent(t *testing.T) {
 			if tt.writePid {
 				writePid(t, cfg.EnginePidFile, 4242)
 			}
-			run := func(_ context.Context, name string, args ...string) (int, error) {
+			run := func(_ context.Context, name string, args ...string) (int, string, error) {
 				if strings.HasSuffix(name, mariadbAdminBinary) {
-					return tt.pingCode, tt.pingErr
+					return tt.pingCode, tt.pingStderr, tt.pingErr
 				}
 				if !slices.Contains(args, "--execute=SELECT 1") {
 					t.Errorf("the second stage ran %s %v, want a statement the server has to execute", name, args)
 				}
-				return tt.execCode, nil
+				return tt.execCode, "", nil
 			}
 			stateFn := mariadbProbeState(cfg, run, func(int) bool { return tt.alive })
 
@@ -626,12 +627,17 @@ func TestMariaDBProbe_BoundsAStalledClient(t *testing.T) {
 
 	started := time.Now()
 	state, message := mariadbProbeState(cfg,
-		func(ctx context.Context, _ string, args ...string) (int, error) {
+		func(ctx context.Context, _ string, args ...string) (int, string, error) {
 			if !slices.Contains(args, "--connect-timeout=3") {
 				t.Errorf("probe args = %v, want a client connection timeout", args)
 			}
+			// The platform drop-in offers TLS the serving cert cannot prove for a
+			// local socket, so a verifying client would be refused every time.
+			if !slices.Contains(args, "--skip-ssl") {
+				t.Errorf("probe args = %v, want TLS declined on the unix socket", args)
+			}
 			<-ctx.Done()
-			return -1, ctx.Err()
+			return -1, "", ctx.Err()
 		},
 		func(int) bool { return true })(t.Context(), int64(cfg.EnginePort))
 
@@ -652,11 +658,11 @@ func TestMariaDBProbe_MapsToTheHealthTheControlPlaneReads(t *testing.T) {
 	alive := true
 	serving := true
 	probe := newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg,
-		func(context.Context, string, ...string) (int, error) {
+		func(context.Context, string, ...string) (int, string, error) {
 			if serving {
-				return 0, nil
+				return 0, "", nil
 			}
-			return 1, nil
+			return 1, "", nil
 		},
 		func(int) bool { return alive }))
 
@@ -681,7 +687,7 @@ func TestMariaDBProbe_LiveButUnreachableEngineResetsTheRollbackDeadline(t *testi
 	cfg := mariadbTestProbeConfig(t)
 	writePid(t, cfg.EnginePidFile, 4242)
 	probe := newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg,
-		func(context.Context, string, ...string) (int, error) { return 1, nil },
+		func(context.Context, string, ...string) (int, string, error) { return 1, "", nil },
 		func(int) bool { return true }))
 
 	recovery := &fakeRecovery{restored: true}

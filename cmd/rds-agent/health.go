@@ -1,31 +1,38 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // A non-zero exit is a result, not a fault, so it comes back as a code; err is
-// reserved for the probe failing to run at all.
-type probeRunner func(ctx context.Context, name string, args ...string) (int, error)
+// reserved for the probe failing to run at all. The client's stderr comes back
+// with it: on a refusal it is the only place the reason is ever stated.
+type probeRunner func(ctx context.Context, name string, args ...string) (int, string, error)
 
-func execProbeRunner(ctx context.Context, name string, args ...string) (int, error) {
-	err := exec.CommandContext(ctx, name, args...).Run()
+func execProbeRunner(ctx context.Context, name string, args ...string) (int, string, error) {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	out := strings.TrimSpace(stderr.String())
 	if err == nil {
-		return 0, nil
+		return 0, out, nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return -1, ctxErr
+		return -1, out, ctxErr
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), nil
+		return exitErr.ExitCode(), out, nil
 	}
-	return -1, err
+	return -1, out, err
 }
 
 // What the engine reports about itself, which is the only part of the probe

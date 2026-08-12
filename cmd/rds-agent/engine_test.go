@@ -341,10 +341,10 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	codes := []int{2, 2, 0}
 	probeCall := 0
 	cfg := testProbeConfig()
-	engine.probe = newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
+	engine.probe = newPostgresProbe(cfg, func(context.Context, string, ...string) (int, string, error) {
 		code := codes[min(probeCall, len(codes)-1)]
 		probeCall++
-		return code, nil
+		return code, "", nil
 	})
 	engine.repairTimeout = 100 * time.Millisecond
 	engine.repairPoll = time.Millisecond

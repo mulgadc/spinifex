@@ -60,8 +60,8 @@ func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
 func TestHeartbeater_ChecksServingParametersOnEveryHealthyProbe(t *testing.T) {
 	code := 0
 	cfg := testProbeConfig()
-	probe := newPostgresProbe(cfg, func(context.Context, string, ...string) (int, error) {
-		return code, nil
+	probe := newPostgresProbe(cfg, func(context.Context, string, ...string) (int, string, error) {
+		return code, "", nil
 	})
 	recorder := &countingServingRecorder{}
 	h := newHeartbeater(newFakeControlPlane(), probe, recorder, 0)

@@ -1,6 +1,7 @@
 package host
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -24,17 +26,54 @@ var firewallApplyHelper = "/usr/local/lib/spinifex/spinifex-firewall-apply"
 // firewallPeersPath is read (not written) here to skip a no-op reconcile.
 var firewallPeersPath = "/etc/spinifex/firewall/peers.nft"
 
-// ovnEncapCommand is a var so tests can stand in for the Southbound query.
-// Unprivileged: the remote is TCP, so this needs no local socket and no sudo
-// grant. setup.sh deliberately grants ovn-sbctl to nobody, because its
-// arguments are unrestricted enough to be root-equivalent.
 // natsRoutePattern pulls the address out of a nats-route:// URL, whose userinfo
 // carries the cluster token and must not be mistaken for the host.
 var natsRoutePattern = regexp.MustCompile(`nats-route://(?:[^@/]*@)?([0-9.]+):\d+`)
 
+// ovnEncapCommand is a var so tests can stand in for the Southbound query.
+// Unprivileged: the remote is TCP, so this needs no local socket and no sudo
+// grant. setup.sh deliberately grants ovn-sbctl to nobody, because its
+// arguments are unrestricted enough to be root-equivalent.
 var ovnEncapCommand = func(remote string) *exec.Cmd {
 	return exec.Command("ovn-sbctl", "--db="+remote, "--timeout=10",
 		"--bare", "--columns=ip", "list", "Encap")
+}
+
+// firewallRetryDelay is the first retry gap after a failed reconcile; it doubles
+// up to firewallReconcileInterval. On a fresh bootstrap the daemon routinely
+// starts before OVN's Southbound DB accepts connections, so the first attempt
+// failing is expected rather than exceptional.
+var firewallRetryDelay = 15 * time.Second
+
+// firewallReconcileInterval re-runs the reconcile so a node added or replaced
+// after bootstrap is picked up without a daemon restart. Cheap: an unchanged
+// peer set short-circuits before the helper is invoked.
+var firewallReconcileInterval = 5 * time.Minute
+
+// MaintainFirewall schedules ReconcileFirewall until it succeeds, then re-runs
+// it at firewallReconcileInterval, for the lifetime of ctx. A scheduler only —
+// all the work stays in the one entrypoint.
+//
+// Both halves matter. A single attempt at startup loses the race with
+// ovn-controller registering its chassis, which leaves the node with no policy
+// until something happens to restart the daemon; and without the periodic
+// re-run a membership change is never picked up at all.
+func MaintainFirewall(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig) {
+	delay := firewallRetryDelay
+	for {
+		if err := ReconcileFirewall(configPath, clusterConfig); err != nil {
+			slog.Warn("Failed to reconcile host firewall, will retry", "err", err, "retry_in", delay)
+			delay = min(delay*2, firewallReconcileInterval)
+		} else {
+			delay = firewallReconcileInterval
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
 }
 
 // ReconcileFirewall keeps the host firewall's peer sets in step with cluster
@@ -65,8 +104,16 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 	if err != nil {
 		return fmt.Errorf("read OVN encap addresses: %w", err)
 	}
-	if len(encap) == 0 {
-		return fmt.Errorf("OVN reports no encap addresses; refusing to write a peer set that would drop Geneve")
+
+	// Every chassis, or none. Chassis register as each node's ovn-controller
+	// starts, so a partial answer is the normal state early in a bootstrap, and
+	// writing it would drop Geneve from every node not yet in it. More than
+	// expected is fine — a decommissioned chassis lingering in the DB only makes
+	// the set wider. Waiting costs nothing: the node stays open until the set is
+	// known good, which is the same fail-open posture as the rest of this.
+	if expected := len(clusterConfig.Nodes); len(encap) < expected {
+		return fmt.Errorf("OVN reports %d of %d chassis encap addresses; not writing a partial peer set",
+			len(encap), expected)
 	}
 
 	peers := clusterPeerAddrs(configPath, clusterConfig, encap)

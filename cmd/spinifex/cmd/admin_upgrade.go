@@ -17,6 +17,41 @@ import (
 // tests could point it elsewhere if this command ever grows a test harness.
 var systemdUnitRoot = "/etc/systemd/system"
 
+// upgradeExit is os.Exit, overridable in tests so a failure path can be
+// exercised without killing the test binary.
+var upgradeExit = os.Exit
+
+// errUpgradeFlagsConflict is returned when both --units-only and --skip-units
+// are set, a combination that would leave nothing for the command to do.
+var errUpgradeFlagsConflict = errors.New("--units-only and --skip-units are mutually exclusive")
+
+// validateUpgradeFlags checks flag combinations that runAdminUpgrade cannot
+// proceed with, kept separate from runAdminUpgrade so the check is testable
+// without driving the whole command.
+func validateUpgradeFlags(unitsOnly, skipUnits bool) error {
+	if unitsOnly && skipUnits {
+		return errUpgradeFlagsConflict
+	}
+	return nil
+}
+
+// upgradeSummary decides whether runAdminUpgrade has anything left to do
+// after gathering config and unit status, and what to print when it does
+// not. Kept pure so the dryRun × hasConfigWork × hasUnitWork matrix is
+// testable without driving the whole command.
+func upgradeSummary(dryRun, hasConfigWork, hasUnitWork bool) (proceed bool, message string) {
+	if !hasConfigWork && !hasUnitWork {
+		if dryRun {
+			return false, "\nNothing pending — config and units are current."
+		}
+		return false, "\nNothing to do."
+	}
+	if dryRun {
+		return false, ""
+	}
+	return true, ""
+}
+
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Apply pending config migrations and systemd unit updates",
@@ -45,16 +80,16 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 	unitsOnly, _ := cmd.Flags().GetBool("units-only")
 	skipUnits, _ := cmd.Flags().GetBool("skip-units")
 
-	if unitsOnly && skipUnits {
-		fmt.Fprintln(os.Stderr, "--units-only and --skip-units are mutually exclusive")
-		os.Exit(1)
+	if err := validateUpgradeFlags(unitsOnly, skipUnits); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		upgradeExit(1)
 	}
 
 	// Check that the installation exists.
 	spinifexToml := configDir + "/spinifex.toml"
 	if _, err := os.Stat(spinifexToml); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "No Spinifex installation found at %s\nRun 'spx admin init' first.\n", configDir)
-		os.Exit(1)
+		upgradeExit(1)
 	}
 
 	var pending []migrate.PendingMigration
@@ -68,7 +103,7 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 		unitResult, err = systemd.Reconcile(systemdUnitRoot, systemd.Options{DryRun: true})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error checking systemd units: %v\n", err)
-			os.Exit(1)
+			upgradeExit(1)
 		}
 		reportUnitStatus(unitResult)
 	}
@@ -76,15 +111,11 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 	hasConfigWork := !unitsOnly && len(pending) > 0
 	hasUnitWork := !skipUnits && unitResult.HasChanges()
 
-	if dryRun {
-		if !hasConfigWork && !hasUnitWork {
-			fmt.Println("\nNothing pending — config and units are current.")
-		}
-		return
+	proceed, message := upgradeSummary(dryRun, hasConfigWork, hasUnitWork)
+	if message != "" {
+		fmt.Println(message)
 	}
-
-	if !hasConfigWork && !hasUnitWork {
-		fmt.Println("\nNothing to do.")
+	if !proceed {
 		return
 	}
 
@@ -102,7 +133,7 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 	if hasConfigWork {
 		if err := migrate.DefaultRegistry.RunAllConfig(configDir, dataDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Config migration failed: %v\n", err)
-			os.Exit(1)
+			upgradeExit(1)
 		}
 	}
 
@@ -113,7 +144,7 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 			if errors.Is(err, systemd.ErrRootRequired) {
 				fmt.Fprintln(os.Stderr, "Re-run as root to apply the unit changes reported above: sudo spx admin upgrade --units-only --yes")
 			}
-			os.Exit(1)
+			upgradeExit(1)
 		}
 		reportUnitApply(applied)
 	}
@@ -128,7 +159,7 @@ func reportConfigStatus(configDir string) []migrate.PendingMigration {
 	versions, err := migrate.DefaultRegistry.ConfigVersions(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config versions: %v\n", err)
-		os.Exit(1)
+		upgradeExit(1)
 	}
 
 	fmt.Println("Reading current config versions...")
@@ -143,7 +174,7 @@ func reportConfigStatus(configDir string) []migrate.PendingMigration {
 	pending, err := migrate.DefaultRegistry.PendingConfig(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking pending migrations: %v\n", err)
-		os.Exit(1)
+		upgradeExit(1)
 	}
 
 	if len(pending) == 0 {

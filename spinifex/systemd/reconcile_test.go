@@ -336,3 +336,188 @@ func seedAllUnits(t *testing.T, root string) {
 		writeFile(t, root, name, content)
 	}
 }
+
+// withFakeUnit temporarily adds name to the package-level Units map, so a
+// test can control the exact path Reconcile computes (including a name with
+// a path separator, to point at a directory that does or doesn't exist)
+// without touching the generated production unit set.
+func withFakeUnit(t *testing.T, name, content string) {
+	t.Helper()
+	prev, existed := Units[name]
+	Units[name] = content
+	t.Cleanup(func() {
+		if existed {
+			Units[name] = prev
+		} else {
+			delete(Units, name)
+		}
+	})
+}
+
+func TestHasConflicts_NoConflictsIsFalse(t *testing.T) {
+	result := Result{Statuses: []UnitStatus{
+		{Name: "a.service", Action: ActionNoop},
+		{Name: "b.service", Action: ActionInstall},
+	}}
+	if result.HasConflicts() {
+		t.Error("HasConflicts() = true, want false — no unit is ActionConflict")
+	}
+}
+
+func TestUnitVersion_OverflowingMarkerIsVersionZero(t *testing.T) {
+	// A marker value too large for strconv.Atoi must be treated the same as
+	// no marker at all, not propagate the parse error.
+	content := "# spinifex-unit-version: 99999999999999999999999999\nExecStart=/usr/bin/true\n"
+	if v := unitVersion(content); v != 0 {
+		t.Errorf("unitVersion() = %d, want 0 for an overflowing marker value", v)
+	}
+}
+
+func TestUnitVersion_MarkerNotOnFirstLineIsIgnored(t *testing.T) {
+	content := "[Unit]\n# spinifex-unit-version: 5\nExecStart=/usr/bin/true\n"
+	if v := unitVersion(content); v != 0 {
+		t.Errorf("unitVersion() = %d, want 0 — a marker must be on the first line to count", v)
+	}
+}
+
+func TestSystemctlDaemonReload_MissingBinaryReturnsError(t *testing.T) {
+	// Exercises the real (non-stubbed) production implementation: an empty
+	// PATH means systemctl cannot be found, so the command fails cleanly
+	// instead of touching a real systemd instance.
+	t.Setenv("PATH", t.TempDir())
+	if err := systemctlDaemonReload(); err == nil {
+		t.Fatal("systemctlDaemonReload(): want an error when systemctl is not on PATH, got nil")
+	}
+}
+
+func TestReconcile_UnreadableInstalledUnitReturnsError(t *testing.T) {
+	root := t.TempDir()
+	stubDaemonReload(t)
+	const name = "spinifex-ui.service"
+	// A directory in place of the unit file fails the read with something
+	// other than IsNotExist, exercising the general read-error path
+	// distinct from "missing unit".
+	if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Reconcile(root, Options{})
+	if err == nil {
+		t.Fatal("Reconcile: want an error when an installed unit path is unreadable, got nil")
+	}
+	if !strings.Contains(err.Error(), name) {
+		t.Errorf("err = %v, want it to name the unreadable unit %s", err, name)
+	}
+}
+
+func TestReconcile_WriteFailureIsSurfaced(t *testing.T) {
+	root := t.TempDir()
+	stubDaemonReload(t)
+
+	// A unit whose path has a parent directory that does not exist: the
+	// read reports NotExist (classified Install, like any missing unit),
+	// but the later write into that missing directory fails. Deterministic
+	// and root-safe, unlike a permission-based probe.
+	const name = "missing-parent/fake-install.service"
+	withFakeUnit(t, name, "# spinifex-unit-version: 1\nExecStart=/usr/bin/true\n")
+
+	_, err := Reconcile(root, Options{})
+	if err == nil {
+		t.Fatal("Reconcile: want an error when the write's parent directory is missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "write") {
+		t.Errorf("err = %v, want it to mention the write step", err)
+	}
+}
+
+func TestReconcile_BackupFailureIsSurfaced(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions; this test needs an unprivileged process")
+	}
+	root := t.TempDir()
+	stubDaemonReload(t)
+
+	const name = "nested/fake-backup.service"
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	embedded := "# spinifex-unit-version: 2\nExecStart=/usr/bin/true\n"
+	withFakeUnit(t, name, embedded)
+	stale := setVersion(embedded, 0)
+	writeFile(t, root, name, stale)
+
+	// Lock the nested directory only after seeding it: the initial read
+	// (classification) still succeeds, but backupUnit's write of the
+	// backup copy into the same directory fails.
+	if err := os.Chmod(nested, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(nested, 0o755) })
+
+	_, err := Reconcile(root, Options{})
+	if err == nil {
+		t.Fatal("Reconcile: want an error when the backup write fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "backup") {
+		t.Errorf("err = %v, want it to mention the backup step", err)
+	}
+}
+
+func TestReconcile_DaemonReloadFailureIsSurfaced(t *testing.T) {
+	root := t.TempDir()
+	prevReload := systemctlDaemonReload
+	wantErr := errors.New("boom: reload failed")
+	systemctlDaemonReload = func() error { return wantErr }
+	t.Cleanup(func() { systemctlDaemonReload = prevReload })
+
+	result, err := Reconcile(root, Options{})
+	if err == nil {
+		t.Fatal("Reconcile: want an error when daemon-reload fails, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want it to wrap %v", err, wantErr)
+	}
+	if result.ReloadRan {
+		t.Error("ReloadRan = true despite daemon-reload failing")
+	}
+}
+
+func TestReconcile_DowngradeMarkerIsConflictNotClobbered(t *testing.T) {
+	root := t.TempDir()
+	stubDaemonReload(t)
+	const name = "spinifex-vpcd.service"
+	embedded := realUnit(t, name)
+	// Simulate a downgrade: the installed unit is stamped at a version
+	// newer than what this binary embeds. Reconcile must never clobber a
+	// newer file with an older one — ActionReplace only ever moves forward.
+	future := setVersion(embedded, unitVersion(embedded)+1) + "# from a future release\n"
+	writeFile(t, root, name, future)
+
+	result, err := Reconcile(root, Options{})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	st := findStatus(t, result, name)
+	if st.Action != ActionConflict {
+		t.Errorf("Action = %s, want %s — a newer installed marker must never be replaced", st.Action, ActionConflict)
+	}
+	if st.Applied {
+		t.Error("Applied = true, want false — a downgrade must not clobber a newer unit")
+	}
+	got, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != future {
+		t.Error("downgrade case: installed unit content must be untouched")
+	}
+}
+
+func TestBackupUnit_UnreadableSourceReturnsError(t *testing.T) {
+	_, err := backupUnit(filepath.Join(t.TempDir(), "does-not-exist.service"), 0, 1)
+	if err == nil {
+		t.Fatal("backupUnit: want an error for a nonexistent source path, got nil")
+	}
+}

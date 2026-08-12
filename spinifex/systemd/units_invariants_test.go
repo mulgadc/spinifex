@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unitsDir locates build/systemd by walking up from this test file.
@@ -51,6 +53,23 @@ func unitFiles(t *testing.T, dir string) []string {
 		}
 	}
 	return out
+}
+
+// timeoutStopSec parses a unit's TimeoutStopSec= value (this repo always
+// writes plain seconds, no unit suffix) into a time.Duration.
+func timeoutStopSec(t *testing.T, unit string) time.Duration {
+	t.Helper()
+	for l := range strings.SplitSeq(unit, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(l), "TimeoutStopSec="); ok {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("parse TimeoutStopSec=%q: %v", v, err)
+			}
+			return time.Duration(n) * time.Second
+		}
+	}
+	t.Fatal("unit has no TimeoutStopSec=")
+	return 0
 }
 
 // hasDirective reports whether unit carries an exact directive line (trimmed).
@@ -195,8 +214,8 @@ func TestOptionalNorthstarActivation(t *testing.T) {
 // oneshot orders After= the storage/daemon units (so a target/host stop runs its
 // ExecStop drain first, while those services are still up), the daemon keeps
 // KillMode=process (guests survive a daemon restart — DDIL reattach), and
-// ExecStop passes --only-if-host-stopping so PartOf=spinifex.target firing on
-// every target stop (restart included) does not drain guests that stay up.
+// ExecStop passes --unless-restarting so PartOf=spinifex.target firing on
+// every target stop only skips the drain when a restart is already queued.
 func TestGracefulDrainOrdering(t *testing.T) {
 	dir := unitsDir(t)
 
@@ -220,8 +239,8 @@ func TestGracefulDrainOrdering(t *testing.T) {
 			t.Errorf("spinifex-shutdown.service After= must include %s so the drain stops before it", dep)
 		}
 	}
-	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --only-if-host-stopping") {
-		t.Error("spinifex-shutdown.service must run spx admin node drain --local --only-if-host-stopping on stop via ExecStop")
+	if !hasDirective(drain, "ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --unless-restarting") {
+		t.Error("spinifex-shutdown.service must run spx admin node drain --local --unless-restarting on stop via ExecStop")
 	}
 
 	daemon := readUnit(t, dir, "spinifex-daemon.service")
@@ -235,6 +254,14 @@ func TestGracefulDrainOrdering(t *testing.T) {
 	viperblock := readUnit(t, dir, "spinifex-viperblock.service")
 	if !hasDirective(viperblock, "KillMode=process") {
 		t.Error("spinifex-viperblock.service must keep KillMode=process — in-use nbdkit survives a viperblock restart (DDIL)")
+	}
+
+	// shutdownVolumes reaps idle nbdkit concurrently, so the unit only has to
+	// outlive the single slowest utils.KillProcess grace (120s), not that
+	// grace summed across every mounted volume.
+	const killProcessGracePeriod = 120 * time.Second
+	if got := timeoutStopSec(t, viperblock); got <= killProcessGracePeriod {
+		t.Errorf("spinifex-viperblock.service TimeoutStopSec=%v must strictly exceed the %v KillProcess grace period", got, killProcessGracePeriod)
 	}
 
 	target := readUnit(t, dir, "spinifex.target")

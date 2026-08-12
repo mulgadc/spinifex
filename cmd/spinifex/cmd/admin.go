@@ -118,8 +118,9 @@ var nodeDrainCmd = &cobra.Command{
 its guests via QMP and unmount their volumes (flushing the viperblock WAL) while
 every service is still running. STORAGE/PERSIST/INFRA are left to systemd's
 ordered unit teardown. This is what spinifex-shutdown.service's ExecStop runs,
-with --only-if-host-stopping so it only drains on a genuine host
-shutdown/reboot -- not on a plain "systemctl restart/stop spinifex.target".
+with --unless-restarting so it drains on a genuine host shutdown/reboot and on
+a plain "systemctl stop spinifex.target", but skips the drain when a restart
+of the stack (e.g. "systemctl restart spinifex.target") is already queued.
 Run by hand without that flag, it always drains unconditionally.`,
 	Run: runNodeDrainLocal,
 }
@@ -283,7 +284,9 @@ func init() {
 	nodeCmd.AddCommand(nodeDrainCmd)
 	nodeDrainCmd.Flags().Bool("local", false, "Drain the local node only (required)")
 	nodeDrainCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
-	nodeDrainCmd.Flags().Bool("only-if-host-stopping", false, "Skip the drain unless systemd is unwinding into shutdown.target (real reboot/poweroff); unset, always drains")
+	nodeDrainCmd.Flags().Bool("unless-restarting", false, "Drain on a real host shutdown or a plain target stop; skip only when a restart of the stack is already queued. Unset, always drains")
+	nodeDrainCmd.Flags().Bool("only-if-host-stopping", false, "Deprecated: use --unless-restarting")
+	_ = nodeDrainCmd.Flags().MarkDeprecated("only-if-host-stopping", "use --unless-restarting instead")
 	nodeCmd.AddCommand(nodeJSProbeCmd)
 	nodeJSProbeCmd.Flags().Duration("timeout", 10*time.Second, "Maximum time to wait for the canary round-trip")
 

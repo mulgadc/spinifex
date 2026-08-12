@@ -1172,7 +1172,13 @@ func launchService(cfg *Config) (err error) {
 // nbdkit for volumes with no attached guest (inUse false). Killing an nbdkit a
 // guest is still writing through corrupts that guest's filesystem; the graceful
 // drain (or unmount) path owns reaping in-use nbdkit after the guest is gone.
+//
+// The reap itself fans out one goroutine per idle volume so the wall-clock
+// cost is bounded by the slowest single nbdkit's utils.KillProcess grace, not
+// the sum across every mounted volume — the caller returns (and the process
+// exits) only once every goroutine below has finished.
 func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
+	var wg sync.WaitGroup
 	for _, volume := range volumes {
 		if volume.VB != nil {
 			volume.VB.StopChunkUploader()
@@ -1183,11 +1189,16 @@ func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 				"pid", volume.PID, "name", volume.Name, "socket", volume.Socket)
 			continue
 		}
-		slog.Info("Killing idle nbdkit process", "pid", volume.PID, "name", volume.Name)
-		if err := utils.KillProcess(volume.PID); err != nil {
-			slog.Error("Failed to kill nbdkit process", "pid", volume.PID, "err", err)
-		}
+		wg.Add(1)
+		go func(volume MountedVolume) {
+			defer wg.Done()
+			slog.Info("Killing idle nbdkit process", "pid", volume.PID, "name", volume.Name)
+			if err := utils.KillProcess(volume.PID); err != nil {
+				slog.Error("Failed to kill nbdkit process", "pid", volume.PID, "err", err)
+			}
+		}(volume)
 	}
+	wg.Wait()
 }
 
 // nbdkitInUse best-effort reports whether nbdkit's NBD endpoint still has a

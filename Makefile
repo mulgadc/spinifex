@@ -149,9 +149,13 @@ test-harness:
 AWS_MODEL_CONFORMANCE_REPORT ?= $(CURDIR)/.cache/aws-model-conformance-report.txt
 AWS_MODEL_CONFORMANCE_MODE ?= fail
 AWS_MODEL_OPERATION_COVERAGE_REPORT ?= $(CURDIR)/docs/aws-model-operation-coverage.md
+# -count=1 is load-bearing: the conformance report is written by the test binary,
+# so a cached pass skips the run, leaves no report, and the cat below fails the
+# target. It also keeps the conformance gate honest — a cached result would mean
+# the check never ran against this commit.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
-	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -count=1 -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 	@cat $(AWS_MODEL_CONFORMANCE_REPORT)
 	@$(MAKE) --no-print-directory generate-aws-model-coverage
 	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_REPORT)"

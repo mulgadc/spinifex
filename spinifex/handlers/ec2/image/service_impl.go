@@ -552,6 +552,8 @@ func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID str
 	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, meta.SnapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) && meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias) {
+			slog.WarnContext(ctx, "GetAMISourceVolumeID: system AMI has no snapshot metadata document, falling back to imageID as volume ID",
+				"imageId", imageID, "snapshotId", meta.SnapshotID, "imageOwnerAlias", meta.ImageOwnerAlias)
 			return imageID, nil
 		}
 		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {

@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
@@ -709,17 +710,49 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// admin.ImportImage only wrote the provider's half of the snapshot (its
+	// blocks); this writes the EC2 control plane's, without which
+	// DescribeSnapshots and GetAMISourceVolumeID cannot resolve the import.
+	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+	if err := registerImportedAMISnapshot(metaStore, node.Predastore.Bucket, ami, node.AZ, node.Viperblock.EncryptionKeyFile != ""); err != nil {
+		fmt.Fprintf(os.Stderr, "Imported %s but could not register its snapshot: %v\n", volumeId, err)
+		os.Exit(1)
+	}
+
 	// The document is what DescribeImages enumerates, so it is written last:
 	// until it exists the AMI is not launchable, and an import that failed
 	// partway leaves no half-registered image behind.
 	ami.State = "available"
-	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), ami); err != nil {
 		fmt.Fprintf(os.Stderr, "Imported %s but could not register it: %v\n", volumeId, err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+}
+
+// registerImportedAMISnapshot writes the EC2 control plane's snapshot document
+// for a catalog-imported AMI. The provider-backed import path only writes the
+// storage backend's blocks under ami.SnapshotID, so without this a launch or
+// DescribeSnapshots call cannot resolve it. The volume ID matches ami.ImageID:
+// admin.ImportImage creates the volume under the AMI's own ID.
+func registerImportedAMISnapshot(store objectstore.ObjectStore, bucket string, ami ebsmetadata.AMI, az string, encrypted bool) error {
+	cfg := &handlers_ec2_snapshot.SnapshotConfig{
+		SnapshotID:       ami.SnapshotID,
+		VolumeID:         ami.ImageID,
+		VolumeSize:       utils.SafeUint64ToInt64(ami.VolumeSizeGiB),
+		State:            "completed",
+		Progress:         "100%",
+		StartTime:        time.Now(),
+		Description:      fmt.Sprintf("Imported AMI volume for %s", ami.Name),
+		Encrypted:        encrypted,
+		OwnerID:          utils.GlobalAccountID,
+		AvailabilityZone: az,
+	}
+	if err := handlers_ec2_snapshot.WriteSnapshotConfig(store, bucket, ami.SnapshotID, cfg); err != nil {
+		return fmt.Errorf("register snapshot metadata: %w", err)
+	}
+	return nil
 }
 
 // caBakeRunCommand installs the uploaded CA into the guest trust store across

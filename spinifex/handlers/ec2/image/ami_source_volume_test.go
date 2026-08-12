@@ -2,6 +2,8 @@ package handlers_ec2_image
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -48,6 +50,30 @@ func TestGetAMISourceVolumeID_BundledSystemAMI(t *testing.T) {
 	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-sys01")
 	require.NoError(t, err)
 	assert.Equal(t, "ami-sys01", got, "the bundled AMI's snapshot reads chunks from a volume named after the AMI")
+}
+
+// TestGetAMISourceVolumeID_BundledSystemAMI_LogsFallbackWarning locks that the
+// bundled-system fallback is observable: it masks a missing control-plane
+// document, so a caller relying on it (e.g. a stale catalog import predating
+// this fix) must be able to spot it in the logs rather than launch silently.
+func TestGetAMISourceVolumeID_BundledSystemAMI_LogsFallbackWarning(t *testing.T) {
+	svc, store := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+		ImageID: "ami-sys02", SnapshotID: "snap-ami-sys02", ImageOwnerAlias: "system",
+	}, "")
+
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-sys02")
+	require.NoError(t, err)
+	assert.Equal(t, "ami-sys02", got)
+
+	logs := buf.String()
+	assert.Contains(t, logs, "level=WARN", "the fallback masking a missing snapshot document must be visible")
+	assert.Contains(t, logs, "ami-sys02")
 }
 
 // TestGetAMISourceVolumeID_AccountAMIMissingSnapshotMetadata locks that the

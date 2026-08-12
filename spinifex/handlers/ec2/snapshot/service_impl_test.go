@@ -309,6 +309,31 @@ func TestDescribeSnapshots_Empty(t *testing.T) {
 	assert.Empty(t, result.Snapshots)
 }
 
+// TestDescribeSnapshots_ImportedAMISnapshotVisible locks that a snapshot
+// registered directly via WriteSnapshotConfig -- the way a provider-backed
+// AMI import registers its snapshot, without ever calling CreateSnapshot --
+// is still listed. Before that registration exists, ListObjectsV2 finds the
+// provider-written "snap-.../" prefix but getSnapshotConfig 404s on it, and
+// DescribeSnapshots silently skips it.
+func TestDescribeSnapshots_ImportedAMISnapshotVisible(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	require.NoError(t, WriteSnapshotConfig(store, "test-bucket", "snap-ami-import01", &SnapshotConfig{
+		SnapshotID: "snap-ami-import01",
+		VolumeID:   "ami-import01",
+		VolumeSize: 8,
+		State:      "completed",
+		Progress:   "100%",
+		OwnerID:    testAccountID,
+	}))
+
+	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, result.Snapshots, 1)
+	assert.Equal(t, "snap-ami-import01", *result.Snapshots[0].SnapshotId)
+	assert.Equal(t, "ami-import01", *result.Snapshots[0].VolumeId)
+}
+
 // TestDescribeSnapshots_AccountScoping tests that account A cannot see account B's snapshots.
 func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)

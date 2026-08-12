@@ -23,6 +23,12 @@ const (
 	KVBucketENIsVersion = 1
 )
 
+// AutoENIDescriptionPrefix marks an ENI the launch path created for an
+// instance, as opposed to one a caller created through the API. It is the only
+// thing distinguishing the two before the attachment lands, which is what lets
+// a sweep tell an abandoned launch from a deliberate standalone ENI.
+const AutoENIDescriptionPrefix = "Primary network interface for "
+
 // ENIRecord represents a stored Elastic Network Interface.
 type ENIRecord struct {
 	NetworkInterfaceId string `json:"network_interface_id"`
@@ -758,6 +764,70 @@ func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instan
 		}
 	}
 	return out, nil
+}
+
+// AccountENI pairs a record with the account its key is scoped by, which a
+// cluster-wide sweep needs because it has no single account to scope to.
+type AccountENI struct {
+	AccountID string
+	Record    ENIRecord
+}
+
+// ListAbandonedInstanceENIs returns auto-created instance ENIs that never
+// reached an attachment and are older than minAge.
+//
+// A launch attaches within seconds of creating the ENI, and stopping an
+// instance leaves the attachment in place, so an unattached one this old is
+// the residue of a launch that died in between. Such a record keeps its
+// security group undeletable forever, since the SG dependency check counts it.
+func (s *VPCServiceImpl) ListAbandonedInstanceENIs(ctx context.Context, minAge time.Duration) ([]AccountENI, error) {
+	keys, err := s.eniKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var out []AccountENI
+	for _, key := range keys {
+		if key == utils.VersionKey {
+			continue
+		}
+		accountID, _, found := strings.Cut(key, ".")
+		if !found || accountID == "" {
+			continue
+		}
+		entry, err := s.eniKV.Get(ctx, key)
+		if err != nil {
+			continue
+		}
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			continue
+		}
+		if !eniIsAbandonedLaunch(&record, minAge) {
+			continue
+		}
+		out = append(out, AccountENI{AccountID: accountID, Record: record})
+	}
+	return out, nil
+}
+
+// eniIsAbandonedLaunch reports whether a record is an instance ENI left behind
+// by a launch that never attached it. A zero CreatedAt is not reapable: age is
+// the only guard against deleting an ENI a launch is still using.
+func eniIsAbandonedLaunch(record *ENIRecord, minAge time.Duration) bool {
+	if !strings.HasPrefix(record.Description, AutoENIDescriptionPrefix) {
+		return false
+	}
+	if record.InstanceId != "" || record.AttachmentId != "" || record.Status == "in-use" {
+		return false
+	}
+	if record.CreatedAt.IsZero() {
+		return false
+	}
+	return time.Since(record.CreatedAt) >= minAge
 }
 
 // FindENIByAttachment scans the ENI bucket for the record with the given

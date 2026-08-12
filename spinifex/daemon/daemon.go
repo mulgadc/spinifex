@@ -1893,6 +1893,9 @@ func (d *Daemon) startCluster() error {
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
 		}
+		if eniOrphan := d.newENIOrphanReaper(); eniOrphan != nil {
+			reapers = append(reapers, eniOrphan)
+		}
 		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
 			reapers = append(reapers, gpuRec)
 		}

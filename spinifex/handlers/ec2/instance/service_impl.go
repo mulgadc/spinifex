@@ -646,7 +646,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		if input.SubnetId != nil && *input.SubnetId != "" && s.eniCreator != nil {
 			eniOut, eniErr := s.eniCreator.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 				SubnetId:    input.SubnetId,
-				Description: aws.String("Primary network interface for " + instance.ID),
+				Description: aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + instance.ID),
 				Groups:      input.SecurityGroupIds,
 			}, accountID)
 			if eniErr != nil {

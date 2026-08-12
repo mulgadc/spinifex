@@ -105,6 +105,10 @@ type MountedVolume struct {
 	// for the life of the export, so a republish asking for the other mode
 	// cannot reuse this one.
 	ReadOnly bool
+
+	// Lease is the cluster-wide claim on this volume, held for as long as the
+	// export is up and given back when this entry leaves cfg.MountedVolumes.
+	Lease *volumeLease
 }
 type Config struct {
 	ConfigPath     string
@@ -164,6 +168,11 @@ type Config struct {
 	// standing up a real S3 backend.
 	constructVB func(ctx context.Context, volumeName string) (*viperblock.VB, int, error)
 
+	// leases excludes a second viperblock engine on a volume this node has
+	// open. Nil means exclusion cannot be established, and every engine open
+	// refuses rather than proceeding blind.
+	leases *volumeLeases
+
 	mu sync.Mutex
 }
 
@@ -177,12 +186,27 @@ func (cfg *Config) seal(ctx context.Context, volumeName string) error {
 }
 
 // buildVB constructs volumeName's daemon-side VB, honouring a test's
-// injected constructVB if there is one.
-func (cfg *Config) buildVB(ctx context.Context, volumeName string) (*viperblock.VB, int, error) {
-	if cfg.constructVB != nil {
-		return cfg.constructVB(ctx, volumeName)
+// injected constructVB if there is one. The returned lease is the caller's to
+// release once the engine is closed.
+func (cfg *Config) buildVB(ctx context.Context, volumeName string) (*viperblock.VB, int, *volumeLease, error) {
+	lease, err := cfg.acquireVolumeLease(ctx, volumeName)
+	if err != nil {
+		return nil, 0, nil, err
 	}
-	return constructMountedVB(ctx, cfg, volumeName)
+
+	construct := func(ctx context.Context, volumeName string) (*viperblock.VB, int, error) {
+		return constructMountedVB(ctx, cfg, volumeName)
+	}
+	if cfg.constructVB != nil {
+		construct = cfg.constructVB
+	}
+
+	vb, cacheSize, err := construct(ctx, volumeName)
+	if err != nil {
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, 0, nil, err
+	}
+	return vb, cacheSize, lease, nil
 }
 
 type Service struct {
@@ -309,11 +333,21 @@ func readVolumeState(ctx context.Context, cfg *Config, volumeName string) (viper
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
 // flushes it back to predastore.
-func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, error) {
+//
+// The returned lease is the volume's cluster-wide claim. It is the caller's to
+// release, and must outlive the VB: releasing it while the engine is still
+// open readmits a second writer.
+func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, *volumeLease, error) {
+	lease, err := cfg.acquireVolumeLease(ctx, volumeName)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
-		return nil, fmt.Errorf("new viperblock: %w", err)
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, fmt.Errorf("new viperblock: %w", err)
 	}
 
 	// New starts the chunk uploader and WAL syncer, so a failure below must
@@ -323,18 +357,19 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 		if !opened {
 			vb.StopChunkUploader()
 			vb.StopWALSyncer()
+			cfg.releaseVolumeLease(ctx, lease)
 		}
 	}()
 
 	if err := vb.Backend.InitCtx(ctx); err != nil {
-		return nil, fmt.Errorf("backend init: %w", err)
+		return nil, nil, fmt.Errorf("backend init: %w", err)
 	}
 	if err := loadStateWithRetry(ctx, vb, volumeName); err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
+		return nil, nil, fmt.Errorf("load state: %w", err)
 	}
 
 	opened = true
-	return vb, nil
+	return vb, lease, nil
 }
 
 // isAuxVolume reports whether a volume is an -efi auxiliary volume. Auxiliary
@@ -462,22 +497,24 @@ func clearStaleSealReceipt(baseDir, volume string) {
 // MUST Close the returned VB; on error the WAL syncer is stopped and no VB is
 // returned. The caller MUST ensure no nbdkit process is writing the shared
 // BaseDir first (post-KillProcess, or volume detached).
-func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, error) {
-	vb, err := openVolumeVB(ctx, cfg, volumeName)
+func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, *volumeLease, error) {
+	vb, lease, err := openVolumeVB(ctx, cfg, volumeName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := vb.LoadBlockStateCtx(ctx); err != nil {
 		vb.StopWALSyncer()
-		return nil, fmt.Errorf("load block state: %w", err)
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, fmt.Errorf("load block state: %w", err)
 	}
 	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
 	// state itself; on failure retain the local WAL (no Close) for retry.
 	if err := vb.RecoverLocalWALs(); err != nil {
 		vb.StopWALSyncer()
-		return nil, fmt.Errorf("recover local WALs: %w", err)
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, fmt.Errorf("recover local WALs: %w", err)
 	}
-	return vb, nil
+	return vb, lease, nil
 }
 
 // sealVolumeVB persists a detached volume's block->object map to predastore.
@@ -487,10 +524,12 @@ func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*v
 // the plugin's recover sequence (LoadBlockState + RecoverLocalWALs replay
 // un-sealed chunk WALs) then Close()s to flush the map.
 func sealVolumeVB(ctx context.Context, cfg *Config, volumeName string) error {
-	vb, err := openLoadedVolumeVB(ctx, cfg, volumeName)
+	vb, lease, err := openLoadedVolumeVB(ctx, cfg, volumeName)
 	if err != nil {
 		return err
 	}
+	defer cfg.releaseVolumeLease(ctx, lease)
+
 	// Close removes local files only after the predastore writes succeed, so a
 	// failed seal leaves the WAL intact rather than losing data.
 	if err := vb.CloseCtx(ctx); err != nil {
@@ -580,6 +619,15 @@ func launchService(cfg *Config) (err error) {
 
 	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL, "gc_enabled", cfg.GCEnabled)
 
+	// Bound before recovery, which opens engines: without the store every
+	// engine open refuses, and the daemon would come up unable to adopt the
+	// exports that outlived it.
+	leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
+	if err != nil {
+		return fmt.Errorf("volume leases: %w", err)
+	}
+	cfg.leases = leases
+
 	// Rebuild MountedVolumes from any nbdkit processes that survived a
 	// restart before the daemon accepts a single request, so a handler can
 	// never race recovery and open a second engine against a live volume.
@@ -654,6 +702,8 @@ func launchService(cfg *Config) (err error) {
 					slog.ErrorContext(ctx, "Failed to delete nbd socket", "err", err, "socket", matched.Socket)
 				}
 			}
+
+			cfg.releaseVolumeLease(ctx, matched.Lease)
 
 			slog.InfoContext(ctx, "ebs.delete: cleaned up mounted volume", "volume", ebsRequest.Volume, "pid", matched.PID)
 		} else {
@@ -807,13 +857,15 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openLoadedVolumeVB(ctx, cfg, req.Volume)
+		vb, lease, err := openLoadedVolumeVB(ctx, cfg, req.Volume)
 		if err != nil {
 			slog.ErrorContext(ctx, "ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			utils.MarkSpanError(span, err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}
+		defer cfg.releaseVolumeLease(ctx, lease)
+
 		applyErr := applyConfigUpdate(ctx, vb, req)
 		if closeErr := vb.CloseCtx(ctx); closeErr != nil {
 			slog.ErrorContext(ctx, "ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)

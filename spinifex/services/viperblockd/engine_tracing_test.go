@@ -44,9 +44,10 @@ func TestOpenVolumeVB_S3TimeJoinsTheCallersTrace(t *testing.T) {
 	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
 	// The open is expected to fail on a bucket with no state in it. What is
 	// under test is which spans it emitted on the way, not whether it opened.
-	vb, err := openVolumeVB(ctx, cfg, "vol-tracedopen000001")
+	vb, lease, err := openVolumeVB(ctx, cfg, "vol-tracedopen000001")
 	require.Error(t, err)
 	require.Nil(t, vb)
+	require.Nil(t, lease)
 	caller.End()
 
 	var joined int

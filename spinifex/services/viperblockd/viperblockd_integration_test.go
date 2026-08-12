@@ -25,19 +25,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupEmbeddedNATS starts an embedded NATS server for testing.
+// setupEmbeddedNATS starts an embedded NATS server for testing. JetStream is
+// on because volume leases live in a KV bucket, and a daemon that cannot take
+// one refuses to open an engine.
 func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	opts := &server.Options{
-		Host: "127.0.0.1",
-		Port: -1, // Random available port
+		Host:      "127.0.0.1",
+		Port:      -1, // Random available port
+		JetStream: true,
+		StoreDir:  t.TempDir(),
 	}
 	ns := natstest.RunServer(opts)
 
 	if ns == nil {
 		t.Fatal("Failed to start embedded NATS server")
 	}
+	t.Cleanup(ns.Shutdown)
 
 	return ns, ns.ClientURL()
+}
+
+// installTestVolumeLeases gives cfg a lease store backed by natsURL's
+// JetStream, which every engine-open path needs before it will proceed.
+func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
+	t.Helper()
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner())
+	require.NoError(t, err)
+	cfg.leases = leases
 }
 
 // setupTestConfig creates a test configuration with proper paths.
@@ -57,6 +76,7 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 		MountedVolumes: []MountedVolume{},
 		NodeName:       "test-node",
 	}
+	installTestVolumeLeases(t, cfg, natsURL)
 
 	return cfg
 }

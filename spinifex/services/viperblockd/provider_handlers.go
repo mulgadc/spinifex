@@ -58,6 +58,17 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 }
 
 func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
+	// The lease store has to exist before any subject is served: a handler
+	// that reaches an engine open without one refuses, and refusing every
+	// publish is a worse failure than not starting.
+	if cfg.leases == nil {
+		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
+		if err != nil {
+			return fmt.Errorf("volume leases: %w", err)
+		}
+		cfg.leases = leases
+	}
+
 	subs := []struct {
 		subject string
 		handler providerMsgHandler
@@ -593,10 +604,15 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	vb, err := openVolumeVB(ctx, cfg, req.VolumeID)
+	vb, lease, err := openVolumeVB(ctx, cfg, req.VolumeID)
 	if err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
 			respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: notFoundError("volume %s not found", req.VolumeID)})
+			return
+		}
+		if errors.Is(err, errVolumeLeaseHeld) {
+			slog.Error("ebs.provider.volume.expand: volume is leased elsewhere", "volume", req.VolumeID, "err", err)
+			respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is open elsewhere: %v", req.VolumeID, err)})
 			return
 		}
 		slog.Error("ebs.provider.volume.expand: open volume failed", "volume", req.VolumeID, "err", err)
@@ -606,6 +622,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	defer func() {
 		vb.StopChunkUploader()
 		vb.StopWALSyncer()
+		cfg.releaseVolumeLease(ctx, lease)
 	}()
 
 	currentBytes := utils.SafeUint64ToInt64(vb.GetVolumeSize())
@@ -876,13 +893,14 @@ func copySnapshotOnVolume(ctx context.Context, cfg *Config, volumeID, srcSnapsho
 		return copySnapshotMetaWithVB(mv.VB, volumeID, srcSnapshotID, dstSnapshotID)
 	}
 
-	vb, err := openVolumeVB(ctx, cfg, volumeID)
+	vb, lease, err := openVolumeVB(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		vb.StopChunkUploader()
 		vb.StopWALSyncer()
+		cfg.releaseVolumeLease(ctx, lease)
 	}()
 	return copySnapshotMetaWithVB(vb, volumeID, srcSnapshotID, dstSnapshotID)
 }
@@ -1250,11 +1268,22 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	ebsResponse.Mounted = false
 	defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
 
-	vb, nbdCacheSize, err := cfg.buildVB(ctx, volumeName)
+	vb, nbdCacheSize, lease, err := cfg.buildVB(ctx, volumeName)
 	if err != nil {
 		ebsResponse.Error = err.Error()
 		return ebsResponse, err
 	}
+
+	// The lease belongs to the export from here on. Every failure below leaves
+	// without one, so it has to go back or the volume stays wedged until it
+	// expires.
+	mounted := false
+	defer func() {
+		if !mounted {
+			cfg.releaseVolumeLease(ctx, lease)
+		}
+	}()
+
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", utils.SafeUint64ToInt64(vb.GetVolumeSize())))
 
 	useTCP := cfg.NBDTransport == types.NBDTransportTCP
@@ -1421,9 +1450,11 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		ConfigSub: configSub,
 		OwnerSubs: ownerSubs,
 		ReadOnly:  readOnly,
+		Lease:     lease,
 	})
 	cfg.mu.Unlock()
 
+	mounted = true
 	return ebsResponse, nil
 }
 
@@ -1532,6 +1563,11 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 				}
 			}
 			cfg.mu.Unlock()
+
+			// The export is gone, so the volume may be opened elsewhere. A
+			// failed seal keeps the entry, and so keeps the lease, because the
+			// retry has to be the only writer too.
+			cfg.releaseVolumeLease(ctx, matched.Lease)
 		}
 	}
 

@@ -126,7 +126,7 @@ func corroborateNbdkit(cfg *Config, disc discoveredNbdkit) bool {
 // (cfg.buildVB, mountVolume's construction) and registers the same
 // config/owner subscriptions a fresh mount would. Never touches the process.
 func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc discoveredNbdkit) (MountedVolume, error) {
-	vb, _, err := cfg.buildVB(ctx, disc.Volume)
+	vb, _, lease, err := cfg.buildVB(ctx, disc.Volume)
 	if err != nil {
 		return MountedVolume{}, fmt.Errorf("construct VB: %w", err)
 	}
@@ -154,6 +154,7 @@ func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc 
 		VB:        vb,
 		ConfigSub: configSub,
 		OwnerSubs: ownerSubs,
+		Lease:     lease,
 	}, nil
 }
 

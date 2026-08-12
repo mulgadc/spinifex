@@ -79,9 +79,10 @@ func TestOpenVolumeVB_FailedOpenLeavesNoChunkUploader(t *testing.T) {
 
 	before := chunkUploaderFrames(t)
 
-	vb, err := openVolumeVB(t.Context(), cfg, "vol-invariantleak001")
+	vb, lease, err := openVolumeVB(t.Context(), cfg, "vol-invariantleak001")
 	require.Error(t, err, "the fast-failing backend must fail the open, or this test proves nothing")
 	require.Nil(t, vb)
+	require.Nil(t, lease)
 
 	assert.Equal(t, before, chunkUploaderFrames(t),
 		"a failed open must stop the uploader viperblock.New started; the caller gets no handle to stop it with")

@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +125,7 @@ func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
 		ID: id, AccountID: owner, Status: vm.StateStopped,
 		Instance: &ec2.Instance{InstanceId: aws.String(id), MetadataOptions: buildMetadataOptions(nil, "")},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stored}}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
 
 	out, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
@@ -133,15 +134,15 @@ func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
 	}, owner)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), aws.Int64Value(out.InstanceMetadataOptions.HttpPutResponseHopLimit))
-	require.Contains(t, store.wroteStopped, id)
-	assert.Equal(t, int64(3), aws.Int64Value(store.wroteStopped[id].Instance.MetadataOptions.HttpPutResponseHopLimit))
+	require.Contains(t, store.WroteStopped, id)
+	assert.Equal(t, int64(3), aws.Int64Value(store.WroteStopped[id].Instance.MetadataOptions.HttpPutResponseHopLimit))
 }
 
 // An unknown instance is reported absent, not a server error.
 func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		vmMgr:        mgrWith(map[string]*vm.VM{}),
-		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+		stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}},
 	}
 	_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId:              aws.String("i-ghost"),
@@ -171,7 +172,7 @@ func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
 	t.Run("stopped", func(t *testing.T) {
 		id := "i-nil-stop"
 		stored := &vm.VM{ID: id, AccountID: owner, Status: vm.StateStopped, Instance: nil}
-		store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: stored}}
+		store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stored}}
 		svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
 		_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 			InstanceId: aws.String(id), HttpPutResponseHopLimit: aws.Int64(2),

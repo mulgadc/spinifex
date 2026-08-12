@@ -52,6 +52,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -1764,7 +1765,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
-	fakeStore := newFakeStateStore()
+	fakeStore := vmmock.New()
 	daemon.stateStore = fakeStore
 
 	volumeID := "vol-data-self-heal"
@@ -1838,7 +1839,7 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 		AttachedInstance: instanceID, // never cleared: Unmount never ran on this path
 	})
 
-	fakeStore := newFakeStateStore()
+	fakeStore := vmmock.New()
 	mgr := vm.NewManagerWithDeps(vm.Deps{
 		NodeID:          daemon.node,
 		StateStore:      fakeStore,

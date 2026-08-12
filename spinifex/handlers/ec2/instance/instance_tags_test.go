@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,7 +142,7 @@ func stoppedTagInstance(id, accountID string, tags []*ec2.Tag) *vm.VM {
 
 func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
 	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-123": stored}}
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -151,18 +152,18 @@ func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{"Name": "web", "env": "prod"}
-	written := store.loadByID["i-123"]
+	written := store.Stopped["i-123"]
 	require.NotNil(t, written)
 	assert.Equal(t, want, tagsAsMap(written.Instance.Tags))
 	assert.Equal(t, want, writer.tags)
 	assert.Equal(t, "i-123", writer.resourceID)
 	assert.Equal(t, "111122223333", writer.accountID)
-	assert.Equal(t, 1, store.updateStoppedCalls)
+	assert.Equal(t, 1, store.UpdateStoppedCalls)
 }
 
 func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
 	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web", "env", "dev"))
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-123": stored}}
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -172,12 +173,12 @@ func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{"Name": "web"}
-	assert.Equal(t, want, tagsAsMap(store.loadByID["i-123"].Instance.Tags))
+	assert.Equal(t, want, tagsAsMap(store.Stopped["i-123"].Instance.Tags))
 	assert.Equal(t, want, writer.tags)
 }
 
 func TestTagStoppedInstance_NotFound(t *testing.T) {
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -187,12 +188,12 @@ func TestTagStoppedInstance_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 	assert.Zero(t, writer.calls)
-	assert.Empty(t, store.wroteStopped)
+	assert.Empty(t, store.WroteStopped)
 }
 
 func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 	stored := stoppedTagInstance("i-123", "999988887777", tagList("Name", "web"))
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-123": stored}}
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -202,7 +203,7 @@ func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 	assert.Zero(t, writer.calls)
-	assert.Empty(t, store.wroteStopped)
+	assert.Empty(t, store.WroteStopped)
 }
 
 // TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect covers a
@@ -212,7 +213,7 @@ func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 // stale stopped entry, and the caller must see a NotFound-shaped error.
 func TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}, claimAfterLoad: true}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-123": stored}, ClaimAfterLoad: true}
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -221,13 +222,13 @@ func TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 	}, false, writer, "111122223333")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
-	assert.Empty(t, store.loadByID, "the claimed record must not be resurrected")
-	assert.Equal(t, []string{"i-123"}, store.claimedStopped)
+	assert.Empty(t, store.Stopped, "the claimed record must not be resurrected")
+	assert.Equal(t, []string{"i-123"}, store.ClaimedStopped)
 }
 
 func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {
 	stored := stoppedTagInstance("i-123", "111122223333", tagList("Name", "web"))
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{"i-123": stored}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-123": stored}}
 	writer := &fakeTagWriter{err: errors.New("s3 down")}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -236,5 +237,5 @@ func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {
 	}, false, writer, "111122223333")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-	assert.Empty(t, store.wroteStopped)
+	assert.Empty(t, store.WroteStopped)
 }

@@ -179,8 +179,7 @@ func TestMariaDBInstance(t *testing.T) {
 		future.DBName = futureDB
 		harness.MariaDB(t, client, future,
 			"CREATE TABLE future_table (id int primary key); INSERT INTO future_table VALUES (1);")
-		assert.Equal(t, "1", strings.TrimSpace(harness.MariaDB(t, client, future,
-			"SELECT id FROM future_table;")))
+		assert.Equal(t, "1", mariaValue(t, client, future, "SELECT id FROM future_table;"))
 
 		out, err := harness.TryMariaDB(client, conn,
 			"CALL `_spinifex_rds`.`create_database`('mysql');")

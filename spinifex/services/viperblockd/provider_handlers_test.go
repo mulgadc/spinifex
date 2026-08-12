@@ -254,6 +254,41 @@ func TestProviderHandlers_DeleteVolume_AbsentIsIdempotent(t *testing.T) {
 	assert.Nil(t, resp.Error, "deleting an absent volume must succeed")
 }
 
+// TestProviderHandlers_DeleteVolume_UnansweredOwnerProbeRefuses pins the
+// difference between "nobody holds this volume" and "nobody answered". A
+// subscriber that never replies is what a busy or partitioned owner looks
+// like from here, and reading it as unmounted deletes a volume a guest may
+// still be writing to.
+func TestProviderHandlers_DeleteVolume_UnansweredOwnerProbeRefuses(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	store := objectstore.NewMemoryObjectStore()
+	prev := providerObjectStoreFactory
+	providerObjectStoreFactory = func(*Config) objectstore.ObjectStore { return store }
+	t.Cleanup(func() { providerObjectStoreFactory = prev })
+
+	const volumeName = "vol-silentowner01"
+	subject, err := ebsprovider.GetVolumeOwnerSubject(volumeName)
+	require.NoError(t, err)
+
+	// Subscribed but silent. A responder exists, so the probe times out rather
+	// than coming back as ErrNoResponders.
+	sub, err := nc.Subscribe(subject, func(*nats.Msg) {})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion, "volume_id": volumeName})
+	msg := requestProvider(t, nc, ebsprovider.DeleteVolumeSubject, body)
+
+	var resp ebsprovider.DeleteVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.NotNil(t, resp.Error, "a delete that could not establish ownership must refuse, not proceed")
+	assert.Equal(t, ebsprovider.ErrorCodeInternal, resp.Error.Code)
+}
+
 func TestProviderHandlers_DeleteSnapshot_AbsentIsIdempotent(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)

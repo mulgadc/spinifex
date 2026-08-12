@@ -645,25 +645,47 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 // reply is a round trip away; no reply within this means nobody holds it.
 const ownerProbeTimeout = 2 * time.Second
 
-// volumeMountedElsewhere asks volumeID's owner subject whether anyone answers
-// for it. Only a node with the volume mounted subscribes that subject, so a
-// reply means a live mount on some node, not necessarily this one.
-func volumeMountedElsewhere(nc *nats.Conn, volumeID string) bool {
+// volumeOwnership is what probing a volume's owner subject established.
+// ownershipUnknown is the zero value so a path that forgets to set it refuses
+// rather than proceeds.
+type volumeOwnership int
+
+const (
+	ownershipUnknown volumeOwnership = iota
+	ownershipUnmounted
+	ownershipMounted
+)
+
+// probeVolumeOwner asks volumeID's owner subject whether anyone answers for
+// it. Only a node with the volume mounted subscribes that subject, so a reply
+// means a live mount on some node, not necessarily this one.
+//
+// No responders and no answer are different facts and are reported as such.
+// NATS says the first explicitly; the second is a timeout, which a busy or
+// partitioned owner is indistinguishable from. Reading a timeout as
+// "unmounted" is what lets a delete run against a volume a guest is writing.
+func probeVolumeOwner(nc *nats.Conn, volumeID string) volumeOwnership {
 	if nc == nil {
-		return false
+		return ownershipUnknown
 	}
 	subject, err := ebsprovider.GetVolumeOwnerSubject(volumeID)
 	if err != nil {
-		return false
+		return ownershipUnknown
 	}
 	payload, err := json.Marshal(ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})
 	if err != nil {
-		return false
+		return ownershipUnknown
 	}
-	if _, err := nc.Request(subject, payload, ownerProbeTimeout); err != nil {
-		return false
+
+	_, err = nc.Request(subject, payload, ownerProbeTimeout)
+	switch {
+	case err == nil:
+		return ownershipMounted
+	case errors.Is(err, nats.ErrNoResponders):
+		return ownershipUnmounted
+	default:
+		return ownershipUnknown
 	}
-	return true
 }
 
 // deleteObjectPrefix deletes every object under prefix in bucket, paginating
@@ -716,9 +738,22 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 	// A published volume must outlive a delete: the nbdkit export and the
 	// guest writing through it survive the metadata going away, so deleting
 	// under them turns a refusable API call into later corruption.
-	if _, mounted := findMountedVolume(cfg, req.VolumeID); mounted || volumeMountedElsewhere(nc, req.VolumeID) {
+	_, mountedHere := findMountedVolume(cfg, req.VolumeID)
+	ownership := ownershipUnmounted
+	if !mountedHere {
+		ownership = probeVolumeOwner(nc, req.VolumeID)
+	}
+	if mountedHere || ownership == ownershipMounted {
 		slog.Error("ebs.provider.volume.delete: volume is published", "volume", req.VolumeID)
 		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: volumeInUseError("volume %s is published; unpublish it before deleting", req.VolumeID)})
+		return
+	}
+	// Ownership could not be established. Deleting is irreversible, so an
+	// unanswered probe is refused rather than assumed safe; the caller may
+	// retry once the owner is reachable.
+	if ownership == ownershipUnknown {
+		slog.Error("ebs.provider.volume.delete: could not establish whether the volume is published", "volume", req.VolumeID)
+		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("volume %s: could not establish whether it is published; retry when its owner is reachable", req.VolumeID)})
 		return
 	}
 

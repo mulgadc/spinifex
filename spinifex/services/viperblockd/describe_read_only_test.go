@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mulgadc/predastore/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/file"
 	"github.com/stretchr/testify/require"

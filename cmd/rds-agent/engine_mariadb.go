@@ -31,6 +31,9 @@ type controlPlaneRules struct {
 	// The catalog name behind a spelling read back out of an option file. Only a
 	// setting whose startup spelling differs from the customer's moves.
 	catalogName func(optionFileName string) string
+	// The catalog's data type for a setting, which decides how its value is
+	// rendered into SQL. Empty for a name the catalog does not carry.
+	dataType func(name string) string
 }
 
 func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
@@ -57,6 +60,13 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 				return name
 			}
 			return optionFileName
+		},
+		dataType: func(name string) string {
+			spec, ok := meta.LookupParameter(name)
+			if !ok {
+				return ""
+			}
+			return spec.DataType
 		},
 	}
 }
@@ -355,6 +365,44 @@ func sqlLiteral(value string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), `'`, `''`)
 }
 
+// The spellings MariaDB parses for a boolean system variable, and the only ones
+// the catalog's own enum narrows a boolean to.
+var mariadbBooleanValues = map[string]string{
+	"on": "ON", "off": "OFF", "true": "ON", "false": "OFF", "1": "ON", "0": "OFF",
+}
+
+// One SET GLOBAL right-hand side. MariaDB refuses a quoted literal for a numeric
+// or boolean system variable with ER_WRONG_TYPE_FOR_VAR, so the catalog's data
+// type decides the form rather than one shape serving every setting.
+//
+// A numeric is re-rendered from its parsed value and a boolean from a fixed
+// table, which is also what keeps an unquoted right-hand side safe to
+// interpolate: neither can carry anything the API validated but SQL would read
+// as more statement.
+func mariadbSetValue(dataType, value string) (string, error) {
+	switch dataType {
+	case handlers_rds.ParamTypeInteger:
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("value %q is not an integer", value)
+		}
+		return strconv.FormatInt(n, 10), nil
+	case handlers_rds.ParamTypeReal:
+		f, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return "", fmt.Errorf("value %q is not a real number", value)
+		}
+		return strconv.FormatFloat(f, 'g', -1, 64), nil
+	case handlers_rds.ParamTypeBoolean:
+		if literal, ok := mariadbBooleanValues[strings.ToLower(strings.TrimSpace(value))]; ok {
+			return literal, nil
+		}
+		return "", fmt.Errorf("value %q is not a boolean", value)
+	default:
+		return "'" + sqlLiteral(value) + "'", nil
+	}
+}
+
 // Turns off the two logs that would otherwise copy a statement's text, and pins
 // the mode the escaping above assumes. All three are session-scoped: a rotation
 // must not leave the customer's own general log switched off behind it.
@@ -456,7 +504,11 @@ func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []han
 		if p.Name == "" || e.rules.isStatic(p.Name) {
 			continue
 		}
-		fmt.Fprintf(&b, "SET GLOBAL %s = '%s';\n", p.Name, sqlLiteral(p.Value))
+		value, err := mariadbSetValue(e.rules.dataType(p.Name), p.Value)
+		if err != nil {
+			return fmt.Errorf("apply the dynamic parameters: %s: %w", p.Name, err)
+		}
+		fmt.Fprintf(&b, "SET GLOBAL %s = %s;\n", p.Name, value)
 		applied++
 	}
 	if applied == 0 {

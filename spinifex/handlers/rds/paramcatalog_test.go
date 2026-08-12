@@ -56,12 +56,12 @@ func TestParameterCatalog_EntriesAreWellFormed(t *testing.T) {
 
 				assert.Equal(t, name, spec.Name, "the catalog key and the spec name disagree")
 				assert.Contains(t, []string{ApplyTypeStatic, ApplyTypeDynamic}, spec.ApplyType, "%s", name)
-				assert.Contains(t, []string{paramTypeInteger, paramTypeReal, paramTypeBoolean, paramTypeString, paramTypeEnum},
+				assert.Contains(t, []string{ParamTypeInteger, ParamTypeReal, ParamTypeBoolean, ParamTypeString, ParamTypeEnum},
 					spec.DataType, "%s", name)
-				if spec.DataType == paramTypeEnum {
+				if spec.DataType == ParamTypeEnum {
 					assert.NotEmpty(t, spec.Enum, "%s is an enum with no allowed values", name)
 				}
-				if spec.DataType == paramTypeInteger || spec.DataType == paramTypeReal {
+				if spec.DataType == ParamTypeInteger || spec.DataType == ParamTypeReal {
 					assert.Less(t, spec.Min, spec.Max, "%s has an empty range", name)
 				}
 			}

@@ -40,11 +40,11 @@ const (
 // The parameter data types the catalog offers. Every one is validated on input,
 // so a value the API accepts is one the engine will parse.
 const (
-	paramTypeInteger = "integer"
-	paramTypeReal    = "real"
-	paramTypeBoolean = "boolean"
-	paramTypeString  = "string"
-	paramTypeEnum    = "enum"
+	ParamTypeInteger = "integer"
+	ParamTypeReal    = "real"
+	ParamTypeBoolean = "boolean"
+	ParamTypeString  = "string"
+	ParamTypeEnum    = "enum"
 )
 
 // One catalog entry. Exactly one of Default and DefaultFor is set: a literal for
@@ -149,15 +149,15 @@ func (s ParameterSpec) DefaultAt(memoryMiB int64) string {
 // for an enum or boolean. Empty for a free-form string, as AWS leaves it.
 func (s ParameterSpec) AllowedValues() string {
 	switch s.DataType {
-	case paramTypeInteger, paramTypeReal:
+	case ParamTypeInteger, ParamTypeReal:
 		bounds := fmt.Sprintf("%s-%s", formatBound(s.Min), formatBound(s.Max))
 		if s.Unit != "" {
 			return bounds + " (" + s.Unit + ")"
 		}
 		return bounds
-	case paramTypeEnum:
+	case ParamTypeEnum:
 		return strings.Join(s.Enum, ",")
-	case paramTypeBoolean:
+	case ParamTypeBoolean:
 		return strings.Join(s.booleanSpellings(), ",")
 	default:
 		return ""
@@ -239,7 +239,7 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 			"parameter %s was given an empty value", spec.Name)
 	}
 	switch spec.DataType {
-	case paramTypeInteger:
+	case ParamTypeInteger:
 		n, err := strconv.ParseInt(trimmed, 10, 64)
 		if err != nil {
 			return ParameterSpec{}, typeError(spec, value, "an integer")
@@ -247,7 +247,7 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 		if float64(n) < spec.Min || float64(n) > spec.Max {
 			return ParameterSpec{}, rangeError(spec, value)
 		}
-	case paramTypeReal:
+	case ParamTypeReal:
 		f, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
 			return ParameterSpec{}, typeError(spec, value, "a number")
@@ -255,17 +255,17 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 		if f < spec.Min || f > spec.Max {
 			return ParameterSpec{}, rangeError(spec, value)
 		}
-	case paramTypeBoolean:
+	case ParamTypeBoolean:
 		if !slices.Contains(spec.booleanSpellings(), strings.ToLower(trimmed)) {
 			return ParameterSpec{}, typeError(spec, value,
 				"a boolean ("+strings.Join(spec.booleanSpellings(), ", ")+")")
 		}
-	case paramTypeEnum:
+	case ParamTypeEnum:
 		if !slices.Contains(spec.Enum, strings.ToLower(trimmed)) {
 			return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
 		}
-	case paramTypeString:
+	case ParamTypeString:
 		if err := validateStringParameter(spec, trimmed); err != nil {
 			return ParameterSpec{}, err
 		}

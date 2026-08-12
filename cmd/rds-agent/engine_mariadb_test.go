@@ -27,6 +27,18 @@ func testMariaDBRules() controlPlaneRules {
 		"max_connections":         handlers_rds.ApplyTypeDynamic,
 		"long_query_time":         handlers_rds.ApplyTypeDynamic,
 		"time_zone":               handlers_rds.ApplyTypeDynamic,
+
+		"innodb_adaptive_hash_index": handlers_rds.ApplyTypeDynamic,
+		"log_output":                 handlers_rds.ApplyTypeDynamic,
+	}
+	dataTypes := map[string]string{
+		"innodb_buffer_pool_size":    handlers_rds.ParamTypeInteger,
+		"innodb_log_file_size":       handlers_rds.ParamTypeInteger,
+		"max_connections":            handlers_rds.ParamTypeInteger,
+		"long_query_time":            handlers_rds.ParamTypeReal,
+		"time_zone":                  handlers_rds.ParamTypeString,
+		"innodb_adaptive_hash_index": handlers_rds.ParamTypeBoolean,
+		"log_output":                 handlers_rds.ParamTypeEnum,
 	}
 	reserved := []string{"root", "mysql", "mariadb.sys", "rdsadmin", "public"}
 
@@ -53,6 +65,7 @@ func testMariaDBRules() controlPlaneRules {
 			}
 			return optionFileName
 		},
+		dataType: func(name string) string { return dataTypes[name] },
 	}
 }
 
@@ -268,7 +281,7 @@ func TestMariaDBEngine_ApplyParametersSetsOnlyTheDynamicHalfLive(t *testing.T) {
 		t.Fatalf("ran %d commands, want the one live apply", len(runner.calls))
 	}
 	sql := runner.calls[0].Stdin
-	if !strings.Contains(sql, "SET GLOBAL max_connections = '200';") {
+	if !strings.Contains(sql, "SET GLOBAL max_connections = 200;") {
 		t.Errorf("SQL %q does not set the dynamic value live", sql)
 	}
 	if strings.Contains(sql, "innodb_buffer_pool_size") {
@@ -276,6 +289,54 @@ func TestMariaDBEngine_ApplyParametersSetsOnlyTheDynamicHalfLive(t *testing.T) {
 	}
 	if !slices.Equal(pending, []string{"innodb_buffer_pool_size"}) {
 		t.Errorf("pending = %v, want the static setting the engine has not adopted", pending)
+	}
+}
+
+// MariaDB refuses a quoted literal for a numeric or boolean system variable, so
+// a single quoting rule for the whole set fails on the first number in it —
+// which the resolved set always carries, whatever the customer changed.
+func TestMariaDBEngine_ApplyParametersRendersEachValueByItsCatalogType(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+		{Name: "max_connections", Value: "200"},
+		{Name: "long_query_time", Value: "2.5"},
+		{Name: "innodb_adaptive_hash_index", Value: "on"},
+		{Name: "log_output", Value: "FILE"},
+	}); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("ran %d commands, want the one live apply", len(runner.calls))
+	}
+	sql := runner.calls[0].Stdin
+	for _, want := range []string{
+		"SET GLOBAL max_connections = 200;",
+		"SET GLOBAL long_query_time = 2.5;",
+		"SET GLOBAL innodb_adaptive_hash_index = ON;",
+		"SET GLOBAL log_output = 'FILE';",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL %q does not contain %q", sql, want)
+		}
+	}
+}
+
+// A numeric that is not a number never reaches the server: an unquoted
+// right-hand side is only safe to interpolate because of this check.
+func TestMariaDBEngine_ApplyParametersRefusesANonNumericNumber(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200; DROP DATABASE orders"}})
+	if err == nil {
+		t.Fatal("ApplyParameters accepted a non-numeric value for an integer parameter")
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("ran %d commands for a refused value, want 0", len(runner.calls))
 	}
 }
 
@@ -792,5 +853,32 @@ func TestMariaDBEngine_PendingRestartReportsCatalogNames(t *testing.T) {
 	}
 	if !slices.Equal(pending, []string{"innodb_buffer_pool_size"}) {
 		t.Errorf("pending = %v, want only the static setting under its catalog name", pending)
+	}
+}
+
+// Every dynamic value the control plane can resolve has to render, at every
+// class: a catalog entry the SET GLOBAL path cannot express would otherwise
+// surface as a failed apply on a live instance rather than as a test failure on
+// the change that introduced it.
+func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
+	meta, err := handlers_rds.LookupEngine("mariadb")
+	if err != nil {
+		t.Fatalf("LookupEngine: %v", err)
+	}
+	rules := controlPlaneRulesFrom(meta)
+
+	for _, class := range handlers_rds.SupportedInstanceClasses() {
+		params, err := meta.ResolveEffectiveParameters(class, nil)
+		if err != nil {
+			t.Fatalf("ResolveEffectiveParameters(%s): %v", class, err)
+		}
+		for _, p := range params {
+			if rules.isStatic(p.Name) {
+				continue
+			}
+			if _, err := mariadbSetValue(rules.dataType(p.Name), p.Value); err != nil {
+				t.Errorf("%s at %s: %v", p.Name, class, err)
+			}
+		}
 	}
 }

@@ -30,12 +30,12 @@ var engineUnderTest = Engine{
 	validateDBName:           dbNameRule(64),
 	catalog: buildParameterCatalog(
 		ParameterSpec{
-			Name: "buffer_size", DataType: paramTypeInteger, ApplyType: ApplyTypeStatic,
+			Name: "buffer_size", DataType: ParamTypeInteger, ApplyType: ApplyTypeStatic,
 			IsModifiable: true, Min: 1, Max: 1024, Default: "64", Unit: "MB",
 			Description: "Buffer the server allocates at startup, in MB.",
 		},
 		ParameterSpec{
-			Name: "connection_limit", DataType: paramTypeInteger, ApplyType: ApplyTypeDynamic,
+			Name: "connection_limit", DataType: ParamTypeInteger, ApplyType: ApplyTypeDynamic,
 			IsModifiable: true, Min: 1, Max: 1000, Default: "100",
 			Description: "Maximum concurrent connections to the server.",
 		},

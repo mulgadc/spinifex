@@ -117,6 +117,7 @@ func Serve(ctx context.Context, nc *nats.Conn, provider ebsprovider.EBSProvider,
 		{ebsprovider.DeleteVolumeSubject, handleDeleteVolume(provider)},
 		{ebsprovider.DeleteSnapshotSubject, handleDeleteSnapshot(provider)},
 		{ebsprovider.CopySnapshotSubject, handleCopySnapshot(provider)},
+		{ebsprovider.ListSnapshotsSubject, handleListSnapshots(provider)},
 		{ebsprovider.SnapshotCreateSubjectPrefix + "*", handleCreateSnapshot(nc, provider)},
 	}
 	for _, step := range steps {
@@ -296,6 +297,26 @@ func handleListVolumes(provider ebsprovider.EBSProvider) msgHandler {
 		resp, err := provider.ListVolumes(ctx, req)
 		if err != nil {
 			respond(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: classifyError(err)})
+			return
+		}
+		respond(ctx, msg, *resp)
+	}
+}
+
+func handleListSnapshots(provider ebsprovider.EBSProvider) msgHandler {
+	return func(ctx context.Context, msg *nats.Msg) {
+		var req ebsprovider.ListSnapshotsRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+			return
+		}
+		if req.SchemaVersion != ebsprovider.SchemaVersion {
+			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
+			return
+		}
+		resp, err := provider.ListSnapshots(ctx, req)
+		if err != nil {
+			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: classifyError(err)})
 			return
 		}
 		respond(ctx, msg, *resp)

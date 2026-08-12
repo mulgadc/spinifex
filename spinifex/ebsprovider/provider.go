@@ -35,6 +35,7 @@ type EBSProvider interface {
 	CreateSnapshot(context.Context, CreateSnapshotRequest) (*Snapshot, error)
 	DeleteSnapshot(context.Context, DeleteSnapshotRequest) error
 	CopySnapshot(context.Context, CopySnapshotRequest) (*Snapshot, error)
+	ListSnapshots(context.Context, ListSnapshotsRequest) (*ListSnapshotsResponse, error)
 	PublishVolume(context.Context, PublishVolumeRequest) (*PublishedVolume, error)
 	UnpublishVolume(context.Context, UnpublishVolumeRequest) error
 }
@@ -64,6 +65,12 @@ type Capabilities struct {
 	// provider actually holds. Without it the control plane's only index of
 	// volumes is its own metadata, so a lost document strands the blocks.
 	VolumeEnumeration bool `json:"volume_enumeration"`
+
+	// SnapshotEnumeration advertises that ListSnapshots answers with what the
+	// provider actually holds. It is the same exposure VolumeEnumeration
+	// closes, for snapshots, and is advertised separately because a provider
+	// can enumerate one without the other.
+	SnapshotEnumeration bool `json:"snapshot_enumeration"`
 
 	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
 	// and GetVolume are answered directly by a volume's mounting node over
@@ -170,9 +177,9 @@ type VolumeRef struct {
 	Handle string `json:"handle,omitempty"`
 }
 
-// MaxListResults bounds one page of ListVolumes. The reply rides a NATS
-// message, so the page must fit the cluster's max_payload; a VolumeRef encodes
-// to well under 1KB, leaving headroom at this count.
+// MaxListResults bounds one page of ListVolumes or ListSnapshots. The reply
+// rides a NATS message, so the page must fit the cluster's max_payload; a
+// VolumeRef or SnapshotRef encodes to well under 1KB, leaving headroom here.
 const MaxListResults int32 = 1000
 
 // ListVolumesRequest pages through the volumes a provider holds. A MaxResults
@@ -299,6 +306,45 @@ type CopySnapshotResponse struct {
 
 	Snapshot *Snapshot      `json:"snapshot,omitempty"`
 	Error    *ProviderError `json:"error,omitempty"`
+}
+
+// SnapshotRef identifies a snapshot the provider holds. Like VolumeRef it is
+// deliberately not a Snapshot: enumeration answers "what exists", and reading
+// a snapshot's size or state can cost far more than listing it.
+//
+// SourceVolumeID is carried because reconciliation needs it: a snapshot found
+// with no metadata document is only actionable once its volume is known.
+type SnapshotRef struct {
+	ID             string `json:"id"`
+	SourceVolumeID string `json:"source_volume_id,omitempty"`
+	Handle         string `json:"handle,omitempty"`
+}
+
+// ListSnapshotsRequest pages through the snapshots a provider holds. It is
+// paged and clamped exactly as ListVolumesRequest is.
+type ListSnapshotsRequest struct {
+	Versioned
+
+	MaxResults    int32  `json:"max_results,omitempty"`
+	StartingToken string `json:"starting_token,omitempty"`
+}
+
+// ListSnapshotsResponse carries one page. An empty NextToken means the last
+// page; an empty Snapshots list with no error means the provider holds none.
+type ListSnapshotsResponse struct {
+	Versioned
+
+	Snapshots []SnapshotRef  `json:"snapshots,omitempty"`
+	NextToken string         `json:"next_token,omitempty"`
+	Error     *ProviderError `json:"error,omitempty"`
+}
+
+// PageSize is the number of refs a provider should return for this request.
+func (r ListSnapshotsRequest) PageSize() int32 {
+	if r.MaxResults <= 0 || r.MaxResults > MaxListResults {
+		return MaxListResults
+	}
+	return r.MaxResults
 }
 
 type PublishVolumeRequest struct {

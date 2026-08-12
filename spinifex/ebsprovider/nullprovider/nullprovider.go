@@ -28,6 +28,7 @@ var Capabilities = ebsprovider.Capabilities{
 	VolumeSeeding:           true,
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
+	SnapshotEnumeration:     true,
 }
 
 // New returns an in-process null provider. Calls against it skip NATS

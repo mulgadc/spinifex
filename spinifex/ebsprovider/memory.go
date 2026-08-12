@@ -323,6 +323,44 @@ func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest
 	return cloneSnapshot(dst), nil
 }
 
+// ListSnapshots pages through the snapshots this provider holds, ordered by ID
+// so a token stays meaningful across calls. The token is the ID to resume
+// after, which keeps paging correct when snapshots come and go mid-walk.
+func (m *MemoryProvider) ListSnapshots(_ context.Context, req ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if !m.capabilities.SnapshotEnumeration {
+		return nil, fmt.Errorf("%w: snapshot enumeration", ErrUnsupportedCapability)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.snapshots))
+	for id := range m.snapshots {
+		if id > req.StartingToken {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	pageSize := int(req.PageSize())
+	response := &ListSnapshotsResponse{Versioned: NewVersioned()}
+	if len(ids) > pageSize {
+		response.NextToken = ids[pageSize-1]
+		ids = ids[:pageSize]
+	}
+	for _, id := range ids {
+		snapshot := m.snapshots[id]
+		response.Snapshots = append(response.Snapshots, SnapshotRef{
+			ID:             id,
+			SourceVolumeID: snapshot.SourceVolumeID,
+			Handle:         snapshot.Handle,
+		})
+	}
+	return response, nil
+}
+
 func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err

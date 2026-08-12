@@ -24,6 +24,7 @@ const (
 	DeleteVolumeSubject   = "ebs.provider.v1.volume.delete"
 	DeleteSnapshotSubject = "ebs.provider.v1.snapshot.delete"
 	CopySnapshotSubject   = "ebs.provider.v1.snapshot.copy"
+	ListSnapshotsSubject  = "ebs.provider.v1.snapshot.list"
 
 	// SnapshotCreateSubjectPrefix is the wildcard prefix servers subscribe to
 	// (SnapshotCreateSubjectPrefix + "*") to catch every per-volume create
@@ -350,6 +351,22 @@ func (p *NATSProvider) CopySnapshot(ctx context.Context, req CopySnapshotRequest
 		return nil, fmt.Errorf("ebs.snapshot.copy returned no snapshot")
 	}
 	return response.Snapshot, nil
+}
+
+// ListSnapshots asks the provider what it holds. Like ListVolumes it is not
+// owner-routed: the question is about the whole provider, not one snapshot.
+func (p *NATSProvider) ListSnapshots(ctx context.Context, req ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	var response ListSnapshotsResponse
+	if err := p.request(ctx, ListSnapshotsSubject, req, &response); err != nil {
+		return nil, err
+	}
+	if err := responseError(response.SchemaVersion, response.Error); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {

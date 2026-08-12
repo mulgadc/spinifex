@@ -39,6 +39,7 @@ var capabilities = ebsprovider.Capabilities{
 	ReadOnlyPublish:         true,
 	OwnerRouting:            false,
 	VolumeEnumeration:       true,
+	SnapshotEnumeration:     true,
 }
 
 // volumeMeta carries the request attributes CreateVolume's idempotency check
@@ -501,6 +502,43 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 	}
 	p.snapshotMeta[req.SnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}
 	return p.buildSnapshot(ctx, req.SnapshotID, req.VolumeID, snapPath)
+}
+
+// ListSnapshots walks the snapshots directory rather than snapshotMeta, so a
+// snapshot that outlived the process still appears. Its SourceVolumeID comes
+// back empty in that case: the link was only ever in memory.
+func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(p.baseDir, "snapshots"))
+	if err != nil {
+		return nil, fmt.Errorf("qemunbdd: read snapshots directory: %w", err)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	pageSize := int(req.PageSize())
+	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned()}
+	// ReadDir returns entries sorted by filename, so resuming after the token
+	// walks the same order the previous page ended on.
+	for _, entry := range entries {
+		snapshotID := strings.TrimSuffix(entry.Name(), ".qcow2")
+		if entry.IsDir() || snapshotID == entry.Name() || snapshotID <= req.StartingToken {
+			continue
+		}
+		if len(response.Snapshots) == pageSize {
+			response.NextToken = response.Snapshots[pageSize-1].ID
+			break
+		}
+		response.Snapshots = append(response.Snapshots, ebsprovider.SnapshotRef{
+			ID:             snapshotID,
+			SourceVolumeID: p.snapshotMeta[snapshotID].sourceVolumeID,
+			Handle:         p.snapshotPath(snapshotID),
+		})
+	}
+	return response, nil
 }
 
 // snapshotInUse reports whether any volume file still points at snapPath as

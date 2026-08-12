@@ -40,6 +40,7 @@ const (
 	verbVolumePublish   = "volume.publish"
 	verbVolumeUnpublish = "volume.unpublish"
 	verbSnapshotDelete  = "snapshot.delete"
+	verbSnapshotList    = "snapshot.list"
 )
 
 // subjectVerbs maps every fixed subject to its verb. The dynamic subject
@@ -54,6 +55,7 @@ var subjectVerbs = map[string]string{
 	DeleteVolumeSubject:   verbVolumeDelete,
 	DeleteSnapshotSubject: verbSnapshotDelete,
 	CopySnapshotSubject:   verbSnapshotCopy,
+	ListSnapshotsSubject:  verbSnapshotList,
 }
 
 // ownerVerbs is the closed set OwnerSubject can build. Parsed subjects are

@@ -81,6 +81,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		{ebsprovider.DeleteVolumeSubject, func(ctx context.Context, msg *nats.Msg) { handleDeleteVolume(ctx, cfg, nc, msg) }},
 		{ebsprovider.DeleteSnapshotSubject, func(ctx context.Context, msg *nats.Msg) { handleDeleteSnapshot(ctx, cfg, msg) }},
 		{ebsprovider.CopySnapshotSubject, func(ctx context.Context, msg *nats.Msg) { handleCopySnapshot(ctx, cfg, msg) }},
+		{ebsprovider.ListSnapshotsSubject, func(ctx context.Context, msg *nats.Msg) { handleListSnapshots(ctx, cfg, msg) }},
 	}
 	for _, s := range subs {
 		if _, err := nc.QueueSubscribe(s.subject, "spinifex-workers", tracedProviderHandler(s.handler)); err != nil {
@@ -253,10 +254,11 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 			// mountVolume registers ebs.provider.v1.owner.{volumeID}.* for
 			// every mounted volume (see subscribeOwnerSubjects).
 			OwnerRouting: true,
-			// Volumes are top-level prefixes in the bucket, so the object
-			// store can be walked for what exists without any control-plane
-			// metadata to consult.
-			VolumeEnumeration: true,
+			// Volumes and snapshots are both top-level prefixes in the
+			// bucket, so the object store can be walked for what exists
+			// without any control-plane metadata to consult.
+			VolumeEnumeration:   true,
+			SnapshotEnumeration: true,
 		},
 	})
 }
@@ -275,6 +277,24 @@ const snapshotIDPrefix = "snap-"
 // volume, sorted. It reports what storage actually holds, which is the point:
 // a volume whose control-plane document is gone still appears here.
 func listVolumePrefixes(ctx context.Context, store objectstore.ObjectStore, bucket string) ([]string, error) {
+	return listTopLevelPrefixes(ctx, store, bucket, func(id string) bool {
+		return !strings.HasPrefix(id, snapshotIDPrefix)
+	})
+}
+
+// listSnapshotPrefixes is the snapshot half of the same walk. A snapshot whose
+// control-plane document is gone still appears here, which is what makes the
+// index reconcilable against storage rather than against itself.
+func listSnapshotPrefixes(ctx context.Context, store objectstore.ObjectStore, bucket string) ([]string, error) {
+	return listTopLevelPrefixes(ctx, store, bucket, func(id string) bool {
+		return strings.HasPrefix(id, snapshotIDPrefix)
+	})
+}
+
+// listTopLevelPrefixes walks the bucket's top level and returns the sorted IDs
+// keep accepts. Reserved prefixes and names that are not safe as a path
+// component are dropped before keep ever sees them.
+func listTopLevelPrefixes(ctx context.Context, store objectstore.ObjectStore, bucket string, keep func(string) bool) ([]string, error) {
 	var ids []string
 	var continuationToken *string
 	for {
@@ -284,11 +304,11 @@ func listVolumePrefixes(ctx context.Context, store objectstore.ObjectStore, buck
 			ContinuationToken: continuationToken,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("list volume prefixes: %w", err)
+			return nil, fmt.Errorf("list bucket prefixes: %w", err)
 		}
 		for _, commonPrefix := range listOutput.CommonPrefixes {
 			id := strings.TrimSuffix(awssdk.StringValue(commonPrefix.Prefix), "/")
-			if !validVolumeName(id) || reservedListPrefixes[id] || strings.HasPrefix(id, snapshotIDPrefix) {
+			if !validVolumeName(id) || reservedListPrefixes[id] || !keep(id) {
 				continue
 			}
 			ids = append(ids, id)
@@ -332,6 +352,43 @@ func handleListVolumes(ctx context.Context, cfg *Config, msg *nats.Msg) {
 			break
 		}
 		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{ID: id, Handle: volumeHandle(id)})
+	}
+	respondProvider(ctx, msg, response)
+}
+
+// handleListSnapshots answers with the snapshot prefixes storage holds.
+// SourceVolumeID is left empty: the link lives inside the snapshot's own
+// encrypted state, and reading it would mean a fetch per snapshot listed.
+func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
+	var req ebsprovider.ListSnapshotsRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		slog.Error("ebs.provider.snapshot.list: bad request", "err", err)
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		return
+	}
+	if req.SchemaVersion != ebsprovider.SchemaVersion {
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		return
+	}
+
+	ids, err := listSnapshotPrefixes(ctx, providerObjectStoreFactory(cfg), cfg.Bucket)
+	if err != nil {
+		slog.Error("ebs.provider.snapshot.list: failed to enumerate snapshots", "err", err)
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("enumerate snapshots: %v", err)})
+		return
+	}
+
+	response := ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned()}
+	pageSize := int(req.PageSize())
+	for _, id := range ids {
+		if id <= req.StartingToken {
+			continue
+		}
+		if len(response.Snapshots) == pageSize {
+			response.NextToken = response.Snapshots[pageSize-1].ID
+			break
+		}
+		response.Snapshots = append(response.Snapshots, ebsprovider.SnapshotRef{ID: id, Handle: snapshotHandle(id)})
 	}
 	respondProvider(ctx, msg, response)
 }

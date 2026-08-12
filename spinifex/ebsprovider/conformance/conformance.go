@@ -24,6 +24,7 @@ var ReferenceCapabilities = ebsprovider.Capabilities{
 	VolumeSeeding:           true,
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
+	SnapshotEnumeration:     true,
 }
 
 // capabilitiesOf reads what a provider advertises, so the suite can branch on
@@ -57,6 +58,31 @@ func drainVolumeIDs(t *testing.T, provider ebsprovider.EBSProvider, maxResults i
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		for _, ref := range resp.Volumes {
+			ids = append(ids, ref.ID)
+		}
+		if resp.NextToken == "" {
+			return ids
+		}
+		token = resp.NextToken
+	}
+}
+
+// drainSnapshotIDs is drainVolumeIDs for snapshots, and keeps duplicates for
+// the same reason: a token that replays a boundary must be visible.
+func drainSnapshotIDs(t *testing.T, provider ebsprovider.EBSProvider, maxResults int32) []string {
+	t.Helper()
+	var ids []string
+	var token string
+	for pages := 0; ; pages++ {
+		require.Lessf(t, pages, maxListPages, "ListSnapshots did not terminate within %d pages; the next token is not advancing", maxListPages)
+		resp, err := provider.ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{
+			Versioned:     ebsprovider.NewVersioned(),
+			MaxResults:    maxResults,
+			StartingToken: token,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		for _, ref := range resp.Snapshots {
 			ids = append(ids, ref.ID)
 		}
 		if resp.NextToken == "" {
@@ -630,6 +656,82 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
 				SourceSnapshotID: cfg.id("snap-a"), DestinationSnapshotID: cfg.id("snap-b"), VolumeID: cfg.id("vol-a"),
 			})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
+		})
+	})
+
+	t.Run("ListSnapshots", func(t *testing.T) {
+		capabilities := capabilitiesOf(t, newProvider(t))
+
+		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
+			if capabilities.SnapshotEnumeration {
+				t.Skip("provider advertises snapshot enumeration")
+			}
+			_, err := newProvider(t).ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewVersioned()})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
+		})
+
+		if !capabilities.SnapshotEnumeration {
+			return
+		}
+
+		t.Run("a created snapshot is enumerated and a deleted one is not", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snaplist-src")
+			snapshotID := cfg.id("snap-list-visible")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			require.NoError(t, err)
+			assert.Contains(t, drainSnapshotIDs(t, provider, 0), snapshotID,
+				"enumeration must report a snapshot the provider holds; it is the only way to find one whose control-plane document is lost")
+
+			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID}))
+			assert.NotContains(t, drainSnapshotIDs(t, provider, 0), snapshotID,
+				"a deleted snapshot must stop being enumerated, or the report it feeds accuses storage of holding data it released")
+		})
+
+		t.Run("pagination returns every snapshot exactly once", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snaplist-page-src")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			want := []string{cfg.id("snap-list-page-a"), cfg.id("snap-list-page-b"), cfg.id("snap-list-page-c")}
+			for _, snapshotID := range want {
+				_, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+				require.NoError(t, err)
+			}
+
+			// One snapshot per page forces every token boundary to be exercised.
+			paged := drainSnapshotIDs(t, provider, 1)
+			seen := make(map[string]int, len(paged))
+			for _, id := range paged {
+				seen[id]++
+			}
+			for id, count := range seen {
+				assert.Equalf(t, 1, count, "snapshot %s appeared %d times across pages; a duplicate means the token replays a boundary", id, count)
+			}
+			for _, snapshotID := range want {
+				assert.Containsf(t, paged, snapshotID, "snapshot %s was skipped across pages; a gap means the token overshoots", snapshotID)
+			}
+		})
+
+		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
+			provider := newProvider(t)
+			resp, err := provider.ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{
+				Versioned:  ebsprovider.NewVersioned(),
+				MaxResults: ebsprovider.MaxListResults * 10,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.LessOrEqual(t, len(resp.Snapshots), int(ebsprovider.MaxListResults),
+				"a page must never exceed MaxListResults; the reply has to fit one NATS message")
+		})
+
+		t.Run("unsupported_version", func(t *testing.T) {
+			_, err := newProvider(t).ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion + 1}})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
 	})

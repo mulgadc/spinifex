@@ -20,6 +20,7 @@ const (
 	verbSnapshotCreate  = "snapshot.create"
 	verbSnapshotDelete  = "snapshot.delete"
 	verbSnapshotCopy    = "snapshot.copy"
+	verbSnapshotList    = "snapshot.list"
 )
 
 // lieFlavours are the ways a successful answer can be wrong. Each one is a
@@ -196,6 +197,21 @@ func (p *Provider) CopySnapshot(ctx context.Context, req ebsprovider.CopySnapsho
 		return corruptSnapshot(snapshot, injection.Detail), nil
 	}
 	return snapshot, nil
+}
+
+// ListSnapshots is never made to lie, for the same reason ListVolumes is not:
+// it is an oracle, and an instrument that reports what it was told to report
+// cannot falsify anything.
+func (p *Provider) ListSnapshots(ctx context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	injection := p.drawTruthful(verbSnapshotList, "")
+	if stop, err := p.apply(ctx, injection); stop || err != nil {
+		return nil, err
+	}
+	resp, err := p.inner.ListSnapshots(ctx, req)
+	if err := p.after(injection, err); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {

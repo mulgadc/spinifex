@@ -14,12 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -275,7 +275,7 @@ func TestRunInstance_UniqueIDs(t *testing.T) {
 }
 
 func TestFloorVolumeSizeToAMI(t *testing.T) {
-	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+	loader := &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 		"ami-rocky":   {VolumeSizeGiB: 10},
 		"ami-debian":  {VolumeSizeGiB: 3},
 		"ami-no-size": {VolumeSizeGiB: 0},
@@ -2492,7 +2492,7 @@ func (raceVolumeMounter) UnmountOne(spxtypes.EBSRequest) error { return nil }
 // TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
 // the double-start bug this claim closes: two nodes (or a forwarded call
 // racing a local fallback) could both observe the same stopped instance as
-// claimable and both launch it onto the same viperblock volume. It fires two
+// claimable and both launch it onto the same EBS volume. It fires two
 // concurrent StartStoppedInstance calls at the same stopped instance id and
 // asserts the atomic claim lets exactly one of them proceed past it —
 // reaching resourceMgr.Allocate / vmMgr.Insert / vmMgr.Run — while the other
@@ -2576,18 +2576,35 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
-	byID map[string]viperblock.AMIMetadata
-	err  error
+	byID       map[string]ebsmetadata.AMI
+	err        error
+	sourceByID map[string]string
+	sourceErr  error
 }
 
-func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (viperblock.AMIMetadata, error) {
+func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.AMI, error) {
 	if f.err != nil {
-		return viperblock.AMIMetadata{}, f.err
+		return ebsmetadata.AMI{}, f.err
 	}
 	if meta, ok := f.byID[id]; ok {
 		return meta, nil
 	}
-	return viperblock.AMIMetadata{}, errors.New("not found")
+	return ebsmetadata.AMI{}, errors.New("not found")
+}
+
+// GetAMISourceVolumeID defaults to the bundled system AMI convention, where the
+// snapshot's source volume is named after the AMI itself.
+func (f *fakeAMILoader) GetAMISourceVolumeID(_ context.Context, id string) (string, error) {
+	if f.sourceErr != nil {
+		return "", f.sourceErr
+	}
+	if volumeID, ok := f.sourceByID[id]; ok {
+		return volumeID, nil
+	}
+	if _, ok := f.byID[id]; !ok {
+		return "", errors.New("not found")
+	}
+	return id, nil
 }
 
 type fakeKeyValidator struct {
@@ -2665,7 +2682,7 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-other": {ImageOwnerAlias: "999988887777"},
 		}},
 	}
@@ -2681,7 +2698,7 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		keyValidator: &fakeKeyValidator{err: errors.New("no key")},
@@ -2706,7 +2723,7 @@ func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
 	_ = it
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2730,7 +2747,7 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2764,7 +2781,7 @@ func TestPrepareRunInstances_PersistsIamInstanceProfile(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2798,7 +2815,7 @@ func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2829,7 +2846,7 @@ func TestPrepareRunInstances_ReservationCapsNoSpill(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2856,7 +2873,7 @@ func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2886,7 +2903,7 @@ func TestPrepareRunInstances_ReservationRollbackNoGeneralPoolLeak(t *testing.T) 
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2918,7 +2935,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 		svc := &InstanceServiceImpl{
 			config:        &config.Config{},
 			instanceTypes: types,
-			amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 				"ami-1": {ImageOwnerAlias: "acc"},
 			}},
 			resourceMgr: prov,
@@ -2994,7 +3011,7 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 			svc := &InstanceServiceImpl{
 				config:        &config.Config{},
 				instanceTypes: types,
-				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 					"ami-1": {ImageOwnerAlias: "acc", BootMode: tc.amiBootMode},
 				}},
 				resourceMgr: prov,
@@ -3189,7 +3206,7 @@ func prepareSvcWithENI(t *testing.T, eni *fakeENICreator, ipam *fakeIPAllocator)
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -3571,7 +3588,7 @@ func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -3598,7 +3615,7 @@ func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,

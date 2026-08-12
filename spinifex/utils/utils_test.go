@@ -429,7 +429,19 @@ func TestParseNBDURI(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "Unix socket",
+			name:     "Unix socket URI",
+			uri:      "nbd+unix:///?socket=/run/user/1000/nbd-vol-123.sock",
+			wantType: "unix",
+			wantPath: "/run/user/1000/nbd-vol-123.sock",
+		},
+		{
+			name:     "Unix socket URI without the empty export path",
+			uri:      "nbd+unix://?socket=/run/nbd-vol.sock",
+			wantType: "unix",
+			wantPath: "/run/nbd-vol.sock",
+		},
+		{
+			name:     "legacy QEMU nbd:unix: filename form",
 			uri:      "nbd:unix:/run/user/1000/nbd-vol-123.sock",
 			wantType: "unix",
 			wantPath: "/run/user/1000/nbd-vol-123.sock",
@@ -451,6 +463,11 @@ func TestParseNBDURI(t *testing.T) {
 		{
 			name:    "Empty socket path",
 			uri:     "nbd:unix:",
+			wantErr: true,
+		},
+		{
+			name:    "Unix socket URI with no socket parameter",
+			uri:     "nbd+unix:///",
 			wantErr: true,
 		},
 		{
@@ -804,8 +821,18 @@ func TestIsSocketURI(t *testing.T) {
 }
 
 func TestFormatNBDSocketURI(t *testing.T) {
-	assert.Equal(t, "nbd:unix:/run/nbd-vol.sock", FormatNBDSocketURI("/run/nbd-vol.sock"))
-	assert.Equal(t, "nbd:unix:/tmp/test.sock", FormatNBDSocketURI("/tmp/test.sock"))
+	assert.Equal(t, "nbd+unix:///?socket=/run/nbd-vol.sock", FormatNBDSocketURI("/run/nbd-vol.sock"))
+	assert.Equal(t, "nbd+unix:///?socket=/tmp/test.sock", FormatNBDSocketURI("/tmp/test.sock"))
+}
+
+// TestFormatNBDSocketURIRoundTrips guards the pairing that a third-party NBD
+// client depends on: what we publish must be what we can parse back.
+func TestFormatNBDSocketURIRoundTrips(t *testing.T) {
+	const path = "/run/spinifex/nbd/nbd-vol-abc123.sock"
+	serverType, parsed, _, _, err := ParseNBDURI(FormatNBDSocketURI(path))
+	require.NoError(t, err)
+	assert.Equal(t, "unix", serverType)
+	assert.Equal(t, path, parsed)
 }
 
 func TestFormatNBDTCPURI(t *testing.T) {

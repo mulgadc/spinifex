@@ -35,7 +35,7 @@ func TestApplyConfigUpdate_GrowsVolumeSize(t *testing.T) {
 	t.Parallel()
 	vb := createTestVBWithState(t, "vol-apply-grow")
 
-	require.NoError(t, applyConfigUpdate(vb, configReq(t, "vol-apply-grow", 5)))
+	require.NoError(t, applyConfigUpdate(t.Context(), vb, configReq(t, "vol-apply-grow", 5)))
 
 	assert.Equal(t, uint64(5), vb.VolumeConfig.VolumeMetadata.SizeGiB)
 	assert.Equal(t, 5*gib, vb.VolumeSize)
@@ -46,7 +46,7 @@ func TestApplyConfigUpdate_ShrinkKeepsSize(t *testing.T) {
 	vb := createTestVBWithState(t, "vol-apply-shrink")
 	vb.VolumeSize = 10 * gib
 
-	require.NoError(t, applyConfigUpdate(vb, configReq(t, "vol-apply-shrink", 2)))
+	require.NoError(t, applyConfigUpdate(t.Context(), vb, configReq(t, "vol-apply-shrink", 2)))
 
 	// Config metadata applied, but VolumeSize is grow-only.
 	assert.Equal(t, uint64(2), vb.VolumeConfig.VolumeMetadata.SizeGiB)
@@ -58,7 +58,7 @@ func TestApplyConfigUpdate_InvalidVolumeConfig(t *testing.T) {
 	vb := createTestVBWithState(t, "vol-apply-bad")
 
 	req := types.EBSConfigUpdateRequest{Volume: "vol-apply-bad", VolumeConfig: json.RawMessage(`"not-an-object"`)}
-	err := applyConfigUpdate(vb, req)
+	err := applyConfigUpdate(t.Context(), vb, req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unmarshal VolumeConfig")
 }

@@ -6,6 +6,7 @@ package viperblockd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -24,19 +25,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupEmbeddedNATS starts an embedded NATS server for testing.
+// setupEmbeddedNATS starts an embedded NATS server for testing. JetStream is
+// on because volume leases live in a KV bucket, and a daemon that cannot take
+// one refuses to open an engine.
 func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	opts := &server.Options{
-		Host: "127.0.0.1",
-		Port: -1, // Random available port
+		Host:      "127.0.0.1",
+		Port:      -1, // Random available port
+		JetStream: true,
+		StoreDir:  t.TempDir(),
 	}
 	ns := natstest.RunServer(opts)
 
 	if ns == nil {
 		t.Fatal("Failed to start embedded NATS server")
 	}
+	t.Cleanup(ns.Shutdown)
 
 	return ns, ns.ClientURL()
+}
+
+// installTestVolumeLeases gives cfg a lease store backed by natsURL's
+// JetStream, which every engine-open path needs before it will proceed.
+func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
+	t.Helper()
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner())
+	require.NoError(t, err)
+	cfg.leases = leases
 }
 
 // setupTestConfig creates a test configuration with proper paths.
@@ -56,6 +76,7 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 		MountedVolumes: []MountedVolume{},
 		NodeName:       "test-node",
 	}
+	installTestVolumeLeases(t, cfg, natsURL)
 
 	return cfg
 }
@@ -422,7 +443,7 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	// is what put this test's outcome inside the tail of the 5s deadline below.
 	createMockVolumeState(t, cfg.BaseDir, "vol-seal-fail")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return fmt.Errorf("seal %s: injected backend failure", volumeName)
 	}
@@ -475,7 +496,7 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	writeSealReceipt(t, cfg.BaseDir, "vol-clean-receipt")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -527,7 +548,7 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 	createMockVolumeState(t, cfg.BaseDir, "vol-state-and-receipt")
 	writeSealReceipt(t, cfg.BaseDir, "vol-state-and-receipt")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -570,7 +591,7 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	createMockVolumeState(t, cfg.BaseDir, "vol-aux-efi")
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}
@@ -613,7 +634,7 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 	var sealCalls atomic.Int32
-	cfg.sealVolume = func(volumeName string) error {
+	cfg.sealVolume = func(_ context.Context, volumeName string) error {
 		sealCalls.Add(1)
 		return nil
 	}

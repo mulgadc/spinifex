@@ -7,6 +7,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
@@ -27,6 +28,7 @@ var (
 	_ Service = (*northstar.Service)(nil)
 	_ Service = (*predastore.Service)(nil)
 	_ Service = (*viperblockd.Service)(nil)
+	_ Service = (*qemunbdd.Service)(nil)
 	_ Service = (*spinifex.Service)(nil)
 	_ Service = (*awsgw.Service)(nil)
 	_ Service = (*spinifexui.Service)(nil)
@@ -47,6 +49,9 @@ func New(btype string, config any) (Service, error) {
 
 	case "viperblock":
 		return viperblockd.New(config)
+
+	case "qemunbd":
+		return qemunbdd.New(config)
 
 	case "spinifex":
 		return spinifex.New(config)

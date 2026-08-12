@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -56,9 +57,11 @@ func IsSocketURI(nbdURI string) bool {
 	return strings.HasSuffix(nbdURI, ".sock") || strings.Contains(nbdURI, "unix:")
 }
 
-// FormatNBDSocketURI formats a socket path as an NBD URI (nbd:unix:/path/to/socket.sock).
+// FormatNBDSocketURI formats a socket path as an NBD URI
+// (nbd+unix:///?socket=/path/to/socket.sock), the form libnbd, qemu and
+// nbdkit all accept. QEMU's older nbd:unix: syntax is not a URI.
 func FormatNBDSocketURI(socketPath string) string {
-	return fmt.Sprintf("nbd:unix:%s", socketPath)
+	return fmt.Sprintf("nbd+unix:///?socket=%s", socketPath)
 }
 
 // FormatNBDTCPURI formats a host:port as an NBD TCP URI (nbd://host:port).
@@ -98,14 +101,33 @@ func waitForTCPListener(addr string, timeout time.Duration) error {
 	}
 }
 
-// ParseNBDURI parses an NBD URI into components: nbd:unix:/path → ("unix", path); nbd://host:port → ("inet", host, port).
-func ParseNBDURI(nbdURI string) (serverType, path, host string, port int, err error) {
+// cutNBDUnixSocket extracts the socket path from either the nbd+unix:// URI
+// form or QEMU's legacy nbd:unix: filename form, reporting whether the URI
+// named a Unix socket at all.
+func cutNBDUnixSocket(nbdURI string) (string, bool) {
 	if after, ok := strings.CutPrefix(nbdURI, "nbd:unix:"); ok {
-		path = after
-		if path == "" {
+		return after, true
+	}
+	if !strings.HasPrefix(nbdURI, "nbd+unix:") {
+		return "", false
+	}
+
+	parsed, err := url.Parse(nbdURI)
+	if err != nil {
+		return "", true
+	}
+	return parsed.Query().Get("socket"), true
+}
+
+// ParseNBDURI parses an NBD URI into components: nbd+unix:///?socket=/path → ("unix", path);
+// nbd://host:port → ("inet", host, port). The legacy nbd:unix:/path form is
+// still accepted for state written by older daemons.
+func ParseNBDURI(nbdURI string) (serverType, path, host string, port int, err error) {
+	if socket, ok := cutNBDUnixSocket(nbdURI); ok {
+		if socket == "" {
 			return "", "", "", 0, fmt.Errorf("empty socket path in NBD URI: %s", nbdURI)
 		}
-		return "unix", path, "", 0, nil
+		return "unix", socket, "", 0, nil
 	}
 
 	if after, ok := strings.CutPrefix(nbdURI, "nbd://"); ok {

@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,199 +13,24 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // Tests in this file exercise the stopped/terminated daemon handlers in
-// daemon_handlers_instance.go against an in-memory vm.StateStore fake.
-// They cover error-injection paths (KV write/delete failures, retry, list
-// errors) that the JetStream-backed integration tests in daemon_handlers_test.go
-// cannot reach with a real backing bucket.
-
-// fakeStateStore is an in-memory vm.StateStore for daemon-handler unit tests.
-// Each method has an optional error knob so a test can drive specific failure
-// branches without standing up an embedded JetStream server.
-type fakeStateStore struct {
-	mu sync.Mutex
-
-	saveRunningErr error
-
-	stopped          map[string]*vm.VM
-	loadStoppedErr   error
-	writeStoppedErr  error
-	updateStoppedErr error
-	listStoppedErr   error
-	deleteStoppedErr error
-
-	// deleteStoppedFailFirst makes the first DeleteStoppedInstance call fail
-	// and the second succeed — exercises the handler's single retry.
-	deleteStoppedFailFirst bool
-	deleteStoppedAttempts  int
-
-	claimStoppedErr error
-
-	terminated         map[string]*vm.VM
-	writeTerminatedErr error
-	listTerminatedErr  error
-}
-
-func newFakeStateStore() *fakeStateStore {
-	return &fakeStateStore{
-		stopped:    map[string]*vm.VM{},
-		terminated: map[string]*vm.VM{},
-	}
-}
-
-func (f *fakeStateStore) SaveRunningState(_ string, _ map[string]*vm.VM) error {
-	return f.saveRunningErr
-}
-
-func (f *fakeStateStore) LoadRunningState(_ string) (map[string]*vm.VM, error) {
-	return map[string]*vm.VM{}, nil
-}
-
-func (f *fakeStateStore) WriteStoppedInstance(id string, v *vm.VM) error {
-	if f.writeStoppedErr != nil {
-		return f.writeStoppedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.stopped[id] = v
-	return nil
-}
-
-func (f *fakeStateStore) LoadStoppedInstance(id string) (*vm.VM, error) {
-	if f.loadStoppedErr != nil {
-		return nil, f.loadStoppedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if v, ok := f.stopped[id]; ok {
-		return v, nil
-	}
-	return nil, nil
-}
-
-func (f *fakeStateStore) DeleteStoppedInstance(id string) error {
-	f.mu.Lock()
-	f.deleteStoppedAttempts++
-	attempt := f.deleteStoppedAttempts
-	f.mu.Unlock()
-
-	if f.deleteStoppedErr != nil {
-		return f.deleteStoppedErr
-	}
-	if f.deleteStoppedFailFirst && attempt == 1 {
-		return errors.New("simulated transient delete failure")
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.stopped, id)
-	return nil
-}
-
-// ClaimStoppedInstance mimics the real atomic-delete claim for tests: under
-// the store lock, remove and return the entry, or claimStoppedErr /
-// vm.ErrStoppedInstanceClaimed if it is already gone or a test forced an error.
-func (f *fakeStateStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
-	if f.claimStoppedErr != nil {
-		return nil, f.claimStoppedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	v, ok := f.stopped[id]
-	if !ok {
-		return nil, vm.ErrStoppedInstanceClaimed
-	}
-	delete(f.stopped, id)
-	return v, nil
-}
-
-// UpdateStoppedInstance mimics the real CAS semantics for tests: mutate runs
-// under the store lock against the stored value, and a missing record
-// returns jetstream.ErrKeyNotFound (matching JetStreamManager's createIfAbsent=false
-// behavior) rather than resurrecting it.
-func (f *fakeStateStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.updateStoppedErr != nil {
-		return nil, f.updateStoppedErr
-	}
-	v, ok := f.stopped[id]
-	if !ok {
-		return nil, jetstream.ErrKeyNotFound
-	}
-	mutate(v)
-	return v, nil
-}
-
-func (f *fakeStateStore) ListStoppedInstances() ([]*vm.VM, error) {
-	if f.listStoppedErr != nil {
-		return nil, f.listStoppedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]*vm.VM, 0, len(f.stopped))
-	for _, v := range f.stopped {
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-func (f *fakeStateStore) WriteTerminatedInstance(id string, v *vm.VM) error {
-	if f.writeTerminatedErr != nil {
-		return f.writeTerminatedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.terminated[id] = v
-	return nil
-}
-
-func (f *fakeStateStore) ListTerminatedInstances() ([]*vm.VM, error) {
-	if f.listTerminatedErr != nil {
-		return nil, f.listTerminatedErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]*vm.VM, 0, len(f.terminated))
-	for _, v := range f.terminated {
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.terminated, id)
-	return nil
-}
-
-// UpdateTerminatedInstance mimics the real CAS semantics for tests: mutate
-// runs under the store lock against the stored value.
-func (f *fakeStateStore) UpdateTerminatedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	v, ok := f.terminated[id]
-	if !ok {
-		return nil, errors.New("terminated instance not found")
-	}
-	mutate(v)
-	return v, nil
-}
-
-var _ vm.StateStore = (*fakeStateStore)(nil)
+// daemon_handlers_instance.go against the shared in-memory vm/mock.StateStore
+// fake. They cover error-injection paths (KV write/delete failures, retry,
+// list errors) that the JetStream-backed integration tests in
+// daemon_handlers_test.go cannot reach with a real backing bucket.
 
 // daemonWithFakeStateStore returns a daemon wired with an in-memory NATS
 // connection (via createTestDaemon) and the supplied fake StateStore.
 // The daemon does not have JetStream initialized. Rewires d.instanceService
 // to point at the fake store so handlers that delegate to InstanceService
 // (e.g. ModifyInstanceAttribute) see the injected state.
-func daemonWithFakeStateStore(t *testing.T, store *fakeStateStore) *Daemon {
+func daemonWithFakeStateStore(t *testing.T, store *vmmock.StateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
@@ -262,8 +86,8 @@ func stoppedVMFixture(id, accountID string) *vm.VM {
 // --- handleEC2StartStoppedInstance ---
 
 func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
-	store := newFakeStateStore()
-	store.loadStoppedErr = errors.New("kv unavailable")
+	store := vmmock.New()
+	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
@@ -281,8 +105,8 @@ func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
 }
 
 func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
-	store := newFakeStateStore()
-	store.stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
+	store := vmmock.New()
+	store.Stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
@@ -291,17 +115,15 @@ func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
 
 	// The instance must remain in shared KV — cross-tenant rejection cannot
 	// also remove it (would be a leak across accounts).
-	store.mu.Lock()
-	_, stillStopped := store.stopped["i-foreign"]
-	store.mu.Unlock()
+	_, stillStopped := store.Stopped["i-foreign"]
 	assert.True(t, stillStopped, "cross-tenant rejection must not delete the stopped instance")
 }
 
 func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := stoppedVMFixture("i-unknown-type", testAccountID)
 	v.InstanceType = "definitely.not.a.real.type"
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
@@ -330,11 +152,11 @@ func withShortForwardTimeout(t *testing.T, d time.Duration) {
 func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing.T) {
 	withShortForwardTimeout(t, 50*time.Millisecond)
 
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := stoppedVMFixture("i-timeout-fallback", testAccountID)
 	v.InstanceType = "definitely.not.a.real.type"
 	v.LastNode = "node-other"
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	// Simulate a live-but-unresponsive original node: subscribed, so no
@@ -358,10 +180,10 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing
 func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleStart(t *testing.T) {
 	withShortForwardTimeout(t, 50*time.Millisecond)
 
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := stoppedVMFixture("i-race-claim", testAccountID)
 	v.LastNode = "node-other"
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	// Simulate the original node winning the claim (atomically removing the
@@ -387,8 +209,8 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleSt
 // --- handleEC2TerminateStoppedInstance ---
 
 func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
-	store := newFakeStateStore()
-	store.loadStoppedErr = errors.New("kv unavailable")
+	store := vmmock.New()
+	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
@@ -407,21 +229,19 @@ func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
 // WriteTerminatedInstance failure must abort BEFORE the stopped-bucket
 // delete — otherwise an instance can vanish from both buckets.
 func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testing.T) {
-	store := newFakeStateStore()
-	store.writeTerminatedErr = errors.New("terminated bucket write failed")
+	store := vmmock.New()
+	store.WriteTerminatedErr = errors.New("terminated bucket write failed")
 	v := stoppedVMFixture("i-write-term-fail", testAccountID)
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test3", handleNATSRequest(d.instanceService.TerminateStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 
-	store.mu.Lock()
-	_, stillStopped := store.stopped[v.ID]
-	_, inTerminated := store.terminated[v.ID]
-	attempts := store.deleteStoppedAttempts
-	store.mu.Unlock()
+	_, stillStopped := store.Stopped[v.ID]
+	_, inTerminated := store.Terminated[v.ID]
+	attempts := store.DeleteAttempts
 	assert.True(t, stillStopped, "stopped entry must remain when terminated write fails (caller can retry)")
 	assert.False(t, inTerminated, "no terminated entry should exist after write failure")
 	assert.Equal(t, 0, attempts, "DeleteStoppedInstance must not be called when terminated write fails")
@@ -430,10 +250,10 @@ func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testi
 // First stopped-bucket delete fails, second succeeds — instance must end up
 // only in the terminated bucket and the handler must still respond success.
 func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
-	store := newFakeStateStore()
-	store.deleteStoppedFailFirst = true
+	store := vmmock.New()
+	store.DeleteFailFirst = true
 	v := stoppedVMFixture("i-retry-success", testAccountID)
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
@@ -443,11 +263,9 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	assert.Equal(t, "terminated", resp["status"])
 
-	store.mu.Lock()
-	_, stillStopped := store.stopped[v.ID]
-	_, inTerminated := store.terminated[v.ID]
-	attempts := store.deleteStoppedAttempts
-	store.mu.Unlock()
+	_, stillStopped := store.Stopped[v.ID]
+	_, inTerminated := store.Terminated[v.ID]
+	attempts := store.DeleteAttempts
 	assert.False(t, stillStopped, "stopped entry must be removed after retry success")
 	assert.True(t, inTerminated, "terminated entry must be present")
 	assert.Equal(t, 2, attempts, "DeleteStoppedInstance must be retried exactly once")
@@ -457,10 +275,10 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 // (the terminated-bucket write is the source of truth) and must NOT roll back
 // the terminated write.
 func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *testing.T) {
-	store := newFakeStateStore()
-	store.deleteStoppedErr = errors.New("delete persistently broken")
+	store := vmmock.New()
+	store.DeleteStoppedErr = errors.New("delete persistently broken")
 	v := stoppedVMFixture("i-retry-fail", testAccountID)
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
@@ -470,25 +288,21 @@ func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *t
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	assert.Equal(t, "terminated", resp["status"], "handler must report success — terminated write succeeded")
 
-	store.mu.Lock()
-	_, inTerminated := store.terminated[v.ID]
-	store.mu.Unlock()
+	_, inTerminated := store.Terminated[v.ID]
 	assert.True(t, inTerminated, "terminated entry must NOT be rolled back when stopped delete fails")
 }
 
 func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
-	store := newFakeStateStore()
-	store.stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
+	store := vmmock.New()
+	store.Stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
 	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test6", handleNATSRequest(d.instanceService.TerminateStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
-	store.mu.Lock()
-	_, inTerminated := store.terminated["i-foreign-term"]
-	_, stillStopped := store.stopped["i-foreign-term"]
-	store.mu.Unlock()
+	_, inTerminated := store.Terminated["i-foreign-term"]
+	_, stillStopped := store.Stopped["i-foreign-term"]
 	assert.False(t, inTerminated, "foreign-tenant terminate must not write to terminated bucket")
 	assert.True(t, stillStopped, "foreign-tenant terminate must not delete the stopped entry")
 }
@@ -496,10 +310,10 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 // --- handleEC2ModifyInstanceAttribute ---
 
 func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *testing.T) {
-	store := newFakeStateStore()
-	store.updateStoppedErr = errors.New("kv write failed")
+	store := vmmock.New()
+	store.UpdateStoppedErr = errors.New("kv write failed")
 	v := stoppedVMFixture("i-mod-write-fail", testAccountID)
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.ModifyInstanceAttributeInput{
@@ -512,8 +326,8 @@ func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *t
 }
 
 func TestHandleEC2ModifyInstanceAttribute_LoadFailureReturnsServerInternal(t *testing.T) {
-	store := newFakeStateStore()
-	store.loadStoppedErr = errors.New("kv unavailable")
+	store := vmmock.New()
+	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.ModifyInstanceAttributeInput{
@@ -528,7 +342,7 @@ func TestHandleEC2ModifyInstanceAttribute_LoadFailureReturnsServerInternal(t *te
 func TestHandleEC2ModifyInstanceAttribute_NilInstanceFieldGuard(t *testing.T) {
 	// Stored VM with a valid status but a nil Instance pointer — the handler
 	// must reject this as a data-integrity violation rather than NPE.
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := &vm.VM{
 		ID:           "i-mod-nil-inst",
 		Status:       vm.StateStopped,
@@ -537,7 +351,7 @@ func TestHandleEC2ModifyInstanceAttribute_NilInstanceFieldGuard(t *testing.T) {
 		Reservation:  &ec2.Reservation{ReservationId: aws.String("r-x"), OwnerId: aws.String(testAccountID)},
 		Instance:     nil,
 	}
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.ModifyInstanceAttributeInput{
@@ -550,9 +364,9 @@ func TestHandleEC2ModifyInstanceAttribute_NilInstanceFieldGuard(t *testing.T) {
 }
 
 func TestHandleEC2ModifyInstanceAttribute_EmptyInstanceTypeRejected(t *testing.T) {
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := stoppedVMFixture("i-mod-empty-type", testAccountID)
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.ModifyInstanceAttributeInput{
@@ -565,8 +379,8 @@ func TestHandleEC2ModifyInstanceAttribute_EmptyInstanceTypeRejected(t *testing.T
 }
 
 func TestHandleEC2ModifyInstanceAttribute_CrossTenantRejected(t *testing.T) {
-	store := newFakeStateStore()
-	store.stopped["i-mod-foreign"] = stoppedVMFixture("i-mod-foreign", "999988887777")
+	store := vmmock.New()
+	store.Stopped["i-mod-foreign"] = stoppedVMFixture("i-mod-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.ModifyInstanceAttributeInput{
@@ -581,8 +395,8 @@ func TestHandleEC2ModifyInstanceAttribute_CrossTenantRejected(t *testing.T) {
 // --- handleEC2DescribeInstanceAttribute ---
 
 func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_LoadError(t *testing.T) {
-	store := newFakeStateStore()
-	store.loadStoppedErr = errors.New("kv unavailable")
+	store := vmmock.New()
+	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 	// d.vmMgr has no running instance, so the handler falls through to the
 	// stopped KV branch — which now errors.
@@ -597,11 +411,11 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_LoadError(t *testing
 }
 
 func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_HitsKV(t *testing.T) {
-	store := newFakeStateStore()
+	store := vmmock.New()
 	v := stoppedVMFixture("i-describe-stopped", testAccountID)
 	v.InstanceType = "t3.medium"
 	v.Instance.InstanceType = aws.String("t3.medium")
-	store.stopped[v.ID] = v
+	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
 	input := &ec2.DescribeInstanceAttributeInput{
@@ -635,8 +449,8 @@ func TestHandleEC2DescribeInstanceAttribute_StateStoreNil(t *testing.T) {
 // --- handleEC2DescribeStoppedInstances / handleEC2DescribeTerminatedInstances ---
 
 func TestHandleEC2DescribeStoppedInstances_ListError(t *testing.T) {
-	store := newFakeStateStore()
-	store.listStoppedErr = errors.New("list failed")
+	store := vmmock.New()
+	store.ListStoppedErr = errors.New("list failed")
 	d := daemonWithFakeStateStore(t, store)
 
 	reply := requestHandler(t, d.natsConn, "ec2.DescribeStoppedInstances.test1", handleNATSRequest(d.instanceService.DescribeStoppedInstances), testAccountID, []byte("{}"))
@@ -644,8 +458,8 @@ func TestHandleEC2DescribeStoppedInstances_ListError(t *testing.T) {
 }
 
 func TestHandleEC2DescribeTerminatedInstances_ListError(t *testing.T) {
-	store := newFakeStateStore()
-	store.listTerminatedErr = errors.New("list failed")
+	store := vmmock.New()
+	store.ListTerminatedErr = errors.New("list failed")
 	d := daemonWithFakeStateStore(t, store)
 
 	reply := requestHandler(t, d.natsConn, "ec2.DescribeTerminatedInstances.test1", handleNATSRequest(d.instanceService.DescribeTerminatedInstances), testAccountID, []byte("{}"))
@@ -653,9 +467,9 @@ func TestHandleEC2DescribeTerminatedInstances_ListError(t *testing.T) {
 }
 
 func TestHandleEC2DescribeStoppedInstances_CrossAccountIsolation(t *testing.T) {
-	store := newFakeStateStore()
-	store.stopped["i-mine"] = stoppedVMFixture("i-mine", testAccountID)
-	store.stopped["i-yours"] = stoppedVMFixture("i-yours", "999988887777")
+	store := vmmock.New()
+	store.Stopped["i-mine"] = stoppedVMFixture("i-mine", testAccountID)
+	store.Stopped["i-yours"] = stoppedVMFixture("i-yours", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
 	reply := requestHandler(t, d.natsConn, "ec2.DescribeStoppedInstances.test3", handleNATSRequest(d.instanceService.DescribeStoppedInstances), testAccountID, []byte("{}"))

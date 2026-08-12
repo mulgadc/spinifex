@@ -39,6 +39,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1939,7 +1940,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
 		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
-		&memStoppedStore{})
+		vmmock.New())
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
 	tests := []struct {

@@ -22,11 +22,11 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	arn := s.ensureCPInstanceProfile(testSysAcct)
 	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+eksServerSystemRoleName, arn)
 
-	assert.Equal(t, 1, f.createRoleCalls)
-	assert.Contains(t, f.lastTrustDoc, "ec2.amazonaws.com")
-	assert.Contains(t, f.lastTrustDoc, "sts:AssumeRole")
+	assert.Equal(t, 1, f.CreateRoleCalls)
+	assert.Contains(t, f.LastTrustDoc, "ec2.amazonaws.com")
+	assert.Contains(t, f.LastTrustDoc, "sts:AssumeRole")
 
-	policy := f.rolePolicies[eksServerSystemRoleName]
+	policy := f.RolePolicies[eksServerSystemRoleName]
 	assert.Contains(t, policy, "eks:PublishInternal")
 	assert.Contains(t, policy, "eks:ListInternalAddons")
 	// The eks-token-webhook relays get-token bearer tokens to the token-review
@@ -38,8 +38,8 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	// and a wedged control plane can never be auto-reset.
 	assert.Contains(t, policy, "eks:GetRecoveryDirective")
 
-	require.NotNil(t, f.profiles[eksServerSystemRoleName])
-	assert.Len(t, f.profiles[eksServerSystemRoleName].Roles, 1)
+	require.NotNil(t, f.Profiles[eksServerSystemRoleName])
+	assert.Len(t, f.Profiles[eksServerSystemRoleName].Roles, 1)
 }
 
 // TestEnsureK3sServerInstanceProfile_ExistingRoleConverges asserts a re-launch
@@ -47,7 +47,7 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 // inline policy so a stale role converges onto the current permissions.
 func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
 	f := newFakeEnsurer()
-	f.roles[eksServerSystemRoleName] = &iam.Role{
+	f.Roles[eksServerSystemRoleName] = &iam.Role{
 		RoleName: aws.String(eksServerSystemRoleName),
 		Arn:      aws.String("arn:aws:iam::" + testSysAcct + ":role/" + eksServerSystemRoleName),
 	}
@@ -55,8 +55,8 @@ func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
 
 	arn := s.ensureCPInstanceProfile(testSysAcct)
 	assert.NotEmpty(t, arn)
-	assert.Zero(t, f.createRoleCalls)
-	assert.Contains(t, f.rolePolicies[eksServerSystemRoleName], "eks:PublishInternal")
+	assert.Zero(t, f.CreateRoleCalls)
+	assert.Contains(t, f.RolePolicies[eksServerSystemRoleName], "eks:PublishInternal")
 }
 
 // TestEnsureCPInstanceProfile_NilIAMFallsBack asserts an unwired IAM service
@@ -76,7 +76,7 @@ func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
 	}}
 	arn := s.ensureCPInstanceProfile(testSysAcct)
 	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+eksServerSystemRoleName, arn)
-	assert.Equal(t, 1, f.createRoleCalls)
+	assert.Equal(t, 1, f.CreateRoleCalls)
 }
 
 // TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack asserts a provider that

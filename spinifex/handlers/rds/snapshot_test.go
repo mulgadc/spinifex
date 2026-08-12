@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
@@ -24,7 +25,7 @@ type snapshotHarness struct {
 	svc     *Service
 	launch  *launchHarness
 	network *fakeNetwork
-	iam     *fakeRDSEnsurer
+	iam     *iammock.SystemInstanceRoleEnsurer
 	snaps   *fakeSnapshots
 	agent   *stubAgent
 	nc      *nats.Conn
@@ -37,7 +38,7 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 	h := &snapshotHarness{
 		launch:  newLaunchHarness(),
 		network: newFakeNetwork(),
-		iam:     &fakeRDSEnsurer{},
+		iam:     iammock.New(),
 		snaps:   &fakeSnapshots{},
 		nc:      nc,
 	}

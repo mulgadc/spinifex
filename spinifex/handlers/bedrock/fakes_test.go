@@ -20,6 +20,9 @@ import (
 // launch_test.go fixture of the same name (the systemvpc package's own rules
 // are covered in its package tests, not re-verified here).
 type fakeSystemVPC struct {
+	// The service under test launches concurrently, so the methods below
+	// run on more than one goroutine and share this state.
+	mu         sync.Mutex
 	seq        int
 	igwCreated bool
 }
@@ -33,6 +36,8 @@ var (
 )
 
 func (f *fakeSystemVPC) id(prefix string) *string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.seq++
 	return aws.String(fmt.Sprintf("%s-%04d", prefix, f.seq))
 }
@@ -110,7 +115,9 @@ func (f *fakeSystemVPC) ReleaseAddress(context.Context, *ec2.ReleaseAddressInput
 }
 
 func (f *fakeSystemVPC) CreateInternetGateway(context.Context, *ec2.CreateInternetGatewayInput, string) (*ec2.CreateInternetGatewayOutput, error) {
+	f.mu.Lock()
 	f.igwCreated = true
+	f.mu.Unlock()
 	return &ec2.CreateInternetGatewayOutput{InternetGateway: &ec2.InternetGateway{InternetGatewayId: aws.String("igw-bedrocksys")}}, nil
 }
 
@@ -130,7 +137,10 @@ func (f *fakeSystemVPC) DeleteInternetGateway(context.Context, *ec2.DeleteIntern
 // attaches an IGW and then re-reads it, so the pre-create lookup must find
 // nothing (or no IGW is ever created) and only the post-attach one answered.
 func (f *fakeSystemVPC) DescribeInternetGateways(_ context.Context, in *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
-	if !f.igwCreated {
+	f.mu.Lock()
+	created := f.igwCreated
+	f.mu.Unlock()
+	if !created {
 		return &ec2.DescribeInternetGatewaysOutput{}, nil
 	}
 	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: []*ec2.InternetGateway{{

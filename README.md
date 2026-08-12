@@ -12,7 +12,7 @@
   <a href="#what-is-spinifex">What is Spinifex?</a> ·
   <a href="#the-platform">Platform</a> ·
   <a href="#three-ways-to-deploy">Deploy</a> ·
-  <a href="#aws-compatibility">AWS services</a> ·
+  <a href="#aws-compatibility">AWS Compatibility</a> ·
   <a href="#core-components">Components</a> ·
   <a href="#architecture-at-a-glance">Architecture</a> ·
   <a href="#installation">Installation</a> ·
@@ -48,7 +48,7 @@ You change *where* your software runs, not *what* it is.
 
 From commodity hardware up to unmodified AWS tooling, every layer is replaceable and yours to own.
 
-## Three ways to deploy
+## Three Ways To Deploy
 
 One AWS-compatible surface, three deployment shapes. Pick the one that matches your reality; the platform on top is the same.
 
@@ -64,21 +64,21 @@ Bring your own hardware and host Spinifex in your own data centre. A real multi-
 
 Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels, factories, and clinics. Compute next to the data, running through disconnection, on hardware you own. The same AWS APIs your software already uses.
 
-## AWS compatibility
+## AWS Compatibility
 
 Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform: everything you deploy on AWS deploys on Spinifex unchanged. At the edge, on-premise, or on a partner Neocloud.
 
 | Service | What it is | Status |
 | --- | --- | --- |
 | **EC2** | Compute | Available |
-| **EBS** | Block storage | Available |
-| **S3** | Object storage | Available |
+| **EBS** | Block Storage | Available |
+| **S3** | Object Storage | Available |
 | **VPC** | Networking | Available |
-| **IAM** | Identity & auth | Available |
-| **ALB / NLB** | Load balancers | Available |
+| **IAM** | Identity & Auth | Available |
+| **ALB / NLB** | Load Balancers | Available |
 | **EKS** | Kubernetes | Available |
-| **ECR** | Container registry | Available |
-| **ECS** | Container service | Available |
+| **ECR** | Container Registry | Available |
+| **ECS** | Container Service | Available |
 | **RDS** | Databases | Available |
 | **Bedrock** | AI Deployment | Q3 2026 |
 
@@ -112,6 +112,14 @@ Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs
 - Multipart uploads, streaming reads/writes
 - Data redundancy with Reed-Solomon encoding
 
+### Northstar (Authoritative DNS)
+
+[Northstar](https://github.com/mulgadc/northstar) is a lightweight authoritative DNS server that handles both internal service discovery and public-facing DNS for a Spinifex cluster. Zones are human-readable TOML files, served from the local filesystem or synced from Predastore, keeping DNS configuration in the same object storage as the rest of your infrastructure.
+
+- Authoritative DNS over UDP, TCP, and DNS-over-TLS
+- Service discovery for cluster components via SRV records
+- Zone files stored locally or in S3-compatible storage
+
 ## Architecture at a Glance
 
 <p align="center">
@@ -131,7 +139,7 @@ Every AWS API call is authenticated at the gateway, published to a NATS subject,
 
 ## Installation
 
-Installation requires an Ubuntu / Debian system. See the detailed documentation at [docs.mulgadc.com](https://docs.mulgadc.com) for maintaining and installing Spinifex.
+Installation requires an Ubuntu 26.04 or Debian 13 system. See the detailed documentation at [docs.mulgadc.com](https://docs.mulgadc.com) for installing Spinifex.
 
 ### Bare Metal ISO
 
@@ -141,16 +149,11 @@ The recommended installation is a [bootable x86 installer](https://iso.mulgadc.c
 curl -fLO https://iso.mulgadc.com/spinifex.iso
 ```
 
-Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware. The install guide walks through the full process.
-
+Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware.
 
 ### Single Node Install
 
-The installation is straightforward to set up and running on a single node for testing purposes. Debian 13 is currently supported, additional Linux distributions are on the immediate roadmap.
-
->*Prerequisite:* Linux bridge for networking.
-
-Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) prerequisites for setup details.
+>*Prerequisite:* Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) for setup details.
 
 ```bash
 curl -fsSL https://install.mulgadc.com | bash
@@ -168,7 +171,7 @@ aws ec2 describe-instance-types
 
 ### Development Setup
 
-For a complete development environment see the [Source Install](https://docs.mulgadc.com/docs/install-source) documentation
+For a complete development environment see the [Source Install](https://docs.mulgadc.com/docs/install-source) documentation.
 
 ### Component Repositories
 
@@ -176,6 +179,7 @@ Spinifex coordinates these independent components:
 
 - **[Predastore](https://github.com/mulgadc/predastore)** - S3-compatible object storage
 - **[Viperblock](https://github.com/mulgadc/viperblock)** - EBS-compatible block storage
+- **[Northstar](https://github.com/mulgadc/northstar)** - Authoritative DNS server
 
 Each component can be developed independently. See component-specific documentation for focused development guides.
 
@@ -188,10 +192,6 @@ Spinifex ships with a built-in web console — an optional alternative to the AW
 </p>
 
 The console is served by each node on port `3000` over TLS, and becomes available as soon as `spinifex.target` is up:
-
-```bash
-open https://YOUR_NODE_IP:3000
-```
 
 - **Same API, different surface.** Every action in the UI is the same AWS SigV4 call the CLI makes — so RBAC, audit trails, and IAM policies apply uniformly.
 - **Single sign-on against your AWS credentials.** Log in with the access keys from `~/.aws/credentials` on the node where Spinifex is installed — no separate user database.

@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/mulgadc/predastore/pkg/sigv4"
+	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
 // failingProvider models a cold IMDS datapath: Retrieve always errors, as the

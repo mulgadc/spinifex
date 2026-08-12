@@ -340,23 +340,35 @@ func exportPool() {
 	}
 }
 
-// clearDisk removes any prior filesystem, partition table and ZFS label from a
-// disk so a retry after a partial install is not rejected for stale metadata —
-// a failure that otherwise reads as mysterious rather than as leftover debris.
+// clearDisk takes a disk over unconditionally, whatever it holds: everything
+// attached to it is released, every signature on it is wiped, its partition
+// table is erased, and the kernel is made to agree the disk is now empty.
+//
+// The last part is the point. sgdisk writes to the platters and exits 0 even
+// when the kernel refuses to drop the old table, so without the assertion an
+// install proceeds against partition nodes describing the previous layout.
 //
 // The probes are quiet because a blank disk makes all of them fail, and their
 // stderr on the install console reads like the install is going wrong.
 func clearDisk(d Disk) error {
-	// ZFS labels live at both ends of the device and wipefs does not know about
-	// them, so an old pool member has to be cleared before its partition goes.
-	if old := d.PartitionPath(rootPartNum); exists(old) {
-		_ = runQuiet("zpool", "labelclear", "-f", old)
-	}
-	_ = runQuiet("wipefs", "-a", d.Path)
-	return runQuiet("sgdisk", "-Z", d.Path)
-}
+	releaseDisk(d)
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	// Every partition, not just the root slice. ZFS labels live at both ends of
+	// a device and wipefs does not know about them, so a data drive that was
+	// once a pool member keeps its label and fails a later zpool create.
+	parts, err := kernelPartitions(d.Path)
+	if err != nil {
+		return err
+	}
+	for _, p := range parts {
+		dev := partitionDevice(d.Path, p)
+		_ = runQuiet("zpool", "labelclear", "-f", dev)
+		_ = runQuiet("wipefs", "-a", dev)
+	}
+
+	_ = runQuiet("wipefs", "-a", d.Path)
+	if err := runQuiet("sgdisk", "-Z", d.Path); err != nil {
+		return fmt.Errorf("erase partition table: %w", err)
+	}
+	return settlePartitions(d)
 }

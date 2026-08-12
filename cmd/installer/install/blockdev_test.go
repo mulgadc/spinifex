@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,7 @@ func newFakeSysfs(t *testing.T, disks ...fakeDisk) *fakeSysfs {
 	swap(&sysClassBlockDir, filepath.Join(f.root, "sys/class/block"))
 	swap(&devByIDDir, filepath.Join(f.root, "dev/disk/by-id"))
 	swap(&procMountsPath, filepath.Join(f.root, "proc/mounts"))
+	swap(&procSwapsPath, filepath.Join(f.root, "proc/swaps"))
 
 	f.mkdirAll(sysBlockDir)
 	f.mkdirAll(sysClassBlockDir)
@@ -111,6 +113,18 @@ func (f *fakeSysfs) addByID(id, dev string) {
 func (f *fakeSysfs) setMounts(content string) {
 	f.t.Helper()
 	f.write(procMountsPath, content)
+}
+
+func (f *fakeSysfs) setSwaps(content string) {
+	f.t.Helper()
+	f.write(procSwapsPath, content)
+}
+
+// addHolder marks a partition as claimed by md, LVM or device-mapper — the
+// state that makes the kernel refuse to re-read the disk's partition table.
+func (f *fakeSysfs) addHolder(disk, part, holder string) {
+	f.t.Helper()
+	f.mkdirAll(filepath.Join(sysBlockDir, disk, part, "holders", holder))
 }
 
 func boolAttr(b bool) string {
@@ -350,5 +364,121 @@ func TestHasAnyPrefix(t *testing.T) {
 	}
 	if hasAnyPrefix("sda", skipPrefixes) {
 		t.Error("sda should not match")
+	}
+}
+
+func TestReadKernelPartitionsListsOnlyPartitions(t *testing.T) {
+	newFakeSysfs(t, fakeDisk{
+		name: "nvme0n1", sectors: 1 << 22,
+		partitions: []string{"nvme0n1p3", "nvme0n1p1", "nvme0n1p2"},
+	})
+
+	got, err := readKernelPartitions("/dev/nvme0n1")
+	if err != nil {
+		t.Fatalf("readKernelPartitions: %v", err)
+	}
+	// Sorted, and "queue" and "device" alongside them are not partitions.
+	want := []string{"nvme0n1p1", "nvme0n1p2", "nvme0n1p3"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestReadKernelPartitionsIsEmptyForAnUnpartitionedDisk(t *testing.T) {
+	newFakeSysfs(t, fakeDisk{name: "nvme2n1", sectors: 1 << 22})
+
+	got, err := readKernelPartitions("/dev/nvme2n1")
+	if err != nil {
+		t.Fatalf("readKernelPartitions: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want none", got)
+	}
+}
+
+func TestReadKernelPartitionsFailsOnAnUnknownDisk(t *testing.T) {
+	newFakeSysfs(t)
+
+	if _, err := readKernelPartitions("/dev/nvme9n1"); err == nil {
+		t.Fatal("expected an error for a disk with no sysfs entry")
+	}
+}
+
+func TestDiskHoldersNamesEveryClaimant(t *testing.T) {
+	f := newFakeSysfs(t, fakeDisk{
+		name: "sda", sectors: 1 << 22, partitions: []string{"sda1", "sda2"},
+	})
+	f.addHolder("sda", "sda1", "md0")
+	f.addHolder("sda", "sda2", "dm-0")
+
+	if got, want := diskHolders("/dev/sda"), []string{"dm-0", "md0"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestDiskHoldersIsEmptyWhenNothingClaimsTheDisk(t *testing.T) {
+	newFakeSysfs(t, fakeDisk{name: "sda", sectors: 1 << 22, partitions: []string{"sda1"}})
+
+	if got := diskHolders("/dev/sda"); len(got) != 0 {
+		t.Errorf("got %v, want none", got)
+	}
+}
+
+func TestMountsOnDiskFindsOnlyThisDiskDeepestFirst(t *testing.T) {
+	f := newFakeSysfs(t,
+		fakeDisk{name: "sda", sectors: 1 << 22, partitions: []string{"sda1", "sda2"}},
+		fakeDisk{name: "sdb", sectors: 1 << 22, partitions: []string{"sdb1"}},
+	)
+	f.setMounts(strings.Join([]string{
+		"/dev/sda1 /oldroot ext4 rw 0 0",
+		"/dev/sda2 /oldroot/boot/efi vfat rw 0 0",
+		"/dev/sdb1 /other ext4 rw 0 0",
+		"proc /proc proc rw 0 0",
+	}, "\n") + "\n")
+
+	got := mountsOnDisk("/dev/sda")
+	want := []diskMount{
+		{Device: "/dev/sda2", Mountpoint: "/oldroot/boot/efi"},
+		{Device: "/dev/sda1", Mountpoint: "/oldroot"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// /dev/nvme0n1 must not claim /dev/nvme0n11, which a string-prefix match would.
+func TestMountsOnDiskDoesNotMatchASiblingNamespace(t *testing.T) {
+	f := newFakeSysfs(t,
+		fakeDisk{name: "nvme0n1", sectors: 1 << 22, partitions: []string{"nvme0n1p1"}},
+		fakeDisk{name: "nvme0n11", sectors: 1 << 22, partitions: []string{"nvme0n11p1"}},
+	)
+	f.setMounts("/dev/nvme0n11p1 /elsewhere ext4 rw 0 0\n")
+
+	if got := mountsOnDisk("/dev/nvme0n1"); len(got) != 0 {
+		t.Errorf("got %v, want none", got)
+	}
+}
+
+func TestSwapsOnDiskSkipsTheHeaderAndOtherDisks(t *testing.T) {
+	f := newFakeSysfs(t,
+		fakeDisk{name: "sda", sectors: 1 << 22, partitions: []string{"sda1"}},
+		fakeDisk{name: "sdb", sectors: 1 << 22, partitions: []string{"sdb1"}},
+	)
+	f.setSwaps(strings.Join([]string{
+		"Filename\t\t\t\tType\t\tSize\tUsed\tPriority",
+		"/dev/sda1 partition 8388604 0 -2",
+		"/dev/sdb1 partition 8388604 0 -3",
+	}, "\n") + "\n")
+
+	if got, want := swapsOnDisk("/dev/sda"), []string{"/dev/sda1"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestSwapsOnDiskIsEmptyWithoutASwapsTable(t *testing.T) {
+	newFakeSysfs(t, fakeDisk{name: "sda", sectors: 1 << 22, partitions: []string{"sda1"}})
+
+	if got := swapsOnDisk("/dev/sda"); len(got) != 0 {
+		t.Errorf("got %v, want none", got)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mulgadc/predastore/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 )
 
 const masterKeySize = 32 // AES-256

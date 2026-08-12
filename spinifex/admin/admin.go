@@ -951,39 +951,54 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 	return nil
 }
 
-// PredastoreClusterNode is one [[node]] entry of the Predastore topology: a
-// role pinned to a host.
+// PredastoreClusterNode is one [[host.node]] entry of the Predastore topology:
+// a role pinned to a host, answering on a port unique within it.
 type PredastoreClusterNode struct {
 	ID     int
 	HostID int
 	Role   string
+	Port   int
 }
 
-// Predastore node roles: shard storage holds erasure-coded object shards,
-// state replicas form the Raft quorum over global state.
+// Predastore node roles: a gate serves the S3 API, blob nodes hold
+// erasure-coded object shards, and meta nodes form the Raft quorum over global
+// state.
 const (
-	predastoreRoleShardStorage = "shard-storage"
-	predastoreRoleStateReplica = "state-replica"
+	predastoreRoleGate = "gate"
+	predastoreRoleBlob = "blob"
+	predastoreRoleMeta = "meta"
+)
+
+// Predastore node ports. Only a gate binds a socket clients reach; the others
+// are still required and must not collide within a host, so each role gets its
+// own base and colocated siblings count up from it.
+const (
+	predastoreGatePort     = 8443
+	predastoreBlobBasePort = 6660
+	predastoreMetaBasePort = 7660
 )
 
 // PredastoreTopology derives the cluster nodes for a set of machines: each
-// machine hosts one shard-storage node and one state replica. Node IDs are
-// unique across roles, so storage takes 1..n and the replicas n+1..2n.
+// machine hosts a gate, one blob node and one meta node. Node IDs are unique
+// across the whole file, so gates take 1..n, blobs n+1..2n and metas 2n+1..3n.
 func PredastoreTopology(nodes []PredastoreNodeConfig) []PredastoreClusterNode {
-	out := make([]PredastoreClusterNode, 0, len(nodes)*2)
+	out := make([]PredastoreClusterNode, 0, len(nodes)*3)
 	for _, n := range nodes {
-		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleShardStorage})
+		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleGate, Port: predastoreGatePort})
 	}
 	for _, n := range nodes {
-		out = append(out, PredastoreClusterNode{ID: n.ID + len(nodes), HostID: n.ID, Role: predastoreRoleStateReplica})
+		out = append(out, PredastoreClusterNode{ID: n.ID + len(nodes), HostID: n.ID, Role: predastoreRoleBlob, Port: predastoreBlobBasePort})
+	}
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID + 2*len(nodes), HostID: n.ID, Role: predastoreRoleMeta, Port: predastoreMetaBasePort})
 	}
 	return out
 }
 
 // GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
 // multi-node Predastore cluster. Each machine becomes one [[host]] — a
-// predastore process owning a socket on port 6660 and a data directory —
-// carrying the shard-storage and state-replica nodes pinned to it.
+// predastore process owning a data directory and a TLS identity — carrying the
+// gate, blob and meta nodes pinned to it under [[host.node]].
 //
 // dataDir is the Spinifex data root; the hosts' data directories are absolute
 // beneath it, since the service runs under systemd with no dependable working
@@ -1049,14 +1064,14 @@ func FindNodeIDByIP(nodes []PredastoreNodeConfig, ip string) int {
 }
 
 // ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
-// the ID of the [[host]] whose public address matches the given IP, or 0 if
-// not found. The host is what an operator places on a machine; the nodes
-// pinned to it follow from the topology.
+// the ID of the [[host]] whose addr matches the given IP, or 0 if not found.
+// A host addr names one machine and never carries a port; the ports belong to
+// the nodes pinned to it.
 func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 	var cfg struct {
 		Hosts []struct {
-			ID         int    `toml:"id"`
-			PublicAddr string `toml:"public_addr"`
+			ID   int    `toml:"id"`
+			Addr string `toml:"addr"`
 		} `toml:"host"`
 	}
 	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
@@ -1064,12 +1079,7 @@ func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
 		return 0
 	}
 	for _, h := range cfg.Hosts {
-		host, _, err := net.SplitHostPort(h.PublicAddr)
-		if err != nil {
-			// A bare address without a port is still a usable match.
-			host = h.PublicAddr
-		}
-		if host == ip {
+		if h.Addr == ip {
 			return h.ID
 		}
 	}

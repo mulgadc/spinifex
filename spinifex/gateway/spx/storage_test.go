@@ -22,15 +22,15 @@ func TestGetStorageStatus_Success(t *testing.T) {
 	sub, err := nc.Subscribe("spinifex.storage.config", func(msg *nats.Msg) {
 		resp := types.StorageConfigResponse{
 			Encoding: types.StorageEncoding{DataShards: 2, ParityShards: 1},
-			DBNodes: []types.StorageDBNode{
+			MetaNodes: []types.StorageMetaNode{
 				{ID: 1, Host: "127.0.0.1", Port: 0}, // port set below
 			},
-			ShardNodes: []types.StorageShardNode{
+			BlobNodes: []types.StorageBlobNode{
 				{ID: 1, Host: "0.0.0.0", Port: 9991},
 				{ID: 2, Host: "0.0.0.0", Port: 9992},
 			},
 			Buckets: []types.StorageBucket{
-				{Name: "predastore", Type: "distributed", Region: "ap-southeast-2"},
+				{Name: "predastore", Region: "ap-southeast-2"},
 			},
 		}
 		data, _ := json.Marshal(resp)
@@ -46,13 +46,13 @@ func TestGetStorageStatus_Success(t *testing.T) {
 	assert.Equal(t, "Reed-Solomon", out.Encoding.Type)
 	assert.Equal(t, 2, out.Encoding.DataShards)
 	assert.Equal(t, 1, out.Encoding.ParityShards)
-	assert.Len(t, out.ShardNodes, 2)
+	assert.Len(t, out.BlobNodes, 2)
 	assert.Len(t, out.Buckets, 1)
 	assert.Equal(t, "predastore", out.Buckets[0].Name)
-	// DB node health check will fail (no real predastore running) — that's expected
-	require.Len(t, out.DBNodes, 1)
-	assert.Equal(t, 1, out.DBNodes[0].ID)
-	assert.False(t, out.DBNodes[0].Healthy) // no predastore server to respond
+	// Meta node health check will fail (no real predastore running) — expected
+	require.Len(t, out.MetaNodes, 1)
+	assert.Equal(t, 1, out.MetaNodes[0].ID)
+	assert.False(t, out.MetaNodes[0].Healthy) // no predastore server to respond
 }
 
 func TestGetStorageStatus_NoNATSResponse(t *testing.T) {
@@ -63,8 +63,8 @@ func TestGetStorageStatus_NoNATSResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "storage config request")
 }
 
-func TestQueryDBNodeStatus_HealthyNode(t *testing.T) {
-	// Start a mock predastore DB server
+func TestQueryMetaNodeStatus_HealthyNode(t *testing.T) {
+	// Start a mock predastore meta node server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -104,8 +104,8 @@ func TestQueryDBNodeStatus_HealthyNode(t *testing.T) {
 	port, err := strconv.Atoi(u.Port())
 	require.NoError(t, err)
 
-	out := &DBNodeStatus{ID: 1, Host: host, Port: port}
-	queryDBNodeStatus(t.Context(), out, host, port)
+	out := &MetaNodeStatus{ID: 1, Host: host, Port: port}
+	queryMetaNodeStatus(t.Context(), out, host, port)
 
 	assert.True(t, out.Healthy)
 	assert.Equal(t, "Leader", out.State)
@@ -115,9 +115,9 @@ func TestQueryDBNodeStatus_HealthyNode(t *testing.T) {
 	assert.Equal(t, "998", out.AppliedIdx)
 }
 
-func TestQueryDBNodeStatus_UnreachableNode(t *testing.T) {
-	out := &DBNodeStatus{ID: 1, Host: "127.0.0.1", Port: 1} // port 1 won't respond
-	queryDBNodeStatus(t.Context(), out, "127.0.0.1", 1)
+func TestQueryMetaNodeStatus_UnreachableNode(t *testing.T) {
+	out := &MetaNodeStatus{ID: 1, Host: "127.0.0.1", Port: 1} // port 1 won't respond
+	queryMetaNodeStatus(t.Context(), out, "127.0.0.1", 1)
 
 	assert.False(t, out.Healthy)
 	assert.Empty(t, out.State)

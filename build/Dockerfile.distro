@@ -16,9 +16,11 @@ COPY predastore/go.mod predastore/go.sum ./predastore/
 COPY viperblock/go.mod viperblock/go.sum ./viperblock/
 COPY viperblock/nbd/go.mod viperblock/nbd/go.sum ./viperblock/nbd/
 COPY viperblock/nbd/libguestfs.org/nbdkit/go.mod ./viperblock/nbd/libguestfs.org/nbdkit/
+COPY northstar/go.mod northstar/go.sum ./northstar/
+COPY bluebottle/go.mod bluebottle/go.sum ./bluebottle/
 
 # Generate go.work (gitignored, so not in checkout)
-RUN cd spinifex && go work init . ../predastore ../viperblock ../viperblock/nbd ../viperblock/nbd/libguestfs.org/nbdkit
+RUN cd spinifex && go work init . ../predastore ../viperblock ../viperblock/nbd ../viperblock/nbd/libguestfs.org/nbdkit ../northstar ../bluebottle
 
 # Download dependencies (cached layer)
 RUN cd spinifex && go mod download
@@ -27,6 +29,8 @@ RUN cd spinifex && go mod download
 COPY spinifex/ ./spinifex/
 COPY predastore/ ./predastore/
 COPY viperblock/ ./viperblock/
+COPY northstar/ ./northstar/
+COPY bluebottle/ ./bluebottle/
 
 # Build spinifex binary (spx)
 RUN COMMIT=$(cd spinifex && git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \

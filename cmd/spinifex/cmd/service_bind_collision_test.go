@@ -21,19 +21,18 @@ func bindAllServiceCollisionEnv(t *testing.T) {
 	bindAwsgwCollisionEnv()
 }
 
-// TestSubcommandDebugKeysResolveIndependently proves predastore, nats and
-// awsgw each resolve their own SPINIFEX_<SERVICE>_DEBUG value instead of
-// sharing one last-registration-wins "debug" viper key.
+// TestSubcommandDebugKeysResolveIndependently proves nats and awsgw each
+// resolve their own SPINIFEX_<SERVICE>_DEBUG value instead of sharing one
+// last-registration-wins "debug" viper key. Predastore has no debug flag: it
+// logs at whatever level the predastore library is built to.
 func TestSubcommandDebugKeysResolveIndependently(t *testing.T) {
 	t.Cleanup(func() { viper.Reset() })
 	viper.Reset()
 	bindAllServiceCollisionEnv(t)
 
-	t.Setenv("SPINIFEX_PREDASTORE_DEBUG", "true")
 	t.Setenv("SPINIFEX_NATS_DEBUG", "false")
 	t.Setenv("SPINIFEX_AWSGW_DEBUG", "true")
 
-	assert.True(t, viper.GetBool("predastore-debug"))
 	assert.False(t, viper.GetBool("nats-debug"))
 	assert.True(t, viper.GetBool("awsgw-debug"))
 }
@@ -99,7 +98,6 @@ func TestGenericSpinifexEnvDoesNotShadowNamespacedKeys(t *testing.T) {
 	t.Setenv("SPINIFEX_HOST", "255.255.255.255")
 	t.Setenv("SPINIFEX_PORT", "1")
 
-	t.Setenv("SPINIFEX_PREDASTORE_DEBUG", "false")
 	t.Setenv("SPINIFEX_NATS_DEBUG", "false")
 	t.Setenv("SPINIFEX_AWSGW_DEBUG", "false")
 	t.Setenv("SPINIFEX_NATS_HOST", "10.0.0.9")
@@ -107,7 +105,6 @@ func TestGenericSpinifexEnvDoesNotShadowNamespacedKeys(t *testing.T) {
 	t.Setenv("SPINIFEX_PREDASTORE_PORT", "8443")
 	t.Setenv("SPINIFEX_NATS_PORT", "4222")
 
-	assert.False(t, viper.GetBool("predastore-debug"), "generic SPINIFEX_DEBUG must not shadow predastore-debug")
 	assert.False(t, viper.GetBool("nats-debug"), "generic SPINIFEX_DEBUG must not shadow nats-debug")
 	assert.False(t, viper.GetBool("awsgw-debug"), "generic SPINIFEX_DEBUG must not shadow awsgw-debug")
 	assert.Equal(t, "10.0.0.9", viper.GetString("nats-service-host"), "generic SPINIFEX_HOST must not shadow nats-service-host")

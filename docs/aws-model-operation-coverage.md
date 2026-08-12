@@ -12,7 +12,7 @@ Implemented means a modelled operation is registered to a real handler. Stub and
 | ecs | 2014-11-13 | 56 | 39 | 31 | 5 | 0 | 20 | 3 |
 | elasticloadbalancingv2 | 2015-12-01 | 46 | 37 | 33 | 0 | 0 | 13 | 4 |
 | iam | 2010-05-08 | 159 | 75 | 75 | 0 | 0 | 84 | 0 |
-| rds | 2014-10-31 | 162 | 40 | 24 | 0 | 12 | 126 | 4 |
+| rds | 2014-10-31 | 162 | 41 | 24 | 0 | 12 | 126 | 5 |
 | s3 | 2006-03-01 | 99 | — | — | — | — | — | — |
 | sts | 2011-06-15 | 8 | 4 | 4 | 0 | 0 | 4 | 0 |
 
@@ -527,9 +527,9 @@ None.
 
 </details>
 
-<details><summary>Registered outside the pinned model (4)</summary>
+<details><summary>Registered outside the pinned model (5)</summary>
 
-`GetDBBootstrapConfig`, `PollDBCommands`, `RegisterDBInstance`, `SubmitDBStateChange`
+`AcknowledgeDBBootstrap`, `GetDBBootstrapConfig`, `PollDBCommands`, `RegisterDBInstance`, `SubmitDBStateChange`
 
 
 </details>

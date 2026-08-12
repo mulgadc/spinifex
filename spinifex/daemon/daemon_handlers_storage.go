@@ -2,10 +2,8 @@ package daemon
 
 import (
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
@@ -17,8 +15,7 @@ import (
 type predastoreTOML struct {
 	RS      predastoreRS       `toml:"rs"`
 	Hosts   []predastoreHost   `toml:"host"`
-	Nodes   []predastoreNode   `toml:"node"`
-	Buckets []predastoreBucket `toml:"buckets"`
+	Buckets []predastoreBucket `toml:"bucket"`
 }
 
 type predastoreRS struct {
@@ -26,30 +23,32 @@ type predastoreRS struct {
 	Parity int `toml:"parity"`
 }
 
-// predastoreHost is one predastore process; the nodes pinned to it are all
-// reachable at its public address.
+// predastoreHost is one predastore process, as written under [[host]]. Addr
+// names the machine and carries no port; the nodes pinned to it supply their
+// own.
 type predastoreHost struct {
-	ID         int    `toml:"id"`
-	PublicAddr string `toml:"public_addr"`
+	ID    int              `toml:"id"`
+	Addr  string           `toml:"addr"`
+	Nodes []predastoreNode `toml:"node"`
 }
 
-// predastoreNode is a role pinned to a host. Its address is the host's, so
-// reporting a node means resolving its host_id.
+// predastoreNode is a role pinned to the host it is written under. Its address
+// is that host's addr joined with this port.
 type predastoreNode struct {
-	ID     int    `toml:"id"`
-	HostID int    `toml:"host_id"`
-	Role   string `toml:"role"`
+	ID   int    `toml:"id"`
+	Role string `toml:"role"`
+	Port int    `toml:"port"`
 }
 
-// Predastore node roles, as written in the [[node]] blocks.
+// Predastore node roles, as written in the [[host.node]] blocks.
 const (
-	predastoreRoleShardStorage = "shard-storage"
-	predastoreRoleStateReplica = "state-replica"
+	predastoreRoleGate = "gate"
+	predastoreRoleBlob = "blob"
+	predastoreRoleMeta = "meta"
 )
 
 type predastoreBucket struct {
 	Name   string `toml:"name"`
-	Type   string `toml:"type"`
 	Region string `toml:"region"`
 }
 
@@ -80,35 +79,33 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) {
 		},
 	}
 
-	// A node's address is its host's: every node pinned to a host is served
-	// by that one process, keyed apart within it.
-	hostAddrs := make(map[int]predastoreHost, len(cfg.Hosts))
+	// A node's address is its host's addr plus its own port: colocated nodes
+	// share a machine but never a port.
 	for _, h := range cfg.Hosts {
-		hostAddrs[h.ID] = h
-	}
-
-	for _, n := range cfg.Nodes {
-		host, port := splitPredastoreAddr(hostAddrs[n.HostID].PublicAddr)
-		switch n.Role {
-		case predastoreRoleStateReplica:
-			resp.DBNodes = append(resp.DBNodes, types.StorageDBNode{ID: n.ID, Host: host, Port: port})
-		case predastoreRoleShardStorage:
-			resp.ShardNodes = append(resp.ShardNodes, types.StorageShardNode{ID: n.ID, Host: host, Port: port})
-		default:
-			slog.Warn("handleStorageConfig: unknown predastore node role", "node", n.ID, "role", n.Role)
+		for _, n := range h.Nodes {
+			switch n.Role {
+			case predastoreRoleMeta:
+				resp.MetaNodes = append(resp.MetaNodes, types.StorageMetaNode{ID: n.ID, Host: h.Addr, Port: n.Port})
+			case predastoreRoleBlob:
+				resp.BlobNodes = append(resp.BlobNodes, types.StorageBlobNode{ID: n.ID, Host: h.Addr, Port: n.Port})
+			case predastoreRoleGate:
+				// A gate serves the S3 API and holds no cluster state, so it
+				// belongs to neither table this report carries.
+			default:
+				slog.Warn("handleStorageConfig: unknown predastore node role", "node", n.ID, "role", n.Role)
+			}
 		}
 	}
-	if resp.DBNodes == nil {
-		resp.DBNodes = []types.StorageDBNode{}
+	if resp.MetaNodes == nil {
+		resp.MetaNodes = []types.StorageMetaNode{}
 	}
-	if resp.ShardNodes == nil {
-		resp.ShardNodes = []types.StorageShardNode{}
+	if resp.BlobNodes == nil {
+		resp.BlobNodes = []types.StorageBlobNode{}
 	}
 
 	for _, b := range cfg.Buckets {
 		resp.Buckets = append(resp.Buckets, types.StorageBucket{
 			Name:   b.Name,
-			Type:   b.Type,
 			Region: b.Region,
 		})
 	}
@@ -117,19 +114,4 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) {
 	}
 
 	respondWithJSON(msg, resp)
-}
-
-// splitPredastoreAddr splits a host's "ip:port" into its parts. An address
-// missing or malformed in the config yields the raw value and a zero port
-// rather than dropping the node from the report entirely.
-func splitPredastoreAddr(addr string) (string, int) {
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr, 0
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return host, 0
-	}
-	return host, port
 }

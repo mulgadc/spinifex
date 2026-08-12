@@ -1,10 +1,114 @@
 package predastore
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	pds "github.com/mulgadc/predastore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// hostSpec and nodeSpec are the [[host]] and [[host.node]] tables of a
+// configuration file under test. An empty field is left out of the file, which
+// is how a test leaves a host-local value for the service flags to supply.
+type hostSpec struct {
+	id       int
+	bindAddr string
+	addr     string
+	dataDir  string
+	tlsCert  string
+	tlsKey   string
+}
+
+type nodeSpec struct {
+	id   int
+	role string
+	port int
+}
+
+// writeTopology writes a predastore configuration file for host and its nodes
+// and returns its path. RS(1,0) is the narrowest code the file format allows,
+// so one blob node satisfies the stripe-width check.
+func writeTopology(t *testing.T, dir string, host hostSpec, nodes []nodeSpec) string {
+	t.Helper()
+
+	var b strings.Builder
+	fmt.Fprint(&b, "version = 1\nregion = \"us-east-1\"\n\n[rs]\ndata = 1\nparity = 0\n\n")
+	fmt.Fprintf(&b, "[[host]]\nid = %d\n", host.id)
+	for _, field := range [][2]string{
+		{"bind_addr", host.bindAddr},
+		{"addr", host.addr},
+		{"data_dir", host.dataDir},
+		{"tls_cert", host.tlsCert},
+		{"tls_key", host.tlsKey},
+	} {
+		if field[1] != "" {
+			fmt.Fprintf(&b, "%s = %q\n", field[0], field[1])
+		}
+	}
+	for _, n := range nodes {
+		fmt.Fprintf(&b, "\n[[host.node]]\nid = %d\nrole = %q\nport = %d\n", n.id, n.role, n.port)
+	}
+
+	path := filepath.Join(dir, "predastore.toml")
+	require.NoError(t, os.WriteFile(path, []byte(b.String()), 0600))
+	return path
+}
+
+// singleHost is the topology most of these tests merge against: a gate and the
+// one blob node RS(1,0) needs, on a host that names every host-local field so
+// a flag has something to beat.
+func singleHost(t *testing.T, dir string) string {
+	t.Helper()
+	return writeTopology(t, dir,
+		hostSpec{
+			id:       1,
+			bindAddr: "10.0.0.1",
+			addr:     "10.0.0.1",
+			dataDir:  filepath.Join(dir, "data"),
+			tlsCert:  filepath.Join(dir, "file.crt"),
+			tlsKey:   filepath.Join(dir, "file.key"),
+		},
+		[]nodeSpec{
+			{id: 1, role: "gate", port: 8443},
+			{id: 2, role: "blob", port: 6660},
+		})
+}
+
+// mergeHost loads the configuration at path and merges cfg's host-local fields
+// into it, which is the pairing Start performs.
+func mergeHost(t *testing.T, cfg *Config) (*pds.Config, error) {
+	t.Helper()
+
+	svc, err := New(cfg)
+	require.NoError(t, err)
+
+	parsed, err := pds.LoadConfig(cfg.ConfigPath)
+	require.NoError(t, err)
+	_, err = svc.mergeHost(parsed)
+	return parsed, err
+}
+
+// gateOf is the gate node of the first host, which is where the merged S3 port
+// lands.
+func gateOf(t *testing.T, cfg *pds.Config) pds.NodeConfig {
+	t.Helper()
+
+	for _, n := range cfg.Hosts[0].Nodes {
+		if n.Role == pds.RoleGate {
+			return n
+		}
+	}
+	t.Fatal("configuration declares no gate node")
+	return pds.NodeConfig{}
+}
 
 // TestNew tests the service constructor.
 func TestNew(t *testing.T) {
@@ -12,107 +116,31 @@ func TestNew(t *testing.T) {
 		ConfigPath:        "/tmp/test-config.toml",
 		Port:              8443,
 		Host:              "0.0.0.0",
-		Debug:             false,
 		BasePath:          "/tmp/predastore",
 		TlsCert:           "/tmp/cert.pem",
 		TlsKey:            "/tmp/key.pem",
 		EncryptionKeyFile: "/tmp/encryption.key",
+		HostID:            2,
 	}
 
 	svc, err := New(cfg)
 
-	assert.NoError(t, err)
-	assert.NotNil(t, svc)
-	assert.NotNil(t, svc.Config)
-	assert.Equal(t, "/tmp/test-config.toml", svc.Config.ConfigPath)
-	assert.Equal(t, 8443, svc.Config.Port)
-	assert.Equal(t, "0.0.0.0", svc.Config.Host)
-	assert.False(t, svc.Config.Debug)
-	assert.Equal(t, "/tmp/predastore", svc.Config.BasePath)
-	assert.Equal(t, "/tmp/cert.pem", svc.Config.TlsCert)
-	assert.Equal(t, "/tmp/key.pem", svc.Config.TlsKey)
-	assert.Equal(t, "/tmp/encryption.key", svc.Config.EncryptionKeyFile)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	// The same pointer, not a copy: the start command mutates the config it
+	// hands over right up to the call.
+	assert.Same(t, cfg, svc.Config)
 }
 
-// TestNewWithNilConfig tests that New handles nil config correctly.
-func TestNewWithNilConfig(t *testing.T) {
-	cfg := &Config{}
-	svc, err := New(cfg)
+// TestNewRejectsForeignConfig pins the type assertion in New: the service
+// registry hands it an any, so a config meant for another service must be
+// rejected rather than silently ignored.
+func TestNewRejectsForeignConfig(t *testing.T) {
+	svc, err := New(struct{ Port int }{Port: 8443})
 
-	assert.NoError(t, err)
-	assert.NotNil(t, svc)
-	assert.NotNil(t, svc.Config)
-}
-
-// TestConfigDefaults tests Config struct default values.
-func TestConfigDefaults(t *testing.T) {
-	cfg := &Config{}
-
-	assert.Empty(t, cfg.ConfigPath)
-	assert.Empty(t, cfg.Host)
-	assert.Equal(t, 0, cfg.Port)
-	assert.False(t, cfg.Debug)
-	assert.Empty(t, cfg.BasePath)
-	assert.Empty(t, cfg.TlsCert)
-	assert.Empty(t, cfg.TlsKey)
-	assert.Empty(t, cfg.EncryptionKeyFile)
-}
-
-// TestConfigWithDebug tests Config with debug enabled.
-func TestConfigWithDebug(t *testing.T) {
-	cfg := &Config{
-		Debug:      true,
-		ConfigPath: "/etc/predastore/config.toml",
-		Port:       8443,
-	}
-
-	assert.True(t, cfg.Debug)
-	assert.Equal(t, "/etc/predastore/config.toml", cfg.ConfigPath)
-	assert.Equal(t, 8443, cfg.Port)
-}
-
-// TestConfigFullyPopulated tests a fully populated config.
-func TestConfigFullyPopulated(t *testing.T) {
-	cfg := &Config{
-		ConfigPath:        "/etc/predastore/config.toml",
-		Port:              9443,
-		Host:              "127.0.0.1",
-		Debug:             true,
-		BasePath:          "/var/lib/predastore",
-		TlsCert:           "/etc/ssl/certs/predastore.crt",
-		TlsKey:            "/etc/ssl/private/predastore.key",
-		EncryptionKeyFile: "/etc/spinifex/predastore/encryption.key",
-	}
-
-	assert.Equal(t, "/etc/predastore/config.toml", cfg.ConfigPath)
-	assert.Equal(t, 9443, cfg.Port)
-	assert.Equal(t, "127.0.0.1", cfg.Host)
-	assert.True(t, cfg.Debug)
-	assert.Equal(t, "/var/lib/predastore", cfg.BasePath)
-	assert.Equal(t, "/etc/ssl/certs/predastore.crt", cfg.TlsCert)
-	assert.Equal(t, "/etc/ssl/private/predastore.key", cfg.TlsKey)
-	assert.Equal(t, "/etc/spinifex/predastore/encryption.key", cfg.EncryptionKeyFile)
-}
-
-// TestServiceMethods tests the service interface methods.
-func TestServiceMethods(t *testing.T) {
-	cfg := &Config{
-		ConfigPath: "/tmp/test-config.toml",
-		Port:       8443,
-		Host:       "127.0.0.1",
-	}
-
-	svc, err := New(cfg)
-	assert.NoError(t, err)
-
-	// Test Status - returns "stopped" when no PID file exists
-	status, err := svc.Status()
-	assert.NoError(t, err)
-	assert.Equal(t, "stopped", status)
-
-	// Test Reload - returns no error
-	err = svc.Reload()
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Nil(t, svc)
+	assert.Contains(t, err.Error(), "invalid config type")
 }
 
 // TestServiceNameConstant tests the serviceName constant.
@@ -120,221 +148,253 @@ func TestServiceNameConstant(t *testing.T) {
 	assert.Equal(t, "predastore", serviceName)
 }
 
-// TestConfigPortRange tests port validation.
-func TestConfigPortRange(t *testing.T) {
-	testCases := []struct {
-		name     string
-		port     int
-		valid    bool
-		expected int
-	}{
-		{"Standard HTTPS", 443, true, 443},
-		{"Custom Port", 8443, true, 8443},
-		{"High Port", 65535, true, 65535},
-		{"Port 80", 80, true, 80},
-		{"Port 8080", 8080, true, 8080},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{
-				Port: tc.port,
-			}
-
-			assert.Equal(t, tc.expected, cfg.Port)
-			if tc.valid {
-				assert.Positive(t, cfg.Port)
-				assert.LessOrEqual(t, cfg.Port, 65535)
-			}
-		})
-	}
+// TestReloadIsANoOp pins the current contract: predastore has no reload, and
+// the service reports success rather than an error a caller would have to
+// special-case.
+func TestReloadIsANoOp(t *testing.T) {
+	svc, err := New(&Config{})
+	require.NoError(t, err)
+	assert.NoError(t, svc.Reload())
 }
 
-// TestConfigHostnames tests host configuration.
-func TestConfigHostnames(t *testing.T) {
-	testCases := []struct {
-		name     string
-		host     string
-		expected string
-	}{
-		{"Localhost", "127.0.0.1", "127.0.0.1"},
-		{"All Interfaces", "0.0.0.0", "0.0.0.0"},
-		{"Localhost Name", "localhost", "localhost"},
-		{"Custom Domain", "s3.example.com", "s3.example.com"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{
-				Host: tc.host,
-			}
-
-			assert.Equal(t, tc.expected, cfg.Host)
-			assert.NotEmpty(t, cfg.Host)
-		})
-	}
-}
-
-// TestConfigBasePath tests base path configuration.
-func TestConfigBasePath(t *testing.T) {
-	testCases := []struct {
-		name     string
-		basePath string
-	}{
-		{"Absolute Path", "/var/lib/predastore"},
-		{"Relative Path", "data/predastore"},
-		{"Temp Directory", "/tmp/predastore"},
-		{"User Directory", "/home/user/predastore"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{
-				BasePath: tc.basePath,
-			}
-
-			assert.Equal(t, tc.basePath, cfg.BasePath)
-		})
-	}
-}
-
-// TestConfigTLSPaths tests TLS certificate and key paths.
-func TestConfigTLSPaths(t *testing.T) {
+// TestMergeHostFlagsBeatFile covers the precedence spinifex.toml relies on:
+// the service flags own the host-local fields, so a value from them replaces
+// whatever the predastore file carried.
+func TestMergeHostFlagsBeatFile(t *testing.T) {
+	dir := t.TempDir()
 	cfg := &Config{
-		TlsCert: "/etc/ssl/certs/server.crt",
-		TlsKey:  "/etc/ssl/private/server.key",
+		ConfigPath: singleHost(t, dir),
+		Host:       "0.0.0.0",
+		Port:       19443,
+		TlsCert:    filepath.Join(dir, "flag.crt"),
+		TlsKey:     filepath.Join(dir, "flag.key"),
+		HostID:     1,
 	}
 
-	assert.NotEmpty(t, cfg.TlsCert)
-	assert.NotEmpty(t, cfg.TlsKey)
-	assert.Contains(t, cfg.TlsCert, ".crt")
-	assert.Contains(t, cfg.TlsKey, ".key")
+	merged, err := mergeHost(t, cfg)
+
+	require.NoError(t, err)
+	assert.Equal(t, cfg.TlsCert, merged.Hosts[0].TLSCert)
+	assert.Equal(t, cfg.TlsKey, merged.Hosts[0].TLSKey)
+	assert.Equal(t, 19443, gateOf(t, merged).Port)
+	// The dial address is the cluster's business, not this host's flags.
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].Addr)
 }
 
-// TestConfigMinimal tests minimal required config.
-func TestConfigMinimal(t *testing.T) {
-	cfg := &Config{
-		ConfigPath: "/tmp/config.toml",
-		Port:       8443,
-		Host:       "127.0.0.1",
-	}
+// TestMergeHostBindsTheGateNotTheCluster is the plane split: the address
+// spinifex.toml carries is the public S3 endpoint, so settling it on the host
+// would put raft and blob traffic on the public interface along with it.
+func TestMergeHostBindsTheGateNotTheCluster(t *testing.T) {
+	dir := t.TempDir()
 
-	svc, err := New(cfg)
-	assert.NoError(t, err)
-	assert.NotNil(t, svc)
+	merged, err := mergeHost(t, &Config{
+		ConfigPath: singleHost(t, dir),
+		Host:       "0.0.0.0",
+		HostID:     1,
+	})
 
-	// Minimal config should work
-	assert.NotEmpty(t, cfg.ConfigPath)
-	assert.Positive(t, cfg.Port)
-	assert.NotEmpty(t, cfg.Host)
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", gateOf(t, merged).BindAddr, "S3 answers on every interface")
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr, "raft and blob stay on the host address")
 }
 
-// TestServiceStartWithoutConfig tests Start method behavior
-// Note: This will fail without proper config file, which is expected.
-func TestServiceStartWithoutConfig(t *testing.T) {
-	// Skip this test - it requires actual config file and will block/exit
-	// This is covered by integration tests instead
-	t.Skip("Skipping test that requires actual predastore config file - covered by integration tests")
+// TestMergeHostWithoutAnS3AddressLeavesBothPlanesOnTheHost covers the
+// single-homed case: nothing to split, so the gate follows the host and the
+// file alone decides.
+func TestMergeHostWithoutAnS3AddressLeavesBothPlanesOnTheHost(t *testing.T) {
+	dir := t.TempDir()
+
+	merged, err := mergeHost(t, &Config{ConfigPath: singleHost(t, dir), HostID: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, gateOf(t, merged).BindAddr, "the gate names no address of its own")
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr)
 }
 
-// TestServiceStartRejectsMissingEncryptionKey ensures Start fails fast when
-// EncryptionKeyFile is unset, before touching the pid file or binding.
-func TestServiceStartRejectsMissingEncryptionKey(t *testing.T) {
-	cfg := &Config{
-		ConfigPath: "/tmp/test-config.toml",
-		Port:       18443,
-		Host:       "127.0.0.1",
+// TestMergeHostReturnsTheResolvedHostID pins what Start hands predastore.Run:
+// the host whose nodes this process serves, resolved once rather than
+// reconverted at the call.
+func TestMergeHostReturnsTheResolvedHostID(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(&Config{ConfigPath: singleHost(t, dir), HostID: 1})
+	require.NoError(t, err)
+	parsed, err := pds.LoadConfig(svc.Config.ConfigPath)
+	require.NoError(t, err)
+
+	hostID, err := svc.mergeHost(parsed)
+
+	require.NoError(t, err)
+	assert.Equal(t, pds.HostID(1), hostID)
+}
+
+// TestMergeHostKeepsFileValues is the other half of the precedence rule: an
+// unset flag must leave the file's value alone rather than blanking it.
+func TestMergeHostKeepsFileValues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{ConfigPath: singleHost(t, dir), HostID: 1}
+
+	merged, err := mergeHost(t, cfg)
+
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1", merged.Hosts[0].BindAddr)
+	assert.Equal(t, filepath.Join(dir, "file.crt"), merged.Hosts[0].TLSCert)
+	assert.Equal(t, filepath.Join(dir, "file.key"), merged.Hosts[0].TLSKey)
+	assert.Equal(t, 8443, gateOf(t, merged).Port)
+}
+
+// TestMergeHostLeavesTheClusterPlaneToTheFile covers the one host-local field
+// no service flag owns. There is no flag for the cluster plane, so a file that
+// names only the dial address is left alone here and resolved by predastore,
+// which is the single place that decides what an empty bind address means.
+func TestMergeHostLeavesTheClusterPlaneToTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTopology(t, dir,
+		hostSpec{id: 1, addr: "10.0.0.1", dataDir: filepath.Join(dir, "data")},
+		[]nodeSpec{{id: 1, role: "gate", port: 8443}, {id: 2, role: "blob", port: 6660}})
+
+	merged, err := mergeHost(t, &Config{ConfigPath: path, Host: "0.0.0.0", HostID: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, merged.Hosts[0].BindAddr, "the S3 address must not settle on the host")
+	assert.Equal(t, "10.0.0.1", pds.HostBindAddr(merged.Hosts[0]), "predastore resolves it to the dial address")
+}
+
+// TestMergeHostRejectsMissingHostID covers the one field with no default: the
+// host id selects which [[host]] this process runs, and zero names none.
+func TestMergeHostRejectsMissingHostID(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := mergeHost(t, &Config{ConfigPath: singleHost(t, dir)})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "host id is required")
+}
+
+// TestMergeHostRejectsUnknownHostID covers a host id the configuration file
+// never declares: nothing pins nodes to it, so the process would serve an
+// empty cluster.
+func TestMergeHostRejectsUnknownHostID(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := mergeHost(t, &Config{ConfigPath: singleHost(t, dir), HostID: 9})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "predastore host 9 is not in")
+}
+
+// TestMergeHostRejectsHostWithoutGate covers a host running no gate: the
+// endpoint spinifex.toml advertises for this node would answer no S3 request,
+// and the port the flags carry would have nowhere to land.
+func TestMergeHostRejectsHostWithoutGate(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTopology(t, dir,
+		hostSpec{id: 1, addr: "10.0.0.1", dataDir: filepath.Join(dir, "data")},
+		[]nodeSpec{{id: 1, role: "blob", port: 6660}, {id: 2, role: "meta", port: 7660}})
+
+	_, err := mergeHost(t, &Config{ConfigPath: path, HostID: 1, Port: 18443})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runs no gate node")
+}
+
+// TestMergeHostRevalidatesMergedConfig is why the merge ends in Validate: a
+// port that only arrives by flag can still collide with a sibling node's, and
+// the file alone was coherent.
+func TestMergeHostRevalidatesMergedConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{ConfigPath: singleHost(t, dir), HostID: 1, Port: 6660}
+
+	_, err := mergeHost(t, cfg)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "both use port 6660")
+}
+
+// TestStartRejectsMissingEncryptionKey ensures Start fails fast when
+// EncryptionKeyFile is unset, before touching the pid file or the config.
+func TestStartRejectsMissingEncryptionKey(t *testing.T) {
+	svc, err := New(&Config{
+		ConfigPath: filepath.Join(t.TempDir(), "predastore.toml"),
 		BasePath:   t.TempDir(),
-		TlsCert:    "/tmp/cert.pem",
-		TlsKey:     "/tmp/key.pem",
-		// EncryptionKeyFile deliberately left empty.
-	}
-	svc, err := New(cfg)
-	assert.NoError(t, err)
+		HostID:     1,
+	})
+	require.NoError(t, err)
 
-	_, err = svc.Start()
-	assert.Error(t, err)
+	pid, err := svc.Start()
+
+	require.Error(t, err)
+	assert.Zero(t, pid)
 	assert.Contains(t, err.Error(), "encryption key file is required")
 }
 
-// TestConfigDebugFlag tests debug flag behavior.
-func TestConfigDebugFlag(t *testing.T) {
-	// Debug enabled
-	cfg1 := &Config{
-		Debug: true,
-	}
-	assert.True(t, cfg1.Debug)
+// TestStatusReportsStoppedWithoutPidFile covers the resting state: no pid file
+// under BasePath means nothing is running, not an error.
+func TestStatusReportsStoppedWithoutPidFile(t *testing.T) {
+	svc, err := New(&Config{BasePath: t.TempDir()})
+	require.NoError(t, err)
 
-	// Debug disabled
-	cfg2 := &Config{
-		Debug: false,
-	}
-	assert.False(t, cfg2.Debug)
+	status, err := svc.Status()
 
-	// Default should be false
-	cfg3 := &Config{}
-	assert.False(t, cfg3.Debug)
+	require.NoError(t, err)
+	assert.Equal(t, "stopped", status)
 }
 
-// TestConfigValidation tests validation of required fields.
-func TestConfigValidation(t *testing.T) {
-	// Empty config - fields should be empty/zero
-	cfg := &Config{}
-	assert.Empty(t, cfg.ConfigPath)
-	assert.Equal(t, 0, cfg.Port)
-	assert.Empty(t, cfg.Host)
+// TestStatusAndStopUseThePidFile covers the out-of-process path: Stop and
+// Status find a predastore started by an earlier invocation through the pid
+// file BasePath holds, and Stop clears it once the process is gone.
+func TestStatusAndStopUseThePidFile(t *testing.T) {
+	basePath := t.TempDir()
+	svc, err := New(&Config{BasePath: basePath})
+	require.NoError(t, err)
 
-	// Valid config
-	cfg2 := &Config{
-		ConfigPath: "/etc/predastore/config.toml",
-		Port:       8443,
-		Host:       "0.0.0.0",
-	}
-	assert.NotEmpty(t, cfg2.ConfigPath)
-	assert.Positive(t, cfg2.Port)
-	assert.NotEmpty(t, cfg2.Host)
+	child := exec.CommandContext(t.Context(), "sleep", "60")
+	require.NoError(t, child.Start())
+	// Reaped as it dies, not at cleanup: an unwaited child of this process
+	// lingers as a zombie, which still answers signal 0, so Stop would wait out
+	// its whole grace period before escalating to SIGKILL.
+	reaped := make(chan struct{})
+	go func() {
+		defer close(reaped)
+		_ = child.Wait()
+	}()
+	t.Cleanup(func() { <-reaped })
+	require.NoError(t, utils.WritePidFileTo(basePath, serviceName, child.Process.Pid))
+
+	status, err := svc.Status()
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("running (pid: %d)", child.Process.Pid), status)
+
+	require.NoError(t, svc.Stop())
+	assert.NoFileExists(t, filepath.Join(basePath, serviceName+".pid"))
+
+	status, err = svc.Status()
+	require.NoError(t, err)
+	assert.Equal(t, "stopped", status)
 }
 
-// TestMultipleServiceInstances tests creating multiple service instances.
-func TestMultipleServiceInstances(t *testing.T) {
-	cfg1 := &Config{
-		ConfigPath: "/tmp/config1.toml",
-		Port:       8443,
-		Host:       "127.0.0.1",
-	}
+// TestShutdownWithoutRunningClusterFallsBackToPidFile covers the fallback: with
+// no cluster in this process there is no context to cancel, so Shutdown goes
+// through the pid file, which reports rather than signalling anything.
+func TestShutdownWithoutRunningClusterFallsBackToPidFile(t *testing.T) {
+	svc, err := New(&Config{BasePath: t.TempDir()})
+	require.NoError(t, err)
 
-	cfg2 := &Config{
-		ConfigPath: "/tmp/config2.toml",
-		Port:       9443,
-		Host:       "127.0.0.1",
-	}
-
-	svc1, err := New(cfg1)
-	assert.NoError(t, err)
-	assert.NotNil(t, svc1)
-
-	svc2, err := New(cfg2)
-	assert.NoError(t, err)
-	assert.NotNil(t, svc2)
-
-	// Services should be independent
-	assert.NotEqual(t, svc1.Config.Port, svc2.Config.Port)
-	assert.NotEqual(t, svc1.Config.ConfigPath, svc2.Config.ConfigPath)
+	assert.Error(t, svc.Shutdown())
 }
 
-// TestConfigPointerPreservation tests that config pointer is preserved.
-func TestConfigPointerPreservation(t *testing.T) {
-	cfg := &Config{
-		Port: 8443,
-		Host: "127.0.0.1",
-	}
+// TestShutdownCancelsTheServiceContext covers the in-process path: once Start
+// has published its cancel func, Shutdown cancels the context the gate and the
+// local nodes share instead of signalling through the pid file.
+func TestShutdownCancelsTheServiceContext(t *testing.T) {
+	svc, err := New(&Config{BasePath: t.TempDir()})
+	require.NoError(t, err)
 
-	svc, err := New(cfg)
-	assert.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.mu.Lock()
+	svc.stop = cancel
+	svc.mu.Unlock()
 
-	// Modify original config
-	cfg.Port = 9443
-
-	// Service should reflect the change (same pointer)
-	assert.Equal(t, 9443, svc.Config.Port)
+	require.NoError(t, svc.Shutdown())
+	assert.Error(t, ctx.Err())
 }

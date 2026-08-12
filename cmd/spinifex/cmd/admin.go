@@ -1524,8 +1524,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// is node-local, so it is derived here from this node's own config dirs.
 	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
-	// Parse multi-node predastore configuration (legacy flag-based approach for single-node)
-	var predastoreHostID int
+	// Parse multi-node predastore configuration. A single-node install is host
+	// 1, the only [[host]] its predastore.toml declares; the multi-node path
+	// below replaces this with the host matching this machine.
+	predastoreHostID := 1
 	if predastoreNodesStr != "" {
 		ips := strings.Split(predastoreNodesStr, ",")
 		if len(ips) < 2 {
@@ -1842,8 +1844,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	// is node-local, so it is derived here from this node's own config dirs.
 	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
 
-	// Generate multi-node predastore config
-	var predastoreHostID int
+	// Generate multi-node predastore config. A single-node install is host 1,
+	// the only [[host]] its predastore.toml declares; the multi-node path below
+	// replaces this with the host matching this machine.
+	predastoreHostID := 1
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
 		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, spxRoot, bindIP, compactionInterval, northstarCreds)
@@ -1858,7 +1862,14 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 			os.Exit(1)
 		}
 
+		// One machine is one predastore host, so the node list entry matching
+		// this bind IP is this node's host ID. Without one the service has no
+		// [[host]] to run and refuses to start.
 		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
+			fmt.Fprintf(os.Stderr, "❌ Error: bind IP %s not found in the predastore node list\n", bindIP)
+			os.Exit(1)
+		}
 		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
 	}
 
@@ -2392,8 +2403,10 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
 
-	// Generate multi-node predastore config
-	var predastoreHostID int
+	// Generate multi-node predastore config. A single-node install is host 1,
+	// the only [[host]] its predastore.toml declares; the multi-node path below
+	// replaces this with the host matching this machine.
+	predastoreHostID := 1
 	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {

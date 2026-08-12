@@ -80,7 +80,7 @@ interface GetVMsOutput {
   vms: VMInfo[]
 }
 
-interface DBNodeStatus {
+interface MetaNodeStatus {
   id: number
   host: string
   port: number
@@ -94,7 +94,7 @@ interface DBNodeStatus {
   is_leader: boolean
 }
 
-interface ShardNode {
+interface BlobNode {
   id: number
   host: string
   port: number
@@ -102,7 +102,6 @@ interface ShardNode {
 
 interface StorageBucket {
   name: string
-  type: string
   region: string
 }
 
@@ -112,8 +111,8 @@ interface StorageStatusOutput {
     data_shards: number
     parity_shards: number
   }
-  db_nodes: DBNodeStatus[]
-  shard_nodes: ShardNode[]
+  meta_nodes: MetaNodeStatus[]
+  blob_nodes: BlobNode[]
   buckets: StorageBucket[]
 }
 
@@ -126,8 +125,8 @@ export type {
   GetNodesOutput,
   VMInfo,
   GetVMsOutput,
-  DBNodeStatus,
-  ShardNode,
+  MetaNodeStatus,
+  BlobNode,
   StorageBucket,
   StorageStatusOutput,
 }

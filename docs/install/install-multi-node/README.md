@@ -26,6 +26,7 @@ resources:
 ## Table of Contents
 
 - [Overview](#overview)
+- [Object Storage Layout](#object-storage-layout)
 - [Prerequisites](#prerequisites)
 - [Instructions](#instructions)
 - [Converting ISO-Installed Nodes](#converting-iso-installed-nodes)
@@ -53,6 +54,28 @@ Servers beyond the third join as compute nodes and do not run a database, which 
 - UDP port 6081 open between hosts (Geneve tunnels)
 - TCP ports 4222, 4248, 6641, 6642 open between hosts (NATS, OVN)
 - TCP ports 6643, 6644 open between database servers (OVN database clustering)
+- TCP port 8443 and UDP ports 6660, 7660 open between hosts (Predastore S3, object shards, metadata consensus)
+
+Predastore uses the same three ports on every server, so the surface does not widen as the cluster grows. See [Object Storage Layout](#object-storage-layout) below.
+
+## Object Storage Layout
+
+Predastore is configured for the whole cluster in `/etc/spinifex/predastore/predastore.toml`. Each server is one `[[host]]` — a single Predastore process owning that machine's data directory and TLS identity — carrying three nodes under `[[host.node]]`:
+
+| Role | Port | Purpose |
+|------|------|---------|
+| `gate` | TCP 8443 | Serves the S3 API. Every server runs one, so any of them answers an S3 request. |
+| `blob` | UDP 6660 | Holds erasure-coded object shards. One per machine. |
+| `meta` | UDP 7660 | Member of the Raft quorum over global state — buckets and the object index. |
+
+Ports have to be unique within a host but not across the cluster, so every machine uses the same three. Blob and meta traffic between hosts runs over QUIC, authenticated by the cluster CA; nodes on the same machine talk over an in-process pipe and open no socket, which is why a single-server install listens on 8443 alone.
+
+Reed-Solomon parameters are chosen from the cluster size, since each machine contributes exactly one blob node: two servers get `RS(1,1)`, three or more get `RS(2,1)`. `RS(2,1)` survives the loss of any one server's shards.
+
+You do not configure any of this by hand. `spx admin init` and `spx admin join` build the topology from the servers that actually form the cluster in Step 4, and each machine gets the same file with its own host ID recorded in `spinifex.toml`.
+
+> [!WARNING]
+> **There is no upgrade path onto this layout.** A cluster installed before the object storage cutover cannot be migrated — the on-disk directory structure and the configuration schema both changed, and no migration rewrites either. Such a cluster has to be re-initialised from scratch, which discards its stored objects. Export anything you need first.
 
 ## Prerequisites
 

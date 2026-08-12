@@ -31,6 +31,11 @@
 #                        SB endpoints for compute nodes pointing at a RAFT
 #                        cluster (default: tcp:127.0.0.1:6642)
 #   --encap-ip=IP        Geneve tunnel endpoint IP (default: auto-detect)
+#   --lan-addr=IP        LAN-plane IP to bind the OVN NB(6641)/SB(6642)
+#                        client listeners on, in addition to loopback
+#                        (requires --management). Falls back to
+#                        --db-cluster-local-addr when omitted, since every
+#                        clustered node already passes its own LAN IP.
 #   --db-cluster-local-addr=IP   This DB node's own IP for OVSDB RAFT clustering.
 #                        Enables clustered NB(6643)/SB(6644) DBs (requires
 #                        --management). Empty --db-cluster-remote-addr ⇒ create
@@ -99,6 +104,9 @@
 #
 #   # Non-bridgeable uplink (WiFi/cellular) — routed NAT, outbound-only VMs:
 #   ./scripts/setup-ovn.sh --management --nat-uplink
+#
+#   # Standalone management node, NB/SB client listeners also on the LAN plane:
+#   ./scripts/setup-ovn.sh --management --lan-addr=10.0.0.1
 
 set -e
 
@@ -114,6 +122,10 @@ MGMT_CIDR="10.15.8.1/24"
 MGMT_IFACE=""
 OVN_REMOTE="tcp:127.0.0.1:6642"
 ENCAP_IP=""
+# LAN-plane IP for the NB/SB client listeners (6641/6642), in addition to
+# loopback. Empty means loopback-only; resolved further down against
+# DB_CLUSTER_LOCAL_ADDR once arguments are parsed.
+LAN_ADDR=""
 # OVSDB RAFT clustering. Empty by default ⇒ single, non-clustered ovn-central
 # (dev box, existing single-node clusters). When LOCAL_ADDR is set, the NB/SB
 # DBs run clustered; REMOTE_ADDR empty ⇒ create the cluster, set ⇒ join it.
@@ -145,6 +157,7 @@ for arg in "$@"; do
         --no-mgmt-bridge)   MGMT_BRIDGE_ENABLED=false ;;
         --ovn-remote=*)     OVN_REMOTE="${arg#*=}" ;;
         --encap-ip=*)       ENCAP_IP="${arg#*=}" ;;
+        --lan-addr=*)       LAN_ADDR="${arg#*=}" ;;
         --db-cluster-local-addr=*)  DB_CLUSTER_LOCAL_ADDR="${arg#*=}" ;;
         --db-cluster-remote-addr=*) DB_CLUSTER_REMOTE_ADDR="${arg#*=}" ;;
         --recreate-db)      RECREATE_DB=true ;;
@@ -175,6 +188,13 @@ if [ "$RECREATE_DB" = true ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
     echo "ERROR: --recreate-db requires --db-cluster-local-addr (it exists to allow"
     echo "       clustered DB creation over an existing standalone DB)"
     exit 1
+fi
+
+# Fall back to the RAFT clustering address when no --lan-addr was given:
+# every clustered node already passes --db-cluster-local-addr with its LAN
+# IP, so clusters stay correct even from a caller that predates this flag.
+if [ -z "$LAN_ADDR" ] && [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+    LAN_ADDR="$DB_CLUSTER_LOCAL_ADDR"
 fi
 
 # --- WAN bridge auto-detection ---
@@ -395,6 +415,14 @@ echo "  openvswitch-switch: started"
 if [ "$MANAGEMENT" = true ]; then
     sudo systemctl enable ovn-central
 
+    # LAN-plane NB/SB client listener, added to the loopback one set below.
+    # Guard is load-bearing: --db-nb-addr defaults to 0.0.0.0, so
+    # create-insecure-remote=yes with no LAN_ADDR recreates the wildcard bug.
+    OVN_DB_LISTEN_OPTS=""
+    if [ -n "$LAN_ADDR" ]; then
+        OVN_DB_LISTEN_OPTS="--db-nb-addr=$LAN_ADDR --db-nb-create-insecure-remote=yes --db-sb-addr=$LAN_ADDR --db-sb-create-insecure-remote=yes"
+    fi
+
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
         ensure_clustered_db_storage
 
@@ -424,6 +452,13 @@ if [ "$MANAGEMENT" = true ]; then
             echo "  ovn-northd: NB=$OVN_REMOTE_NB SB=$OVN_REMOTE (RAFT member list)"
         fi
 
+        if [ -n "$OVN_DB_LISTEN_OPTS" ]; then
+            OVN_CTL_OPTS="$OVN_CTL_OPTS $OVN_DB_LISTEN_OPTS"
+            echo "  NB/SB client listen: 127.0.0.1, $LAN_ADDR"
+        else
+            echo "  NB/SB client listen: 127.0.0.1"
+        fi
+
         echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
         echo "  wrote /etc/default/ovn-central"
 
@@ -446,8 +481,24 @@ EOF
         sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd
         echo "  ovn-central: started clustered (NB DB + SB DB + ovn-northd)"
     else
-        sudo systemctl start ovn-central
-        echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+        if [ -n "$OVN_DB_LISTEN_OPTS" ]; then
+            # A two-node standalone install still has a remote
+            # ovn-controller needing the LAN listener — write the file
+            # before starting, same as the clustered branch.
+            echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
+            echo "  wrote /etc/default/ovn-central"
+            sudo systemctl start ovn-central
+
+            # ovn-central is ExecStart=/bin/true; restarting it does not
+            # restart its children, so a re-run with a changed LAN_ADDR needs
+            # the per-DB units restarted directly to pick up the new options.
+            sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb
+            echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+            echo "  NB/SB client listen: 127.0.0.1, $LAN_ADDR"
+        else
+            sudo systemctl start ovn-central
+            echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+        fi
     fi
 
     # Wait for OVN NB DB socket to become available
@@ -495,14 +546,19 @@ EOF
         sleep 1
     done
 
-    # Set the NB/SB client listen addresses. set-connection writes through RAFT
-    # (replicated cluster-wide), so it only runs on the create node — a joining
-    # node would redirect to the leader, which the init node already configured.
+    # set-connection replicates through RAFT, so it only runs on the create
+    # node. Scoped to loopback, not a wildcard ptcp:6641, because 127.0.0.1
+    # is valid on every node; the differing LAN address is set above instead.
     if [ -z "$DB_CLUSTER_REMOTE_ADDR" ]; then
-        sudo ovn-nbctl set-connection ptcp:6641
-        sudo ovn-sbctl set-connection ptcp:6642
-        echo "  OVN NB DB listening on tcp:6641"
-        echo "  OVN SB DB listening on tcp:6642"
+        sudo ovn-nbctl set-connection ptcp:6641:127.0.0.1
+        sudo ovn-sbctl set-connection ptcp:6642:127.0.0.1
+        if [ -n "$LAN_ADDR" ]; then
+            echo "  OVN NB DB listening on tcp:127.0.0.1:6641, tcp:$LAN_ADDR:6641"
+            echo "  OVN SB DB listening on tcp:127.0.0.1:6642, tcp:$LAN_ADDR:6642"
+        else
+            echo "  OVN NB DB listening on tcp:127.0.0.1:6641"
+            echo "  OVN SB DB listening on tcp:127.0.0.1:6642"
+        fi
     fi
 fi
 

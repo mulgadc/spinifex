@@ -1,6 +1,6 @@
 ---
-title: "IAM Users and Policies"
-description: "Create IAM users, manage access keys, and control permissions with policies."
+title: "AWS IAM Users, Policies, and Access Keys"
+description: "Create AWS IAM users, issue and rotate access keys, and write and attach JSON policies that control exactly what each user can do in a Spinifex account."
 category: "Identity"
 tags:
   - iam
@@ -17,9 +17,9 @@ resources:
     url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html"
 ---
 
-# IAM Users and Policies
+# AWS IAM Users, Policies, and Access Keys
 
-> Create IAM users, manage access keys, and control permissions with policies.
+> Create AWS IAM users, issue and rotate access keys, and write and attach JSON policies that control exactly what each user can do in a Spinifex account.
 
 ## Table of Contents
 
@@ -119,7 +119,7 @@ aws iam delete-user --user-name alice
 
 ## Access Keys
 
-Access keys are how users authenticate with the AWS CLI. Each user can have up to **2 access keys** at a time, allowing key rotation without downtime.
+Access keys are how users authenticate with the AWS CLI. Each user can have up to **2 access keys** at a time, allowing key rotation without downtime. For credentials that expire on their own instead of a long-lived key pair, see [STS and Temporary Credentials](/docs/sts). Workloads running inside an EC2 instance should not carry a user's access key at all — they pick up role credentials automatically through [IMDS](/docs/imds).
 
 ### Create an Access Key
 

@@ -7,8 +7,8 @@ Single source of truth for the current schema version of every config file Spini
 | `nats.conf` | `3` | `cmd/spinifex/cmd/templates/nats.conf` |
 | `awsgw.toml` | `2` | `cmd/spinifex/cmd/templates/awsgw.toml` |
 | `spinifex.toml` | `4` | `cmd/spinifex/cmd/templates/spinifex.toml` |
-| `predastore.toml` | `5` | `cmd/spinifex/cmd/templates/predastore.toml` |
-| `predastore-multinode.toml` | `5` | `cmd/spinifex/cmd/templates/predastore-multinode.toml` |
+| `predastore.toml` | `1` | `cmd/spinifex/cmd/templates/predastore.toml` |
+| `predastore-multinode.toml` | `1` | `cmd/spinifex/cmd/templates/predastore-multinode.toml` |
 
 ## How versions are stamped
 
@@ -19,14 +19,11 @@ Single source of truth for the current schema version of every config file Spini
 
 | Target | Migration | File |
 |---|---|---|
-| `predastore.toml` | `4` → `5`: `[[db]]`/`[[nodes]]` → `[[host]]`/`[[node]]`, relocate node data, recover raft | `spinifex/migrate/predastoretopology/004_predastore_topology.go` |
 | `spinifex.toml` | `3` → `4`: rename `[nodes.*.predastore]` `node_id` → `host_id` | `spinifex/migrate/005_spinifex_predastore_host_id.go` |
 
 ## Where migrations live
 
 Register a `ConfigMigration` against `DefaultRegistry` in a new numbered file under `spinifex/migrate/`, and bump the version in both the template and the table above.
-
-A migration that needs more than the framework and the standard library goes in its own package beside `migrate` instead, blank-imported from `cmd/spinifex/cmd/admin_upgrade.go`. `migrate` is imported by every handler that stamps a KV bucket version, so a heavy dependency there reaches the whole tree — `predastoretopology` needs Predastore's cluster runtime, which is why it sits apart.
 
 ## Framework
 

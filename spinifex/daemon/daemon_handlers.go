@@ -347,13 +347,10 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 	// OVN roles are probed only on DB quorum members; compute-only nodes skip
 	// the shell-out entirely.
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); resp.NATSRole = d.queryNATSRole() }()
-	go func() { defer wg.Done(); resp.PredastoreRole = d.queryPredastoreRole() }()
+	wg.Go(func() { resp.NATSRole = d.queryNATSRole() })
 	if d.isOVNDBQuorumMember() {
-		wg.Add(2)
-		go func() { defer wg.Done(); resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) }()
-		go func() { defer wg.Done(); resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) }()
+		wg.Go(func() { resp.OVNNBRole = host.OVNDBRole(host.OVNNBTarget, host.OVNNBSchema) })
+		wg.Go(func() { resp.OVNSBRole = host.OVNDBRole(host.OVNSBTarget, host.OVNSBSchema) })
 	}
 	wg.Wait()
 
@@ -364,8 +361,7 @@ const (
 	roleLeader   = "leader"
 	roleFollower = "follower"
 
-	natsMonitorPort  = 8222
-	predastoreDBPort = 6660
+	natsMonitorPort = 8222
 )
 
 // queryNATSRole queries the local NATS monitoring endpoint to determine this
@@ -376,16 +372,6 @@ func (d *Daemon) queryNATSRole() string {
 	}
 	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(natsMonitorPort)) + "/varz"
 	return fetchNATSRole(url, roleHTTPClient)
-}
-
-// queryPredastoreRole queries the local Predastore DB status endpoint to
-// determine this node's Raft role. Returns "leader", "follower", or "".
-func (d *Daemon) queryPredastoreRole() string {
-	if !d.config.HasService("predastore") {
-		return ""
-	}
-	url := "https://" + net.JoinHostPort(d.daemonIP(), strconv.Itoa(predastoreDBPort)) + "/status"
-	return fetchPredastoreRole(url, roleTLSHTTPClient)
 }
 
 // isOVNDBQuorumMember reports whether this node hosts the clustered OVN NB/SB
@@ -400,10 +386,6 @@ func (d *Daemon) isOVNDBQuorumMember() bool {
 }
 
 var roleHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}
-
-var roleTLSHTTPClient = &http.Client{
-	Timeout: 500 * time.Millisecond,
-}
 
 // fetchNATSRole queries a NATS /varz endpoint and returns "leader", "follower", or "".
 func fetchNATSRole(url string, client *http.Client) string {
@@ -523,29 +505,6 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 		}
 	}
 	return nil
-}
-
-// fetchPredastoreRole queries a Predastore /status endpoint and returns "leader", "follower", or "".
-func fetchPredastoreRole(url string, client *http.Client) string {
-	resp, err := client.Get(url) //nolint:noctx // internal monitoring call
-	if err != nil {
-		slog.Debug("Failed to query Predastore status", "err", err)
-		return ""
-	}
-	defer resp.Body.Close()
-
-	var status struct {
-		IsLeader bool `json:"is_leader"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		slog.Debug("Failed to decode Predastore status", "err", err)
-		return ""
-	}
-
-	if status.IsLeader {
-		return roleLeader
-	}
-	return roleFollower
 }
 
 // handleNodeVMs responds with the list of VMs running on this node.

@@ -1,6 +1,6 @@
 ---
-title: "IMDS (Instance Metadata Service)"
-description: "Access instance metadata, user data, and IAM role credentials from inside a guest VM with IMDSv2."
+title: "AWS IMDS: Instance Metadata Service (IMDSv2)"
+description: "Query AWS instance metadata, read user data, and fetch short-lived IAM role credentials from inside a guest VM using IMDSv2 session tokens on Spinifex."
 category: "Identity"
 tags:
   - imds
@@ -18,9 +18,9 @@ resources:
     url: "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html"
 ---
 
-# Instance Metadata Service (IMDS)
+# AWS IMDS: Instance Metadata Service (IMDSv2)
 
-> Access instance metadata, user data, and IAM role credentials from inside a guest VM with IMDSv2.
+> Query AWS instance metadata, read user data, and fetch short-lived IAM role credentials from inside a guest VM using IMDSv2 session tokens on Spinifex.
 
 ## Table of Contents
 
@@ -153,7 +153,7 @@ Returns the decoded user data, or 404 if the instance was launched without any. 
 
 ## IAM Role Credentials
 
-Instances launched with an IAM instance profile get short-lived, auto-rotating credentials through IMDS — no static keys baked into the image. Creating roles and instance profiles is covered in [IAM Roles and Instance Profiles](/docs/iam-roles-and-instance-profiles).
+Instances launched with an IAM instance profile get short-lived, auto-rotating credentials through IMDS — no static keys baked into the image. Creating roles and instance profiles is covered in [IAM Roles and Instance Profiles](/docs/iam-roles-and-instance-profiles). These are the same temporary credentials [STS](/docs/sts) issues, delivered to the guest automatically instead of through an explicit `assume-role` call.
 
 ```bash
 # Discover the role name

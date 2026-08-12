@@ -3,7 +3,7 @@ package handlers_iam
 import (
 	"testing"
 
-	"github.com/mulgadc/predastore/pkg/iampolicy"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

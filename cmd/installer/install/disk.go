@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -46,6 +49,95 @@ const (
 	// discovered while standing in front of a degraded pool.
 	tailReserveMiB = 1024
 )
+
+// partitionSettleTimeout bounds the wait for the kernel and udev to publish a
+// disk's new partition table. A var so tests do not pay it.
+var partitionSettleTimeout = 15 * time.Second
+
+// releaseDisk detaches whatever the live environment has attached to a disk
+// before it is erased. A mounted filesystem or an active swap area makes
+// BLKRRPART return EBUSY, and the kernel then keeps serving the disk's old
+// partition table while sgdisk writes the new one and reports success.
+func releaseDisk(d Disk) {
+	for _, m := range mountsOnDisk(d.Path) {
+		err := runQuiet("umount", m.Device)
+		if err != nil {
+			// Lazy detach: a busy mount must not stall an install that is about to
+			// erase the filesystem underneath it anyway.
+			err = runQuiet("umount", "-l", m.Device)
+		}
+		if err != nil {
+			slog.Warn("could not unmount before erase", "device", m.Device, "mountpoint", m.Mountpoint, "err", err)
+			continue
+		}
+		slog.Info("released mount before erase", "device", m.Device, "mountpoint", m.Mountpoint)
+	}
+	for _, s := range swapsOnDisk(d.Path) {
+		if err := runQuiet("swapoff", s); err != nil {
+			slog.Warn("could not disable swap before erase", "device", s, "err", err)
+			continue
+		}
+		slog.Info("disabled swap before erase", "device", s)
+	}
+}
+
+// settlePartitions forces the kernel to re-read a disk's partition table and
+// blocks until its view matches want, naming the partitions by number.
+//
+// An empty want asserts the disk has no partitions at all. That is the only
+// state no leftover can satisfy: a disk whose previous table had the same
+// partition numbers as the one being written — an old OS install is p1, p2, p3,
+// exactly what the boot layout writes — passes an "are the expected partitions
+// there" check on stale nodes alone.
+func settlePartitions(d Disk, want ...int) error {
+	if err := runQuiet("partprobe", d.Path); err != nil {
+		// partprobe rescans the whole disk and fails if it cannot open any part of
+		// it; the ioctl on its own sometimes still gets through.
+		if err := runQuiet("blockdev", "--rereadpt", d.Path); err != nil {
+			slog.Warn("could not force a partition table re-read", "disk", d.Path, "err", err)
+		}
+	}
+	_ = runQuiet("udevadm", "settle", "--timeout=10")
+
+	wanted := make([]string, 0, len(want))
+	for _, n := range want {
+		wanted = append(wanted, filepath.Base(d.PartitionPath(n)))
+	}
+	slices.Sort(wanted)
+
+	deadline := time.Now().Add(partitionSettleTimeout)
+	for {
+		got, err := kernelPartitions(d.Path)
+		if err != nil {
+			return err
+		}
+		if slices.Equal(got, wanted) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return staleTableError(d, wanted, got)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// staleTableError explains a kernel partition view that never caught up. The
+// erase case gets its own wording because it is the dangerous one — proceeding
+// would format the previous layout — and because the holder is usually the
+// whole diagnosis.
+func staleTableError(d Disk, wanted, got []string) error {
+	if len(wanted) == 0 {
+		msg := fmt.Sprintf("%s still shows partitions [%s] after its table was erased — the kernel is using the old table, so formatting would write at the previous layout's offsets",
+			d.Path, strings.Join(got, ", "))
+		if h := diskHolders(d.Path); len(h) > 0 {
+			return fmt.Errorf("%s; it is held by %s, which must be stopped before this disk can be installed to",
+				msg, strings.Join(h, ", "))
+		}
+		return fmt.Errorf("%s; something in the live environment is holding it open", msg)
+	}
+	return fmt.Errorf("%s: the kernel shows partitions [%s] but the new table has [%s] — the table was written but never picked up",
+		d.Path, strings.Join(got, ", "), strings.Join(wanted, ", "))
+}
 
 // espSizeMiB picks the ESP size for a disk.
 func espSizeMiB(d Disk) int {
@@ -98,7 +190,7 @@ func partitionDataDisk(rm RoleMount) error {
 	if err := run("sgdisk", "-G", rm.Disk.Path); err != nil {
 		slog.Warn("could not randomise GPT GUIDs", "disk", rm.Disk.Path, "err", err)
 	}
-	return nil
+	return settlePartitions(rm.Disk, dataPartNum)
 }
 
 // partitionOne writes the GPT for a single disk.
@@ -129,25 +221,15 @@ func partitionOne(d Disk, rootType string) error {
 	if err := run("sgdisk", "-G", d.Path); err != nil {
 		slog.Warn("could not randomise GPT GUIDs", "disk", d.Path, "err", err)
 	}
-	return nil
+	return settlePartitions(d, biosPartNum, espPartNum, rootPartNum)
 }
 
 // waitForPartitions ensures every partition device node the installer is about
-// to use exists. Trixie's udev is slow enough after a table rewrite that mkfs
-// races it and fails with ENOENT on a device the kernel has already accepted.
+// to use exists. The kernel's own view was already asserted per disk as each
+// table was written; udev publishes the /dev nodes and by-id symlinks after
+// that, and Trixie is slow enough about it that mkfs races them.
 func waitForPartitions(cfg DiskConfig) error {
-	for _, d := range cfg.Disks {
-		// Best-effort: partprobe failing is not fatal, since udev may still act
-		// on the BLKRRPART ioctl sgdisk issued itself.
-		if err := run("partprobe", d.Path); err != nil {
-			slog.Warn("partprobe failed, continuing", "disk", d.Path, "err", err)
-		}
-	}
-	if err := run("udevadm", "settle", "--timeout=10"); err != nil {
-		slog.Warn("udevadm settle failed, continuing", "err", err)
-	}
-
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(partitionSettleTimeout)
 	for _, d := range cfg.bootDisks() {
 		wanted := []string{d.PartitionPath(espPartNum), d.PartitionPath(rootPartNum)}
 		// The pool is built from by-id paths, so their symlinks have to exist

@@ -376,6 +376,16 @@ fi
 
 DB_NODES=$((N >= 3 ? 3 : 1))
 
+# A collapsed lan plane puts the OVN NB/SB listener on the public address,
+# because it is the only one the node has. Nothing can be done about that
+# here, but the operator has to know a host firewall is the only control.
+for i in $(seq 0 $((DB_NODES - 1))); do
+    if [ "${LAN_IPS[$i]}" = "${WAN_IPS[$i]}" ]; then
+        log "WARNING: ${HOSTS[$i]} has no separate lan plane — OVN NB/SB (6641/6642)"
+        log "         will listen on ${WAN_IPS[$i]}. Restrict those ports with a firewall."
+    fi
+done
+
 # --node-name pins the OVS system-id, which is the OVN chassis-id, which
 # ovs-monitor-ipsec uses as the IKEv2 `@<name>` peer identity. `spx admin init`
 # enables IPsec by default and bakes the cluster node name into each peer
@@ -389,6 +399,7 @@ if [ "$DB_NODES" -eq 3 ]; then
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
         --db-cluster-local-addr=${LAN_IPS[0]} \
+        --lan-addr=${LAN_IPS[0]} \
         --recreate-db \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: could not create the OVN database cluster"
     log "  ${HOSTS[0]} created the database cluster"
@@ -398,6 +409,7 @@ if [ "$DB_NODES" -eq 3 ]; then
             --node-name=${NODE_NAMES[$i]} \
             --db-cluster-local-addr=${LAN_IPS[$i]} \
             --db-cluster-remote-addr=${LAN_IPS[0]} \
+            --lan-addr=${LAN_IPS[$i]} \
             --recreate-db \
             --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: could not join the OVN database cluster"
         log "  ${HOSTS[$i]} joined the database cluster"
@@ -407,6 +419,7 @@ if [ "$DB_NODES" -eq 3 ]; then
 else
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
+        --lan-addr=${LAN_IPS[0]} \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: setup-ovn.sh failed"
     log "  ${HOSTS[0]} is running a standalone database"
 

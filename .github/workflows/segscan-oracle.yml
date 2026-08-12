@@ -51,6 +51,20 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: northstar
+
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: ${{ steps.siblings.outputs.bluebottle }}
+          path: bluebottle
+
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
@@ -73,7 +87,7 @@ jobs:
           go-version-file: "spinifex/go.mod"
 
       - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore
+        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Run Segscan Oracle Test
         env:

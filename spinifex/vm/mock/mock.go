@@ -17,9 +17,10 @@ import (
 
 // StateStore is an in-memory vm.StateStore. Per-method error fields let a
 // test drive a specific failure branch without a real KV backend; the
-// Wrote*/Deleted*/Claimed* fields record every successful call in addition
-// to mutating Stopped/Terminated, so a test can assert on call history
-// independent of final state.
+// Wrote*/Deleted*/Claimed* fields record every successful call, so a test
+// can assert on call history independent of final state. Stopped is the
+// claimable pool: Delete/Claim remove from it, but WriteStoppedInstance
+// records only, it never puts a record back.
 type StateStore struct {
 	mu sync.Mutex
 
@@ -111,10 +112,9 @@ func (s *StateStore) WriteStoppedInstance(id string, v *vm.VM) error {
 		s.mu.Unlock()
 		return s.WriteStoppedErr
 	}
-	if s.Stopped == nil {
-		s.Stopped = map[string]*vm.VM{}
-	}
-	s.Stopped[id] = v
+	// Records the write without repopulating Stopped: that map is the pool
+	// ClaimStoppedInstance draws from, and a rollback write must not make an
+	// already-claimed instance claimable a second time.
 	if s.WroteStopped == nil {
 		s.WroteStopped = map[string]*vm.VM{}
 	}

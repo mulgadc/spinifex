@@ -1,4 +1,4 @@
-package mock
+package mock_test
 
 import (
 	"errors"
@@ -7,10 +7,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 )
 
 func TestGetRole_MissingReturnsNoSuchEntity(t *testing.T) {
-	e := New()
+	e := mock.New()
 	_, err := e.GetRole("acct", &iam.GetRoleInput{RoleName: aws.String("r1")})
 	if err == nil || err.Error() != awserrors.ErrorIAMNoSuchEntity {
 		t.Fatalf("err = %v, want ErrorIAMNoSuchEntity", err)
@@ -18,7 +19,7 @@ func TestGetRole_MissingReturnsNoSuchEntity(t *testing.T) {
 }
 
 func TestCreateRole_DuplicateReturnsEntityAlreadyExists(t *testing.T) {
-	e := New()
+	e := mock.New()
 	in := &iam.CreateRoleInput{RoleName: aws.String("r1"), AssumeRolePolicyDocument: aws.String("doc")}
 	if _, err := e.CreateRole("acct", in); err != nil {
 		t.Fatalf("first CreateRole: %v", err)
@@ -37,7 +38,7 @@ func TestCreateRole_DuplicateReturnsEntityAlreadyExists(t *testing.T) {
 // AddRoleToInstanceProfile must report LimitExceeded on a second attach,
 // mirroring the live API rejecting a second role on one profile.
 func TestAddRoleToInstanceProfile_SecondAttachIsLimitExceeded(t *testing.T) {
-	e := New()
+	e := mock.New()
 	if _, err := e.CreateInstanceProfile("acct", &iam.CreateInstanceProfileInput{
 		InstanceProfileName: aws.String("p1"),
 	}); err != nil {
@@ -53,7 +54,7 @@ func TestAddRoleToInstanceProfile_SecondAttachIsLimitExceeded(t *testing.T) {
 }
 
 func TestCreateInstanceProfile_EmptyARNOverride(t *testing.T) {
-	e := New()
+	e := mock.New()
 	e.EmptyInstanceProfileARN = true
 	out, err := e.CreateInstanceProfile("acct", &iam.CreateInstanceProfileInput{
 		InstanceProfileName: aws.String("p1"),
@@ -67,7 +68,7 @@ func TestCreateInstanceProfile_EmptyARNOverride(t *testing.T) {
 }
 
 func TestPutRolePolicy_InjectedErrorStillRecordsCall(t *testing.T) {
-	e := New()
+	e := mock.New()
 	injected := errors.New("boom")
 	e.PutRolePolicyErr = injected
 	in := &iam.PutRolePolicyInput{RoleName: aws.String("r1"), PolicyName: aws.String("p"), PolicyDocument: aws.String("doc")}

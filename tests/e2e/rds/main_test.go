@@ -52,17 +52,25 @@ const (
 	dbMasterPassword = "e2eSup3rSecret1"
 )
 
-// The suite's DB-VM concurrency cap, in GiB of guest memory. Each DB instance is
-// a guest with its own data volume on a node that is also running the cluster,
+// The suite's whole guest-memory allowance on the node, in GiB. Each DB instance
+// is a guest with its own data volume on a node that is also running the cluster,
 // and the phase budget — 25 minutes wall clock — is written against four floor
-// instances alive at once. Every instance-owning test runs in parallel and takes
-// its allowance from here.
+// instances alive at once.
 //
 // Denominated in memory rather than instances because the node admits a launch
 // on live MemAvailable: a budget counting VMs lets a test holding two db.t3.small
 // through a cap written for four db.t3.micro, and the launch is then refused with
 // InsufficientInstanceCapacity rather than made to wait.
-const maxConcurrentDBVMGiB = 4
+const totalVMBudgetGiB = 4
+
+// The two nano client VMs, which come out of the same node memory but no test's
+// reservation. Deducted up front rather than acquired: a test asking for one
+// while holding its own DB reservation would deadlock against itself.
+const clientVMBudgetGiB = 1
+
+// What is left for DB instances. Every instance-owning test runs in parallel and
+// takes its allowance from here.
+const maxConcurrentDBVMGiB = totalVMBudgetGiB - clientVMBudgetGiB
 
 // What each class the suite names costs against that budget.
 var dbClassGiB = map[string]int64{

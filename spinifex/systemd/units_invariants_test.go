@@ -1,4 +1,4 @@
-package systemd_test
+package systemd
 
 import (
 	"crypto/sha256"

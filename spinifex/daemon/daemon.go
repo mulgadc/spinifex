@@ -1393,11 +1393,10 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
-	// Enable OVN native IPsec when configured (idempotent).
-	if d.clusterConfig != nil && d.clusterConfig.Network.IPSecEnabled {
-		if err := host.EnableOVNIPSec(d.configPath, d.clusterConfig); err != nil {
-			slog.Warn("Failed to enable OVN native IPsec; intra-AZ Geneve will be plaintext", "err", err)
-		}
+	// Reconcile OVN native IPsec both ways (idempotent): a node that does not
+	// use it should not be left running charon on 500/4500 either.
+	if err := host.ReconcileOVNIPSec(d.configPath, d.clusterConfig); err != nil {
+		slog.Warn("Failed to reconcile OVN native IPsec", "err", err)
 	}
 
 	// Write service manifest so other nodes know what this node runs

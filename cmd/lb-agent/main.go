@@ -18,8 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 
 	_ "github.com/mulgadc/spinifex/internal/fipsboot"
 )
@@ -28,7 +28,7 @@ func main() {
 	// Without this the agent falls back to slog's default text handler, which folds
 	// attributes into the message so the console scraper recovers a level and nothing
 	// else. No OTLP export: the agent's only egress is the gateway it is watching.
-	otelsetup.SetDefaultJSONLogger(slog.LevelInfo)
+	otelsetup.SetDefaultJSONLogger("lb-agent", slog.LevelInfo)
 
 	var (
 		lbID       string

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -103,10 +104,10 @@ func TestHTTPMiddleware5xxSetsErrorStatus(t *testing.T) {
 
 func TestHTTPMiddlewareExtractsTraceparent(t *testing.T) {
 	sr := withRecorder(t)
-	// Extraction needs the W3C propagator installed (Init does this even
-	// without an endpoint).
+	// Extraction needs the W3C propagator installed (the shared Init does this
+	// even without an endpoint).
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	if _, err := Init(t.Context(), "test-svc"); err != nil {
+	if _, err := bbotel.Init(t.Context(), "test-svc"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

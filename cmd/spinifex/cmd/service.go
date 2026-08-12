@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
@@ -39,9 +39,10 @@ func initTelemetry(serviceName string, debug bool) func() {
 	if debug {
 		level = slog.LevelDebug
 	}
-	otelsetup.SetDefaultJSONLogger(level)
+	otelsetup.SetDefaultJSONLogger(serviceName, level)
 
-	shutdown, err := otelsetup.Init(context.Background(), serviceName)
+	shutdown, err := otelsetup.Init(context.Background(), serviceName,
+		otelsetup.WithEnvironmentFallback("SPINIFEX_CI_ENV"))
 	if err != nil {
 		slog.Warn("otel init", "service", serviceName, "error", err)
 		return func() {}

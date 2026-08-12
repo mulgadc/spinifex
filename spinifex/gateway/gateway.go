@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -204,7 +205,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 
 	// Adjust the level only. Reinstalling the default logger here would drop the OTLP
 	// bridge Init fanned on at startup, blinding the sink to every line after this.
-	otelsetup.SetLevel(logLevel)
+	bbotel.SetLevel(logLevel)
 
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()

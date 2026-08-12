@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Spinifex Development Dependencies Setup Script
-# This script clones the Viperblock, Predastore and Northstar repositories for
-# cross-repo development
+# This script clones the Viperblock, Predastore, Northstar and Bluebottle
+# repositories for cross-repo development
 
 set -e
 
@@ -40,17 +40,20 @@ clone_or_update() {
 VIPERBLOCK_REPO="${VIPERBLOCK_REPO:-https://github.com/mulgadc/viperblock.git}"
 PREDASTORE_REPO="${PREDASTORE_REPO:-https://github.com/mulgadc/predastore.git}"
 NORTHSTAR_REPO="${NORTHSTAR_REPO:-https://github.com/mulgadc/northstar.git}"
+BLUEBOTTLE_REPO="${BLUEBOTTLE_REPO:-https://github.com/mulgadc/bluebottle.git}"
 
 echo "🔗 Repository URLs:"
 echo "   Viperblock: $VIPERBLOCK_REPO"
 echo "   Predastore: $PREDASTORE_REPO"
 echo "   Northstar:  $NORTHSTAR_REPO"
+echo "   Bluebottle: $BLUEBOTTLE_REPO"
 echo ""
 
 # Clone dependencies
 clone_or_update "$VIPERBLOCK_REPO" "viperblock"
 clone_or_update "$PREDASTORE_REPO" "predastore"
 clone_or_update "$NORTHSTAR_REPO" "northstar"
+clone_or_update "$BLUEBOTTLE_REPO" "bluebottle"
 
 # Verify go.mod replace directives
 echo ""
@@ -77,10 +80,17 @@ else
     echo "replace github.com/mulgadc/northstar => ../northstar" >> "$PROJECT_ROOT/go.mod"
 fi
 
+if grep -q "replace github.com/mulgadc/bluebottle => ../bluebottle" "$PROJECT_ROOT/go.mod"; then
+    echo "✅ Bluebottle replace directive found"
+else
+    echo "⚠️  Adding Bluebottle replace directive to go.mod"
+    echo "replace github.com/mulgadc/bluebottle => ../bluebottle" >> "$PROJECT_ROOT/go.mod"
+fi
+
 # Verify directory structure
 echo ""
 echo "📁 Directory structure:"
-ls -la "$MULGA_ROOT" | grep -E "(spinifex|viperblock|predastore|northstar)" || true
+ls -la "$MULGA_ROOT" | grep -E "(spinifex|viperblock|predastore|northstar|bluebottle)" || true
 
 echo ""
 echo "🎉 Development environment setup complete!"

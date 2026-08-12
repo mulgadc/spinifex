@@ -34,6 +34,12 @@ jobs:
           repository: mulgadc/northstar
           path: northstar
 
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          path: bluebottle
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -84,6 +90,12 @@ jobs:
         with:
           repository: mulgadc/northstar
           path: northstar
+
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          path: bluebottle
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -286,6 +298,12 @@ jobs:
           repository: mulgadc/northstar
           path: northstar
 
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          path: bluebottle
+
       - name: Checkout Mulga iso-builder
         uses: actions/checkout@v7
         with:
@@ -304,7 +322,7 @@ jobs:
           cache: false
 
       - name: Configure Go workspace
-        run: go work init ./spinifex ./predastore ./viperblock ./northstar
+        run: go work init ./spinifex ./predastore ./viperblock ./northstar ./bluebottle
 
       - name: Install ISO builder dependencies
         run: |

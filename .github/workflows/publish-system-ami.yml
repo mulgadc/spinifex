@@ -106,6 +106,13 @@ jobs:
           ref: dev
           path: northstar
 
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: dev
+          path: bluebottle
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -123,7 +130,7 @@ jobs:
         # "go.work already exists".
         run: |
           rm -f go.work go.work.sum
-          go work init ./spinifex ./viperblock ./predastore ./northstar
+          go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Install build + upload tooling
         run: |

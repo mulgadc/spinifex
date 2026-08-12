@@ -1,3 +1,4 @@
+# spinifex-unit-version: 1
 [Unit]
 Description=Spinifex NATS JetStream liveness watchdog
 PartOf=spinifex.target

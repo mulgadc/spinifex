@@ -22,6 +22,7 @@ resources:
 - [Overview](#overview)
 - [Instructions](#instructions)
 - [Manual Upgrade](#manual-upgrade)
+- [Checking for Unit Drift](#checking-for-unit-drift)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -31,6 +32,9 @@ resources:
 Updating Spinifex is the same command used to install it. The installer detects an existing installation, downloads the latest binary and runs any pending configuration migrations before restarting services.
 
 For operators who want to review migrations before they are applied, a manual upgrade path is also supported.
+
+> [!WARNING]
+> **Swapping the `spx` binary alone is not an upgrade.** Systemd unit files (`KillMode`, `TimeoutStopSec`, drain ordering, and similar) are written once at install time and never re-asserted just because a new binary is in place — a node "upgraded" by replacing `/usr/local/bin/spx` directly keeps running whatever units it was first installed with, which can silently disagree with the new binary's behaviour. Re-running the installer always reinstalls units unconditionally, so it is unaffected. `spx admin upgrade` now reconciles units too, so it closes this gap for operators who update the binary by hand. See [Checking for Unit Drift](#checking-for-unit-drift).
 
 > [!WARNING]
 > **Object storage is exempt when upgrading from v1.15.0 or earlier to v1.16.0.** Predastore's configuration schema and on-disk layout changed with the object storage cutover in v1.16.0, and no migration converts an installation from before it. `spx admin upgrade` will not report anything pending for `predastore.toml`, and updating the binary over such an installation leaves Predastore unable to start. Those clusters have to be re-initialised from scratch, which discards their stored objects — export anything you need first. Upgrades between v1.16.0 and later releases are unaffected.
@@ -82,15 +86,15 @@ curl -fsSL https://install.mulgadc.com | INSTALL_SPINIFEX_SKIP_MIGRATE=1 bash
 
 The installer will download the new binary and reinstall systemd units, but will **not** apply any configuration migrations.
 
-## Step 2. Review Pending Migrations
+## Step 2. Review Pending Changes
 
 ```bash
 sudo spx admin upgrade
 ```
 
-The command prints the current version of each config file, the migrations that would be applied, and a `from → to` description for each. It then prompts for confirmation before making any changes. Answer `n` to abort without touching your config.
+The command prints the current version of each config file and systemd unit, the migrations and unit replacements that would be applied, and a `from → to` description for each. It then prompts for confirmation before making any changes. Answer `n` to abort without touching config or units. Use `--dry-run` instead of the prompt to only report and never apply.
 
-## Step 3. Apply Migrations
+## Step 3. Apply Changes
 
 When you are ready, answer `y` at the prompt, or re-run with `--yes` to apply non-interactively:
 
@@ -98,15 +102,36 @@ When you are ready, answer `y` at the prompt, or re-run with `--yes` to apply no
 sudo spx admin upgrade --yes
 ```
 
+This requires root: config files are typically owned by their service user, but writing `/etc/systemd/system` needs root. Run the whole command with `sudo`, not just parts of it.
+
 ## Step 4. Restart Services
 
-Migrations modify config files on disk but do not restart running services. Apply the new config with:
+Migrations modify config files on disk but do not restart running services, and unit reconciliation deliberately never restarts anything either — it writes the unit and runs `systemctl daemon-reload`, so the fix applies to the *next* stop of that service without disturbing a running guest. Apply a config change with:
 
 ```bash
 sudo systemctl restart spinifex.target
 ```
 
 A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](/docs/admin/host-lifecycle) for the full contract.
+
+## Checking for Unit Drift
+
+`spx admin upgrade --dry-run` reports whether a node's installed systemd units match the ones shipped in the running `spx` binary, without prompting or changing anything — the fastest way to answer "are this node's units current?" in a support conversation:
+
+```bash
+spx admin upgrade --dry-run
+```
+
+Each unit is reported as one of:
+
+- **up to date** — installed content matches the embedded copy.
+- **stale, will replace** — the installed marker version is older than the embedded one (or has no marker at all, which is version 0 — every node installed before units were versioned).
+- **missing → will install** — no unit installed under that name.
+- **operator-modified, not touched** — the installed marker version matches, but the content differs. `spx admin upgrade` never overwrites this case; review it with `systemctl cat <unit>` and reconcile by hand with `systemctl edit`.
+
+Run `sudo spx admin upgrade --units-only --yes` to reconcile units without touching config, or `--skip-units` to do the reverse. A replaced unit is backed up alongside the original as `<unit>.pre-reconcile-<from>to<to>.<unix-timestamp>` before being overwritten.
+
+This covers the 16 core units installed by `install_systemd()` (`spinifex-*.service`, `spinifex.target`, `spinifex.slice` and friends). Firstboot, banner, bridge and getty units written by the installer, and the auxiliary units Ansible manages (`wattle-wan-veth-persist`, `wattle-mgmt-bridge-persist`, `obs-agent`), are separate lifecycles with no overlap in unit names and are out of scope for this reconciler.
 
 ## Troubleshooting
 
@@ -174,3 +199,22 @@ Or `describe-images --image-ids` reports `InvalidAMIID.NotFound` for an AMI that
 
 1. **A node running a replaced binary**, per the previous entry. Suspect this first if the failure is intermittent — the same command succeeding on some attempts and failing on others is characteristic.
 2. **AMI metadata predating the EBS-provider decoupling**, per the warning at the top of this page. This is consistent rather than intermittent, and is resolved by re-importing the AMI.
+
+### Root Privileges Required to Write Systemd Units
+
+```
+root privileges required to write systemd units (writing to /etc/systemd/system): ...
+Re-run as root to apply the unit changes reported above: sudo spx admin upgrade --units-only --yes
+```
+
+`spx admin upgrade` computes and prints unit drift without needing root, but writing `/etc/systemd/system` does. Nothing is written when this happens — re-run the full command with `sudo`.
+
+### Operator-Modified Unit Reported, Not Replaced
+
+A unit whose installed marker version matches the embedded one but whose content differs is never overwritten — this is a deliberate safety property so a hand-tuned unit does not get silently reverted. Compare it against the shipped copy and decide whether to keep, discard or merge the local change:
+
+```bash
+systemctl cat <unit>
+```
+
+If you want the shipped version, remove the local override and re-run `spx admin upgrade`; systemd falls back to the packaged unit and it reconciles as up to date.

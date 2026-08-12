@@ -248,7 +248,9 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 
 		// Unsubscribe from progress
 		if progressSub != nil {
-			progressSub.Unsubscribe()
+			if err := progressSub.Unsubscribe(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to unsubscribe from progress: %v\n", err)
+			}
 		}
 
 		// Print results
@@ -262,9 +264,17 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		ackedCount := len(acks)
+		// A node that answered with an error has not completed the phase. Counting
+		// it as done would advance the run into STORAGE and PERSIST, tearing
+		// storage out from under guests that never stopped.
+		ackedCount, failed := summariseShutdownACKs(acks)
+		if len(failed) > 0 && !force {
+			fmt.Fprintf(os.Stderr, "[%s] %d node(s) failed the phase: %s. Use --force to continue.\n",
+				strings.ToUpper(phase), len(failed), strings.Join(failed, ", "))
+			os.Exit(1)
+		}
 		if ackedCount < nodeCount && !force {
-			fmt.Fprintf(os.Stderr, "[%s] Only %d/%d nodes responded. Use --force to continue.\n",
+			fmt.Fprintf(os.Stderr, "[%s] Only %d/%d nodes completed. Use --force to continue.\n",
 				strings.ToUpper(phase), ackedCount, nodeCount)
 			os.Exit(1)
 		}
@@ -319,7 +329,7 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 
 	for _, phase := range []string{"gate", "drain"} {
 		topic := "spinifex.cluster.shutdown." + phase
-		req := daemon.ShutdownRequest{Phase: phase, Timeout: int(timeout.Seconds())}
+		req := localDrainRequest(phase, node, timeout)
 		reqData, err := json.Marshal(req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error marshaling request: %v\n", err)
@@ -421,6 +431,30 @@ var (
 	localShutdownACKRetryBaseDelay = 250 * time.Millisecond
 	localShutdownACKRetryMaxDelay  = 2 * time.Second
 )
+
+// localDrainRequest builds a phase request scoped to one node. Target is what
+// keeps it local: the phase subjects are fan-out, so an untargeted request
+// gates and drains every node in the cluster off one node's target stop.
+func localDrainRequest(phase, node string, timeout time.Duration) daemon.ShutdownRequest {
+	return daemon.ShutdownRequest{
+		Phase:   phase,
+		Timeout: int(timeout.Seconds()),
+		Target:  node,
+	}
+}
+
+// summariseShutdownACKs splits a phase's ACKs into the count that completed
+// cleanly and the names of the nodes that answered with an error.
+func summariseShutdownACKs(acks []daemon.ShutdownACK) (completed int, failed []string) {
+	for _, ack := range acks {
+		if ack.Error != "" {
+			failed = append(failed, ack.Node)
+			continue
+		}
+		completed++
+	}
+	return completed, failed
+}
 
 // collectShutdownACKsFn indirects collectShutdownACKs so tests can simulate a
 // slow-to-resubscribe daemon without a real NATS round trip.

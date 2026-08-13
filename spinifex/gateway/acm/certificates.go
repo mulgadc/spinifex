@@ -3,12 +3,16 @@ package gateway_acm
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// natsTimeout bounds the gateway's wait for a daemon-side ACM response.
+const natsTimeout = 30 * time.Second
 
 // ImportCertificate — CertificateManager.ImportCertificate.
 func ImportCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ImportCertificateOutput, error) {
@@ -16,7 +20,7 @@ func ImportCertificate(ctx context.Context, natsConn *nats.Conn, accountID strin
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).ImportCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.ImportCertificateOutput](ctx, natsConn, "acm.ImportCertificate", input, natsTimeout, accountID)
 }
 
 // DescribeCertificate — CertificateManager.DescribeCertificate.
@@ -25,7 +29,7 @@ func DescribeCertificate(ctx context.Context, natsConn *nats.Conn, accountID str
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).DescribeCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.DescribeCertificateOutput](ctx, natsConn, "acm.DescribeCertificate", input, natsTimeout, accountID)
 }
 
 // GetCertificate — CertificateManager.GetCertificate.
@@ -34,7 +38,7 @@ func GetCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, 
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).GetCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.GetCertificateOutput](ctx, natsConn, "acm.GetCertificate", input, natsTimeout, accountID)
 }
 
 // ListCertificates — CertificateManager.ListCertificates.
@@ -43,7 +47,7 @@ func ListCertificates(ctx context.Context, natsConn *nats.Conn, accountID string
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).ListCertificates(ctx, input, accountID)
+	return utils.NATSRequest[acm.ListCertificatesOutput](ctx, natsConn, "acm.ListCertificates", input, natsTimeout, accountID)
 }
 
 // DeleteCertificate — CertificateManager.DeleteCertificate.
@@ -52,7 +56,7 @@ func DeleteCertificate(ctx context.Context, natsConn *nats.Conn, accountID strin
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).DeleteCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.DeleteCertificateOutput](ctx, natsConn, "acm.DeleteCertificate", input, natsTimeout, accountID)
 }
 
 // ListTagsForCertificate — CertificateManager.ListTagsForCertificate.
@@ -61,7 +65,7 @@ func ListTagsForCertificate(ctx context.Context, natsConn *nats.Conn, accountID 
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).ListTagsForCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.ListTagsForCertificateOutput](ctx, natsConn, "acm.ListTagsForCertificate", input, natsTimeout, accountID)
 }
 
 // AddTagsToCertificate — CertificateManager.AddTagsToCertificate.
@@ -70,7 +74,7 @@ func AddTagsToCertificate(ctx context.Context, natsConn *nats.Conn, accountID st
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).AddTagsToCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.AddTagsToCertificateOutput](ctx, natsConn, "acm.AddTagsToCertificate", input, natsTimeout, accountID)
 }
 
 // RemoveTagsFromCertificate — CertificateManager.RemoveTagsFromCertificate.
@@ -79,5 +83,5 @@ func RemoveTagsFromCertificate(ctx context.Context, natsConn *nats.Conn, account
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
-	return handlers_acm.NewNATSACMService(natsConn).RemoveTagsFromCertificate(ctx, input, accountID)
+	return utils.NATSRequest[acm.RemoveTagsFromCertificateOutput](ctx, natsConn, "acm.RemoveTagsFromCertificate", input, natsTimeout, accountID)
 }

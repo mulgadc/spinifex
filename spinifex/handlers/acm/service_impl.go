@@ -45,7 +45,7 @@ type CertAuthority interface {
 	Authorized(domain string) bool
 }
 
-// ACMServiceImpl is the local, KV-backed implementation of ACMService.
+// ACMServiceImpl is the local, KV-backed ACM implementation the daemon serves.
 type ACMServiceImpl struct {
 	store  *Store
 	region string
@@ -84,8 +84,6 @@ type ACMServiceImpl struct {
 	// load balancer must not fail the certificate write that already succeeded.
 	CertMaterialUpdated func(ctx context.Context, certArn string) error
 }
-
-var _ ACMService = (*ACMServiceImpl)(nil)
 
 // NewACMServiceImplWithNATS builds an ACM service backed by a JetStream KV
 // store. cfg may be nil (tests); region then falls back to the default.

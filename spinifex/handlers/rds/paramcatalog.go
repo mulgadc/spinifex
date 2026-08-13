@@ -72,8 +72,7 @@ type ParameterSpec struct {
 	// unbounded below and above.
 	Min, Max float64
 	// The permitted values of an enum parameter, lowest-to-highest where the
-	// engine gives them an order. On a boolean it narrows the spellings the
-	// engine parses, which are not the same set for every engine.
+	// engine gives them an order.
 	Enum []string
 	// The engine's own unit suffix, reported in AllowedValues so a customer can
 	// see what an integer means. Empty for unitless settings.
@@ -166,31 +165,24 @@ func (s ParameterSpec) AllowedValues() string {
 	case ParamTypeEnum:
 		return strings.Join(s.Enum, ",")
 	case ParamTypeBoolean:
-		return strings.Join(s.booleanSpellings(), ",")
+		return strings.Join(booleanSpellings, ",")
 	default:
 		return ""
 	}
 }
 
-// The spellings the engine parses for a boolean. PostgreSQL takes all of these;
-// MariaDB refuses yes and no, so its specs narrow the set rather than let the
-// API accept a value mysqld will not parse.
-var defaultBooleanSpellings = []string{"on", "off", "true", "false", "yes", "no", "1", "0"}
-
-func (s ParameterSpec) booleanSpellings() []string {
-	if len(s.Enum) > 0 {
-		return s.Enum
-	}
-	return defaultBooleanSpellings
-}
+// The spellings the API accepts for a boolean, on every engine. MariaDB's own
+// parser refuses yes and no, which costs nothing here: canonicalBoolean turns
+// all eight into 1 or 0 before a value reaches either guest.
+var booleanSpellings = []string{"on", "off", "true", "false", "yes", "no", "1", "0"}
 
 // The one spelling a boolean reaches the guest as. Both engines parse 1 and 0,
-// only PostgreSQL parses all eight the API accepts, and a guest deriving
-// behaviour from a value has one literal to compare rather than a vocabulary.
+// neither parses all eight the API accepts, and a guest deriving behaviour from
+// a value has one literal to compare rather than a vocabulary.
 //
 // The set is closed: an override reaches this only after it was validated
-// against the engine's own spellings, so anything else is a catalog default the
-// engine would not have parsed either.
+// against the spellings above, so anything else is a catalog default that would
+// not have passed the same check.
 func canonicalBoolean(name, value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "on", "true", "yes", "1":
@@ -292,9 +284,9 @@ func (s ParameterSpec) validateValue(value string) error {
 			return rangeError(s, value)
 		}
 	case ParamTypeBoolean:
-		if !slices.Contains(s.booleanSpellings(), strings.ToLower(trimmed)) {
+		if !slices.Contains(booleanSpellings, strings.ToLower(trimmed)) {
 			return typeError(s, value,
-				"a boolean ("+strings.Join(s.booleanSpellings(), ", ")+")")
+				"a boolean ("+strings.Join(booleanSpellings, ", ")+")")
 		}
 	case ParamTypeEnum:
 		if !slices.Contains(s.Enum, strings.ToLower(trimmed)) {

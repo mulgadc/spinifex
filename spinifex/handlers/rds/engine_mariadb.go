@@ -47,7 +47,7 @@ var engineMariaDB = Engine{
 // Platform-owned settings are absent, except the ones AWS exposes as modifiable
 // and this platform pins: those are present and unmodifiable, so a refusal reads
 // as policy rather than as a missing feature.
-var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
+var mariadbParameterCatalog = buildParameterCatalog(
 	// Connections and threads. max_connections is what a size-derived default
 	// matters most for: RDS's own formula is {DBInstanceClassMemory/12582880}.
 	ParameterSpec{
@@ -376,22 +376,7 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 		IsModifiable: true, Default: "1",
 		Description: "Whether the server requires TLS of client connections over TCP.",
 	},
-))
-
-// MariaDB parses 0, 1, ON, OFF, TRUE and FALSE for a boolean system variable and
-// refuses yes and no, which PostgreSQL accepts. Narrowing the whole catalog in
-// one place keeps every boolean spec free of the distinction.
-var mariadbBooleanSpellings = []string{"on", "off", "true", "false", "1", "0"}
-
-func withMariaDBBooleanSpellings(catalog map[string]ParameterSpec) map[string]ParameterSpec {
-	for name, spec := range catalog {
-		if spec.DataType == ParamTypeBoolean {
-			spec.Enum = mariadbBooleanSpellings
-			catalog[name] = spec
-		}
-	}
-	return catalog
-}
+)
 
 // The InnoDB buffer pool ceiling, above the three-quarters default but below the
 // whole guest: the pool is a single allocation the kernel will not overcommit

@@ -247,9 +247,16 @@ func (e *postgresEngine) restartOnRepairSetLocked(ctx context.Context) ([]string
 	return awaitRepairedEngine(ctx, e.probe, e.Restart, e.pendingRestartParameters, e.repairTimeout, e.repairPoll)
 }
 
+// The function's own answer is the reload, not psql's exit status: it returns f
+// when it could not signal the postmaster, and the read-back that follows parses
+// pg_hba from disk, so an unsignalled reload would otherwise verify clean.
 func (e *postgresEngine) reload(ctx context.Context) error {
-	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
+	out, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n")
+	if err != nil {
 		return fmt.Errorf("reload the engine configuration: %w", err)
+	}
+	if result := strings.TrimSpace(out); result != "t" {
+		return fmt.Errorf("reload the engine configuration: pg_reload_conf() returned %q", result)
 	}
 	return nil
 }

@@ -490,18 +490,30 @@ func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_r
 		}
 		return nil, errors.Join(err, restore())
 	}
+	// Last, and on its own: the batch above is not a transaction, so moving the
+	// TLS posture inside it would leave enforcement changed on a set the server
+	// went on to refuse, with only the parameter file rolled back.
+	if err := e.applyTLSEnforcement(ctx); err != nil {
+		if state, _ := e.probe.state(ctx); state == engineAbsent {
+			return e.restartOnRepairSetLocked(ctx)
+		}
+		return nil, errors.Join(err, restore())
+	}
 	return e.pendingRestartParameters(ctx)
 }
 
 // The dynamic half, in one invocation that stops at the first refusal so the
 // server names the setting it would not take. Only catalog names are emitted,
 // which is what makes the identifier safe to build into the statement.
+//
+// TLS enforcement is excluded: applyTLSEnforcement issues it after this batch
+// has succeeded.
 func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []handlers_rds.Parameter) error {
 	var b strings.Builder
 	b.WriteString("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';\n")
 	applied := 0
 	for _, p := range params {
-		if p.Name == "" || e.rules.isStatic(p.Name) {
+		if p.Name == "" || p.Name == e.rules.tlsEnforcementParameter || e.rules.isStatic(p.Name) {
 			continue
 		}
 		value, err := mariadbSetValue(e.rules.dataType(p.Name), p.Value)
@@ -516,6 +528,73 @@ func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []han
 	}
 	if _, err := e.clientRun(ctx, b.String()); err != nil {
 		return fmt.Errorf("apply the dynamic parameters: %w", err)
+	}
+	return nil
+}
+
+// Puts the installed set's enforcement on the running server. The value comes
+// from the installed file rather than the set in hand, so a set that predates
+// the parameter enforces here rather than leaving the server on mariadbd's own
+// default of off while the API reports enforcement.
+func (e *mariadbEngine) applyTLSEnforcement(ctx context.Context) error {
+	enforce, err := installedTLSEnforcement(e.rules.tlsEnforcementParameter, e.params.installedPath())
+	if err != nil {
+		return err
+	}
+	previous, err := e.readTLSEnforcement(ctx)
+	if err != nil {
+		return err
+	}
+	if previous == enforce {
+		return nil
+	}
+	applyErr := e.setTLSEnforcement(ctx, enforce)
+	if applyErr == nil {
+		return nil
+	}
+	// The client can fail without saying whether the server ran the statement, so
+	// the posture it left behind is read rather than assumed unchanged: the one
+	// outcome that must not survive a failed apply is plaintext nobody asked for.
+	live, readErr := e.readTLSEnforcement(ctx)
+	if readErr != nil {
+		return errors.Join(applyErr, readErr)
+	}
+	if live == previous {
+		return applyErr
+	}
+	return errors.Join(applyErr, e.setTLSEnforcement(ctx, previous))
+}
+
+func (e *mariadbEngine) readTLSEnforcement(ctx context.Context) (bool, error) {
+	name := e.rules.tlsEnforcementParameter
+	out, err := e.clientRun(ctx, "SELECT @@global."+name+";\n")
+	if err != nil {
+		return false, fmt.Errorf("read whether the engine requires TLS of clients: %w", err)
+	}
+	switch value := strings.TrimSpace(out); value {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("the engine reports %s as %q, which is neither 1 nor 0", name, value)
+	}
+}
+
+func (e *mariadbEngine) setTLSEnforcement(ctx context.Context, enforce bool) error {
+	name, value := e.rules.tlsEnforcementParameter, "0"
+	if enforce {
+		value = "1"
+	}
+	// Rendered the way the batch renders every other boolean, so the statement the
+	// server sees does not depend on which path issued it.
+	literal, err := mariadbSetValue(handlers_rds.ParamTypeBoolean, value)
+	if err != nil {
+		return fmt.Errorf("render %s: %w", name, err)
+	}
+	sql := fmt.Sprintf("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';\nSET GLOBAL %s = %s;\n", name, literal)
+	if _, err := e.clientRun(ctx, sql); err != nil {
+		return fmt.Errorf("set %s to %s: %w", name, literal, err)
 	}
 	return nil
 }

@@ -225,6 +225,7 @@ CONF_DIR="${DATA_MOUNT}/conf.d"
 PARAM_FILE="${CONF_DIR}/10-rds-parameters.cnf"
 SERVING_FILE="${CONF_DIR}/10-rds-parameters.serving"
 PLATFORM_FILE="${CONF_DIR}/90-rds-init.cnf"
+TLS_DEFAULT_FILE="${CONF_DIR}/05-rds-tls-default.cnf"
 TLS_PARAM="require_secure_transport"
 SENTINEL="${DATADIR}/rds-bootstrap-incomplete"
 RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
@@ -1003,19 +1004,36 @@ if run_ok "enforce-on"; then
     grep -q "^${TLS_PARAM}" "${PLATFORM_FILE}" \
         && fail "enforce-on: the platform file pins what the parameter group sets" \
         || pass "enforce-on: the platform file leaves enforcement alone"
+    # The default file is written on every boot, and the resolved set still owns
+    # the value: it is read after this one, and mariadbd takes the last.
+    [ "$(printf '%s\n' "$(basename "${TLS_DEFAULT_FILE}")" "$(basename "${PARAM_FILE}")" \
+        | LC_ALL=C sort | head -n 1)" = "$(basename "${TLS_DEFAULT_FILE}")" ] \
+        && pass "enforce-on: the default is read before the parameter group's value" \
+        || fail "enforce-on: the default is read after the parameter group's value and beats it"
 fi
 
-# --- Case 8c: an absent key reads as enforce ---
-# MariaDB's own default for the absent key is off, so this decides only whether
-# the engine may start — never whether it enforces.
+# --- Case 8c: an absent key enforces, and reaches a file mariadbd parses ---
+# MariaDB's own default for this setting is off, so deriving enforcement from the
+# absence is not enough on its own: the derived value has to be written somewhere
+# the server reads, or it serves plaintext while the API reports enforcement.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters
+if run_ok "enforce-absent-key"; then
+    grep -q "^${TLS_PARAM} = 1$" "${TLS_DEFAULT_FILE}" \
+        && pass "enforce-absent-key: the derived enforcement reached the server's configuration" \
+        || fail "enforce-absent-key: nothing tells mariadbd to require TLS"
+fi
+
+# --- Case 8c-i: and it is still only a default, so it cannot start without TLS ---
 reset_state
 drop_tls
 write_handoff initialize 's3cr3t' ''
 write_parameters
-run_fails "enforce-absent-key"
+run_fails "enforce-absent-key-no-cert"
 grep -q 'no serving certificate was delivered' "${WORK}/out" \
-    && pass "enforce-absent-key: a set naming no value reads as enforcing" \
-    || fail "enforce-absent-key: a set naming no value read as not enforcing"
+    && pass "enforce-absent-key-no-cert: a set naming no value reads as enforcing" \
+    || fail "enforce-absent-key-no-cert: a set naming no value read as not enforcing"
 
 # --- Case 8d: a value that is neither 1 nor 0 is fatal, not read as off ---
 # The resolver canonicalises every boolean, so this can only be a file the

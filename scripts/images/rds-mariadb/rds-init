@@ -67,6 +67,10 @@ PARAM_FILE="${CONF_DIR}/10-rds-parameters.cnf"
 # material, not a second set of settings.
 SERVING_FILE="${CONF_DIR}/10-rds-parameters.serving"
 PLATFORM_FILE="${CONF_DIR}/90-rds-init.cnf"
+# The enforcement the platform requires of a resolved set that does not name it.
+# It sorts before the parameters file on purpose: mariadbd takes the last
+# occurrence, so a set that does name the setting overrides this one.
+TLS_DEFAULT_FILE="${CONF_DIR}/05-rds-tls-default.cnf"
 
 # The one setting in the resolved group this script reads rather than only
 # installs. Unlike PostgreSQL's, the value is the enforcement — mariadbd applies
@@ -509,6 +513,28 @@ require_tls_for_enforcement() {
     fi
 }
 
+# Unlike PostgreSQL's, this setting is a real global variable whose own default
+# is off, so an absent key read as enforce has to reach a file mariadbd parses or
+# the server serves plaintext while the API reports enforcement.
+#
+# Written unconditionally rather than only when the key is absent: this file
+# sorts first, so a resolved set naming the setting still wins, and a set that
+# stops naming it cannot leave a stale platform value behind.
+write_tls_enforcement_default() {
+    _tmp="${CONF_DIR}/.05-rds-tls-default.cnf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by rds-init — regenerated on every boot. Edits here are lost.
+# The enforcement an instance gets when its parameter group does not set one.
+# Read before the resolved parameters, which override it.
+[mysqld]
+${TLS_PARAM} = 1
+EOF
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${TLS_DEFAULT_FILE}" ||
+        fail "the default ${TLS_PARAM} could not be installed at ${TLS_DEFAULT_FILE}"
+}
+
 # The 90- prefix sorts last within the include directory and MariaDB takes the
 # last occurrence of a setting, so a resolved parameter can never move the
 # endpoint's port, redirect the datadir, turn off TLS or lower the protocol floor.
@@ -584,6 +610,7 @@ install_runtime_config() {
     install_tls
     derive_tls_enforcement
     require_tls_for_enforcement
+    write_tls_enforcement_default
     write_platform_config "${SSL_MODE}"
 }
 

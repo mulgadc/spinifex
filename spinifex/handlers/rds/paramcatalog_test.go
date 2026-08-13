@@ -205,13 +205,13 @@ func TestResolveEffectiveParameters_CanonicalisesEveryBooleanSpelling(t *testing
 				"off": "0", "OFF": "0", "false": "0", "False": "0", "no": "0", "0": "0",
 			},
 		},
-		// MariaDB's catalog narrows the vocabulary to the six mysqld parses, so the
-		// canonicalisation has to hold over that set rather than PostgreSQL's eight.
+		// The same eight on MariaDB, whose own parser takes only six: yes and no
+		// never reach mysqld, because this is where they stop being either.
 		{
 			engine: engineMariaDB, name: "autocommit",
 			spellings: map[string]string{
-				"on": "1", "ON": "1", "true": "1", "1": "1",
-				"off": "0", "OFF": "0", "false": "0", "0": "0",
+				"on": "1", "ON": "1", "true": "1", "True": "1", "yes": "1", "1": "1",
+				"off": "0", "OFF": "0", "false": "0", "False": "0", "no": "0", "0": "0",
 			},
 		},
 	}
@@ -293,11 +293,12 @@ func TestParameterCatalog_EachEngineExposesItsTLSEnforcementParameter(t *testing
 	tests := []struct {
 		engine Engine
 		name   string
-		// Only the spellings the engine itself parses: MariaDB refuses yes and no.
+		// Every spelling the API accepts, on both engines: a group written for AWS
+		// RDS carries whichever one its author chose.
 		spellings map[string]string
 	}{
-		{enginePostgres, "rds.force_ssl", map[string]string{"on": "1", "true": "1", "off": "0", "no": "0"}},
-		{engineMariaDB, "require_secure_transport", map[string]string{"on": "1", "true": "1", "off": "0", "false": "0"}},
+		{enginePostgres, "rds.force_ssl", map[string]string{"on": "1", "true": "1", "yes": "1", "off": "0", "false": "0", "no": "0"}},
+		{engineMariaDB, "require_secure_transport", map[string]string{"on": "1", "true": "1", "yes": "1", "off": "0", "false": "0", "no": "0"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.engine.Name, func(t *testing.T) {

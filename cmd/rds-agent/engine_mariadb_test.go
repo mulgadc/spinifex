@@ -85,13 +85,19 @@ func newTestMariaDBEngine(t *testing.T, run commandRunner) *mariadbEngine {
 	return newScriptedTestMariaDBEngine(t, withMariaDBReadBacks(run))
 }
 
-// Answers the read-back an apply runs against a live server, and does not record
-// the call: an apply against a set that says nothing about TLS still asks, and a
-// case counting the statements it issued is about the set rather than the guard.
+// Answers the read-backs an apply runs against a live server, and does not
+// record the calls: an apply against a set that says nothing about TLS still
+// asks both, and a case counting the statements it issued is about the set
+// rather than the guard.
 func withMariaDBReadBacks(run commandRunner) commandRunner {
 	return func(ctx context.Context, c command) (string, error) {
-		if strings.Contains(c.Stdin, "have_ssl") {
+		switch {
+		case strings.Contains(c.Stdin, "have_ssl"):
 			return "YES\n", nil
+		// Already enforcing, which is what rds-init leaves behind: an apply that
+		// does not move the posture issues no statement for it.
+		case strings.Contains(c.Stdin, "@@global.require_secure_transport"):
+			return "1\n", nil
 		}
 		return run(ctx, c)
 	}
@@ -446,18 +452,38 @@ func TestMariaDBEngine_ApplyParametersRollsBackAValueTheServerRefuses(t *testing
 	}
 }
 
-// Answers the serving-TLS read-back from a field the case sets, so what the
-// engine does with each answer is what is under test.
+// Answers the two TLS read-backs from fields the case sets, so what the engine
+// does with each answer is what is under test. liveEnforcement is the value the
+// server is already on.
+//
+// failOn fails one statement and then stops: with liveEnforcementAfter it is the
+// client that failed without saying whether the server ran what it was sent.
 type mariadbTLSReadBackRunner struct {
 	recordingRunner
 
-	haveSSL string
+	haveSSL         string
+	liveEnforcement string
+
+	failOn               string
+	failErr              error
+	liveEnforcementAfter string
 }
 
 func (r *mariadbTLSReadBackRunner) run(ctx context.Context, c command) (string, error) {
-	if strings.Contains(c.Stdin, "have_ssl") {
+	switch {
+	case strings.Contains(c.Stdin, "have_ssl"):
 		r.calls = append(r.calls, c)
 		return r.haveSSL + "\n", nil
+	case strings.Contains(c.Stdin, "@@global.require_secure_transport"):
+		r.calls = append(r.calls, c)
+		if r.liveEnforcement == "" {
+			return "0\n", nil
+		}
+		return r.liveEnforcement + "\n", nil
+	case r.failOn != "" && strings.Contains(c.Stdin, r.failOn):
+		r.calls = append(r.calls, c)
+		r.failOn, r.liveEnforcement = "", r.liveEnforcementAfter
+		return "", r.failErr
 	}
 	return r.recordingRunner.run(ctx, c)
 }
@@ -523,6 +549,70 @@ func TestMariaDBEngine_ApplyParametersReadsAnAbsentEnforcementKeyAsOn(t *testing
 		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}})
 	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
 		t.Fatalf("ApplyParameters error = %v, want a set predating the parameter to read as enforcing", err)
+	}
+}
+
+// A set that predates the parameter reads as enforce, and the server's own
+// default for it is off — so the apply has to issue the statement rather than
+// leave the server accepting plaintext under an API reporting enforcement.
+func TestMariaDBEngine_ApplyParametersEnforcesOnAnAbsentKey(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "YES", liveEnforcement: "0"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	sql := runner.calls[len(runner.calls)-1].Stdin
+	if !strings.Contains(sql, "SET GLOBAL require_secure_transport = ON;") {
+		t.Errorf("SQL %q left a server that predates the parameter accepting plaintext", sql)
+	}
+}
+
+// The batch of SET GLOBAL statements is not a transaction, so enforcement is
+// issued after it rather than sorted into it: a refusal partway through must not
+// leave the server's TLS posture already moved.
+func TestMariaDBEngine_ApplyParametersLeavesTLSAloneWhenTheBatchFails(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "YES", liveEnforcement: "1"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+	runner.err = errors.New("ERROR 1231 (42000): Variable 'max_connections' can't be set to the value of '0'")
+
+	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+		{Name: "max_connections", Value: "0"},
+		{Name: "require_secure_transport", Value: "0"},
+	}); err == nil {
+		t.Fatal("ApplyParameters succeeded against a value the server refused")
+	}
+	for _, c := range runner.calls {
+		if strings.Contains(c.Stdin, "SET GLOBAL require_secure_transport") {
+			t.Errorf("a failed batch moved the TLS posture anyway: %q", c.Stdin)
+		}
+	}
+}
+
+// The client can fail without saying whether the server ran the statement, so
+// the posture is read back rather than assumed unchanged. Plaintext nobody asked
+// for is the one outcome that must not survive a failed apply.
+func TestMariaDBEngine_ApplyParametersRestoresTLSAfterAnAmbiguousFailure(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "YES", liveEnforcement: "1"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+	// The statement ran and the client still reported a failure, which is what
+	// leaves the live value where the caller cannot infer it.
+	runner.failOn = "SET GLOBAL require_secure_transport"
+	runner.failErr = errors.New("ERROR 2013 (HY000): Lost connection to server during query")
+	runner.liveEnforcementAfter = "0"
+
+	if _, err := engine.ApplyParameters(context.Background(), requireSecureTransport("0")); err == nil {
+		t.Fatal("ApplyParameters succeeded against a client that failed")
+	}
+	restored := 0
+	for _, c := range runner.calls {
+		if strings.Contains(c.Stdin, "SET GLOBAL require_secure_transport = ON;") {
+			restored++
+		}
+	}
+	if restored != 1 {
+		t.Errorf("issued %d statements putting enforcement back, want 1", restored)
 	}
 }
 

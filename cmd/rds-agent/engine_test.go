@@ -172,18 +172,23 @@ func testEngineConfig(t *testing.T) config {
 	return cfg
 }
 
-// Answers the two read-backs every apply runs against a live postmaster, from
-// the datadir the case is working in: an engine serving TLS, and a pg_hba
-// carrying whatever the agent last wrote. The call still reaches the runner, so
-// a case counting commands sees them; one that is about the read-backs
-// themselves builds its own engine.
+// Answers the read-backs every apply runs against a live postmaster, from the
+// datadir the case is working in: an engine serving TLS, a reload the postmaster
+// took, and a pg_hba carrying whatever the agent last wrote. The call still
+// reaches the runner, so a case counting commands sees them; one that is about
+// the read-backs themselves builds its own engine.
 func withPostgresReadBacks(dataDir string, run commandRunner) commandRunner {
 	rule := filepath.Join(dataDir, postgresHBADir, postgresForceSSLRuleFile)
 	return func(ctx context.Context, c command) (string, error) {
 		out, err := run(ctx, c)
+		if err != nil {
+			return out, err
+		}
 		switch {
 		case strings.Contains(c.Stdin, "SHOW ssl"):
 			return "on\n", nil
+		case strings.Contains(c.Stdin, "pg_reload_conf"):
+			return "t\n", nil
 		case strings.Contains(c.Stdin, "pg_hba_file_rules"):
 			rules := 0
 			if _, statErr := os.Stat(rule); statErr == nil {
@@ -366,6 +371,21 @@ func TestPostgresEngine_ApplyParametersSurfacesAFailedReload(t *testing.T) {
 	}
 }
 
+// pg_reload_conf() returns f when it could not signal the postmaster, and psql
+// exits 0 all the same. Every read-back after it parses files from disk, so an
+// apply that trusted the exit status would verify clean against a server still
+// serving the old rules.
+func TestPostgresEngine_ApplyParametersSurfacesAnUnsignalledReload(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount, reload: "f"}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}})
+	if err == nil || !strings.Contains(err.Error(), `pg_reload_conf() returned "f"`) {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the answer the postmaster gave", err)
+	}
+}
+
 type reloadFailingRunner struct {
 	recordingRunner
 
@@ -436,6 +456,9 @@ type tlsReadBackRunner struct {
 	ssl        string
 	ruleRows   int
 	brokenRows int
+	// What pg_reload_conf() answered. Empty is the postmaster having taken the
+	// signal, which is every case but the one about it not having.
+	reload string
 }
 
 func (r *tlsReadBackRunner) run(ctx context.Context, c command) (string, error) {
@@ -443,6 +466,12 @@ func (r *tlsReadBackRunner) run(ctx context.Context, c command) (string, error) 
 	case strings.Contains(c.Stdin, "SHOW ssl"):
 		r.calls = append(r.calls, c)
 		return r.ssl + "\n", nil
+	case strings.Contains(c.Stdin, "pg_reload_conf"):
+		r.calls = append(r.calls, c)
+		if r.reload == "" {
+			return "t\n", nil
+		}
+		return r.reload + "\n", nil
 	case strings.Contains(c.Stdin, "pg_hba_file_rules"):
 		r.calls = append(r.calls, c)
 		return fmt.Sprintf("%d|%d\n", r.ruleRows, r.brokenRows), nil

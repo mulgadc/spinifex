@@ -1,3 +1,7 @@
+// Exercises the unexported chunker internals with no exported surface to
+// drive them through.
+//
+//test:in-package
 package handlers_ochrevector
 
 import (

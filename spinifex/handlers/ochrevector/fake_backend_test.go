@@ -1,3 +1,7 @@
+// Provides an unexported fakeBackend used only by in-package ochrevector
+// orchestration tests.
+//
+//test:in-package
 package handlers_ochrevector
 
 import (

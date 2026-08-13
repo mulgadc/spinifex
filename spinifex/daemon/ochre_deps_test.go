@@ -1,3 +1,7 @@
+// Exercises unexported ochre daemon wiring with no exported surface to
+// drive it through.
+//
+//test:in-package
 package daemon
 
 import (

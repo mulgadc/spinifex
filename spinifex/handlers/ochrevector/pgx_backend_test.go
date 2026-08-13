@@ -1,3 +1,7 @@
+// Exercises the unexported pgx backend internals with no exported
+// surface to drive them through.
+//
+//test:in-package
 package handlers_ochrevector
 
 import (

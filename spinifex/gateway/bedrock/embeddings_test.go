@@ -1,3 +1,7 @@
+// Exercises the unexported embeddings adapter internals with no exported
+// surface to drive them through.
+//
+//test:in-package
 package gateway_bedrock
 
 import (

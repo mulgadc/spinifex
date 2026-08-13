@@ -1,3 +1,7 @@
+// Exercises unexported ochre vector CLI command internals with no
+// exported surface to drive them through.
+//
+//test:in-package
 package cmd
 
 import (

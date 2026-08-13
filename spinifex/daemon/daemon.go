@@ -184,6 +184,9 @@ type Daemon struct {
 	startTime     time.Time
 	configPath    string
 
+	// predastoreHealth caches the /health predastore probe's verdict; see health.go.
+	predastoreHealth predastoreHealthCache
+
 	// System credentials for ALB agent SigV4 auth (loaded from system-credentials.json)
 	systemAccessKey string
 	systemSecretKey string
@@ -2307,10 +2310,7 @@ func (d *Daemon) ClusterManager() error {
 			return
 		}
 
-		serviceHealth := make(map[string]string)
-		for _, svc := range d.config.GetServices() {
-			serviceHealth[svc] = "ok"
-		}
+		serviceHealth := d.probeServiceHealth(r.Context())
 		if !d.config.HasService("nats") {
 			if d.natsConn != nil && d.natsConn.IsConnected() {
 				serviceHealth["nats"] = "remote_ok"

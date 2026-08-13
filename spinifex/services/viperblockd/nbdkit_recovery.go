@@ -269,7 +269,14 @@ func endpointReferencer(procRoot string, disc discoveredNbdkit) (pid int, found 
 
 		cmdline, rerr := os.ReadFile(filepath.Join(procRoot, entry.Name(), "cmdline"))
 		if rerr != nil {
-			continue
+			// The process exited between ReadDir and this read: genuinely
+			// not a referencer. Any other error (EACCES under a hidepid
+			// /proc, most importantly) means the scan cannot rule this PID
+			// out, so it must not be silently read as absence of evidence.
+			if os.IsNotExist(rerr) {
+				continue
+			}
+			return 0, false, rerr
 		}
 
 		if cmdlineReferencesEndpoint(cmdline, disc) {

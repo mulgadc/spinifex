@@ -432,6 +432,84 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 	assert.True(t, utils.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
 }
 
+// unreadableProcDir creates procRoot/<pid> with a cmdline file inside, then
+// strips all permissions from the directory itself, so os.ReadFile on the
+// cmdline path inside it fails with a permission error rather than
+// os.ErrNotExist -- standing in for an /proc mounted with hidepid, where a
+// guest owned by another uid is invisible to viperblockd entirely. Skips the
+// calling test when running as root, since root ignores directory permission
+// bits and the failure this simulates would not occur.
+func unreadableProcDir(t *testing.T, procRoot string, pid int) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("cannot simulate a permission-denied /proc entry while running as root")
+	}
+	dir := filepath.Join(procRoot, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("x\x00"), 0644))
+	require.NoError(t, os.Chmod(dir, 0000))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0755) }) // let t.TempDir() clean up
+}
+
+// TestEndpointReferencer_MissingCandidateCmdline_NotAnError proves a
+// candidate that exited between ReadDir and the cmdline read (ENOENT) is
+// correctly read as "not a referencer", not as an inconclusive scan.
+func TestEndpointReferencer_MissingCandidateCmdline_NotAnError(t *testing.T) {
+	procRoot := t.TempDir()
+	// A numbered entry with no cmdline file at all: the process vanished
+	// between the directory listing and this read.
+	require.NoError(t, os.MkdirAll(filepath.Join(procRoot, "424243"), 0755))
+
+	disc := discoveredNbdkit{PID: 424242, Volume: "vol-enoent1", Socket: filepath.Join(t.TempDir(), "x.sock")}
+	pid, found, err := endpointReferencer(procRoot, disc)
+
+	require.NoError(t, err, "a vanished candidate must not make the scan inconclusive")
+	assert.False(t, found)
+	assert.Zero(t, pid)
+}
+
+// TestEndpointReferencer_UnreadableCandidate_ReturnsError proves the hole the
+// safety argument depends on is closed: a candidate this scan could not read
+// for any reason other than ENOENT must surface as an error, not as "no
+// referencer found", since a read failure is not evidence of absence.
+func TestEndpointReferencer_UnreadableCandidate_ReturnsError(t *testing.T) {
+	procRoot := t.TempDir()
+	unreadableProcDir(t, procRoot, 555555)
+
+	disc := discoveredNbdkit{PID: 424242, Volume: "vol-eacces1", Socket: filepath.Join(t.TempDir(), "x.sock")}
+	_, found, err := endpointReferencer(procRoot, disc)
+
+	require.Error(t, err, "a permission-denied candidate must make the scan inconclusive, not silently pass")
+	assert.False(t, os.IsNotExist(err), "the error must not be mistaken for ENOENT")
+	assert.False(t, found)
+}
+
+// TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged is the
+// end-to-end version of the fix: an unclaimed nbdkit is left running, not
+// reaped, when the referencer scan itself could not be completed -- the same
+// fail-safe outcome as an unreadable procRoot, just triggered by one
+// unreadable candidate entry among otherwise-readable ones.
+func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.T) {
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), "vol-reap-eacces.sock")
+	listenUnix(t, socket)
+
+	procRoot := t.TempDir()
+	unreadableProcDir(t, procRoot, 555556)
+
+	logs := captureLogs(t)
+	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-eacces1", Socket: socket}
+	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, utils.ProcessAlive(pid), "an inconclusive scan must never result in a signal")
+	_, err := os.Stat(socket)
+	assert.NoError(t, err, "an orphan left running because the scan was inconclusive must keep its socket")
+	assert.Contains(t, logs.String(), "could not scan for processes")
+	assert.Contains(t, logs.String(), fmt.Sprintf("pid=%d", pid))
+	assert.Contains(t, logs.String(), "volume=vol-reap-eacces1")
+}
+
 // TestRecoverMountedVolumes_DuplicateVolume_UnusedDuplicateReaped extends
 // TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce: the duplicate
 // recovery declines to adopt must not just be skipped but reaped, while the

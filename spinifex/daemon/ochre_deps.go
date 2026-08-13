@@ -146,6 +146,7 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
 		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
+		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(vectorService.ListJobs), "spinifex-workers"},
 	}
 	if err := d.registerNatsSubs(subs); err != nil {
 		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)

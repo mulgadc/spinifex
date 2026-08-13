@@ -131,6 +131,13 @@ func (e Engine) OptionFileName(name string) string {
 	return spec.optionFileName
 }
 
+// The parameter that requires TLS of a client connection, under AWS's own name
+// for it. Exported for the in-guest agent, which derives enforcement from the
+// installed set and has no business knowing which engine it is running.
+func (e Engine) TLSEnforcementParameter() string {
+	return e.tlsEnforcementParameter
+}
+
 // Sorted, so a describe returns the same order on every call and Terraform does
 // not read a reshuffle as drift.
 func (e Engine) CatalogParameterNames() []string {

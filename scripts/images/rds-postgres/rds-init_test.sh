@@ -194,6 +194,11 @@ pass() { echo "ok: $*"; }
 
 DATA_MOUNT="${WORK}/data"
 PGDATA="${DATA_MOUNT}/18/data"
+HBA_DIR="${PGDATA}/hba.d"
+# The enforcement rule as pg_hba includes it: relative to the file that
+# references it, which puts it inside the datadir.
+FORCE_SSL_RULE="hba.d/20-rds-force-ssl.conf"
+TLS_PARAM="rds.force_ssl"
 SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
 RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
 RECEIPT="${RECEIPT_DIR}/receipt.env"
@@ -250,6 +255,12 @@ write_parameters() {
 
 # reset_state clears everything the previous case left behind: a fresh datadir,
 # an attached data volume, and empty stub-call logs.
+#
+# The serving cert is part of that baseline. A formed deployment always has a
+# cluster CA, so every bootstrap fetch carries one, and enforcement defaults to
+# on for a parameter set that does not name it — a case starting without a cert
+# would be refused for a reason it is not about. The cases that are about a
+# missing cert drop it themselves.
 reset_state() {
     rm -rf "${WORK}/data" "${WORK}/run" "${WORK}/log"
     mkdir -p "${DATA_MOUNT}"
@@ -259,6 +270,15 @@ reset_state() {
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
     unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT STAMP_OVERRIDE || true
+    write_tls
+}
+
+# drop_tls: the deployment could not serve TLS at all, which is what the
+# fail-closed cases need. Removes both the delivered cert and any this or an
+# earlier boot installed.
+drop_tls() {
+    rm -f "${HANDOFF}/server.crt" "${HANDOFF}/server.key"
+    rm -f "${WORK}/run/postgresql/tls/server.crt" "${WORK}/run/postgresql/tls/server.key"
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -859,9 +879,11 @@ if run_ok "legacy-setup"; then
     fi
 fi
 
-# --- Case 7: no serving cert -> TLS off rather than a failed start ---
+# --- Case 7: no serving cert and no enforcement -> TLS off, not a failed start ---
 reset_state
+drop_tls
 write_handoff initialize 's3cr3t' ''
+write_parameters "rds.force_ssl = '0'"
 if run_ok "no-cert"; then
     grep -q '^ssl = off' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "no-cert: ssl off" || fail "no-cert: ssl not off"
@@ -874,7 +896,76 @@ if run_ok "no-cert"; then
         || fail "no-cert: the floor was skipped along with the cert paths"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && fail "no-cert: wrote an enforcement rule the engine cannot serve" \
+        || pass "no-cert: not enforcing"
 fi
+
+# --- Case 7a: a set that requires TLS on a deployment that cannot serve it ---
+# The other half of the same rule: a configuration asking for TLS is never
+# quietly downgraded to plaintext, and the engine is not started at all.
+reset_state
+drop_tls
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+run_fails "enforce-no-cert"
+grep -q 'no serving certificate was delivered' "${WORK}/out" \
+    && pass "enforce-no-cert: refusal names the missing certificate" \
+    || fail "enforce-no-cert: no refusal naming the certificate"
+[ -s "${PGCTL_CALLS}" ] \
+    && fail "enforce-no-cert: the engine was started anyway" \
+    || pass "enforce-no-cert: the engine was not started"
+
+# --- Case 7b: enforcement is derived from the installed parameters ---
+# PostgreSQL has no server setting for this, so the value in the file is inert:
+# the rule the pg_hba includes is the whole of the enforcement.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+if run_ok "enforce-on"; then
+    grep -q '^hostnossl all all 0.0.0.0/0 reject$' "${PGDATA}/${FORCE_SSL_RULE}" \
+        && pass "enforce-on: the reject rule is in place" || fail "enforce-on: no reject rule"
+    grep -q '^hostnossl all all ::/0 reject$' "${PGDATA}/${FORCE_SSL_RULE}" \
+        && pass "enforce-on: the IPv6 reject rule is in place" || fail "enforce-on: no IPv6 reject rule"
+    [ -e "${HBA_DIR}/.20-rds-force-ssl.conf.new" ] \
+        && fail "enforce-on: the temp file was left beside the rule" \
+        || pass "enforce-on: the rule was installed by rename"
+fi
+
+# --- Case 7c: a set that turns enforcement off removes a rule left on the volume ---
+# A snapshot carries hba.d with it, so restoring one taken while enforcing into a
+# group that does not would otherwise keep rejecting every plaintext client.
+write_handoff attach '' ''
+write_parameters "${TLS_PARAM} = '0'"
+if run_ok "enforce-off"; then
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && fail "enforce-off: the stale rule from the restored volume survived" \
+        || pass "enforce-off: the stale rule was removed"
+    grep -q "^include_if_exists '${FORCE_SSL_RULE}'$" "${PGDATA}/pg_hba.conf" \
+        && pass "enforce-off: the include stays, so removing the file is a clean stop" \
+        || fail "enforce-off: the include was dropped along with the rule"
+fi
+
+# --- Case 7d: an absent key enforces, which is what converts a legacy instance ---
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "shared_buffers = '16384'"
+if run_ok "enforce-absent-key"; then
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && pass "enforce-absent-key: a set predating the parameter enforces" \
+        || fail "enforce-absent-key: a set predating the parameter did not enforce"
+fi
+
+# --- Case 7e: a value that is neither 1 nor 0 is fatal, not read as off ---
+# The resolver canonicalises every boolean, so this can only be a file the
+# platform did not write.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = 'yes'"
+run_fails "enforce-unparsable"
+grep -q 'neither 1 nor 0' "${WORK}/out" \
+    && pass "enforce-unparsable: refusal names the unreadable value" \
+    || fail "enforce-unparsable: no refusal naming the value"
 
 # --- Case 8: no handoff at all ---
 reset_state

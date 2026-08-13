@@ -284,6 +284,32 @@ func TestParameterCatalog_TLSFloorIsPinnedAndNotModifiable(t *testing.T) {
 	}
 }
 
+// PostgreSQL has no server setting for this, so the entry carries AWS's name and
+// a value the guest turns into a pg_hba rule. Dynamic rather than static because
+// a placeholder GUC never appears in pg_settings.pending_restart, where a static
+// classification would leave it reported as applied and enforcing nothing.
+func TestParameterCatalog_PostgresExposesTheTLSEnforcementParameter(t *testing.T) {
+	const name = "rds.force_ssl"
+	spec, ok := enginePostgres.LookupParameter(name)
+	require.True(t, ok, "postgres exposes no %s", name)
+	assert.Equal(t, ParamTypeBoolean, spec.DataType)
+	assert.Equal(t, ApplyTypeDynamic, spec.ApplyType)
+	assert.True(t, spec.IsModifiable, "a customer can turn enforcement off, exactly as on AWS")
+	assert.Equal(t, "0", spec.Default)
+
+	// The guest derives enforcement from this name rather than from the engine it
+	// happens to be running, so the two have to agree on it.
+	assert.Equal(t, name, enginePostgres.TLSEnforcementParameter())
+
+	// Whichever spelling the group carries, the guest has one literal to compare.
+	for spelling, want := range map[string]string{"on": "1", "true": "1", "off": "0", "no": "0"} {
+		resolved, err := enginePostgres.ResolveEffectiveParameters(SmallestInstanceClass(),
+			map[string]string{name: spelling})
+		require.NoError(t, err)
+		assert.Equal(t, want, resolvedParameter(t, resolved, name))
+	}
+}
+
 // A group's overrides are laid over the whole catalog, not merged into a subset:
 // every parameter is present, and one the group does not set carries its default.
 func TestResolveEffectiveParameters_OverlaysOverridesOnDefaults(t *testing.T) {

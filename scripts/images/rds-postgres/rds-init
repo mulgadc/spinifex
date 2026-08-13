@@ -58,6 +58,12 @@ PGDATA="${RDS_PGDATA:-${DATA_MOUNT}/${PG_VERSION}/data}"
 HBA_DIR="${PGDATA}/hba.d"
 HBA_FORCE_SSL_INCLUDE="hba.d/20-rds-force-ssl.conf"
 
+# The resolved parameter group, and the one setting in it this script reads
+# rather than only installs. PostgreSQL has no server setting for requiring TLS,
+# so the value is inert in the file and becomes behaviour only as the rule above.
+PARAMETERS_FILE="${PGDATA}/conf.d/10-rds-parameters.conf"
+TLS_PARAM="rds.force_ssl"
+
 # Written between initdb and a working master role. It lives on the data volume
 # because no trap survives a crash or a hard kill, and it is what stops the next
 # boot attaching to a datadir whose master role was never created.
@@ -312,14 +318,78 @@ initialise_cluster() {
 install_parameters() {
     if [ -f "${HANDOFF_DIR}/parameters.conf" ]; then
         install -m 0600 -o "${PG_USER}" -g "${PG_USER}" \
-            "${HANDOFF_DIR}/parameters.conf" "${PGDATA}/conf.d/10-rds-parameters.conf"
+            "${HANDOFF_DIR}/parameters.conf" "${PARAMETERS_FILE}"
         return 0
     fi
     # A handoff without parameters keeps the previous include: dropping it would
     # silently reset the instance to engine defaults.
-    if [ -f "${PGDATA}/conf.d/10-rds-parameters.conf" ]; then
+    if [ -f "${PARAMETERS_FILE}" ]; then
         log "warning: no parameters in the handoff — keeping the parameters already installed"
     fi
+}
+
+# Sets TLS_ENFORCE from the installed parameter file rather than the handoff's:
+# install_parameters keeps the previous file when a handoff carries none, so the
+# installed one is what the engine reads and what this has to agree with.
+#
+# An absent key is enforce. That is the ordinary state of an instance whose
+# resolved set predates the parameter, and it is the whole of the migration — one
+# begins requiring TLS at this boot with no control-plane work at all.
+derive_tls_enforcement() {
+    TLS_ENFORCE=1
+    [ -f "${PARAMETERS_FILE}" ] || return 0
+
+    # Every value in the file is written quoted, and the quotes are optional here
+    # so the format is not a second thing to keep in step.
+    _value=$(sed -n "s/^[[:space:]]*${TLS_PARAM}[[:space:]]*=[[:space:]]*'\{0,1\}\([^'[:space:]]*\).*/\1/p" \
+        "${PARAMETERS_FILE}" | tail -n 1)
+    [ -n "${_value}" ] || return 0
+
+    case "${_value}" in
+        1) TLS_ENFORCE=1 ;;
+        0) TLS_ENFORCE=0 ;;
+        # The control plane canonicalises every boolean to 1 or 0, so anything else
+        # means the file was written by something other than the platform. Reading
+        # an unparsable security setting as off is the one choice not open here.
+        *) fail "the installed parameters set ${TLS_PARAM} to '${_value}', which is neither 1 nor 0; refusing to start the engine on a TLS setting that cannot be read" ;;
+    esac
+}
+
+# A configuration that asks for TLS is never quietly served in the clear. Not a
+# transient-failure risk: load_handoff already required a successful bootstrap
+# fetch to get this far, and that fetch carries a certificate whenever a CA
+# exists.
+require_tls_for_enforcement() {
+    [ "${TLS_ENFORCE}" = "1" ] || return 0
+    if [ "${SSL_MODE}" != "on" ]; then
+        fail "${TLS_PARAM} requires TLS of client connections but no serving certificate was delivered and none is installed; refusing to start an engine that would reject every client"
+    fi
+}
+
+# Enforcement is the presence of this file and nothing else: its content is a
+# constant, so the copy written here and the one rds-agent writes in Go have no
+# template to drift apart on.
+write_tls_enforcement() {
+    _rule="${PGDATA}/${HBA_FORCE_SSL_INCLUDE}"
+    if [ "${TLS_ENFORCE}" != "1" ]; then
+        # A restored data volume carries hba.d with it, so a rule left from the
+        # snapshot would keep enforcing under a group that turns enforcement off.
+        rm -f "${_rule}" ||
+            fail "the TLS enforcement rule ${_rule} could not be removed; the engine would keep requiring TLS that the parameter group does not"
+        return 0
+    fi
+
+    _tmp="${HBA_DIR}/.20-rds-force-ssl.conf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by the platform: the rule that requires TLS of client connections.
+# Written by rds-init at boot and by rds-agent on a parameter apply.
+hostnossl all all 0.0.0.0/0 reject
+hostnossl all all ::/0 reject
+EOF
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${_rule}" ||
+        fail "the TLS enforcement rule ${_rule} could not be installed"
 }
 
 # The key stays on tmpfs: it is re-minted every fetch, so persisting it would
@@ -406,8 +476,9 @@ EOF
 }
 
 # Everything refreshed on every boot: the include hook, the client
-# authentication rules, the resolved parameters, the serving cert and the
-# platform's own connectivity settings.
+# authentication rules, the resolved parameters, the serving cert, the TLS
+# enforcement those parameters ask for and the platform's own connectivity
+# settings.
 install_runtime_config() {
     install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${PGDATA}/conf.d" "${HBA_DIR}"
     install -d -m 1775 -o "${PG_USER}" -g "${PG_USER}" "${SOCKET_DIR}"
@@ -423,6 +494,9 @@ install_runtime_config() {
     write_pg_hba
     install_parameters
     install_tls
+    derive_tls_enforcement
+    require_tls_for_enforcement
+    write_tls_enforcement
     write_rds_conf "${SSL_MODE}"
 }
 

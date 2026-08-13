@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	networkconnections "github.com/mulgadc/spinifex/docs/security/network-connections"
 	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
@@ -28,11 +29,7 @@ import (
 func runListenerInvariant(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Listener Invariant")
 
-	root, err := listenerinventory.RepoRoot()
-	if err != nil {
-		t.Fatalf("resolve module root: %v", err)
-	}
-	table, err := listenerinventory.ParseFile(listenerinventory.DocPath(root))
+	table, err := listenerinventory.Parse(string(networkconnections.README()))
 	if err != nil {
 		t.Fatalf("parse inbound listener inventory: %v", err)
 	}

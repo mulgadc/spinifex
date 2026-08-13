@@ -149,14 +149,26 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		}
 
 		if isInstanceProcessRunning(instance) {
-			if !AreVolumeSocketsValid(instance) {
+			socketsValid := AreVolumeSocketsValid(instance)
+			if !socketsValid && m.backingStoreReady() {
+				// Sockets are genuinely stale under a healthy store: a real
+				// orphan, so reap it and relaunch below.
 				slog.Warn("QEMU alive but NBD sockets are stale, killing orphaned process for relaunch",
 					"instance", instance.ID)
 				if !killOrphanedQEMU(instance) {
 					continue
 				}
 			} else {
-				slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
+				// Sockets valid, or the backing store is not yet ready. The
+				// latter makes an unreachable socket a transient dependency
+				// gap, never grounds to destroy a running VM: keep it and
+				// reconnect QMP, which needs neither predastore nor viperblock.
+				if socketsValid {
+					slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
+				} else {
+					slog.Warn("NBD sockets unreachable but backing store not ready; reconnecting instead of killing running QEMU",
+						"instance", instance.ID)
+				}
 				if err := m.reconnectInstance(instance); err != nil {
 					slog.Error("Failed to reconnect to running instance, marking recovery-failed to preserve user data",
 						"instanceId", instance.ID, "err", err)

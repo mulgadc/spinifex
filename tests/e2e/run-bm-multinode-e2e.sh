@@ -989,6 +989,13 @@ peer_ssh "$NODE2_IP" "sudo systemctl kill -s SIGKILL --kill-whom=main $NODE2_KIL
     echo "  WARNING: systemctl kill returned non-zero (may be expected)"
 }
 
+# Cancels each unit's queued Restart=on-failure job so the outage holds rather
+# than self-healing within RestartSec=5. The main process is already dead, so
+# this settles the unit instead of draining it — spinifex.target stays untouched.
+peer_ssh "$NODE2_IP" "sudo systemctl stop $NODE2_KILL_UNITS" || {
+    echo "  WARNING: systemctl stop returned non-zero (may be expected)"
+}
+
 # Wait for NATS cluster to detect the failure and reform
 sleep 10
 
@@ -1019,15 +1026,21 @@ else
     echo "  Node3 not present in this cluster — skipping node3 survival check"
 fi
 
-# Check NATS degraded state (should have 1 route instead of 2)
+# Check NATS degraded state: node1 should see every peer except itself and
+# the now-dead node2. The stop above holds node2 down for the rest of this
+# phase, so this is a real assertion now, not a best-effort guess.
+EXPECTED_DEGRADED_PEERS=$((NODE_COUNT - 2))
+if [ "$EXPECTED_DEGRADED_PEERS" -lt 0 ]; then
+    EXPECTED_DEGRADED_PEERS=0
+fi
 NATS_DEGRADED=$(curl -s "http://127.0.0.1:${NATS_MONITOR_PORT}/routez" 2>/dev/null)
 DEGRADED_PEERS=$(echo "$NATS_DEGRADED" | jq -r '[.routes[].remote_name] | unique | length' 2>/dev/null || echo "0")
-echo "  NATS peers during failure: $DEGRADED_PEERS (expected: 1)"
-if [ "$DEGRADED_PEERS" -eq 1 ]; then
+echo "  NATS peers during failure: $DEGRADED_PEERS (expected: $EXPECTED_DEGRADED_PEERS)"
+if [ "$DEGRADED_PEERS" -eq "$EXPECTED_DEGRADED_PEERS" ]; then
     pass_test "NATS degraded mode"
 else
-    echo "  WARNING: Expected 1 NATS peer during node2 failure, got $DEGRADED_PEERS"
-    # Not fatal — NATS might take a moment to detect
+    echo "  ERROR: Expected $EXPECTED_DEGRADED_PEERS NATS peer(s) during node2 failure, got $DEGRADED_PEERS"
+    fail_test "NATS degraded mode"
 fi
 
 # Verify describe-instances still works from surviving nodes
@@ -1050,8 +1063,8 @@ echo "Phase 9: Node Recovery"
 echo "========================================"
 echo "Restarting services on node2 ($NODE2_IP)..."
 
-# Each killed unit's Restart=on-failure will already have respawned it within
-# RestartSec=5; this start is the backstop for anything that did not.
+# Phase 8 stopped every unit it killed, so node2 has been genuinely down
+# since then; this start is the actual recovery, not a backstop.
 peer_ssh "$NODE2_IP" "sudo systemctl start spinifex.target" || {
     echo "  ERROR: Failed to restart services on node2"
     fail_test "Node2 restart"

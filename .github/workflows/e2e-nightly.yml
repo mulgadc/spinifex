@@ -449,6 +449,9 @@ jobs:
     env:
       CI_WAN_MODE: dhcp
       CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+      # mktemp honours TMPDIR, which is how the disk image lands on the runner's
+      # disk rather than in RAM. /tmp is tmpfs here.
+      TMPDIR: ${{ runner.temp }}/spx-work
       # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
       # instances. Disjoint from cell-22's pool so a run that dies holding its
       # SNAT address cannot collide with the next cell.
@@ -485,6 +488,7 @@ jobs:
       - name: Preflight
         run: |
           set -euo pipefail
+          mkdir -p "$TMPDIR"
           ip link show "${BRIDGE:-br-wan}" >/dev/null ||
             { echo "::error::bridge br-wan not found on this runner"; exit 1; }
           grep -qE "^allow +${BRIDGE:-br-wan}$" /etc/qemu/bridge.conf ||
@@ -494,6 +498,14 @@ jobs:
           free_mb=$(free -m | awk '/^Mem:/ {print $7}')
           [ "$free_mb" -ge 8192 ] ||
             { echo "::error::need 8 GiB available, have ${free_mb} MiB"; exit 1; }
+          # A 40G image on tmpfs competes with the 8 GiB the VM itself needs.
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          [ "$fstype" != tmpfs ] ||
+            { echo "::error::$TMPDIR is tmpfs — the node disk would be in RAM"; exit 1; }
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          [ "$avail_gb" -ge 60 ] ||
+            { echo "::error::need 60 GiB on $TMPDIR, have ${avail_gb} GiB"; exit 1; }
 
       - name: Build artefacts
         working-directory: mulga/scripts/iso-builder
@@ -586,6 +598,9 @@ jobs:
       MEM: 8G
       SMP: 8
       PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+      # test-cluster.sh defaults WORK_DIR to mktemp -d, which follows TMPDIR.
+      # Nine 40G images must not land in RAM.
+      TMPDIR: ${{ runner.temp }}/spx-work
       EXT_POOL_START: 192.168.0.235
       EXT_POOL_END: 192.168.0.239
       EXT_GATEWAY: 192.168.1.1
@@ -618,12 +633,17 @@ jobs:
       - name: Preflight
         run: |
           set -euo pipefail
+          mkdir -p "$TMPDIR"
           free_mb=$(free -m | awk '/^Mem:/ {print $7}')
           [ "$free_mb" -ge 26624 ] ||
             { echo "::error::need 26 GiB available, have ${free_mb} MiB"; exit 1; }
-          free_gb=$(df -BG --output=avail /tmp | tail -1 | tr -dc '0-9')
-          [ "$free_gb" -ge 120 ] ||
-            { echo "::error::need 120 GiB free on /tmp, have ${free_gb} GiB"; exit 1; }
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          [ "$fstype" != tmpfs ] ||
+            { echo "::error::$TMPDIR is tmpfs — nine node disks would be in RAM"; exit 1; }
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          [ "$avail_gb" -ge 120 ] ||
+            { echo "::error::need 120 GiB on $TMPDIR ($fstype), have ${avail_gb} GiB"; exit 1; }
 
       - name: Build artefacts
         working-directory: mulga/scripts/iso-builder
@@ -688,7 +708,10 @@ jobs:
     env:
       # Two-minute samples. The 30s smoke preset is too short to compare nights.
       PERF_PRESET: compare
-      PERF_RESULTS_ROOT: /tmp/predastore-perf-${{ github.run_id }}
+      # Off /tmp deliberately: it is tmpfs on these runners, so the blob store
+      # would land in RAM. runner.temp is on the runner's disk.
+      TMPDIR: ${{ runner.temp }}/spx-work
+      PERF_RESULTS_ROOT: ${{ runner.temp }}/predastore-perf-${{ github.run_id }}
     steps:
       - name: Clean Workspace
         run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
@@ -719,18 +742,30 @@ jobs:
       # free-space watermark. Without this the symptom is several hundred
       # "storage pool is at capacity" lines from warp and no statement of how
       # much space there actually was.
+      #
+      # TMPDIR is pointed at the runner's disk above, and the tmpfs assertion is
+      # the one that matters: a storage benchmark on a RAM-backed filesystem
+      # measures memcpy. It would report a number that looks excellent, sit in
+      # the baseline, and never notice a disk regression.
       - name: Preflight
         run: |
           set -euo pipefail
+          mkdir -p "$TMPDIR"
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          case "$fstype" in
+            tmpfs|ramfs)
+              echo "::error::$TMPDIR is $fstype — a storage benchmark there measures RAM"
+              exit 1 ;;
+          esac
           # Work dirs from runs that were killed before their cleanup trap ran.
           # -mtime +0 so a concurrent run's directory is never in scope.
-          find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'predastore-e2e-performance.*' \
+          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-performance.*' \
                -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
-          df -h "${TMPDIR:-/tmp}"
-          avail_gb=$(df -BG --output=avail "${TMPDIR:-/tmp}" | tail -1 | tr -dc '0-9')
-          pct_used=$(df --output=pcent "${TMPDIR:-/tmp}" | tail -1 | tr -dc '0-9')
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          pct_used=$(df --output=pcent "$TMPDIR" | tail -1 | tr -dc '0-9')
           if [ "$pct_used" -ge 90 ] || [ "$avail_gb" -lt 20 ]; then
-            echo "::error::${TMPDIR:-/tmp} is ${pct_used}% full with ${avail_gb} GiB free."
+            echo "::error::$TMPDIR ($fstype) is ${pct_used}% full with ${avail_gb} GiB free."
             echo "::error::The benchmark needs headroom above predastore's 5% watermark."
             exit 1
           fi

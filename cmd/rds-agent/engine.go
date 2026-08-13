@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
@@ -234,6 +235,34 @@ func serviceAction(ctx context.Context, run commandRunner, rcService, service, a
 		return fmt.Errorf("%s the %s service: %w", action, service, err)
 	}
 	return nil
+}
+
+// Whether the installed set requires TLS of client connections. Read back from
+// the file rather than taken from the set being applied, because the restore and
+// repair paths put a file in place without holding one. Both engines' generated
+// parameter files are written in the same syntax, so one reader serves them.
+func installedTLSEnforcement(name, installedPath string) (bool, error) {
+	values, err := readOptionFile(installedPath)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read the installed parameters: %w", err)
+	}
+	value, ok := values[name]
+	if !ok {
+		// The ordinary state of an instance whose resolved set predates the
+		// parameter, and the whole of the migration story: it begins enforcing at
+		// its next boot with no control-plane work at all.
+		return true, nil
+	}
+	switch value {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	}
+	// The resolver canonicalises every boolean, so anything else means the file
+	// was written by something other than the platform. The permissive reading is
+	// the one that must not be chosen for a setting that turns TLS off.
+	return false, fmt.Errorf("the installed parameters set %s to %q, which is neither 1 nor 0", name, value)
 }
 
 // A minimal environment for a child that is not carrying secrets.

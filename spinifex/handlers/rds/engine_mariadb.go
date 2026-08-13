@@ -28,9 +28,10 @@ var engineMariaDB = Engine{
 	// MariaDB maps a database name onto a directory name and its client has no
 	// identifier interpolation, so rds-init builds CREATE DATABASE by shell
 	// interpolation and this rule is the barrier rather than defence in depth.
-	validateDBName:       dbNameRule(64),
-	catalog:              mariadbParameterCatalog,
-	validateCombinations: validateMariaDBParameterCombinations,
+	validateDBName:          dbNameRule(64),
+	catalog:                 mariadbParameterCatalog,
+	validateCombinations:    validateMariaDBParameterCombinations,
+	tlsEnforcementParameter: "require_secure_transport",
 	// Only InnoDB keeps a redo log. Aria and MyISAM have none, so a datadir torn
 	// mid-write can leave one of their tables inconsistent with no way back.
 	crashRecoveryNote: "InnoDB tables will recover from the redo log when it is restored; " +
@@ -365,6 +366,14 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 		Name: "tls_version", DataType: ParamTypeString, ApplyType: ApplyTypeStatic,
 		IsModifiable: false, Default: "TLSv1.3",
 		Description: "TLS protocol versions the server accepts, as a comma-separated list.",
+	},
+	// A real global system variable, unlike PostgreSQL's placeholder: the value in
+	// the file is the enforcement, and SET GLOBAL applies it live. A unix socket
+	// counts as a secure transport, so neither rds-init nor rds-agent is affected.
+	ParameterSpec{
+		Name: "require_secure_transport", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
+		IsModifiable: true, Default: "0",
+		Description: "Whether the server requires TLS of client connections over TCP.",
 	},
 ))
 

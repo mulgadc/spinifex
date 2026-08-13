@@ -225,6 +225,7 @@ CONF_DIR="${DATA_MOUNT}/conf.d"
 PARAM_FILE="${CONF_DIR}/10-rds-parameters.cnf"
 SERVING_FILE="${CONF_DIR}/10-rds-parameters.serving"
 PLATFORM_FILE="${CONF_DIR}/90-rds-init.cnf"
+TLS_PARAM="require_secure_transport"
 SENTINEL="${DATADIR}/rds-bootstrap-incomplete"
 RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
 RECEIPT="${RECEIPT_DIR}/receipt.env"
@@ -277,11 +278,20 @@ write_tls() {
     echo "KEY" > "${HANDOFF}/server.key"
 }
 
+# drop_tls: the deployment could not serve TLS at all, which is what the
+# fail-closed cases need. Removes both the delivered cert and any this or an
+# earlier boot installed.
+drop_tls() {
+    rm -f "${HANDOFF}/server.crt" "${HANDOFF}/server.key"
+    rm -f "${WORK}/run/mysqld/tls/server.crt" "${WORK}/run/mysqld/tls/server.key"
+}
+
 # The resolved parameter group rds-agent hands over, in the engine-neutral
 # `name = 'value'` rendering and with no group header — rds-init is what adds the
 # one MariaDB needs. general_log is in it to prove the bootstrap server does not
 # read it: the password is interpolated into a statement, and a customer's
-# logging parameter must not be able to write that statement to a log.
+# logging parameter must not be able to write that statement to a log. Each
+# argument is one further setting, for the cases that are about a single value.
 write_parameters() {
     mkdir -p "${HANDOFF}"
     {
@@ -290,11 +300,20 @@ write_parameters() {
         echo "general_log = 'on'"
         echo "character_set_server = 'utf8mb4'"
         echo "collation_server = 'utf8mb4_general_ci'"
+        for _setting in "$@"; do
+            echo "${_setting}"
+        done
     } > "${HANDOFF}/parameters.conf"
 }
 
 # reset_state clears everything the previous case left behind: a fresh data
 # volume, an attached mount, and empty stub-call logs.
+#
+# The serving cert is part of that baseline. A formed deployment always has a
+# cluster CA, so every bootstrap fetch carries one, and a set that names no
+# enforcement value reads as enforcing — a case starting without a cert would be
+# refused for a reason it is not about. The cases that are about a missing cert
+# drop it themselves.
 reset_state() {
     rm -rf "${WORK}/data" "${WORK}/run" "${WORK}/log" "${SECURE_FILE_DIR}"
     mkdir -p "${DATA_MOUNT}"
@@ -308,6 +327,7 @@ reset_state() {
     unset MARIADBD_START_FAIL MARIADBD_KILL_PARENT MARIADBD_IGNORE_TERM CLIENT_KILL_PARENT || true
     unset ADMIN_SHUTDOWN_FAIL SYNC_KILL_PARENT || true
     rm -f "${MARIADBD_TEST_PID_FILE}"
+    write_tls
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir. The
@@ -353,7 +373,6 @@ run_signalled_fails() {
 # --- Case 1: initialize on a fresh data volume ---
 reset_state
 write_handoff initialize 's3cr3t' appdb
-write_tls
 write_parameters
 if run_ok "initialize"; then
     grep -q 'mariadb-install-db' "${INSTALLDB_CALLS}" \
@@ -498,9 +517,11 @@ if run_ok "initialize"; then
     grep -q "^tls_version = TLSv1.3$" "${PLATFORM_FILE}" \
         && pass "initialize: the TLS floor is pinned at 1.3" \
         || fail "initialize: no TLS floor, so the server accepts 1.0 through 1.2"
+    # Whether clients must use TLS is the parameter group's to say. In the
+    # platform file it would sort last and beat the customer's own value.
     grep -q "require_secure_transport" "${PLATFORM_FILE}" \
-        && fail "initialize: TLS enforced before the enforcement phase" \
-        || pass "initialize: TLS offered rather than enforced"
+        && fail "initialize: enforcement pinned where the parameter group cannot reach it" \
+        || pass "initialize: enforcement left to the parameter group"
     # Removed outright in 11.8, so naming it is a startup failure rather than an
     # override — every instance would boot-loop on it.
     grep -q "innodb_buffer_pool_instances" "${PLATFORM_FILE}" \
@@ -932,9 +953,11 @@ if run_ok "legacy-setup"; then
     fi
 fi
 
-# --- Case 8: no serving cert -> TLS off rather than a failed start ---
+# --- Case 8: no serving cert and no enforcement -> TLS off, not a failed start ---
 reset_state
+drop_tls
 write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '0'"
 if run_ok "no-cert"; then
     grep -q '^ssl_cert' "${PLATFORM_FILE}" \
         && fail "no-cert: points at a cert that was never delivered" || pass "no-cert: no cert paths"
@@ -946,6 +969,64 @@ if run_ok "no-cert"; then
     grep -q '^CALL `_spinifex_rds`.`create_database`' "${CLIENT_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
 fi
+
+# --- Case 8a: a set that requires TLS on a deployment that cannot serve it ---
+# The other half of the same rule: a configuration asking for TLS is never
+# quietly downgraded to plaintext, and the engine is not started at all.
+reset_state
+drop_tls
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+run_fails "enforce-no-cert"
+grep -q 'no serving certificate was delivered' "${WORK}/out" \
+    && pass "enforce-no-cert: refusal names the missing certificate" \
+    || fail "enforce-no-cert: no refusal naming the certificate"
+[ -s "${MARIADBD_CALLS}" ] \
+    && fail "enforce-no-cert: the engine was started anyway" \
+    || pass "enforce-no-cert: the engine was not started"
+# The refusal lands between mariadb-install-db and the master user, so the same
+# trap that covers every other failure there takes the datadir with it.
+[ -e "${DATADIR}/mysql" ] \
+    && fail "enforce-no-cert: a datadir with no master user was left behind" \
+    || pass "enforce-no-cert: datadir cleared"
+
+# --- Case 8b: the value is installed for mariadbd to read at startup ---
+# Unlike PostgreSQL's, it is a real system variable: rds-init installs it and
+# reads it only to decide whether the engine may start at all.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+if run_ok "enforce-on"; then
+    grep -q "^${TLS_PARAM} = '1'$" "${PARAM_FILE}" \
+        && pass "enforce-on: the engine reads the enforcement out of its own parameters" \
+        || fail "enforce-on: the enforcement never reached the installed parameters"
+    grep -q "^${TLS_PARAM}" "${PLATFORM_FILE}" \
+        && fail "enforce-on: the platform file pins what the parameter group sets" \
+        || pass "enforce-on: the platform file leaves enforcement alone"
+fi
+
+# --- Case 8c: an absent key reads as enforce ---
+# MariaDB's own default for the absent key is off, so this decides only whether
+# the engine may start — never whether it enforces.
+reset_state
+drop_tls
+write_handoff initialize 's3cr3t' ''
+write_parameters
+run_fails "enforce-absent-key"
+grep -q 'no serving certificate was delivered' "${WORK}/out" \
+    && pass "enforce-absent-key: a set naming no value reads as enforcing" \
+    || fail "enforce-absent-key: a set naming no value read as not enforcing"
+
+# --- Case 8d: a value that is neither 1 nor 0 is fatal, not read as off ---
+# The resolver canonicalises every boolean, so this can only be a file the
+# platform did not write.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = 'yes'"
+run_fails "enforce-unparsable"
+grep -q 'neither 1 nor 0' "${WORK}/out" \
+    && pass "enforce-unparsable: refusal names the unreadable value" \
+    || fail "enforce-unparsable: no refusal naming the value"
 
 # --- Case 9: no handoff at all ---
 reset_state

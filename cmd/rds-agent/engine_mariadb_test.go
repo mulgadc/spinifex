@@ -34,6 +34,7 @@ func testMariaDBRules() controlPlaneRules {
 
 		"innodb_adaptive_hash_index": handlers_rds.ApplyTypeDynamic,
 		"log_output":                 handlers_rds.ApplyTypeDynamic,
+		"require_secure_transport":   handlers_rds.ApplyTypeDynamic,
 	}
 	dataTypes := map[string]string{
 		"innodb_buffer_pool_size":    handlers_rds.ParamTypeInteger,
@@ -43,6 +44,7 @@ func testMariaDBRules() controlPlaneRules {
 		"time_zone":                  handlers_rds.ParamTypeString,
 		"innodb_adaptive_hash_index": handlers_rds.ParamTypeBoolean,
 		"log_output":                 handlers_rds.ParamTypeEnum,
+		"require_secure_transport":   handlers_rds.ParamTypeBoolean,
 	}
 	reserved := []string{"root", "mysql", "mariadb.sys", "rdsadmin", "public"}
 
@@ -69,7 +71,8 @@ func testMariaDBRules() controlPlaneRules {
 			}
 			return optionFileName
 		},
-		dataType: func(name string) string { return dataTypes[name] },
+		dataType:                func(name string) string { return dataTypes[name] },
+		tlsEnforcementParameter: "require_secure_transport",
 	}
 }
 
@@ -78,6 +81,26 @@ func isTestIdentifierRune(r rune) bool {
 }
 
 func newTestMariaDBEngine(t *testing.T, run commandRunner) *mariadbEngine {
+	t.Helper()
+	return newScriptedTestMariaDBEngine(t, withMariaDBReadBacks(run))
+}
+
+// Answers the read-back an apply runs against a live server, and does not record
+// the call: an apply against a set that says nothing about TLS still asks, and a
+// case counting the statements it issued is about the set rather than the guard.
+func withMariaDBReadBacks(run commandRunner) commandRunner {
+	return func(ctx context.Context, c command) (string, error) {
+		if strings.Contains(c.Stdin, "have_ssl") {
+			return "YES\n", nil
+		}
+		return run(ctx, c)
+	}
+}
+
+// The same engine with the read-back left to the runner, for the cases that are
+// about what the engine does with that answer rather than about the rest of an
+// apply.
+func newScriptedTestMariaDBEngine(t *testing.T, run commandRunner) *mariadbEngine {
 	t.Helper()
 	cfg := testLoadConfig(t, engineMariaDB)
 	cfg.DataMount = t.TempDir()
@@ -420,6 +443,105 @@ func TestMariaDBEngine_ApplyParametersRollsBackAValueTheServerRefuses(t *testing
 	}
 	if !strings.Contains(string(installed), "max_connections = '200'") {
 		t.Errorf("installed parameters = %q, want the previous accepted set restored", installed)
+	}
+}
+
+// Answers the serving-TLS read-back from a field the case sets, so what the
+// engine does with each answer is what is under test.
+type mariadbTLSReadBackRunner struct {
+	recordingRunner
+
+	haveSSL string
+}
+
+func (r *mariadbTLSReadBackRunner) run(ctx context.Context, c command) (string, error) {
+	if strings.Contains(c.Stdin, "have_ssl") {
+		r.calls = append(r.calls, c)
+		return r.haveSSL + "\n", nil
+	}
+	return r.recordingRunner.run(ctx, c)
+}
+
+func requireSecureTransport(value string) []handlers_rds.Parameter {
+	return []handlers_rds.Parameter{
+		{Name: "max_connections", Value: "200"},
+		{Name: "require_secure_transport", Value: value},
+	}
+}
+
+// Unlike PostgreSQL's, this is a real global system variable: the value in the
+// file is the enforcement, and a running server takes it as SET GLOBAL.
+func TestMariaDBEngine_ApplyParametersEnforcesTLSLive(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "YES"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(context.Background(), requireSecureTransport("1")); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+
+	installed, err := os.ReadFile(engine.params.installedPath())
+	if err != nil {
+		t.Fatalf("read the installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "require_secure_transport = '1'") {
+		t.Errorf("installed parameters = %q, want the value the next start reads", installed)
+	}
+	sql := runner.calls[len(runner.calls)-1].Stdin
+	if !strings.Contains(sql, "SET GLOBAL require_secure_transport = ON;") {
+		t.Errorf("SQL %q does not require TLS of clients without a restart", sql)
+	}
+}
+
+// Without this the apply would reject every client of an engine started with no
+// certificate, and report the parameter applied.
+func TestMariaDBEngine_ApplyParametersRefusesToEnforceWithoutTLS(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "DISABLED"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(), requireSecureTransport("1"))
+	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the engine's own TLS state", err)
+	}
+	for _, c := range runner.calls {
+		if strings.Contains(c.Stdin, "SET GLOBAL") {
+			t.Errorf("the set reached the server anyway: %q", c.Stdin)
+		}
+	}
+	if _, statErr := os.Stat(engine.params.installedPath()); !os.IsNotExist(statErr) {
+		t.Errorf("the refused set is still installed (stat err = %v)", statErr)
+	}
+}
+
+// An absent key reads as enforce here, as it does on the PostgreSQL side. The
+// server's own default for it is off, so this decides only whether the engine
+// may be asked to enforce — never whether it does.
+func TestMariaDBEngine_ApplyParametersReadsAnAbsentEnforcementKeyAsOn(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "DISABLED"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}})
+	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
+		t.Fatalf("ApplyParameters error = %v, want a set predating the parameter to read as enforcing", err)
+	}
+}
+
+// The resolver canonicalises every boolean, so a value that is neither means the
+// file was written by something other than the platform. Reading an unparsable
+// security setting as off is the one choice not open here.
+func TestMariaDBEngine_ApplyParametersRefusesAnUnparsableEnforcementValue(t *testing.T) {
+	runner := &mariadbTLSReadBackRunner{haveSSL: "YES"}
+	engine := newScriptedTestMariaDBEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(), requireSecureTransport("yes"))
+	if err == nil || !strings.Contains(err.Error(), "neither 1 nor 0") {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the unreadable value", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("ran %d commands against a set that could not be read, want 0", len(runner.calls))
+	}
+	if _, statErr := os.Stat(engine.params.installedPath()); !os.IsNotExist(statErr) {
+		t.Errorf("the refused set is still installed (stat err = %v)", statErr)
 	}
 }
 

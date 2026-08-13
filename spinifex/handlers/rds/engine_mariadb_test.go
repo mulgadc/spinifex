@@ -175,7 +175,7 @@ func TestMariaDBCatalog_IsSeparateFromPostgres(t *testing.T) {
 func TestMariaDBCatalog_OmitsPlatformOwnedSettings(t *testing.T) {
 	owned := []string{
 		"port", "datadir", "socket", "bind_address",
-		"ssl_ca", "ssl_cert", "ssl_key", "require_secure_transport",
+		"ssl_ca", "ssl_cert", "ssl_key",
 		"secure_file_priv", "skip_symbolic_links", "log_bin",
 		"default_storage_engine",
 		"innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances",

@@ -33,6 +33,10 @@ type controlPlaneRules struct {
 	// The catalog's data type for a setting, which decides how its value is
 	// rendered into SQL. Empty for a name the catalog does not carry.
 	dataType func(name string) string
+	// The engine's own name for the setting that requires TLS of a client
+	// connection. Held rather than spelled out here, so the guest derives
+	// enforcement from the same key the control plane resolves it under.
+	tlsEnforcementParameter string
 }
 
 func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
@@ -67,6 +71,7 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 			}
 			return spec.DataType
 		},
+		tlsEnforcementParameter: meta.TLSEnforcementParameter(),
 	}
 }
 
@@ -469,6 +474,13 @@ func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_r
 		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restore())
 	}
 
+	// Before the set reaches the server: enforcement is one of the values below,
+	// and a server told to require a transport it cannot offer would refuse every
+	// client the statement after.
+	if err := e.requireServingTLSForEnforcement(ctx); err != nil {
+		return nil, errors.Join(err, restore())
+	}
+
 	if err := e.applyDynamicParameters(ctx, params); err != nil {
 		// The engine may have gone down after the first probe. In that case start it
 		// on the newly installed set rather than restoring one that already left it
@@ -504,6 +516,32 @@ func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []han
 	}
 	if _, err := e.clientRun(ctx, b.String()); err != nil {
 		return fmt.Errorf("apply the dynamic parameters: %w", err)
+	}
+	return nil
+}
+
+// Refuses to require TLS of clients from a server that is not serving it, which
+// would reject every TCP connection while the parameter path reported success.
+// Read back from the installed file rather than taken from the set in hand, so
+// what is checked is also what the server reads at its next start.
+func (e *mariadbEngine) requireServingTLSForEnforcement(ctx context.Context) error {
+	enforce, err := installedTLSEnforcement(e.rules.tlsEnforcementParameter, e.params.installedPath())
+	if err != nil {
+		return err
+	}
+	if !enforce {
+		return nil
+	}
+	// DISABLED is a server built with TLS and started without a certificate,
+	// which is what a boot that was handed none leaves behind. The agent's own
+	// connections are unaffected either way: MariaDB counts a unix socket as a
+	// secure transport.
+	out, err := e.clientRun(ctx, "SELECT @@global.have_ssl;\n")
+	if err != nil {
+		return fmt.Errorf("read whether the engine is serving TLS: %w", err)
+	}
+	if serving := strings.TrimSpace(out); serving != "YES" {
+		return fmt.Errorf("the engine is serving without TLS (have_ssl = %q), so requiring it of clients would reject every connection", serving)
 	}
 	return nil
 }

@@ -68,6 +68,11 @@ PARAM_FILE="${CONF_DIR}/10-rds-parameters.cnf"
 SERVING_FILE="${CONF_DIR}/10-rds-parameters.serving"
 PLATFORM_FILE="${CONF_DIR}/90-rds-init.cnf"
 
+# The one setting in the resolved group this script reads rather than only
+# installs. Unlike PostgreSQL's, the value is the enforcement — mariadbd applies
+# it out of the file — so reading it answers only whether the engine may start.
+TLS_PARAM="require_secure_transport"
+
 # Written between mariadb-install-db and a working master user. It lives on the
 # data volume because no trap survives a crash or a hard kill, and it is what
 # stops the next boot attaching to a datadir whose master user was never created.
@@ -471,6 +476,39 @@ install_tls() {
     SSL_MODE="off"
 }
 
+# Sets TLS_ENFORCE from the installed parameter file rather than the handoff's:
+# install_parameters keeps the previous file when a handoff carries none, so the
+# installed one is what mariadbd reads and what this has to agree with.
+#
+# An absent key is enforce. That is the ordinary state of an instance whose
+# resolved set predates the parameter, and reading it the other way would let a
+# file the platform did not write decide a security setting.
+derive_tls_enforcement() {
+    TLS_ENFORCE=1
+    _value=$(resolved_parameter "${TLS_PARAM}")
+    [ -n "${_value}" ] || return 0
+
+    case "${_value}" in
+        1) TLS_ENFORCE=1 ;;
+        0) TLS_ENFORCE=0 ;;
+        # The control plane canonicalises every boolean to 1 or 0, so anything else
+        # means the file was written by something other than the platform. Reading
+        # an unparsable security setting as off is the one choice not open here.
+        *) fail "the installed parameters set ${TLS_PARAM} to '${_value}', which is neither 1 nor 0; refusing to start the engine on a TLS setting that cannot be read" ;;
+    esac
+}
+
+# A configuration that asks for TLS is never quietly served in the clear. Not a
+# transient-failure risk: load_handoff already required a successful bootstrap
+# fetch to get this far, and that fetch carries a certificate whenever a CA
+# exists.
+require_tls_for_enforcement() {
+    [ "${TLS_ENFORCE}" = "1" ] || return 0
+    if [ "${SSL_MODE}" != "on" ]; then
+        fail "${TLS_PARAM} requires TLS of client connections but no serving certificate was delivered and none is installed; refusing to start an engine that would reject every client"
+    fi
+}
+
 # The 90- prefix sorts last within the include directory and MariaDB takes the
 # last occurrence of a setting, so a resolved parameter can never move the
 # endpoint's port, redirect the datadir, turn off TLS or lower the protocol floor.
@@ -519,10 +557,10 @@ log_error = ${ENGINE_LOG}
 tls_version = TLSv1.3
 EOF
     if [ "${_ssl}" = "on" ]; then
-        # Offered, not enforced, matching the PostgreSQL image's pg_hba: clients
-        # opt in. require_secure_transport is deliberately absent until enforcement
-        # lands for both engines at once. No ssl_ca, because client certificates
-        # are not required and it would only gate those.
+        # Whether clients must use it is require_secure_transport's to say, and it
+        # belongs to the parameter group rather than here: this file only makes
+        # the offer. No ssl_ca, because client certificates are not required and
+        # it would only gate those.
         cat >> "${_tmp}" <<EOF
 ssl_cert = ${TLS_DIR}/server.crt
 ssl_key = ${TLS_DIR}/server.key
@@ -534,7 +572,8 @@ EOF
 }
 
 # Everything refreshed on every boot: the resolved parameters and their serving
-# copy, the serving cert and the platform's own settings.
+# copy, the serving cert, the TLS those parameters require of clients and the
+# platform's own settings.
 install_runtime_config() {
     install -d -m 0750 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${CONF_DIR}"
     install -d -m 0755 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${SOCKET_DIR}"
@@ -543,6 +582,8 @@ install_runtime_config() {
 
     install_parameters
     install_tls
+    derive_tls_enforcement
+    require_tls_for_enforcement
     write_platform_config "${SSL_MODE}"
 }
 

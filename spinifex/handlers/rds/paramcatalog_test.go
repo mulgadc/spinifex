@@ -284,29 +284,42 @@ func TestParameterCatalog_TLSFloorIsPinnedAndNotModifiable(t *testing.T) {
 	}
 }
 
-// PostgreSQL has no server setting for this, so the entry carries AWS's name and
-// a value the guest turns into a pg_hba rule. Dynamic rather than static because
-// a placeholder GUC never appears in pg_settings.pending_restart, where a static
-// classification would leave it reported as applied and enforcing nothing.
-func TestParameterCatalog_PostgresExposesTheTLSEnforcementParameter(t *testing.T) {
-	const name = "rds.force_ssl"
-	spec, ok := enginePostgres.LookupParameter(name)
-	require.True(t, ok, "postgres exposes no %s", name)
-	assert.Equal(t, ParamTypeBoolean, spec.DataType)
-	assert.Equal(t, ApplyTypeDynamic, spec.ApplyType)
-	assert.True(t, spec.IsModifiable, "a customer can turn enforcement off, exactly as on AWS")
-	assert.Equal(t, "0", spec.Default)
+// Each engine's enforcement parameter under AWS's own name for it, so a real
+// aws_db_parameter_group works verbatim. Dynamic on both: MariaDB takes it as
+// SET GLOBAL, and PostgreSQL's is a placeholder GUC that never appears in
+// pg_settings.pending_restart, where a static classification would leave it
+// reported as applied and enforcing nothing.
+func TestParameterCatalog_EachEngineExposesItsTLSEnforcementParameter(t *testing.T) {
+	tests := []struct {
+		engine Engine
+		name   string
+		// Only the spellings the engine itself parses: MariaDB refuses yes and no.
+		spellings map[string]string
+	}{
+		{enginePostgres, "rds.force_ssl", map[string]string{"on": "1", "true": "1", "off": "0", "no": "0"}},
+		{engineMariaDB, "require_secure_transport", map[string]string{"on": "1", "true": "1", "off": "0", "false": "0"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.engine.Name, func(t *testing.T) {
+			spec, ok := tc.engine.LookupParameter(tc.name)
+			require.True(t, ok, "%s exposes no %s", tc.engine.Name, tc.name)
+			assert.Equal(t, ParamTypeBoolean, spec.DataType)
+			assert.Equal(t, ApplyTypeDynamic, spec.ApplyType)
+			assert.True(t, spec.IsModifiable, "a customer can turn enforcement off, exactly as on AWS")
+			assert.Equal(t, "0", spec.Default)
 
-	// The guest derives enforcement from this name rather than from the engine it
-	// happens to be running, so the two have to agree on it.
-	assert.Equal(t, name, enginePostgres.TLSEnforcementParameter())
+			// The guest derives enforcement from this name rather than from the engine
+			// it happens to be running, so the two have to agree on it.
+			assert.Equal(t, tc.name, tc.engine.TLSEnforcementParameter())
 
-	// Whichever spelling the group carries, the guest has one literal to compare.
-	for spelling, want := range map[string]string{"on": "1", "true": "1", "off": "0", "no": "0"} {
-		resolved, err := enginePostgres.ResolveEffectiveParameters(SmallestInstanceClass(),
-			map[string]string{name: spelling})
-		require.NoError(t, err)
-		assert.Equal(t, want, resolvedParameter(t, resolved, name))
+			// Whichever spelling the group carries, the guest has one literal to compare.
+			for spelling, want := range tc.spellings {
+				resolved, err := tc.engine.ResolveEffectiveParameters(SmallestInstanceClass(),
+					map[string]string{tc.name: spelling})
+				require.NoError(t, err)
+				assert.Equal(t, want, resolvedParameter(t, resolved, tc.name))
+			}
+		})
 	}
 }
 

@@ -77,19 +77,25 @@ func (d *Daemon) startOchreVector() {
 		NodeID:   d.node,
 	})
 
+	// Publish the appliance and register the operator teardown subject BEFORE
+	// Connect: recovering a broken singleton is teardown's whole purpose, so it
+	// must stay reachable even when the appliance is unreachable and the connect
+	// loop below fails. Teardown needs only js+launcher+KV, never a live backend.
+	d.mu.Lock()
+	d.ochreAppliance = appliance
+	d.mu.Unlock()
+	if err := d.registerNatsSubs([]natsSub{
+		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.handleOchreApplianceTeardown), "spinifex-workers"},
+	}); err != nil {
+		slog.Error("Ochre vector store: failed to register appliance teardown subject", "err", err)
+	}
+
 	backend, err := d.connectOchreAppliance(appliance)
 	if err != nil {
 		slog.Warn("Ochre vector store disabled: platform appliance not reachable after retrying",
 			"attempts", ochreStartupMaxAttempts, "err", err)
 		return
 	}
-
-	// Set as soon as Connect succeeds, before the subjects below: the ENI
-	// and host port already exist at this point regardless of what happens
-	// next, so a shutdown from here on must be able to find and remove them.
-	d.mu.Lock()
-	d.ochreAppliance = appliance
-	d.mu.Unlock()
 
 	embedModel := cfg.EmbeddingModel
 	if embedModel == "" {
@@ -132,10 +138,6 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
 		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
-		// Operator-only: teardown of the platform appliance singleton itself,
-		// not a tenant vector-store action, so it is reached solely through
-		// `spx admin ochre appliance teardown`, never awsgw.
-		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.handleOchreApplianceTeardown), "spinifex-workers"},
 	}
 	if err := d.registerNatsSubs(subs); err != nil {
 		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)

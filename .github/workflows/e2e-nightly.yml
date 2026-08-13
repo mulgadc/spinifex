@@ -449,9 +449,6 @@ jobs:
     env:
       CI_WAN_MODE: dhcp
       CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
-      # mktemp honours TMPDIR, which is how the disk image lands on the runner's
-      # disk rather than in RAM. /tmp is tmpfs here.
-      TMPDIR: ${{ runner.temp }}/spx-work
       # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
       # instances. Disjoint from cell-22's pool so a run that dies holding its
       # SNAT address cannot collide with the next cell.
@@ -464,6 +461,11 @@ jobs:
         run: |
           sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/spx-work"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -598,9 +600,6 @@ jobs:
       MEM: 8G
       SMP: 8
       PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
-      # test-cluster.sh defaults WORK_DIR to mktemp -d, which follows TMPDIR.
-      # Nine 40G images must not land in RAM.
-      TMPDIR: ${{ runner.temp }}/spx-work
       EXT_POOL_START: 192.168.0.235
       EXT_POOL_END: 192.168.0.239
       EXT_GATEWAY: 192.168.1.1
@@ -610,6 +609,11 @@ jobs:
         run: |
           sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/spx-work"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -708,13 +712,15 @@ jobs:
     env:
       # Two-minute samples. The 30s smoke preset is too short to compare nights.
       PERF_PRESET: compare
-      # Off /tmp deliberately: it is tmpfs on these runners, so the blob store
-      # would land in RAM. runner.temp is on the runner's disk.
-      TMPDIR: ${{ runner.temp }}/spx-work
-      PERF_RESULTS_ROOT: ${{ runner.temp }}/predastore-perf-${{ github.run_id }}
     steps:
       - name: Clean Workspace
         run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
+          echo "PERF_RESULTS_ROOT=$RUNNER_TEMP/predastore-perf-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/spx-work"
 
       - name: Checkout Spinifex
         uses: actions/checkout@v7

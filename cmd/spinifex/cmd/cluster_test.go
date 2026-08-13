@@ -425,6 +425,40 @@ func TestSummariseShutdownACKs(t *testing.T) {
 	}
 }
 
+// TestShutdownPhaseOutcome covers the gate between phases. Advancing past a
+// node that failed to drain is what tears storage out from under a guest that
+// never stopped, so only --force may do it.
+func TestShutdownPhaseOutcome(t *testing.T) {
+	clean := []daemon.ShutdownACK{{Node: "node1"}, {Node: "node2"}, {Node: "node3"}}
+	mixed := []daemon.ShutdownACK{{Node: "node1"}, {Node: "node2", Error: "failed to stop VMs"}, {Node: "node3"}}
+
+	t.Run("every node clean advances", func(t *testing.T) {
+		completed, abort := shutdownPhaseOutcome("drain", clean, 3, false)
+		assert.Equal(t, 3, completed)
+		assert.Empty(t, abort)
+	})
+
+	t.Run("an errored node aborts and is named", func(t *testing.T) {
+		completed, abort := shutdownPhaseOutcome("drain", mixed, 3, false)
+		assert.Equal(t, 2, completed)
+		assert.Contains(t, abort, "node2")
+		assert.Contains(t, abort, "failed the phase")
+		assert.Contains(t, abort, "--force")
+	})
+
+	t.Run("a silent node aborts on the count", func(t *testing.T) {
+		completed, abort := shutdownPhaseOutcome("storage", clean, 5, false)
+		assert.Equal(t, 3, completed)
+		assert.Contains(t, abort, "3/5")
+	})
+
+	t.Run("force advances past both", func(t *testing.T) {
+		completed, abort := shutdownPhaseOutcome("drain", mixed, 5, true)
+		assert.Equal(t, 2, completed)
+		assert.Empty(t, abort, "--force is the documented way to continue despite errors")
+	})
+}
+
 // TestCollectLocalShutdownACKRetriesUntilACK covers the actual bug: the
 // daemon may not have re-subscribed right after a restart, so the first
 // attempt(s) get no ACK. The ACK on the third attempt must still succeed.

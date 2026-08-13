@@ -369,6 +369,36 @@ func TestShutdownRequestTarget(t *testing.T) {
 		assert.True(t, daemon.shuttingDown.Load())
 	})
 
+	// Every phase is a fan-out subject, so each handler needs the check —
+	// STORAGE and PERSIST stop another node's storage, and INFRA exits its
+	// daemon outright.
+	t.Run("every phase handler ignores another node's request", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{}
+		configurePidDir(t, daemon)
+
+		for phase, handler := range map[string]nats.MsgHandler{
+			"drain":   daemon.handleShutdownDrain,
+			"storage": daemon.handleShutdownStorage,
+			"persist": daemon.handleShutdownPersist,
+			"infra":   daemon.handleShutdownInfra,
+		} {
+			t.Run(phase, func(t *testing.T) {
+				subject := "spinifex.cluster.shutdown." + phase + ".elsewhere"
+				sub, err := daemon.natsConn.Subscribe(subject, handler)
+				require.NoError(t, err)
+				defer sub.Unsubscribe()
+				require.NoError(t, daemon.natsConn.Flush())
+
+				payload, err := json.Marshal(ShutdownRequest{Phase: phase, Target: "some-other-node"})
+				require.NoError(t, err)
+
+				_, err = daemon.natsConn.Request(subject, payload, 2*time.Second)
+				require.Error(t, err, "%s answered a request addressed to another node", phase)
+			})
+		}
+	})
+
 	t.Run("untargeted request still reaches every node", func(t *testing.T) {
 		daemon := createTestDaemon(t, sharedNATSURL)
 		daemon.config.Services = []string{}
@@ -469,6 +499,35 @@ func TestCleanupOrphanNBDKit(t *testing.T) {
 		signalled := stubProcTable(t, map[int]string{})
 		cleanupOrphanNBDKit("")
 		assert.Empty(t, *signalled)
+	})
+}
+
+// TestProcCommAndSignalProcess exercises the real /proc and kill paths the
+// cleanup stubs out everywhere else, so a change to either is caught here
+// rather than only on a node.
+func TestProcCommAndSignalProcess(t *testing.T) {
+	t.Run("procComm reads this process's own name", func(t *testing.T) {
+		comm, err := procComm(os.Getpid())
+		require.NoError(t, err)
+		assert.NotEmpty(t, comm)
+		assert.NotContains(t, comm, "\n", "comm must be trimmed")
+	})
+
+	t.Run("procComm reports a pid that does not exist", func(t *testing.T) {
+		// Above the default pid_max, so it cannot collide with a live process.
+		_, err := procComm(1 << 30)
+		require.Error(t, err)
+	})
+
+	t.Run("signalProcess reaches a live process", func(t *testing.T) {
+		pid := startSleepProcess(t)
+		// Signal 0 runs every permission check and delivers nothing, which is
+		// the reachability probe without disturbing the process.
+		require.NoError(t, signalProcess(pid, syscall.Signal(0)))
+	})
+
+	t.Run("signalProcess reports a pid that does not exist", func(t *testing.T) {
+		require.Error(t, signalProcess(1<<30, syscall.Signal(0)))
 	})
 }
 

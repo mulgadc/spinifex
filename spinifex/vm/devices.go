@@ -13,19 +13,59 @@ func IsMMIO(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
 }
 
+// MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
+// thread per queue, so an unbounded count would put 64 of them behind a large
+// instance for throughput a handful already saturates.
+const MaxNICQueues = 8
+
+// NICQueues returns the queue-pair count for a NIC on a guest with vcpus
+// vCPUs, clamped to [1, MaxNICQueues]. The guest's virtio_net negotiates
+// min(vcpus, queues), so matching vCPUs lets every core drive its own queue.
+func NICQueues(vcpus int) int {
+	if vcpus < 1 {
+		return 1
+	}
+	return min(vcpus, MaxNICQueues)
+}
+
+// TapNetDev returns the QEMU -netdev argument for a tap-backed NIC.
+//
+// vhost=on is what makes the NIC fast: it moves the datapath into the kernel
+// vhost-net thread. Without it QEMU copies every packet on its main loop
+// thread, which caps a guest around 1.7 Gbit/s no matter how many streams or
+// vCPUs it has. queues > 1 requests a multiqueue tap, which the tap device
+// itself must already have been created with (see TapSpec.Queues).
+func TapNetDev(id, ifname string, queues int) NetDev {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tap,id=%s,ifname=%s,script=no,downscript=no,vhost=on", id, ifname)
+	if queues > 1 {
+		fmt.Fprintf(&b, ",queues=%d", queues)
+	}
+	return NetDev{Value: b.String()}
+}
+
 // NetDevice returns the appropriate QEMU virtio-net device string for
 // machineType, wiring netdev and mac. mac is omitted when empty.
-func NetDevice(machineType, netdev, mac string) Device {
-	var transport string
+//
+// queues > 1 enables multiqueue, which needs one MSI-X vector per rx and tx
+// queue plus one for config and one for control — 2N+2. Understating vectors
+// silently drops the NIC back to fewer queues, so it is derived here rather
+// than passed in. MMIO machines have no MSI-X and are left single-queue.
+func NetDevice(machineType, netdev, mac string, queues int) Device {
+	var b strings.Builder
 	if IsMMIO(machineType) {
-		transport = "virtio-net-device"
+		b.WriteString("virtio-net-device")
 	} else {
-		transport = "virtio-net-pci"
+		b.WriteString("virtio-net-pci")
 	}
+	fmt.Fprintf(&b, ",netdev=%s", netdev)
 	if mac != "" {
-		return Device{Value: fmt.Sprintf("%s,netdev=%s,mac=%s", transport, netdev, mac)}
+		fmt.Fprintf(&b, ",mac=%s", mac)
 	}
-	return Device{Value: fmt.Sprintf("%s,netdev=%s", transport, netdev)}
+	if !IsMMIO(machineType) && queues > 1 {
+		fmt.Fprintf(&b, ",mq=on,vectors=%d", 2*queues+2)
+	}
+	return Device{Value: b.String()}
 }
 
 // BlkDevice returns the appropriate QEMU virtio-blk device string for

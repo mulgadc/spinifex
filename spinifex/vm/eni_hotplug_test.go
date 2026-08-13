@@ -306,6 +306,82 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 	}
 }
 
+// A hot-plugged ENI must come up on the same vhost and multiqueue settings as
+// a cold-booted one, or an instance's network performance depends on how its
+// NIC happened to arrive — a divergence that surfaces as an irreproducible
+// customer report rather than a test failure.
+func TestHotPlugENI_MatchesColdBootNICOptions(t *testing.T) {
+	mgr, v, stub, _ := newHotPlugTestVMWithPlumber(t, 2)
+	v.Config.CPUCount = 4
+	v.Config.MachineType = "q35"
+	queues := NICQueues(v.Config.CPUCount)
+
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+		t.Fatalf("HotPlugENI: %v", err)
+	}
+
+	var netdevArgs, deviceArgs map[string]any
+	for _, c := range stub.Calls() {
+		switch c.Execute {
+		case "netdev_add":
+			netdevArgs = c.Args
+		case "device_add":
+			deviceArgs = c.Args
+		}
+	}
+	if netdevArgs == nil || deviceArgs == nil {
+		t.Fatalf("missing netdev_add/device_add; calls=%+v", stub.Calls())
+	}
+
+	// The cold-boot path renders the same NIC as command-line strings. Compare
+	// against those so the two paths cannot drift independently.
+	coldNetDev := TapNetDev("hostnet-eni-1", TapDeviceName("eni-abc123"), queues).Value
+	coldDevice := NetDevice(v.Config.MachineType, "hostnet-eni-1", "02:00:00:aa:bb:cc", queues).Value
+
+	if got := netdevArgs["vhost"]; got != true {
+		t.Errorf("netdev_add vhost = %v, want true (cold boot renders %q)", got, coldNetDev)
+	}
+	if got := netdevArgs["queues"]; got != queues {
+		t.Errorf("netdev_add queues = %v, want %d (cold boot renders %q)", got, queues, coldNetDev)
+	}
+	if got := deviceArgs["mq"]; got != true {
+		t.Errorf("device_add mq = %v, want true (cold boot renders %q)", got, coldDevice)
+	}
+	if got, want := deviceArgs["vectors"], 2*queues+2; got != want {
+		t.Errorf("device_add vectors = %v, want %d (cold boot renders %q)", got, want, coldDevice)
+	}
+}
+
+// A single-queue instance must not ask for mq/vectors at all: an mq=on NIC
+// with one queue pair is a different device model to the guest.
+func TestHotPlugENI_SingleQueueOmitsMultiqueue(t *testing.T) {
+	mgr, v, stub, _ := newHotPlugTestVMWithPlumber(t, 2)
+	v.Config.CPUCount = 1
+
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+		t.Fatalf("HotPlugENI: %v", err)
+	}
+
+	for _, c := range stub.Calls() {
+		switch c.Execute {
+		case "netdev_add":
+			if c.Args["vhost"] != true {
+				t.Errorf("netdev_add vhost = %v, want true even at one queue", c.Args["vhost"])
+			}
+			if _, ok := c.Args["queues"]; ok {
+				t.Errorf("netdev_add carries queues at one queue: %+v", c.Args)
+			}
+		case "device_add":
+			if _, ok := c.Args["mq"]; ok {
+				t.Errorf("device_add carries mq at one queue: %+v", c.Args)
+			}
+			if _, ok := c.Args["vectors"]; ok {
+				t.Errorf("device_add carries vectors at one queue: %+v", c.Args)
+			}
+		}
+	}
+}
+
 func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
 	mgr, v, _, plumber := newHotPlugTestVMWithPlumber(t, 2)
 
@@ -316,7 +392,7 @@ func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
 		t.Fatalf("SetupTap calls = %d, want 1", len(plumber.setupCalls))
 	}
 	got := plumber.setupCalls[0]
-	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc")
+	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", NICQueues(v.Config.CPUCount))
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SetupTap spec = %+v, want %+v", got, want)
 	}

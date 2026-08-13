@@ -74,6 +74,45 @@ func TestOVSPlumber_SetupTap_AddPortArgs(t *testing.T) {
 	}
 }
 
+// A multiqueue netdev needs a multi_queue tap: QEMU opens the tap once per
+// queue and each TUNSETIFF carries IFF_MULTI_QUEUE, which a single-queue tap
+// rejects. The flag must appear at creation, not afterwards.
+func TestOVSPlumber_SetupTap_MultiQueue(t *testing.T) {
+	cases := []struct {
+		name   string
+		queues int
+		want   bool
+	}{
+		{"unset", 0, false},
+		{"single queue", 1, false},
+		{"multiqueue", 4, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var addArgs []string
+			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+				if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "add" {
+					addArgs = args
+				}
+				return exec.Command("/bin/true")
+			}))
+
+			p := NewOVSPlumber()
+			spec := vm.TapSpec{Name: "tapmq-test", Bridge: "br-int", Queues: tc.queues}
+			if err := p.SetupTap(spec); err != nil {
+				t.Fatalf("SetupTap: %v", err)
+			}
+			if addArgs == nil {
+				t.Fatal("no ip tuntap add invocation captured")
+			}
+			if got := slices.Contains(addArgs, "multi_queue"); got != tc.want {
+				t.Errorf("multi_queue present = %v, want %v (args=%v)", got, tc.want, addArgs)
+			}
+		})
+	}
+}
+
 // "lo" is always present so os.Stat hits the pre-create cleanup branch.
 func TestOVSPlumber_SetupTap_PreExistingKernelTap(t *testing.T) {
 	failTuntapDel := true

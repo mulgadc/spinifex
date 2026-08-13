@@ -39,6 +39,12 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	// must be owned by the calling euid (kernel TUNSETIFF check). Use numeric
 	// uid/gid to avoid NSS lookup failures in hardened systemd units.
 	addArgs := []string{"tuntap", "add", "dev", spec.Name, "mode", "tap"}
+	// multi_queue must be set at creation: QEMU opens the tap once per queue
+	// and each TUNSETIFF has to carry IFF_MULTI_QUEUE, which a single-queue
+	// tap rejects. The flag is inert for a netdev that asks for one queue.
+	if spec.Queues > 1 {
+		addArgs = append(addArgs, "multi_queue")
+	}
 	if uid := os.Geteuid(); uid != 0 {
 		addArgs = append(addArgs, "user", strconv.Itoa(uid), "group", strconv.Itoa(os.Getegid()))
 	}

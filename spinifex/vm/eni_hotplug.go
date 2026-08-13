@@ -83,33 +83,48 @@ func (m *Manager) HotPlugENI(ctx context.Context, instance *VM, eniID, mac strin
 	tapName := TapDeviceName(eniID)
 	busID := eniBusID(slot)
 
+	// A hot-plugged ENI must land on the same vhost/multiqueue settings the
+	// cold-boot path uses, or an instance performs differently depending on
+	// how its NIC arrived.
+	queues := NICQueues(instance.Config.CPUCount)
+
 	// Step 1: tap device + OVS port on br-int (carries OVN iface-id binding).
-	if err := m.setupENITap(instance.ID, eniID, mac); err != nil {
+	if err := m.setupENITap(instance.ID, eniID, mac, queues); err != nil {
 		m.releaseSlotLocked(instance, eniID, slot)
 		return HotPlugENIResult{}, fmt.Errorf("tap/ovs setup: %w", err)
 	}
 
 	// Step 2: QMP netdev_add.
-	if err := dc.NetdevAdd(map[string]any{
+	netdevArgs := map[string]any{
 		"type":       "tap",
 		"id":         netdevID,
 		"ifname":     tapName,
 		"script":     "no",
 		"downscript": "no",
-	}); err != nil {
+		"vhost":      true,
+	}
+	if queues > 1 {
+		netdevArgs["queues"] = queues
+	}
+	if err := dc.NetdevAdd(netdevArgs); err != nil {
 		m.cleanupENITap(instance.ID, eniID, tapName)
 		m.releaseSlotLocked(instance, eniID, slot)
 		return HotPlugENIResult{}, fmt.Errorf("QMP netdev_add: %w", err)
 	}
 
 	// Step 3: QMP device_add.
-	if err := dc.DeviceAdd(map[string]any{
+	deviceArgs := map[string]any{
 		"driver": "virtio-net-pci",
 		"id":     deviceID,
 		"bus":    busID,
 		"netdev": netdevID,
 		"mac":    mac,
-	}); err != nil {
+	}
+	if queues > 1 {
+		deviceArgs["mq"] = true
+		deviceArgs["vectors"] = 2*queues + 2
+	}
+	if err := dc.DeviceAdd(deviceArgs); err != nil {
 		_ = dc.NetdevDel(netdevID)
 		m.cleanupENITap(instance.ID, eniID, tapName)
 		m.releaseSlotLocked(instance, eniID, slot)
@@ -259,11 +274,11 @@ func SetHotPlugTestSeams(factory func(*VM) DeviceController, sleep func(time.Dur
 // setupENITap creates the tap on br-int and wires the OVS port carrying the
 // OVN binding (iface-id) and attached MAC, via the shared NetworkPlumber. A
 // nil plumber (unit-test managers) is a noop, mirroring setupExtraENINICs.
-func (m *Manager) setupENITap(instanceID, eniID, mac string) error {
+func (m *Manager) setupENITap(instanceID, eniID, mac string, queues int) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil
 	}
-	spec := VPCTapSpec(eniID, mac)
+	spec := VPCTapSpec(eniID, mac, queues)
 	if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 		return fmt.Errorf("setup tap %s for eni %s on instance %s: %w", spec.Name, eniID, instanceID, err)
 	}

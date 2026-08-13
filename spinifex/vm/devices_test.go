@@ -41,23 +41,68 @@ func TestIsMMIO(t *testing.T) {
 }
 
 func TestNetDevice_PCI(t *testing.T) {
-	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc")
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1)
 	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
 }
 
 func TestNetDevice_PCI_NoMAC(t *testing.T) {
-	d := NetDevice("q35", "net0", "")
+	d := NetDevice("q35", "net0", "", 0)
 	assert.Equal(t, "virtio-net-pci,netdev=net0", d.Value)
 }
 
 func TestNetDevice_MMIO(t *testing.T) {
-	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc")
+	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc", 1)
 	assert.Equal(t, "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
 }
 
 func TestNetDevice_MMIO_NoMAC(t *testing.T) {
-	d := NetDevice("microvm,x-option-roms=off", "net0", "")
+	d := NetDevice("microvm,x-option-roms=off", "net0", "", 0)
 	assert.Equal(t, "virtio-net-device,netdev=net0", d.Value)
+}
+
+// vectors must be 2N+2 (N rx + N tx + config + control). Understating it makes
+// QEMU silently fall back to fewer queues, so the arithmetic is pinned here.
+func TestNetDevice_PCI_Multiqueue(t *testing.T) {
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 4)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,mq=on,vectors=10", d.Value)
+}
+
+// MMIO has no MSI-X, so a queue count must not produce mq/vectors there.
+func TestNetDevice_MMIO_IgnoresQueues(t *testing.T) {
+	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc", 4)
+	assert.Equal(t, "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
+}
+
+func TestTapNetDev_SingleQueue(t *testing.T) {
+	nd := TapNetDev("net0", "tapabc", 1)
+	assert.Equal(t, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on", nd.Value)
+}
+
+func TestTapNetDev_Multiqueue(t *testing.T) {
+	nd := TapNetDev("net0", "tapabc", 4)
+	assert.Equal(t, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=4", nd.Value)
+}
+
+// vhost=on is the whole point of the change: without it QEMU copies every
+// packet on its main loop and the guest is capped around 1.7 Gbit/s.
+func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
+	for _, queues := range []int{0, 1, 2, 8} {
+		nd := TapNetDev("net0", "tapabc", queues)
+		assert.Contains(t, nd.Value, "vhost=on", "queues=%d", queues)
+	}
+}
+
+func TestNICQueues(t *testing.T) {
+	tests := []struct {
+		vcpus int
+		want  int
+	}{
+		{-1, 1}, {0, 1}, {1, 1}, {2, 2}, {4, 4}, {8, 8},
+		{16, MaxNICQueues}, {96, MaxNICQueues},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, NICQueues(tt.vcpus), "vcpus=%d", tt.vcpus)
+	}
 }
 
 func TestBlkDevice_PCI(t *testing.T) {

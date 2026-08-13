@@ -849,10 +849,10 @@ func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInpu
 		netID := fmt.Sprintf("net%d", i)
 		// Resolve the tap name from the corresponding ENI.
 		tapName := tapNameForNIC(i, nic, instanceID, input)
-		res.netdevs = append(res.netdevs, vm.NetDev{
-			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, tapName),
-		})
-		res.devices = append(res.devices, vm.NetDevice(machineType, netID, nic.MAC))
+		// Single-queue, matching the taps the direct-boot path pre-creates.
+		// vhost still applies: it is the datapath, not the queue count.
+		res.netdevs = append(res.netdevs, vm.TapNetDev(netID, tapName, 1))
+		res.devices = append(res.devices, vm.NetDevice(machineType, netID, nic.MAC, 1))
 	}
 
 	return res

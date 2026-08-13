@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -87,9 +88,14 @@ type GatewayConfig struct {
 	DisableLogging bool       `json:"disable_logging"`
 	NATSConn       *nats.Conn // Shared NATS connection for service communication
 	Config         string     // Shared AWS Gateway config for S3 auth
-	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
-	Region         string     // Region this gateway is running in
-	InternalSuffix string     // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	// RootCAs is the cluster CA pool, used to verify predastore meta nodes
+	// dialed directly for GetStorageStatus. Nil disables that verification,
+	// so admin storage status reports every meta node unreachable rather than
+	// dialing with no trust root.
+	RootCAs        *x509.CertPool
+	ExpectedNodes  int    // Number of expected spinifex nodes for multi-node operations
+	Region         string // Region this gateway is running in
+	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	// RegistryPort is the gateway's advertised port, appended to the ECR
 	// registry host so docker login/tag/push dial the right port. Empty or
 	// "443" renders a port-less host (standard HTTPS parity).

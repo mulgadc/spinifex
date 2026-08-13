@@ -23,6 +23,7 @@ resources:
 - [Overview](#overview)
 - [The Contract](#the-contract)
 - [Older Releases: `systemctl stop spinifex.target`](#older-releases-systemctl-stop-spinifextarget)
+- [Older Releases: A Local Drain Drained the Whole Cluster](#older-releases-a-local-drain-drained-the-whole-cluster)
 - [Why Guests Outlive the Daemon](#why-guests-outlive-the-daemon)
 - [Checking State](#checking-state)
 - [Maintenance Runbooks](#maintenance-runbooks)
@@ -118,6 +119,36 @@ explicitly before stopping the target.**
 This does not apply to `systemctl restart spinifex.target` — the restart row
 in the contract table above is unaffected, since the same gate is what makes
 guests survive a restart intact.
+
+## Older Releases: A Local Drain Drained the Whole Cluster
+
+> [!WARNING]
+> **Releases up to the one carrying this section drain every node in the
+> cluster when any single node stops its target.** Stopping or rebooting one
+> node powers down every guest on every other node, stops their API gateway,
+> UI and VPC daemon, and leaves each daemon refusing new work until it is
+> restarted. On a multi-node cluster this reads as an unexplained cluster-wide
+> outage triggered by routine single-node maintenance.
+
+**Cause:** the local drain published its GATE and DRAIN requests to the shared
+`spinifex.cluster.shutdown.*` subjects, which every daemon subscribes to as a
+fan-out. The node filter applied only to the replies the stopping node waited
+for, so the other nodes had already drained by the time it was applied.
+Requests now name the node they apply to, and a daemon ignores one addressed
+to another node.
+
+Both ends have to be current for this to hold: the node that issues the drain
+sends the target, and the nodes that receive it must be new enough to honour
+it. A cluster mid-upgrade still drains cluster-wide from any node that has not
+yet been updated. **Upgrade every node before relying on single-node
+maintenance**, and until then stop guests deliberately rather than as a side
+effect of stopping a target.
+
+To check whether a cluster is exposed, confirm each node's `spx` is current:
+
+```bash
+spx version
+```
 
 ## Why Guests Outlive the Daemon
 

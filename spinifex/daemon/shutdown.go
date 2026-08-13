@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -28,6 +31,17 @@ type ShutdownRequest struct {
 	Phase   string `json:"phase"`
 	Force   bool   `json:"force"`
 	Timeout int    `json:"timeout_seconds"`
+	// Target names the only node that should act on this request. Empty means
+	// every node, which is what a whole-cluster shutdown sends. The phase
+	// subjects are fan-out, so without this a single node's stop drains all.
+	Target string `json:"target,omitempty"`
+}
+
+// forAnotherNode reports whether a targeted request belongs to a different
+// node. Such a request is dropped without an ACK: the sender is waiting for
+// its own node only, and an ACK from here would just be discarded.
+func (d *Daemon) forAnotherNode(req ShutdownRequest) bool {
+	return req.Target != "" && req.Target != d.node
 }
 
 // ShutdownACK is the response from a daemon after completing a shutdown phase.
@@ -53,6 +67,9 @@ func (d *Daemon) handleShutdownGate(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownGate: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "gate", Error: err.Error()})
+		return
+	}
+	if d.forAnotherNode(req) {
 		return
 	}
 
@@ -108,6 +125,9 @@ func (d *Daemon) handleShutdownDrain(msg *nats.Msg) {
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "drain", Error: err.Error()})
 		return
 	}
+	if d.forAnotherNode(req) {
+		return
+	}
 
 	slog.Info("Shutdown DRAIN phase starting", "node", d.node)
 
@@ -161,6 +181,9 @@ func (d *Daemon) handleShutdownStorage(msg *nats.Msg) {
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "storage", Error: err.Error()})
 		return
 	}
+	if d.forAnotherNode(req) {
+		return
+	}
 
 	slog.Info("Shutdown STORAGE phase starting", "node", d.node)
 
@@ -174,10 +197,7 @@ func (d *Daemon) handleShutdownStorage(msg *nats.Msg) {
 		}
 	}
 
-	// Best-effort cleanup of orphaned nbdkit processes
-	if err := exec.Command("pkill", "-f", "nbdkit").Run(); err != nil {
-		slog.Debug("pkill nbdkit (best-effort)", "result", err)
-	}
+	cleanupOrphanNBDKit(utils.RuntimeDir())
 
 	ack := ShutdownACK{
 		Node:    d.node,
@@ -194,6 +214,9 @@ func (d *Daemon) handleShutdownPersist(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownPersist: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "persist", Error: err.Error()})
+		return
+	}
+	if d.forAnotherNode(req) {
 		return
 	}
 
@@ -225,6 +248,9 @@ func (d *Daemon) handleShutdownInfra(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownInfra: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "infra", Error: err.Error()})
+		return
+	}
+	if d.forAnotherNode(req) {
 		return
 	}
 
@@ -263,6 +289,79 @@ func (d *Daemon) handleShutdownInfra(msg *nats.Msg) {
 	slog.Info("Shutdown INFRA phase complete, exiting", "node", d.node)
 
 	os.Exit(0)
+}
+
+// nbdkitPidGlob matches the pidfiles viperblockd hands nbdkit, one per volume.
+const nbdkitPidGlob = "nbdkit-vol-*.pid"
+
+// procComm and signalProcess are overridable so the cleanup below can be
+// tested without a real nbdkit to point at.
+var (
+	procComm = func(pid int) (string, error) {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	signalProcess = func(pid int, sig syscall.Signal) error {
+		return syscall.Kill(pid, sig)
+	}
+)
+
+// cleanupOrphanNBDKit terminates the nbdkit backends this node started, found
+// through the pidfiles in its runtime dir. A pattern kill was used here before
+// and reached every nbdkit on the host, including other nodes' live backends.
+func cleanupOrphanNBDKit(runtimeDir string) {
+	if runtimeDir == "" {
+		return
+	}
+
+	pidFiles, err := filepath.Glob(filepath.Join(runtimeDir, nbdkitPidGlob))
+	if err != nil {
+		slog.Warn("nbdkit cleanup: cannot list pid files", "dir", runtimeDir, "error", err)
+		return
+	}
+
+	for _, path := range pidFiles {
+		pid, err := readPidFileAt(path)
+		if err != nil {
+			slog.Debug("nbdkit cleanup: unreadable pid file, removing", "path", path, "error", err)
+			removeStalePidFile(path)
+			continue
+		}
+
+		// A pidfile outlives the process it names, so the PID may since have
+		// been recycled onto something unrelated. Only signal it while the
+		// kernel still agrees it is nbdkit.
+		comm, err := procComm(pid)
+		if err != nil || comm != "nbdkit" {
+			slog.Debug("nbdkit cleanup: pid is no longer nbdkit, skipping", "pid", pid, "comm", comm, "error", err)
+			removeStalePidFile(path)
+			continue
+		}
+
+		if err := signalProcess(pid, syscall.SIGTERM); err != nil {
+			slog.Warn("nbdkit cleanup: failed to signal backend", "pid", pid, "path", path, "error", err)
+			continue
+		}
+		slog.Info("nbdkit cleanup: terminated backend", "pid", pid, "path", path)
+		removeStalePidFile(path)
+	}
+}
+
+func readPidFileAt(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+func removeStalePidFile(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Debug("nbdkit cleanup: could not remove pid file", "path", path, "error", err)
+	}
 }
 
 // respondShutdownACK marshals and sends a ShutdownACK response.

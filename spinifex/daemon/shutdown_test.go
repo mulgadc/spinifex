@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -312,6 +313,221 @@ func TestHandleShutdownGate(t *testing.T) {
 		assert.Empty(t, ack.Error)
 		assert.Equal(t, []string{"awsgw"}, ack.Stopped, "only the service with a live pid file should appear in stopped")
 		assert.True(t, daemon.shuttingDown.Load())
+	})
+}
+
+// TestShutdownRequestTarget covers the node scoping that keeps one node's
+// local drain off every other node: the phase subjects are fan-out, so a
+// request naming another node must be dropped before any service is stopped.
+func TestShutdownRequestTarget(t *testing.T) {
+	t.Run("request for another node is ignored with no ack", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{"awsgw", "ui", "vpcd"}
+		pidDir := configurePidDir(t, daemon)
+
+		pid := startSleepProcess(t)
+		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+
+		subject := "spinifex.cluster.shutdown.gate.targeted-elsewhere"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "gate", Target: "some-other-node"})
+		require.NoError(t, err)
+
+		_, err = daemon.natsConn.Request(subject, payload, 2*time.Second)
+		require.Error(t, err, "a request for another node must not be answered")
+
+		assert.False(t, daemon.shuttingDown.Load(), "another node's drain must not gate this daemon")
+		_, statErr := os.Stat(filepath.Join(pidDir, "awsgw.pid"))
+		assert.NoError(t, statErr, "another node's drain must not stop this node's services")
+	})
+
+	t.Run("request for this node is honoured", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{}
+		configurePidDir(t, daemon)
+
+		subject := "spinifex.cluster.shutdown.gate.targeted-here"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "gate", Target: daemon.node})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, daemon.node, ack.Node)
+		assert.Empty(t, ack.Error)
+		assert.True(t, daemon.shuttingDown.Load())
+	})
+
+	// Every phase is a fan-out subject, so each handler needs the check —
+	// STORAGE and PERSIST stop another node's storage, and INFRA exits its
+	// daemon outright.
+	t.Run("every phase handler ignores another node's request", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{}
+		configurePidDir(t, daemon)
+
+		for phase, handler := range map[string]nats.MsgHandler{
+			"drain":   daemon.handleShutdownDrain,
+			"storage": daemon.handleShutdownStorage,
+			"persist": daemon.handleShutdownPersist,
+			"infra":   daemon.handleShutdownInfra,
+		} {
+			t.Run(phase, func(t *testing.T) {
+				subject := "spinifex.cluster.shutdown." + phase + ".elsewhere"
+				sub, err := daemon.natsConn.Subscribe(subject, handler)
+				require.NoError(t, err)
+				defer sub.Unsubscribe()
+				require.NoError(t, daemon.natsConn.Flush())
+
+				payload, err := json.Marshal(ShutdownRequest{Phase: phase, Target: "some-other-node"})
+				require.NoError(t, err)
+
+				_, err = daemon.natsConn.Request(subject, payload, 2*time.Second)
+				require.Error(t, err, "%s answered a request addressed to another node", phase)
+			})
+		}
+	})
+
+	t.Run("untargeted request still reaches every node", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{}
+		configurePidDir(t, daemon)
+
+		subject := "spinifex.cluster.shutdown.gate.untargeted"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "gate"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Empty(t, ack.Error)
+		assert.True(t, daemon.shuttingDown.Load(), "a cluster-wide shutdown must still gate this daemon")
+	})
+}
+
+// TestCleanupOrphanNBDKit covers the scoped replacement for the host-wide
+// pattern kill: only PIDs named by this node's own pidfiles are signalled,
+// and only while the kernel still agrees the PID is nbdkit.
+func TestCleanupOrphanNBDKit(t *testing.T) {
+	writePid := func(t *testing.T, dir, name string, contents string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+		return path
+	}
+
+	// stubProcTable replaces the /proc lookup and the kill with in-memory
+	// equivalents, returning the slice that records what was signalled.
+	stubProcTable := func(t *testing.T, comms map[int]string) *[]int {
+		t.Helper()
+		origComm, origSignal := procComm, signalProcess
+		t.Cleanup(func() { procComm, signalProcess = origComm, origSignal })
+
+		var signalled []int
+		procComm = func(pid int) (string, error) {
+			comm, ok := comms[pid]
+			if !ok {
+				return "", os.ErrNotExist
+			}
+			return comm, nil
+		}
+		signalProcess = func(pid int, _ syscall.Signal) error {
+			signalled = append(signalled, pid)
+			return nil
+		}
+		return &signalled
+	}
+
+	t.Run("signals only this node's live nbdkit pids", func(t *testing.T) {
+		dir := t.TempDir()
+		writePid(t, dir, "nbdkit-vol-vol-a.pid", "1001")
+		writePid(t, dir, "nbdkit-vol-vol-b.pid", "1002")
+		writePid(t, dir, "qemu-i-0123.pid", "1003")
+
+		signalled := stubProcTable(t, map[int]string{1001: "nbdkit", 1002: "nbdkit", 1003: "qemu-system-x86_64"})
+
+		cleanupOrphanNBDKit(dir)
+
+		assert.ElementsMatch(t, []int{1001, 1002}, *signalled, "only nbdkit pidfiles should be swept")
+		assert.FileExists(t, filepath.Join(dir, "qemu-i-0123.pid"), "unrelated pid files must be left alone")
+	})
+
+	t.Run("skips a recycled pid that is no longer nbdkit", func(t *testing.T) {
+		dir := t.TempDir()
+		writePid(t, dir, "nbdkit-vol-recycled.pid", "2001")
+
+		signalled := stubProcTable(t, map[int]string{2001: "postgres"})
+
+		cleanupOrphanNBDKit(dir)
+
+		assert.Empty(t, *signalled, "a pid whose comm is not nbdkit must never be signalled")
+	})
+
+	t.Run("removes pid files for dead and unparsable entries", func(t *testing.T) {
+		dir := t.TempDir()
+		dead := writePid(t, dir, "nbdkit-vol-dead.pid", "3001")
+		garbage := writePid(t, dir, "nbdkit-vol-garbage.pid", "not-a-pid")
+
+		signalled := stubProcTable(t, map[int]string{})
+
+		cleanupOrphanNBDKit(dir)
+
+		assert.Empty(t, *signalled)
+		assert.NoFileExists(t, dead)
+		assert.NoFileExists(t, garbage)
+	})
+
+	t.Run("empty runtime dir is a no-op", func(t *testing.T) {
+		signalled := stubProcTable(t, map[int]string{})
+		cleanupOrphanNBDKit("")
+		assert.Empty(t, *signalled)
+	})
+}
+
+// TestProcCommAndSignalProcess exercises the real /proc and kill paths the
+// cleanup stubs out everywhere else, so a change to either is caught here
+// rather than only on a node.
+func TestProcCommAndSignalProcess(t *testing.T) {
+	t.Run("procComm reads this process's own name", func(t *testing.T) {
+		comm, err := procComm(os.Getpid())
+		require.NoError(t, err)
+		assert.NotEmpty(t, comm)
+		assert.NotContains(t, comm, "\n", "comm must be trimmed")
+	})
+
+	t.Run("procComm reports a pid that does not exist", func(t *testing.T) {
+		// Above the default pid_max, so it cannot collide with a live process.
+		_, err := procComm(1 << 30)
+		require.Error(t, err)
+	})
+
+	t.Run("signalProcess reaches a live process", func(t *testing.T) {
+		pid := startSleepProcess(t)
+		// Signal 0 runs every permission check and delivers nothing, which is
+		// the reachability probe without disturbing the process.
+		require.NoError(t, signalProcess(pid, syscall.Signal(0)))
+	})
+
+	t.Run("signalProcess reports a pid that does not exist", func(t *testing.T) {
+		require.Error(t, signalProcess(1<<30, syscall.Signal(0)))
 	})
 }
 

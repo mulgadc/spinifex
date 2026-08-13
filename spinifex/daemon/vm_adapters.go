@@ -620,6 +620,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DetachDelay:                d.detachDelay,
 		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
+		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkViperblockReady() },
 	}
 }
 

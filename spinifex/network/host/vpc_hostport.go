@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
@@ -75,6 +76,9 @@ func installVPCHostPort(ctx context.Context, r Runner, d VPCHostPort) error {
 	if err := d.validate(); err != nil {
 		return err
 	}
+	if err := pruneCollidingVPCHostPorts(ctx, r, d.Name, d.Addr); err != nil {
+		return err
+	}
 	if _, err := r.Run(ctx, "ovs-vsctl", "--may-exist", "add-port", "br-int", d.Name,
 		"--", "set", "Interface", d.Name, "type=internal",
 		"external_ids:iface-id="+d.IfaceID, "external_ids:attached-mac="+d.MAC); err != nil {
@@ -92,6 +96,33 @@ func installVPCHostPort(ctx context.Context, r Runner, d VPCHostPort) error {
 		return fmt.Errorf("bring up VPC host port %s: %w", d.Name, err)
 	}
 	slog.Info("VPC host port ready", "port", d.Name, "iface_id", d.IfaceID, "addr", d.Addr)
+	return nil
+}
+
+// pruneCollidingVPCHostPorts removes any daemon host port other than keep that
+// already carries addr's host IP. A replaced appliance leaves its vhp- port and
+// the connected route behind even after its ENI record is gone, so without this
+// two ports would claim the same address and the kernel could route to the dead
+// one. Only vhp- ports are pruned, never a guest tap sharing the address.
+func pruneCollidingVPCHostPorts(ctx context.Context, r Runner, keep string, addr netip.Prefix) error {
+	out, err := r.Run(ctx, "ip", "-4", "-o", "addr", "show", "to", addr.Addr().String()+"/32")
+	if err != nil {
+		return fmt.Errorf("list interfaces holding %s: %w", addr.Addr(), err)
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := fields[1]
+		if dev == keep || !strings.HasPrefix(dev, vpcHostPortPrefix) {
+			continue
+		}
+		slog.Info("pruning stale VPC host port before install", "stale", dev, "keep", keep, "addr", addr)
+		if err := removeVPCHostPort(ctx, r, dev); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

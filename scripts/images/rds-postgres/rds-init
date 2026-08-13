@@ -85,6 +85,11 @@ MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 # AWS, so a customer's `GRANT rds_superuser TO ...` works here too.
 MASTER_GROUP_ROLE="rds_superuser"
 
+# The Ochre vector store appliance is the one platform (non-tenant) consumer of
+# this image, provisioned with this fixed master name. Tenant instances take a
+# different master, so the pgvector install below is scoped to the appliance.
+OCHRE_APPLIANCE_MASTER="ochre_vector_admin"
+
 # NAMEDATALEN-1: the server truncates a longer identifier, so the database
 # created would not be the one the customer asked for.
 MAX_DB_NAME_LEN=63
@@ -151,6 +156,11 @@ load_handoff() {
             fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
             ;;
     esac
+
+    # Scopes the platform pgvector install to the appliance; a tenant master
+    # takes a different name and skips it.
+    RDS_IS_OCHRE_APPLIANCE=0
+    [ "${_master_lower}" = "${OCHRE_APPLIANCE_MASTER}" ] && RDS_IS_OCHRE_APPLIANCE=1
 
     # The same rule the control plane applies, for the same reason the reserved
     # name is re-checked: an unusable name reaches initdb, fails at CREATE
@@ -496,6 +506,9 @@ bootstrap_master() {
     if [ "${_rc}" -eq 0 ] && [ -n "${RDS_DB_NAME}" ]; then
         create_database || _rc=$?
     fi
+    if [ "${_rc}" -eq 0 ]; then
+        create_platform_extensions || _rc=$?
+    fi
 
     # `set -e` is suspended for a function called from an AND-OR list, so the
     # stop status is captured rather than propagated. A failed stop must also not
@@ -628,6 +641,23 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dbname') AS creat
 \if :create_db
 CREATE DATABASE :"dbname" OWNER :"master";
 \endif
+SQL
+}
+
+# pgvector is baked in but left uninstalled so tenant databases stay free of it.
+# The appliance master is NOSUPERUSER, so the bootstrap superuser installs the
+# extension into a read-only extensions schema and grants the master the database
+# and role privileges its daemon needs to create a per-account schema and role.
+# Scoped to the appliance master alone; tenant masters skip this entirely.
+create_platform_extensions() {
+    [ "${RDS_IS_OCHRE_APPLIANCE:-0}" = "1" ] || return 0
+    log "configuring pgvector and platform privileges for the Ochre vector appliance"
+    psql_bootstrap <<SQL
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
+GRANT USAGE ON SCHEMA extensions TO PUBLIC;
+GRANT CREATE ON DATABASE postgres TO "${OCHRE_APPLIANCE_MASTER}";
+ALTER ROLE "${OCHRE_APPLIANCE_MASTER}" SET createrole_self_grant = 'set, inherit';
 SQL
 }
 

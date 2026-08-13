@@ -101,6 +101,24 @@ func classifyTestManager(t *testing.T) (*Manager, *fakeStateStore, *fakeResource
 	return m, store, rc
 }
 
+// backingStoreReady gates the restore-path kill: an unreachable NBD socket is
+// only reaped as an orphan when the store is confirmed up. A nil probe keeps
+// today's behaviour so existing classifier tests and storage-unwired nodes are
+// unaffected.
+func TestManager_backingStoreReady(t *testing.T) {
+	m := NewManager()
+	assert.True(t, m.backingStoreReady(),
+		"a nil probe must default to ready so a missing wiring never blocks recovery")
+
+	m.SetDeps(Deps{BackingStoreReady: func() bool { return false }})
+	assert.False(t, m.backingStoreReady(),
+		"a store reporting not-ready must gate the kill so a transient gap cannot force-kill a live VM")
+
+	m.SetDeps(Deps{BackingStoreReady: func() bool { return true }})
+	assert.True(t, m.backingStoreReady(),
+		"a ready store must let genuine orphan reaping proceed")
+}
+
 func TestClassifyRestoredInstances_TerminatedMigrates(t *testing.T) {
 	m, store, _ := classifyTestManager(t)
 	v := &VM{ID: "i-term", Status: StateTerminated, InstanceType: "t3.micro"}

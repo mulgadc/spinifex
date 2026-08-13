@@ -313,6 +313,15 @@ if run_ok "initialize"; then
         && pass "initialize: password passed through the environment" || fail "initialize: password not in psql env"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && pass "initialize: initial database created" || fail "initialize: no CREATE DATABASE"
+    grep -q 'CREATE EXTENSION' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant instance installed a platform extension" \
+        || pass "initialize: tenant instance installs no platform extension"
+    grep -q 'GRANT CREATE ON DATABASE' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant instance was granted database CREATE" \
+        || pass "initialize: tenant instance gets no platform database grant"
+    grep -q 'createrole_self_grant' "${PSQL_CALLS}" \
+        && fail "initialize: a tenant master got createrole_self_grant" \
+        || pass "initialize: tenant master gets no createrole_self_grant"
 
     # The master role is administrative but not a PostgreSQL superuser: a
     # superuser reaches outside the database (COPY FROM PROGRAM, pg_read_file,
@@ -368,6 +377,29 @@ if run_ok "attach"; then
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "attach: TLS survives a handoff without a new cert" || fail "attach: TLS turned off"
 fi
+
+# --- Case 3b: the Ochre appliance master installs pgvector ---
+# No DBName, as the appliance is launched: create_database is skipped and the
+# gated extension install is the only platform-specific bootstrap step.
+reset_state
+MASTER_USER=ochre_vector_admin
+write_handoff initialize 's3cr3t' ''
+write_parameters
+if run_ok "ochre-appliance"; then
+    grep -q 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: pgvector installed into the extensions schema" \
+        || fail "ochre-appliance: pgvector not installed into the extensions schema"
+    grep -q 'GRANT USAGE ON SCHEMA extensions TO PUBLIC' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: extensions schema readable by account roles" \
+        || fail "ochre-appliance: extensions schema not granted to PUBLIC"
+    grep -q 'GRANT CREATE ON DATABASE postgres TO "ochre_vector_admin"' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: master granted CREATE on the database" \
+        || fail "ochre-appliance: master not granted CREATE on the database"
+    grep -q 'createrole_self_grant' "${PSQL_CALLS}" \
+        && pass "ochre-appliance: master can set into the roles it creates" \
+        || fail "ochre-appliance: master missing createrole_self_grant"
+fi
+unset MASTER_USER
 
 # --- Case 3a: a parameter group cannot log the master password ---
 # The customer's parameters are installed before the master role is applied and

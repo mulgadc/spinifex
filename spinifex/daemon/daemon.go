@@ -58,6 +58,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -160,6 +161,8 @@ type Daemon struct {
 	bedrockReaper         *handlers_bedrock.Reaper
 	acmService            *handlers_acm.ACMServiceImpl
 	acmRenewalWorker      *handlers_acm.Worker
+	ochreVectorService    handlers_ochrevector.VectorService
+	ochreAppliance        *handlers_ochrevector.Appliance
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
@@ -1128,6 +1131,12 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Ochre vector store tenant surface is deliberately NOT registered here:
+	// its subjects only exist once the platform appliance has finished
+	// launching (startOchreVector, run in the background after this method
+	// returns), and registering them requires this same table-driven
+	// mechanism after the fact — see registerNatsSubs.
+
 	// ECR gateway → daemon subscriptions. The daemon owns the per-account
 	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
 	if d.ecrMetaService != nil {
@@ -1173,6 +1182,17 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
 	)
 
+	return d.registerNatsSubs(subs)
+}
+
+// registerNatsSubs turns each entry in subs into a live NATS subscription and
+// records it in d.natsSubscriptions. Shared by subscribeAll's boot-time table
+// and any subject registered later, off the main boot goroutine (e.g. Ochre's
+// VectorService, whose subjects only exist once its platform appliance has
+// finished launching) — the map write is mutex-guarded because that later
+// registration can race the shutdown path's unsubscribe-all sweep, unlike
+// subscribeAll's own single-goroutine, boot-time-only writes.
+func (d *Daemon) registerNatsSubs(subs []natsSub) error {
 	for _, s := range subs {
 		var sub *nats.Subscription
 		var err error
@@ -1185,7 +1205,9 @@ func (d *Daemon) subscribeAll() error {
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to %s: %w", s.topic, err)
 		}
+		d.mu.Lock()
 		d.natsSubscriptions[s.topic] = sub
+		d.mu.Unlock()
 		slog.Info("Subscribed to NATS topic", "topic", s.topic, "queue", s.queueGroup)
 	}
 	return nil
@@ -1865,13 +1887,51 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
 
+	// Ochre vector store platform appliance + VectorService, backgrounded:
+	// launching the appliance can block on a cold RDS VM boot for minutes, and
+	// its own launch request needs the rds.* responders subscribeAll just
+	// registered above, so it cannot run any earlier. Gated on
+	// config.OchreVector.Enabled (default off); any failure along the way is
+	// logged and leaves the feature's subjects unregistered rather than
+	// failing startCluster or blocking daemon boot. Tracked on shutdownWg so
+	// shutdown waits for it to observe d.ctx cancellation and unwind instead
+	// of leaking; d.ctx is what bounds every NATS call it makes.
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Ochre vector store startup goroutine panicked", "recover", r)
+			}
+		}()
+		d.startOchreVector()
+	})
+
+	// Remove this node's appliance-VPC host port on shutdown. Same config gate
+	// as startOchreVector, so a disabled daemon spawns nothing. d.ochreAppliance
+	// stays nil until the retry loop succeeds, so early shutdown tears down nothing.
+	if d.config.OchreVector.Enabled {
+		d.shutdownWg.Go(func() {
+			<-d.ctx.Done()
+			d.mu.Lock()
+			appliance := d.ochreAppliance
+			d.mu.Unlock()
+			if appliance == nil {
+				return
+			}
+			if err := appliance.TeardownHostPort(); err != nil {
+				slog.Warn("Ochre vector store: daemon host port teardown failed", "err", err)
+			}
+		})
+	}
+
 	// DNS record writer: a queue-group consumer of dns.recordset.change. Every
 	// node subscribes, so the writer locks each zone before its
 	// read-modify-write. No-op when northstar S3 is not configured.
 	if sub, err := d.dnsWriter.Subscribe(d.natsConn); err != nil {
 		return fmt.Errorf("failed to subscribe DNS record writer: %w", err)
 	} else if sub != nil {
+		d.mu.Lock()
 		d.natsSubscriptions[handlers_dns.SubjectRecordsetChange] = sub
+		d.mu.Unlock()
 		slog.Info("Subscribed DNS record writer", "subject", handlers_dns.SubjectRecordsetChange, "queue", handlers_dns.QueueGroup)
 	}
 
@@ -2557,7 +2617,15 @@ func (d *Daemon) setupShutdown() {
 			d.eksService.Shutdown()
 		}
 
-		for _, sub := range d.natsSubscriptions {
+		// Snapshotted under d.mu rather than ranged over live: a background
+		// registration (e.g. Ochre's VectorService, registered off the boot
+		// goroutine once its appliance finishes launching) can still be
+		// writing to this map concurrently with shutdown.
+		d.mu.Lock()
+		subsSnapshot := make(map[string]*nats.Subscription, len(d.natsSubscriptions))
+		maps.Copy(subsSnapshot, d.natsSubscriptions)
+		d.mu.Unlock()
+		for _, sub := range subsSnapshot {
 			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
 			if err := sub.Unsubscribe(); err != nil {
 				if errors.Is(err, nats.ErrBadSubscription) {

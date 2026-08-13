@@ -446,10 +446,20 @@ done
 log "building the OVN database ($([ "$DB_NODES" -eq 3 ] && echo "RAFT across 3" || echo standalone))"
 
 if [ "$DB_NODES" -eq 3 ]; then
+    # Computed before the database nodes are built, not after, because they need
+    # it too. setup-ovn.sh writes ovn-northd's NB/SB connections from this list
+    # and skips doing so when it is the localhost default, which is what a
+    # database node gets when --ovn-remote is left off. A northd that dials only
+    # its local member stops advancing nb_cfg the moment raft leadership moves
+    # elsewhere, and every `ovn-nbctl --wait=hv` then runs to its timeout — which
+    # takes out the vpc.add-nat flows barrier and fails instance launches.
+    OVN_REMOTE="tcp:${LAN_IPS[0]}:6642,tcp:${LAN_IPS[1]}:6642,tcp:${LAN_IPS[2]}:6642"
+
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
         --db-cluster-local-addr=${LAN_IPS[0]} \
         --lan-addr=${LAN_IPS[0]} \
+        --ovn-remote=$OVN_REMOTE \
         --recreate-db \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: could not create the OVN database cluster"
     log "  ${HOSTS[0]} created the database cluster"
@@ -460,12 +470,11 @@ if [ "$DB_NODES" -eq 3 ]; then
             --db-cluster-local-addr=${LAN_IPS[$i]} \
             --db-cluster-remote-addr=${LAN_IPS[0]} \
             --lan-addr=${LAN_IPS[$i]} \
+            --ovn-remote=$OVN_REMOTE \
             --recreate-db \
             --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: could not join the OVN database cluster"
         log "  ${HOSTS[$i]} joined the database cluster"
     done
-
-    OVN_REMOTE="tcp:${LAN_IPS[0]}:6642,tcp:${LAN_IPS[1]}:6642,tcp:${LAN_IPS[2]}:6642"
 else
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \

@@ -340,25 +340,6 @@ SELECT pg_backup_start(:'label', fast => true);
 	return nil
 }
 
-// Ends the backup cleanly. A missing hold is an error rather than a silent
-// success: it means the deadline fired first, so the snapshot the control plane
-// just took was not taken against a held checkpoint.
 func (e *postgresEngine) Unquiesce(ctx context.Context) error {
-	held := e.takeHold()
-	if held == nil {
-		return errors.New("the engine is not quiesced; the backup hold had already expired")
-	}
-
-	// The stop has to run on the session that started the backup, and the session
-	// is closed either way — the engine aborts an unstopped backup with it.
-	execErr := held.session.Exec(ctx, "SELECT pg_backup_stop();\n")
-	closeErr := held.session.Close()
-	if execErr != nil {
-		return fmt.Errorf("take the engine out of backup mode: %w", errors.Join(execErr, closeErr))
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close the backup session: %w", closeErr)
-	}
-	slog.Info("rds-agent: engine released from backup mode", "label", held.label)
-	return nil
+	return e.releaseHold(ctx, "SELECT pg_backup_stop();\n")
 }

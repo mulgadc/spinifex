@@ -92,6 +92,29 @@ func (q *quiesceState) takeHold() *quiesceHold {
 	return held
 }
 
+// Ends the backup cleanly, running releaseSQL on the session that took the hold.
+// A missing hold is an error rather than a silent success: it means the deadline
+// fired first, so what the control plane just snapshotted was not held.
+func (q *quiesceState) releaseHold(ctx context.Context, releaseSQL string) error {
+	held := q.takeHold()
+	if held == nil {
+		return errors.New("the engine is not quiesced; the backup hold had already expired")
+	}
+
+	// The release has to run on the session that took the hold, and the session is
+	// closed either way — both engines end an unreleased backup with it.
+	execErr := held.session.Exec(ctx, releaseSQL)
+	closeErr := held.session.Close()
+	if execErr != nil {
+		return fmt.Errorf("take the engine out of backup mode: %w", errors.Join(execErr, closeErr))
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close the backup session: %w", closeErr)
+	}
+	slog.Info("rds-agent: engine released from backup mode", "label", held.label)
+	return nil
+}
+
 // The deadline. Ending the session is enough — both engines release the hold
 // with it — so this never has to reach the engine itself.
 func (q *quiesceState) expire(label string) {

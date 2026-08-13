@@ -728,27 +728,8 @@ func (e *mariadbEngine) Quiesce(ctx context.Context, label string, hold time.Dur
 	return nil
 }
 
-// Ends the backup cleanly. A missing hold is an error rather than a silent
-// success: it means the deadline fired first, so the snapshot the control plane
-// just took was not taken against a held stage.
 func (e *mariadbEngine) Unquiesce(ctx context.Context) error {
-	held := e.takeHold()
-	if held == nil {
-		return errors.New("the engine is not quiesced; the backup hold had already expired")
-	}
-
-	// The release has to run on the session that took the stages, and the session
-	// is closed either way — the engine ends an unreleased backup with it.
-	execErr := held.session.Exec(ctx, "BACKUP STAGE END;\n")
-	closeErr := held.session.Close()
-	if execErr != nil {
-		return fmt.Errorf("take the engine out of backup mode: %w", errors.Join(execErr, closeErr))
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close the backup session: %w", closeErr)
-	}
-	slog.Info("rds-agent: engine released from backup mode", "label", held.label)
-	return nil
+	return e.releaseHold(ctx, "BACKUP STAGE END;\n")
 }
 
 // Feeds sql on stdin rather than as an argument, so a statement is never visible

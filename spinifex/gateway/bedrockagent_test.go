@@ -41,6 +41,10 @@ type fakeBedrockAgentVectorService struct {
 
 	listJobsResp handlers_ochrevector.ListJobsResponse
 	listJobsErr  error
+
+	queryReq  *handlers_ochrevector.QueryRequest
+	queryResp handlers_ochrevector.QueryResponse
+	queryErr  error
 }
 
 func (f *fakeBedrockAgentVectorService) CreateIndex(_ context.Context, req *handlers_ochrevector.CreateIndexRequest, _ string) (*handlers_ochrevector.CreateIndexResponse, error) {
@@ -91,8 +95,13 @@ func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, _ *handlers_
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) Query(_ context.Context, _ *handlers_ochrevector.QueryRequest, _ string) (*handlers_ochrevector.QueryResponse, error) {
-	return &handlers_ochrevector.QueryResponse{}, nil
+func (f *fakeBedrockAgentVectorService) Query(_ context.Context, req *handlers_ochrevector.QueryRequest, _ string) (*handlers_ochrevector.QueryResponse, error) {
+	f.queryReq = req
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	resp := f.queryResp
+	return &resp, nil
 }
 
 var _ handlers_ochrevector.VectorService = (*fakeBedrockAgentVectorService)(nil)

@@ -653,6 +653,13 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"bedrock-agent": {
 		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockAgentResourceNotFoundMessage},
 	},
+	// bedrock-agent-runtime addresses the same knowledge-base resources as
+	// bedrock-agent (Retrieve/RetrieveAndGenerate resolve a knowledgeBaseId),
+	// so it shares bedrock-agent's wording rather than either the EKS default
+	// or bedrockResourceNotFoundMessage.
+	"bedrock-agent-runtime": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockAgentResourceNotFoundMessage},
+	},
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},

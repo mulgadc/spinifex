@@ -179,20 +179,21 @@ type GatewayConfig struct {
 }
 
 var supportedServices = map[string]bool{
-	"ec2":                  true,
-	"iam":                  true,
-	"sts":                  true,
-	"elasticloadbalancing": true,
-	"eks":                  true,
-	"ecs":                  true,
-	"ecr":                  true,
-	"acm":                  true,
-	"rds":                  true,
-	"tagging":              true,
-	"spinifex":             true,
-	"bedrock":              true,
-	"bedrock-runtime":      true,
-	"bedrock-agent":        true,
+	"ec2":                   true,
+	"iam":                   true,
+	"sts":                   true,
+	"elasticloadbalancing":  true,
+	"eks":                   true,
+	"ecs":                   true,
+	"ecr":                   true,
+	"acm":                   true,
+	"rds":                   true,
+	"tagging":               true,
+	"spinifex":              true,
+	"bedrock":               true,
+	"bedrock-runtime":       true,
+	"bedrock-agent":         true,
+	"bedrock-agent-runtime": true,
 }
 
 // EC2ErrorResponse is the EC2 query-API error envelope.
@@ -419,6 +420,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.BedrockRuntime_Request(w, r)
 	case "bedrock-agent":
 		err = gw.BedrockAgent_Request(w, r)
+	case "bedrock-agent-runtime":
+		err = gw.BedrockAgentRuntime_Request(w, r)
 	case "ecs":
 		err = gw.ECS_Request(w, r)
 	case "ecr":
@@ -448,14 +451,25 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if !ok {
 		return "", errors.New(awserrors.ErrorAuthFailure)
 	}
-	// bedrock and bedrock-runtime share the SigV4 signing name "bedrock", so the
-	// credential scope alone cannot tell the control plane from the data plane —
+	// The whole Bedrock family (bedrock, bedrock-runtime, bedrock-agent,
+	// bedrock-agent-runtime) shares the SigV4 signing name "bedrock" -- real
 	// AWS separates them by endpoint hostname, but the gateway serves one
-	// endpoint. The request path is the discriminator: /model/... and singular
-	// /guardrail/... are exclusive to the data plane; control-plane guardrail
-	// CRUD uses the plural /guardrails, so the prefixes never collide.
-	if svc == "bedrock" && (strings.HasPrefix(r.URL.Path, "/model/") || strings.HasPrefix(r.URL.Path, "/guardrail/")) {
-		svc = "bedrock-runtime"
+	// endpoint, so the request path is the only discriminator available here.
+	// /model/... and singular /guardrail/... are exclusive to bedrock-runtime;
+	// control-plane guardrail CRUD uses the plural /guardrails, so the
+	// prefixes never collide. Retrieve's /knowledgebases/{id}/retrieve and
+	// RetrieveAndGenerate's /retrieveAndGenerate are checked ahead of the
+	// bedrock-agent /knowledgebases/... prefix, since Retrieve's own path is
+	// itself a /knowledgebases/... path.
+	if svc == "bedrock" {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/model/") || strings.HasPrefix(r.URL.Path, "/guardrail/"):
+			svc = "bedrock-runtime"
+		case r.URL.Path == "/retrieveAndGenerate" || (strings.HasPrefix(r.URL.Path, "/knowledgebases/") && strings.HasSuffix(r.URL.Path, "/retrieve")):
+			svc = "bedrock-agent-runtime"
+		case strings.HasPrefix(r.URL.Path, "/knowledgebases/"):
+			svc = "bedrock-agent"
+		}
 	}
 	if !supportedServices[svc] {
 		slog.Debug("Unsupported service", "service", svc)
@@ -633,9 +647,10 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime/bedrock-agent use
-	// AWS JSON 1.1; query/XML services fall through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" || svc == "bedrock-agent" {
+	// EKS, ECR, ACM, ECS, tagging, and the bedrock/bedrock-runtime/bedrock-agent/
+	// bedrock-agent-runtime family use AWS JSON 1.1; query/XML services fall
+	// through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" || svc == "bedrock-agent" || svc == "bedrock-agent-runtime" {
 		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

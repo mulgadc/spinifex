@@ -175,6 +175,12 @@ This is easy to miss, because the request handlers are NATS queue-group workers 
 Check for it with:
 
 ```bash
+sudo spx admin preflight
+```
+
+Any unit reported `Stale` with kind `service` is running a replaced binary. The check covers every `.service` unit this build ships, and exits non-zero when it finds one, so it also works as a gate in a script. To see the raw state instead:
+
+```bash
 for u in spinifex-daemon spinifex-awsgw spinifex-viperblock spinifex-vpcd spinifex-ui spinifex-predastore; do
   pid=$(systemctl show -p MainPID --value "$u")
   [ "$pid" != "0" ] && printf '%-22s %s\n' "$u" "$(sudo readlink /proc/$pid/exe)"

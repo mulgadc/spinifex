@@ -5,6 +5,7 @@ package multinode
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,6 +35,19 @@ func runListenerInvariant(t *testing.T, fix *Fixture) {
 		t.Fatalf("parse inbound listener inventory: %v", err)
 	}
 
+	// SPINIFEX_WAN_IP is read directly (not via harness.Env.WANHost, which
+	// falls back to the first NodeIPs entry — i.e. some node's own peer
+	// address — when unset) so a WAN address is only ever trusted here when
+	// it was positively supplied, never inferred.
+	wanAddr := strings.TrimSpace(os.Getenv("SPINIFEX_WAN_IP"))
+	if wanAddr == "" {
+		harness.Detail(t, "wan_bind_check",
+			"skipped for every node: SPINIFEX_WAN_IP is unset, so no address can be "+
+				"distinguished from each node's cluster peer address")
+	} else {
+		harness.Detail(t, "wan_addr", wanAddr)
+	}
+
 	ssh := harness.NewPeerSSH()
 	var violations []string
 	for _, node := range fix.Cluster.Nodes {
@@ -45,12 +59,18 @@ func runListenerInvariant(t *testing.T, fix *Fixture) {
 			t.Fatalf("ss -tulnp on %s: %v", node.Name, runErr)
 		}
 
+		if wanAddr != "" && wanAddr == node.Addr {
+			harness.Detail(t, "wan_bind_check", fmt.Sprintf(
+				"skipped on %s: SPINIFEX_WAN_IP equals this node's peer address, so it is "+
+					"single-homed for the purpose of this check", node.Name))
+		}
+
 		for _, sock := range parseSSOutput(string(out)) {
 			for _, r := range table.RowsForPort(sock.port) {
 				if r.Scope != listenerinventory.ScopeCluster && r.Scope != listenerinventory.ScopeEncap {
 					continue
 				}
-				if v := checkSocketScope(node, sock, r); v != "" {
+				if v := checkSocketScope(node, sock, r, wanAddr); v != "" {
 					violations = append(violations, v)
 				}
 			}
@@ -67,8 +87,13 @@ func runListenerInvariant(t *testing.T, fix *Fixture) {
 
 // checkSocketScope reports a violation message if sock is bound somewhere
 // row's Scope does not permit, honoring row's own doc-declared wildcard
-// exception. Returns "" if the socket is clean for this row.
-func checkSocketScope(node harness.Node, sock ssSocket, row listenerinventory.Row) string {
+// exception. node.Addr is the cluster peer address (SSH target, not
+// necessarily WAN-facing — a single-homed node has no other address).
+// wanAddr is a positively-known WAN address, or "" when none is available;
+// it is only meaningful when distinct from node.Addr, since on a
+// single-homed node they are the same address by definition. Returns "" if
+// the socket is clean for this row.
+func checkSocketScope(node harness.Node, sock ssSocket, row listenerinventory.Row, wanAddr string) string {
 	wildcard := listenerinventory.IsWildcardAddr(sock.addr)
 	switch {
 	case wildcard && row.WildcardOK():
@@ -77,10 +102,10 @@ func checkSocketScope(node harness.Node, sock ssSocket, row listenerinventory.Ro
 		return fmt.Sprintf(
 			"%s: port %d (%s, %s scope) bound to the wildcard address %s; its inventory row does not declare a wildcard exception",
 			node.Name, sock.port, sock.proto, row.Scope, sock.addr)
-	case sock.addr == node.Addr:
+	case wanAddr != "" && wanAddr != node.Addr && sock.addr == wanAddr:
 		return fmt.Sprintf(
-			"%s: port %d (%s, %s scope) bound to %s, the node's WAN address",
-			node.Name, sock.port, sock.proto, row.Scope, sock.addr)
+			"%s: port %d (%s, %s scope) bound to %s, a WAN address distinct from the node's peer address %s",
+			node.Name, sock.port, sock.proto, row.Scope, sock.addr, node.Addr)
 	}
 	return ""
 }

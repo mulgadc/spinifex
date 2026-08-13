@@ -143,6 +143,12 @@ type Appliance struct {
 	// directly) skips the metadata purge, unchanged from before it existed.
 	registry *Registry
 	jobs     *JobStore
+
+	// kb and ds are optional Teardown collaborators (WithKBStores) for the
+	// gateway-owned bedrock-agent knowledge-base/data-source records: a nil
+	// pair skips their purge, mirroring registry/jobs above.
+	kb *KBStore
+	ds *DataSourceStore
 }
 
 // NewAppliance constructs an Appliance over js, encrypting/decrypting the
@@ -183,6 +189,19 @@ func (a *Appliance) WithStores(registry *Registry, jobs *JobStore) *Appliance {
 	return a
 }
 
+// WithKBStores attaches the gateway-owned knowledge-base and data-source KV
+// stores Teardown purges alongside the index registry/job store above, so a
+// rebuilt appliance never leaves a KB/DataSource record pointing at an index
+// that no longer exists. Optional, mirroring WithStores: an Appliance that
+// never calls this skips the purge (back-compat default).
+func (a *Appliance) WithKBStores(kb *KBStore, ds *DataSourceStore) *Appliance {
+	a.mu.Lock()
+	a.kb = kb
+	a.ds = ds
+	a.mu.Unlock()
+	return a
+}
+
 // TeardownHostPort removes this daemon's own VPC host port, if Connect ever
 // installed one. Not per-endpoint -- the port belongs to this node, not to
 // any one Connect call -- so this is meant for daemon shutdown, not for
@@ -196,8 +215,9 @@ func (a *Appliance) TeardownHostPort() error {
 }
 
 // Teardown removes the singleton platform appliance -- RDS instance, host
-// port, then (if WithStores was called) index/job metadata, then the KV
-// record -- so a rebuilt appliance starts coherent. Every step runs
+// port, then (if WithStores/WithKBStores were called) index/job and
+// KB/DataSource metadata, then the KV record -- so a rebuilt appliance starts
+// coherent. Every step runs
 // regardless of an earlier one's failure, and every failure is joined into
 // the returned error. Idempotent overall: tearing down an already-absent
 // appliance is a no-op success. Does not re-provision -- the daemon's own
@@ -215,7 +235,7 @@ func (a *Appliance) Teardown(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
-	registry, jobs := a.registry, a.jobs
+	registry, jobs, kb, ds := a.registry, a.jobs, a.kb, a.ds
 	a.mu.Unlock()
 	// Purged after the data-bearing RDS instance is gone but before the
 	// appliance record: a crash here still leaves a record an operator can
@@ -228,6 +248,19 @@ func (a *Appliance) Teardown(ctx context.Context) error {
 	if jobs != nil {
 		if err := jobs.PurgeAll(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("ochrevector: purge ingestion jobs: %w", err))
+		}
+	}
+	// kb/ds are gateway-owned metadata, not daemon-owned like registry/jobs
+	// above, but they still point at this appliance's index/backend, so a
+	// torn-down appliance must not leave them dangling either.
+	if kb != nil {
+		if err := kb.PurgeAll(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("ochrevector: purge knowledge bases: %w", err))
+		}
+	}
+	if ds != nil {
+		if err := ds.PurgeAll(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("ochrevector: purge data sources: %w", err))
 		}
 	}
 

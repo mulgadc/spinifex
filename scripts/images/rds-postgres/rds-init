@@ -52,6 +52,12 @@ ENGINE="postgres"
 DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/postgresql}"
 PGDATA="${RDS_PGDATA:-${DATA_MOUNT}/${PG_VERSION}/data}"
 
+# The TLS enforcement rule, included by the generated pg_hba when present. A
+# relative include resolves against the directory holding the referencing file,
+# so it sits inside PGDATA and rides the data volume through a VM replacement.
+HBA_DIR="${PGDATA}/hba.d"
+HBA_FORCE_SSL_INCLUDE="hba.d/20-rds-force-ssl.conf"
+
 # Written between initdb and a working master role. It lives on the data volume
 # because no trap survives a crash or a hard kill, and it is what stops the next
 # boot attaching to a datadir whose master role was never created.
@@ -240,8 +246,9 @@ require_engine_stamp() {
     write_engine_stamp
 }
 
-# Runs initdb into an empty datadir and lays down the cluster config written
-# once: the include_dir hook and pg_hba.
+# Runs initdb into an empty datadir. The cluster config — the include_dir hook,
+# pg_hba and the parameters — is laid down by install_runtime_config, which both
+# the initialise and the attach path run.
 initialise_cluster() {
     # An empty datadir in `attach` mode means the data volume did not come back.
     # Creating a cluster there would report success and hand the customer an
@@ -298,15 +305,6 @@ initialise_cluster() {
         > "${BOOTSTRAP_SENTINEL}"
     chown "${PG_USER}:${PG_USER}" "${BOOTSTRAP_SENTINEL}"
     chmod 0600 "${BOOTSTRAP_SENTINEL}"
-
-    cat >> "${PGDATA}/pg_hba.conf" <<'EOF'
-
-# Managed by rds-init. Clients reach the instance over its customer ENI, gated
-# by the DB security group as on AWS RDS, and authenticate with scram-sha-256.
-# TLS is offered, not enforced — clients opt in with sslmode=require and up.
-host all all 0.0.0.0/0 scram-sha-256
-host all all ::/0     scram-sha-256
-EOF
 }
 
 # Parameters live beside the data rather than in /etc, since a class change boots
@@ -345,6 +343,38 @@ install_tls() {
     SSL_MODE="off"
 }
 
+# The whole file, regenerated every boot rather than appended to initdb's.
+# pg_hba is first-match-wins, so initdb's loopback lines sort above anything
+# appended and no rule appended at the end could ever govern a local client.
+write_pg_hba() {
+    _hba="${PGDATA}/pg_hba.conf"
+    _tmp="${PGDATA}/.pg_hba.conf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by rds-init — regenerated on every boot. Edits here are lost.
+#
+# Clients reach the instance over its customer ENI, gated by the DB security
+# group as on AWS RDS, and authenticate with scram-sha-256. The catch-alls cover
+# loopback too, so initdb's own 127.0.0.1 and ::1 lines are not carried over.
+# The local socket is how rds-init and rds-agent run privileged SQL.
+local all all peer
+include_if_exists '${HBA_FORCE_SSL_INCLUDE}'
+host all all 0.0.0.0/0 scram-sha-256
+host all all ::/0     scram-sha-256
+EOF
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+
+    # mv onto a directory of that name would move the temp file inside it and
+    # report success, leaving initdb's rules in force with nothing to say so.
+    if [ -d "${_hba}" ]; then
+        fail "${_hba} is a directory rather than PostgreSQL's client authentication file; refusing to start the engine on rules rds-init does not control"
+    fi
+    # Renamed rather than written in place: a torn pg_hba locks every client and
+    # rds-agent out of the instance at once.
+    mv -f "${_tmp}" "${_hba}" ||
+        fail "the client authentication file ${_hba} could not be installed"
+}
+
 # The 90- prefix sorts last within include_dir and the last setting wins, so a
 # resolved parameter can never move the endpoint's port or turn off TLS.
 write_rds_conf() {
@@ -369,10 +399,11 @@ EOF
     mv -f "${_tmp}" "${PGDATA}/conf.d/90-rds-init.conf"
 }
 
-# Everything refreshed on every boot: the include hook, the resolved parameters,
-# the serving cert and the platform's own connectivity settings.
+# Everything refreshed on every boot: the include hook, the client
+# authentication rules, the resolved parameters, the serving cert and the
+# platform's own connectivity settings.
 install_runtime_config() {
-    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${PGDATA}/conf.d"
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${PGDATA}/conf.d" "${HBA_DIR}"
     install -d -m 1775 -o "${PG_USER}" -g "${PG_USER}" "${SOCKET_DIR}"
     install -d -m 0755 -o "${PG_USER}" -g "${PG_USER}" "${LOG_DIR}"
 
@@ -383,6 +414,7 @@ install_runtime_config() {
             >> "${PGDATA}/postgresql.conf"
     fi
 
+    write_pg_hba
     install_parameters
     install_tls
     write_rds_conf "${SSL_MODE}"

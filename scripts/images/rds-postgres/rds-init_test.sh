@@ -1,7 +1,9 @@
 #!/bin/sh
 # Self-contained POSIX test for rds-init: the initialize path (initdb, master
 # password, initial database), the idempotent attach path, the data-volume
-# guard, TLS install and the parameter include. No PostgreSQL, no root: initdb,
+# guard, TLS install, the generated pg_hba and the parameter include.
+#
+# No PostgreSQL, no root: initdb,
 # pg_ctl and psql are stubbed on PATH alongside install/chown/su (the script
 # drops privileges and sets file ownership), and every path it touches is
 # redirected into a temp dir via its env knobs.
@@ -90,7 +92,16 @@ echo "# stock postgresql.conf" > "${pgdata}/postgresql.conf"
 if [ "${PG_HBA_AS_DIR:-0}" = "1" ]; then
     mkdir "${pgdata}/pg_hba.conf"
 else
-    echo "local all all peer" > "${pgdata}/pg_hba.conf"
+    # What a real initdb --auth-local=peer --auth-host=scram-sha-256 leaves: the
+    # loopback TCP and replication rules rds-init takes over rather than keeps.
+    cat > "${pgdata}/pg_hba.conf" <<'HBA'
+local all all peer
+host all all 127.0.0.1/32 scram-sha-256
+host all all ::1/128 scram-sha-256
+local replication all peer
+host replication all 127.0.0.1/32 scram-sha-256
+host replication all ::1/128 scram-sha-256
+HBA
 fi
 exit 0
 EOF
@@ -298,7 +309,29 @@ if run_ok "initialize"; then
     grep -q -- '--data-checksums' "${INITDB_CALLS}" \
         && pass "initialize: data checksums on" || fail "initialize: no --data-checksums"
     grep -q 'host all all 0.0.0.0/0 scram-sha-256' "${PGDATA}/pg_hba.conf" \
-        && pass "initialize: remote scram hba rule appended" || fail "initialize: no hba rule"
+        && pass "initialize: remote scram hba rule written" || fail "initialize: no hba rule"
+
+    # pg_hba is first-match-wins, so initdb's loopback rules sorting above the
+    # catch-all would shadow anything the platform appends below them. rds-init
+    # owns the whole file; the catch-alls cover loopback themselves.
+    grep -qE '127\.0\.0\.1/32|::1/128' "${PGDATA}/pg_hba.conf" \
+        && fail "initialize: initdb's loopback TCP rules survived above the catch-all" \
+        || pass "initialize: initdb's loopback TCP rules are gone"
+    grep -q 'replication' "${PGDATA}/pg_hba.conf" \
+        && fail "initialize: initdb's replication rules survived" \
+        || pass "initialize: initdb's replication rules are gone"
+    grep -q '^local all all peer$' "${PGDATA}/pg_hba.conf" \
+        && pass "initialize: the local socket keeps peer auth" \
+        || fail "initialize: the local peer rule rds-agent runs SQL over is gone"
+    grep -q "^include_if_exists 'hba.d/20-rds-force-ssl.conf'$" "${PGDATA}/pg_hba.conf" \
+        && pass "initialize: the enforcement include is hooked" \
+        || fail "initialize: no enforcement include"
+    [ -d "${PGDATA}/hba.d" ] \
+        && pass "initialize: the enforcement include directory exists" \
+        || fail "initialize: no hba.d for the include to resolve into"
+    [ -e "${PGDATA}/.pg_hba.conf.new" ] \
+        && fail "initialize: the pg_hba temp file was left in the datadir" \
+        || pass "initialize: pg_hba installed by rename, temp file gone"
     grep -q "^include_dir = 'conf.d'" "${PGDATA}/postgresql.conf" \
         && pass "initialize: include_dir hooked" || fail "initialize: no include_dir"
     grep -q '^port = 6543' "${PGDATA}/conf.d/90-rds-init.conf" \
@@ -485,6 +518,37 @@ grep -q 'spans more than one line' "${WORK}/out" \
     && pass "multiline-password: refusal names the reason" \
     || fail "multiline-password: no refusal message"
 
+# --- Case 3f: attach converges on the generated pg_hba, legacy block and all ---
+# The file was written once at initdb and never revisited, so a datadir in the
+# field carries initdb's rules with two scram lines appended below them. Attach
+# must land the generated file, byte for byte with a fresh instance's.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_tls
+write_parameters
+if run_ok "hba-legacy-setup"; then
+    cp "${PGDATA}/pg_hba.conf" "${WORK}/hba.fresh"
+    {
+        echo "local all all peer"
+        echo "host all all 127.0.0.1/32 scram-sha-256"
+        echo "host all all ::1/128 scram-sha-256"
+        echo ""
+        echo "# Managed by rds-init."
+        echo "host all all 0.0.0.0/0 scram-sha-256"
+        echo "host all all ::/0     scram-sha-256"
+    } > "${PGDATA}/pg_hba.conf"
+    write_handoff attach '' appdb
+    write_parameters
+    if run_ok "hba-legacy-attach"; then
+        cmp -s "${WORK}/hba.fresh" "${PGDATA}/pg_hba.conf" \
+            && pass "hba-legacy: attach converges on a fresh instance's file" \
+            || fail "hba-legacy: attach left a pg_hba differing from a fresh instance's"
+        grep -qE '127\.0\.0\.1/32|::1/128' "${PGDATA}/pg_hba.conf" \
+            && fail "hba-legacy: the legacy loopback rules survived the rewrite" \
+            || pass "hba-legacy: the legacy loopback rules are gone"
+    fi
+fi
+
 # --- Case 4: an empty datadir in attach mode means the data volume is missing ---
 reset_state
 write_handoff attach '' appdb
@@ -519,6 +583,9 @@ run_fails "initdb-fail"
 unset INITDB_FAIL
 
 # --- Case 6a: a post-initdb failure is covered by the cleanup trap ---
+# A pg_hba.conf that is not a regular file is also the shape that would make the
+# rename move the new rules *into* it and report success, leaving initdb's rules
+# in force and the engine started on authentication rds-init does not control.
 reset_state
 write_handoff initialize 's3cr3t' appdb
 PG_HBA_AS_DIR=1
@@ -527,6 +594,9 @@ run_fails "post-initdb-fail"
 [ -e "${PGDATA}/PG_VERSION" ] \
     && fail "post-initdb-fail: datadir kept before the former late trap point" \
     || pass "post-initdb-fail: datadir cleared"
+grep -q 'rules rds-init does not control' "${WORK}/out" \
+    && pass "post-initdb-fail: refusal names the unusable pg_hba" \
+    || fail "post-initdb-fail: no refusal naming the pg_hba"
 unset PG_HBA_AS_DIR
 
 # --- Case 6b: a failed emptiness probe must abort before initdb ---

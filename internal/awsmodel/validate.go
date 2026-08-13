@@ -2,6 +2,7 @@ package awsmodel
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ func (m *Model) validateShape(shapeName, path string, value any, violations *[]V
 		if !ok {
 			return
 		}
-		keys := sortedKeys(values)
+		keys := slices.Sorted(maps.Keys(values))
 		for _, key := range keys {
 			keyPath := path + "[" + strconv.Quote(key) + "]"
 			m.validateShape(shape.Key.Shape, keyPath+".key", key, violations)
@@ -114,7 +115,7 @@ func (m *Model) validateStructure(shape *Shape, path string, value any, violatio
 		}
 	}
 
-	fieldNames := sortedKeys(fields)
+	fieldNames := slices.Sorted(maps.Keys(fields))
 	for _, name := range fieldNames {
 		if _, modelled := shape.Members[name]; !modelled {
 			*violations = append(*violations, Violation{
@@ -125,7 +126,7 @@ func (m *Model) validateStructure(shape *Shape, path string, value any, violatio
 		}
 	}
 
-	memberNames := sortedKeys(shape.Members)
+	memberNames := slices.Sorted(maps.Keys(shape.Members))
 	for _, name := range memberNames {
 		field, present := fields[name]
 		if !present {

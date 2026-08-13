@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -182,7 +183,7 @@ func clusterPeerAddrs(configPath string, clusterConfig *config.ClusterConfig, en
 		add(addr)
 	}
 
-	return sortedKeys(seen)
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // natsRouteAddrs reads the peer addresses out of the generated NATS config.
@@ -236,7 +237,7 @@ func ovnEncapAddrs(clusterConfig *config.ClusterConfig) ([]string, error) {
 			seen[addr] = struct{}{}
 		}
 	}
-	return sortedKeys(seen), nil
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
 // ovnSBRemote takes the Southbound address off any node's vpcd section. Every
@@ -266,13 +267,4 @@ func isPlainIPv4(addr string) bool {
 	// accept` already covers it — in a source set it could never match.
 	ip, err := netip.ParseAddr(addr)
 	return err == nil && ip.Is4() && !ip.IsUnspecified() && !ip.IsLoopback()
-}
-
-func sortedKeys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

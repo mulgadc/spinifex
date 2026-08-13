@@ -486,6 +486,37 @@ jobs:
         with:
           path: mulga/spinifex
 
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: mulga/spinifex
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: mulga/viperblock
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: mulga/predastore
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: mulga/northstar
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: ${{ steps.siblings.outputs.bluebottle }}
+          path: mulga/bluebottle
+
       # Assert the host can do what the cell assumes, before spending 40
       # minutes finding out it cannot. A checklist in a plan doc goes stale;
       # this does not.
@@ -635,6 +666,37 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: mulga/spinifex
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: mulga/spinifex
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: mulga/viperblock
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: mulga/predastore
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: mulga/northstar
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: ${{ steps.siblings.outputs.bluebottle }}
+          path: mulga/bluebottle
 
       # 3 x 8 GiB plus 9 sparse 40G disks, before the instances the cluster
       # launches on top.

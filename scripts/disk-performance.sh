@@ -37,6 +37,7 @@ mkdir -p "$BENCH_DIR" "$OUT_DIR"
 trap 'rm -rf "${BENCH_DIR:?}"' EXIT
 
 echo "disk-performance: $JOBS jobs x $SIZE, randrw 70/30, direct=1, data in $BENCH_DIR"
+printf '  %-6s %11s %10s %11s %10s\n' bs "read IOPS" "read MB/s" "write IOPS" "write MB/s"
 
 for bs in $BLOCK_SIZES; do
     fio --name="randrw_70_30_$bs" \
@@ -54,11 +55,14 @@ for bs in $BLOCK_SIZES; do
         --output="$OUT_DIR/$bs.json" >/dev/null
 
     # group_reporting folds every job into jobs[0], so this is the whole run.
-    # bw is KiB/s, clat is nanoseconds.
-    jq -r --arg bs "$bs" '.jobs[0] |
-        "  \($bs)\tread \(.read.iops | round) IOPS \(.read.bw / 1024 | floor) MiB/s" +
-        "\twrite \(.write.iops | round) IOPS \(.write.bw / 1024 | floor) MiB/s"' \
-        "$OUT_DIR/$bs.json"
+    # bw_bytes is bytes/sec; MB is decimal, matching how throughput is quoted.
+    # Fixed-width rather than tabs: a tab-separated 128k row does not line up
+    # with a 4k one, which is what made the first run's output unreadable.
+    # shellcheck disable=SC2046
+    printf '  %-6s %11s %10s %11s %10s\n' "$bs" $(jq -r '.jobs[0] |
+        "\(.read.iops | round) \(.read.bw_bytes / 1000000 | round)" +
+        " \(.write.iops | round) \(.write.bw_bytes / 1000000 | round)"' \
+        "$OUT_DIR/$bs.json")
 done
 
 echo "disk-performance: results in $OUT_DIR"

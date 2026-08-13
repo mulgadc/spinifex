@@ -30,7 +30,7 @@ Node installation, dev-environment lifecycle, guest image builds, and verificati
 | `diff-coverage.sh` | Coverage check scoped to changed lines only, against an auto-detected base ref (`HEAD~1` on main, `origin/main` on dev, otherwise `origin/dev`). |
 | `run-bench.sh` | Launches a benchmark against running Ubuntu instances, auto-detecting the AMI for the host architecture. Tracks nbdkit and perf alongside the run. |
 | `disk-performance.sh` | Runs a `fio` random 70/30 read-write benchmark swept across 4k/16k/128k/1M. Writes JSON results to `/tmp/spinifex-disk-bench`; override with `BENCH_DIR`, `OUT_DIR`, `SIZE`, `JOBS`, `BLOCK_SIZES`. |
-| `network-performance.sh` | iperf throughput from several clients to one server, driven over SSH, with CSV results. `--server-ip` sets the address clients dial, so pointing it at instance private addresses measures the VPC overlay. |
+| `network-performance.sh` | iperf throughput from several clients to one server, driven over SSH, writing a `summary.txt` of Gbit/s per client. `--server-ip` sets the address clients dial, so pointing it at instance private addresses measures the VPC overlay rather than the external pool. |
 | `workload-performance.sh` | In-guest memory, disk, CPU and network workload test. Installs Go and runs the Badger test suite with jemalloc disabled and reduced parallelism. |
 
 ## Guest images

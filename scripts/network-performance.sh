@@ -81,28 +81,36 @@ for c in "${CLIENT_LIST[@]}"; do
     install_iperf "$c"
 done
 
-# -D daemonises. Killed in the trap so a failed run does not leave a listener
-# holding 5001 against the next one.
-cleanup() { on "$SERVER" "sudo pkill -f 'iperf -s' >/dev/null 2>&1" || true; }
+# `pkill -x iperf` matches the process name. NOT `pkill -f 'iperf -s'`: -f
+# matches the whole command line, and the command line of the remote shell
+# running the pkill contains that very string — so it kills its own process
+# tree, and ssh returns non-zero having printed nothing at all.
+cleanup() { on "$SERVER" "sudo pkill -x iperf >/dev/null 2>&1" || true; }
 trap cleanup EXIT
 
 log "starting iperf -s on $SERVER"
-# The remote output is carried into the failure rather than discarded. A bare
-# "could not start" says nothing about whether the package is missing, the port
-# is taken, or sudo refused.
-start_err=$(on "$SERVER" "sudo pkill -f 'iperf -s' >/dev/null 2>&1
-                          iperf -s -D" 2>&1) ||
-    fail "$SERVER: could not start iperf -s
-$(sed 's/^/         | /' <<<"$start_err")"
+# Redirecting the daemon's descriptors matters: a backgrounded remote process
+# holding ssh's stdout open never lets ssh return.
+start_err=$(on "$SERVER" "sudo pkill -x iperf >/dev/null 2>&1
+                          iperf -s -D > /tmp/iperf-server.log 2>&1 < /dev/null" 2>&1) ||
+    fail "$SERVER: could not start iperf -s${start_err:+
+$(sed 's/^/         | /' <<<"$start_err")}"
 sleep 2
+
+# A positive control. `iperf -s -D` exiting 0 does not mean anything is
+# listening, and a server that silently did not start looks identical to one
+# that did until every client fails for no stated reason.
+on "$SERVER" "pgrep -x iperf >/dev/null" ||
+    fail "$SERVER: iperf -s reported success but no iperf process is running.
+$(on "$SERVER" "cat /tmp/iperf-server.log" 2>/dev/null | sed 's/^/         | /')"
 
 log "running $PARALLEL streams for ${DURATION}s from each client to $SERVER_IP, concurrently"
 pids=()
 for c in "${CLIENT_LIST[@]}"; do
     # Concurrently, because simultaneous clients are what stresses the plane.
     # One at a time would measure a single flow's best case.
-    on "$c" "iperf -c $SERVER_IP -P $PARALLEL -t $DURATION -i 1 -y C" \
-        > "$OUT_DIR/$c.csv" 2>"$OUT_DIR/$c.err" &
+    on "$c" "iperf -c $SERVER_IP -P $PARALLEL -t $DURATION -i 1" \
+        > "$OUT_DIR/$c.txt" 2>"$OUT_DIR/$c.err" &
     pids+=($!)
 done
 
@@ -111,25 +119,33 @@ for pid in "${pids[@]}"; do
     wait "$pid" || failed=1
 done
 
-# CSV columns: timestamp,src,sport,dst,dport,id,interval,bytes,bits_per_second.
-# With -P the aggregate rows carry id -1; taking the last of them gives the
-# whole-run total rather than one interval. A single stream emits no such row,
-# so fall back to the last row of all.
-csv_bps() {
-    local bps
-    bps=$(awk -F, '$6 == -1 {v = $9} END {print v + 0}' "$1" 2>/dev/null)
-    [ "${bps:-0}" != "0" ] || bps=$(awk -F, 'END {print $9 + 0}' "$1" 2>/dev/null)
-    echo "${bps:-0}"
+# Every result line ends with a value and a unit, so read from the end rather
+# than by field number: "[SUM]" is one token and "[  4]" is two, so counting
+# from the left gives different columns for the aggregate and a single stream.
+# Prefer [SUM]; one stream produces none, so fall back to the last line.
+gbits_of() {
+    awk '/bits\/sec/ {
+             v = $(NF-1); u = $NF
+             if ($0 ~ /\[SUM\]/) { sv = v; su = u }
+         }
+         END {
+             if (sv != "") { v = sv; u = su }
+             m = (u ~ /^Gbits/) ? 1e9 : (u ~ /^Mbits/) ? 1e6 : (u ~ /^Kbits/) ? 1e3 : 0
+             printf "%.2f", v * m / 1e9
+         }' "$1" 2>/dev/null
 }
 
+# One parser, written down once. test-workload.sh reads this file rather than
+# re-deriving the number and getting a subtly different answer.
+: > "$OUT_DIR/summary.txt"
 for c in "${CLIENT_LIST[@]}"; do
-    gbits=$(awk -v b="$(csv_bps "$OUT_DIR/$c.csv")" \
-        'BEGIN {printf "%.2f", b / 1000000000}')
-    if [ "$gbits" = "0.00" ]; then
+    gbits=$(gbits_of "$OUT_DIR/$c.txt")
+    if [ -z "$gbits" ] || [ "$gbits" = "0.00" ]; then
         log "  $c -> $SERVER_IP   FAILED"
-        sed 's/^/           | /' "$OUT_DIR/$c.err" 2>/dev/null | head -3
+        head -3 "$OUT_DIR/$c.err" 2>/dev/null | sed 's/^/           | /'
         failed=1
     else
+        printf '%s\t%s\n' "$c" "$gbits" >> "$OUT_DIR/summary.txt"
         log "  $c -> $SERVER_IP   $gbits Gbit/s"
     fi
 done

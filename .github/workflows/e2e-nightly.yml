@@ -715,6 +715,26 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      # The benchmark works in $TMPDIR and predastore refuses writes below a 5%
+      # free-space watermark. Without this the symptom is several hundred
+      # "storage pool is at capacity" lines from warp and no statement of how
+      # much space there actually was.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          # Work dirs from runs that were killed before their cleanup trap ran.
+          # -mtime +0 so a concurrent run's directory is never in scope.
+          find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'predastore-e2e-performance.*' \
+               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          df -h "${TMPDIR:-/tmp}"
+          avail_gb=$(df -BG --output=avail "${TMPDIR:-/tmp}" | tail -1 | tr -dc '0-9')
+          pct_used=$(df --output=pcent "${TMPDIR:-/tmp}" | tail -1 | tr -dc '0-9')
+          if [ "$pct_used" -ge 90 ] || [ "$avail_gb" -lt 20 ]; then
+            echo "::error::${TMPDIR:-/tmp} is ${pct_used}% full with ${avail_gb} GiB free."
+            echo "::error::The benchmark needs headroom above predastore's 5% watermark."
+            exit 1
+          fi
+
       # PERF_PORT_OFFSET defaults to 10000, so the benchmark's own nodes do not
       # collide with a cluster left on the default ports.
       - name: Run throughput benchmark

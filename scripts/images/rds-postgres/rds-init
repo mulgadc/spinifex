@@ -26,6 +26,10 @@
 # Nothing there survives a reboot: the next boot re-fetches and the cert is
 # re-minted rather than persisted.
 #
+# The data volume also carries an engine stamp, written before the datadir is
+# inspected and compared on every boot, so another engine's volume is refused
+# rather than initialised over.
+#
 # rds-init keys off the datadir, never off RDS_MODE. An initialised datadir
 # means skip initdb and only refresh config, so a replaced VM comes back on its
 # existing data volume without re-bootstrapping. RDS_BOOTSTRAP_PENDING is not an
@@ -36,6 +40,11 @@ set -eu
 PG_VERSION="${RDS_PG_VERSION:-18}"
 PG_BIN="${RDS_PG_BIN:-/usr/libexec/postgresql${PG_VERSION}}"
 PG_USER="${RDS_PG_USER:-postgres}"
+
+# The engine this image bakes, stamped onto the data volume and compared against
+# it on every boot. Held here rather than read from /etc/spinifex-rds/engine:
+# this script is the PostgreSQL half of the seam, so it is the same constant.
+ENGINE="postgres"
 
 # Mount point of the data volume, and the datadir one level inside it. The
 # datadir is deliberately not the mount point itself: initdb refuses a non-empty
@@ -53,6 +62,11 @@ BOOTSTRAP_SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
 # rm -rf's: no initdb-adjacent path can touch it and PGDATA stays a stock datadir.
 RECEIPT_DIR="${RDS_RECEIPT_DIR:-${DATA_MOUNT}/.spinifex-rds/bootstrap}"
 RECEIPT_FILE="${RECEIPT_DIR}/receipt.env"
+
+# Which engine's data this volume holds. Outside PGDATA for the same reason the
+# receipt is, and beside it rather than inside the bootstrap directory: it
+# outlives any one bootstrap and is read before the datadir is ever inspected.
+ENGINE_STAMP="${RDS_ENGINE_STAMP:-${DATA_MOUNT}/.spinifex-rds/engine}"
 
 HANDOFF_DIR="${RDS_HANDOFF_DIR:-/run/spinifex-rds}"
 ENV_FILE="${HANDOFF_DIR}/bootstrap.env"
@@ -75,6 +89,10 @@ MASTER_GROUP_ROLE="rds_superuser"
 # this image, provisioned with this fixed master name. Tenant instances take a
 # different master, so the pgvector install below is scoped to the appliance.
 OCHRE_APPLIANCE_MASTER="ochre_vector_admin"
+
+# NAMEDATALEN-1: the server truncates a longer identifier, so the database
+# created would not be the one the customer asked for.
+MAX_DB_NAME_LEN=63
 
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
@@ -144,6 +162,20 @@ load_handoff() {
     RDS_IS_OCHRE_APPLIANCE=0
     [ "${_master_lower}" = "${OCHRE_APPLIANCE_MASTER}" ] && RDS_IS_OCHRE_APPLIANCE=1
 
+    # The same rule the control plane applies, for the same reason the reserved
+    # name is re-checked: an unusable name reaches initdb, fails at CREATE
+    # DATABASE and spends the one-shot password on the way. psql quotes the
+    # identifier, so here this is defence in depth rather than the barrier.
+    case "${RDS_DB_NAME}" in
+        '') ;;
+        [!A-Za-z]* | *[!A-Za-z0-9_]*)
+            fail "RDS_DB_NAME ${RDS_DB_NAME} must begin with a letter and hold only letters, digits and underscores; the control plane should have rejected it"
+            ;;
+    esac
+    if [ "${#RDS_DB_NAME}" -gt "${MAX_DB_NAME_LEN}" ]; then
+        fail "RDS_DB_NAME is longer than the ${MAX_DB_NAME_LEN} characters PostgreSQL allows; the control plane should have rejected it"
+    fi
+
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
     esac
@@ -170,6 +202,52 @@ require_data_volume() {
     [ "${RDS_ALLOW_LOCAL_DATADIR:-0}" = "1" ] ||
         fail "${DATA_MOUNT} is not a mount point — the data volume is not attached; refusing to initialise on the boot volume"
     log "warning: ${DATA_MOUNT} is not a mount point; data will not survive a VM replace (RDS_ALLOW_LOCAL_DATADIR=1)"
+}
+
+# Written before the datadir is inspected, so a volume this image goes on to
+# initialise carries the stamp from the first boot onwards. Fatal on failure:
+# an unstamped volume is one the next boot cannot tell from another engine's.
+write_engine_stamp() {
+    _stamp_dir=$(dirname "${ENGINE_STAMP}")
+    install -d -m 0700 -o "${PG_USER}" -g "${PG_USER}" "${_stamp_dir}" ||
+        fail "the datadir engine stamp directory ${_stamp_dir} could not be created; refusing to use a data volume whose engine cannot be recorded"
+
+    _tmp="${ENGINE_STAMP}.new"
+    printf '%s\n' "${ENGINE}" > "${_tmp}" ||
+        fail "the datadir engine stamp ${ENGINE_STAMP} could not be written; refusing to use a data volume whose engine cannot be recorded"
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+
+    # Renamed rather than written in place, so a crash leaves either the old
+    # stamp or none — and none is backfilled, where a torn one would be fatal.
+    sync "${_tmp}" 2>/dev/null || sync
+    mv -f "${_tmp}" "${ENGINE_STAMP}" ||
+        fail "the datadir engine stamp ${ENGINE_STAMP} could not be installed; refusing to use a data volume whose engine cannot be recorded"
+    sync "${_stamp_dir}" 2>/dev/null || sync
+}
+
+# The volume mounts cleanly whichever engine wrote it, and another engine's
+# datadir reads as uninitialised here: rds-init would initdb beside the
+# customer's data and serve an empty database that passes every health probe.
+require_engine_stamp() {
+    if [ -e "${ENGINE_STAMP}" ]; then
+        _stamped=""
+        _stamp_read=0
+        _stamped=$(head -n 1 -- "${ENGINE_STAMP}") && _stamp_read=1
+        [ "${_stamp_read}" = "1" ] ||
+            fail "the datadir engine stamp ${ENGINE_STAMP} exists but could not be read; refusing to attach to a data volume whose engine cannot be established"
+        if [ "${_stamped}" != "${ENGINE}" ]; then
+            fail "the data volume holds a '${_stamped}' datadir but this image runs ${ENGINE}; refusing to touch it. Attach it to a '${_stamped}' instance, or recover the volume out of band."
+        fi
+        log "data volume is stamped ${ENGINE}"
+        return 0
+    fi
+
+    # No stamp is either a volume predating it or one about to be initialised.
+    # Both are ours here — PostgreSQL had unstamped volumes in the field, so a
+    # non-empty datadir is backfilled rather than refused.
+    log "data volume carries no engine stamp — recording ${ENGINE}"
+    write_engine_stamp
 }
 
 # Runs initdb into an empty datadir and lays down the cluster config written
@@ -595,6 +673,7 @@ consume_secrets() {
 
 load_handoff
 require_data_volume
+require_engine_stamp
 
 if [ -s "${PGDATA}/PG_VERSION" ]; then
     # The engine would start cleanly on such a datadir and pass every health

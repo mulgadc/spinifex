@@ -979,11 +979,20 @@ echo ""
 # ==========================================================================
 echo "Phase 8: Node Failure"
 echo "========================================"
-echo "Stopping services on node2 ($NODE2_IP) to simulate node failure..."
+echo "Abruptly killing spinifex services on node2 ($NODE2_IP) to simulate an unclean node failure..."
 
-# Stop services on node2 only — SPINIFEX_FORCE_LOCAL_STOP prevents coordinated
-# cluster shutdown which would kill all nodes via NATS
-peer_ssh "$NODE2_IP" "sudo systemctl stop spinifex.target" || {
+# spinifex.target has no process of its own and PartOf= only propagates
+# stop/restart jobs (not kill), so SIGKILL each unit directly. --kill-whom=main
+# hits only the service's own process, leaving qemu/nbdkit orphaned for reattach.
+NODE2_KILL_UNITS="spinifex-daemon.service spinifex-viperblock.service spinifex-predastore.service spinifex-nats.service spinifex-awsgw.service spinifex-vpcd.service spinifex-northstar.service spinifex-qmp-collector.service spinifex-ui.service"
+peer_ssh "$NODE2_IP" "sudo systemctl kill -s SIGKILL --kill-whom=main $NODE2_KILL_UNITS" || {
+    echo "  WARNING: systemctl kill returned non-zero (may be expected)"
+}
+
+# Cancels each unit's queued Restart=on-failure job so the outage holds rather
+# than self-healing within RestartSec=5. The main process is already dead, so
+# this settles the unit instead of draining it — spinifex.target stays untouched.
+peer_ssh "$NODE2_IP" "sudo systemctl stop $NODE2_KILL_UNITS" || {
     echo "  WARNING: systemctl stop returned non-zero (may be expected)"
 }
 
@@ -1017,15 +1026,21 @@ else
     echo "  Node3 not present in this cluster — skipping node3 survival check"
 fi
 
-# Check NATS degraded state (should have 1 route instead of 2)
+# Check NATS degraded state: node1 should see every peer except itself and
+# the now-dead node2. The stop above holds node2 down for the rest of this
+# phase, so this is a real assertion now, not a best-effort guess.
+EXPECTED_DEGRADED_PEERS=$((NODE_COUNT - 2))
+if [ "$EXPECTED_DEGRADED_PEERS" -lt 0 ]; then
+    EXPECTED_DEGRADED_PEERS=0
+fi
 NATS_DEGRADED=$(curl -s "http://127.0.0.1:${NATS_MONITOR_PORT}/routez" 2>/dev/null)
 DEGRADED_PEERS=$(echo "$NATS_DEGRADED" | jq -r '[.routes[].remote_name] | unique | length' 2>/dev/null || echo "0")
-echo "  NATS peers during failure: $DEGRADED_PEERS (expected: 1)"
-if [ "$DEGRADED_PEERS" -eq 1 ]; then
+echo "  NATS peers during failure: $DEGRADED_PEERS (expected: $EXPECTED_DEGRADED_PEERS)"
+if [ "$DEGRADED_PEERS" -eq "$EXPECTED_DEGRADED_PEERS" ]; then
     pass_test "NATS degraded mode"
 else
-    echo "  WARNING: Expected 1 NATS peer during node2 failure, got $DEGRADED_PEERS"
-    # Not fatal — NATS might take a moment to detect
+    echo "  ERROR: Expected $EXPECTED_DEGRADED_PEERS NATS peer(s) during node2 failure, got $DEGRADED_PEERS"
+    fail_test "NATS degraded mode"
 fi
 
 # Verify describe-instances still works from surviving nodes
@@ -1048,6 +1063,8 @@ echo "Phase 9: Node Recovery"
 echo "========================================"
 echo "Restarting services on node2 ($NODE2_IP)..."
 
+# Phase 8 stopped every unit it killed, so node2 has been genuinely down
+# since then; this start is the actual recovery, not a backstop.
 peer_ssh "$NODE2_IP" "sudo systemctl start spinifex.target" || {
     echo "  ERROR: Failed to restart services on node2"
     fail_test "Node2 restart"
@@ -1585,9 +1602,10 @@ else
 
         SPREAD_NODES=()
         for inst_id in "${NATGW_PRIV_IDS[@]}"; do
-            # spx get vms output is pipe-delimited: INSTANCE | STATUS | TYPE | VCPU | MEM | NODE | IP | AGE
-            # NODE is field 6
-            NODE_NAME=$(echo "$SPX_VMS" | grep "$inst_id" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $6); print $6}' || echo "unknown")
+            # spx get vms is pipe-delimited, with ANSI colour codes around each
+            # cell: INSTANCE | STATUS | HEALTH | CRASHES | TYPE | VCPU | MEM |
+            # NODE | IP | AGE. NODE is field 8; reading field 6 yields VCPU.
+            NODE_NAME=$(echo "$SPX_VMS" | grep "$inst_id" | sed -e 's/\x1b\[[0-9;]*m//g' | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $8); print $8}' || echo "unknown")
             if [ -z "$NODE_NAME" ] || [ "$NODE_NAME" = "unknown" ]; then
                 NODE_NAME=$(find_instance_node "$inst_id" || echo "unknown")
             fi

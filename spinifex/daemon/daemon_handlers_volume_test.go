@@ -8,18 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,24 +102,12 @@ func TestAttachDetachErrorCode(t *testing.T) {
 	}
 }
 
-// seedVolumeConfig writes a minimal VolumeConfig to config.json, matching
-// the seeding pattern used by the handleAttachVolume tests in
-// daemon_handlers_test.go.
-func seedVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata) {
+// seedVolumeConfig makes a volume exist on both sides at once: the provider
+// holds the blocks, the ebsmetadata document is what the control plane reads.
+func seedVolumeConfig(t *testing.T, daemon *Daemon, store *objectstore.MemoryObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{VolumeMetadata: meta},
-	}
-	data, err := json.Marshal(wrapper)
-	require.NoError(t, err)
-	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
-	})
-	require.NoError(t, err)
+	seedProviderVolume(t, daemon, volume.VolumeID, utils.SafeUint64ToInt64(volume.CapacityGiB))
+	seedVolumeDocument(t, store, volume)
 }
 
 // TestAttachVolume_IdempotentSameInstance verifies that re-attaching a
@@ -156,9 +143,9 @@ func TestAttachVolume_IdempotentSameInstance(t *testing.T) {
 			}
 			daemon.vmMgr.Insert(instance)
 
-			seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+			seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 				VolumeID:         volumeID,
-				SizeGiB:          10,
+				CapacityGiB:      10,
 				State:            "in-use",
 				TenantID:         testAccountID,
 				AttachedInstance: instanceID,
@@ -224,9 +211,9 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 	}
 	daemon.vmMgr.Insert(instance)
 
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		TenantID:         testAccountID,
 		AttachedInstance: otherInstanceID,
@@ -281,9 +268,9 @@ func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 	}
 	daemon.vmMgr.Insert(instance)
 
-	seedVolumeConfig(t, store, volumeID, viperblock.VolumeMetadata{
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		TenantID:         testAccountID,
 		AttachedInstance: instanceID,
@@ -568,4 +555,18 @@ func TestDrainVolume_DispatchedGoroutineDoesNotLeak(t *testing.T) {
 	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
 
 	goleak.VerifyNone(t, ignoreExisting)
+}
+
+// seedProviderVolume allocates volumeID in the daemon's EBS provider so
+// operations that reach the provider (expand, delete) find it there.
+func seedProviderVolume(t *testing.T, daemon *Daemon, volumeID string, sizeGiB int64) {
+	t.Helper()
+	if daemon == nil || daemon.ebsProvider == nil || volumeID == "" || sizeGiB <= 0 {
+		return
+	}
+	_, err := daemon.ebsProvider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: sizeGiB * 1024 * 1024 * 1024},
+	})
+	require.NoError(t, err)
 }

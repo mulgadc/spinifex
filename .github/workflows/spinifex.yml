@@ -76,6 +76,20 @@ jobs:
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
+      # The EBS provider contract suite needs a real implementation on each
+      # side of the boundary: qemu-img/qemu-nbd/qemu-io back qemunbdd, which
+      # shares no code with viperblock, and nbdkit plus viperblock's plugin
+      # back viperblockd, the provider production actually uses. Without them
+      # the suite runs against MemoryProvider alone. nbdkit-plugin-dev carries
+      # the headers and nbdkit.pc that cgo needs to build that plugin, and
+      # libnbd-bin supplies the third-party NBD client (nbdinfo/nbdcopy) that
+      # judges the published export by something outside this codebase.
+      - name: Install conformance tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils nbdkit nbdkit-plugin-dev libnbd-bin
+
+      - name: Build viperblock nbdkit plugin
+        run: make -C viperblock go_build_nbd
+
       - name: Build Spinifex
         run: make -C spinifex build
 
@@ -83,6 +97,9 @@ jobs:
         run: make -C spinifex manifest-check manifest-lint
 
       - name: Run Tests with Coverage
+        env:
+          SPINIFEX_REQUIRE_CONFORMANCE_TOOLS: "1"
+          VIPERBLOCK_NBDKIT_PLUGIN: ${{ github.workspace }}/viperblock/lib/nbdkit-viperblock-plugin.so
         run: make -C spinifex test-cover
 
       - name: Run Action Tests

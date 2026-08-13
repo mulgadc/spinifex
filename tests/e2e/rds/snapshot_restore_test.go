@@ -88,7 +88,7 @@ func TestSnapshotRestore(t *testing.T) {
 	assert.Equal(t, dbEngine, aws.StringValue(snapshot.Engine))
 	assert.Equal(t, int64(dbStorageGiB), aws.Int64Value(snapshot.AllocatedStorage))
 	assert.Equal(t, dbMasterUser, aws.StringValue(snapshot.MasterUsername))
-	assert.Equal(t, int64(harness.DBEnginePort), aws.Int64Value(snapshot.Port))
+	assert.Equal(t, int64(harness.PostgresEnginePort), aws.Int64Value(snapshot.Port))
 	assert.True(t, aws.BoolValue(snapshot.Encrypted), "the snapshot inherits the data volume's encryption")
 	assert.Equal(t, int64(100), aws.Int64Value(snapshot.PercentProgress),
 		"a snapshot reported as available must not also report itself part-done")

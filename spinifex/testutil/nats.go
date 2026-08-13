@@ -12,8 +12,9 @@ import (
 )
 
 // StartTestNATS starts an embedded NATS server (no JetStream) and returns
-// the server and a connected client. Both are cleaned up via t.Cleanup.
-func StartTestNATS(t *testing.T) (*server.Server, *nats.Conn) {
+// the server and a connected client. Both are cleaned up via t.Cleanup. It
+// takes a testing.TB so benchmarks can stand up the same transport tests do.
+func StartTestNATS(t testing.TB) (*server.Server, *nats.Conn) {
 	t.Helper()
 	opts := &server.Options{
 		Host:   "127.0.0.1",

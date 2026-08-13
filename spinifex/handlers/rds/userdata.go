@@ -20,8 +20,11 @@ type agentUserDataInput struct {
 	GatewayCACert        string
 	Region               string
 	DBInstanceIdentifier string
-	EngineVersion        string
-	EnginePort           int64
+	// The engine this VM is launched as. The agent checks it against the engine
+	// its own image bakes and refuses to bootstrap when the two disagree.
+	Engine        string
+	EngineVersion string
+	EnginePort    int64
 }
 
 type userDataFile struct {
@@ -36,6 +39,7 @@ func buildAgentUserData(in agentUserDataInput) string {
 		"RDS_GATEWAY_CA=" + agentGatewayCAPath,
 		"RDS_REGION=" + in.Region,
 		"RDS_DB_INSTANCE_IDENTIFIER=" + in.DBInstanceIdentifier,
+		"RDS_ENGINE=" + in.Engine,
 		"RDS_ENGINE_VERSION=" + in.EngineVersion,
 		fmt.Sprintf("RDS_ENGINE_PORT=%d", in.EnginePort),
 	}, "\n")

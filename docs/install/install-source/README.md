@@ -85,7 +85,17 @@ export PATH=$PATH:/usr/local/go/bin
 
 ### CA Certificate Not Trusted
 
+On a node or any host running `spx`/`aws` against the cluster:
+
 ```bash
 sudo cp /etc/spinifex/ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt
+sudo update-ca-certificates
+```
+
+Inside a guest VM there is no `/etc/spinifex`; fetch the CA from IMDS instead:
+
+```bash
+sudo curl -fsS http://169.254.169.254/spinifex/ca.pem \
+  -o /usr/local/share/ca-certificates/spinifex-ca.crt
 sudo update-ca-certificates
 ```

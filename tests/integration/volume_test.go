@@ -9,9 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/mulgadc/spinifex/spinifex/testutil/vbscan"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,9 +74,16 @@ func TestCreateVolume_PersistsToRealPredastore(t *testing.T) {
 	assert.Equal(t, aws.StringValue(out.VolumeId), meta.VolumeID, "persisted VolumeID")
 	assert.Equal(t, uint64(8), meta.SizeGiB, "persisted VolumeMetadata.SizeGiB")
 	assert.Equal(t, "available", meta.State, "persisted VolumeMetadata.State")
-	assert.Equal(t, "gp3", meta.VolumeType, "persisted VolumeMetadata.VolumeType")
-	assert.Equal(t, testAZ, meta.AvailabilityZone, "persisted VolumeMetadata.AvailabilityZone")
-	assert.Equal(t, utils.GlobalAccountID, meta.TenantID, "persisted VolumeMetadata.TenantID")
+
+	// Tenancy, volume type and placement are control-plane facts, held in the
+	// ebsmetadata document rather than storage state: the provider writes only
+	// what it owns. DescribeVolumes above is what checks them, and its answer
+	// is account-scoped, so returning this volume at all proves the tenant was
+	// recorded.
+	assert.Empty(t, meta.TenantID, "tenancy belongs to ebsmetadata, not viperblock state")
+	assert.Empty(t, meta.VolumeType, "volume type belongs to ebsmetadata, not viperblock state")
+	assert.Empty(t, meta.AvailabilityZone, "placement belongs to ebsmetadata, not viperblock state")
+	assert.Equal(t, testAZ, aws.StringValue(desc.Volumes[0].AvailabilityZone), "reported AvailabilityZone")
 
 	// The on-disk VolumeSize is bytes, derived independently of
 	// VolumeMetadata.SizeGiB (the field DescribeVolumes actually reports) —

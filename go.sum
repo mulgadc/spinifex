@@ -1329,10 +1329,10 @@ github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3 h1:EJ8JMQB9Y
 github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3/go.mod h1:bhJitsX6VKkbmQ1dVh3vPUmoSeQsvtn5Jm4D8hUyq2s=
 github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059 h1:CK3Ed0Rg5dGvpSeMFTGpE1nf+390Rbf5hePOcnm1+kM=
 github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059/go.mod h1:vyfhxWlBlAnJfUeSEt+z/Z6KrfReC/uzZM3WTllorYM=
-github.com/mulgadc/predastore v1.16.1-0.20260812012531-12c90bd2e14a h1:XSvL4FucGZaEDPUXCG/mUshfFskGO9tE69SYMJJ28L4=
-github.com/mulgadc/predastore v1.16.1-0.20260812012531-12c90bd2e14a/go.mod h1:S5vcni7R3VYi3nccelMagKbWdX58WtbKf0I1R/7MmNI=
-github.com/mulgadc/viperblock v1.16.1-0.20260812012547-bb1225320f0c h1:5PCU4696Gelc+4X4K+E+EzNVsyoLLWEiF/TcsIaAGi4=
-github.com/mulgadc/viperblock v1.16.1-0.20260812012547-bb1225320f0c/go.mod h1:8NT5u+udY1CsoKz/JAPY2SSMcQ98Omi+42r8BkoA4FY=
+github.com/mulgadc/predastore v1.16.1-0.20260813022738-0b4392b43cae h1:itP5arN88Xv/xe4kI/5TWC/fkawnOeIR8MF1AL7aC48=
+github.com/mulgadc/predastore v1.16.1-0.20260813022738-0b4392b43cae/go.mod h1:S5vcni7R3VYi3nccelMagKbWdX58WtbKf0I1R/7MmNI=
+github.com/mulgadc/viperblock v1.16.1-0.20260812124023-7e0df2323c75 h1:eqB0VOuFPldBHuQ7ELYZHSRxq+3MXbMMi9D5bfVUwe8=
+github.com/mulgadc/viperblock v1.16.1-0.20260812124023-7e0df2323c75/go.mod h1:8NT5u+udY1CsoKz/JAPY2SSMcQ98Omi+42r8BkoA4FY=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=

@@ -42,31 +42,31 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 		return
 	}
 
-	volCfg, err := d.volumeService.GetVolumeConfig(volumeID)
+	volMeta, err := d.volumeService.GetVolumeMetadata(volumeID)
 	if err != nil {
-		slog.ErrorContext(ctx, "AttachVolume: failed to get volume config", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "AttachVolume: failed to get volume metadata", "volumeId", volumeID, "err", err)
 		respondWithError(msg, awserrors.ErrorInvalidVolumeNotFound)
 		return
 	}
 
 	callerAccountID := utils.AccountIDFromMsg(msg)
-	if !volumeVisibleTo(volCfg.VolumeMetadata.TenantID, callerAccountID) {
+	if !volumeVisibleTo(volMeta.TenantID, callerAccountID) {
 		slog.WarnContext(ctx, "AttachVolume: account does not own volume",
 			"volumeId", volumeID,
 			"callerAccount", callerAccountID,
-			"ownerAccount", volCfg.VolumeMetadata.TenantID)
+			"ownerAccount", volMeta.TenantID)
 		respondWithError(msg, awserrors.ErrorInvalidVolumeNotFound)
 		return
 	}
 
-	if volCfg.VolumeMetadata.State != "available" {
-		if volCfg.VolumeMetadata.AttachedInstance == command.ID {
+	if volMeta.State != "available" {
+		if volMeta.AttachedInstance == command.ID {
 			if command.AttachVolumeData.Device != "" &&
-				command.AttachVolumeData.Device != volCfg.VolumeMetadata.DeviceName {
+				command.AttachVolumeData.Device != volMeta.DeviceName {
 				slog.ErrorContext(ctx, "AttachVolume: requested device conflicts with existing attachment",
 					"volumeId", volumeID, "instanceId", command.ID,
 					"requestedDevice", command.AttachVolumeData.Device,
-					"attachedDevice", volCfg.VolumeMetadata.DeviceName)
+					"attachedDevice", volMeta.DeviceName)
 				// AWS returns VolumeInUse (not InvalidParameterValue) when a
 				// re-attach targets a device other than the one already in use.
 				respondWithError(msg, awserrors.ErrorVolumeInUse)
@@ -77,22 +77,22 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			// ControllerPublishVolume retry after a slow first attach).
 			// Treat as an idempotent success instead of VolumeInUse.
 			slog.InfoContext(ctx, "AttachVolume: volume already attached to requesting instance, returning idempotent success",
-				"volumeId", volumeID, "instanceId", command.ID, "device", volCfg.VolumeMetadata.DeviceName)
-			d.respondWithVolumeAttachment(msg, volumeID, command.ID, volCfg.VolumeMetadata.DeviceName, "attached")
+				"volumeId", volumeID, "instanceId", command.ID, "device", volMeta.DeviceName)
+			d.respondWithVolumeAttachment(msg, volumeID, command.ID, volMeta.DeviceName, "attached")
 			return
 		}
 
 		slog.ErrorContext(ctx, "AttachVolume: volume not available",
-			"volumeId", volumeID, "state", volCfg.VolumeMetadata.State)
+			"volumeId", volumeID, "state", volMeta.State)
 		respondWithError(msg, awserrors.ErrorVolumeInUse)
 		return
 	}
 
-	if volCfg.VolumeMetadata.AvailabilityZone != "" && d.config.AZ != "" &&
-		volCfg.VolumeMetadata.AvailabilityZone != d.config.AZ {
+	if volMeta.AvailabilityZone != "" && d.config.AZ != "" &&
+		volMeta.AvailabilityZone != d.config.AZ {
 		slog.ErrorContext(ctx, "AttachVolume: volume and instance are in different AZs",
 			"volumeId", volumeID,
-			"volumeAZ", volCfg.VolumeMetadata.AvailabilityZone,
+			"volumeAZ", volMeta.AvailabilityZone,
 			"instanceAZ", d.config.AZ)
 		respondWithError(msg, awserrors.ErrorInvalidVolumeZoneMismatch)
 		return

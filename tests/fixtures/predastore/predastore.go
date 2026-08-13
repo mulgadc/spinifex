@@ -43,10 +43,9 @@ import (
 )
 
 // Fixed connection details for the shared predastore fixture started by
-// Start. Every cluster node runs in-process, so these values never need to
-// vary per caller or per test run.
+// Start. The endpoint is not among them: it carries a port picked at startup
+// and is only reachable through the Fixture returned by Start.
 const (
-	Host   = "127.0.0.1:18443"
 	Region = "us-east-1"
 	// AccessKey/SecretKey are the well-known AWS SDK example credentials
 	// (docs.aws.amazon.com/IAM/latest/UserGuide), used only to authenticate
@@ -65,7 +64,6 @@ const (
 	DefaultBucket2 = "public-bucket"
 
 	testHost = "127.0.0.1"
-	testPort = 18443
 )
 
 // The topology Start writes. One host runs every node, so they talk over the
@@ -96,6 +94,9 @@ const (
 // S3/viperblock clients: a reachable endpoint and its default buckets
 // created. Its TLS cert is self-signed, so clients skip verification.
 type Fixture struct {
+	// Host is the cluster's host:port S3 endpoint, whose port is picked when
+	// the cluster starts. It is the only way to reach this fixture: nothing
+	// may hardcode a port, or concurrently running test binaries collide.
 	Host      string
 	Region    string
 	AccessKey string
@@ -166,11 +167,15 @@ func Start(t *testing.T) *Fixture {
 
 	// SSL_CERT_FILE injects the cert into the OS trust store for clients that
 	// verify it rather than skipping verification (objectstore's S3 client,
-	// for one). t.Setenv reverts when this test ends, while the cluster lives
-	// on for the whole binary, so the pool is loaded here and now: crypto/x509
-	// caches it behind a sync.Once, and this call is what fixes our cert in it
-	// for every later test in the process.
-	t.Setenv("SSL_CERT_FILE", certPath)
+	// for one). Set for the life of the process, not the calling test: the
+	// daemon outlives that test, and child processes started by later tests
+	// (nbdkit, whose plugin talks to this daemon) read the environment when
+	// they are spawned, long after a t.Setenv would have reverted it.
+	if err := os.Setenv("SSL_CERT_FILE", certPath); err != nil { //nolint:usetesting // must outlive the calling test, like the daemon
+		t.Fatalf("predastore fixture: set SSL_CERT_FILE: %v", err)
+	}
+	// crypto/x509 caches the pool behind a sync.Once, so this call is what
+	// fixes our cert in it for every in-process client that follows.
 	if _, err := x509.SystemCertPool(); err != nil {
 		t.Fatalf("predastore fixture: load system cert pool: %v", err)
 	}
@@ -186,12 +191,18 @@ func Start(t *testing.T) *Fixture {
 		t.Fatalf("predastore fixture: write encryption key: %v", err)
 	}
 
+	gatePort, err := freeGatePort()
+	if err != nil {
+		t.Fatalf("predastore fixture: reserve gate port: %v", err)
+	}
+	host := net.JoinHostPort(testHost, strconv.Itoa(gatePort))
+
 	// The config goes through the real file and the real loader rather than a
 	// hand-built struct, so the fixture trips over the same strict decode and
 	// topology validation an operator's install would.
 	dataDir := filepath.Join(testDir, "data")
 	configPath := filepath.Join(testDir, "predastore.toml")
-	config := topology(dataDir, certPath, keyPath, encryptionKeyPath)
+	config := topology(dataDir, certPath, keyPath, encryptionKeyPath, gatePort)
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 		t.Fatalf("predastore fixture: write config: %v", err)
 	}
@@ -225,23 +236,23 @@ func Start(t *testing.T) *Fixture {
 
 	// The gate holds off serving until the local Raft quorum has a leader, so
 	// an accepted connection also means writes will commit.
-	if !waitForReady(30*time.Second, done) {
-		cancel()
+	if !waitForReady(30*time.Second, done, host) {
+		shutdown()
 		t.Fatal("predastore fixture: S3 gate did not become ready")
 	}
 
 	// Create the default buckets through the S3 API so they land in the meta
 	// plane; config-defined buckets are not visible to ListBuckets.
-	setupClient := s3Client(AccessKey, SecretKey)
+	setupClient := s3Client(host, AccessKey, SecretKey)
 	for _, bucket := range []string{DefaultBucket, DefaultBucket2} {
 		if _, err := setupClient.CreateBucket(&s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
-			cancel()
+			shutdown()
 			t.Fatalf("predastore fixture: create bucket %s: %v", bucket, err)
 		}
 	}
 
 	fixture = &Fixture{
-		Host:      Host,
+		Host:      host,
 		Region:    Region,
 		AccessKey: AccessKey,
 		SecretKey: SecretKey,
@@ -264,25 +275,50 @@ func Stop() {
 	if !started {
 		return
 	}
+	shutdown()
+	started, fixture = false, nil
+}
+
+// shutdown cancels the running cluster and waits for it to drain, with mu
+// held. A Start that fails partway must do this before it returns: its nodes
+// hold process-wide pipe names a later attempt would otherwise collide with.
+func shutdown() {
 	stop()
 	select {
 	case <-drained:
 	case <-time.After(30 * time.Second):
 		slog.Error("predastore fixture: cluster did not drain")
 	}
-	started, fixture = false, nil
+}
+
+// freeGatePort reserves a port for the S3 gate by binding one and handing it
+// straight back. Test binaries for different packages run concurrently, and a
+// fixed port would silently point one process's clients at another's cluster.
+func freeGatePort() (int, error) {
+	ln, err := net.Listen("tcp", net.JoinHostPort(testHost, "0"))
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected listener address %T", ln.Addr())
+	}
+
+	return addr.Port, nil
 }
 
 // topology is the fixture's predastore configuration file: one host, the gate
-// on the fixed S3 port, and the blob and meta nodes the erasure code needs.
-func topology(dataDir, certPath, keyPath, encryptionKeyPath string) string {
+// on the reserved S3 port, and the blob and meta nodes the erasure code needs.
+func topology(dataDir, certPath, keyPath, encryptionKeyPath string, gatePort int) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "version = 1\nregion = %q\n\n[rs]\ndata = %d\nparity = %d\n\n", Region, rsData, rsParity)
 	fmt.Fprintf(&b, "[[host]]\nid = %d\nbind_addr = %q\naddr = %q\ndata_dir = %q\ntls_cert = %q\ntls_key = %q\nencryption_key = %q\n\n",
 		fixtureHostID, testHost, testHost, dataDir, certPath, keyPath, encryptionKeyPath)
 
-	fmt.Fprintf(&b, "[[host.node]]\nid = %d\nrole = \"gate\"\nport = %d\n\n", gateNodeID, testPort)
+	fmt.Fprintf(&b, "[[host.node]]\nid = %d\nrole = \"gate\"\nport = %d\n\n", gateNodeID, gatePort)
 	for i := range blobNodes {
 		fmt.Fprintf(&b, "[[host.node]]\nid = %d\nrole = \"blob\"\nport = %d\n\n", firstBlobNode+i, firstBlobPort+i)
 	}
@@ -365,7 +401,7 @@ func generateCertificate(certPath, keyPath string) error {
 // waitForReady polls the S3 endpoint until it answers, the cluster exits or
 // timeout elapses. A cluster that failed to start closes done, which is the
 // difference between waiting out the timeout and reporting at once.
-func waitForReady(timeout time.Duration, done <-chan struct{}) bool {
+func waitForReady(timeout time.Duration, done <-chan struct{}, host string) bool {
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed cert generated by this same fixture, localhost-only
@@ -380,7 +416,7 @@ func waitForReady(timeout time.Duration, done <-chan struct{}) bool {
 			return false
 		default:
 		}
-		resp, err := client.Get("https://" + net.JoinHostPort(testHost, strconv.Itoa(testPort)) + "/")
+		resp, err := client.Get("https://" + host + "/")
 		if err == nil {
 			resp.Body.Close()
 			return true
@@ -393,7 +429,7 @@ func waitForReady(timeout time.Duration, done <-chan struct{}) bool {
 // s3Client creates an AWS S3 client against the fixture for fixture setup
 // only (bucket creation); test bodies build their own clients against
 // whatever bucket/credentials their scenario needs.
-func s3Client(accessKey, secretKey string) *s3.S3 {
+func s3Client(host, accessKey, secretKey string) *s3.S3 {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed cert generated by this same fixture, localhost-only
 	}
@@ -401,7 +437,7 @@ func s3Client(accessKey, secretKey string) *s3.S3 {
 
 	sess := session.Must(session.NewSession(&aws.Config{
 		Region:           aws.String(Region),
-		Endpoint:         aws.String("https://" + Host),
+		Endpoint:         aws.String("https://" + host),
 		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
 		S3ForcePathStyle: aws.Bool(true),
 		DisableSSL:       aws.Bool(false),

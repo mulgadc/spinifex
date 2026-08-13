@@ -1,4 +1,4 @@
-package daemon
+package daemon_test
 
 import (
 	"fmt"
@@ -52,6 +52,43 @@ func TestShutdownHelpersHaveASingleCallSite(t *testing.T) {
 			}
 			t.Fatal(b.String())
 		})
+	}
+}
+
+// A pattern kill matches by command line across the whole host, so it reaches
+// processes this node never started: another node's backends on a shared host,
+// and a live guest's backend that survived a daemon restart by design. Cleanup
+// has to work from this node's own pidfiles instead.
+func TestNoPatternKillsInDaemonPackage(t *testing.T) {
+	banned := []string{"pkill", "killall"}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+
+	var offences []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, rerr := os.ReadFile(name)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", name, rerr)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			for _, cmd := range banned {
+				if strings.Contains(line, `"`+cmd+`"`) {
+					offences = append(offences, fmt.Sprintf("  %s:%d: %s", name, i+1, strings.TrimSpace(line)))
+				}
+			}
+		}
+	}
+
+	if len(offences) > 0 {
+		t.Fatalf("pattern kills are host-wide and must not appear in the daemon package:\n%s",
+			strings.Join(offences, "\n"))
 	}
 }
 

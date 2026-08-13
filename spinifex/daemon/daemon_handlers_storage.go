@@ -3,7 +3,6 @@ package daemon
 import (
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
@@ -55,8 +54,7 @@ type predastoreBucket struct {
 // handleStorageConfig responds with parsed predastore config (topology only, no creds).
 // Used by the gateway to build the GetStorageStatus response.
 func (d *Daemon) handleStorageConfig(msg *nats.Msg) {
-	configDir := filepath.Dir(d.configPath)
-	predastorePath := filepath.Join(configDir, "predastore", "predastore.toml")
+	predastorePath := predastoreConfigPath(d.configPath)
 
 	data, err := os.ReadFile(predastorePath)
 	if err != nil {

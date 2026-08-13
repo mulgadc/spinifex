@@ -1,3 +1,4 @@
+# spinifex-unit-version: 1
 [Unit]
 Description=Spinifex graceful guest drain
 PartOf=spinifex.target
@@ -11,11 +12,11 @@ RemainAfterExit=yes
 ExecStart=/bin/true
 # ExecStop fires on ANY target stop, including the stop half of `systemctl
 # restart spinifex.target` (a rolling deploy) -- PartOf propagates regardless
-# of whether the host is actually going down. --only-if-host-stopping drains
-# only when systemd itself is unwinding into shutdown.target; a plain restart
-# or `systemctl stop spinifex.target` falls through so QEMU/nbdkit survive
-# (KillMode=process) and the daemon reconnects to them on the way back up.
-ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --only-if-host-stopping
+# of whether the host is actually going down. --unless-restarting drains on a
+# real shutdown/reboot and on a plain `systemctl stop spinifex.target`; it
+# skips only when a restart of the stack is already queued, so QEMU/nbdkit
+# survive (KillMode=process) and the daemon reconnects on the way back up.
+ExecStop=/usr/local/bin/spx admin node drain --local --timeout=120s --unless-restarting
 TimeoutStopSec=180
 
 [Install]

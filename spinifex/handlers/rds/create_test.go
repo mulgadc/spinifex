@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -122,7 +123,7 @@ type createHarness struct {
 	svc     *Service
 	launch  *launchHarness
 	network *fakeNetwork
-	iam     *fakeRDSEnsurer
+	iam     *iammock.SystemInstanceRoleEnsurer
 	nc      *nats.Conn
 
 	// dnsChanges collects what the endpoint publish put on the bus.
@@ -136,7 +137,7 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 	h := &createHarness{
 		launch:     newLaunchHarness(),
 		network:    newFakeNetwork(),
-		iam:        &fakeRDSEnsurer{},
+		iam:        iammock.New(),
 		nc:         nc,
 		dnsChanges: make(chan handlers_dns.ChangeBatch, 4),
 	}
@@ -285,13 +286,13 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, int64(firstVMGeneration), entry.VMGeneration)
 
 	require.NotNil(t, h.launch.launcher.input)
-	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }
 
 func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
 	h := newCreateHarness(t, "")
 	iamErr := errors.New("IAM store unavailable")
-	h.iam.policyErr = iamErr
+	h.iam.PutRolePolicyErr = iamErr
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
 
@@ -594,6 +595,10 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 		{"PortTooLow", func(in *rds.CreateDBInstanceInput) { in.Port = aws.Int64(80) }, awserrors.ErrorInvalidParameterValue},
 		{"ReservedUsername", func(in *rds.CreateDBInstanceInput) { in.MasterUsername = aws.String("rdsadmin") }, awserrors.ErrorInvalidParameterValue},
 		{"ShortPassword", func(in *rds.CreateDBInstanceInput) { in.MasterUserPassword = aws.String("short") }, awserrors.ErrorInvalidParameterValue},
+		{"DBNameHyphen", func(in *rds.CreateDBInstanceInput) { in.DBName = aws.String("my-db") }, awserrors.ErrorInvalidParameterValue},
+		{"DBNameTooLong", func(in *rds.CreateDBInstanceInput) {
+			in.DBName = aws.String(strings.Repeat("a", 64))
+		}, awserrors.ErrorInvalidParameterValue},
 	}
 
 	for _, tc := range cases {

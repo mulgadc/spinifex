@@ -68,6 +68,9 @@ type NetworkConfig struct {
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
+	// FirewallEnabled toggles the host firewall that scopes cluster ports to cluster
+	// members. Default true; disable only where a site firewall already scopes them.
+	FirewallEnabled bool `mapstructure:"firewall_enabled"`
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
 	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
 	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
@@ -100,6 +103,7 @@ type Config struct {
 	NATS        NATSConfig        `json:"NATS" mapstructure:"nats"`
 	Predastore  PredastoreConfig  `json:"Predastore" mapstructure:"predastore"`
 	Viperblock  ViperblockConfig  `json:"Viperblock" mapstructure:"viperblock"`
+	EBS         EBSConfig         `json:"EBS" mapstructure:"ebs"`
 	AWSGW       AWSGWConfig       `json:"AWSGW" mapstructure:"awsgw"`
 	VPCD        VPCDConfig        `json:"VPCD" mapstructure:"vpcd"`
 	Northstar   NorthstarConfig   `json:"Northstar" mapstructure:"northstar"`
@@ -135,6 +139,35 @@ type ViperblockConfig struct {
 	// volume service. Default false when nil so existing deployments keep
 	// today's behavior until explicitly opted in.
 	GCEnabled *bool `json:"GCEnabled" mapstructure:"gc_enabled"`
+}
+
+// EBS provider selectors. Viperblockd routes EBS calls to the viperblockd
+// daemon and qemunbd to the qemunbdd daemon, both over the versioned
+// ebs.provider.v1.* NATS contract. Embedded named the removed in-process
+// engine and survives solely so a config that still selects it can be
+// rejected by name.
+const (
+	EBSProviderEmbedded    = "embedded"
+	EBSProviderViperblockd = "viperblockd"
+	EBSProviderQEMUNBD     = "qemunbd"
+)
+
+// EBSConfig selects which provider backs EBS. Not nested under
+// ViperblockConfig: it names the provider boundary, not one provider's
+// settings, so a second provider never needs a rename.
+type EBSConfig struct {
+	// Provider is "viperblockd" or "qemunbd" and may be left unset. Volumes
+	// are persisted in ebsmetadata.
+	Provider string `json:"Provider" mapstructure:"provider"`
+}
+
+// ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
+// the default provider.
+func (c EBSConfig) ResolvedProvider() string {
+	if c.Provider == "" {
+		return EBSProviderViperblockd
+	}
+	return c.Provider
 }
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.
@@ -381,6 +414,9 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
 
+	// Default firewall_enabled to true; operators must explicitly set false to disable.
+	viper.SetDefault("network.firewall_enabled", true)
+
 	// Cluster-wide AWS-parity defaults so existing deployments keep working.
 	viper.SetDefault("aws.region", DefaultAWSRegion)
 	viper.SetDefault("aws.internal_suffix", DefaultAWSInternalSuffix)
@@ -435,9 +471,19 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
 	}
-	for nodeName := range cc.Nodes {
+	for nodeName, nodeCfg := range cc.Nodes {
 		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
+		}
+		switch nodeCfg.EBS.Provider {
+		case "", EBSProviderViperblockd, EBSProviderQEMUNBD:
+		case EBSProviderEmbedded:
+			// Refuse rather than silently upgrade: the embedded engine is gone,
+			// and starting anyway would migrate this node's volumes to
+			// ebsmetadata one-way without the operator ever asking for it.
+			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q has been removed; set provider = %q or remove the key (this is a one-way switch: volumes move to ebsmetadata)", nodeName, EBSProviderEmbedded, EBSProviderViperblockd)
+		default:
+			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or %q, or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd, EBSProviderQEMUNBD)
 		}
 	}
 

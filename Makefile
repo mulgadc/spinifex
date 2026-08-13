@@ -111,6 +111,12 @@ build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + Postg
 import-rds-postgres-image: ## Build + register the rds-postgres AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=rds-postgres IMPORT=1
 
+build-rds-mariadb-image: ## Build the spinifex-rds-mariadb AMI (Alpine + MariaDB 11.8 + rds-init; IMPORT=1 to register)
+	$(MAKE) build-system-image IMAGE=rds-mariadb
+
+import-rds-mariadb-image: ## Build + register the rds-mariadb AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=rds-mariadb IMPORT=1
+
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -134,7 +140,7 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
 # integration and race tests skipped to keep quick, they run in CI.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-package-check test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -149,9 +155,13 @@ test-harness:
 AWS_MODEL_CONFORMANCE_REPORT ?= $(CURDIR)/.cache/aws-model-conformance-report.txt
 AWS_MODEL_CONFORMANCE_MODE ?= fail
 AWS_MODEL_OPERATION_COVERAGE_REPORT ?= $(CURDIR)/docs/aws-model-operation-coverage.md
+# -count=1 is load-bearing: the conformance report is written by the test binary,
+# so a cached pass skips the run, leaves no report, and the cat below fails the
+# target. It also keeps the conformance gate honest — a cached result would mean
+# the check never ran against this commit.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
-	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -count=1 -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
 	@cat $(AWS_MODEL_CONFORMANCE_REPORT)
 	@$(MAKE) --no-print-directory generate-aws-model-coverage
 	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_REPORT)"
@@ -248,6 +258,10 @@ test-images:
 # Check that new/changed code meets coverage threshold (runs tests first)
 diff-coverage: test-cover
 	@QUIET=$(QUIET) scripts/diff-coverage.sh $(COVERPROFILE)
+
+# Check that newly added test files use an external test package
+test-package-check:
+	@QUIET=$(QUIET) scripts/check-test-package.sh
 
 bench:
 	@echo -e "\n....Running benchmarks for $(GO_PROJECT_NAME)...."
@@ -388,7 +402,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

@@ -1,0 +1,25 @@
+# spinifex-unit-version: 1
+[Unit]
+Description=Spinifex host firewall (nftables input policy)
+Documentation=file:/etc/spinifex/firewall/spinifex.nft
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+DefaultDependencies=no
+ConditionPathExists=/etc/spinifex/firewall/peers.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+ExecStart=/usr/local/lib/spinifex/spinifex-firewall-apply
+ExecReload=/usr/local/lib/spinifex/spinifex-firewall-apply
+TimeoutStopSec=10s
+
+# No ExecStop: flushing on stop would take vpcd's MASQUERADE and per-EIP FORWARD
+# rules with it. Remove the policy deliberately with
+# `nft delete table inet spinifex_filter`.
+
+[Install]
+WantedBy=sysinit.target

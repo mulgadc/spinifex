@@ -14,15 +14,15 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/nats-io/nats-server/v2/server"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -275,7 +275,7 @@ func TestRunInstance_UniqueIDs(t *testing.T) {
 }
 
 func TestFloorVolumeSizeToAMI(t *testing.T) {
-	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+	loader := &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 		"ami-rocky":   {VolumeSizeGiB: 10},
 		"ami-debian":  {VolumeSizeGiB: 3},
 		"ami-no-size": {VolumeSizeGiB: 0},
@@ -600,157 +600,6 @@ func (f *fakeResourceCapacityProvider) ReservationAvailable(reservationID, accou
 
 func (f *fakeResourceCapacityProvider) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
 	return f.instanceTypes
-}
-
-type fakeStoppedStore struct {
-	mu              sync.Mutex
-	stopped         []*vm.VM
-	terminated      []*vm.VM
-	loadByID        map[string]*vm.VM
-	wroteStopped    map[string]*vm.VM
-	wroteTerminated map[string]*vm.VM
-	deletedStopped  []string
-	listErr         error
-	listTermErr     error
-	loadErr         error
-	writeErr        error
-	updateErr       error
-	writeTermErr    error
-	deleteErr       error
-	deleteFailFirst bool
-	deleteAttempts  int
-
-	// claimedStopped / claimErr drive ClaimStoppedInstance, the atomic
-	// claim used by StartStoppedInstance. Claiming removes the entry from
-	// loadByID (mirroring the real KV delete-as-claim), guarded by mu so
-	// concurrent StartStoppedInstance callers race exactly like production.
-	claimedStopped []string
-	claimErr       error
-	claimAttempts  int
-
-	// updateStoppedCalls counts UpdateStoppedInstance invocations for tests
-	// that assert on retry/race behavior.
-	updateStoppedCalls int
-
-	// claimAfterLoad simulates a winning ClaimStoppedInstance landing between
-	// a caller's Load and its later UpdateStoppedInstance: the record is
-	// removed right after LoadStoppedInstance returns it, so the subsequent
-	// UpdateStoppedInstance sees a missing entry exactly like the real CAS.
-	claimAfterLoad bool
-}
-
-func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
-	if f.loadErr != nil {
-		return nil, f.loadErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	v, ok := f.loadByID[id]
-	if !ok {
-		return nil, nil
-	}
-	if f.claimAfterLoad {
-		delete(f.loadByID, id)
-		f.claimedStopped = append(f.claimedStopped, id)
-	}
-	return v, nil
-}
-func (f *fakeStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.stopped, nil
-}
-func (f *fakeStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) {
-	if f.listTermErr != nil {
-		return nil, f.listTermErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.terminated, nil
-}
-func (f *fakeStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error {
-	if f.writeErr != nil {
-		return f.writeErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.wroteStopped == nil {
-		f.wroteStopped = make(map[string]*vm.VM)
-	}
-	f.wroteStopped[id] = instance
-	return nil
-}
-func (f *fakeStoppedStore) WriteTerminatedInstance(id string, instance *vm.VM) error {
-	if f.writeTermErr != nil {
-		return f.writeTermErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.wroteTerminated == nil {
-		f.wroteTerminated = make(map[string]*vm.VM)
-	}
-	f.wroteTerminated[id] = instance
-	return nil
-}
-func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
-	f.mu.Lock()
-	f.deleteAttempts++
-	attempt := f.deleteAttempts
-	f.mu.Unlock()
-	if f.deleteFailFirst && attempt == 1 {
-		return errors.New("transient delete failure")
-	}
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deletedStopped = append(f.deletedStopped, id)
-	return nil
-}
-func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
-
-// UpdateStoppedInstance mimics the real CAS semantics: mutate runs under the
-// store lock against loadByID's entry, and a missing record (e.g. removed by
-// a concurrent ClaimStoppedInstance) returns jetstream.ErrKeyNotFound instead of
-// resurrecting it — the same createIfAbsent=false contract as JetStreamManager.
-func (f *fakeStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.updateStoppedCalls++
-	if f.updateErr != nil {
-		return nil, f.updateErr
-	}
-	v, ok := f.loadByID[id]
-	if !ok {
-		return nil, jetstream.ErrKeyNotFound
-	}
-	mutate(v)
-	return v, nil
-}
-
-// ClaimStoppedInstance mimics the real atomic delete-as-claim: under the
-// store lock, remove and return loadByID[id], or vm.ErrStoppedInstanceClaimed
-// if it is already gone — mirroring the real KV's "revision conflict or
-// not-found" outcome for a losing racer. The lock makes this genuinely
-// exclusive under concurrent callers, matching the production guarantee.
-func (f *fakeStoppedStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.claimAttempts++
-	if f.claimErr != nil {
-		return nil, f.claimErr
-	}
-	v, ok := f.loadByID[id]
-	if !ok {
-		return nil, vm.ErrStoppedInstanceClaimed
-	}
-	delete(f.loadByID, id)
-	f.claimedStopped = append(f.claimedStopped, id)
-	return v, nil
 }
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
@@ -1092,7 +941,7 @@ func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {
 func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
 	id := "i-stopped1"
 	owner := utils.GlobalAccountID
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, InstanceType: "t3.medium", AccountID: owner},
 	}}
 	svc := &InstanceServiceImpl{
@@ -1111,7 +960,7 @@ func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
 func TestDescribeInstanceAttribute_NotFound(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		vmMgr:        mgrWith(map[string]*vm.VM{}),
-		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+		stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}},
 	}
 	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-ghost"),
@@ -1200,9 +1049,9 @@ func TestDescribeStoppedInstances_NilStore(t *testing.T) {
 
 func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 	owner := utils.GlobalAccountID
-	store := &fakeStoppedStore{
-		stopped: []*vm.VM{
-			{
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			"i-stop1": {
 				ID:        "i-stop1",
 				AccountID: owner,
 				Reservation: &ec2.Reservation{
@@ -1230,9 +1079,9 @@ func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
 
 func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
 	owner := utils.GlobalAccountID
-	store := &fakeStoppedStore{
-		terminated: []*vm.VM{
-			{
+	store := &vmmock.StateStore{
+		Terminated: map[string]*vm.VM{
+			"i-term1": {
 				ID:        "i-term1",
 				AccountID: owner,
 				Reservation: &ec2.Reservation{
@@ -1267,9 +1116,9 @@ func TestDescribeKVInstances_FilteringGroupingAndIsolation(t *testing.T) {
 		Reservation: &ec2.Reservation{ReservationId: aws.String("r-other")},
 		Instance:    &ec2.Instance{InstanceId: aws.String("i-other")},
 	}
-	store := &fakeStoppedStore{
-		stopped:    []*vm.VM{first, second, other},
-		terminated: []*vm.VM{first, second, other},
+	store := &vmmock.StateStore{
+		Stopped:    map[string]*vm.VM{first.ID: first, second.ID: second, other.ID: other},
+		Terminated: map[string]*vm.VM{first.ID: first, second.ID: second, other.ID: other},
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
 
@@ -1361,7 +1210,7 @@ func TestModifyInstanceAttribute_NilStore(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
@@ -1374,7 +1223,7 @@ func TestModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
 
 func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
 	id := "i-running"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1389,7 +1238,7 @@ func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
 
 func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
 	id := "i-stopped"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1404,7 +1253,7 @@ func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
 
 func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
 	id := "i-type"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
 			ID:           id,
 			Status:       vm.StateStopped,
@@ -1425,7 +1274,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.loadByID[id]
+	updated := store.Stopped[id]
 	require.NotNil(t, updated)
 	assert.Equal(t, "t3.medium", updated.InstanceType)
 	assert.Equal(t, "t3.medium", updated.Config.InstanceType)
@@ -1434,7 +1283,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
 
 func TestModifyInstanceAttribute_ChangeInstanceType_EmptyValue(t *testing.T) {
 	id := "i-empty"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", Instance: &ec2.Instance{}},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1449,7 +1298,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType_EmptyValue(t *testing.T) {
 
 func TestModifyInstanceAttribute_ChangeInstanceType_NilEmbeddedInstance(t *testing.T) {
 	id := "i-nil-inst"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1464,7 +1313,7 @@ func TestModifyInstanceAttribute_ChangeInstanceType_NilEmbeddedInstance(t *testi
 
 func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 	id := "i-ud"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
 			ID:        id,
 			Status:    vm.StateStopped,
@@ -1484,14 +1333,14 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.loadByID[id]
+	updated := store.Stopped[id]
 	require.NotNil(t, updated)
 	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
 }
 
 func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 	id := "i-recovery"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
 			ID:           id,
 			Status:       vm.StateStopped,
@@ -1516,7 +1365,7 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 	}, "acc")
 	require.NoError(t, err)
 
-	updated := store.loadByID[id]
+	updated := store.Stopped[id]
 	require.NotNil(t, updated)
 	assert.Nil(t, updated.Instance.StateReason)
 }
@@ -1573,7 +1422,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Running_NotVisible(t *tes
 func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 	id := "i-stop-prot"
 	owner := "acc"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
 			ID: id, Status: vm.StateStopped, AccountID: owner,
 			Instance: &ec2.Instance{InstanceId: aws.String(id)},
@@ -1590,7 +1439,7 @@ func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 	}, owner)
 	require.NoError(t, err)
 
-	updated := store.loadByID[id]
+	updated := store.Stopped[id]
 	require.NotNil(t, updated)
 	require.NotNil(t, updated.RunInstancesInput)
 	assert.True(t, *updated.RunInstancesInput.DisableApiTermination)
@@ -1598,8 +1447,8 @@ func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 
 func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 	id := "i-werr"
-	store := &fakeStoppedStore{
-		loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
 			id: {
 				ID:           id,
 				Status:       vm.StateStopped,
@@ -1612,7 +1461,7 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 				},
 			},
 		},
-		updateErr: fmt.Errorf("kv write boom"),
+		UpdateStoppedErr: fmt.Errorf("kv write boom"),
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -1631,8 +1480,8 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 // stale stopped entry.
 func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 	id := "i-raced"
-	store := &fakeStoppedStore{
-		loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
 			id: {
 				ID:           id,
 				Status:       vm.StateStopped,
@@ -1645,7 +1494,7 @@ func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 				},
 			},
 		},
-		claimAfterLoad: true,
+		ClaimAfterLoad: true,
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
@@ -1655,8 +1504,8 @@ func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 	}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
-	assert.Empty(t, store.loadByID, "the claimed record must not be resurrected")
-	assert.Equal(t, []string{id}, store.claimedStopped)
+	assert.Empty(t, store.Stopped, "the claimed record must not be resurrected")
+	assert.Equal(t, []string{id}, store.ClaimedStopped)
 }
 
 // --- TerminateStoppedInstance tests ---
@@ -1733,21 +1582,7 @@ func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID
 // ebs.delete path inside TerminateStoppedInstance.
 func embeddedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
-	opts := &server.Options{
-		Host:   "127.0.0.1",
-		Port:   -1,
-		NoLog:  true,
-		NoSigs: true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc := testutil.StartTestNATS(t)
 	return nc
 }
 
@@ -1766,7 +1601,7 @@ func TestTerminateStoppedInstance_NilStore(t *testing.T) {
 }
 
 func TestTerminateStoppedInstance_LoadError(t *testing.T) {
-	store := &fakeStoppedStore{loadErr: errors.New("kv down")}
+	store := &vmmock.StateStore{LoadStoppedErr: errors.New("kv down")}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
@@ -1775,7 +1610,7 @@ func TestTerminateStoppedInstance_LoadError(t *testing.T) {
 }
 
 func TestTerminateStoppedInstance_NotFound(t *testing.T) {
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
@@ -1785,7 +1620,7 @@ func TestTerminateStoppedInstance_NotFound(t *testing.T) {
 
 func TestTerminateStoppedInstance_NotStopped(t *testing.T) {
 	id := "i-running"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1797,7 +1632,7 @@ func TestTerminateStoppedInstance_NotStopped(t *testing.T) {
 
 func TestTerminateStoppedInstance_NotVisible(t *testing.T) {
 	id := "i-stopped"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1818,7 +1653,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-001", DeleteOnTermination: true},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
@@ -1827,13 +1662,13 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
 
 	assert.Empty(t, vd.calls, "volumes must not be deleted when termination protected")
-	assert.Empty(t, store.wroteTerminated, "must not write to terminated bucket when protected")
-	assert.Empty(t, store.deletedStopped, "must not remove from stopped bucket when protected")
+	assert.Empty(t, store.WroteTerminated, "must not write to terminated bucket when protected")
+	assert.Empty(t, store.DeletedStopped, "must not remove from stopped bucket when protected")
 }
 
 func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
 	id := "i-term-001"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
 	}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
@@ -1844,14 +1679,14 @@ func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
 	assert.Equal(t, "terminated", out.Status)
 	assert.Equal(t, id, out.InstanceID)
 
-	require.NotNil(t, store.wroteTerminated[id])
-	assert.Equal(t, vm.StateTerminated, store.wroteTerminated[id].Status)
-	assert.Contains(t, store.deletedStopped, id)
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, vm.StateTerminated, store.WroteTerminated[id].Status)
+	assert.Contains(t, store.DeletedStopped, id)
 }
 
 func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
 	id := "i-term-tags"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
 	}}
 	tw := &fakeTagWriter{}
@@ -1867,7 +1702,7 @@ func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
 
 func TestTerminateStoppedInstance_CentralTagDeleteFailureIsBestEffort(t *testing.T) {
 	id := "i-term-tagerr"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
 	}}
 	tw := &fakeTagWriter{err: errors.New("s3 down")}
@@ -1876,13 +1711,13 @@ func TestTerminateStoppedInstance_CentralTagDeleteFailureIsBestEffort(t *testing
 	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err, "terminate already succeeded; central delete failure must not surface")
 	assert.Equal(t, "terminated", out.Status)
-	assert.Contains(t, store.deletedStopped, id)
+	assert.Contains(t, store.DeletedStopped, id)
 }
 
 func TestTerminateStoppedInstance_ProtectedSkipsCentralTagDelete(t *testing.T) {
 	id := "i-prot-tags"
 	tw := &fakeTagWriter{}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
 			ID: id, Status: vm.StateStopped, AccountID: "acc",
 			RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
@@ -1897,30 +1732,30 @@ func TestTerminateStoppedInstance_ProtectedSkipsCentralTagDelete(t *testing.T) {
 
 func TestTerminateStoppedInstance_WriteTerminatedError_Aborts(t *testing.T) {
 	id := "i-werr"
-	store := &fakeStoppedStore{
-		loadByID:     map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
-		writeTermErr: errors.New("kv write boom"),
+	store := &vmmock.StateStore{
+		Stopped:            map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		WriteTerminatedErr: errors.New("kv write boom"),
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-	assert.Empty(t, store.deletedStopped, "stopped delete must not run when terminated write fails")
+	assert.Empty(t, store.DeletedStopped, "stopped delete must not run when terminated write fails")
 }
 
 func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
 	id := "i-retry"
-	store := &fakeStoppedStore{
-		loadByID:        map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
-		deleteFailFirst: true,
+	store := &vmmock.StateStore{
+		Stopped:         map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		DeleteFailFirst: true,
 	}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
-	assert.Equal(t, 2, store.deleteAttempts, "first delete fails, retry succeeds")
-	assert.Contains(t, store.deletedStopped, id)
+	assert.Equal(t, 2, store.DeleteAttempts, "first delete fails, retry succeeds")
+	assert.Contains(t, store.DeletedStopped, id)
 }
 
 func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
@@ -1930,7 +1765,7 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 		{Name: "vol-user-001", DeleteOnTermination: true},
 		{Name: "vol-keep-001", DeleteOnTermination: false},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
@@ -1952,15 +1787,15 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 
-	require.NotNil(t, store.wroteTerminated[id])
-	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
 		"ADR-0003 §1 semantics: a successful volume delete must stamp Teardown[volumes]=done")
 	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
 }
@@ -1976,15 +1811,15 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *te
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{err: errors.New("delete forced failure")}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err, "terminate itself stays best-effort; the failure is tracked via Teardown, not returned")
 
-	require.NotNil(t, store.wroteTerminated[id])
-	assert.Equal(t, string(vm.TeardownFailed), store.wroteTerminated[id].Teardown[vm.TeardownVolumes],
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownFailed), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
 		"a DeleteVolumeOnTerminate failure must be surfaced via Teardown, not silently swallowed")
 	assert.Empty(t, vd.deleted, "the forced failure must mean nothing was actually deleted")
 }
@@ -2001,7 +1836,7 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
 
@@ -2010,8 +1845,8 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 
 	assert.Equal(t, []string{"vol-root-nondot"}, vd.detached, "the still-attached non-DoT boot volume must be detached")
 	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
-	require.NotNil(t, store.wroteTerminated[id])
-	assert.Equal(t, string(vm.TeardownDone), store.wroteTerminated[id].Teardown[vm.TeardownVolumes])
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes])
 }
 
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
@@ -2020,12 +1855,12 @@ func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-user-001", DeleteOnTermination: true},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err, "missing VolumeDeleter must not abort termination")
-	require.NotNil(t, store.wroteTerminated[id])
+	require.NotNil(t, store.WroteTerminated[id])
 }
 
 func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
@@ -2034,7 +1869,7 @@ func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 	v.EBSRequests.Requests = []spxtypes.EBSRequest{
 		{Name: "vol-efi-001", EFI: true},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 
 	nc := embeddedNATS(t)
 	var ebsDeleted []string
@@ -2069,7 +1904,7 @@ func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
 			PrivateIpAddress: aws.String("10.0.0.5"),
 		},
 	}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	pr := &fakePublicIPReleaser{}
 	svc := &InstanceServiceImpl{stoppedStore: store, ipReleaser: pr}
 
@@ -2082,7 +1917,7 @@ func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
 func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 	id := "i-eni"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-1234"}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{}
 	ec := &fakeENICreator{}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
@@ -2100,7 +1935,7 @@ func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
 	// instance must still finalize to the terminated bucket, not error out.
 	id := "i-eni-gone"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-gone"}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
 
@@ -2116,7 +1951,7 @@ func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
 func TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete(t *testing.T) {
 	id := "i-eni-detach-fail"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-stuck"}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{}
 	ec := &fakeENICreator{detachErr: errors.New("detach unavailable")}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
@@ -2134,7 +1969,7 @@ func TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete(t *te
 func TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError(t *testing.T) {
 	id := "i-eni-delete-fail"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-broken"}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{err: errors.New("server unavailable")}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
 
@@ -2151,7 +1986,7 @@ func TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError(t *testing.T) 
 func TestTerminateStoppedInstance_ReleaseAttachedENIs_ListErrorLogsAndReturns(t *testing.T) {
 	id := "i-list-err"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	ed := &fakeENIDeleter{}
 	ec := &fakeENICreator{listENIsErr: errors.New("kv unreachable")}
 	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
@@ -2212,7 +2047,7 @@ func TestTerminateStoppedInstance_ReleaseAttachedENIs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			id := "i-sweep-" + tt.name
 			v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-			store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 			ed := &fakeENIDeleter{err: tt.deleteErr}
 			ec := &fakeENICreator{
 				detachErr:    tt.detachErr,
@@ -2267,7 +2102,7 @@ func TestStartStoppedInstance_NilStore(t *testing.T) {
 }
 
 func TestStartStoppedInstance_NilResourceMgr(t *testing.T) {
-	svc := &InstanceServiceImpl{stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}}}
+	svc := &InstanceServiceImpl{stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}}}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
@@ -2275,7 +2110,7 @@ func TestStartStoppedInstance_NilResourceMgr(t *testing.T) {
 
 func TestStartStoppedInstance_NilVMMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{
-		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+		stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}},
 		resourceMgr:  &fakeResourceCapacityProvider{},
 	}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
@@ -2284,7 +2119,7 @@ func TestStartStoppedInstance_NilVMMgr(t *testing.T) {
 }
 
 func TestStartStoppedInstance_LoadError(t *testing.T) {
-	store := &fakeStoppedStore{loadErr: errors.New("kv down")}
+	store := &vmmock.StateStore{LoadStoppedErr: errors.New("kv down")}
 	svc := &InstanceServiceImpl{
 		stoppedStore: store,
 		resourceMgr:  &fakeResourceCapacityProvider{},
@@ -2296,7 +2131,7 @@ func TestStartStoppedInstance_LoadError(t *testing.T) {
 }
 
 func TestStartStoppedInstance_NotFound(t *testing.T) {
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
 	svc := &InstanceServiceImpl{
 		stoppedStore: store,
 		resourceMgr:  &fakeResourceCapacityProvider{},
@@ -2316,7 +2151,7 @@ func TestStartStoppedInstance_NotFound(t *testing.T) {
 // returns NotFound (TestStartStoppedInstance_NotFound).
 func TestStartStoppedInstance_NotFoundButRunningLocally(t *testing.T) {
 	id := "i-won-locally"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
 	mgr := vm.NewManager()
 	mgr.Insert(&vm.VM{ID: id, Status: vm.StateRunning, AccountID: "acc"})
 	svc := &InstanceServiceImpl{
@@ -2331,7 +2166,7 @@ func TestStartStoppedInstance_NotFoundButRunningLocally(t *testing.T) {
 
 func TestStartStoppedInstance_NotStopped(t *testing.T) {
 	id := "i-running"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
 	}}
 	svc := &InstanceServiceImpl{
@@ -2346,7 +2181,7 @@ func TestStartStoppedInstance_NotStopped(t *testing.T) {
 
 func TestStartStoppedInstance_NotVisible(t *testing.T) {
 	id := "i-foreign"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc", InstanceType: "t3.micro"},
 	}}
 	svc := &InstanceServiceImpl{
@@ -2359,12 +2194,12 @@ func TestStartStoppedInstance_NotVisible(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 
 	// Cross-tenant rejection must not delete from KV.
-	assert.Empty(t, store.deletedStopped, "cross-tenant rejection must not delete stopped instance")
+	assert.Empty(t, store.DeletedStopped, "cross-tenant rejection must not delete stopped instance")
 }
 
 func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	id := "i-badtype"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: "z99.nope"},
 	}}
 	prov := &fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
@@ -2380,15 +2215,15 @@ func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 
 	// The claim removed the entry from KV before the instance-type check;
 	// the rollback must write it back so the instance is not lost.
-	assert.Contains(t, store.claimedStopped, id, "claim must run before the instance-type check")
-	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after a downstream failure")
-	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+	assert.Contains(t, store.ClaimedStopped, id, "claim must run before the instance-type check")
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after a downstream failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
 }
 
 func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 	id := "i-alloc-fail"
 	itype := "t3.micro"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
 	}}
 	prov := &fakeResourceCapacityProvider{
@@ -2409,8 +2244,8 @@ func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 	// A failed Allocate must not leave the instance stranded — it was
 	// already claimed (removed from KV) by this point, so it must be
 	// restored.
-	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after Allocate failure")
-	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after Allocate failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
 }
 
 // GPU claim failure must roll back the resource allocation and remove the VM
@@ -2418,7 +2253,7 @@ func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	id := "i-gpu-fail"
 	itype := "g5.xlarge"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
 	}}
 	prov := &fakeResourceCapacityProvider{
@@ -2444,12 +2279,12 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	require.Len(t, prov.deallocated, 1, "GPU claim failure must trigger deallocate")
 	_, stillInMgr := mgr.Get(id)
 	assert.False(t, stillInMgr, "GPU claim failure must remove the VM from the manager map")
-	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
+	assert.Empty(t, store.DeletedStopped, "stopped-KV entry must remain on rollback")
 
 	// The atomic claim removed the entry from KV before Allocate/GPU-claim
 	// ran; the rollback must write it back so it is not lost.
-	require.NotNil(t, store.wroteStopped[id], "claimed instance must be restored to KV after GPU claim failure")
-	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after GPU claim failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
 }
 
 // TestStartStoppedInstance_ClaimConflict proves a lost claim race is
@@ -2457,11 +2292,11 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 func TestStartStoppedInstance_ClaimConflict(t *testing.T) {
 	id := "i-claim-conflict"
 	itype := "t3.micro"
-	store := &fakeStoppedStore{
-		loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
 			id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
 		},
-		claimErr: vm.ErrStoppedInstanceClaimed,
+		ClaimStoppedErr: vm.ErrStoppedInstanceClaimed,
 	}
 	prov := &fakeResourceCapacityProvider{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: {InstanceType: aws.String(itype)}},
@@ -2492,7 +2327,7 @@ func (raceVolumeMounter) UnmountOne(spxtypes.EBSRequest) error { return nil }
 // TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
 // the double-start bug this claim closes: two nodes (or a forwarded call
 // racing a local fallback) could both observe the same stopped instance as
-// claimable and both launch it onto the same viperblock volume. It fires two
+// claimable and both launch it onto the same EBS volume. It fires two
 // concurrent StartStoppedInstance calls at the same stopped instance id and
 // asserts the atomic claim lets exactly one of them proceed past it —
 // reaching resourceMgr.Allocate / vmMgr.Insert / vmMgr.Run — while the other
@@ -2517,7 +2352,7 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 
 	id := "i-race"
 	itype := "t3.micro"
-	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
 	}}
 	prov := &fakeResourceCapacityProvider{
@@ -2563,11 +2398,11 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 	// Exactly one caller ever wins the atomic claim, regardless of whether
 	// the loser lost at the claim itself or earlier at the preliminary Load
 	// (see comment above) — it may not always attempt the claim at all.
-	assert.Len(t, store.claimedStopped, 1, "the atomic claim must succeed exactly once")
-	assert.GreaterOrEqual(t, store.claimAttempts, 1, "the winner must have attempted the claim")
+	assert.Len(t, store.ClaimedStopped, 1, "the atomic claim must succeed exactly once")
+	assert.GreaterOrEqual(t, store.ClaimAttempts, 1, "the winner must have attempted the claim")
 
-	require.NotNil(t, store.wroteStopped[id], "the winner's downstream Run failure must restore the instance to KV")
-	assert.Equal(t, vm.StateStopped, store.wroteStopped[id].Status)
+	require.NotNil(t, store.WroteStopped[id], "the winner's downstream Run failure must restore the instance to KV")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
 
 	_, stillInMgr := mgr.Get(id)
 	assert.False(t, stillInMgr, "a failed Run must not leave the VM in the manager map")
@@ -2576,18 +2411,35 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
-	byID map[string]viperblock.AMIMetadata
-	err  error
+	byID       map[string]ebsmetadata.AMI
+	err        error
+	sourceByID map[string]string
+	sourceErr  error
 }
 
-func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (viperblock.AMIMetadata, error) {
+func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.AMI, error) {
 	if f.err != nil {
-		return viperblock.AMIMetadata{}, f.err
+		return ebsmetadata.AMI{}, f.err
 	}
 	if meta, ok := f.byID[id]; ok {
 		return meta, nil
 	}
-	return viperblock.AMIMetadata{}, errors.New("not found")
+	return ebsmetadata.AMI{}, errors.New("not found")
+}
+
+// GetAMISourceVolumeID defaults to the bundled system AMI convention, where the
+// snapshot's source volume is named after the AMI itself.
+func (f *fakeAMILoader) GetAMISourceVolumeID(_ context.Context, id string) (string, error) {
+	if f.sourceErr != nil {
+		return "", f.sourceErr
+	}
+	if volumeID, ok := f.sourceByID[id]; ok {
+		return volumeID, nil
+	}
+	if _, ok := f.byID[id]; !ok {
+		return "", errors.New("not found")
+	}
+	return id, nil
 }
 
 type fakeKeyValidator struct {
@@ -2665,7 +2517,7 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-other": {ImageOwnerAlias: "999988887777"},
 		}},
 	}
@@ -2681,7 +2533,7 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		keyValidator: &fakeKeyValidator{err: errors.New("no key")},
@@ -2706,7 +2558,7 @@ func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
 	_ = it
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2730,7 +2582,7 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2764,7 +2616,7 @@ func TestPrepareRunInstances_PersistsIamInstanceProfile(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2798,7 +2650,7 @@ func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2829,7 +2681,7 @@ func TestPrepareRunInstances_ReservationCapsNoSpill(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2856,7 +2708,7 @@ func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2886,7 +2738,7 @@ func TestPrepareRunInstances_ReservationRollbackNoGeneralPoolLeak(t *testing.T) 
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -2918,7 +2770,7 @@ func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
 		svc := &InstanceServiceImpl{
 			config:        &config.Config{},
 			instanceTypes: types,
-			amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 				"ami-1": {ImageOwnerAlias: "acc"},
 			}},
 			resourceMgr: prov,
@@ -2994,7 +2846,7 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 			svc := &InstanceServiceImpl{
 				config:        &config.Config{},
 				instanceTypes: types,
-				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 					"ami-1": {ImageOwnerAlias: "acc", BootMode: tc.amiBootMode},
 				}},
 				resourceMgr: prov,
@@ -3189,7 +3041,7 @@ func prepareSvcWithENI(t *testing.T, eni *fakeENICreator, ipam *fakeIPAllocator)
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -3571,7 +3423,7 @@ func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,
@@ -3598,7 +3450,7 @@ func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		config:        &config.Config{},
 		instanceTypes: types,
-		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
 		resourceMgr: prov,

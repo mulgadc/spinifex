@@ -393,6 +393,11 @@ func (w *Worker) ForceRenewCertificate(ctx context.Context, input *ForceRenewCer
 	if err != nil {
 		return nil, fmt.Errorf("get renewed cert: %w", err)
 	}
+	// An absent record reads back as (nil, nil): the certificate was deleted
+	// between the ownership check and this re-read.
+	if renewed == nil {
+		return nil, errors.New(awserrors.ErrorResourceNotFound)
+	}
 	if renewed.RenewalSummary != nil && renewed.RenewalSummary.RenewalStatus == acm.RenewalStatusFailed {
 		return nil, fmt.Errorf("acm renewal: %s: %s", renewed.RenewalSummary.RenewalStatusReason, input.CertificateArn)
 	}

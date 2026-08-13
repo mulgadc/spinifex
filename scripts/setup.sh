@@ -14,9 +14,9 @@
 #                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
-#                                deps, aws, users, sudoers, files, directories,
-#                                env, systemd, logrotate, udev, fixown,
-#                                migrations
+#                                deps, aws, users, sudoers, firewall, files,
+#                                directories, env, systemd, logrotate, udev,
+#                                fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -24,8 +24,17 @@ set -e
 INSTALL_SPINIFEX_CHANNEL="${INSTALL_SPINIFEX_CHANNEL:-latest}"
 INSTALL_BASE_URL="${INSTALL_BASE_URL:-https://install.mulgadc.com}"
 
-# Referenced by both the sudoers grant and the daemon, so the path is fixed here.
+# Referenced by both the sudoers grant and the daemon, so the paths are fixed here.
 ENDPOINT_SYSCTL_HELPER="/usr/local/lib/spinifex/spinifex-set-endpoint-sysctl"
+IPSEC_STATE_HELPER="/usr/local/lib/spinifex/spinifex-set-ipsec-state"
+
+# The firewall policy and the peer addresses it scopes cluster ports to. The
+# policy ships with the node; the peers are written by install-node.sh, which is
+# the only component that knows every node's resolved planes.
+FIREWALL_DIR="/etc/spinifex/firewall"
+FIREWALL_RULES="${FIREWALL_DIR}/spinifex.nft"
+FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
+FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -234,9 +243,223 @@ HELPER
     $SUDO chmod 0755 "${ENDPOINT_SYSCTL_HELPER}"
 }
 
+# The daemon turns OVN IPsec on and off as the cluster topology resolves, so it
+# needs unit control. A NOPASSWD systemctl grant takes an arbitrary unit name and
+# is root-equivalent, so the units are fixed here and only the state is an input.
+install_ipsec_state_helper() {
+    $SUDO install -d -m 0755 /usr/local/lib/spinifex
+    $SUDO tee "${IPSEC_STATE_HELPER}" > /dev/null << 'HELPER'
+#!/bin/sh
+# Turns the host's OVN IPsec services on or off. Runs as root under a NOPASSWD
+# grant, so it must never act on a unit the caller names.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: $0 <on|off>" >&2
+    exit 2
+fi
+
+# mask/unmask rather than disable/enable. The daemon's unit sets
+# ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
+# and disabling a unit that also ships a SysV script shells out to update-rc.d
+# there and fails. Masking is done by PID 1 over D-Bus and is unaffected.
+
+# ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
+# this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
+# states. Absent on a host without strongswan, which is not an error.
+systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+
+case "$1" in
+    on)
+        systemctl unmask openvswitch-ipsec.service
+        exec systemctl start openvswitch-ipsec.service
+        ;;
+    off)
+        exec systemctl mask --now openvswitch-ipsec.service
+        ;;
+    *)
+        echo "state not permitted: $1" >&2
+        exit 2
+        ;;
+esac
+HELPER
+    $SUDO chown root:root "${IPSEC_STATE_HELPER}"
+    $SUDO chmod 0755 "${IPSEC_STATE_HELPER}"
+}
+
+# The policy is written here rather than shipped in the tarball so the ISO chroot
+# and the ansible path get an identical file without a packaging step. Installed
+# but NOT enabled: the peer set is empty until install-node.sh resolves the
+# cluster's planes, and a drop policy with no peers would break formation.
+install_firewall() {
+    stage "installing host firewall policy"
+    info "Installing host firewall policy..."
+
+    $SUDO install -d -m 0755 "$FIREWALL_DIR" /usr/local/lib/spinifex
+    $SUDO tee "$FIREWALL_RULES" > /dev/null << 'RULES'
+#!/usr/sbin/nft -f
+# Spinifex host firewall. Managed by scripts/setup.sh — edits are overwritten.
+#
+# Only `table inet spinifex_filter` is created, deleted and replaced. vpcd writes
+# MASQUERADE and per-EIP FORWARD ACCEPT rules into the `ip nat` and `ip filter`
+# tables and reinstalls them only when the service starts, so anything that
+# flushes the whole ruleset breaks elastic IPs silently until the next restart.
+#
+# INPUT only. nftables runs every table registered on a hook and any drop is
+# final, so a forward-hook policy here could not be rescued by vpcd's ACCEPTs in
+# the other table. OUTPUT is untouched: the IMDS reply path egresses under
+# per-tap policy routing.
+
+include "/etc/spinifex/firewall/peers.nft"
+
+# Create-then-delete so the replace is atomic and the delete cannot fail on a
+# first run. nft applies the whole file as one transaction or none of it.
+table inet spinifex_filter
+delete table inet spinifex_filter
+
+table inet spinifex_filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # First, or every reply to a connection this node opened is dropped.
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        # Guest metadata and VPC DNS terminate on per-ENI OVS internal ports in
+        # the host netns, so guest traffic to 169.254.169.254 and .253 arrives
+        # here. Without this, cloud-init, instance-role credentials and all
+        # guest DNS break. The ports exist only while instances run, so this
+        # matches the prefix rather than an enumerated list.
+        iifname "ime-*" accept
+
+        # PMTUD is not optional under a Geneve overlay.
+        icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
+        icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+
+        # A broadcast DHCP reply does not reliably match an established
+        # conntrack entry, so the uplink and external-pool leases need this.
+        udp sport 67 udp dport 68 accept
+
+        # Public plane. 9999 is also how every guest agent (lb, eks, ecs, rds)
+        # reaches its control plane over br-mgmt: they speak SigV4 to the AWS
+        # gateway, never NATS, so no cluster port needs to face the guests.
+        tcp dport { 22, 3000, 8443, 9999 } accept
+        tcp dport 53 accept
+        udp dport 53 accept
+
+        # Cluster plane, peer-scoped. On a single-NIC node the planes collapse
+        # onto the public address, which is why these are peer addresses rather
+        # than an interface or a CIDR.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
+        ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
+
+        # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a
+        # kernel UDP-tunnel socket, so encapsulated packets are delivered
+        # locally and pass this hook before the OVS vport sees them.
+        ip saddr $spinifex_encap_peers udp dport { 6081, 500, 4500 } accept
+        ip saddr $spinifex_encap_peers meta l4proto esp accept
+
+        # Rate-limited so a scan cannot fill the journal. This is the only way
+        # to tell a policy gap from an application fault after the fact.
+        limit rate 5/minute burst 10 packets log prefix "spinifex-fw drop: " level info
+    }
+}
+RULES
+    $SUDO chmod 0644 "$FIREWALL_RULES"
+    info "  $FIREWALL_RULES"
+
+    $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
+#!/bin/sh
+# Applies the spinifex host firewall. Fails without changing the ruleset when
+# the peer file is missing, so a node whose daemon has not yet resolved cluster
+# membership is left reachable rather than cut off from a cluster it cannot name.
+set -eu
+
+RULES="/etc/spinifex/firewall/spinifex.nft"
+PEERS="/etc/spinifex/firewall/peers.nft"
+
+[ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
+
+# set-peers reads two comma-separated address lists on stdin (cluster peers,
+# then encap peers) and rewrites the peer file before applying. Every address is
+# re-validated here as a bare dotted quad: this runs as root under a NOPASSWD
+# grant, so a caller must not be able to inject nft syntax through it.
+# disable removes spinifex's own table and the peer file, leaving every other
+# table alone. Idempotent, so it is safe on a node that never had the policy.
+if [ "${1:-}" = "disable" ]; then
+    nft delete table inet spinifex_filter 2>/dev/null || true
+    rm -f "$PEERS"
+    systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
+    exit 0
+fi
+
+if [ "${1:-}" = "set-peers" ]; then
+    read -r peers_in || peers_in=""
+    read -r encap_in || encap_in=""
+
+    # Octet ranges are checked, not just the shape: nft rejects 10.0.0.999 and
+    # the whole transaction with it, which would leave a peer file that fails on
+    # every boot. A loop, not a pipeline — a rejection in a `while read` subshell
+    # cannot fail the function.
+    OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    validate() {
+        _out=""
+        for a in $(echo "$1" | tr ',' ' '); do
+            echo "$a" | grep -Eq "^${OCTET}(\.${OCTET}){3}$" || {
+                echo "address not permitted: $a" >&2
+                return 2
+            }
+            if [ -z "$_out" ]; then _out="$a"; else _out="$_out, $a"; fi
+        done
+        printf '%s' "$_out"
+    }
+
+    peers=$(validate "$peers_in") || exit 2
+    encap=$(validate "$encap_in") || exit 2
+    [ -n "$peers" ] && [ -n "$encap" ] || {
+        echo "set-peers needs a non-empty peer and encap list" >&2
+        exit 2
+    }
+
+    tmp=$(mktemp)
+    bak=$(mktemp)
+    printf '%s\n' \
+        '# Managed by spinifex-daemon. Regenerated from cluster membership.' \
+        "define spinifex_peers = { $peers }" \
+        "define spinifex_encap_peers = { $encap }" > "$tmp"
+    if [ -r "$PEERS" ]; then cp "$PEERS" "$bak"; fi
+    install -m 0644 "$tmp" "$PEERS"
+
+    # Roll the peer file back if the ruleset will not load, so the boot-time
+    # unit never inherits a file already known to fail.
+    if ! nft -f "$RULES"; then
+        if [ -s "$bak" ]; then install -m 0644 "$bak" "$PEERS"; else rm -f "$PEERS"; fi
+        rm -f "$tmp" "$bak"
+        exit 1
+    fi
+    rm -f "$tmp" "$bak"
+    exit 0
+fi
+
+if [ ! -r "$PEERS" ]; then
+    echo "no peer file at $PEERS: the daemon writes it once cluster membership" >&2
+    echo "resolves. Ruleset left unchanged." >&2
+    exit 1
+fi
+
+exec nft -f "$RULES"
+APPLY
+    $SUDO chown root:root "$FIREWALL_APPLY"
+    $SUDO chmod 0755 "$FIREWALL_APPLY"
+    info "  $FIREWALL_APPLY"
+    info "Host firewall installed (applied by spinifex-daemon once peers resolve)"
+}
+
 install_sudoers() {
     stage "installing scoped sudoers rules"
     install_endpoint_sysctl_helper
+    install_ipsec_state_helper
 
     if sudo_is_sudo_rs; then
         $SUDO tee /etc/sudoers.d/spinifex-network > /dev/null << 'SUDOERS'
@@ -282,6 +505,8 @@ SUDOERS
     # backticks that an expanding one would run as command substitution.
     $SUDO tee -a /etc/sudoers.d/spinifex-network > /dev/null << SUDOERS
 spinifex-daemon ALL=(root) NOPASSWD: ${ENDPOINT_SYSCTL_HELPER}
+spinifex-daemon ALL=(root) NOPASSWD: ${IPSEC_STATE_HELPER}
+spinifex-daemon ALL=(root) NOPASSWD: ${FIREWALL_APPLY}
 SUDOERS
     $SUDO chmod 0440 /etc/sudoers.d/spinifex-network
     $SUDO visudo -cf /etc/sudoers.d/spinifex-network || fatal "Invalid sudoers syntax in spinifex-network"
@@ -303,7 +528,7 @@ libvirt-daemon-system libvirt-clients
 pciutils
 jq curl iproute2 netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
-chrony"
+chrony nftables"
 
 install_apt_deps() {
     stage "installing apt dependencies"
@@ -763,6 +988,10 @@ EOF
     # takes effect once enabled) — without this the JetStream ENOSPC-latch
     # watchdog is inert and a full disk requires a manual restart forever.
     $SUDO systemctl enable --now spinifex-nats-watchdog.timer
+    # Enabled, not started: its ConditionPathExists holds it inert until the
+    # daemon writes a peer file, so this only decides that a node which has one
+    # gets the policy back at boot, before any service opens a socket.
+    $SUDO systemctl enable spinifex-firewall.service
     info "Systemd units installed and enabled (per-service users)"
 }
 
@@ -930,6 +1159,7 @@ main() {
     stage_enabled aws        && install_aws_cli
     stage_enabled users      && create_service_users
     stage_enabled sudoers    && install_sudoers
+    stage_enabled firewall   && install_firewall
     stage_enabled files      && install_files
     stage_enabled directories && create_directories
     stage_enabled env        && install_systemd_env

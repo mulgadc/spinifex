@@ -3,7 +3,7 @@ package handlers_ec2_volume
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,30 +13,38 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func newTestVolumeService(az string) *VolumeServiceImpl {
-	cfg := &config.Config{
-		AZ: az,
-		Predastore: config.PredastoreConfig{
-			Bucket:    "test-bucket",
-			Region:    "ap-southeast-2",
-			Host:      fakeS3Host,
-			AccessKey: "testkey",
-			SecretKey: "testsecret",
-		},
-		WalDir: "/tmp/test-wal",
+	return newTestVolumeServiceWithStore(az, objectstore.NewMemoryObjectStore())
+}
+
+// seedTestProviderVolume gives the service's provider a volume to operate on.
+// A control-plane document alone is not a volume: the provider owns the blocks
+// and refuses to expand one it has never allocated.
+func seedTestProviderVolume(t *testing.T, svc *VolumeServiceImpl, volumeID string, sizeGiB int64) {
+	t.Helper()
+	// A fixture with no ID or no size is deliberately unusable and exists to
+	// exercise a rejection path, so there is nothing to allocate.
+	if svc == nil || svc.provider == nil || volumeID == "" || sizeGiB <= 0 {
+		return
 	}
-	return NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nil)
+	_, err := svc.provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: sizeGiB * 1024 * 1024 * 1024},
+		AvailabilityZone: "ap-southeast-2a",
+	})
+	require.NoError(t, err)
 }
 
 func TestCreateVolume_Validation(t *testing.T) {
@@ -290,38 +298,348 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 	}
 }
 
-// TestCreateVolume_BuildVBConfig_GCEnabled asserts that CreateVolume's
-// viperblock config carries GCEnabled through from spinifex.toml's
-// [viperblock] gc_enabled key (config.Config.Viperblock.GCEnabled). This is
-// the config-level seam: GCEnabled isn't part of viperblock.VBState, so it
-// never persists to config.json and can't be observed by reading a created
-// volume back — the only place it's checkable is the config CreateVolume
-// hands to viperblock.New, before construction ever reaches the backend.
-// A regression that unwires GC in buildVBConfig, or a future refactor of
-// CreateVolume that stops routing through buildVBConfig, fails this test.
-func TestCreateVolume_BuildVBConfig_GCEnabled(t *testing.T) {
-	tests := []struct {
-		name      string
-		gcEnabled *bool
-		want      bool
-	}{
-		{name: "NilDefaultsToDisabled", gcEnabled: nil, want: false},
-		{name: "ExplicitFalse", gcEnabled: aws.Bool(false), want: false},
-		{name: "ExplicitTrue", gcEnabled: aws.Bool(true), want: true},
+func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.snapshotKV = setupTestVolumeKV(t)
+
+	vol, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		Size:             aws.Int64(8),
+		AvailabilityZone: aws.String("ap-southeast-2a"),
+	}, "acct-1")
+	require.NoError(t, err)
+	require.NotNil(t, vol)
+	require.NotEmpty(t, vol.VolumeId)
+
+	metadata, err := svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	require.NoError(t, err)
+	assert.Equal(t, "acct-1", metadata.TenantID)
+	assert.Equal(t, uint64(8), metadata.CapacityGiB)
+	assert.Equal(t, "memory://volume/"+aws.StringValue(vol.VolumeId), metadata.ProviderHandle)
+	described, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.Equal(t, int64(8), aws.Int64Value(described.Volumes[0].Size))
+	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "in-use", "i-123", "/dev/sda1"))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	assert.EqualError(t, err, awserrors.ErrorVolumeInUse)
+	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "available", "", ""))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	require.NoError(t, err)
+	_, err = svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	assert.Error(t, err)
+}
+
+// TestDescribeVolumes_Provider_FilterAndTenantIsolation covers DescribeVolumes'
+// provider-metadata branch: a filter must narrow results, an unknown
+// requested volume ID must come back InvalidVolume.NotFound, and one
+// tenant must never see another tenant's volumes.
+func TestDescribeVolumes_Provider_FilterAndTenantIsolation(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-2")
+	require.NoError(t, err)
+
+	t.Run("tenant isolation", func(t *testing.T) {
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.Volumes, 1)
+		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
+	})
+
+	t.Run("filter match", func(t *testing.T) {
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			Filters: []*ec2.Filter{{Name: aws.String("size"), Values: []*string{aws.String("8")}}},
+		}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.Volumes, 1)
+		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
+	})
+
+	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
+		_, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-does-not-exist")}}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestModifyVolume_Provider covers ModifyVolume's provider-metadata branch:
+// a grow succeeds and persists the new capacity, a shrink is rejected
+// (grow-only), and an in-use volume is rejected regardless of size.
+func TestModifyVolume_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+
+	t.Run("grow succeeds", func(t *testing.T) {
+		out, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16)}, "acct-1")
+		require.NoError(t, err)
+		require.NotNil(t, out.VolumeModification)
+		assert.Equal(t, int64(8), aws.Int64Value(out.VolumeModification.OriginalSize))
+		assert.Equal(t, int64(16), aws.Int64Value(out.VolumeModification.TargetSize))
+
+		meta, err := svc.metadata.GetVolume(ctx, volumeID)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(16), meta.CapacityGiB)
+	})
+
+	t.Run("shrink is rejected", func(t *testing.T) {
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(8)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	})
+
+	t.Run("in-use is rejected", func(t *testing.T) {
+		require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-123", "/dev/sda1"))
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(32)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorIncorrectState)
+	})
+
+	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String("vol-does-not-exist"), Size: aws.Int64(32)}, "acct-1")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestModifyVolume_Provider_PersistsAndDescribesModification covers 2a/2b:
+// a ModifyVolume grow under the provider path must persist its modification
+// on the ebsmetadata.Volume document, and a subsequent
+// DescribeVolumesModifications (both the fast VolumeIds path and the slow
+// list-everything path) must be able to read it back.
+func TestModifyVolume_Provider_PersistsAndDescribesModification(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+
+	_, err = svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16), Iops: aws.Int64(4000)}, "acct-1")
+	require.NoError(t, err)
+
+	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	require.NoError(t, err)
+	require.NotNil(t, meta.Modification, "ModifyVolume must persist the modification on the ebsmetadata.Volume document")
+	assert.Equal(t, int64(8), meta.Modification.OriginalSize)
+	assert.Equal(t, int64(16), meta.Modification.TargetSize)
+	assert.Equal(t, int64(4000), meta.Modification.TargetIOPS)
+
+	t.Run("fast path", func(t *testing.T) {
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
+			VolumeIds: []*string{vol.VolumeId},
+		}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumesModifications, 1)
+		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
+		assert.Equal(t, int64(16), aws.Int64Value(out.VolumesModifications[0].TargetSize))
+	})
+
+	t.Run("slow path", func(t *testing.T) {
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumesModifications, 1)
+		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
+	})
+
+	t.Run("unmodified volume has no modification record", func(t *testing.T) {
+		other, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+		require.NoError(t, err)
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
+			VolumeIds: []*string{other.VolumeId},
+		}, "acct-1")
+		require.NoError(t, err)
+		assert.Empty(t, out.VolumesModifications)
+	})
+}
+
+// TestDescribeVolumeStatus_Provider covers the DescribeVolumeStatus provider
+// gap found during the survey: neither the fast nor the slow path had a
+// provider branch, so both silently returned nothing for provider-managed
+// volumes.
+func TestDescribeVolumeStatus_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+
+	t.Run("fast path", func(t *testing.T) {
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumeStatuses, 1)
+		assert.Equal(t, aws.StringValue(vol.VolumeId), aws.StringValue(out.VolumeStatuses[0].VolumeId))
+	})
+
+	t.Run("slow path", func(t *testing.T) {
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{}, "acct-1")
+		require.NoError(t, err)
+		require.Len(t, out.VolumeStatuses, 1)
+	})
+
+	t.Run("cross tenant is not found", func(t *testing.T) {
+		_, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-2")
+		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	})
+}
+
+// TestCreateVolume_Provider_EncryptedFollowsConfig covers 1b: the Encrypted
+// bit on a provider-managed volume must follow config.Viperblock.EncryptionKeyFile,
+// the same knob the legacy path uses, and must be visible via both
+// CreateVolume's response and a subsequent DescribeVolumes.
+func TestCreateVolume_Provider_EncryptedFollowsConfig(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	assert.False(t, aws.BoolValue(vol.Encrypted), "no encryption key file configured, so the volume must not report encrypted")
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.False(t, aws.BoolValue(described.Volumes[0].Encrypted))
+}
+
+// TestVolumeLeakReaper_Provider covers 2d: the reaper must read attachment
+// and tags from ebsmetadata and mark orphaned volumes there when a provider
+// is configured, and the mark must be visible via DescribeVolumes.
+func TestVolumeLeakReaper_Provider(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+	volumeID := aws.StringValue(vol.VolumeId)
+	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-gone0000000000", "/dev/sda1"))
+
+	reaper := svc.NewVolumeLeakReaper(func() (map[string]bool, error) {
+		return map[string]bool{"i-gone0000000000": true}, nil
+	})
+
+	marked, err := reaper.Sweep(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, marked)
+
+	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, meta.Tags[orphanTagKey], "the reaper must mark the provider-managed volume orphaned in ebsmetadata")
+	assert.Equal(t, "available", meta.State, "the reaper must reconcile the stale attachment")
+	assert.Empty(t, meta.AttachedInstance)
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.NotEmpty(t, filterutil.EC2TagsToMap(described.Volumes[0].Tags)[orphanTagKey],
+		"the orphan mark must be visible via DescribeVolumes, which reads ebsmetadata under the provider path")
+
+	// Idempotent: a second sweep re-marks nothing.
+	marked, err = reaper.Sweep(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, marked)
+}
+
+// TestApplyRecordTags_Provider_VisibleViaDescribeVolumes covers 2e: a tag
+// applied post-create under the provider path must be visible via
+// DescribeVolumes, which reads ebsmetadata.Volume.Tags directly (there is no
+// tags.json for it to fall back to).
+func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	ctx := context.Background()
+
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{vol.VolumeId},
+		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+	}, "acct-1"))
+
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.Equal(t, "control-plane", filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"],
+		"a tag applied post-create must be visible via DescribeVolumes under the provider path")
+
+	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
+		Resources: []*string{vol.VolumeId},
+		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+	}, "acct-1"))
+
+	described, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+	assert.False(t, hasOwnerTag, "RemoveRecordTags must remove the tag under the provider path too")
+
+	t.Run("wrong tenant is a no-op", func(t *testing.T) {
+		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+			Resources: []*string{vol.VolumeId},
+			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("intruder")}},
+		}, "acct-2"))
+		described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		require.NoError(t, err)
+		_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+		assert.False(t, hasOwnerTag, "a caller who does not own the volume must not be able to tag it")
+	})
+
+	t.Run("unknown volume is a no-op", func(t *testing.T) {
+		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+			Resources: []*string{aws.String("vol-does-not-exist")},
+			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
+		}, "acct-1"))
+	})
+}
+
+// prefixFailingObjectStore fails PutObject for any key under failPrefix and
+// records the last such key, so a test can recover a randomly generated
+// resource ID from the write CreateVolume/CreateSnapshot attempted, without
+// needing to predict utils.GenerateResourceID's output up front.
+type prefixFailingObjectStore struct {
+	objectstore.ObjectStore
+
+	failPrefix   string
+	attemptedKey string
+}
+
+func (s *prefixFailingObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	key := aws.StringValue(input.Key)
+	if strings.HasPrefix(key, s.failPrefix) {
+		s.attemptedKey = key
+		return nil, errors.New("simulated metadata write failure")
 	}
+	return s.ObjectStore.PutObject(ctx, input)
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestVolumeService("ap-southeast-2a")
-			svc.config.Viperblock.GCEnabled = tt.gcEnabled
+// TestCreateVolume_Provider_RollbackOnMetadataWriteFailure covers CreateVolume's
+// rollback path: when the control-plane metadata write fails after the
+// provider has already allocated the volume, CreateVolume must delete the
+// just-created provider volume rather than orphan it.
+func TestCreateVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
+	store := &prefixFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore(), failPrefix: "spinifex/ebsmetadata/v1/volumes/"}
+	cfg := &config.Config{AZ: "ap-southeast-2a", Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewVolumeServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
 
-			vbconfig := svc.buildVBConfig("vol-gc-test", 10*1024*1024*1024,
-				viperblock.VolumeConfig{}, nil, "", "")
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a"),
+	}, "acct-1")
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	require.NotEmpty(t, store.attemptedKey, "the metadata write must have been attempted")
 
-			assert.Equal(t, tt.want, vbconfig.GCEnabled,
-				"buildVBConfig GCEnabled must follow config.Viperblock.GCEnabled")
-		})
-	}
+	volumeID := strings.TrimSuffix(strings.TrimPrefix(store.attemptedKey, store.failPrefix), ".json")
+	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})
+	require.ErrorIs(t, err, ebsprovider.ErrNotFound, "rollback must delete the just-created provider volume")
 }
 
 func TestDeleteVolume_Validation(t *testing.T) {
@@ -403,7 +721,9 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 		},
 		WalDir: "/tmp/test-wal",
 	}
-	return NewVolumeServiceImplWithStore(cfg, store, nil)
+	svc := NewVolumeServiceImplWithStore(cfg, store, nil)
+	svc.SetEBSProvider(ebsfake.New(store, "test-bucket"))
+	return svc
 }
 
 // putTestSnapshotMetadata writes snapshot metadata in the store, matching the
@@ -595,26 +915,13 @@ func setupTestVolumeKV(t *testing.T) jetstream.KeyValue {
 	return kv
 }
 
-func createVolumeInStore(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string) {
+func createVolumeInStore(t *testing.T, svc *VolumeServiceImpl, store *objectstore.MemoryObjectStore, volumeID string) {
 	t.Helper()
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID: volumeID,
-				SizeGiB:  10,
-				State:    "available",
-			},
-		},
-	}
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	createVolumeInStoreWithMeta(t, svc, store, volumeID, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "available",
 	})
-	require.NoError(t, err)
 }
 
 func TestDeleteVolume_BlockedByKV(t *testing.T) {
@@ -624,7 +931,7 @@ func TestDeleteVolume_BlockedByKV(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-kvblocked"
-	createVolumeInStore(t, store, volumeID)
+	createVolumeInStore(t, svc, store, volumeID)
 
 	// Put a snapshot ref in KV
 	data, err := json.Marshal([]string{"snap-001"})
@@ -647,7 +954,8 @@ func TestDeleteVolume_AllowedByKV(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-kvallowed"
-	createVolumeInStore(t, store, volumeID)
+	createVolumeInStore(t, svc, store, volumeID)
+	seedTestProviderVolume(t, svc, volumeID, 10)
 
 	// No KV entry → delete allowed
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
@@ -662,7 +970,7 @@ func TestDeleteVolume_ErrorWhenKVNil(t *testing.T) {
 	// snapshotKV is nil by default
 
 	volumeID := "vol-nokvtest"
-	createVolumeInStore(t, store, volumeID)
+	createVolumeInStore(t, svc, store, volumeID)
 
 	// Should fail because snapshotKV is nil
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
@@ -672,59 +980,50 @@ func TestDeleteVolume_ErrorWhenKVNil(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
 }
 
-// createVolumeInStoreWithMeta seeds a volume config.json with custom metadata.
-func createVolumeInStoreWithMeta(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata) {
+// createVolumeInStoreWithMeta seeds a volume on both sides: the document the
+// control plane reads and the provider volume behind it.
+func createVolumeInStoreWithMeta(t *testing.T, svc *VolumeServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, meta ebsmetadata.Volume) {
 	t.Helper()
-	wrapper := volumeConfigWrapper{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: meta,
-		},
+	if meta.VolumeID == "" {
+		meta.VolumeID = volumeID
 	}
-	data, err := json.Marshal(wrapper)
-	require.NoError(t, err)
+	seedVolumeDocument(t, store, meta)
+	seedTestProviderVolume(t, svc, meta.VolumeID, utils.SafeUint64ToInt64(meta.CapacityGiB))
+}
 
+// putRawVolumeDocument writes document bytes verbatim, for cases a typed seed
+// cannot express: a corrupt document, or one predating a field.
+func putRawVolumeDocument(t *testing.T, store *objectstore.MemoryObjectStore, volumeID, body string) {
+	t.Helper()
+	key, err := ebsmetadata.VolumeKey(volumeID)
+	require.NoError(t, err)
 	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(body),
 	})
 	require.NoError(t, err)
 }
 
-// createVolumeInStoreWithVBState seeds a volume config.json as a full VBState
-// (with BlockSize > 0) so that mergeVolumeConfig preserves VBState fields.
-func createVolumeInStoreWithVBState(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, meta viperblock.VolumeMetadata, blockSize uint32, seqNum uint64) {
+// --- Group 1: single-volume read and projection tests ---
+
+// volumeByID reads a volume's control-plane document and renders it the way
+// DescribeVolumes does, so the read and the projection are covered together.
+func volumeByID(t *testing.T, svc *VolumeServiceImpl, volumeID string) *ec2.Volume {
 	t.Helper()
-	state := viperblock.VBState{
-		VolumeName: volumeID,
-		VolumeSize: meta.SizeGiB * 1024 * 1024 * 1024,
-		BlockSize:  blockSize,
-		SeqNum:     seqNum,
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: meta,
-		},
-	}
-	data, err := json.Marshal(state)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
-	})
-	require.NoError(t, err)
+	return metadataVolumeToEC2(meta)
 }
-
-// --- Group 1: getVolumeByID tests ---
 
 func TestGetVolumeByID_FullMetadata(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	now := time.Now()
-	meta := viperblock.VolumeMetadata{
+	meta := ebsmetadata.Volume{
 		VolumeID:            "vol-full",
-		SizeGiB:             20,
+		CapacityGiB:         20,
 		State:               "in-use",
 		CreatedAt:           now,
 		AvailabilityZone:    "ap-southeast-2a",
@@ -738,27 +1037,10 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 		AttachedAt:          now,
 		Tags:                map[string]string{"Name": "test-vol", "env": "dev"},
 	}
-	// Seed as a full VBState with EncryptionEnabled=true so getVolumeByID
-	// reports Encrypted via the authoritative VBState.EncryptionEnabled path.
-	state := viperblock.VBState{
-		VolumeName:        "vol-full",
-		VolumeSize:        meta.SizeGiB * 1024 * 1024 * 1024,
-		BlockSize:         4096,
-		EncryptionEnabled: true,
-		VolumeConfig:      viperblock.VolumeConfig{VolumeMetadata: meta},
-	}
-	data, err := json.Marshal(state)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-full/config.json"),
-		Body:   strings.NewReader(string(data)),
-	})
-	require.NoError(t, err)
+	meta.Encrypted = true
+	seedVolumeDocument(t, store, meta)
 
-	result, err := svc.getVolumeByID(context.Background(), "vol-full")
-	require.NoError(t, err)
-	vol := result.volume
+	vol := volumeByID(t, svc, "vol-full")
 
 	assert.Equal(t, "vol-full", *vol.VolumeId)
 	assert.Equal(t, int64(20), *vol.Size)
@@ -786,98 +1068,71 @@ func TestGetVolumeByID_AttachmentDetached(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
+	meta := ebsmetadata.Volume{
 		VolumeID:         "vol-detach",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-99999",
 		DeviceName:       "/dev/nbd1",
 	}
-	createVolumeInStoreWithMeta(t, store, "vol-detach", meta)
+	createVolumeInStoreWithMeta(t, svc, store, "vol-detach", meta)
 
-	result, err := svc.getVolumeByID(context.Background(), "vol-detach")
-	require.NoError(t, err)
+	vol := volumeByID(t, svc, "vol-detach")
 
-	require.Len(t, result.volume.Attachments, 1)
-	assert.Equal(t, "detached", *result.volume.Attachments[0].State)
+	require.Len(t, vol.Attachments, 1)
+	assert.Equal(t, "detached", *vol.Attachments[0].State)
 }
 
 func TestGetVolumeByID_DefaultStateAndType(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
-		VolumeID: "vol-defaults",
-		SizeGiB:  5,
-		State:    "",
+	meta := ebsmetadata.Volume{
+		VolumeID:    "vol-defaults",
+		CapacityGiB: 5,
+		State:       "",
 	}
-	createVolumeInStoreWithMeta(t, store, "vol-defaults", meta)
+	createVolumeInStoreWithMeta(t, svc, store, "vol-defaults", meta)
 
-	result, err := svc.getVolumeByID(context.Background(), "vol-defaults")
-	require.NoError(t, err)
+	vol := volumeByID(t, svc, "vol-defaults")
 
-	assert.Equal(t, "available", *result.volume.State)
-	assert.Equal(t, "gp3", *result.volume.VolumeType)
+	assert.Equal(t, "available", *vol.State)
+	assert.Equal(t, "gp3", *vol.VolumeType)
 }
 
 // TestGetVolumeByID_ThroughputOmitted_PreFieldVolume covers a volume written
 // before Throughput existed on VolumeMetadata: json.Unmarshal leaves the new
-// int field at its zero value, and getVolumeByID must omit Throughput from
+// int field at its zero value, and the projection must omit Throughput from
 // the response rather than surface a misleading 0 MiB/s.
 func TestGetVolumeByID_ThroughputOmitted_PreFieldVolume(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	// Simulate a pre-field volume by writing raw JSON with no Throughput key.
-	rawConfig := `{"VolumeConfig":{"VolumeMetadata":{"VolumeID":"vol-prefield","SizeGiB":5,"State":"available","VolumeType":"gp3","IOPS":3000}}}`
-	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-prefield/config.json"),
-		Body:   strings.NewReader(rawConfig),
+	// Simulate a pre-field volume by writing a document with no throughput key.
+	putRawVolumeDocument(t, store, "vol-prefield",
+		`{"schema_version":1,"volume_id":"vol-prefield","capacity_gib":5,"state":"available","volume_type":"gp3","iops":3000}`)
+
+	vol := volumeByID(t, svc, "vol-prefield")
+
+	assert.Nil(t, vol.Throughput)
+}
+
+// A volume with no ID is not representable: the document store refuses to key
+// it, so an ID-less volume can never be written and later read back as one.
+func TestPutVolume_EmptyVolumeIDRejected(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+
+	err := ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
+		CapacityGiB: 10,
 	})
-	require.NoError(t, err)
-
-	result, err := svc.getVolumeByID(context.Background(), "vol-prefield")
-	require.NoError(t, err)
-
-	assert.Nil(t, result.volume.Throughput)
-}
-
-func TestGetVolumeByID_EmptyVolumeID(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	meta := viperblock.VolumeMetadata{
-		VolumeID: "",
-		SizeGiB:  10,
-	}
-	createVolumeInStoreWithMeta(t, store, "vol-emptyid", meta)
-
-	_, err := svc.getVolumeByID(context.Background(), "vol-emptyid")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "volume ID is empty")
-}
-
-func TestGetVolumeByID_ZeroSize(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	meta := viperblock.VolumeMetadata{
-		VolumeID: "vol-zerosize",
-		SizeGiB:  0,
-	}
-	createVolumeInStoreWithMeta(t, store, "vol-zerosize", meta)
-
-	_, err := svc.getVolumeByID(context.Background(), "vol-zerosize")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "zero size")
 }
 
 func TestGetVolumeByID_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	_, err := svc.getVolumeByID(context.Background(), "vol-nonexistent")
+	_, err := svc.GetVolumeMetadata("vol-nonexistent")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -889,8 +1144,8 @@ func TestDescribeVolumes_NilInput(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Seed one volume so slow path has something to find
-	createVolumeInStoreWithMeta(t, store, "vol-nil1", viperblock.VolumeMetadata{
-		VolumeID: "vol-nil1", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-nil1", ebsmetadata.Volume{
+		VolumeID: "vol-nil1", CapacityGiB: 10, State: "available",
 	})
 
 	output, err := svc.DescribeVolumes(context.Background(), nil, "")
@@ -912,8 +1167,8 @@ func TestDescribeVolumes_SlowPath_MultipleVolumes(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-a", "vol-b", "vol-c"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
-			VolumeID: id, SizeGiB: 10, State: "available",
+		createVolumeInStoreWithMeta(t, svc, store, id, ebsmetadata.Volume{
+			VolumeID: id, CapacityGiB: 10, State: "available",
 		})
 	}
 
@@ -927,8 +1182,8 @@ func TestDescribeVolumes_FastPath_SpecificIDs(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-x", "vol-y", "vol-z"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
-			VolumeID: id, SizeGiB: 10, State: "available",
+		createVolumeInStoreWithMeta(t, svc, store, id, ebsmetadata.Volume{
+			VolumeID: id, CapacityGiB: 10, State: "available",
 		})
 	}
 
@@ -950,8 +1205,8 @@ func TestDescribeVolumes_FastPath_MixedExistingAndMissing(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-exists", viperblock.VolumeMetadata{
-		VolumeID: "vol-exists", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-exists", ebsmetadata.Volume{
+		VolumeID: "vol-exists", CapacityGiB: 10, State: "available",
 	})
 
 	// AWS returns InvalidVolume.NotFound when any requested ID is missing
@@ -966,8 +1221,8 @@ func TestDescribeVolumes_FastPath_NilVolumeID(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-ok", viperblock.VolumeMetadata{
-		VolumeID: "vol-ok", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-ok", ebsmetadata.Volume{
+		VolumeID: "vol-ok", CapacityGiB: 10, State: "available",
 	})
 
 	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -984,11 +1239,11 @@ func TestDescribeVolumes_AccountScoping_SlowPath(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Create volumes for two different accounts
-	createVolumeInStoreWithMeta(t, store, "vol-acctA", viperblock.VolumeMetadata{
-		VolumeID: "vol-acctA", SizeGiB: 10, State: "available", TenantID: "111111111111",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-acctA", ebsmetadata.Volume{
+		VolumeID: "vol-acctA", CapacityGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-acctB", viperblock.VolumeMetadata{
-		VolumeID: "vol-acctB", SizeGiB: 10, State: "available", TenantID: "222222222222",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-acctB", ebsmetadata.Volume{
+		VolumeID: "vol-acctB", CapacityGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
 	// Account A sees only its own volume
@@ -1016,11 +1271,11 @@ func TestDescribeVolumes_AccountScoping_FastPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-mine", viperblock.VolumeMetadata{
-		VolumeID: "vol-mine", SizeGiB: 10, State: "available", TenantID: "111111111111",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-mine", ebsmetadata.Volume{
+		VolumeID: "vol-mine", CapacityGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-other", viperblock.VolumeMetadata{
-		VolumeID: "vol-other", SizeGiB: 10, State: "available", TenantID: "222222222222",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-other", ebsmetadata.Volume{
+		VolumeID: "vol-other", CapacityGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
 	// Requesting another account's volume by ID returns NotFound
@@ -1044,8 +1299,8 @@ func TestDeleteVolume_AccountScoping(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = setupTestVolumeKV(t)
 
-	createVolumeInStoreWithMeta(t, store, "vol-owned", viperblock.VolumeMetadata{
-		VolumeID: "vol-owned", SizeGiB: 10, State: "available", TenantID: "111111111111",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-owned", ebsmetadata.Volume{
+		VolumeID: "vol-owned", CapacityGiB: 10, State: "available", TenantID: "111111111111",
 	})
 
 	// Another account cannot delete
@@ -1066,8 +1321,8 @@ func TestModifyVolume_AccountScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-modify", viperblock.VolumeMetadata{
-		VolumeID: "vol-modify", SizeGiB: 10, State: "available", TenantID: "111111111111",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-modify", ebsmetadata.Volume{
+		VolumeID: "vol-modify", CapacityGiB: 10, State: "available", TenantID: "111111111111",
 	})
 
 	// Another account cannot modify
@@ -1091,11 +1346,11 @@ func TestDescribeVolumeStatus_AccountScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-statusA", viperblock.VolumeMetadata{
-		VolumeID: "vol-statusA", SizeGiB: 10, State: "available", TenantID: "111111111111",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-statusA", ebsmetadata.Volume{
+		VolumeID: "vol-statusA", CapacityGiB: 10, State: "available", TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-statusB", viperblock.VolumeMetadata{
-		VolumeID: "vol-statusB", SizeGiB: 10, State: "available", TenantID: "222222222222",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-statusB", ebsmetadata.Volume{
+		VolumeID: "vol-statusB", CapacityGiB: 10, State: "available", TenantID: "222222222222",
 	})
 
 	// Slow path: Account A only sees its own volume status
@@ -1164,8 +1419,8 @@ func TestModifyVolume_ShrinkRejected(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-shrink", viperblock.VolumeMetadata{
-		VolumeID: "vol-shrink", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-shrink", ebsmetadata.Volume{
+		VolumeID: "vol-shrink", CapacityGiB: 10, State: "available",
 	})
 
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
@@ -1180,8 +1435,8 @@ func TestModifyVolume_SameSizeRejected(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-same", viperblock.VolumeMetadata{
-		VolumeID: "vol-same", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-same", ebsmetadata.Volume{
+		VolumeID: "vol-same", CapacityGiB: 10, State: "available",
 	})
 
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
@@ -1196,9 +1451,9 @@ func TestModifyVolume_AttachedInUse(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-inuse", ebsmetadata.Volume{
 		VolumeID:         "vol-inuse",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: "i-12345",
 	})
@@ -1215,12 +1470,12 @@ func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-grow", viperblock.VolumeMetadata{
-		VolumeID:   "vol-grow",
-		SizeGiB:    10,
-		State:      "available",
-		VolumeType: "gp3",
-		IOPS:       3000,
+	createVolumeInStoreWithMeta(t, svc, store, "vol-grow", ebsmetadata.Volume{
+		VolumeID:    "vol-grow",
+		CapacityGiB: 10,
+		State:       "available",
+		VolumeType:  "gp3",
+		IOPS:        3000,
 	})
 
 	output, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
@@ -1237,21 +1492,21 @@ func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	assert.Equal(t, int64(100), *mod.Progress)
 
 	// Verify persisted config
-	cfg, err := svc.GetVolumeConfig("vol-grow")
+	meta, err := svc.GetVolumeMetadata("vol-grow")
 	require.NoError(t, err)
-	assert.Equal(t, uint64(20), cfg.VolumeMetadata.SizeGiB)
+	assert.Equal(t, uint64(20), meta.CapacityGiB)
 }
 
 func TestModifyVolume_ModifyTypeAndIOPS(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-typemod", viperblock.VolumeMetadata{
-		VolumeID:   "vol-typemod",
-		SizeGiB:    10,
-		State:      "available",
-		VolumeType: "gp3",
-		IOPS:       3000,
+	createVolumeInStoreWithMeta(t, svc, store, "vol-typemod", ebsmetadata.Volume{
+		VolumeID:    "vol-typemod",
+		CapacityGiB: 10,
+		State:       "available",
+		VolumeType:  "gp3",
+		IOPS:        3000,
 	})
 
 	output, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
@@ -1274,9 +1529,9 @@ func TestModifyVolume_AvailableWithAttachment(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Volume attached but state is "available" (stopped instance) -- allowed
-	createVolumeInStoreWithMeta(t, store, "vol-stopinst", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-stopinst", ebsmetadata.Volume{
 		VolumeID:         "vol-stopinst",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-stopped",
 	})
@@ -1295,28 +1550,28 @@ func TestUpdateVolumeState_AttachVolume(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-attach", viperblock.VolumeMetadata{
-		VolumeID: "vol-attach", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-attach", ebsmetadata.Volume{
+		VolumeID: "vol-attach", CapacityGiB: 10, State: "available",
 	})
 
 	err := svc.UpdateVolumeState("vol-attach", "in-use", "i-abc123", "/dev/nbd0")
 	require.NoError(t, err)
 
-	cfg, err := svc.GetVolumeConfig("vol-attach")
+	meta, err := svc.GetVolumeMetadata("vol-attach")
 	require.NoError(t, err)
-	assert.Equal(t, "in-use", cfg.VolumeMetadata.State)
-	assert.Equal(t, "i-abc123", cfg.VolumeMetadata.AttachedInstance)
-	assert.Equal(t, "/dev/nbd0", cfg.VolumeMetadata.DeviceName)
-	assert.False(t, cfg.VolumeMetadata.AttachedAt.IsZero())
+	assert.Equal(t, "in-use", meta.State)
+	assert.Equal(t, "i-abc123", meta.AttachedInstance)
+	assert.Equal(t, "/dev/nbd0", meta.DeviceName)
+	assert.False(t, meta.AttachedAt.IsZero())
 }
 
 func TestUpdateVolumeState_DetachVolume(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-detach2", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-detach2", ebsmetadata.Volume{
 		VolumeID:         "vol-detach2",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: "i-xyz789",
 		DeviceName:       "/dev/nbd1",
@@ -1325,11 +1580,11 @@ func TestUpdateVolumeState_DetachVolume(t *testing.T) {
 	err := svc.UpdateVolumeState("vol-detach2", "available", "", "")
 	require.NoError(t, err)
 
-	cfg, err := svc.GetVolumeConfig("vol-detach2")
+	meta, err := svc.GetVolumeMetadata("vol-detach2")
 	require.NoError(t, err)
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance)
-	assert.Empty(t, cfg.VolumeMetadata.DeviceName)
+	assert.Equal(t, "available", meta.State)
+	assert.Empty(t, meta.AttachedInstance)
+	assert.Empty(t, meta.DeviceName)
 }
 
 func TestUpdateVolumeState_VolumeNotFound(t *testing.T) {
@@ -1337,46 +1592,31 @@ func TestUpdateVolumeState_VolumeNotFound(t *testing.T) {
 
 	err := svc.UpdateVolumeState("vol-missing", "available", "", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to get volume config")
+	assert.Contains(t, err.Error(), "failed to get volume metadata")
 }
 
-func TestUpdateVolumeState_PreservesVBState(t *testing.T) {
+func TestUpdateVolumeState_PreservesProviderConfig(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	meta := viperblock.VolumeMetadata{
-		VolumeID: "vol-vbstate", SizeGiB: 10, State: "available",
-	}
-	createVolumeInStoreWithVBState(t, store, "vol-vbstate", meta, 4096, 5)
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vbstate", ebsmetadata.Volume{
+		VolumeID: "vol-vbstate", CapacityGiB: 10, State: "available",
+	})
+	seedProviderConfig(t, store, "vol-vbstate")
+	before := getStoredConfig(t, store, "vol-vbstate")
 
 	err := svc.UpdateVolumeState("vol-vbstate", "in-use", "i-preserve", "/dev/nbd0")
 	require.NoError(t, err)
 
-	// config.json is owned by the live VB and must be left untouched: VBState
-	// fields survive and its embedded State is NOT rewritten (the control plane's
-	// attachment state lives in state.json now).
-	getResult, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-vbstate/config.json"),
-	})
+	// config.json belongs to the live VB, which rewrites it from its own state.
+	// The attachment lives on the document instead, so the bytes must survive.
+	assert.Equal(t, string(before), string(getStoredConfig(t, store, "vol-vbstate")),
+		"UpdateVolumeState must not rewrite provider-owned config.json")
+
+	readback, err := svc.GetVolumeMetadata("vol-vbstate")
 	require.NoError(t, err)
-
-	body, err := io.ReadAll(getResult.Body)
-	require.NoError(t, err)
-
-	var state viperblock.VBState
-	require.NoError(t, json.Unmarshal(body, &state))
-
-	assert.Equal(t, uint32(4096), state.BlockSize)
-	assert.Equal(t, uint64(5), state.SeqNum)
-	assert.Equal(t, "available", state.VolumeConfig.VolumeMetadata.State,
-		"UpdateVolumeState must not rewrite config.json's embedded State")
-
-	// The attachment state is read back through the state.json overlay.
-	cfg, err := svc.GetVolumeConfig("vol-vbstate")
-	require.NoError(t, err)
-	assert.Equal(t, "in-use", cfg.VolumeMetadata.State)
-	assert.Equal(t, "i-preserve", cfg.VolumeMetadata.AttachedInstance)
+	assert.Equal(t, "in-use", readback.State)
+	assert.Equal(t, "i-preserve", readback.AttachedInstance)
 }
 
 // --- Group 6: listAllVolumeIDs tests ---
@@ -1385,15 +1625,14 @@ func TestListAllVolumeIDs_FiltersCorrectly(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	// Seed objects with various prefixes
-	for _, key := range []string{
-		"vol-abc/config.json",
-		"vol-def/config.json",
-		"vol-abc-efi/config.json",
-		"vol-abc-cloudinit/config.json",
-		"ami-123/metadata.json",
-		"snap-456/metadata.json",
-	} {
+	for _, id := range []string{"vol-abc", "vol-def"} {
+		createVolumeInStoreWithMeta(t, svc, store, id, ebsmetadata.Volume{
+			VolumeID: id, CapacityGiB: 10, State: "available",
+		})
+	}
+	// Auxiliary volumes and other resources hold blocks but no document, which
+	// is exactly what keeps them out of the listing.
+	for _, key := range []string{"vol-abc-efi/config.json", "vol-abc-cloudinit/config.json", "ami-123/metadata.json", "snap-456/metadata.json"} {
 		_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
 			Bucket: aws.String("test-bucket"),
 			Key:    aws.String(key),
@@ -1429,12 +1668,9 @@ func TestListAllVolumeIDs_NilPrefix(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	// Seed a single volume to ensure the loop runs
-	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String("vol-only/config.json"),
-		Body:   strings.NewReader("{}"),
+	createVolumeInStoreWithMeta(t, svc, store, "vol-only", ebsmetadata.Volume{
+		VolumeID: "vol-only", CapacityGiB: 10, State: "available",
 	})
-	require.NoError(t, err)
 
 	ids, err := svc.listAllVolumeIDs(context.Background())
 	require.NoError(t, err)
@@ -1450,9 +1686,9 @@ func TestDeleteVolume_VolumeInUse(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	createVolumeInStoreWithMeta(t, store, "vol-busy", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-busy", ebsmetadata.Volume{
 		VolumeID:         "vol-busy",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AttachedInstance: "i-running",
 	})
@@ -1473,9 +1709,9 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 	// State != "available" triggers the check even without "in-use"
 	// Actually: the code checks `State != "available" || AttachedInstance != ""`
 	// So having AttachedInstance set while state is "available" still triggers VolumeInUse
-	createVolumeInStoreWithMeta(t, store, "vol-attached", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-attached", ebsmetadata.Volume{
 		VolumeID:         "vol-attached",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-stopped",
 	})
@@ -1495,10 +1731,10 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 
 	// Drift: a detach/terminate left State empty with no attachment. The volume
 	// is not in use and must be deletable, not VolumeInUse.
-	createVolumeInStoreWithMeta(t, store, "vol-drift", viperblock.VolumeMetadata{
-		VolumeID: "vol-drift",
-		SizeGiB:  10,
-		State:    "",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-drift", ebsmetadata.Volume{
+		VolumeID:    "vol-drift",
+		CapacityGiB: 10,
+		State:       "",
 	})
 
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
@@ -1522,9 +1758,9 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-stopped-root"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, volumeID, ebsmetadata.Volume{
 		VolumeID:         volumeID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-stopped",
 	})
@@ -1532,7 +1768,7 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")
 	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
 
-	_, err = svc.GetVolumeConfig(volumeID)
+	_, err = svc.GetVolumeMetadata(volumeID)
 	require.Error(t, err, "the volume must actually be deleted, not merely detached")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
@@ -1549,9 +1785,9 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	svc.snapshotKV = kv
 
 	volumeID := "vol-snapshotted-root"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, volumeID, ebsmetadata.Volume{
 		VolumeID:         volumeID,
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "available",
 		AttachedInstance: "i-stopped",
 	})
@@ -1566,9 +1802,9 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	require.Error(t, err, "a DeleteVolume failure must be surfaced, not swallowed")
 	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
 
-	cfg, getErr := svc.GetVolumeConfig(volumeID)
+	meta, getErr := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, getErr, "the volume must still exist after a failed delete")
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance, "the attachment clear runs before delete and is not rolled back on a later delete failure")
+	assert.Empty(t, meta.AttachedInstance, "the attachment clear runs before delete and is not rolled back on a later delete failure")
 }
 
 func TestDescribeVolumes_EmptyStateDerivedFromAttachment(t *testing.T) {
@@ -1598,60 +1834,10 @@ func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
 	// A detach writeback that clears the attachment without a state must not
 	// strand the volume with an empty State.
 	require.NoError(t, svc.UpdateVolumeState("vol-norm", "", "", ""))
-	cfg, err := svc.GetVolumeConfig("vol-norm")
+	meta, err := svc.GetVolumeMetadata("vol-norm")
 	require.NoError(t, err)
-	assert.Equal(t, "available", cfg.VolumeMetadata.State)
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance)
-}
-
-func TestDeleteVolume_WithNATSNotification(t *testing.T) {
-	kv := setupTestVolumeKV(t)
-	store := objectstore.NewMemoryObjectStore()
-
-	// Set up NATS server and connection for this test
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.snapshotKV = kv
-	svc.natsConn = nc
-
-	volumeID := "vol-natsok"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
-		VolumeID: volumeID, SizeGiB: 10, State: "available",
-	})
-
-	// Subscribe to ebs.delete and reply with success
-	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		resp := types.EBSDeleteResponse{Volume: volumeID, Success: true}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(volumeID),
-	}, "")
-	require.NoError(t, err)
-
-	// Verify all objects deleted
-	assert.Equal(t, 0, store.Count())
+	assert.Equal(t, "available", meta.State)
+	assert.Empty(t, meta.AttachedInstance)
 }
 
 func TestDescribeVolumeStatus_SlowPath_WithVolumes(t *testing.T) {
@@ -1659,9 +1845,9 @@ func TestDescribeVolumeStatus_SlowPath_WithVolumes(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	for _, id := range []string{"vol-s1", "vol-s2"} {
-		createVolumeInStoreWithMeta(t, store, id, viperblock.VolumeMetadata{
+		createVolumeInStoreWithMeta(t, svc, store, id, ebsmetadata.Volume{
 			VolumeID:         id,
-			SizeGiB:          10,
+			CapacityGiB:      10,
 			State:            "available",
 			AvailabilityZone: "ap-southeast-2a",
 		})
@@ -1682,9 +1868,9 @@ func TestDescribeVolumeStatus_FastPath_WithVolumes(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-status1", viperblock.VolumeMetadata{
+	createVolumeInStoreWithMeta(t, svc, store, "vol-status1", ebsmetadata.Volume{
 		VolumeID:         "vol-status1",
-		SizeGiB:          10,
+		CapacityGiB:      10,
 		State:            "in-use",
 		AvailabilityZone: "ap-southeast-2a",
 	})
@@ -1698,138 +1884,17 @@ func TestDescribeVolumeStatus_FastPath_WithVolumes(t *testing.T) {
 	assert.Equal(t, "ok", *output.VolumeStatuses[0].VolumeStatus.Status)
 }
 
-func TestDescribeVolumes_SlowPath_SkipsBrokenConfig(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	// Good volume
-	createVolumeInStoreWithMeta(t, store, "vol-good", viperblock.VolumeMetadata{
-		VolumeID: "vol-good", SizeGiB: 10, State: "available",
-	})
-	// Bad volume: zero size triggers error in getVolumeByID
-	createVolumeInStoreWithMeta(t, store, "vol-bad", viperblock.VolumeMetadata{
-		VolumeID: "vol-bad", SizeGiB: 0,
-	})
-
-	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "")
-	require.NoError(t, err)
-	// Only the good volume should be returned
-	assert.Len(t, output.Volumes, 1)
-	assert.Equal(t, "vol-good", *output.Volumes[0].VolumeId)
-}
-
-func TestDescribeVolumeStatus_SlowPath_SkipsBrokenConfig(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	createVolumeInStoreWithMeta(t, store, "vol-ok", viperblock.VolumeMetadata{
-		VolumeID: "vol-ok", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
-	})
-	createVolumeInStoreWithMeta(t, store, "vol-broken", viperblock.VolumeMetadata{
-		VolumeID: "vol-broken", SizeGiB: 0,
-	})
-
-	output, err := svc.DescribeVolumeStatus(context.Background(), nil, "")
-	require.NoError(t, err)
-	assert.Len(t, output.VolumeStatuses, 1)
-}
-
-func TestDeleteVolume_NATSErrorResponse(t *testing.T) {
-	kv := setupTestVolumeKV(t)
-	store := objectstore.NewMemoryObjectStore()
-
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.snapshotKV = kv
-	svc.natsConn = nc
-
-	volumeID := "vol-natserr"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
-		VolumeID: volumeID, SizeGiB: 10, State: "available",
-	})
-
-	// Subscribe and respond with an error
-	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		resp := types.EBSDeleteResponse{Volume: volumeID, Error: "volume still mounted"}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(volumeID),
-	}, "")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestDeleteVolume_NATSTimeout(t *testing.T) {
-	kv := setupTestVolumeKV(t)
-	store := objectstore.NewMemoryObjectStore()
-
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	}
-	ns, err := server.NewServer(opts)
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.snapshotKV = kv
-	svc.natsConn = nc
-
-	volumeID := "vol-natstimeout"
-	createVolumeInStoreWithMeta(t, store, volumeID, viperblock.VolumeMetadata{
-		VolumeID: volumeID, SizeGiB: 10, State: "available",
-	})
-
-	// No subscriber → NATS request will timeout, but delete proceeds (best-effort)
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(volumeID),
-	}, "")
-	require.NoError(t, err)
-}
-
 // --- DescribeVolumes filter tests ---
 
 func TestDescribeVolumes_FilterByStatus(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-avail", viperblock.VolumeMetadata{
-		VolumeID: "vol-avail", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-avail", ebsmetadata.Volume{
+		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
-		VolumeID: "vol-inuse", SizeGiB: 20, State: "in-use", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-inuse", ebsmetadata.Volume{
+		VolumeID: "vol-inuse", CapacityGiB: 20, State: "in-use", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -1846,11 +1911,11 @@ func TestDescribeVolumes_FilterByVolumeType(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-gp3", viperblock.VolumeMetadata{
-		VolumeID: "vol-gp3", SizeGiB: 10, State: "available", VolumeType: "gp3", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-gp3", ebsmetadata.Volume{
+		VolumeID: "vol-gp3", CapacityGiB: 10, State: "available", VolumeType: "gp3", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-io1", viperblock.VolumeMetadata{
-		VolumeID: "vol-io1", SizeGiB: 10, State: "available", VolumeType: "io1", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-io1", ebsmetadata.Volume{
+		VolumeID: "vol-io1", CapacityGiB: 10, State: "available", VolumeType: "io1", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -1867,11 +1932,11 @@ func TestDescribeVolumes_FilterBySize(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-small", viperblock.VolumeMetadata{
-		VolumeID: "vol-small", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-small", ebsmetadata.Volume{
+		VolumeID: "vol-small", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-big", viperblock.VolumeMetadata{
-		VolumeID: "vol-big", SizeGiB: 100, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-big", ebsmetadata.Volume{
+		VolumeID: "vol-big", CapacityGiB: 100, State: "available", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -1888,12 +1953,12 @@ func TestDescribeVolumes_FilterByAttachmentInstanceId(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-att", viperblock.VolumeMetadata{
-		VolumeID: "vol-att", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-att", ebsmetadata.Volume{
+		VolumeID: "vol-att", CapacityGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-free", viperblock.VolumeMetadata{
-		VolumeID: "vol-free", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-free", ebsmetadata.Volume{
+		VolumeID: "vol-free", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -1910,12 +1975,12 @@ func TestDescribeVolumes_FilterByAttachmentDevice(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-nbd0", viperblock.VolumeMetadata{
-		VolumeID: "vol-nbd0", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-nbd0", ebsmetadata.Volume{
+		VolumeID: "vol-nbd0", CapacityGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-nbd1", viperblock.VolumeMetadata{
-		VolumeID: "vol-nbd1", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-nbd1", ebsmetadata.Volume{
+		VolumeID: "vol-nbd1", CapacityGiB: 10, State: "in-use",
 		AttachedInstance: "i-12345", DeviceName: "/dev/nbd1", TenantID: "acct1",
 	})
 
@@ -1933,12 +1998,12 @@ func TestDescribeVolumes_FilterByAZ(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-az1", viperblock.VolumeMetadata{
-		VolumeID: "vol-az1", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-az1", ebsmetadata.Volume{
+		VolumeID: "vol-az1", CapacityGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-az2", viperblock.VolumeMetadata{
-		VolumeID: "vol-az2", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-az2", ebsmetadata.Volume{
+		VolumeID: "vol-az2", CapacityGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2b", TenantID: "acct1",
 	})
 
@@ -1956,15 +2021,15 @@ func TestDescribeVolumes_FilterMultipleValues_OR(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-avail", viperblock.VolumeMetadata{
-		VolumeID: "vol-avail", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-avail", ebsmetadata.Volume{
+		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-inuse", viperblock.VolumeMetadata{
-		VolumeID: "vol-inuse", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-inuse", ebsmetadata.Volume{
+		VolumeID: "vol-inuse", CapacityGiB: 10, State: "in-use",
 		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-del", viperblock.VolumeMetadata{
-		VolumeID: "vol-del", SizeGiB: 10, State: "deleted", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-del", ebsmetadata.Volume{
+		VolumeID: "vol-del", CapacityGiB: 10, State: "deleted", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -1980,12 +2045,12 @@ func TestDescribeVolumes_FilterMultipleFilters_AND(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-match", viperblock.VolumeMetadata{
-		VolumeID: "vol-match", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-match", ebsmetadata.Volume{
+		VolumeID: "vol-match", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-nomatch", viperblock.VolumeMetadata{
-		VolumeID: "vol-nomatch", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-nomatch", ebsmetadata.Volume{
+		VolumeID: "vol-nomatch", CapacityGiB: 10, State: "in-use",
 		VolumeType: "gp3", AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
 
@@ -2017,8 +2082,8 @@ func TestDescribeVolumes_FilterNoResults(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-one", viperblock.VolumeMetadata{
-		VolumeID: "vol-one", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-one", ebsmetadata.Volume{
+		VolumeID: "vol-one", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -2034,11 +2099,11 @@ func TestDescribeVolumes_FilterNoFilters(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-a", viperblock.VolumeMetadata{
-		VolumeID: "vol-a", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-a", ebsmetadata.Volume{
+		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-b", viperblock.VolumeMetadata{
-		VolumeID: "vol-b", SizeGiB: 20, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-b", ebsmetadata.Volume{
+		VolumeID: "vol-b", CapacityGiB: 20, State: "available", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "acct1")
@@ -2050,12 +2115,12 @@ func TestDescribeVolumes_FilterWildcard(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-az1", viperblock.VolumeMetadata{
-		VolumeID: "vol-az1", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-az1", ebsmetadata.Volume{
+		VolumeID: "vol-az1", CapacityGiB: 10, State: "available",
 		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-az2", viperblock.VolumeMetadata{
-		VolumeID: "vol-az2", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-az2", ebsmetadata.Volume{
+		VolumeID: "vol-az2", CapacityGiB: 10, State: "available",
 		AvailabilityZone: "us-east-1a", TenantID: "acct1",
 	})
 
@@ -2073,12 +2138,12 @@ func TestDescribeVolumes_FilterByTag(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-tagged", viperblock.VolumeMetadata{
-		VolumeID: "vol-tagged", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-tagged", ebsmetadata.Volume{
+		VolumeID: "vol-tagged", CapacityGiB: 10, State: "available", TenantID: "acct1",
 		Tags: map[string]string{"Environment": "prod"},
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-untagged", viperblock.VolumeMetadata{
-		VolumeID: "vol-untagged", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-untagged", ebsmetadata.Volume{
+		VolumeID: "vol-untagged", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -2095,11 +2160,11 @@ func TestDescribeVolumes_FilterWithVolumeIds(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-a", viperblock.VolumeMetadata{
-		VolumeID: "vol-a", SizeGiB: 10, State: "available", TenantID: "acct1",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-a", ebsmetadata.Volume{
+		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "acct1",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-b", viperblock.VolumeMetadata{
-		VolumeID: "vol-b", SizeGiB: 10, State: "in-use",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-b", ebsmetadata.Volume{
+		VolumeID: "vol-b", CapacityGiB: 10, State: "in-use",
 		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
 	})
 
@@ -2119,11 +2184,11 @@ func TestDescribeVolumeStatus_FilterByVolumeId(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vs1", viperblock.VolumeMetadata{
-		VolumeID: "vol-vs1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vs1", ebsmetadata.Volume{
+		VolumeID: "vol-vs1", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vs2", viperblock.VolumeMetadata{
-		VolumeID: "vol-vs2", SizeGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vs2", ebsmetadata.Volume{
+		VolumeID: "vol-vs2", CapacityGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	out, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
@@ -2140,8 +2205,8 @@ func TestDescribeVolumeStatus_FilterByStatus(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vss1", viperblock.VolumeMetadata{
-		VolumeID: "vol-vss1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vss1", ebsmetadata.Volume{
+		VolumeID: "vol-vss1", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	// Status is always "ok" in Spinifex
@@ -2166,8 +2231,8 @@ func TestDescribeVolumeStatus_FilterByAZ(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsaz", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsaz", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsaz", ebsmetadata.Volume{
+		VolumeID: "vol-vsaz", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	out, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
@@ -2191,14 +2256,14 @@ func TestDescribeVolumeStatus_FilterMultipleValues_OR(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsor1", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsor1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsor1", ebsmetadata.Volume{
+		VolumeID: "vol-vsor1", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsor2", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsor2", SizeGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsor2", ebsmetadata.Volume{
+		VolumeID: "vol-vsor2", CapacityGiB: 20, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsor3", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsor3", SizeGiB: 30, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsor3", ebsmetadata.Volume{
+		VolumeID: "vol-vsor3", CapacityGiB: 30, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	out, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
@@ -2214,8 +2279,8 @@ func TestDescribeVolumeStatus_FilterMultipleFilters_AND(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsand", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsand", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsand", ebsmetadata.Volume{
+		VolumeID: "vol-vsand", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	// Both match
@@ -2255,8 +2320,8 @@ func TestDescribeVolumeStatus_FilterWildcard(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vswild", viperblock.VolumeMetadata{
-		VolumeID: "vol-vswild", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vswild", ebsmetadata.Volume{
+		VolumeID: "vol-vswild", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	out, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
@@ -2272,8 +2337,8 @@ func TestDescribeVolumeStatus_FilterNoResults(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsnr", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsnr", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsnr", ebsmetadata.Volume{
+		VolumeID: "vol-vsnr", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
 
 	out, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
@@ -2289,11 +2354,11 @@ func TestDescribeVolumeStatus_FilterWithVolumeIds(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-vsf1", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsf1", SizeGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsf1", ebsmetadata.Volume{
+		VolumeID: "vol-vsf1", CapacityGiB: 10, State: "available", AvailabilityZone: "ap-southeast-2a",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-vsf2", viperblock.VolumeMetadata{
-		VolumeID: "vol-vsf2", SizeGiB: 20, State: "available", AvailabilityZone: "us-east-1a",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-vsf2", ebsmetadata.Volume{
+		VolumeID: "vol-vsf2", CapacityGiB: 20, State: "available", AvailabilityZone: "us-east-1a",
 	})
 
 	// Fast path with VolumeIds + filter: should apply filter to requested IDs
@@ -2311,14 +2376,14 @@ func TestDescribeVolumeStatus_FilterWithVolumeIds(t *testing.T) {
 // --- Group: DescribeVolumesModifications tests ---
 
 // TestDescribeVolumesModifications_RoundTrip proves ModifyVolume persists the
-// modification record into cfg.Modification AND that DescribeVolumesModifications
+// modification record into meta.Modification AND that DescribeVolumesModifications
 // reads it back. Guards the load-bearing wiring between the two APIs.
 func TestDescribeVolumesModifications_RoundTrip(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-rt", viperblock.VolumeMetadata{
-		VolumeID: "vol-rt", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-rt", ebsmetadata.Volume{
+		VolumeID: "vol-rt", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
 
@@ -2329,11 +2394,11 @@ func TestDescribeVolumesModifications_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Confirm Modification was persisted on cfg.
-	cfg, err := svc.GetVolumeConfig("vol-rt")
+	meta, err := svc.GetVolumeMetadata("vol-rt")
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Modification)
-	assert.Equal(t, int64(10), cfg.Modification.OriginalSize)
-	assert.Equal(t, int64(20), cfg.Modification.TargetSize)
+	require.NotNil(t, meta.Modification)
+	assert.Equal(t, int64(10), meta.Modification.OriginalSize)
+	assert.Equal(t, int64(20), meta.Modification.TargetSize)
 
 	out, err := svc.DescribeVolumesModifications(context.Background(), &ec2.DescribeVolumesModificationsInput{
 		VolumeIds: []*string{aws.String("vol-rt")},
@@ -2355,8 +2420,8 @@ func TestDescribeVolumesModifications_OverwriteSemantics(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-ow", viperblock.VolumeMetadata{
-		VolumeID: "vol-ow", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-ow", ebsmetadata.Volume{
+		VolumeID: "vol-ow", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
 
@@ -2387,8 +2452,8 @@ func TestDescribeVolumesModifications_CrossTenantFastPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-tenantA", viperblock.VolumeMetadata{
-		VolumeID: "vol-tenantA", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-tenantA", ebsmetadata.Volume{
+		VolumeID: "vol-tenantA", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
@@ -2410,16 +2475,16 @@ func TestDescribeVolumesModifications_SlowPathScoping(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-modA", viperblock.VolumeMetadata{
-		VolumeID: "vol-modA", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-modA", ebsmetadata.Volume{
+		VolumeID: "vol-modA", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-unmodA", viperblock.VolumeMetadata{
-		VolumeID: "vol-unmodA", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-unmodA", ebsmetadata.Volume{
+		VolumeID: "vol-unmodA", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-modB", viperblock.VolumeMetadata{
-		VolumeID: "vol-modB", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-modB", ebsmetadata.Volume{
+		VolumeID: "vol-modB", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "222222222222",
 	})
 
@@ -2445,12 +2510,12 @@ func TestDescribeVolumesModifications_FilterMatching(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	createVolumeInStoreWithMeta(t, store, "vol-fa", viperblock.VolumeMetadata{
-		VolumeID: "vol-fa", SizeGiB: 10, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-fa", ebsmetadata.Volume{
+		VolumeID: "vol-fa", CapacityGiB: 10, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
-	createVolumeInStoreWithMeta(t, store, "vol-fb", viperblock.VolumeMetadata{
-		VolumeID: "vol-fb", SizeGiB: 50, State: "available",
+	createVolumeInStoreWithMeta(t, svc, store, "vol-fb", ebsmetadata.Volume{
+		VolumeID: "vol-fb", CapacityGiB: 50, State: "available",
 		VolumeType: "gp3", IOPS: 3000, TenantID: "111111111111",
 	})
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{

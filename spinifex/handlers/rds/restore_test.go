@@ -71,14 +71,14 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 	assert.Empty(t, stored.Bootstrap.MasterUserPassword)
 
 	require.NotNil(t, h.launch.launcher.input)
-	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	iamErr := errors.New("IAM store unavailable")
-	h.iam.policyErr = iamErr
+	h.iam.PutRolePolicyErr = iamErr
 
 	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
 

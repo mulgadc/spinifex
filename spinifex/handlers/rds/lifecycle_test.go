@@ -679,3 +679,23 @@ func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {
 	assert.Equal(t, StatusFailed, rec.Status)
 	assert.Contains(t, rec.FailureReason, "did not report healthy")
 }
+
+// What the next start recovers is the engine's own guarantee. Telling a MariaDB
+// customer a write-ahead log will bring back an Aria or MyISAM table would be a
+// false assurance about exactly the data most at risk.
+func TestUncleanStopMessage_IsEngineAware(t *testing.T) {
+	postgres := uncleanStopMessage(t.Context(), "postgres", "stopping the instance")
+	assert.Contains(t, postgres, "could not be shut down cleanly before stopping the instance")
+	assert.Contains(t, postgres, "write-ahead log")
+
+	mariadb := uncleanStopMessage(t.Context(), "mariadb", "rebooting the instance")
+	assert.Contains(t, mariadb, "could not be shut down cleanly before rebooting the instance")
+	assert.Contains(t, mariadb, "InnoDB tables will recover")
+	assert.Contains(t, mariadb, "may be left inconsistent")
+	assert.NotContains(t, mariadb, "write-ahead log")
+
+	// The VM is going down either way, so an engine this build cannot resolve
+	// still gets the half of the warning that does not depend on knowing it.
+	unknown := uncleanStopMessage(t.Context(), "oracle", "stopping the instance")
+	assert.Equal(t, "The database engine could not be shut down cleanly before stopping the instance.", unknown)
+}

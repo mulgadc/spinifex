@@ -180,6 +180,7 @@ func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec
 			GatewayCACert:        s.deps.GatewayCACert,
 			Region:               s.region,
 			DBInstanceIdentifier: rec.DBInstanceIdentifier,
+			Engine:               rec.Engine,
 			EngineVersion:        rec.EngineVersion,
 			EnginePort:           rec.Port,
 		}),

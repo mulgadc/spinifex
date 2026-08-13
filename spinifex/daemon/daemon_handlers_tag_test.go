@@ -116,7 +116,7 @@ func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
 func TestCreateTags_StoppedFallback(t *testing.T) {
 	const id = "i-tag-stopfall"
 	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated3", nil)
-	stopped.instances[id] = &vm.VM{
+	stopped.Stopped[id] = &vm.VM{
 		ID:        id,
 		Status:    vm.StateStopped,
 		AccountID: testAccountID,
@@ -131,7 +131,7 @@ func TestCreateTags_StoppedFallback(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{"Name": "web", "env": "prod"}
-	assert.Equal(t, want, tagsAsMap(stopped.instances[id].Instance.Tags))
+	assert.Equal(t, want, tagsAsMap(stopped.Stopped[id].Instance.Tags))
 	assert.Equal(t, want, centralTags(t, d, testAccountID, id))
 }
 
@@ -141,7 +141,7 @@ func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
 	const id = "i-tag-stopcross"
 	const attacker = "999999999999"
 	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated4", nil)
-	stopped.instances[id] = &vm.VM{
+	stopped.Stopped[id] = &vm.VM{
 		ID:        id,
 		Status:    vm.StateStopped,
 		AccountID: testAccountID,
@@ -155,7 +155,7 @@ func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 
-	assert.Equal(t, map[string]string{"Name": "web"}, tagsAsMap(stopped.instances[id].Instance.Tags))
+	assert.Equal(t, map[string]string{"Name": "web"}, tagsAsMap(stopped.Stopped[id].Instance.Tags))
 	assert.Empty(t, centralTags(t, d, attacker, id))
 }
 

@@ -9,7 +9,10 @@ source_time_handoff="${CASE}/source-time"
 configured_handoff="${CASE}/configured"
 mkdir -p "${configured_handoff}"
 touch "${configured_handoff}/bootstrap.env"
-printf 'RDS_HANDOFF_DIR=%s\n' "${configured_handoff}" >"${CASE}/agent.env"
+{
+    printf 'RDS_HANDOFF_DIR=%s\n' "${configured_handoff}"
+    printf 'RDS_ENGINE=postgres\n'
+} >"${CASE}/agent.env"
 
 # Simulate OpenRC sourcing the service before start_pre loads agent.env.
 export RDS_HANDOFF_DIR="${source_time_handoff}"
@@ -32,6 +35,13 @@ if [ "${HANDOFF_ENV}" != "${configured_handoff}/bootstrap.env" ]; then
 fi
 if [ "${EEND_STATUS}" != "0" ]; then
     echo "FAIL: post-start wait did not find the configured handoff" >&2
+    exit 1
+fi
+# The agent checks this against the engine its own image bakes. Left out of the
+# export list it would read as no assertion at all, so a VM launched as the
+# wrong engine would bootstrap instead of refusing.
+if [ "${RDS_ENGINE:-}" != "postgres" ]; then
+    echo "FAIL: start_pre did not export RDS_ENGINE from agent.env" >&2
     exit 1
 fi
 

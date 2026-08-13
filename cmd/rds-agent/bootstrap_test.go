@@ -16,6 +16,7 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 
 	err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
 		Mode:               handlers_rds.BootstrapModeInitialize,
+		Engine:             "postgres",
 		MasterUsername:     "master",
 		MasterUserPassword: &password,
 		DBName:             "appdb",
@@ -82,6 +83,7 @@ func TestWriteHandoff_AttachOmitsPassword(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
 		Mode:           handlers_rds.BootstrapModeAttach,
+		Engine:         "postgres",
 		MasterUsername: "master",
 		Port:           5432,
 	}); err != nil {
@@ -112,6 +114,7 @@ func TestWriteHandoff_QuotesShellMetacharacters(t *testing.T) {
 
 	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
 		Mode:               handlers_rds.BootstrapModeInitialize,
+		Engine:             "postgres",
 		MasterUsername:     "master",
 		MasterUserPassword: &password,
 		Port:               5432,
@@ -132,6 +135,7 @@ func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
 		Mode:               handlers_rds.BootstrapModeAttach,
+		Engine:             "postgres",
 		MasterUsername:     "master",
 		Port:               5432,
 		ServingCertificate: "CERT",
@@ -149,8 +153,9 @@ func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 func TestWriteHandoff_RejectsConfigWithNoMasterUser(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode: handlers_rds.BootstrapModeAttach,
-		Port: 5432,
+		Mode:   handlers_rds.BootstrapModeAttach,
+		Engine: "postgres",
+		Port:   5432,
 	})
 	if err == nil {
 		t.Fatal("writeHandoff accepted a config with no master username, want an error")
@@ -170,6 +175,7 @@ func TestWriteHandoff_TightensExistingDirectory(t *testing.T) {
 
 	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
 		Mode:           handlers_rds.BootstrapModeAttach,
+		Engine:         "postgres",
 		MasterUsername: "master",
 		Port:           5432,
 	}); err != nil {
@@ -218,4 +224,47 @@ func findLine(t *testing.T, body, prefix string) string {
 	}
 	t.Fatalf("no line starting %q in:\n%s", prefix, body)
 	return ""
+}
+
+// The include rds-init installs is what the engine starts on, so the spelling
+// written here is the one that has to boot.
+func TestRenderParameters_UsesTheEngineStartupSpelling(t *testing.T) {
+	params := []handlers_rds.Parameter{
+		{Name: "time_zone", Value: "SYSTEM"},
+		{Name: "max_connections", Value: "85"},
+	}
+
+	rendered, err := renderParameters("mariadb", params)
+	if err != nil {
+		t.Fatalf("renderParameters: %v", err)
+	}
+	if !strings.Contains(rendered, "default_time_zone = 'SYSTEM'\n") {
+		t.Errorf("time_zone was not written under its startup spelling:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "\ntime_zone = ") {
+		t.Errorf("time_zone reached the option file, which mariadbd refuses:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "max_connections = '85'\n") {
+		t.Errorf("an unmapped parameter was not written unchanged:\n%s", rendered)
+	}
+}
+
+func TestRenderParameters_PostgresKeepsEveryName(t *testing.T) {
+	rendered, err := renderParameters("postgres", []handlers_rds.Parameter{
+		{Name: "shared_buffers", Value: "262144"},
+	})
+	if err != nil {
+		t.Fatalf("renderParameters: %v", err)
+	}
+	if !strings.Contains(rendered, "shared_buffers = '262144'\n") {
+		t.Errorf("postgres name was rewritten:\n%s", rendered)
+	}
+}
+
+// Failing closed beats writing a file the engine may refuse: the bad include
+// would already be on the data volume by the time the server rejected it.
+func TestRenderParameters_RefusesAnUnknownEngine(t *testing.T) {
+	if _, err := renderParameters("", nil); err == nil {
+		t.Fatal("renderParameters accepted a config naming no engine, want an error")
+	}
 }

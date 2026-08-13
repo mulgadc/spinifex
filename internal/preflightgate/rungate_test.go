@@ -1,7 +1,7 @@
 // Package preflightgate tests the preflight gate wrapper. It exists as a Go
 // test so `go test ./...` exercises it; the repo's shell suites are not yet
 // wired into CI.
-package preflightgate
+package preflightgate_test
 
 import (
 	"errors"

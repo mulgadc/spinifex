@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,6 +14,7 @@ import (
 const (
 	testParameterGroup = "tuned-pg"
 	testDefaultPG      = "default.postgres18"
+	testDefaultMariaDB = "default.mariadb11.8"
 )
 
 func parameterGroupInput(name string) *rds.CreateDBParameterGroupInput {
@@ -80,7 +82,7 @@ func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
 	// A fresh group and the default group resolve to the same effective set,
 	// because a group holds overrides rather than a copy of the catalog.
 	params := describedParameters(t, h, testParameterGroup)
-	require.Len(t, params, len(CatalogParameterNames()))
+	require.Len(t, params, len(enginePostgres.CatalogParameterNames()))
 	for _, param := range params {
 		assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(param.Source))
 	}
@@ -139,10 +141,20 @@ func TestDescribeDBParameterGroups_ReportsTheImplicitDefault(t *testing.T) {
 	require.Len(t, named.DBParameterGroups, 1)
 	assert.Equal(t, testDefaultPG, aws.StringValue(named.DBParameterGroups[0].DBParameterGroupName))
 
+	// One per registered engine, as AWS does: an account that has never touched
+	// MariaDB still sees its default group, because the group is the engine's.
 	listed, err := h.svc.DescribeDBParameterGroups(t.Context(), &rds.DescribeDBParameterGroupsInput{}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, listed.DBParameterGroups, 1, "the default group is reported even with nothing created")
-	assert.Equal(t, testDefaultPG, aws.StringValue(listed.DBParameterGroups[0].DBParameterGroupName))
+	assert.Equal(t, []string{testDefaultMariaDB, testDefaultPG}, parameterGroupNames(listed),
+		"the default groups are reported even with nothing created")
+}
+
+func parameterGroupNames(out *rds.DescribeDBParameterGroupsOutput) []string {
+	var names []string
+	for _, group := range out.DBParameterGroups {
+		names = append(names, aws.StringValue(group.DBParameterGroupName))
+	}
+	return names
 }
 
 // Synthesised rather than stored, so it must appear exactly once alongside the
@@ -156,12 +168,7 @@ func TestDescribeDBParameterGroups_ListsCustomerGroupsBesideTheDefault(t *testin
 
 	listed, err := h.svc.DescribeDBParameterGroups(t.Context(), &rds.DescribeDBParameterGroupsInput{}, testAccountID)
 	require.NoError(t, err)
-
-	var names []string
-	for _, group := range listed.DBParameterGroups {
-		names = append(names, aws.StringValue(group.DBParameterGroupName))
-	}
-	assert.Equal(t, []string{"alpha", testDefaultPG, "zeta"}, names)
+	assert.Equal(t, []string{"alpha", testDefaultMariaDB, testDefaultPG, "zeta"}, parameterGroupNames(listed))
 }
 
 func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {
@@ -241,6 +248,87 @@ func TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstan
 		require.Len(t, groups, 1)
 		assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
 	}
+}
+
+// The override is stored before it is propagated, so a guest that refuses it
+// leaves the group holding a value the engine never adopted. That has to reach
+// the instance's apply status rather than being reported as in-sync.
+func TestModifyDBParameterGroup_RecordsAFailedApplyOnTheInstance(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.Error(t, err)
+
+	stored := h.record(t)
+	assert.True(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", aws.StringValue(groups[0].ParameterApplyStatus))
+	assert.Contains(t, strings.Join(h.eventMessages(t), "\n"), "could not be applied")
+}
+
+// A later apply the engine accepts is what clears it, so the instance does not
+// keep reporting a failure it has recovered from.
+func TestModifyDBParameterGroup_ASuccessfulApplyClearsTheRecordedFailure(t *testing.T) {
+	h := newModifyHarness(t)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	rec := modifiableRecord()
+	rec.DBParameterGroupName = testParameterGroup
+	rec.ParameterApplyFailed = true
+	seedInstance(t, h.svc, rec)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.NoError(t, err)
+
+	stored := h.record(t)
+	assert.False(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
+}
+
+// Propagation marks the instances that refused the set, not the group: an
+// instance that took the same values stays in-sync.
+func TestModifyDBParameterGroup_MarksOnlyTheInstancesWhoseApplyFailed(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	refusing := modifiableRecord()
+	refusing.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, refusing)
+
+	acceptingID := testDBID + "-second"
+	accepting := modifiableRecord()
+	accepting.DBInstanceIdentifier = acceptingID
+	accepting.DBParameterGroupName = testParameterGroup
+	seedInstance(t, h.svc, accepting)
+	newStubAgent(t, h.nc, testAccountID, acceptingID, false)
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(), modifyParameters(testParameterGroup,
+		parameter("work_mem", "16384", ApplyMethodImmediate),
+	), testAccountID)
+	require.Error(t, err)
+
+	assert.True(t, storedDBInstance(t, h.svc, testDBID).ParameterApplyFailed)
+
+	stored := storedDBInstance(t, h.svc, acceptingID)
+	assert.False(t, stored.ParameterApplyFailed)
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "in-sync", aws.StringValue(groups[0].ParameterApplyStatus))
 }
 
 func TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot(t *testing.T) {
@@ -441,7 +529,7 @@ func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {
 		Source:               aws.String(ParameterSourceEngineDefault),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, defaults.Parameters, len(CatalogParameterNames())-1)
+	assert.Len(t, defaults.Parameters, len(enginePostgres.CatalogParameterNames())-1)
 }
 
 func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
@@ -527,7 +615,7 @@ func TestCreateDBInstance_ResolvesTheNamedGroupIntoTheBootstrapSet(t *testing.T)
 
 	rec := h.record(t, testDBInstanceID)
 	assert.Equal(t, testParameterGroup, rec.DBParameterGroupName)
-	require.Len(t, rec.Bootstrap.ResolvedParameters, len(CatalogParameterNames()))
+	require.Len(t, rec.Bootstrap.ResolvedParameters, len(enginePostgres.CatalogParameterNames()))
 
 	values := map[string]string{}
 	for _, param := range rec.Bootstrap.ResolvedParameters {
@@ -551,7 +639,7 @@ func TestCreateDBInstance_ResolvesTheDefaultGroupWhenNoneIsNamed(t *testing.T) {
 
 	rec := h.record(t, testDBInstanceID)
 	assert.Equal(t, testDefaultPG, rec.DBParameterGroupName)
-	assert.Len(t, rec.Bootstrap.ResolvedParameters, len(CatalogParameterNames()))
+	assert.Len(t, rec.Bootstrap.ResolvedParameters, len(enginePostgres.CatalogParameterNames()))
 }
 
 func TestCreateDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {

@@ -119,8 +119,20 @@ func (s *S3ObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput)
 	return s.client.PutObjectWithContext(ctx, input)
 }
 
+// DeleteObject reports a missing key as NoSuchKeyError so callers can tell an
+// already-deleted object from a backend failure. S3 itself answers 204 here, but
+// Predastore answers 404, and a delete sweep must treat both as done.
 func (s *S3ObjectStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
-	return s.client.DeleteObjectWithContext(ctx, input)
+	out, err := s.client.DeleteObjectWithContext(ctx, input)
+	if err != nil {
+		var aerr awserr.Error
+		if errors.As(err, &aerr) &&
+			(aerr.Code() == s3.ErrCodeNoSuchKey || aerr.Code() == "NotFound") {
+			return nil, &NoSuchKeyError{Key: aws.StringValue(input.Key)}
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *S3ObjectStore) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {

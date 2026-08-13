@@ -61,12 +61,12 @@ func newTestStorage(t *testing.T, device, fstype string, run commandRunner) *gue
 	mounts := filepath.Join(dir, "mounts")
 	content := "proc /proc proc rw 0 0\n"
 	if device != "" {
-		content += device + " " + defaultDataMount + " " + fstype + " rw,relatime 0 0\n"
+		content += device + " " + testDataMount + " " + fstype + " rw,relatime 0 0\n"
 	}
 	if err := os.WriteFile(mounts, []byte(content), 0o600); err != nil {
 		t.Fatalf("write the mount table: %v", err)
 	}
-	cfg := config{DataMount: defaultDataMount, MountsFile: mounts, SysBlock: filepath.Join(dir, "block")}
+	cfg := config{DataMount: testDataMount, MountsFile: mounts, SysBlock: filepath.Join(dir, "block")}
 	if err := os.MkdirAll(cfg.SysBlock, 0o755); err != nil {
 		t.Fatalf("create the sysfs tree: %v", err)
 	}
@@ -93,6 +93,9 @@ func seedPartition(t *testing.T, g *guestStorage, disk, name, number string) {
 
 // The data volume is formatted whole, so the usual grow is resize2fs against
 // the device with no partition to push out first.
+// Where rds-datadir mounts the data volume in the PostgreSQL preset.
+const testDataMount = "/var/lib/postgresql"
+
 func TestGrowFilesystem_ResizesAnExt4DeviceOnline(t *testing.T) {
 	log := &runLog{}
 	g := newTestStorage(t, "/dev/vdb", "ext4", log.run)
@@ -108,7 +111,7 @@ func TestGrowFilesystem_ResizesAnExt4DeviceOnline(t *testing.T) {
 	if args := log.calls[0].Args; len(args) != 1 || args[0] != "/dev/vdb" {
 		t.Errorf("resize2fs args = %v, want the device", args)
 	}
-	if !strings.Contains(message, "/dev/vdb") || !strings.Contains(message, defaultDataMount) {
+	if !strings.Contains(message, "/dev/vdb") || !strings.Contains(message, testDataMount) {
 		t.Errorf("reply message = %q, want the device and mount it grew", message)
 	}
 }
@@ -125,7 +128,7 @@ func TestGrowFilesystem_GrowsXFSByMountPoint(t *testing.T) {
 	if got := log.names(); len(got) != 1 || got[0] != defaultXFSGrowfs {
 		t.Fatalf("ran %v, want just %s", got, defaultXFSGrowfs)
 	}
-	if args := log.calls[0].Args; len(args) != 1 || args[0] != defaultDataMount {
+	if args := log.calls[0].Args; len(args) != 1 || args[0] != testDataMount {
 		t.Errorf("xfs_growfs args = %v, want the mount point", args)
 	}
 }

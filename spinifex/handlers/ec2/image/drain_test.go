@@ -42,7 +42,8 @@ func setupDrainImageService(t *testing.T) (*ImageServiceImpl, *objectstore.Memor
 			Bucket: testBucket,
 		},
 	}
-	return NewImageServiceImplWithConfig(cfg, store, nc), store, nc
+	svc := NewImageServiceImplWithConfig(cfg, store, nc)
+	return svc, store, nc
 }
 
 func seedImageVolumeAttachment(t *testing.T, store *objectstore.MemoryObjectStore, volumeID, state, instanceID string) {

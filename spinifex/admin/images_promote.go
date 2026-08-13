@@ -1,21 +1,16 @@
 package admin
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
 )
 
 // SystemOwnerAlias is the fixed owner alias written to AMI config on promotion.
@@ -49,13 +44,13 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, err := readAMIConfig(store, bucket, opts.ImageID)
+	meta, err := readAMI(store, bucket, opts.ImageID)
 	switch {
 	case err == nil:
 		// ok
 	case objectstore.IsNoSuchKeyError(err):
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
-	case errors.Is(err, handlers_ec2_image.ErrCorruptAMIConfig):
+	case errors.Is(err, ebsmetadata.ErrCorruptDocument):
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	default:
 		slog.Error("PromoteSystemImage: read AMI config", "imageId", opts.ImageID, "err", err)
@@ -69,8 +64,8 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 	prev := meta.ImageOwnerAlias
 	meta.ImageOwnerAlias = SystemOwnerAlias
 
-	if err := writeAMIConfig(store, bucket, opts.ImageID, meta); err != nil {
-		slog.Error("PromoteSystemImage: write AMI config", "imageId", opts.ImageID, "err", err)
+	if err := ebsmetadata.NewStore(store, bucket).PutAMI(context.Background(), meta); err != nil {
+		slog.Error("PromoteSystemImage: write AMI document", "imageId", opts.ImageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -78,39 +73,18 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 	return &PromoteImageResult{PreviousOwner: prev}, nil
 }
 
-// writeAMIConfig persists updated AMIMetadata to {imageID}/config.json,
-// preserving the VBState wrapper used by GetAMIConfig.
-func writeAMIConfig(store objectstore.ObjectStore, bucket, imageID string, meta viperblock.AMIMetadata) error {
-	state := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: meta,
-		},
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/json"),
-	})
-	return err
-}
-
-// GetAMIMetadata reads and returns the AMIMetadata for the given image ID.
-// Returns ErrorInvalidAMIIDNotFound for missing or corrupt configs.
-func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (viperblock.AMIMetadata, error) {
-	meta, err := readAMIConfig(store, bucket, imageID)
+// GetAMIMetadata reads and returns the control-plane document for the given
+// image ID. Returns ErrorInvalidAMIIDNotFound for missing or corrupt documents.
+func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
+	meta, err := readAMI(store, bucket, imageID)
 	switch {
 	case err == nil:
 		return meta, nil
 	case objectstore.IsNoSuchKeyError(err):
-		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
-	case errors.Is(err, handlers_ec2_image.ErrCorruptAMIConfig):
-		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		return ebsmetadata.AMI{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	case errors.Is(err, ebsmetadata.ErrCorruptDocument):
+		return ebsmetadata.AMI{}, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	default:
-		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorServerInternal)
+		return ebsmetadata.AMI{}, errors.New(awserrors.ErrorServerInternal)
 	}
 }

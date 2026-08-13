@@ -32,10 +32,9 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		if fetched == nil {
 			return fmt.Errorf("bootstrap fetch returned no config")
 		}
-		// A control plane that predates the encrypted payload answers initialize
-		// with nothing to initialise with. Retrying re-dials the worker queue
-		// group until an upgraded node answers, so a mixed-version fleet heals
-		// within one boot rather than needing a reboot.
+		// A control plane predating the encrypted payload answers initialize with
+		// nothing to initialise with. Retrying re-dials the queue group until an
+		// upgraded node answers, so a mixed-version fleet heals within one boot.
 		if fetched.Mode == handlers_rds.BootstrapModeInitialize &&
 			(fetched.MasterUserPassword == nil || *fetched.MasterUserPassword == "") {
 			return fmt.Errorf("bootstrap fetch returned mode=%s with no master password", fetched.Mode)
@@ -61,7 +60,6 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 	a.hb.clearBootstrapFailure()
 	if cfg.Port > 0 {
 		a.probe.setPort(int(cfg.Port))
-		a.engine.setPort(int(cfg.Port))
 	}
 	if cfg.BootstrapPending && cfg.PayloadID != "" {
 		a.pending = &pendingBootstrap{
@@ -107,7 +105,11 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 		return fmt.Errorf("secure handoff dir %s: %w", dir, err)
 	}
 
-	if err := writeHandoffFile(dir, handoffParamsFile, renderParameters(cfg.Parameters)); err != nil {
+	params, err := renderParameters(cfg.Engine, cfg.Parameters)
+	if err != nil {
+		return err
+	}
+	if err := writeHandoffFile(dir, handoffParamsFile, params); err != nil {
 		return err
 	}
 	// Cert and key are written as a pair; half of one would start the engine
@@ -177,18 +179,23 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// postgresql.conf syntax. Values are quoted so a setting with a space or unit
-// suffix survives; the engine accepts quoted numerics and booleans too.
-func renderParameters(params []handlers_rds.Parameter) string {
+// postgresql.conf syntax, which MariaDB's option files also parse. Values are
+// quoted so a space or unit suffix survives. Names are the engine's startup
+// spellings, not the customer's: the wrong one leaves the engine unable to boot.
+func renderParameters(engineName string, params []handlers_rds.Parameter) (string, error) {
+	engine, err := handlers_rds.LookupEngine(engineName)
+	if err != nil {
+		return "", fmt.Errorf("render the resolved parameters: %w", err)
+	}
 	var b strings.Builder
 	b.WriteString("# Resolved parameter group, written by rds-agent.\n")
 	for _, p := range params {
 		if p.Name == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s = '%s'\n", p.Name, strings.ReplaceAll(p.Value, "'", "''"))
+		fmt.Fprintf(&b, "%s = '%s'\n", engine.OptionFileName(p.Name), strings.ReplaceAll(p.Value, "'", "''"))
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // Atomic: a temp file in the same directory, renamed over the target. The mode

@@ -1,0 +1,206 @@
+#!/bin/sh
+# rds-datadir — select, authorize, prepare, and mount the exact data volume
+# assigned by the control plane before rds-init touches the engine's datadir.
+#
+# Shared by every RDS image preset. The mount point and the OS user that owns it
+# are the one engine-specific pair here, and both are supplied by the preset's
+# own service rather than defaulted, so no image can inherit another's layout.
+set -eu
+
+DATA_MOUNT="${RDS_DATA_MOUNT:-}"
+ENGINE_USER="${RDS_ENGINE_USER:-}"
+SYS_BLOCK="${RDS_SYS_BLOCK:-/sys/block}"
+DEV_DIR="${RDS_DEV_DIR:-/dev}"
+MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
+WAIT_SECS="${RDS_DATA_VOLUME_WAIT:-120}"
+FS_LABEL="${RDS_DATA_FS_LABEL:-rds-data}"
+HANDOFF_ENV="${RDS_HANDOFF_ENV:-${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env}"
+
+log() { echo "[rds-datadir] $*"; }
+fail() { echo "[rds-datadir] ERROR: $*" >&2; exit 1; }
+
+load_handoff() {
+    [ -f "${HANDOFF_ENV}" ] || fail "no bootstrap handoff at ${HANDOFF_ENV}; refusing to discover or format a volume"
+    # Root-owned content written with shell-safe quoting by rds-agent.
+    # shellcheck disable=SC1090
+    . "${HANDOFF_ENV}"
+
+    RDS_DATA_VOLUME_ID="${RDS_DATA_VOLUME_ID:-}"
+    RDS_DATA_VOLUME_SERIAL="${RDS_DATA_VOLUME_SERIAL:-}"
+    RDS_VM_GENERATION="${RDS_VM_GENERATION:-}"
+    RDS_FORMAT_AUTHORIZED="${RDS_FORMAT_AUTHORIZED:-false}"
+
+    [ -n "${RDS_DATA_VOLUME_ID}" ] || fail "bootstrap handoff has no RDS_DATA_VOLUME_ID"
+    [ -n "${RDS_DATA_VOLUME_SERIAL}" ] || fail "bootstrap handoff has no RDS_DATA_VOLUME_SERIAL"
+    case "${RDS_VM_GENERATION}" in
+        ''|*[!0-9]*|0) fail "bootstrap handoff has invalid RDS_VM_GENERATION '${RDS_VM_GENERATION}'" ;;
+    esac
+    case "${RDS_FORMAT_AUTHORIZED}" in
+        true|false) ;;
+        *) fail "bootstrap handoff has invalid RDS_FORMAT_AUTHORIZED '${RDS_FORMAT_AUTHORIZED}'" ;;
+    esac
+}
+
+mounted_source() {
+    awk -v mnt="${DATA_MOUNT}" '$2 == mnt { print $1; found = 1; exit } END { exit !found }' "${MOUNTS_FILE}"
+}
+
+# Only an exact serial match is a candidate; other vol* devices are unrelated
+# attachments and are deliberately ignored. The loop status must not depend on
+# the last device examined, or set -e would abort the caller's wait and report.
+data_disks() {
+    for _p in "${SYS_BLOCK}"/*; do
+        [ -r "${_p}/serial" ] || continue
+        _serial=$(cat "${_p}/serial" 2>/dev/null || true)
+        if [ "${_serial}" = "${RDS_DATA_VOLUME_SERIAL}" ]; then
+            basename "${_p}"
+        fi
+    done
+    return 0
+}
+
+await_data_disk() {
+    _waited=0
+    while :; do
+        _found=$(data_disks)
+        _count=$(printf '%s\n' "${_found}" | grep -c . || true)
+        if [ "${_count}" -gt 1 ]; then
+            fail "found ${_count} devices with expected serial ${RDS_DATA_VOLUME_SERIAL}; refusing to choose one"
+        fi
+        # Sysfs appears before the device node. A probe cannot classify a node
+        # that is not present yet, so both must exist before the wait ends.
+        if [ "${_count}" = "1" ] && [ -e "${DEV_DIR}/${_found}" ]; then
+            printf '%s\n' "${_found}"
+            return 0
+        fi
+        if [ "${_waited}" -ge "${WAIT_SECS}" ]; then
+            fail "volume ${RDS_DATA_VOLUME_ID} with serial ${RDS_DATA_VOLUME_SERIAL} was not attached after ${WAIT_SECS}s"
+        fi
+        sleep 1
+        _waited=$((_waited + 1))
+    done
+}
+
+has_partitions() {
+    for _part in "${SYS_BLOCK}/$1/$1"*; do
+        [ -d "${_part}" ] && return 0
+    done
+    return 1
+}
+
+consume_format_authorization() {
+    [ "${RDS_FORMAT_AUTHORIZED}" = "true" ] || return 0
+    _tmp="${HANDOFF_ENV}.consume.$$"
+    if ! awk '!/^RDS_FORMAT_AUTHORIZED=/' "${HANDOFF_ENV}" > "${_tmp}"; then
+        rm -f "${_tmp}"
+        fail "could not remove the consumed format authorization from ${HANDOFF_ENV}"
+    fi
+    chmod 0600 "${_tmp}" || {
+        rm -f "${_tmp}"
+        fail "could not secure the rewritten bootstrap handoff"
+    }
+    mv -f "${_tmp}" "${HANDOFF_ENV}" || {
+        rm -f "${_tmp}"
+        fail "could not install the bootstrap handoff without its consumed format authorization"
+    }
+    RDS_FORMAT_AUTHORIZED=false
+}
+
+main() {
+    # An unset layout is a broken image, not something to guess at: mounting the
+    # customer's volume where the engine is not looking would read as an empty
+    # datadir and bootstrap a second, empty database beside their data.
+    [ -n "${DATA_MOUNT}" ] ||
+        fail "RDS_DATA_MOUNT is not set; refusing to guess where this engine's datadir belongs"
+    [ -n "${ENGINE_USER}" ] ||
+        fail "RDS_ENGINE_USER is not set; refusing to guess which user owns this engine's datadir"
+
+    load_handoff
+
+    command -v blkid >/dev/null 2>&1 ||
+        fail "blkid is not installed; refusing to classify the expected volume"
+
+    _disk=$(await_data_disk)
+    _dev="${DEV_DIR}/${_disk}"
+    log "volume ${RDS_DATA_VOLUME_ID} generation ${RDS_VM_GENERATION} attached as ${_dev}"
+
+    if _mounted=$(mounted_source 2>/dev/null); then
+        [ "${_mounted}" = "${_dev}" ] ||
+            fail "${DATA_MOUNT} is mounted from ${_mounted}, not expected device ${_dev}"
+        consume_format_authorization
+        log "${DATA_MOUNT} is already mounted from the expected device"
+        return 0
+    fi
+
+    # Low-level probing exposes partition tables and returns a distinct failure
+    # for ambiguous signatures. Exit 2 also covers read failures, so stderr must
+    # be empty before it can be treated as a signature-free device.
+    _probe_err="${HANDOFF_ENV}.blkid.$$"
+    umask 077
+    # A redirection that cannot be created leaves blkid unrun and returns the
+    # shell's own status, which some shells report as the blank-device exit 2.
+    # `true` is a regular builtin, so the failure is catchable rather than fatal.
+    true > "${_probe_err}" ||
+        fail "could not create the probe error capture at ${_probe_err}; refusing to classify ${_dev}"
+    if _probe=$(blkid -p -o export "${_dev}" 2>"${_probe_err}"); then
+        _probe_rc=0
+    else
+        _probe_rc=$?
+    fi
+    _probe_stderr=$(cat "${_probe_err}" 2>/dev/null || true)
+    rm -f "${_probe_err}"
+    if [ "${_probe_rc}" -eq 2 ] && [ -n "${_probe_stderr}" ]; then
+        fail "could not read ${_dev} while probing it; refusing to classify it as blank"
+    fi
+
+    case "${_probe_rc}" in
+        0)
+            _pttype=$(printf '%s\n' "${_probe}" | awk -F= '$1 == "PTTYPE" { print $2 }')
+            _types=$(printf '%s\n' "${_probe}" | awk -F= '$1 == "TYPE" { print $2 }')
+            _type_count=$(printf '%s\n' "${_types}" | grep -c . || true)
+            if [ -n "${_pttype}" ] || has_partitions "${_disk}"; then
+                fail "${_dev} carries a partition table or partitions; refusing to mount or format it"
+            fi
+            [ "${_type_count}" = "1" ] ||
+                fail "${_dev} has conflicting or incomplete filesystem signatures; refusing to use it"
+            case "${_types}" in
+                ext4|xfs) _fstype="${_types}" ;;
+                *) fail "${_dev} holds unsupported filesystem ${_types}; refusing to use it" ;;
+            esac
+            # A grant left after mkfs but before local consumption must not
+            # survive once the newly recognizable filesystem is observed.
+            consume_format_authorization
+            log "${_dev} already holds a supported ${_fstype} filesystem"
+            ;;
+        2)
+            if has_partitions "${_disk}"; then
+                fail "${_dev} carries partitions but no supported whole-disk filesystem; refusing to format it"
+            fi
+            [ "${RDS_FORMAT_AUTHORIZED}" = "true" ] ||
+                fail "${_dev} has no recognizable filesystem and this boot has no matching format authorization"
+            log "formatting authorized volume ${RDS_DATA_VOLUME_ID} as ext4"
+            mkfs.ext4 -q -L "${FS_LABEL}" -m 0 "${_dev}" ||
+                fail "mkfs.ext4 failed on ${_dev}"
+            # Consume before mount. If mounting later fails, the next run sees
+            # ext4 and mounts it without receiving another chance to format.
+            consume_format_authorization
+            _fstype=ext4
+            ;;
+        8)
+            fail "${_dev} has ambiguous or conflicting signatures; refusing to use it"
+            ;;
+        *)
+            fail "could not probe ${_dev} (blkid exit ${_probe_rc}); refusing to classify it as blank"
+            ;;
+    esac
+
+    mount -t "${_fstype}" "${_dev}" "${DATA_MOUNT}" ||
+        fail "could not mount ${_dev} at ${DATA_MOUNT}"
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${DATA_MOUNT}" ||
+        fail "could not set ${ENGINE_USER} ownership on ${DATA_MOUNT}"
+    chmod 0750 "${DATA_MOUNT}"
+
+    log "${DATA_MOUNT} ready on ${_dev}"
+}
+
+main "$@"

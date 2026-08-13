@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
 )
 
 // orphanTagKey marks a volume the GC has surfaced as orphaned. It is a
@@ -67,26 +66,27 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		default:
 		}
 
-		cfg, err := r.svc.getVolumeConfig(ctx, id)
+		meta, err := r.svc.metadata.GetVolume(ctx, id)
 		if err != nil {
 			continue
 		}
-		md := &cfg.VolumeMetadata
-		if md.AttachedInstance == "" || !leaked[md.AttachedInstance] {
+		attachedInstance, tags, sizeGiB := meta.AttachedInstance, meta.Tags, meta.CapacityGiB
+
+		if attachedInstance == "" || !leaked[attachedInstance] {
 			continue
 		}
-		if md.Tags[orphanTagKey] != "" {
+		if tags[orphanTagKey] != "" {
 			continue // already surfaced; idempotent
 		}
 
-		if err := r.svc.markVolumeOrphaned(ctx, id, cfg); err != nil {
+		if err := r.svc.markVolumeOrphaned(ctx, id, tags, attachedInstance); err != nil {
 			slog.Error("volume-leak: failed to mark orphaned volume", "volumeId", id, "err", err)
 			continue
 		}
 		// ALARM — surface the retained orphan to the operator. NEVER delete:
 		// reclamation is the explicit --purge / operator path (ADR-0005 §3).
 		slog.Warn("DATA-SAFETY ALARM: orphaned volume retained, not deleted",
-			"volumeId", id, "attachedInstance", md.AttachedInstance, "sizeGiB", md.SizeGiB)
+			"volumeId", id, "attachedInstance", attachedInstance, "sizeGiB", sizeGiB)
 
 		// Reconcile the attachment record only — never the volume data. The
 		// owning instance is definitively terminated (this node's leaked
@@ -100,13 +100,20 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 	return marked, nil
 }
 
-// markVolumeOrphaned tags the volume as orphaned in the control-plane-owned
-// tags.json. The volume's data and state remain untouched.
-func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, cfg *viperblock.VolumeConfig) error {
-	if cfg.VolumeMetadata.Tags == nil {
-		cfg.VolumeMetadata.Tags = make(map[string]string)
+// markVolumeOrphaned tags the volume as orphaned. tags is the volume's
+// current, already-authoritative tag set; the volume's data and state remain
+// untouched.
+func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, tags map[string]string, attachedInstance string) error {
+	if tags == nil {
+		tags = make(map[string]string)
 	}
-	cfg.VolumeMetadata.Tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
-	cfg.VolumeMetadata.Tags[orphanInstanceTagKey] = cfg.VolumeMetadata.AttachedInstance
-	return s.putVolumeTags(ctx, volumeID, cfg.VolumeMetadata.Tags)
+	tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
+	tags[orphanInstanceTagKey] = attachedInstance
+
+	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	if err != nil {
+		return err
+	}
+	meta.Tags = tags
+	return s.metadata.PutVolume(ctx, meta)
 }

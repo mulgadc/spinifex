@@ -10,10 +10,9 @@ import (
 	"strings"
 )
 
-// The in-guest half of a storage grow. The control plane has already
-// grown the block device by the time this runs; all that is left is to put the
-// filesystem on the capacity that is now there. Both ext4 and XFS grow while
-// mounted, so this needs no ordering against the engine start.
+// The in-guest half of a storage grow: the control plane has already grown the
+// block device, so all that is left is the filesystem. Both ext4 and XFS grow
+// while mounted, so this needs no ordering against the engine start.
 type storageOps interface {
 	// Extends the filesystem at the data mount onto its whole device, and
 	// reports what it did for the command reply.
@@ -28,8 +27,6 @@ const (
 	defaultXFSGrowfs  = "xfs_growfs"
 	defaultMountsFile = "/proc/mounts"
 	defaultSysBlock   = "/sys/class/block"
-	// Where rds-datadir mounts the data volume; the datadir sits one level in.
-	defaultDataMount = "/var/lib/postgresql"
 	// growpart says this when the partition already fills the disk, which a
 	// resumed grow is the normal way to reach.
 	growpartNoChange = "NOCHANGE"

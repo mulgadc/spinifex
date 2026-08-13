@@ -25,20 +25,53 @@ func multiNodeClusterConfig() *config.ClusterConfig {
 }
 
 type recordingSudo struct {
-	runs         [][]string
-	activeOutput string
+	runs          [][]string
+	activeOutput  string
+	enabledOutput map[string]string
+	activePerUnit map[string]string
 }
 
 func (r *recordingSudo) stub(name string, args ...string) *exec.Cmd {
 	r.runs = append(r.runs, append([]string{name}, args...))
-	if name == "systemctl" && len(args) >= 1 && args[0] == "is-active" {
+	if name != "systemctl" || len(args) < 2 {
+		return exec.Command("true")
+	}
+	unit := args[len(args)-1]
+	switch args[0] {
+	case "is-active":
+		if out, ok := r.activePerUnit[unit]; ok {
+			return exec.Command("printf", "%s", out)
+		}
 		out := r.activeOutput
 		if out == "" {
 			out = "active\n"
 		}
 		return exec.Command("printf", "%s", out)
+	case "is-enabled":
+		if out, ok := r.enabledOutput[unit]; ok {
+			return exec.Command("printf", "%s", out)
+		}
+		return exec.Command("printf", "%s", "enabled\n")
 	}
 	return exec.Command("true")
+}
+
+// helperRuns returns the IPsec state-helper invocations, dropping the
+// is-enabled/is-active probes that precede them.
+func (r *recordingSudo) helperRuns() [][]string {
+	var out [][]string
+	for _, run := range r.runs {
+		if run[0] == ipsecStateHelper {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+func multiNodeIPSecConfig(enabled bool) *config.ClusterConfig {
+	cfg := multiNodeClusterConfig()
+	cfg.Network.IPSecEnabled = enabled
+	return cfg
 }
 
 func TestEnableOVNIPSec(t *testing.T) {
@@ -166,4 +199,127 @@ func TestEnableOVNIPSec_NoConfigPath(t *testing.T) {
 	err := EnableOVNIPSec("", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config path unset")
+}
+
+func TestReconcileOVNIPSec_DisabledStopsCharon(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+
+	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
+
+	for _, run := range recorder.runs {
+		assert.NotEqual(t, "ovs-vsctl", run[0], "must not touch OVS when IPsec is off: %v", run)
+	}
+}
+
+// The daemon has no systemctl grant, so a unit change must never be attempted
+// directly: it would fail at the polkit prompt and leave charon listening.
+func TestReconcileOVNIPSec_NeverCallsSystemctlDirectly(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+
+	for _, run := range recorder.runs {
+		if run[0] != "systemctl" {
+			continue
+		}
+		assert.Contains(t, []string{"is-active", "is-enabled"}, run[1],
+			"only read-only systemctl verbs may be run directly: %v", run)
+	}
+}
+
+// A single-node cluster has no tunnels to protect, so charon must not be left
+// listening even though ipsec_enabled defaults to true.
+func TestReconcileOVNIPSec_SingleNodeStopsCharon(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {}}}
+	cfg.Network.IPSecEnabled = true
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", cfg))
+
+	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
+}
+
+func TestReconcileOVNIPSec_EnabledTurnsTheServicesOn(t *testing.T) {
+	recorder := &recordingSudo{
+		enabledOutput: map[string]string{
+			ovsIPSecUnit:          "disabled\n",
+			strongswanStarterUnit: "disabled\n",
+		},
+		activePerUnit: map[string]string{
+			ovsIPSecUnit:          "active\n",
+			strongswanStarterUnit: "inactive\n",
+		},
+	}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
+	for _, rel := range []string{"ca.pem", "ipsec/peer.pem", "ipsec/peer.key"} {
+		full := filepath.Join(configDir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0750))
+		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
+	}
+
+	origNBSock := ovnNBSocketPath
+	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
+	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
+
+	require.NoError(t, ReconcileOVNIPSec(configPath, multiNodeIPSecConfig(true)))
+
+	assert.Equal(t, [][]string{{ipsecStateHelper, "on"}}, recorder.helperRuns())
+
+	// The enable path must still reach the OVS writes.
+	var sawEncapsulation bool
+	for _, run := range recorder.runs {
+		if run[0] == "ovs-vsctl" && strings.Contains(strings.Join(run, " "), "ipsec_encapsulation=true") {
+			sawEncapsulation = true
+		}
+	}
+	assert.True(t, sawEncapsulation, "ipsec_encapsulation was never set: %v", recorder.runs)
+}
+
+func TestReconcileOVNIPSec_AlreadyInStateIsNoOp(t *testing.T) {
+	recorder := &recordingSudo{
+		enabledOutput: map[string]string{strongswanStarterUnit: "disabled\n", ovsIPSecUnit: "disabled\n"},
+		activePerUnit: map[string]string{strongswanStarterUnit: "inactive\n", ovsIPSecUnit: "inactive\n"},
+	}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	assert.Empty(t, recorder.helperRuns())
+}
+
+func TestReconcileOVNIPSec_UnknownUnitIsNotAnError(t *testing.T) {
+	recorder := &recordingSudo{
+		enabledOutput: map[string]string{
+			strongswanStarterUnit: "Failed to get unit file state for strongswan-starter.service: No such file or directory\n",
+			ovsIPSecUnit:          "Failed to get unit file state for openvswitch-ipsec.service: No such file or directory\n",
+		},
+		activePerUnit: map[string]string{
+			strongswanStarterUnit: "inactive\n",
+			ovsIPSecUnit:          "inactive\n",
+		},
+	}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	assert.Empty(t, recorder.helperRuns())
+}
+
+// A nil cluster config means the intent is unknown; tearing down working
+// tunnels on a guess would be worse than leaving them.
+func TestReconcileOVNIPSec_NilConfigLeavesUnitsAlone(t *testing.T) {
+	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("utils.SudoCommand must not run with a nil cluster config; got %s %v", name, args)
+		return exec.Command("true")
+	}))
+
+	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", nil))
 }

@@ -261,16 +261,21 @@ func projectPendingModifiedValues(pending *PendingModifiedValues) *rds.PendingMo
 // PendingModifiedValues, and the Terraform provider reads it there: applying
 // while a modify is draining, pending-reboot while static settings await the
 // restart that adopts them.
+//
+// A recorded failure outranks a still-outstanding request, whether the engine
+// refused the set live or rolled back on it at boot: otherwise a failed apply
+// inside a draining modify reports applying on every retry, and the group goes
+// on disagreeing with the engine with nothing visible in the API.
 func projectParameterGroup(rec *DBInstanceRecord) []*rds.DBParameterGroupStatus {
 	if rec.DBParameterGroupName == "" {
 		return nil
 	}
 	status := "in-sync"
 	switch {
+	case rec.ParametersRolledBack || rec.ParameterApplyFailed:
+		status = "failed-to-apply"
 	case rec.PendingModifiedValues != nil && rec.PendingModifiedValues.DBParameterGroupName != "":
 		status = "applying"
-	case rec.ParametersRolledBack:
-		status = "failed-to-apply"
 	case len(rec.PendingRebootParameters) > 0:
 		status = "pending-reboot"
 	}

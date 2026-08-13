@@ -62,9 +62,9 @@ func TestSupportedInstanceClasses_SortedAndComplete(t *testing.T) {
 // memory, so reading the head of the sorted list would advertise a shared_buffers
 // no small instance ever runs.
 func TestSmallestInstanceClass_IsTheLeastMemory(t *testing.T) {
-	assert.Equal(t, "db.t3.micro", smallestInstanceClass())
+	assert.Equal(t, "db.t3.micro", SmallestInstanceClass())
 
-	least, err := classMemoryMiB(smallestInstanceClass())
+	least, err := classMemoryMiB(SmallestInstanceClass())
 	require.NoError(t, err)
 	for _, class := range SupportedInstanceClasses() {
 		memoryMiB, err := classMemoryMiB(class)

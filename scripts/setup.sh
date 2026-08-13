@@ -463,8 +463,6 @@ RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
 OPEN="/etc/spinifex/firewall/open-ports.nft"
 
-[ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
-
 # 0 is a sentinel that keeps the set non-empty, because nft rejects an empty
 # one. No packet can match it: the kernel has no destination port 0.
 write_open_ports() {
@@ -482,12 +480,20 @@ write_open_ports() {
 # grant, so a caller must not be able to inject nft syntax through it.
 # disable removes spinifex's own table and the peer file, leaving every other
 # table alone. Idempotent, so it is safe on a node that never had the policy.
+# Deliberately ahead of the policy-file check below: turning the firewall off is
+# the recovery path, and refusing to run it because the policy is missing leaves
+# an operator with a node they can neither arm nor disarm.
 if [ "${1:-}" = "disable" ]; then
     nft delete table inet spinifex_filter 2>/dev/null || true
     rm -f "$PEERS"
     systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
 fi
+
+# Every remaining verb writes the policy, so it has to exist. Failing here
+# changes nothing, which leaves a node whose daemon has not yet resolved cluster
+# membership reachable rather than cut off from a cluster it cannot name.
+[ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
 
 # open-port and close-port hold a single port open to any source while a cluster
 # forms. One slot, not a list: the only caller is `spx admin init` opening its
@@ -1082,6 +1088,11 @@ fix_file_ownership() {
                 || fatal "Failed to set ownership on /var/lib/spinifex/$d"
             $SUDO chmod -R u+rwX,g+rwX,o-rwx "/var/lib/spinifex/$d" \
                 || fatal "Failed to set permissions on /var/lib/spinifex/$d"
+            # setgid on directories only, so subdirectories a root run creates
+            # keep the spinifex group instead of falling back to root and locking
+            # the admin CLI out of the tree it is meant to write.
+            $SUDO find "/var/lib/spinifex/$d" -type d -exec chmod g+s {} + \
+                || fatal "Failed to set setgid on /var/lib/spinifex/$d"
         fi
     done
 

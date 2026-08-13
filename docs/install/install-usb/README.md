@@ -98,7 +98,7 @@ Network interfaces will be automatically detected. In the event that none are de
 
 A hostname (eg `node1`) and admin password must be set.
 
-The installer does not ask about clustering. It installs and configures a standalone node — operating system, disks, hostname, network interfaces and plane addressing — and leaves Spinifex service configuration to a post-install step. This applies equally to single-node and multi-node deployments; see [Configure Spinifex](#configure-spinifex) below.
+The installer does not ask about clustering, because it does not need to. It installs and configures a complete, working single node — operating system, disks, hostname, network interfaces, plane addressing, OVN networking, credentials and services — and starts it. A single-node deployment is finished when the installer is. A multi-node cluster is built by joining these servers together afterwards; see [Building a Cluster](#building-a-cluster) below.
 
 Once configuration is complete, a summary of the configuration will be shown.
 
@@ -115,29 +115,37 @@ The device will reboot and briefly finalise the install — setting the hostname
 - Login: `spinifex`
 - Password: Set by user during installation
 
-Both before and after login, a banner will be printed specifying important information, such as details for SSH into the node and the commands needed to configure Spinifex. The web dashboard becomes available once the node has been configured and `spinifex.target` has been started.
+Both before and after login, a banner will be printed specifying important information, such as the node's addresses and how to reach the web dashboard.
 
 <img src="../../../.github/assets/images/banner1.png" alt="banner">
 
-### Configure Spinifex
+### Start Using It
 
-**Spinifex is now installed on this node, but not yet configured.**
+**There is nothing left to configure.** The node came up as a running single-node cluster: services are started, credentials are issued and networking is up. This is the point of installing from the ISO.
 
-The ISO performs the same job as **Step 1** of the install guides — it puts Spinifex and its dependencies on the machine. The remaining steps configure OVN networking and form the cluster, and they run after installation because cluster membership determines how OVN's clustered database is brought up. That set cannot be known while the nodes are still being installed.
+**Web dashboard** — browse to `https://<node-address>:3000`. It is served with the cluster's own CA, so expect a certificate warning on first visit.
 
-Continue from **Step 2** of whichever guide applies:
-
-**Single node** — follow [Single-Node Install](/docs/install) from Step 2. In brief:
+**AWS CLI** — credentials were written during install, under the profile `spinifex`:
 
 ```bash
-sudo /usr/local/share/spinifex/setup-ovn.sh --management
-sudo spx admin init --node node1 --nodes 1
-sudo systemctl start spinifex.target
+cat ~/.aws/credentials
+AWS_PROFILE=spinifex aws ec2 describe-instance-types
 ```
 
-**Multi-node cluster** — install Spinifex from the ISO on **every** server first, following this guide on each one. Once all servers are installed and reachable, follow [Multi-Node Install](/docs/install-multi-node) from Step 2. Do not configure any node until all of them are installed: the first node's `spx admin init` waits for the others to join, and the join must happen while it is waiting.
+That profile is the operator account, with administrator access. Copy it to your workstation to drive the node remotely — you will also need the cluster CA, available unauthenticated from `https://<node-address>:3000/api/ca.pem`.
 
-Read [Joining ISO-installed servers into a cluster](#joining-iso-installed-servers-into-a-cluster) below before you start — the firewall needs turning off while the cluster forms, and back on afterwards.
+From here, [Setting Up Your Cluster](/docs/admin/setting-up-your-cluster) walks through importing an AMI, creating a key pair and a VPC, and launching your first instance.
+
+### Building a Cluster
+
+Skip this if one server is all you need.
+
+To build a multi-node cluster, install from the ISO on **every** server first, following this guide on each one. Each comes up as its own working single node, and they are then joined together — the second and third servers discard the CA and master key they were installed with and adopt the first server's.
+
+> [!IMPORTANT]
+> Install all of the servers before joining any of them. The first server's `spx admin init` waits for the others to join, and the join has to happen while it is waiting.
+
+Then follow [Multi-Node Install](/docs/install-multi-node), and read [Joining ISO-installed servers into a cluster](#joining-iso-installed-servers-into-a-cluster) below first — the firewall needs turning off while the cluster forms, and back on afterwards.
 
 ### Joining ISO-Installed Servers Into a Cluster
 

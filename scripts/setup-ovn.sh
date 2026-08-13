@@ -481,29 +481,41 @@ EOF
         sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd
         echo "  ovn-central: started clustered (NB DB + SB DB + ovn-northd)"
     else
-        if [ -n "$OVN_DB_LISTEN_OPTS" ]; then
-            # A two-node standalone install still has a remote
-            # ovn-controller needing the LAN listener — write the file
-            # before starting, same as the clustered branch.
-            echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
-            echo "  wrote /etc/default/ovn-central"
-            sudo systemctl start ovn-central
+        # Always write the file, even when there is nothing to put in it. This
+        # branch is how a node that used to be clustered comes back standalone,
+        # and the RAFT flags live here rather than in the database — leaving a
+        # stale file in place restarts the DB as a cluster member dialling a
+        # peer that no longer exists, which looks like a hung leader election.
+        echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
+        echo "  wrote /etc/default/ovn-central"
+        sudo systemctl start ovn-central
 
-            # ovn-central is ExecStart=/bin/true; restarting it does not
-            # restart its children, so a re-run with a changed LAN_ADDR needs
-            # the per-DB units restarted directly to pick up the new options.
-            sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb
-            echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+        # ovn-central is ExecStart=/bin/true; restarting it does not restart
+        # its children, so a re-run with changed options needs the per-DB units
+        # restarted directly to pick them up.
+        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb
+        echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+        if [ -n "$LAN_ADDR" ]; then
             echo "  NB/SB client listen: 127.0.0.1, $LAN_ADDR"
         else
-            sudo systemctl start ovn-central
-            echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
+            echo "  NB/SB client listen: 127.0.0.1"
         fi
+    fi
+
+    # A clustered DB has no unix socket to fall back on, and a follower refuses
+    # to answer at all unless leader-only is turned off. Without both of these
+    # the waits below can never succeed on a clustered node: they burn their
+    # full timeout, gate nothing, and the run still continues.
+    NBCTL=(ovn-nbctl)
+    SBCTL=(ovn-sbctl)
+    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        NBCTL=(ovn-nbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6641" --no-leader-only)
+        SBCTL=(ovn-sbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6642" --no-leader-only)
     fi
 
     # Wait for OVN NB DB socket to become available
     for i in $(seq 1 15); do
-        if sudo ovn-nbctl --timeout=2 get-connection >/dev/null 2>&1; then
+        if sudo "${NBCTL[@]}" --timeout=2 get-connection >/dev/null 2>&1; then
             break
         fi
         echo "  Waiting for OVN NB DB... ($i/15)"
@@ -531,7 +543,7 @@ EOF
     # a partial datapath that never reconverges. Gate on SB reachable and, when
     # clustered, an elected leader.
     for i in $(seq 1 30); do
-        if sudo ovn-sbctl --timeout=2 show >/dev/null 2>&1; then
+        if sudo "${SBCTL[@]}" --timeout=2 show >/dev/null 2>&1; then
             if [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
                 break
             fi

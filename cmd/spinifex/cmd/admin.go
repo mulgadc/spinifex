@@ -569,9 +569,11 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// Create the specified image directory
 	imagePath := fmt.Sprintf("%s/%s/%s/%s", imageDir, image.Distro, image.Version, image.Arch)
 
-	// Create config directory
-	if err := os.MkdirAll(imagePath, 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
+	// 0770, matching the root:spinifex convention setup.sh gives the shared data
+	// dirs. At 0700 the first sudo import leaves a directory no group member can
+	// descend into, so every later import without sudo fails on mkdir.
+	if err := os.MkdirAll(imagePath, 0770); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating image directory %s: %v\n", imagePath, err)
 		os.Exit(1)
 	}
 
@@ -1395,18 +1397,32 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if masterKeyExisted {
 		// Preserve path: reuse the existing identity. The system credentials must
 		// match what seeded the NATS KV `system` secret, so load them rather than
-		// mint new ones. The admin credentials are not recovered: bootstrap.json is
-		// consumed and deleted by awsgw after first boot, and the operator's copy
-		// already lives in ~/.aws/credentials. Leaving them empty makes
-		// finalizeNodeSetup refresh only ~/.aws/config (endpoint/CA for a changed
-		// bind IP), not the credentials.
+		// mint new ones.
 		accessKey, secretKey, err = loadSystemCredentials(configDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("\n🔐 Preserved existing identity (master key, credentials and CA unchanged)")
+
+		// The admin pair is minted afresh rather than preserved, because it cannot
+		// be read back: bootstrap.json is consumed and deleted by awsgw on first
+		// start. The half of the identity that survives a re-init is on local disk,
+		// but the IAM store lives in NATS and predastore — so forming a cluster out
+		// of already-initialized nodes rebuilds it and the old access key stops
+		// existing. Carrying an empty pair through instead is worse than useless:
+		// it reaches every joiner's bootstrap.json, where seeding rejects the empty
+		// key ID and awsgw fails to start on every restart, forever.
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+
+		fmt.Println("\n🔐 Preserved existing identity (master key and CA unchanged)")
 		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Admin credentials reissued in %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 	} else {
 		// Fresh install: mint system + admin credentials and seed the bootstrap files.
 		accessKey, err = admin.GenerateAWSAccessKey()

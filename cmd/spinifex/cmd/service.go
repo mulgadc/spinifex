@@ -219,7 +219,7 @@ var predastoreStartCmd = &cobra.Command{
 
 		if err != nil {
 			fmt.Println("Error starting predastore service:", err)
-			return
+			os.Exit(1)
 		}
 
 		if _, err := service.Start(); err != nil {
@@ -398,16 +398,21 @@ var viperblockStartCmd = &cobra.Command{
 			Debug:             debug,
 		})
 
+		// Exit non-zero, or systemd records a clean stop and Restart=on-failure
+		// never fires. Startup here can fail for reasons that clear on their own —
+		// during formation the JetStream bucket has no leader yet — and a node that
+		// silently keeps a dead EBS provider fails every volume request with "no
+		// responders" until someone restarts it by hand.
 		if err != nil {
 			fmt.Println("Error starting viperblock service:", err)
-			return
+			os.Exit(1)
 		}
 
 		_, err = service.Start()
 
 		if err != nil {
 			fmt.Println("Error starting viperblock service:", err)
-			return
+			os.Exit(1)
 		}
 
 		fmt.Println("Viperblock service started")
@@ -506,14 +511,14 @@ var qemunbdStartCmd = &cobra.Command{
 
 		if err != nil {
 			fmt.Println("Error starting qemunbd service:", err)
-			return
+			os.Exit(1)
 		}
 
 		_, err = service.Start()
 
 		if err != nil {
 			fmt.Println("Error starting qemunbd service:", err)
-			return
+			os.Exit(1)
 		}
 
 		fmt.Println("qemunbd service started")

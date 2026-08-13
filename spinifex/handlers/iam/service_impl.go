@@ -780,7 +780,16 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	}
 
 	// --- Seed admin account (000000000001) if present ---
-	if data.Admin != nil {
+	if data.Admin != nil && data.Admin.AccessKeyID == "" {
+		// An admin block carrying no access key cannot be seeded, and returning an
+		// error here takes the gateway down for as long as the file stays on disk —
+		// it is read again on every restart, so the node never recovers on its own.
+		// A node serving the API without the operator account is a problem someone
+		// can fix; one that will not start is not.
+		slog.Error("bootstrap admin block has no access key, skipping admin seeding",
+			"accountID", data.Admin.AccountID,
+			"hint", "re-run `spx admin init` on the first node to reissue admin credentials")
+	} else if data.Admin != nil {
 		if err := s.seedAdminAccount(ctx, data.Admin); err != nil {
 			return fmt.Errorf("seed admin account: %w", err)
 		}

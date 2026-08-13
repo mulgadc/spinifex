@@ -49,7 +49,7 @@ func (s Status) String() string {
 // Result is the outcome of checking one managed asset against this build's manifest.
 type Result struct {
 	Path   string
-	Kind   string // "helper" | "sudoers-grant"
+	Kind   string // "helper" | "sudoers-grant" | "service"
 	Status Status
 	Detail string
 }
@@ -80,6 +80,7 @@ func CheckHostAt(root string) []Result {
 		results = append(results, checkHelper(root, path))
 	}
 	results = append(results, checkSudoersGrant(root))
+	results = append(results, checkRunningBinaries(root)...)
 	return results
 }
 

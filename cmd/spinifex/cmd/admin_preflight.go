@@ -19,6 +19,11 @@ has the privileged helper scripts and sudoers grants that build depends on —
 setup.sh and setup-ovn.sh install them, and a binary-swap deploy (make
 deploy or a manual binary copy) skips those steps.
 
+It also reports any running service still executing a replaced binary.
+Overwriting /usr/local/bin/spx while spinifex.target is up does not move the
+services onto it: each keeps executing the replaced inode until it restarts,
+so a node can serve a mixture of two builds indefinitely.
+
 Checks compare content, not mere existence, so a present-but-stale asset is
 caught too. Exits non-zero if any asset is Missing, Stale, or Ungranted.`,
 	RunE:         runAdminPreflight,

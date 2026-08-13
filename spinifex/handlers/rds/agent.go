@@ -93,7 +93,9 @@ type GetDBBootstrapConfigOutput struct {
 	BootstrapPending bool   `json:"bootstrapPending" locationName:"BootstrapPending" xml:"BootstrapPending"`
 
 	// Empty when no cluster CA is configured; the agent then starts the engine
-	// without TLS rather than failing to boot, since TLS is offered not enforced.
+	// without TLS rather than failing to boot. Only an instance whose resolved set
+	// turns enforcement off can reach that state — one that requires TLS is
+	// refused at binding, where the CA is checked.
 	ServingCertificate string `json:"servingCertificate,omitempty" locationName:"ServingCertificate"`
 	ServingPrivateKey  string `json:"servingPrivateKey,omitempty" locationName:"ServingPrivateKey"`
 	CACertificate      string `json:"caCertificate,omitempty" locationName:"CACertificate"`

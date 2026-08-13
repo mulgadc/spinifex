@@ -60,6 +60,7 @@ func TestSnapshotRestore(t *testing.T) {
 	snapshotID := fmt.Sprintf("%s-snapshot-%d", dbInstancePfx, suffix)
 	stoppedSnapshotID := fmt.Sprintf("%s-stopped-snap-%d", dbInstancePfx, suffix)
 	subnetGroup := fmt.Sprintf("%s-restore-subnets-%d", dbInstancePfx, suffix)
+	paramGroup := fmt.Sprintf("%s-restore-params-%d", dbInstancePfx, suffix)
 
 	harness.Phase(t, "Creating source DB instance %q", sourceID)
 	createDBInstance(t, f, sourceID)
@@ -118,16 +119,24 @@ func TestSnapshotRestore(t *testing.T) {
 	})
 
 	// The restore is a new instance in every respect but its data: its own volume,
-	// ENI, endpoint and certificate. The overrides are the two a customer actually
-	// reaches for — a different class, and somewhere else to put it.
+	// ENI, endpoint and certificate. The overrides are the three a customer
+	// actually reaches for — a different class, somewhere else to put it, and a
+	// parameter group of their own.
 	t.Run("ARestoreHoldsTheDataAsOfTheSnapshot", func(t *testing.T) {
 		createSubnetGroupOverVPC(t, f, subnetGroup)
+		// The source was enforcing when the snapshot was taken, so its pg_hba and
+		// the rule it includes are on the restored volume. The restore is put on a
+		// group that turns enforcement off, which is the only case that proves the
+		// guest removes an inherited rule rather than only ever writing one.
+		createParameterGroup(t, f, paramGroup)
+		setGroupParameter(t, f, paramGroup, forceSSLParameter, "0", "immediate")
 
 		harness.Phase(t, "Restoring %q from %q on %s", restoredID, snapshotID, grownClass)
 		restored := restoreFromSnapshot(t, f, restoredID, snapshotID,
 			func(in *rds.RestoreDBInstanceFromDBSnapshotInput) {
 				in.DBInstanceClass = aws.String(grownClass)
 				in.DBSubnetGroupName = aws.String(subnetGroup)
+				in.DBParameterGroupName = aws.String(paramGroup)
 			})
 		assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(restored.DBInstanceStatus))
 
@@ -167,6 +176,16 @@ func TestSnapshotRestore(t *testing.T) {
 		// The source is untouched by the restore reading from its snapshot.
 		live := harness.PSQL(t, client, sourceConn, fmt.Sprintf("SELECT count(*) FROM %s;", snapshotTable))
 		assert.Equal(t, "2", strings.TrimSpace(live), "the source instance keeps both rows")
+
+		// Two instances on the same datadir and opposite enforcement: the source
+		// keeps the catalog default, and the restore has to have dropped the rule
+		// its volume arrived carrying.
+		assertRefusesPlaintext(t, client, sourceConn)
+		plaintext := conn
+		plaintext.SSLMode = "disable"
+		ssl := harness.PSQL(t, client, plaintext, "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();")
+		assert.Equal(t, "f", strings.TrimSpace(ssl),
+			"a restore into a group that turns enforcement off must not keep enforcing")
 	})
 
 	t.Run("TheEventsAccountForBothHalves", func(t *testing.T) {

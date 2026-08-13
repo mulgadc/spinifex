@@ -251,8 +251,9 @@ func TestGetDBBootstrapConfig_NoDNSNameStillMintsIPOnlyCert(t *testing.T) {
 	require.Len(t, cert.IPAddresses, 1)
 }
 
-// TLS is offered, not enforced, so a deployment with no cluster CA must still
-// boot a database rather than failing the fetch.
+// A deployment with no cluster CA cannot enforce TLS, and a set that requires it
+// is refused at binding rather than here — so the fetch must still serve a
+// config and boot a database.
 func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion).WithDeps(Deps{MasterKey: testMasterKey})

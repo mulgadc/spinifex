@@ -48,6 +48,11 @@ const (
 	// it the parameter that can be pending-reboot.
 	mariaStaticParameter = "innodb_read_io_threads"
 	mariaStaticValue     = "8"
+
+	// MariaDB's enforcement parameter, under AWS's own name, and the phrase the
+	// server's refusal of an unencrypted connection carries.
+	mariaTLSParameter = "require_secure_transport"
+	mariaTLSRefusal   = "secure transport"
 )
 
 // Versions that exist upstream but are not what the image runs: two other
@@ -187,13 +192,18 @@ func TestMariaDBInstance(t *testing.T) {
 		assert.Contains(t, out, "non-system identifier")
 	})
 
-	// TLS is offered rather than enforced, so what is asserted is that a client
-	// asking for it gets it.
-	t.Run("AClientCanConnectOverTLS", func(t *testing.T) {
+	// TLS is required rather than merely offered, so what is asserted is both
+	// halves: a client asking for it gets it, and one refusing it is turned away.
+	t.Run("AClientCanConnectOverTLSAndPlaintextIsRefused", func(t *testing.T) {
 		encrypted := conn
 		encrypted.SSLRootCert = harness.RDSClientCACertPath
 		assert.NotEmpty(t, mariaSessionCipher(t, client, encrypted),
 			"a connection made against the cluster CA must report a negotiated cipher")
+
+		// The only direct proof enforcement is live. require_secure_transport is a
+		// real global variable, so the agent can read it back — but only a
+		// connection the server turns away proves it acted on it.
+		assertMariaDBRefusesPlaintext(t, client, conn)
 
 		// Verified by name only, in its own subtest because a cluster with no base
 		// domain has no name to verify against. The endpoint name and the ENI
@@ -208,6 +218,29 @@ func TestMariaDBInstance(t *testing.T) {
 			assert.NotEmpty(t, mariaSessionCipher(t, client, verified),
 				"the serving certificate must verify against the cluster CA under the endpoint name")
 		})
+	})
+
+	// Enforcement is the customer's to turn off, as it is on AWS, and SET GLOBAL
+	// lands both directions on the running server without a restart.
+	t.Run("EnforcementFlipsWithoutARestart", func(t *testing.T) {
+		plaintext := conn
+		plaintext.Plaintext = true
+
+		// Registered before the flip: a failure part-way would otherwise leave every
+		// later subtest on a database serving in the clear.
+		t.Cleanup(func() { setGroupParameter(t, f, paramGroup, mariaTLSParameter, "1", "immediate") })
+
+		harness.Step(t, "Turning %s off on %q", mariaTLSParameter, id)
+		setGroupParameter(t, f, paramGroup, mariaTLSParameter, "0", "immediate")
+		// The cipher, not merely a successful connection: it is what separates a
+		// client that really connected in the clear from one that quietly negotiated
+		// TLS anyway, which would make the assertion above prove nothing.
+		assert.Empty(t, mariaSessionCipher(t, client, plaintext),
+			"with enforcement off the same connection must be accepted, and in the clear")
+
+		harness.Step(t, "Turning %s back on on %q", mariaTLSParameter, id)
+		setGroupParameter(t, f, paramGroup, mariaTLSParameter, "1", "immediate")
+		assertMariaDBRefusesPlaintext(t, client, conn)
 	})
 
 	// The system keeps no cleartext password anywhere, so the only proof a
@@ -260,7 +293,7 @@ func TestMariaDBInstance(t *testing.T) {
 		require.NotEqual(t, mariaDynamicValue, mariaGlobal(t, client, conn, mariaDynamicParameter),
 			"the chosen dynamic value must differ from the catalog default")
 
-		setMariaDBParameter(t, f, paramGroup, mariaDynamicParameter, mariaDynamicValue, "immediate")
+		setGroupParameter(t, f, paramGroup, mariaDynamicParameter, mariaDynamicValue, "immediate")
 		assert.Equal(t, mariaDynamicValue, mariaGlobal(t, client, conn, mariaDynamicParameter),
 			"an immediate edit to an attached group must reload without a reboot")
 
@@ -268,7 +301,7 @@ func TestMariaDBInstance(t *testing.T) {
 		require.NotEqual(t, mariaStaticValue, before,
 			"the chosen static value must differ from the catalog default")
 
-		setMariaDBParameter(t, f, paramGroup, mariaStaticParameter, mariaStaticValue, "pending-reboot")
+		setGroupParameter(t, f, paramGroup, mariaStaticParameter, mariaStaticValue, "pending-reboot")
 		pending, err := harness.DescribeDBInstance(f.AWS, id)
 		require.NoError(t, err, "describe the pending static parameter")
 		require.NotEmpty(t, pending.DBParameterGroups)
@@ -313,6 +346,10 @@ func TestMariaDBInstance(t *testing.T) {
 			fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", mariaTable)),
 			"the row written before the stop must still be there")
 		assertMariaDBOverridesInForce(t, client, conn)
+		// Enforcement is derived at boot from the parameter file on the data volume,
+		// so a start that came back accepting plaintext would be a healthy instance
+		// serving a connection its owner's configuration forbids.
+		assertMariaDBRefusesPlaintext(t, client, conn)
 	})
 
 	// The class moves, which replaces the VM. The endpoint is kept through it —
@@ -353,6 +390,7 @@ func TestMariaDBInstance(t *testing.T) {
 			fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", mariaTable)),
 			"the row written before the replacement must survive it")
 		assertMariaDBOverridesInForce(t, client, conn)
+		assertMariaDBRefusesPlaintext(t, client, conn)
 
 		// The size-derived defaults are re-resolved against the class the instance
 		// is now on, so a replacement that carried the old configuration over
@@ -384,6 +422,7 @@ func TestMariaDBSnapshotRestore(t *testing.T) {
 	sourceID := fmt.Sprintf("%s-snapsrc-%d", mariaInstancePfx, suffix)
 	restoredID := fmt.Sprintf("%s-restored-%d", mariaInstancePfx, suffix)
 	snapshotID := fmt.Sprintf("%s-snapshot-%d", mariaInstancePfx, suffix)
+	paramGroup := fmt.Sprintf("%s-restore-params-%d", mariaInstancePfx, suffix)
 
 	harness.Phase(t, "Creating source MariaDB instance %q", sourceID)
 	createDBInstanceFrom(t, f, validMariaDBCreateInput(sourceID))
@@ -424,8 +463,18 @@ func TestMariaDBSnapshotRestore(t *testing.T) {
 	})
 
 	t.Run("ARestoreHoldsTheDataAsOfTheSnapshot", func(t *testing.T) {
+		// The source was enforcing when the snapshot was taken, so the parameter
+		// file that says so is on the restored volume. Restoring onto a group that
+		// turns enforcement off is what proves the guest re-derives it rather than
+		// inheriting whatever the volume arrived with.
+		createMariaDBParameterGroup(t, f, paramGroup)
+		setGroupParameter(t, f, paramGroup, mariaTLSParameter, "0", "immediate")
+
 		harness.Phase(t, "Restoring %q from %q", restoredID, snapshotID)
-		restored := restoreFromSnapshot(t, f, restoredID, snapshotID)
+		restored := restoreFromSnapshot(t, f, restoredID, snapshotID,
+			func(in *rds.RestoreDBInstanceFromDBSnapshotInput) {
+				in.DBParameterGroupName = aws.String(paramGroup)
+			})
 		assert.Equal(t, harness.DBInstanceCreating, aws.StringValue(restored.DBInstanceStatus))
 
 		instance := waitForAvailable(t, f, restoredID)
@@ -448,6 +497,15 @@ func TestMariaDBSnapshotRestore(t *testing.T) {
 		assert.Equal(t, "2", mariaValue(t, client, sourceConn,
 			fmt.Sprintf("SELECT count(*) FROM %s;", snapshotTable)),
 			"the source is untouched by the restore reading from its snapshot")
+
+		// Two instances on the same datadir and opposite enforcement. The cipher
+		// rather than the connection alone: an empty one is what proves the client
+		// really did connect in the clear.
+		assertMariaDBRefusesPlaintext(t, client, sourceConn)
+		plaintext := conn
+		plaintext.Plaintext = true
+		assert.Empty(t, mariaSessionCipher(t, client, plaintext),
+			"a restore into a group that turns enforcement off must not keep enforcing")
 	})
 }
 
@@ -559,19 +617,6 @@ func createMariaDBParameterGroup(t *testing.T, f *Fixture, name string) {
 	})
 }
 
-func setMariaDBParameter(t *testing.T, f *Fixture, group, name, value, applyMethod string) {
-	t.Helper()
-	_, err := f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
-		DBParameterGroupName: aws.String(group),
-		Parameters: []*rds.Parameter{{
-			ParameterName:  aws.String(name),
-			ParameterValue: aws.String(value),
-			ApplyMethod:    aws.String(applyMethod),
-		}},
-	})
-	require.NoError(t, err, "modify-db-parameter-group %s: %s=%s", group, name, value)
-}
-
 // Both overrides as the running engine reports them. Asserted after every
 // transition, because the failure this catches is silent: an instance that came
 // back on catalog defaults is healthy, available and running a configuration
@@ -582,6 +627,19 @@ func assertMariaDBOverridesInForce(t *testing.T, tgt harness.SSHTarget, conn har
 		"the dynamic override must still be in force")
 	assert.Equal(t, mariaStaticValue, mariaGlobal(t, tgt, conn, mariaStaticParameter),
 		"the static override must still be in force")
+}
+
+// The MariaDB half of the assertion every transition repeats. Matched on the
+// reason the server gives rather than the whole message, which AWS words
+// differently for the same rejection.
+func assertMariaDBRefusesPlaintext(t *testing.T, tgt harness.SSHTarget, conn harness.MariaDBConn) {
+	t.Helper()
+	plaintext := conn
+	plaintext.Plaintext = true
+	out, err := harness.TryMariaDB(tgt, plaintext, "SELECT 1;")
+	require.Error(t, err, "a plaintext connection must be refused: %s", out)
+	assert.Contains(t, strings.ToLower(out), mariaTLSRefusal,
+		"the server must turn the connection away for being unencrypted, not for some other reason")
 }
 
 // One global system variable as the running server reports it. GLOBAL rather

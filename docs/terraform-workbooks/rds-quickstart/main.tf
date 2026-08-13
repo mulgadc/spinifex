@@ -434,11 +434,14 @@ output "note" {
     cloud-init installs postgresql-client on first boot, so give the client a
     minute after apply before the first psql.
 
-    TLS is offered but not enforced. `psql "sslmode=require"` encrypts the
-    connection; `sslmode=verify-full` additionally verifies the serving
-    certificate, which is signed by the cluster CA — copy /etc/spinifex/ca.pem
-    from a cluster node to the client and pass sslrootcert=<path>. Both the
-    endpoint name and the endpoint IP are in the certificate's SAN set.
+    TLS is required, and psql negotiates it on its own, so the commands above
+    just work; only a client explicitly setting sslmode=disable is refused. To
+    verify the certificate as well, fetch the cluster CA in the client with
+
+      curl -fsS http://169.254.169.254/spinifex/ca.pem -o ~/ca.pem
+
+    and add sslmode=verify-full sslrootcert=~/ca.pem. Both the endpoint name
+    and the endpoint IP are in the certificate's SAN set.
   EOT
 }
 

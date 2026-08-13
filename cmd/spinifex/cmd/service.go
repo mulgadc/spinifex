@@ -981,6 +981,7 @@ var vpcdStartCmd = &cobra.Command{
 			NatsHost:                nodeConfig.NATS.Host,
 			NatsToken:               nodeConfig.NATS.ACL.Token,
 			NatsCACert:              nodeConfig.NATS.CACert,
+			CACert:                  nodeConfig.NATS.CACert,
 			OVNNBAddr:               nodeConfig.VPCD.OVNNBAddr,
 			OVNSBAddr:               nodeConfig.VPCD.OVNSBAddr,
 			BaseDir:                 nodeConfig.BaseDir,

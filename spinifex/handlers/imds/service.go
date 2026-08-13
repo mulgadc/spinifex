@@ -71,6 +71,7 @@ type IMDSServiceImpl struct {
 	now            func() time.Time
 	baseDomain     string
 	internalDomain string
+	caCert         *caCertCache
 }
 
 // NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
@@ -80,8 +81,9 @@ type IMDSServiceImpl struct {
 // publishes. resolverIPs are the WAN IPs of nodes running northstar: when
 // non-empty, each per-tap responder also serves the VPC DNS shim on
 // 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
+// caCertPath is the deployment CA served at /spinifex/ca.pem; empty 404s it.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain, internalDomain string, resolverIPs []string) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -145,6 +147,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		now:            time.Now,
 		baseDomain:     baseDomain,
 		internalDomain: internalDomain,
+		caCert:         newCACertCache(caCertPath),
 	}
 	// Each per-tap responder serves the shared mux, threading its tap's ENI
 	// identity into every request via BaseContext.
@@ -171,6 +174,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathToken, s.handleToken)
+	mux.HandleFunc(pathSpinifexCACert, s.handleCACert)
 	mux.HandleFunc("/", s.handleMetadata)
 	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(mux)))
 }

@@ -98,7 +98,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. On every import a best-effort `virt-customize` step bakes the deployment CA (`<data-root>/config/ca.pem`) into the image's trust store before the block copy, so in-guest SDK-over-TLS calls to Spinifex endpoints trust the gateway from first boot; an image libguestfs cannot customize is imported as-is (CA-free) and logs a skip. Because the CA is fixed into the image, rotating the cluster CA requires re-importing affected images. |
+| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. Import never modifies the image: the bytes written to storage are the bytes that were verified. A guest that needs to trust the deployment CA for in-guest SDK-over-TLS calls fetches it at runtime from `http://169.254.169.254/spinifex/ca.pem` (see the IMDS section), so a CA rotation reaches guests without re-importing anything. |
 | `spx admin images list` | — | Lists available OS images that can be imported or downloaded |
 | `spx admin images promote` | `--image-id` (required), `--yes` | Reads `ami-<id>/config.json`, validates the AMI is account-owned, then rewrites `ImageOwnerAlias` to `"system"` in-place. No block data is copied. The change takes effect immediately — the AMI becomes visible to all accounts via `DescribeImages`. Prompts for confirmation (skipped with `--yes`). Already-system AMIs are refused. |
 | `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. |
@@ -671,6 +671,29 @@ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
 curl -i http://169.254.169.254/latest/meta-data/instance-id
 ```
 
+### IMDS — Deployment CA
+
+A guest that calls a Spinifex HTTPS endpoint with an AWS SDK needs the deployment CA in its trust
+store. The CA is served from the IMDS responder at `/spinifex/ca.pem` — deliberately outside the
+`/latest` tree, because the AWS-compatible surface stays byte-identical to EC2's and cloud-init must
+never descend into a Spinifex-only path.
+
+The route is **token-free**: a CA certificate is public material (the console already serves it
+unauthenticated at `/api/ca.pem`), and requiring the IMDSv2 handshake would push a token dance into
+every bootstrap snippet. The `X-Forwarded-For` SSRF guard still applies, as on every other path.
+
+```yaml
+#cloud-config
+runcmd:
+  # Debian/Ubuntu
+  - curl -fsS http://169.254.169.254/spinifex/ca.pem -o /usr/local/share/ca-certificates/spinifex.crt
+  - update-ca-certificates
+```
+
+RHEL/Rocky write to `/etc/pki/ca-trust/source/anchors/spinifex.crt` and run `update-ca-trust`; stock
+Alpine has no updater or anchor directory, so append the PEM to `/etc/ssl/certs/ca-certificates.crt`.
+Rotating `ca.pem` on a node is served immediately — vpcd re-reads the file when it changes.
+
 ### IMDS — Supported Paths
 
 | Path | Method | Source | Status |
@@ -702,6 +725,7 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/public-keys/0/` | GET | `openssh-key` (format list for index 0) | **DONE** |
 | `/latest/meta-data/public-keys/0/openssh-key` | GET | Launch SSH public key, live-fetched from the key store; 404 if the key was deleted, 500 on backend fault | **DONE** |
 | `/latest/user-data` | GET | `vm.UserData`; 404 if none | **DONE** |
+| `/spinifex/ca.pem` | GET | Deployment CA PEM (`application/x-pem-file`); token-free, outside the AWS tree; 404 when no CA is configured | **DONE** |
 | `/latest/dynamic` | GET | Lists `instance-identity/` | **DONE** |
 | `/latest/dynamic/instance-identity` | GET | Lists `document` (signed forms listed when the signing key lands) | **DONE** |
 | `/latest/dynamic/instance-identity/document` | GET | Unsigned identity document from resolved ENI + instance facts | **DONE** |

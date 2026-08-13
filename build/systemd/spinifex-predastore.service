@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex Predastore (S3-compatible Object Storage)
 PartOf=spinifex.target
@@ -18,9 +18,9 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service predastore start
 Restart=on-failure
 RestartSec=5
-# Matches viperblock's drain budget: viperblock's WAL flush writes into
-# predastore, and After= already stops viperblock first, but this is the
-# backstop if that ordering is ever bypassed (direct stop, future edit).
+# Bounds predastore's own graceful stop. viperblock's WAL flush writes into
+# predastore, but After= already stops viperblock first (within its own 150s
+# budget); this is the backstop if that ordering is ever bypassed.
 TimeoutStopSec=30
 OOMScoreAdjust=-500
 # Legitimately the most memory-hungry infra service (S3 buffering/caching);

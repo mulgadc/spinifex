@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 23 predastore throughput"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput"
         required: false
 
 permissions:
@@ -427,6 +427,243 @@ jobs:
       otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=20,ci.matrix=baremetal/pxe/real-hw
     secrets: inherit
 
+  # ISO cells. Unlike 1-19 these need no tofu: the harnesses run QEMU directly
+  # on the runner. The nodes are therefore L1, which keeps the instances they
+  # launch at L2 and their benchmark numbers comparable between the two cells.
+  #
+  # Serialised against each other because the guest MACs are fixed
+  # (52:54:00:12:...): stable MACs are what make DHCP discovery work, and two
+  # concurrent runs would put duplicates on the rack LAN, which is a confusing
+  # failure for everyone on it, not just CI.
+  iso-single:
+    name: cell-21 (iso/dhcp/single)
+    if: >-
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',21,')
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 45
+    concurrency:
+      group: iso-qemu-rack
+      cancel-in-progress: false
+    env:
+      CI_WAN_MODE: dhcp
+      CI_PASSWORD: ${{ secrets.CI_NODE_PASSWORD }}
+      # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
+      # instances. Disjoint from cell-22's pool so a run that dies holding its
+      # SNAT address cannot collide with the next cell.
+      EXT_POOL_START: 192.168.0.230
+      EXT_POOL_END: 192.168.0.234
+      EXT_GATEWAY: 192.168.1.1
+      EXT_PREFIX_LEN: 23
+    steps:
+      - name: Clean Workspace
+        run: |
+          sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          path: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          path: mulga/spinifex
+
+      # Assert the host can do what the cell assumes, before spending 40
+      # minutes finding out it cannot. A checklist in a plan doc goes stale;
+      # this does not.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          ip link show "${BRIDGE:-br-wan}" >/dev/null ||
+            { echo "::error::bridge br-wan not found on this runner"; exit 1; }
+          grep -qE "^allow +${BRIDGE:-br-wan}$" /etc/qemu/bridge.conf ||
+            { echo "::error::br-wan not permitted in /etc/qemu/bridge.conf"; exit 1; }
+          command -v sshpass >/dev/null ||
+            { echo "::error::sshpass not installed"; exit 1; }
+          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
+          [ "$free_mb" -ge 8192 ] ||
+            { echo "::error::need 8 GiB available, have ${free_mb} MiB"; exit 1; }
+
+      - name: Build artefacts
+        working-directory: mulga/scripts/iso-builder
+        run: make build-rootfs build-squashfs build-initramfs
+
+      # One key for both halves of the cell. test-workload.sh SSHes to the node
+      # AND registers the same key as the EC2 key pair it uses to reach the
+      # instances, so the key test-smoke.sh installs has to be that one — its
+      # default ~/.ssh/id_*.pub would leave the workload step locked out.
+      - name: Prepare SSH key
+        run: |
+          set -euo pipefail
+          if [ ! -f "$HOME/.ssh/spinifex-key" ]; then
+            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+            ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/spinifex-key" -C "spinifex-ci"
+          fi
+
+      # Boots the ISO, installs unattended, discovers the lease by MAC, runs the
+      # in-guest smoke test, and installs the key for the next step.
+      - name: Install and smoke test
+        id: smoke
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          set -euo pipefail
+          SSH_IDENTITY="$HOME/.ssh/spinifex-key.pub" \
+            ./test/test-smoke.sh | tee /tmp/smoke-$GITHUB_RUN_ID.log
+          ip=$(sed -n 's/^\[smoke\] node address: //p' /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$ip" ] || { echo "::error::smoke test did not report a node address"; exit 1; }
+          echo "node_ip=$ip" >> "$GITHUB_OUTPUT"
+
+      # The customer path: AMI, key, VPC, instance, SSH in. --benchmark records
+      # host and guest disk numbers so a regression shows up as a number rather
+      # than a story.
+      - name: Workload and benchmark
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          set -euo pipefail
+          cat > /tmp/cell21.env <<EOF
+          NODES=(${{ steps.smoke.outputs.node_ip }})
+          NODE_NAMES=(spinifex-ci)
+          SSH_USER=spinifex
+          SSH_KEY_PATH=$HOME/.ssh/spinifex-key
+          EXT_POOL_START=$EXT_POOL_START
+          EXT_POOL_END=$EXT_POOL_END
+          EXT_GATEWAY=$EXT_GATEWAY
+          EXT_PREFIX_LEN=$EXT_PREFIX_LEN
+          EOF
+          ./test/test-workload.sh --env /tmp/cell21.env --benchmark
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
+          cp -r /tmp/smoke-$GITHUB_RUN_ID.log /tmp/spinifex-disk-bench \
+                /tmp/spinifex-network-bench /tmp/cell21-artifacts-$GITHUB_RUN_ID/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts-cell-21-${{ github.run_id }}
+          path: /tmp/cell21-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Teardown
+        if: always()
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          ./test/test-workload.sh --env /tmp/cell21.env --cleanup || true
+          sudo pkill -f spinifex-smoke-test || true
+          rm -rf /tmp/cell21-artifacts-$GITHUB_RUN_ID /tmp/cell21.env \
+                 /tmp/smoke-$GITHUB_RUN_ID.log
+
+  iso-multi:
+    name: cell-22 (iso/dhcp/three-node)
+    # After cell-21 rather than beside it: same concurrency group, and running
+    # them together would need 32 GiB on one box.
+    needs: [iso-single]
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',22,') )
+    runs-on: [self-hosted, ci-multi]
+    timeout-minutes: 90
+    concurrency:
+      group: iso-qemu-rack
+      cancel-in-progress: false
+    env:
+      MEM: 8G
+      SMP: 8
+      PASSWORD: ${{ secrets.CI_NODE_PASSWORD }}
+      EXT_POOL_START: 192.168.0.235
+      EXT_POOL_END: 192.168.0.239
+      EXT_GATEWAY: 192.168.1.1
+      EXT_PREFIX_LEN: 23
+    steps:
+      - name: Clean Workspace
+        run: |
+          sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          path: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          path: mulga/spinifex
+
+      # 3 x 8 GiB plus 9 sparse 40G disks, before the instances the cluster
+      # launches on top.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
+          [ "$free_mb" -ge 26624 ] ||
+            { echo "::error::need 26 GiB available, have ${free_mb} MiB"; exit 1; }
+          free_gb=$(df -BG --output=avail /tmp | tail -1 | tr -dc '0-9')
+          [ "$free_gb" -ge 120 ] ||
+            { echo "::error::need 120 GiB free on /tmp, have ${free_gb} GiB"; exit 1; }
+
+      - name: Build artefacts
+        working-directory: mulga/scripts/iso-builder
+        run: make build-rootfs build-squashfs build-initramfs
+
+      # Four phases: install three nodes, convert to one cluster, assert it
+      # formed (including the external pool), then pull node 1's power and
+      # assert the survivors hold quorum.
+      #
+      # Phase 5 (test-workload.sh, as cell-21 runs it) is not wired yet: the
+      # nodes are still on user-mode NAT and reachable only through the
+      # harness's own port forwards, and test-cluster.sh does not open the
+      # formation port. Both land with mulga-yxtda and the bridged WAN mode;
+      # until then this cell proves the cluster forms and survives, not that a
+      # customer can use it.
+      - name: Install, form and verify the cluster
+        working-directory: mulga/scripts/iso-builder
+        run: ./test/test-cluster.sh
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/cell22-artifacts-$GITHUB_RUN_ID
+          cp -r /tmp/spinifex-disk-bench /tmp/spinifex-network-bench \
+                /tmp/cell22-artifacts-$GITHUB_RUN_ID/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts-cell-22-${{ github.run_id }}
+          path: /tmp/cell22-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Teardown
+        if: always()
+        run: |
+          sudo pkill -f spinifex-cluster-test || true
+          rm -rf /tmp/cell22-artifacts-$GITHUB_RUN_ID
+
   # Predastore throughput ("cell 23"). Predastore has no runners of its own and
   # spinifex depends on it, so the benchmark lives here and checks predastore
   # out as a sibling.
@@ -440,7 +677,7 @@ jobs:
   # leave a green-looking night with no number in it.
   performance:
     name: cell-23 (predastore/throughput)
-    needs: [matrix, baremetal]
+    needs: [matrix, baremetal, iso-single, iso-multi]
     if: >-
       always() && (
       github.event_name == 'schedule' ||

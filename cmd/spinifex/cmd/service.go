@@ -405,7 +405,7 @@ var viperblockStartCmd = &cobra.Command{
 
 		if err != nil {
 			fmt.Println("Error starting viperblock service:", err)
-			return
+			os.Exit(1)
 		}
 
 		fmt.Println("Viperblock service started")
@@ -511,7 +511,7 @@ var qemunbdStartCmd = &cobra.Command{
 
 		if err != nil {
 			fmt.Println("Error starting qemunbd service:", err)
-			return
+			os.Exit(1)
 		}
 
 		fmt.Println("qemunbd service started")

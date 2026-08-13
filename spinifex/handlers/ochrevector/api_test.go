@@ -121,6 +121,25 @@ func TestVectorService_ListIndexes_ScopedPerAccount(t *testing.T) {
 	assert.Equal(t, "idx-a", out.Indexes[0].ID)
 }
 
+func TestVectorService_ListJobs_ScopedPerAccount(t *testing.T) {
+	s := newAPITestSetup(t)
+	ctx := context.Background()
+	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 8}, apiAccountA)
+	require.NoError(t, err)
+	ingestOut, err := s.svc.Ingest(ctx, &IngestRequest{IndexID: "idx-one", Source: SourceSpec{Bucket: "docs"}}, apiAccountA)
+	require.NoError(t, err)
+
+	out, err := s.svc.ListJobs(ctx, &ListJobsRequest{}, apiAccountA)
+	require.NoError(t, err)
+	require.Len(t, out.Jobs, 1)
+	assert.Equal(t, ingestOut.Job.ID, out.Jobs[0].ID)
+
+	// A foreign account's listing never surfaces another tenant's jobs.
+	empty, err := s.svc.ListJobs(ctx, &ListJobsRequest{}, apiAccountB)
+	require.NoError(t, err)
+	assert.Empty(t, empty.Jobs)
+}
+
 // TestVectorService_Ingest_StampsIndexPinnedModel proves Ingest overwrites
 // whatever EmbeddingModel/Dimension a caller sends with the index's own
 // registered values (D6/D8): the stored source-spec must always match the
@@ -305,6 +324,7 @@ func subscribeVectorService(t *testing.T, nc *nats.Conn, svc VectorService) {
 		{SubjectIngest, stubVectorNATSHandler(svc.Ingest)},
 		{SubjectDescribeJob, stubVectorNATSHandler(svc.DescribeJob)},
 		{SubjectQuery, stubVectorNATSHandler(svc.Query)},
+		{SubjectListJobs, stubVectorNATSHandler(svc.ListJobs)},
 	}
 	for _, s := range subs {
 		sub, err := nc.QueueSubscribe(s.subject, "spinifex-workers", s.handler)
@@ -343,6 +363,11 @@ func TestNATSVectorService_RoundTrip(t *testing.T) {
 	descOut, err := client.DescribeJob(ctx, &DescribeJobRequest{JobID: ingestOut.Job.ID}, apiAccountA)
 	require.NoError(t, err)
 	assert.Equal(t, ingestOut.Job.ID, descOut.Job.ID)
+
+	listJobsOut, err := client.ListJobs(ctx, &ListJobsRequest{}, apiAccountA)
+	require.NoError(t, err)
+	require.Len(t, listJobsOut.Jobs, 1)
+	assert.Equal(t, ingestOut.Job.ID, listJobsOut.Jobs[0].ID)
 
 	backend.queryResults = []QueryResult{{Chunk: "hi", SourceKey: "docs/a.txt", Score: 0.9}}
 	queryOut, err := client.Query(ctx, &QueryRequest{IndexID: "idx-one", Text: "hello"}, apiAccountA)

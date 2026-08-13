@@ -121,6 +121,71 @@ func TestDataSourceStore_CreateCollisionReturnsErrDataSourceExists(t *testing.T)
 	assert.ErrorIs(t, err, ErrDataSourceExists)
 }
 
+func TestKBStore_PurgeAll(t *testing.T) {
+	store := newKBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Create(ctx, kbAccountA, KBRecord{ID: "kb-a1"}))
+	require.NoError(t, store.Create(ctx, kbAccountB, KBRecord{ID: "kb-b1"}))
+
+	require.NoError(t, store.PurgeAll(ctx))
+
+	listA, err := store.List(ctx, kbAccountA)
+	require.NoError(t, err)
+	assert.Empty(t, listA)
+	listB, err := store.List(ctx, kbAccountB)
+	require.NoError(t, err)
+	assert.Empty(t, listB)
+
+	// Idempotent: purging an already-empty bucket still succeeds.
+	require.NoError(t, store.PurgeAll(ctx))
+}
+
+func TestKBStore_NoJetStreamClientReturnsError(t *testing.T) {
+	store := NewKBStore(nil)
+	ctx := context.Background()
+
+	err := store.Create(ctx, kbAccountA, KBRecord{ID: "kb-1"})
+	assert.Error(t, err)
+
+	_, err = store.Get(ctx, kbAccountA, "kb-1")
+	assert.Error(t, err)
+
+	_, err = store.List(ctx, kbAccountA)
+	assert.Error(t, err)
+}
+
+func TestDataSourceStore_PurgeAll(t *testing.T) {
+	store := newDataSourceTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Create(ctx, kbAccountA, DataSourceRecord{ID: "ds-a1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, store.Create(ctx, kbAccountB, DataSourceRecord{ID: "ds-b1", KnowledgeBaseID: "kb-2"}))
+
+	require.NoError(t, store.PurgeAll(ctx))
+
+	listA, err := store.List(ctx, kbAccountA)
+	require.NoError(t, err)
+	assert.Empty(t, listA)
+
+	// Idempotent: purging an already-empty bucket still succeeds.
+	require.NoError(t, store.PurgeAll(ctx))
+}
+
+func TestDataSourceStore_NoJetStreamClientReturnsError(t *testing.T) {
+	store := NewDataSourceStore(nil)
+	ctx := context.Background()
+
+	err := store.Create(ctx, kbAccountA, DataSourceRecord{ID: "ds-1"})
+	assert.Error(t, err)
+
+	_, err = store.Get(ctx, kbAccountA, "ds-1")
+	assert.Error(t, err)
+
+	_, err = store.List(ctx, kbAccountA)
+	assert.Error(t, err)
+}
+
 func TestDataSourceStore_ListByKnowledgeBase(t *testing.T) {
 	store := newDataSourceTestStore(t)
 	ctx := context.Background()

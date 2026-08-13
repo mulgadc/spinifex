@@ -77,7 +77,7 @@ func TestReplaceInstanceVM_IAMFailureLeavesTheCurrentVMServing(t *testing.T) {
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 	iamErr := errors.New("IAM store unavailable")
-	h.iam.policyErr = iamErr
+	h.iam.PutRolePolicyErr = iamErr
 
 	err := h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{
 		GrowStorageToGiB: 80,
@@ -338,5 +338,5 @@ func TestReplaceInstanceVM_LaunchesWithTheInstancesOwnIdentity(t *testing.T) {
 	assert.Equal(t, testAccountID, h.launch.launcher.input.ExtraENIs[0].AccountID)
 	assert.NotEqual(t, testAccountID, h.launch.launcher.input.AccountID,
 		"the VM and its management NIC live in the system account")
-	assert.Equal(t, h.iam.profileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }

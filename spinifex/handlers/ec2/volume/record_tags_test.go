@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,10 +27,10 @@ func TestVolumeRecordTagsMirror(t *testing.T) {
 		},
 	}, testVolAccountID))
 
-	cfg, err := svc.GetVolumeConfig("vol-tagmirror0001")
+	meta, err := svc.GetVolumeMetadata("vol-tagmirror0001")
 	require.NoError(t, err)
-	assert.Equal(t, "yes", cfg.VolumeMetadata.Tags["keep"])
-	assert.Equal(t, "v", cfg.VolumeMetadata.Tags["drop"])
+	assert.Equal(t, "yes", meta.Tags["keep"])
+	assert.Equal(t, "v", meta.Tags["drop"])
 
 	// Value-mismatched delete is a no-op; matched delete removes.
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
@@ -40,10 +41,10 @@ func TestVolumeRecordTagsMirror(t *testing.T) {
 		},
 	}, testVolAccountID))
 
-	cfg, err = svc.GetVolumeConfig("vol-tagmirror0001")
+	meta, err = svc.GetVolumeMetadata("vol-tagmirror0001")
 	require.NoError(t, err)
-	assert.Equal(t, "yes", cfg.VolumeMetadata.Tags["keep"])
-	_, ok := cfg.VolumeMetadata.Tags["drop"]
+	assert.Equal(t, "yes", meta.Tags["keep"])
+	_, ok := meta.Tags["drop"]
 	assert.False(t, ok)
 }
 
@@ -69,11 +70,15 @@ func TestApplyRecordTags_AttachedVolumePersistsForTagFilterDiscovery(t *testing.
 	assert.Equal(t, volumeID, aws.StringValue(out.Volumes[0].VolumeId))
 }
 
+// A tag must survive the live nbdkit VB rewriting config.json from its own
+// mount-time state: the tag lives in the control-plane document, which that
+// writer does not own.
 func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-staleconfigtag"
-	seedVolume(t, svc, volumeID, "in-use", "i-live0000000000")
+	seedVolume(t, svc, volumeID, "available", "")
+	seedProviderConfig(t, store, volumeID)
 	staleConfig := getStoredConfig(t, store, volumeID)
 
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
@@ -89,9 +94,9 @@ func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	cfg, err := svc.GetVolumeConfig(volumeID)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.Equal(t, "retain", cfg.VolumeMetadata.Tags["sweep"])
+	assert.Equal(t, "retain", meta.Tags["sweep"])
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{{
@@ -104,55 +109,51 @@ func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	assert.Equal(t, volumeID, aws.StringValue(out.Volumes[0].VolumeId))
 }
 
-func TestApplyRecordTags_FirstWriteSeedsEmbeddedTags(t *testing.T) {
+// A tag write must merge into the tags already on the document rather than
+// replacing the set wholesale.
+func TestApplyRecordTags_MergesWithExistingTags(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-seedembedded"
-	seedVolumeWithEmbeddedTags(t, svc, volumeID, map[string]string{"created-with": "volume"})
+	seedVolume(t, svc, volumeID, "available", "")
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 8, State: "available",
+		Tags: map[string]string{"created-with": "volume"},
+	})
 
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String(volumeID)},
 		Tags:      []*ec2.Tag{{Key: aws.String("added-later"), Value: aws.String("yes")}},
 	}, testVolAccountID))
 
-	cfg, err := svc.GetVolumeConfig(volumeID)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"created-with": "volume",
 		"added-later":  "yes",
-	}, cfg.VolumeMetadata.Tags)
+	}, meta.Tags)
 }
 
-func TestRemoveRecordTags_EmptyTagsJSONOverridesEmbeddedTags(t *testing.T) {
+// Removing the last tag must leave an authoritative empty tag set rather than
+// any other source of tags resurrecting the deleted one.
+func TestRemoveRecordTags_LastTagLeavesEmptySet(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	volumeID := "vol-emptytagsjson"
-	seedVolumeWithEmbeddedTags(t, svc, volumeID, map[string]string{"legacy": "tag"})
+	seedVolume(t, svc, volumeID, "available", "")
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 8, State: "available",
+		Tags: map[string]string{"legacy": "tag"},
+	})
 
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(volumeID)},
 		Tags:      []*ec2.Tag{{Key: aws.String("legacy"), Value: aws.String("tag")}},
 	}, testVolAccountID))
 
-	tags, found, err := svc.getVolumeTags(context.Background(), volumeID)
+	meta, err := svc.GetVolumeMetadata(volumeID)
 	require.NoError(t, err)
-	assert.True(t, found, "removing the final tag must leave an authoritative tags.json")
-	assert.Empty(t, tags)
-
-	cfg, err := svc.GetVolumeConfig(volumeID)
-	require.NoError(t, err)
-	assert.Empty(t, cfg.VolumeMetadata.Tags, "present empty tags.json must not fall back to embedded tags")
-}
-
-// seedVolumeWithEmbeddedTags creates a legacy or create-time tagged volume with
-// no tags.json so tests exercise the migration fallback.
-func seedVolumeWithEmbeddedTags(t *testing.T, svc *VolumeServiceImpl, volumeID string, tags map[string]string) {
-	t.Helper()
-	seedVolume(t, svc, volumeID, "available", "")
-	cfg, err := svc.GetVolumeConfig(volumeID)
-	require.NoError(t, err)
-	cfg.VolumeMetadata.Tags = tags
-	require.NoError(t, svc.putVolumeConfig(context.Background(), volumeID, cfg))
+	assert.Empty(t, meta.Tags, "the deleted tag must not come back from anywhere")
 }
 
 func TestVolumeRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
@@ -166,9 +167,9 @@ func TestVolumeRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
 		Tags:      []*ec2.Tag{{Key: aws.String("evil"), Value: aws.String("1")}},
 	}, "999999999999"))
 
-	cfg, err := svc.GetVolumeConfig("vol-tenantguard01")
+	meta, err := svc.GetVolumeMetadata("vol-tenantguard01")
 	require.NoError(t, err)
-	assert.Empty(t, cfg.VolumeMetadata.Tags)
+	assert.Empty(t, meta.Tags)
 }
 
 func TestVolumeRecordTagsMirror_UnownedNoError(t *testing.T) {

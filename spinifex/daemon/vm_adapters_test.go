@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -17,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -560,21 +558,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_AbsentPrimaryDoesNotLogFalseS
 func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerated(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
+	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)

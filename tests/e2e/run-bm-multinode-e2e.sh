@@ -1585,9 +1585,10 @@ else
 
         SPREAD_NODES=()
         for inst_id in "${NATGW_PRIV_IDS[@]}"; do
-            # spx get vms output is pipe-delimited: INSTANCE | STATUS | TYPE | VCPU | MEM | NODE | IP | AGE
-            # NODE is field 6
-            NODE_NAME=$(echo "$SPX_VMS" | grep "$inst_id" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $6); print $6}' || echo "unknown")
+            # spx get vms is pipe-delimited, with ANSI colour codes around each
+            # cell: INSTANCE | STATUS | HEALTH | CRASHES | TYPE | VCPU | MEM |
+            # NODE | IP | AGE. NODE is field 8; reading field 6 yields VCPU.
+            NODE_NAME=$(echo "$SPX_VMS" | grep "$inst_id" | sed -e 's/\x1b\[[0-9;]*m//g' | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $8); print $8}' || echo "unknown")
             if [ -z "$NODE_NAME" ] || [ "$NODE_NAME" = "unknown" ]; then
                 NODE_NAME=$(find_instance_node "$inst_id" || echo "unknown")
             fi

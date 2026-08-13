@@ -19,19 +19,13 @@ type tagMirrorRecord struct {
 }
 
 // seedKV creates a bucket on the jetstream API and populates it. Package utils
-// cannot use kvutil's helpers — kvutil imports utils — so the bucket is created
-// here directly.
+// cannot use kvutil's helpers — kvutil imports utils — so a fresh JetStream
+// server is bootstrapped here directly.
 func seedKV(t *testing.T, bucket string, entries map[string][]byte) jetstream.KeyValue {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
-	require.NoError(t, err)
-	for k, v := range entries {
-		_, err := kv.Put(t.Context(), k, v)
-		require.NoError(t, err)
-	}
-	return kv
+	return testutil.SeedKV(t, js, bucket, entries)
 }
 
 func TestMergeTagsMut(t *testing.T) {

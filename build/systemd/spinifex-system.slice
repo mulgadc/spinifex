@@ -1,3 +1,4 @@
+# spinifex-unit-version: 1
 [Unit]
 Description=Spinifex control/infra tier (NATS, predastore, viperblock, daemon, awsgw, vpcd, ui)
 Before=slices.target

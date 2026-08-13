@@ -21,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -381,7 +380,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 				m.appendDevHostfwdNIC(instance)
 			}
 		} else {
-			sshDebugAddr, err := viperblock.FindFreePort()
+			sshDebugAddr, err := findFreePort()
 			if err != nil {
 				slog.Error("Failed to find free port", "err", err)
 				return err
@@ -609,9 +608,21 @@ func (m *Manager) startQEMU(instance *VM) error {
 	return nil
 }
 
-// findFreePort is a var so tests can swap in a stub to reach appendDevHostfwdNIC's
-// failure paths (viperblock.FindFreePort always succeeds in production).
-var findFreePort = viperblock.FindFreePort
+// findFreePort is a var so tests can swap in a stub to reach callers' failure
+// paths without depending on the OS allocator.
+var findFreePort = allocateFreePort
+
+// allocateFreePort asks the OS for an available loopback TCP port. The listener
+// is closed before returning, so callers must still handle a subsequent bind
+// race in the usual way.
+func allocateFreePort() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	defer listener.Close()
+	return listener.Addr().String(), nil
+}
 
 // appendDevHostfwdNIC adds a user-mode NIC with SSH hostfwd for dev access.
 func (m *Manager) appendDevHostfwdNIC(instance *VM) {

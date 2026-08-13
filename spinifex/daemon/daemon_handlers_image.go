@@ -27,6 +27,13 @@ func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
 	handleNATSRequest(promoteImage)(msg)
 }
 
+// stoppedInstanceOwnerElector is implemented by state stores that can
+// atomically mutate a stopped instance record. Checked via assertion so
+// vm.StateStore itself need not widen for this one call site.
+type stoppedInstanceOwnerElector interface {
+	UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error)
+}
+
 // handleEC2CreateImage is a stateful handler that extracts instance context
 // (root volume ID, source AMI, running state) before delegating to the image service.
 func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
@@ -88,6 +95,40 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 			respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
 			return
 		}
+
+		// The KV is cluster-shared, so every node's lookup above succeeds;
+		// only LastNode picks a single owner. Non-owners decline like the
+		// miss above — Gather only short-circuits on success, so this can't
+		// preempt the owner's reply, it just stops a duplicate AMI/snapshot.
+		if stopped.LastNode == "" {
+			// Pre-LastNode record from an older build. Elect an owner via
+			// CAS so exactly one node wins, instead of every node
+			// proceeding (the leak) or every node declining forever.
+			elector, canElect := d.stateStore.(stoppedInstanceOwnerElector)
+			if !canElect {
+				slog.Error("CreateImage: state store cannot elect owner for legacy stopped instance", "instanceId", instanceID)
+				respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+				return
+			}
+			elected, uerr := elector.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+				if v.LastNode == "" {
+					v.LastNode = d.node
+				}
+			})
+			if uerr != nil || elected == nil || elected.LastNode == "" {
+				slog.Warn("CreateImage: failed to elect owner for legacy stopped instance", "instanceId", instanceID, "err", uerr)
+				respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+				return
+			}
+			stopped.LastNode = elected.LastNode
+		}
+		if stopped.LastNode != d.node {
+			slog.Info("CreateImage: declining, instance owned by another node",
+				"instanceId", instanceID, "lastNode", stopped.LastNode)
+			respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+			return
+		}
+
 		instance = stopped
 		status = stopped.Status
 		if stopped.Instance != nil {

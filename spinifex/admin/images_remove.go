@@ -2,10 +2,8 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,11 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
 )
 
 // RemoveImageOpts configures RemoveSystemImage.
@@ -59,8 +56,8 @@ type RemovePreview struct {
 	Name          string
 	Owner         string
 	Created       time.Time
-	ConfigPresent bool // false when ami-<id>/config.json is missing
-	ConfigCorrupt bool // true when config.json exists but is undecodable
+	ConfigPresent bool // false when the AMI's ebsmetadata document is missing
+	ConfigCorrupt bool // true when the document exists but is undecodable
 	IsSystemOwned bool // ImageOwnerAlias is set and not an account ID
 
 	AMIObjectCount  int
@@ -87,7 +84,7 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 
 	preview := &RemovePreview{ImageID: imageID}
 
-	meta, configErr := readAMIConfig(store, bucket, imageID)
+	meta, configErr := readAMI(store, bucket, imageID)
 	switch {
 	case configErr == nil:
 		preview.ConfigPresent = true
@@ -97,7 +94,7 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 		preview.IsSystemOwned = meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias)
 	case objectstore.IsNoSuchKeyError(configErr):
 		// Config absent — salvage candidate. Leave ConfigPresent=false.
-	case errors.Is(configErr, handlers_ec2_image.ErrCorruptAMIConfig):
+	case errors.Is(configErr, ebsmetadata.ErrCorruptDocument):
 		preview.ConfigCorrupt = true
 	default:
 		return nil, fmt.Errorf("preview: read AMI config: %w", configErr)
@@ -170,43 +167,32 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 		volSnapRefs[s] = true
 	}
 
-	// Pass 2: volumes (vol-*/config.json) whose SnapshotID matches.
-	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "vol-") {
-			continue
-		}
-		volID := strings.TrimSuffix(p, "/")
-		cfg, err := readVolumeConfig(store, bucket, volID)
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, errCorruptVolumeConfig) {
-				continue
-			}
-			return Dependents{}, fmt.Errorf("read volume %s: %w", volID, err)
-		}
-		if volSnapRefs[cfg.VolumeMetadata.SnapshotID] {
-			deps.Volumes = append(deps.Volumes, volID)
+	// Pass 2: volumes whose SnapshotID matches. The ebsmetadata documents are
+	// the whole fleet — a volume with blocks but no document does not exist as
+	// far as the control plane is concerned — and they carry SnapshotID
+	// already, so no second read per volume is needed.
+	volDocs, err := ebsmetadata.NewStore(store, bucket).ListVolumes(context.Background())
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list ebsmetadata volumes: %w", err)
+	}
+	for _, v := range volDocs {
+		if volSnapRefs[v.SnapshotID] {
+			deps.Volumes = append(deps.Volumes, v.VolumeID)
 		}
 	}
 
-	// Pass 3: AMIs (ami-*/config.json) whose SnapshotID is a derived snap.
-	// Skip the target AMI itself.
-	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "ami-") {
+	// Pass 3: AMIs whose SnapshotID is a derived snap, skipping the target AMI
+	// itself.
+	docAMIs, err := ebsmetadata.NewStore(store, bucket).ListAMIs(context.Background())
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list ebsmetadata AMIs: %w", err)
+	}
+	for _, a := range docAMIs {
+		if a.ImageID == imageID {
 			continue
 		}
-		otherAMI := strings.TrimSuffix(p, "/")
-		if otherAMI == imageID {
-			continue
-		}
-		meta, err := readAMIConfig(store, bucket, otherAMI)
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_image.ErrCorruptAMIConfig) {
-				continue
-			}
-			return Dependents{}, fmt.Errorf("read AMI %s: %w", otherAMI, err)
-		}
-		if derived[meta.SnapshotID] {
-			deps.AMIs = append(deps.AMIs, otherAMI)
+		if derived[a.SnapshotID] {
+			deps.AMIs = append(deps.AMIs, a.ImageID)
 		}
 	}
 
@@ -221,9 +207,9 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, configErr := readAMIConfig(store, bucket, opts.ImageID)
+	meta, configErr := readAMI(store, bucket, opts.ImageID)
 	configMissing := objectstore.IsNoSuchKeyError(configErr)
-	configCorrupt := errors.Is(configErr, handlers_ec2_image.ErrCorruptAMIConfig)
+	configCorrupt := errors.Is(configErr, ebsmetadata.ErrCorruptDocument)
 	switch {
 	case configErr == nil:
 		// fine
@@ -256,18 +242,18 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 
 	result := &RemoveImageResult{}
 
-	// Step 1: drop config.json first — the barrier that hides the AMI from
-	// DescribeImages so no new launches can land on the blocks we're deleting.
-	if configErr == nil || (opts.Force && !configMissing) {
-		n, b, err := deletePrefix(store, bucket, opts.ImageID+"/config.json")
-		if err != nil {
-			return nil, fmt.Errorf("delete config: %w", err)
-		}
-		result.ObjectsDeleted += n
-		result.BytesDeleted += b
+	// Step 1: drop the ebsmetadata document first — the barrier that hides the
+	// AMI from DescribeImages, so no new launch can land on blocks step 2 is
+	// about to delete. Fatal, unlike the blocks: an AMI still advertised after
+	// its blocks are gone is worse than one whose blocks outlive it.
+	// An already-absent document is the barrier being satisfied, not a failure:
+	// this is exactly the state of an orphaned image, whose blocks are the only
+	// thing left to reclaim and the whole reason --force exists.
+	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(context.Background(), opts.ImageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return nil, fmt.Errorf("delete ebsmetadata document: %w", err)
 	}
 
-	// Step 2: drop the rest of ami-<id>/ (chunks, WAL, checkpoints).
+	// Step 2: drop ami-<id>/ (chunks, WAL, checkpoints).
 	n, b, err := deletePrefix(store, bucket, opts.ImageID+"/")
 	if err != nil {
 		return nil, fmt.Errorf("delete ami prefix: %w", err)
@@ -304,62 +290,10 @@ func (e *DependentError) Error() string {
 		e.ImageID, len(e.Dependents.Volumes), len(e.Dependents.Snapshots), len(e.Dependents.AMIs))
 }
 
-// readAMIConfig reads ami-<id>/config.json and returns the AMIMetadata.
-// Mirrors ImageServiceImpl.GetAMIConfig but operates package-locally so the
-// admin tooling doesn't require an ImageServiceImpl (which carries NATS).
-func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viperblock.AMIMetadata, error) {
-	key := imageID + "/config.json"
-	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return viperblock.AMIMetadata{}, err
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return viperblock.AMIMetadata{}, err
-	}
-
-	var state viperblock.VBState
-	if err := json.Unmarshal(viperblock.StateBody(body), &state); err != nil {
-		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %w", handlers_ec2_image.ErrCorruptAMIConfig, key, err)
-	}
-	return state.VolumeConfig.AMIMetadata, nil
-}
-
-// errCorruptVolumeConfig distinguishes an unparse-able config (walk continues)
-// from a transport error (walk fails closed to prevent deleting live blocks).
-var errCorruptVolumeConfig = errors.New("corrupt volume config")
-
-// readVolumeConfig reads vol-<id>/config.json into VolumeConfig.
-type volumeConfigWrapper struct {
-	VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-}
-
-func readVolumeConfig(store objectstore.ObjectStore, bucket, volumeID string) (*viperblock.VolumeConfig, error) {
-	key := volumeID + "/config.json"
-	res, err := store.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var w volumeConfigWrapper
-	if err := json.Unmarshal(viperblock.StateBody(body), &w); err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", errCorruptVolumeConfig, key, err)
-	}
-	return &w.VolumeConfig, nil
+// readAMI resolves an AMI's control-plane document. It exists so the admin
+// tooling can read an AMI without an ImageServiceImpl, which carries NATS.
+func readAMI(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
+	return ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
 }
 
 // listCommonPrefixes returns the top-level "directory" prefixes in the bucket

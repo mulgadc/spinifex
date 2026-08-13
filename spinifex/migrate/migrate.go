@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -38,6 +39,25 @@ type ConfigMigration struct {
 	Run         func(ctx ConfigContext) error
 }
 
+// ObjectMigration represents a versioned transformation of object-store data
+// (Predastore/S3 objects), such as backfilling a new document shape from an
+// older one written by a different subsystem.
+type ObjectMigration struct {
+	FromVersion int
+	ToVersion   int
+	Description string
+	Run         func(ctx context.Context, octx ObjectContext) error
+}
+
+// ObjectContext provides object-store migration functions access to the
+// bucket being migrated. Objects is the same object-store abstraction
+// handlers use, so a migration reads/writes exactly as a handler would.
+type ObjectContext struct {
+	Objects objectstore.ObjectStore
+	Bucket  string
+	Logger  *slog.Logger
+}
+
 // ConfigContext provides config migration functions access to the filesystem.
 type ConfigContext struct {
 	ConfigDir string // path to /etc/spinifex or equivalent
@@ -64,6 +84,7 @@ type Registry struct {
 	kvMigrations     map[string][]KVMigration
 	configMigrations map[string][]ConfigMigration
 	configTargets    map[string]configTarget
+	objectMigrations map[string][]ObjectMigration
 }
 
 // DefaultRegistry is the global migration registry. Migrations self-register
@@ -76,6 +97,7 @@ func NewRegistry() *Registry {
 		kvMigrations:     make(map[string][]KVMigration),
 		configMigrations: make(map[string][]ConfigMigration),
 		configTargets:    make(map[string]configTarget),
+		objectMigrations: make(map[string][]ObjectMigration),
 	}
 }
 
@@ -99,6 +121,82 @@ func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
 	sort.Slice(r.configMigrations[target], func(i, j int) bool {
 		return r.configMigrations[target][i].FromVersion < r.configMigrations[target][j].FromVersion
 	})
+}
+
+// RegisterObject adds an object-store migration. Migrations are kept sorted by FromVersion.
+func (r *Registry) RegisterObject(target string, m ObjectMigration) {
+	r.objectMigrations[target] = append(r.objectMigrations[target], m)
+	sort.Slice(r.objectMigrations[target], func(i, j int) bool {
+		return r.objectMigrations[target][i].FromVersion < r.objectMigrations[target][j].FromVersion
+	})
+}
+
+// RunObject applies pending object-store migrations for target up to
+// targetVersion. Predastore has no conditional write, so progress is stamped
+// in JetStream KV instead, exactly as RunKV stamps a KV bucket's own version.
+//
+// Callers must pass a KV bucket shared by every node. The stamp is a
+// read-then-write rather than a compare-and-swap, so two nodes can still race
+// to run a step; each Run must be safe to re-execute for that to be harmless.
+func (r *Registry) RunObject(ctx context.Context, target string, objects objectstore.ObjectStore, bucket string, versionKV jetstream.KeyValue, targetVersion int) error {
+	current, err := kvutil.ReadVersion(ctx, versionKV)
+	if err != nil {
+		return fmt.Errorf("read version for %s: %w", target, err)
+	}
+
+	if current >= targetVersion {
+		return nil
+	}
+
+	all := r.objectMigrations[target]
+
+	// Fresh target, no migrations: stamp directly (common first-init path).
+	if current == 0 && len(all) == 0 {
+		return kvutil.WriteVersion(ctx, versionKV, targetVersion)
+	}
+
+	// Fresh target with migrations: no v0 schema by convention; start at chain bottom.
+	if current == 0 {
+		current = all[0].FromVersion
+	}
+
+	// Require a complete chain from current to target.
+	var pending []ObjectMigration
+	for _, m := range all {
+		if m.FromVersion >= current && m.ToVersion <= targetVersion {
+			pending = append(pending, m)
+		}
+	}
+
+	if len(pending) == 0 {
+		return fmt.Errorf("no migrations registered for %s from version %d to %d", target, current, targetVersion)
+	}
+
+	// Validate contiguous chain.
+	expected := current
+	for _, m := range pending {
+		if m.FromVersion != expected {
+			return fmt.Errorf("migration chain gap for %s: expected from %d, got from %d", target, expected, m.FromVersion)
+		}
+		expected = m.ToVersion
+	}
+	if expected != targetVersion {
+		return fmt.Errorf("migration chain for %s ends at version %d, target is %d", target, expected, targetVersion)
+	}
+
+	logger := slog.Default()
+	for _, m := range pending {
+		logger.Info("Running object migration", "target", target, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
+		octx := ObjectContext{Objects: objects, Bucket: bucket, Logger: logger}
+		if err := m.Run(ctx, octx); err != nil {
+			return fmt.Errorf("object migration %s %d→%d failed: %w", target, m.FromVersion, m.ToVersion, err)
+		}
+		if err := kvutil.WriteVersion(ctx, versionKV, m.ToVersion); err != nil {
+			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, target, err)
+		}
+	}
+
+	return nil
 }
 
 // RunKVWithJetStream is RunKV with a JetStream handle attached to each

@@ -18,6 +18,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -35,12 +36,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/mulgadc/viperblock/viperblock"
-	"github.com/nats-io/nats-server/v2/server"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +69,7 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.snapshotService = handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
+	wireTestEBSProvider(daemon, memStore)
 	initAccountServiceForTest(t, daemon)
 
 	// Wire RunInstances deps now that image/key services exist. vpcService and
@@ -77,6 +78,25 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
 	return daemon, memStore
+}
+
+// wireTestEBSProvider mirrors configureEBSProvider for the test daemon: one
+// in-memory provider behind every EBS-adjacent service.
+func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
+	provider := ebsfake.New(store, daemon.config.Predastore.Bucket)
+	daemon.ebsProvider = provider
+	daemon.instanceService.SetEBSProvider(provider)
+	daemon.imageService.SetEBSProvider(provider)
+	daemon.snapshotService.SetEBSProvider(provider)
+	daemon.volumeService.SetEBSProvider(provider)
+}
+
+// seedVolumeDocument registers a volume the only way the control plane knows
+// one: as an ebsmetadata document. Tests that need a volume to exist seed it
+// here rather than writing storage state the control plane never reads.
+func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(t.Context(), volume))
 }
 
 // createFullTestDaemon creates a test daemon with ALL services initialized (including
@@ -116,22 +136,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 // using an isolated embedded NATS JetStream server per test to avoid shared KV state.
 func initAccountServiceForTest(t *testing.T, daemon *Daemon) {
 	t.Helper()
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
@@ -1470,24 +1475,12 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	// Create a volume in a different AZ
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID:         volumeID,
-				SizeGiB:          10,
-				State:            "available",
-				AvailabilityZone: "us-west-2a",
-				TenantID:         testAccountID,
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:         volumeID,
+		CapacityGiB:      10,
+		State:            "available",
+		AvailabilityZone: "us-west-2a",
+		TenantID:         testAccountID,
 	})
 
 	// Subscribe handler
@@ -1947,7 +1940,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
 		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
-		&memStoppedStore{})
+		vmmock.New())
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
 	tests := []struct {
@@ -2277,22 +2270,7 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 
 	daemon := createTestDaemon(t, sharedNATSURL)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -2595,22 +2573,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	// Create an isolated JetStream NATS server for the EIGW service
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
@@ -2671,23 +2634,11 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 
 	// Seed a volume in the store
 	volumeID := "vol-modify-success"
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID:   volumeID,
-				SizeGiB:    10,
-				State:      "available",
-				VolumeType: "gp3",
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "available",
+		VolumeType:  "gp3",
 	})
 
 	// Subscribe a dummy ebs.sync handler so the NATS Request doesn't time out
@@ -2810,22 +2761,10 @@ func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
 	sourceImageID := "ami-source-001"
 
 	// Seed a root volume config
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID: rootVolumeID,
-				SizeGiB:  8,
-				State:    "in-use",
-			},
-		},
-	}
-	volData, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(rootVolumeID + "/config.json"),
-		Body:   strings.NewReader(string(volData)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:    rootVolumeID,
+		CapacityGiB: 8,
+		State:       "in-use",
 	})
 
 	daemon.vmMgr.Insert(&vm.VM{
@@ -3011,23 +2950,11 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	// Seed a volume that is already in-use
-	wrapper := struct {
-		VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
-	}{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				VolumeID: volumeID,
-				SizeGiB:  10,
-				State:    "in-use",
-				TenantID: testAccountID,
-			},
-		},
-	}
-	data, _ := json.Marshal(wrapper)
-	store.PutObject(t.Context(), &awss3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(volumeID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "in-use",
+		TenantID:    testAccountID,
 	})
 
 	sub, err := daemon.natsConn.Subscribe(
@@ -3547,25 +3474,8 @@ func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
 func TestDelegateHandlers_EIP(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
+	_, nc, js := testutil.StartTestJetStream(t)
 
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
-
-	js, err := jetstream.New(nc)
-	require.NoError(t, err)
 	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
@@ -3740,22 +3650,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	// Route table service needs its own JetStream for KV buckets
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
@@ -3873,22 +3768,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 
-	ns, err := server.NewServer(&server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1,
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-		NoLog:     true,
-		NoSigs:    true,
-	})
-	require.NoError(t, err)
-	go ns.Start()
-	require.True(t, ns.ReadyForConnections(5*time.Second))
-	t.Cleanup(func() { ns.Shutdown() })
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(func() { nc.Close() })
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)

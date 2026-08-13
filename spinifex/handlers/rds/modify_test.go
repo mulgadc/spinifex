@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -30,7 +31,7 @@ type modifyHarness struct {
 	nc      *nats.Conn
 	launch  *launchHarness
 	network *fakeNetwork
-	iam     *fakeRDSEnsurer
+	iam     *iammock.SystemInstanceRoleEnsurer
 	cmdr    *fakeInstanceCommander
 	storage *fakeVolumeResizer
 	vmState *fakeInstanceState
@@ -52,7 +53,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		nc:      nc,
 		launch:  newLaunchHarness(),
 		network: newFakeNetwork(),
-		iam:     &fakeRDSEnsurer{},
+		iam:     iammock.New(),
 		cmdr:    &fakeInstanceCommander{vm: vmState},
 		storage: newFakeVolumeResizer(testDataVolume, 20),
 		vmState: vmState,

@@ -2,7 +2,6 @@ package handlers_ecs
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"testing"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,22 +66,22 @@ func imageMatchesFilters(img *ec2.Image, filters []*ec2.Filter) bool {
 	return true
 }
 
-// stubIAM converges to find-or-create: Get* report NoSuchEntity, Create* succeed.
-type stubIAM struct{}
+// stubIAM embeds the shared SystemInstanceRoleEnsurer mock for the Get*/Create*
+// find-or-create behaviour, and adds CreatePolicy/AttachRolePolicy locally
+// since ecsIAM needs both beyond what the ensurer interface covers.
+type stubIAM struct {
+	*iammock.SystemInstanceRoleEnsurer
+}
+
+func newStubIAM() stubIAM {
+	return stubIAM{SystemInstanceRoleEnsurer: iammock.New()}
+}
 
 var (
 	_ ecsIAM           = stubIAM{}
 	_ ecsImageResolver = (*stubImages)(nil)
 	_ ecsImageResolver = (*filteringStubImages)(nil)
 )
-
-func (stubIAM) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-}
-
-func (stubIAM) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	return &iam.CreateRoleOutput{Role: &iam.Role{RoleName: aws.String(ecsInstanceRoleName)}}, nil
-}
 
 func (stubIAM) CreatePolicy(accountID string, _ *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
 	arn := "arn:aws:iam::" + accountID + ":policy/" + ecsInstanceRolePolicyName
@@ -90,19 +90,6 @@ func (stubIAM) CreatePolicy(accountID string, _ *iam.CreatePolicyInput) (*iam.Cr
 
 func (stubIAM) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
 	return &iam.AttachRolePolicyOutput{}, nil
-}
-
-func (stubIAM) GetInstanceProfile(_ string, _ *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-}
-
-func (stubIAM) CreateInstanceProfile(accountID string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	arn := "arn:aws:iam::" + accountID + ":instance-profile/" + ecsInstanceRoleName
-	return &iam.CreateInstanceProfileOutput{InstanceProfile: &iam.InstanceProfile{Arn: aws.String(arn)}}, nil
-}
-
-func (stubIAM) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	return &iam.AddRoleToInstanceProfileOutput{}, nil
 }
 
 func ecsNodeImage() []*ec2.Image {
@@ -120,7 +107,7 @@ func TestProvisionCapacity_BuildsRunInstancesInput(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		GatewayBaseURL: "https://10.0.0.1:9999",
 		GatewayCACert:  "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
-		IAM:            stubIAM{},
+		IAM:            newStubIAM(),
 		Images:         &stubImages{images: ecsNodeImage()},
 		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
@@ -159,7 +146,7 @@ func TestProvisionCapacity_BuildsRunInstancesInput(t *testing.T) {
 func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &stubImages{images: ecsNodeImage()},
 		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
@@ -190,7 +177,7 @@ func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 func TestProvisionCapacity_ExplicitDiskSize(t *testing.T) {
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &stubImages{images: ecsNodeImage()},
 		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
@@ -212,7 +199,7 @@ func TestProvisionCapacity_ExplicitDiskSize(t *testing.T) {
 
 func TestProvisionCapacity_MissingRequired(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM: stubIAM{}, Images: &stubImages{images: ecsNodeImage()},
+		IAM: newStubIAM(), Images: &stubImages{images: ecsNodeImage()},
 		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) { return nil, nil },
 	})
 	_, err := svc.ProvisionCapacity(context.Background(), &ProvisionCapacityInput{Cluster: "web"}, testAccountID)
@@ -276,7 +263,7 @@ func TestLookupECSNodeAMI_ExcludesGPUTaggedAMI(t *testing.T) {
 func TestProvisionCapacity_GPUInstanceTypeUsesGPUAMI(t *testing.T) {
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &filteringStubImages{images: []*ec2.Image{ecsGPUNodeImage("ami-ecs-gpu", "2026-06-01T00:00:00.000Z")}},
 		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
@@ -298,7 +285,7 @@ func TestProvisionCapacity_GPUInstanceTypeUsesGPUAMI(t *testing.T) {
 func TestProvisionCapacity_NonGPUInstanceTypeUsesPlainAMI(t *testing.T) {
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &filteringStubImages{images: ecsNodeImage()},
 		RunInstances: func(_ context.Context, in *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 			captured = in
@@ -322,7 +309,7 @@ func TestProvisionCapacity_NonGPUInstanceTypeUsesPlainAMI(t *testing.T) {
 // lookup must fail rather than silently reuse the driverless image.
 func TestProvisionCapacity_GPUInstanceTypeNoGPUAMIErrors(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &filteringStubImages{images: ecsNodeImage()}, // only the plain (non-GPU) AMI resolves
 		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) {
 			t.Fatal("RunInstances must not be called when no GPU AMI resolves")
@@ -342,7 +329,7 @@ func TestProvisionCapacity_GPUInstanceTypeNoGPUAMIErrors(t *testing.T) {
 
 func TestProvisionCapacity_AMINotFound(t *testing.T) {
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
-		IAM:    stubIAM{},
+		IAM:    newStubIAM(),
 		Images: &stubImages{images: nil},
 		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) {
 			t.Fatal("RunInstances must not be called when no AMI resolves")

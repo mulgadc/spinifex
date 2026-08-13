@@ -3,7 +3,6 @@ package handlers_ec2_image
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,9 +16,9 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,117 +26,96 @@ import (
 const testBucket = "test-bucket"
 const testAccountID = "000000000001"
 
-// setupTestImageService creates an image service with in-memory storage for testing.
+// setupTestImageService creates an image service with in-memory storage for
+// testing.
 func setupTestImageService(t *testing.T) (*ImageServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := NewImageServiceImplWithStore(store, testBucket)
 	return svc, store
 }
 
-// createTestVolumeConfig creates a test volume config in the mock store.
-func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
-	volumeState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			VolumeMetadata: viperblock.VolumeMetadata{
-				SizeGiB: uint64(sizeGiB),
-			},
-		},
-	}
-	data, err := json.Marshal(volumeState)
-	require.NoError(t, err)
+// putAMIDocument writes an AMI's control-plane document, which is what
+// DescribeImages enumerates.
+func putAMIDocument(t *testing.T, store *objectstore.MemoryObjectStore, ami ebsmetadata.AMI) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, testBucket).PutAMI(context.Background(), ami))
+}
 
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(volumeID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+// putRawAMIDocument writes AMI document bytes verbatim, for a corrupt document
+// a typed seed cannot express.
+func putRawAMIDocument(t *testing.T, store *objectstore.MemoryObjectStore, imageID, body string) {
+	t.Helper()
+	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(amiDocumentKey(t, imageID)),
+		Body:   strings.NewReader(body),
 	})
 	require.NoError(t, err)
 }
 
+// amiDocumentKey is where an AMI's control-plane document lives.
+func amiDocumentKey(t *testing.T, imageID string) string {
+	t.Helper()
+	key, err := ebsmetadata.AMIKey(imageID)
+	require.NoError(t, err)
+	return key
+}
+
+// putVolumeDocument writes a volume's control-plane document.
+func putVolumeDocument(t *testing.T, store *objectstore.MemoryObjectStore, volume ebsmetadata.Volume) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, testBucket).PutVolume(context.Background(), volume))
+}
+
+// createTestVolumeConfig creates a test volume config in the mock store.
+func createTestVolumeConfig(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+	putVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: uint64(sizeGiB),
+	})
+}
+
 // createTestAMIConfig creates a test AMI config in the mock store.
 func createTestAMIConfig(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         imageID,
-				Name:            "test-ami",
-				Architecture:    "x86_64",
-				PlatformDetails: "Linux/UNIX",
-				Virtualization:  "hvm",
-				RootDeviceType:  "ebs",
-				VolumeSizeGiB:   8,
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+	putAMIDocument(t, store, ebsmetadata.AMI{
+		ImageID:         imageID,
+		Name:            "test-ami",
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
 	})
-	require.NoError(t, err)
 }
 
 // createTestAMIConfigWithName creates a test AMI config with a specified name.
 // Owner defaults to testAccountID so the AMI is visible to the default caller —
 // an empty ImageOwnerAlias would be filtered out as a corrupt config.
 func createTestAMIConfigWithName(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         imageID,
-				Name:            name,
-				Architecture:    "x86_64",
-				PlatformDetails: "Linux/UNIX",
-				Virtualization:  "hvm",
-				RootDeviceType:  "ebs",
-				VolumeSizeGiB:   8,
-				ImageOwnerAlias: testAccountID,
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+	putAMIDocument(t, store, ebsmetadata.AMI{
+		ImageID:         imageID,
+		Name:            name,
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: testAccountID,
 	})
-	require.NoError(t, err)
 }
 
 // createTestAMIConfigWithOwner creates a test AMI config with a specified name and owner.
 func createTestAMIConfigWithOwner(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner string) {
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         imageID,
-				Name:            name,
-				Architecture:    "x86_64",
-				PlatformDetails: "Linux/UNIX",
-				Virtualization:  "hvm",
-				RootDeviceType:  "ebs",
-				VolumeSizeGiB:   8,
-				ImageOwnerAlias: owner,
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+	putAMIDocument(t, store, ebsmetadata.AMI{
+		ImageID:         imageID,
+		Name:            name,
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: owner,
 	})
-	require.NoError(t, err)
 }
 
 func TestCreateImageFromInstance_NilInput(t *testing.T) {
@@ -211,7 +189,7 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 func TestDescribeImages_BootModeProjection(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-uefi001",
 		Name:            "uefi-image",
 		Architecture:    "x86_64",
@@ -222,7 +200,7 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 		ImageOwnerAlias: testAccountID,
 		BootMode:        "uefi",
 	})
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-legacy001",
 		Name:            "legacy-image",
 		Architecture:    "x86_64",
@@ -269,7 +247,7 @@ func TestDescribeImages_StateProjection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, store := setupTestImageService(t)
 
-			createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+			createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 				ImageID:         "ami-state001",
 				Name:            "state-image",
 				Architecture:    "x86_64",
@@ -291,21 +269,20 @@ func TestDescribeImages_StateProjection(t *testing.T) {
 	}
 }
 
-func TestGetVolumeConfig(t *testing.T) {
+func TestGetVolumeMetadata(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	createTestVolumeConfig(t, store, "vol-abc123", 20)
 
-	cfg, err := svc.getVolumeConfig(context.Background(), "vol-abc123")
+	meta, err := svc.getVolumeMetadata(context.Background(), "vol-abc123")
 	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	assert.Equal(t, uint64(20), cfg.VolumeMetadata.SizeGiB)
+	assert.Equal(t, uint64(20), meta.CapacityGiB)
 }
 
-func TestGetVolumeConfig_NotFound(t *testing.T) {
+func TestGetVolumeMetadata_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.getVolumeConfig(context.Background(), "vol-nonexistent")
+	_, err := svc.getVolumeMetadata(context.Background(), "vol-nonexistent")
 	require.Error(t, err)
 }
 
@@ -455,7 +432,7 @@ func TestCreateImageFromInstance_UniqueNameAllowed(t *testing.T) {
 func TestPutAMIConfig_RoundTrip(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	meta := viperblock.AMIMetadata{
+	meta := ebsmetadata.AMI{
 		ImageID:         "ami-roundtrip01",
 		Name:            "round-trip",
 		Description:     "hello",
@@ -499,7 +476,7 @@ func TestCheckAMIOwnership(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := svc.checkAMIOwnership(viperblock.AMIMetadata{ImageOwnerAlias: tt.owner}, caller)
+			err := svc.checkAMIOwnership(ebsmetadata.AMI{ImageOwnerAlias: tt.owner}, caller)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -520,10 +497,10 @@ func TestDeregisterImage_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out)
 
-	// AMI config gone from S3
+	// AMI document gone from S3
 	_, getErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
-		Key:    aws.String(amiID + "/config.json"),
+		Key:    aws.String(amiDocumentKey(t, amiID)),
 	})
 	require.Error(t, getErr)
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr))
@@ -573,7 +550,7 @@ func TestDeregisterImage_CrossAccount(t *testing.T) {
 	// Confirm AMI still present after rejected mutation.
 	_, getErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
-		Key:    aws.String(amiID + "/config.json"),
+		Key:    aws.String(amiDocumentKey(t, amiID)),
 	})
 	require.NoError(t, getErr)
 }
@@ -594,33 +571,21 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	snapID := "snap-keep001"
 
 	// AMI pointing at a snapshot
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         amiID,
-				Name:            "with-snapshot",
-				SnapshotID:      snapID,
-				ImageOwnerAlias: testAccountID,
-				Architecture:    "x86_64",
-				Virtualization:  "hvm",
-				RootDeviceType:  "ebs",
-				VolumeSizeGiB:   8,
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(amiID + "/config.json"),
-		Body:   strings.NewReader(string(data)),
+	putAMIDocument(t, store, ebsmetadata.AMI{
+		ImageID:         amiID,
+		Name:            "with-snapshot",
+		SnapshotID:      snapID,
+		ImageOwnerAlias: testAccountID,
+		Architecture:    "x86_64",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
 	})
-	require.NoError(t, err)
 
 	// Backing snapshot metadata
 	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, testAccountID))
 
-	_, err = svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
 
 	// Snapshot metadata still present
@@ -723,13 +688,8 @@ func TestDescribeImages_NonAMIPrefixIgnored(t *testing.T) {
 func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	// Store invalid JSON as an AMI config
-	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("ami-bad123/config.json"),
-		Body:   strings.NewReader("not valid json"),
-	})
-	require.NoError(t, err)
+	// Store invalid JSON as an AMI document
+	putRawAMIDocument(t, store, "ami-bad123", "not valid json")
 
 	// Should skip the invalid AMI without error
 	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
@@ -737,38 +697,30 @@ func TestDescribeImages_InvalidConfigJSON(t *testing.T) {
 	assert.Empty(t, result.Images)
 }
 
-// TestDescribeImages_ConfigFaultCounting covers a config.json that
-// exists but can't be fetched/read/parsed must be promoted to WARN and counted
-// as unreadable so it stays visible at INFO, while a genuinely absent
-// config.json (a non-AMI directory) stays silent at DEBUG and uncounted, and a
-// healthy prefix is unaffected either way.
+// TestDescribeImages_ConfigFaultCounting covers a config.json that exists but
+// can't be fetched/read/parsed being promoted to WARN so it stays visible at
+// the default level, while a genuinely absent config.json (a non-AMI
+// directory) stays silent, and a healthy prefix is unaffected either way.
 func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 	tests := []struct {
 		name           string
 		setup          func(t *testing.T, store *objectstore.MemoryObjectStore)
 		wantImageCount int
-		wantUnreadable int
 		wantWarnLogged bool
 	}{
 		{
-			name: "malformed config.json is counted as unreadable and does not vanish silently",
+			name: "malformed document is counted as unreadable and does not vanish silently",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
-					Bucket: aws.String(testBucket),
-					Key:    aws.String("ami-malformed1/config.json"),
-					Body:   strings.NewReader("{not valid json"),
-				})
-				require.NoError(t, err)
+				putRawAMIDocument(t, store, "ami-malformed1", "{not valid json")
 			},
 			wantImageCount: 0,
-			wantUnreadable: 1,
 			wantWarnLogged: true,
 		},
 		{
-			name: "missing config.json (NoSuchKey) is not counted as a fault",
+			name: "an object that is not a document is not counted as a fault",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				// A placeholder object under the prefix makes ListObjectsV2 surface
-				// "ami-nokey1/" as a CommonPrefix with no config.json underneath.
+				// An object outside the document prefix is not an AMI at all, so
+				// it must neither appear nor register as a fault.
 				_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
 					Bucket: aws.String(testBucket),
 					Key:    aws.String("ami-nokey1/placeholder.txt"),
@@ -777,7 +729,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 				require.NoError(t, err)
 			},
 			wantImageCount: 0,
-			wantUnreadable: 0,
 			wantWarnLogged: false,
 		},
 		{
@@ -786,7 +737,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 				createTestAMIConfigWithOwner(t, store, "ami-healthy1", "healthy-ami", testAccountID)
 			},
 			wantImageCount: 1,
-			wantUnreadable: 0,
 			wantWarnLogged: false,
 		},
 	}
@@ -807,8 +757,6 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 			assert.Len(t, out.Images, tt.wantImageCount)
 
 			logs := buf.String()
-			assert.Contains(t, logs, "prefixesExamined=1", "the single ami-* prefix must be counted as examined")
-			assert.Contains(t, logs, fmt.Sprintf("unreadableConfigs=%d", tt.wantUnreadable))
 
 			if tt.wantWarnLogged {
 				assert.Contains(t, logs, "level=WARN",
@@ -824,24 +772,10 @@ func TestDescribeImages_ConfigFaultCounting(t *testing.T) {
 func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	// AMI config with empty ImageID
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID: "",
-				Name:    "empty-id-ami",
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("ami-emptyid/config.json"),
-		Body:   strings.NewReader(string(data)),
-	})
-	require.NoError(t, err)
+	// A document whose image_id is empty names no image, so listing it would
+	// hand out an AMI nothing can be launched from.
+	putRawAMIDocument(t, store, "ami-emptyid",
+		`{"schema_version":1,"image_id":"","name":"empty-id-ami"}`)
 
 	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{}, testAccountID)
 	require.NoError(t, err)
@@ -851,30 +785,17 @@ func TestDescribeImages_EmptyImageIDSkipped(t *testing.T) {
 func TestDescribeImages_WithTags(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: viperblock.AMIMetadata{
-				ImageID:         "ami-tagged123",
-				Name:            "tagged-ami",
-				Architecture:    "x86_64",
-				PlatformDetails: "Linux/UNIX",
-				Virtualization:  "hvm",
-				RootDeviceType:  "ebs",
-				VolumeSizeGiB:   8,
-				ImageOwnerAlias: testAccountID,
-				Tags:            map[string]string{"Environment": "test", "Name": "my-ami"},
-			},
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("ami-tagged123/config.json"),
-		Body:   strings.NewReader(string(data)),
+	putAMIDocument(t, store, ebsmetadata.AMI{
+		ImageID:         "ami-tagged123",
+		Name:            "tagged-ami",
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: testAccountID,
+		Tags:            map[string]string{"Environment": "test", "Name": "my-ami"},
 	})
-	require.NoError(t, err)
 
 	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		ImageIds: []*string{aws.String("ami-tagged123")},
@@ -904,28 +825,25 @@ func TestDescribeImages_OwnerFilterNilEntry(t *testing.T) {
 func TestGetAMIConfig_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("ami-badjson/config.json"),
-		Body:   strings.NewReader("not json"),
-	})
-	require.NoError(t, err)
+	putRawAMIDocument(t, store, "ami-badjson", "not json")
 
-	_, err = svc.GetAMIConfig(context.Background(), "ami-badjson")
+	_, err := svc.GetAMIConfig(context.Background(), "ami-badjson")
 	assert.Error(t, err)
 }
 
-func TestGetVolumeConfig_InvalidJSON(t *testing.T) {
+func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
+	key, err := ebsmetadata.VolumeKey("vol-badjson")
+	require.NoError(t, err)
+	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
-		Key:    aws.String("vol-badjson/config.json"),
+		Key:    aws.String(key),
 		Body:   strings.NewReader("{invalid"),
 	})
 	require.NoError(t, err)
 
-	_, err = svc.getVolumeConfig(context.Background(), "vol-badjson")
+	_, err = svc.getVolumeMetadata(context.Background(), "vol-badjson")
 	assert.Error(t, err)
 }
 
@@ -960,17 +878,12 @@ func TestAmiNameExists_NotFound(t *testing.T) {
 func TestAmiNameExists_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("ami-bad/config.json"),
-		Body:   strings.NewReader("not json"),
-	})
-	require.NoError(t, err)
+	putRawAMIDocument(t, store, "ami-bad", "not json")
 
-	// A corrupt AMI config is a real store-side problem. Surface it rather
+	// A corrupt AMI document is a real store-side problem. Surface it rather
 	// than silently under-counting names (which would let a caller write a
 	// duplicate and mask the corruption).
-	_, err = svc.amiNameExists(context.Background(), "any-name")
+	_, err := svc.amiNameExists(context.Background(), "any-name")
 	require.Error(t, err)
 }
 
@@ -979,25 +892,12 @@ func TestAmiNameExists_InvalidJSON(t *testing.T) {
 // createTestAMIConfigFull creates an AMI with all metadata fields for filter testing.
 // Owner defaults to testAccountID when the caller leaves ImageOwnerAlias empty —
 // an empty owner would be filtered out as corrupt.
-func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore, meta viperblock.AMIMetadata) {
+func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore, meta ebsmetadata.AMI) {
 	t.Helper()
 	if meta.ImageOwnerAlias == "" {
 		meta.ImageOwnerAlias = testAccountID
 	}
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{
-			AMIMetadata: meta,
-		},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(meta.ImageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
-	})
-	require.NoError(t, err)
+	putAMIDocument(t, store, meta)
 }
 
 // TestDescribeImages_FilterBy verifies single-attribute filters; each subtest builds
@@ -1049,11 +949,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "architecture",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-x86", Name: "x86-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-arm", Name: "arm-img", Architecture: "arm64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1066,12 +966,12 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "tag",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-tagged", Name: "tagged-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 					Tags: map[string]string{"Environment": "prod"},
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-untagged", Name: "untagged-img", Architecture: "x86_64",
 					RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1104,11 +1004,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "virtualization type",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-hvm", Name: "hvm-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-pv", Name: "pv-img", Architecture: "x86_64",
 					Virtualization: "paravirtual", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
@@ -1121,11 +1021,11 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 		{
 			name: "root device type",
 			setup: func(t *testing.T, store *objectstore.MemoryObjectStore) {
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-ebs", Name: "ebs-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "ebs", VolumeSizeGiB: 8,
 				})
-				createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+				createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 					ImageID: "ami-is", Name: "is-img", Architecture: "x86_64",
 					Virtualization: "hvm", RootDeviceType: "instance-store", VolumeSizeGiB: 8,
 				})
@@ -1174,11 +1074,11 @@ func TestDescribeImages_FilterMultipleValues_OR(t *testing.T) {
 
 func TestDescribeImages_FilterMultipleNames_AND(t *testing.T) {
 	svc, store := setupTestImageService(t)
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 		ImageID: "ami-match", Name: "debian-13", Architecture: "x86_64",
 		RootDeviceType: "ebs", VolumeSizeGiB: 8,
 	})
-	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigFull(t, store, ebsmetadata.AMI{
 		ImageID: "ami-nomatch", Name: "debian-13", Architecture: "arm64",
 		RootDeviceType: "ebs", VolumeSizeGiB: 8,
 	})
@@ -1602,13 +1502,13 @@ func TestRegisterImage_OwnerSetToCaller(t *testing.T) {
 
 // --- CopyImage tests ---
 
-// readAMIConfigBytes returns the raw bytes of {imageID}/config.json from the
-// store so tests can prove the source was not mutated by a copy/modify/etc.
+// readAMIConfigBytes returns the raw bytes of an AMI's document from the store
+// so tests can prove the source was not mutated by a copy/modify/etc.
 func readAMIConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) []byte {
 	t.Helper()
 	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
-		Key:    aws.String(imageID + "/config.json"),
+		Key:    aws.String(amiDocumentKey(t, imageID)),
 	})
 	require.NoError(t, err)
 	defer result.Body.Close()
@@ -1634,7 +1534,7 @@ func readSnapshotConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore,
 // putTestAMIConfigWithSnapshot seeds an AMI config that carries a real
 // SnapshotID — distinct from createTestAMIConfigWithOwner which sets no
 // snapshot and would be treated as orphaned by CopyImage.
-func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string, meta viperblock.AMIMetadata) {
+func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string, meta ebsmetadata.AMI) {
 	t.Helper()
 	meta.ImageID = imageID
 	meta.Name = name
@@ -1655,18 +1555,7 @@ func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectS
 	if meta.VolumeSizeGiB == 0 {
 		meta.VolumeSizeGiB = 8
 	}
-	amiState := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{AMIMetadata: meta},
-	}
-	data, err := json.Marshal(amiState)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(imageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
-	})
-	require.NoError(t, err)
+	putAMIDocument(t, store, meta)
 }
 
 // seedCopyableAMI writes a matching (snapshot, AMI) pair so CopyImage can complete
@@ -1691,7 +1580,7 @@ func seedCopyableAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID
 	})
 	require.NoError(t, err)
 
-	putTestAMIConfigWithSnapshot(t, store, imageID, name, owner, snapshotID, viperblock.AMIMetadata{
+	putTestAMIConfigWithSnapshot(t, store, imageID, name, owner, snapshotID, ebsmetadata.AMI{
 		VolumeSizeGiB: uint64(sizeGiB),
 		Description:   "source desc",
 	})
@@ -1758,7 +1647,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	require.NoError(t, err)
 
 	// Source AMI with non-default fields that must propagate.
-	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", viperblock.AMIMetadata{
+	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", ebsmetadata.AMI{
 		Architecture:    "arm64",
 		PlatformDetails: "Linux/UNIX (arm64)",
 		Virtualization:  "hvm",
@@ -1836,7 +1725,7 @@ func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 	// Seed only the AMI config, no snap-xxx/metadata.json object — matches the
 	// on-disk layout produced by `spx admin images import`.
 	putTestAMIConfigWithSnapshot(t, store, "ami-bundled01", "alpine-bundled",
-		"system", "snap-ami-bundled01", viperblock.AMIMetadata{
+		"system", "snap-ami-bundled01", ebsmetadata.AMI{
 			VolumeSizeGiB: 8,
 			Description:   "bundled source",
 		})
@@ -1894,7 +1783,7 @@ func TestCopyImage_OrphanedSource_MissingSnapshot(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// AMI config points at a snapshot that doesn't exist on S3.
-	putTestAMIConfigWithSnapshot(t, store, "ami-orphan", "orphan", testAccountID, "snap-ghost", viperblock.AMIMetadata{})
+	putTestAMIConfigWithSnapshot(t, store, "ami-orphan", "orphan", testAccountID, "snap-ghost", ebsmetadata.AMI{})
 
 	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-orphan", "orphan-copy"), testAccountID)
 	require.Error(t, err)
@@ -2070,27 +1959,15 @@ func TestCopyImage_MissingRequiredFields(t *testing.T) {
 
 // --- Image attribute tests ---
 
-func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore, meta viperblock.AMIMetadata) {
+func createTestAMIConfigRich(t *testing.T, store *objectstore.MemoryObjectStore, meta ebsmetadata.AMI) {
 	t.Helper()
-	state := viperblock.VBState{
-		VolumeConfig: viperblock.VolumeConfig{AMIMetadata: meta},
-	}
-	data, err := json.Marshal(state)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(meta.ImageID + "/config.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
-	})
-	require.NoError(t, err)
+	putAMIDocument(t, store, meta)
 }
 
 func TestDescribeImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-desc01",
 		Name:            "desc-ami",
 		Description:     "the stored description",
@@ -2119,7 +1996,7 @@ func TestDescribeImageAttribute_Description(t *testing.T) {
 func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-bdm01",
 		Name:            "bdm-ami",
 		SnapshotID:      "snap-bdm01",
@@ -2183,7 +2060,7 @@ func TestDescribeImageAttribute_NotFound(t *testing.T) {
 func TestDescribeImageAttribute_CrossAccountHidesExistence(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-cross01",
 		Name:            "cross-ami",
 		Description:     "secret",
@@ -2202,7 +2079,7 @@ func TestDescribeImageAttribute_CrossAccountHidesExistence(t *testing.T) {
 func TestDescribeImageAttribute_SystemAMIReadable(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-sys01",
 		Name:            "system-ami",
 		Description:     "baked-in",
@@ -2240,7 +2117,7 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 func TestModifyImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-mod01",
 		Name:            "mod-ami",
 		Description:     "old",
@@ -2273,7 +2150,7 @@ func TestModifyImageAttribute_Description(t *testing.T) {
 func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-modclr01",
 		Name:            "modclr-ami",
 		Description:     "will-be-cleared",
@@ -2296,7 +2173,7 @@ func TestModifyImageAttribute_DescriptionEmptyValueClears(t *testing.T) {
 func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-modx01",
 		Name:            "modx-ami",
 		Description:     "dont-touch",
@@ -2321,7 +2198,7 @@ func TestModifyImageAttribute_CrossAccount(t *testing.T) {
 func TestModifyImageAttribute_SystemAMIImmutable(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-modsys01",
 		Name:            "sys-ami",
 		Description:     "baked-in",
@@ -2385,7 +2262,7 @@ func TestModifyImageAttribute_MissingParameters(t *testing.T) {
 func TestResetImageAttribute_Description(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-reset01",
 		Name:            "reset-ami",
 		Description:     "will-be-cleared",
@@ -2416,7 +2293,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 func TestResetImageAttribute_CrossAccount(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	createTestAMIConfigRich(t, store, viperblock.AMIMetadata{
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
 		ImageID:         "ami-rstx01",
 		Name:            "rstx",
 		Description:     "dont-touch",

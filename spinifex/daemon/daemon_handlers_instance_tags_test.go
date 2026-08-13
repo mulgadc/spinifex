@@ -13,67 +13,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats.go/jetstream"
+	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// memStoppedStore is a map-backed StoppedInstanceStore standing in for the
-// shared JetStream KV in tag fallback tests.
-type memStoppedStore struct {
-	instances map[string]*vm.VM
-}
-
-var _ handlers_ec2_instance.StoppedInstanceStore = (*memStoppedStore)(nil)
-
-func (m *memStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
-	return m.instances[id], nil
-}
-
-func (m *memStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
-	var out []*vm.VM
-	for _, v := range m.instances {
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-func (m *memStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) { return nil, nil }
-
-func (m *memStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error {
-	if m.instances == nil {
-		m.instances = make(map[string]*vm.VM)
-	}
-	m.instances[id] = instance
-	return nil
-}
-
-func (m *memStoppedStore) DeleteStoppedInstance(id string) error {
-	delete(m.instances, id)
-	return nil
-}
-
-// UpdateStoppedInstance mimics the real CAS semantics: a missing record
-// returns jetstream.ErrKeyNotFound instead of resurrecting it.
-func (m *memStoppedStore) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
-	v, ok := m.instances[id]
-	if !ok {
-		return nil, jetstream.ErrKeyNotFound
-	}
-	mutate(v)
-	return v, nil
-}
-
-func (m *memStoppedStore) ClaimStoppedInstance(id string) (*vm.VM, error) {
-	v, ok := m.instances[id]
-	if !ok {
-		return nil, vm.ErrStoppedInstanceClaimed
-	}
-	delete(m.instances, id)
-	return v, nil
-}
-
-func (m *memStoppedStore) WriteTerminatedInstance(string, *vm.VM) error { return nil }
 
 // tagTestDaemon returns a test daemon with an in-memory central tag store, an
 // empty stopped store, and a running VM carrying the given initial tags.
@@ -84,12 +27,12 @@ func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *
 
 // tagTestDaemonWithStopped is tagTestDaemon exposing the stopped store, so
 // tests can seed stopped instances for the no-running-owner fallback.
-func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[string]string) (*Daemon, *memStoppedStore) {
+func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[string]string) (*Daemon, *vmmock.StateStore) {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore())
 
-	stopped := &memStoppedStore{instances: map[string]*vm.VM{}}
+	stopped := vmmock.New()
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, stopped)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -15,16 +14,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/viperblock/viperblock"
-	vbs3 "github.com/mulgadc/viperblock/viperblock/backends/s3"
-	"github.com/mulgadc/viperblock/viperblock/v_utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -307,63 +303,6 @@ func buildWeightsImage(srcDir, imagePath string, contentBytes int64) error {
 	return mkfsExt4Runner(srcDir, imagePath)
 }
 
-// snapshotImportedWeightsVolume snapshots a viperblock volume that
-// v_utils.ImportDiskImage just wrote and closed -- never attached, never
-// nbdkit-served, so there is no live checkpoint to load. This mirrors the
-// offline snapshot sequence handlers/ec2/image/service_impl.go's
-// snapshotStoppedVolume uses for a stopped instance's root volume: reopen
-// read-only, load the numbered checkpoint Close() wrote, then CreateSnapshot.
-//
-// az names the zone recorded on the snapshot for DescribeSnapshots; it is not
-// used to resolve the clone.
-func snapshotImportedWeightsVolume(s3Config *vbs3.S3Config, volumeID string, volumeSize uint64, walDir, az string, mkey *masterkey.Key) (string, error) {
-	vbConfig := viperblock.VB{
-		VolumeName:        volumeID,
-		VolumeSize:        volumeSize,
-		BaseDir:           walDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-	}
-
-	vb, err := viperblock.New(&vbConfig, "s3", *s3Config)
-	if err != nil {
-		return "", fmt.Errorf("new viperblock: %w", err)
-	}
-	defer func() {
-		vb.StopChunkUploader()
-		vb.StopWALSyncer()
-	}()
-
-	if err := vb.Backend.Init(); err != nil {
-		return "", fmt.Errorf("backend init: %w", err)
-	}
-	if err := vb.LoadState(); err != nil {
-		return "", fmt.Errorf("load state: %w", err)
-	}
-	if err := vb.LoadBlockState(); err != nil {
-		return "", fmt.Errorf("load block state: %w", err)
-	}
-	defer func() {
-		if err := vb.RemoveLocalFiles(); err != nil {
-			slog.Warn("snapshotImportedWeightsVolume: failed to remove local files", "volumeId", volumeID, "err", err)
-		}
-	}()
-
-	snapshotID := admin.SnapPrefix(volumeID)
-	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
-		return "", fmt.Errorf("create snapshot: %w", err)
-	}
-
-	store := objectstore.NewS3ObjectStoreFromConfig(s3Config.Host, s3Config.Region, s3Config.AccessKey, s3Config.SecretKey)
-	if err := registerWeightsSnapshot(store, s3Config.Bucket, snapshotID, volumeID, volumeSize, az, mkey != nil); err != nil {
-		return "", err
-	}
-
-	return snapshotID, nil
-}
-
 // registerWeightsSnapshot writes the EC2 control plane's half of the snapshot
 // prefix. CreateSnapshot above writes only viperblock's half -- the block
 // checkpoint and config.json -- but CreateVolume resolves a SnapshotId through
@@ -485,12 +424,11 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 }
 
 // materializeWeightsVolume is the real weightsMaterializer: it packages
-// downloadDir into a filesystem image, imports it into a new viperblock
-// volume backed by node's predastore, and snapshots it. This is the
-// expensive, environment-dependent half of stage -- it shells out to
-// mkfs.ext4 and talks to a live S3-shaped backend -- so it is exercised live
-// (see the plan's Testing section) rather than in unit tests.
-func materializeWeightsVolume(node config.Config, downloadDir string, contentBytes int64, mkey *masterkey.Key) (string, error) {
+// downloadDir into a filesystem image, imports it into a new volume through
+// the EBS provider, and snapshots it. This is the expensive,
+// environment-dependent half of stage -- it shells out to mkfs.ext4 and needs
+// a live provider -- so it is exercised live rather than in unit tests.
+func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvider, nodeID string, node config.Config, downloadDir string, contentBytes int64) (string, error) {
 	tmpDir := filepath.Dir(downloadDir)
 	volumeId := utils.GenerateResourceID("vol")
 	imagePath := filepath.Join(tmpDir, volumeId+".img")
@@ -505,74 +443,32 @@ func materializeWeightsVolume(node config.Config, downloadDir string, contentByt
 		return "", fmt.Errorf("could not stat image: %w", err)
 	}
 
-	// Round the volume up to a whole GiB rather than using the raw image size.
-	// viperblock rejects a tail write whose block overruns VolumeSize, so an
-	// unaligned size fails at the last block. This also keeps the byte size and
-	// the manifest's SizeGiB describing the same volume.
+	// Round the volume up to a whole GiB rather than using the raw image size,
+	// so the byte size and the recorded SizeGiB describe the same volume.
 	sizeGiB := amiVolumeSizeGiB(imageStat.Size())
 	volumeBytes := sizeGiB * bytesPerGiB
 
-	s3Config := vbs3.S3Config{
-		VolumeName: volumeId,
-		VolumeSize: volumeBytes,
-		Bucket:     node.Predastore.Bucket,
-		Region:     node.Predastore.Region,
-		AccessKey:  node.Predastore.AccessKey,
-		SecretKey:  node.Predastore.SecretKey,
-		Host:       node.Predastore.Host,
-	}
-
-	// AMIMetadata is deliberately left zero-valued: a weights volume is not
-	// bootable and must never be registered as a launchable AMI. Leaving it
-	// unset also means ImportDiskImage does not attempt its own automatic
-	// snapshot -- that happens explicitly below, after the volume is closed.
-	manifest := viperblock.VolumeConfig{}
-	manifest.VolumeMetadata.VolumeID = volumeId
-	manifest.VolumeMetadata.VolumeName = volumeId
-	manifest.VolumeMetadata.TenantID = "system"
-	manifest.VolumeMetadata.SizeGiB = sizeGiB
-	manifest.VolumeMetadata.State = "available"
-	manifest.VolumeMetadata.AvailabilityZone = node.Predastore.Region
-	manifest.VolumeMetadata.CreatedAt = time.Now()
-	manifest.VolumeMetadata.VolumeType = "gp3"
-	manifest.VolumeMetadata.IOPS = 1000
-
-	vbConfig := viperblock.VB{
-		VolumeName:        volumeId,
-		VolumeSize:        volumeBytes,
-		BaseDir:           tmpDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig:      manifest,
-		MasterKey:         mkey,
-		EncryptionEnabled: mkey != nil,
-		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-	}
-
-	var flushBar *pterm.ProgressbarPrinter
-	var flushUpdate func(current uint64)
-	progress := func(current, total uint64) {
-		if flushBar == nil {
-			flushBar, flushUpdate = utils.NewByteProgressBar("Flushing weights to storage", total)
-		}
-		flushUpdate(current)
-	}
-
 	// Name the volume in the failure path: a part-written import leaves blocks
 	// in predastore, and without the ID an operator cannot find them to reclaim.
-	if err := v_utils.ImportDiskImage(&s3Config, &vbConfig, imagePath, progress); err != nil {
-		if flushBar != nil {
-			_, _ = flushBar.Stop()
-		}
+	fmt.Println("Writing weights to storage ...")
+	if err := admin.ImportImage(ctx, provider, admin.ImportOpts{
+		VolumeID:         volumeId,
+		NodeID:           nodeID,
+		SizeBytes:        utils.SafeUint64ToInt64(volumeBytes),
+		AvailabilityZone: node.AZ,
+		SourcePath:       imagePath,
+		Snapshot:         true,
+		Progress:         os.Stdout,
+	}); err != nil {
 		return "", fmt.Errorf("could not import weights volume %s: %w", volumeId, err)
 	}
-	if flushBar != nil {
-		_, _ = flushBar.Stop()
-	}
 
-	fmt.Println("Snapshotting weights volume ...")
-	snapshotID, err := snapshotImportedWeightsVolume(&s3Config, volumeId, volumeBytes, tmpDir, node.AZ, mkey)
-	if err != nil {
-		return "", fmt.Errorf("could not snapshot weights volume: %w", err)
+	// The provider wrote viperblock's half of the snapshot prefix; this writes
+	// the EC2 control plane's, without which a launch cannot resolve it.
+	snapshotID := admin.SnapPrefix(volumeId)
+	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+	if err := registerWeightsSnapshot(store, node.Predastore.Bucket, snapshotID, volumeId, volumeBytes, node.AZ, node.Viperblock.EncryptionKeyFile != ""); err != nil {
+		return "", err
 	}
 	return snapshotID, nil
 }
@@ -629,15 +525,9 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
-	mkey, err := utils.LoadViperblockMasterKey(node.Viperblock.EncryptionKeyFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not load viperblock encryption key: %v\n", err)
-		ochreExit(1)
-		return
-	}
-
-	materialize := func(_ context.Context, downloadDir string, contentBytes int64) (string, error) {
-		return materializeWeightsVolume(node, downloadDir, contentBytes, mkey)
+	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
+	materialize := func(ctx context.Context, downloadDir string, contentBytes int64) (string, error) {
+		return materializeWeightsVolume(ctx, provider, appConfig.Node, node, downloadDir, contentBytes)
 	}
 	checkSnapshotLive := newWeightsSnapshotChecker(store, node.Predastore.Bucket)
 

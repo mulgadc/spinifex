@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
@@ -124,19 +125,21 @@ var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServi
 
 // Daemon represents the main daemon service.
 type Daemon struct {
-	node                  string
-	clusterConfig         *config.ClusterConfig
-	config                *config.Config
-	natsConn              *nats.Conn
-	resourceMgr           *ResourceManager
-	instanceService       *handlers_ec2_instance.InstanceServiceImpl
-	dnsWriter             *handlers_dns.Writer
-	dnsReconciler         *handlers_dns.Reconciler
-	dnsBaseDomain         string
-	dnsInternalDomain     string
-	keyService            *handlers_ec2_key.KeyServiceImpl
-	imageService          *handlers_ec2_image.ImageServiceImpl
-	volumeService         *handlers_ec2_volume.VolumeServiceImpl
+	node              string
+	clusterConfig     *config.ClusterConfig
+	config            *config.Config
+	natsConn          *nats.Conn
+	resourceMgr       *ResourceManager
+	instanceService   *handlers_ec2_instance.InstanceServiceImpl
+	dnsWriter         *handlers_dns.Writer
+	dnsReconciler     *handlers_dns.Reconciler
+	dnsBaseDomain     string
+	dnsInternalDomain string
+	keyService        *handlers_ec2_key.KeyServiceImpl
+	imageService      *handlers_ec2_image.ImageServiceImpl
+	volumeService     *handlers_ec2_volume.VolumeServiceImpl
+	// ebsProvider is the sole EBS backend, set once during startup.
+	ebsProvider           ebsprovider.EBSProvider
 	accountService        *handlers_ec2_account.AccountSettingsServiceImpl
 	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
 	tagsService           *handlers_ec2_tags.TagsServiceImpl
@@ -1399,6 +1402,13 @@ func (d *Daemon) startCluster() error {
 		slog.Warn("Failed to reconcile OVN native IPsec", "err", err)
 	}
 
+	// Keep the host firewall's peer sets in step with cluster membership. Every
+	// formation path reaches this, which none of the installers do. Runs in the
+	// background because the first attempt routinely loses the race with
+	// ovn-controller registering its chassis, and blocking startup on that would
+	// hold up every service below.
+	go host.MaintainFirewall(d.ctx, d.configPath, d.clusterConfig)
+
 	// Write service manifest so other nodes know what this node runs
 	if d.jsManager != nil {
 		if err := d.jsManager.WriteServiceManifest(
@@ -1435,6 +1445,9 @@ func (d *Daemon) startCluster() error {
 	d.snapshotService = snap.svc
 
 	d.volumeService = handlers_ec2_volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
+	if err := d.configureEBSProvider(); err != nil {
+		return fmt.Errorf("configure EBS provider: %w", err)
+	}
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
@@ -1887,6 +1900,9 @@ func (d *Daemon) startCluster() error {
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
 		}
+		if eniOrphan := d.newENIOrphanReaper(); eniOrphan != nil {
+			reapers = append(reapers, eniOrphan)
+		}
 		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
 			reapers = append(reapers, gpuRec)
 		}
@@ -1918,6 +1934,50 @@ func (d *Daemon) startCluster() error {
 	d.setupReload()
 
 	return nil
+}
+
+// ebsProviderRequestTimeout bounds each ebs.provider.v1.* NATS request/reply.
+// Passed explicitly rather than relying on NATSProvider's own 30s default so
+// the daemon's behavior doesn't silently drift if that default ever changes.
+const ebsProviderRequestTimeout = 30 * time.Second
+
+// ebsProviderProbeTimeout bounds the startup reachability check. Short because
+// a missing responder must be reported promptly, and the check is advisory.
+const ebsProviderProbeTimeout = 2 * time.Second
+
+// configureEBSProvider wires a single NATSProvider into every EBS-adjacent
+// service. The control plane never constructs a provider implementation
+// itself, so this always runs regardless of which daemon answers on the wire.
+func (d *Daemon) configureEBSProvider() error {
+	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
+	d.ebsProvider = provider
+	d.instanceService.SetEBSProvider(provider)
+	d.imageService.SetEBSProvider(provider)
+	d.snapshotService.SetEBSProvider(provider)
+	d.volumeService.SetEBSProvider(provider)
+	slog.Info("EBS provider path active", "provider", d.config.EBS.ResolvedProvider())
+	d.probeEBSProvider(provider)
+	return nil
+}
+
+// probeEBSProvider reports whether anything is serving the provider contract.
+// Advisory rather than fatal: this daemon and viperblockd start independently,
+// so an unanswered probe here can simply mean viperblockd has not come up yet.
+func (d *Daemon) probeEBSProvider(provider ebsprovider.EBSProvider) {
+	// Own base context rather than the daemon's: the probe is bounded well
+	// below any shutdown deadline, and startCluster runs before d.ctx is set
+	// on some construction paths.
+	ctx, cancel := context.WithTimeout(context.Background(), ebsProviderProbeTimeout)
+	defer cancel()
+
+	capabilities, err := provider.GetCapabilities(ctx, ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+	if err != nil {
+		slog.Warn("EBS provider did not answer the capability probe; EBS calls will fail until it does",
+			"provider", d.config.EBS.ResolvedProvider(), "err", err)
+		return
+	}
+	slog.Info("EBS provider reachable", "provider", d.config.EBS.ResolvedProvider(),
+		"capabilities", capabilities.Capabilities)
 }
 
 // clusterSweepLease gates the GC's cluster-wide reapers so exactly one node runs

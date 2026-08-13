@@ -28,12 +28,12 @@ func TestVolumeLeakReaper_ReconcilesAttachmentNeverDeletesData(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, marked)
 
-	cfg, err := svc.GetVolumeConfig("vol-leaked-reconcile")
+	meta, err := svc.GetVolumeMetadata("vol-leaked-reconcile")
 	require.NoError(t, err, "the reaper must never delete the volume, only mark + reconcile it")
-	assert.NotEmpty(t, cfg.VolumeMetadata.Tags[orphanTagKey], "the volume must still be marked orphaned")
-	assert.Equal(t, "available", cfg.VolumeMetadata.State,
+	assert.NotEmpty(t, meta.Tags[orphanTagKey], "the volume must still be marked orphaned")
+	assert.Equal(t, "available", meta.State,
 		"the reaper must reconcile the attachment record to available so DeleteVolume can proceed")
-	assert.Empty(t, cfg.VolumeMetadata.AttachedInstance,
+	assert.Empty(t, meta.AttachedInstance,
 		"the reaper must clear the stale attachment left by the terminated instance")
 
 	// The reconcile only clears control-plane attachment state — this is
@@ -41,7 +41,7 @@ func TestVolumeLeakReaper_ReconcilesAttachmentNeverDeletesData(t *testing.T) {
 	// AttachedInstance=="" and State in {"available",""}. Confirm the reaper
 	// leaves the volume passing that guard, without exercising DeleteVolume's
 	// full path here (which needs a snapshotKV this unit fixture omits).
-	assert.True(t, cfg.VolumeMetadata.AttachedInstance == "" && (cfg.VolumeMetadata.State == "available" || cfg.VolumeMetadata.State == ""),
+	assert.True(t, meta.AttachedInstance == "" && (meta.State == "available" || meta.State == ""),
 		"the reconciled volume must pass DeleteVolume's in-use guard so an operator can delete it")
 }
 
@@ -62,8 +62,8 @@ func TestVolumeLeakReaper_LiveOwnerAttachmentUntouched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, marked)
 
-	cfg, err := svc.GetVolumeConfig("vol-live-reconcile")
+	meta, err := svc.GetVolumeMetadata("vol-live-reconcile")
 	require.NoError(t, err)
-	assert.Equal(t, "in-use", cfg.VolumeMetadata.State, "a live-owner volume's attachment must never be reconciled")
-	assert.Equal(t, "i-running00000000", cfg.VolumeMetadata.AttachedInstance)
+	assert.Equal(t, "in-use", meta.State, "a live-owner volume's attachment must never be reconciled")
+	assert.Equal(t, "i-running00000000", meta.AttachedInstance)
 }

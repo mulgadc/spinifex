@@ -1,4 +1,4 @@
-package awsgw
+package awsgw_test
 
 import (
 	"os"

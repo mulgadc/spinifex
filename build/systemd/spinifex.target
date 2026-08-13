@@ -1,3 +1,4 @@
+# spinifex-unit-version: 1
 [Unit]
 Description=Spinifex Infrastructure Platform
 After=network-online.target

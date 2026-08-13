@@ -101,8 +101,8 @@ while [[ $# -gt 0 ]]; do
             done <"$2"
             shift 2
             ;;
-        --smoke)    RUN_SMOKE=true; shift ;;
-        --wipe)     WIPE=true; shift ;;
+        --smoke)        RUN_SMOKE=true; shift ;;
+        --wipe)         WIPE=true; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
         -h|--help)  sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -595,6 +595,17 @@ for name in "${NODE_NAMES[@]}"; do
        still be registering — if it persists, IPsec will fail to authenticate.
        Check 'sudo ovs-vsctl get Open_vSwitch . external_ids:system-id' on that host."
 done
+
+# --- Host firewall ---------------------------------------------------------
+#
+# Not applied here. spinifex-daemon reconciles the peer sets from cluster
+# membership on every startup, so it also picks up nodes added or replaced after
+# formation, which a one-shot write from this script would not.
+
+echo ""
+log "host firewall: reconciled by spinifex-daemon from cluster membership."
+log "               Check with 'sudo nft list table inet spinifex_filter' on a node,"
+log "               or disable it cluster-wide with network.firewall_enabled = false."
 
 # The pool is the one thing the operator supplied by hand and the one thing
 # nothing else validates, so print what actually landed. dns_servers in

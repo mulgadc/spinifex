@@ -3,6 +3,7 @@ package listenerinventory_test
 import (
 	"testing"
 
+	networkconnections "github.com/mulgadc/spinifex/docs/security/network-connections"
 	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
 )
 
@@ -128,13 +129,9 @@ func TestIsWildcardAddr(t *testing.T) {
 }
 
 func TestParse_RealDoc(t *testing.T) {
-	root, err := listenerinventory.RepoRoot()
+	table, err := listenerinventory.Parse(string(networkconnections.README()))
 	if err != nil {
-		t.Fatalf("RepoRoot: %v", err)
-	}
-	table, err := listenerinventory.ParseFile(listenerinventory.DocPath(root))
-	if err != nil {
-		t.Fatalf("ParseFile: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
 	if len(table.Rows) < 15 {
 		t.Fatalf("got %d rows from the real inventory, expected considerably more", len(table.Rows))

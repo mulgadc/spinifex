@@ -3,7 +3,6 @@ package listenerinventory
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -232,23 +231,4 @@ func IsWildcardAddr(addr string) bool {
 	default:
 		return false
 	}
-}
-
-// RepoRoot returns the spinifex module root via `go env GOMOD`.
-func RepoRoot() (string, error) {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		return "", fmt.Errorf("listenerinventory: go env GOMOD: %w", err)
-	}
-	gomod := strings.TrimSpace(string(out))
-	if gomod == "" || gomod == "/dev/null" {
-		return "", fmt.Errorf("listenerinventory: not in a go module (GOMOD=%q)", gomod)
-	}
-	return strings.TrimSuffix(gomod, "/go.mod"), nil
-}
-
-// DocPath returns the standard location of the inbound-listener inventory
-// relative to root.
-func DocPath(root string) string {
-	return root + "/docs/security/network-connections/README.md"
 }

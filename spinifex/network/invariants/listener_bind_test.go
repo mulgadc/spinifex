@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	networkconnections "github.com/mulgadc/spinifex/docs/security/network-connections"
 	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
 )
 
@@ -37,10 +38,9 @@ import (
 // it at review time.
 func TestListenerBindSitesMatchInventory(t *testing.T) {
 	root := repoRoot(t)
-	docPath := listenerinventory.DocPath(root)
-	table, err := listenerinventory.ParseFile(docPath)
+	table, err := listenerinventory.Parse(string(networkconnections.README()))
 	if err != nil {
-		t.Fatalf("parse %s: %v", relTo(docPath, root), err)
+		t.Fatalf("parse docs/security/network-connections/README.md: %v", err)
 	}
 
 	var bad []string
@@ -231,4 +231,32 @@ func checkBindSite(table *listenerinventory.Table, s bindSite, root string) stri
 			rel, s.line, s.port, s.raw, r.Scope)
 	}
 	return ""
+}
+
+// TestCheckBindSite_RejectsUndocumentedPort proves the invariant still has
+// teeth after switching its doc source to an embedded copy: a bind site on a
+// port absent from the inventory must still be rejected, not silently
+// waved through.
+func TestCheckBindSite_RejectsUndocumentedPort(t *testing.T) {
+	const doc = `# doc
+
+## 1. Inbound Listeners
+
+| Port | Service | Protocol | Scope | Purpose | Auth / Verification |
+|------|---------|----------|-------|---------|--------------------|
+| 9999 | gw | HTTPS | External | public API | TLS |
+`
+	table, err := listenerinventory.Parse(doc)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	site := bindSite{file: "fixture.sh", line: 7, port: 31337, wildcard: true, raw: "0.0.0.0:31337"}
+	msg := checkBindSite(table, site, "/repo")
+	if msg == "" {
+		t.Fatalf("checkBindSite let an undocumented port (31337) through with no violation")
+	}
+	if !strings.Contains(msg, "no row in") {
+		t.Fatalf("checkBindSite message for an undocumented port = %q, want it to say there is no inventory row", msg)
+	}
 }

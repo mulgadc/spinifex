@@ -80,6 +80,14 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 - **Guest** — bound to a per-instance interface and reachable only by that instance's VM.
 - **Localhost** — bound to `127.0.0.1`; not reachable off-node.
 
+The listener invariant tests (`spinifex/network/invariants` and the multinode e2e suite) read
+this table and fail any Cluster- or Encap-scope port found bound to the wildcard address,
+unless that row's Purpose or Auth text contains the exact phrase **"binds the wildcard by
+design"**. That phrase is load-bearing, not incidental wording — a row that merely mentions
+"wildcard" or "0.0.0.0", negated or not, grants no exception. Adding a new wildcard-bound
+Cluster/Encap listener means adding that literal phrase to its row, not just describing the
+behavior in other words.
+
 | Port | Service | Protocol | Scope | Purpose | Auth / Verification |
 |------|---------|----------|-------|---------|--------------------|
 | 9999 | spinifex-awsgw | HTTPS | External | AWS-compatible API (EC2, S3, ELBv2, IAM) — customer endpoint | AWS SigV4 + TLS (cluster CA) |
@@ -90,15 +98,15 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 | 4432 | Formation server | HTTPS | Cluster (bootstrap only) | Cluster join coordination; active only while a join token is valid. Binds the node's `--bind` (lan) address. See *Formation port lifecycle* below. | Short-lived bearer token + TLS¹ |
 | 4222 | spinifex-nats (client) | NATS + TLS | Cluster | Internal service bus for EC2/EBS/VPC/S3 handlers | Token + mutual TLS (cluster CA) |
 | 4248 | spinifex-nats (cluster) | NATS + TLS | Cluster | Inter-node NATS federation | Token + mutual TLS (cluster CA) |
-| 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard address. | None — restrict by firewall |
+| 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard by design. | None — restrict by firewall |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
 | 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6643 | OVN Northbound DB (RAFT) | OVSDB/TCP | Cluster | NB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
 | 6644 | OVN Southbound DB (RAFT) | OVSDB/TCP | Cluster | SB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
-| 6081 | OVN (Geneve) | UDP | Encap | Tenant traffic overlay between chassis. A kernel UDP-tunnel socket, so packets are delivered locally and traverse the host's netfilter input hook before OVS sees them — a host firewall must accept them explicitly. | None — see 500/4500 |
-| 500, 4500 | strongSwan `charon` | IKEv2 / UDP | Encap | IKE and NAT-T for the IPsec protecting Geneve, managed entirely by `ovs-monitor-ipsec`. Binds the wildcard address (upstream strongSwan default), so reach must be restricted by firewall. | Certificate-based, against the cluster CA |
+| 6081 | OVN (Geneve) | UDP | Encap | Tenant traffic overlay between chassis. A kernel UDP-tunnel socket, so packets are delivered locally and traverse the host's netfilter input hook before OVS sees them — a host firewall must accept them explicitly. The socket is opened by the kernel tunnel driver and takes no bind address, so it binds the wildcard by design and reach must be restricted by firewall. | None — see 500/4500 |
+| 500, 4500 | strongSwan `charon` | IKEv2 / UDP | Encap | IKE and NAT-T for the IPsec protecting Geneve, managed entirely by `ovs-monitor-ipsec`. Binds the wildcard by design (the upstream strongSwan default, accepted rather than overridden), so reach must be restricted by firewall. | Certificate-based, against the cluster CA |
 | — | ESP | IP proto 50 | Encap | The IPsec payload itself, once IKE has negotiated an SA | Cluster CA |
 | 8222 | spinifex-nats (monitoring) | HTTP | Localhost | `varz`/`subsz` metrics consumed by the daemon | Loopback only |
 | 323 | chronyd | NTP | Localhost | Time sync client control socket | Loopback only |

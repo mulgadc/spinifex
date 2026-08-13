@@ -558,8 +558,9 @@ jobs:
             ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/spinifex-key" -C "spinifex-ci"
           fi
 
-      # Boots the ISO, installs unattended, discovers the lease by MAC, runs the
-      # in-guest smoke test, and installs the key for the next step.
+      # Boots the ISO, installs unattended, reads the lease off the serial
+      # console, runs the in-guest smoke test, and installs the key for the
+      # next step.
       - name: Install and smoke test
         id: smoke
         working-directory: mulga/scripts/iso-builder
@@ -609,7 +610,11 @@ jobs:
         if: always()
         working-directory: mulga/scripts/iso-builder
         run: |
-          ./test/test-workload.sh --env /tmp/cell21.env --cleanup || true
+          # No env file means the workload step never ran, so there is nothing
+          # of its to clean up.
+          if [ -f /tmp/cell21.env ]; then
+            ./test/test-workload.sh --env /tmp/cell21.env --cleanup || true
+          fi
           sudo pkill -f spinifex-smoke-test || true
           rm -rf /tmp/cell21-artifacts-$GITHUB_RUN_ID /tmp/cell21.env \
                  /tmp/smoke-$GITHUB_RUN_ID.log

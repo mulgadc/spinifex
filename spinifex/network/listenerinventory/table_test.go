@@ -1,6 +1,10 @@
-package listenerinventory
+package listenerinventory_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
+)
 
 func TestParse_Synthetic(t *testing.T) {
 	const doc = `# doc
@@ -12,9 +16,10 @@ Some prose before the table.
 | Port | Service | Protocol | Scope | Purpose | Auth / Verification |
 |------|---------|----------|-------|---------|--------------------|
 | 9999 | gw | HTTPS | External | public API | TLS |
-| 5300 | ns | DNS | Cluster | Forward target. Binds the wildcard address. | none |
+| 5300 | ns | DNS | Cluster | Forward target. Binds the wildcard by design. | none |
 | 6641 | ovn-nb | OVSDB | Cluster | Binds 127.0.0.1 plus lan, never the wildcard address. | TLS |
-| 500, 4500 | charon | IKEv2 | Encap | Binds the wildcard address (upstream default). | cert |
+| 7777 | mystery | UDP | Cluster | Mentions the wildcard address here, unrelated to any exception. | none |
+| 500, 4500 | charon | IKEv2 | Encap | Binds the wildcard by design (upstream default). | cert |
 | — | ESP | IP proto 50 | Encap | payload | cert |
 | 169.254.169.254:80 | vpcd | HTTP | Guest | imds | tokens |
 | socket / dynamic TCP | nbdkit | NBD | Host-local / cluster | block transport | unix |
@@ -23,12 +28,12 @@ Some prose before the table.
 
 not a table row
 `
-	table, err := Parse(doc)
+	table, err := listenerinventory.Parse(doc)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(table.Rows) != 7 {
-		t.Fatalf("got %d rows, want 7", len(table.Rows))
+	if len(table.Rows) != 8 {
+		t.Fatalf("got %d rows, want 8", len(table.Rows))
 	}
 
 	if !table.KnownPort(9999) {
@@ -39,7 +44,7 @@ not a table row
 	}
 
 	for _, r := range table.RowsForPort(5300) {
-		if r.Scope != ScopeCluster {
+		if r.Scope != listenerinventory.ScopeCluster {
 			t.Fatalf("5300 scope = %v, want Cluster", r.Scope)
 		}
 		if !r.WildcardOK() {
@@ -47,9 +52,19 @@ not a table row
 		}
 	}
 
+	// 6641's mention is negated ("never the wildcard") and 7777's is plain
+	// prose with no negation at all — both must resolve to no exception, for
+	// the same structural reason: neither row contains the exact marker
+	// phrase. Fail-closed means a bare mention never grants an exception on
+	// its own, negated or not.
 	for _, r := range table.RowsForPort(6641) {
 		if r.WildcardOK() {
-			t.Fatalf("6641 says \"never the wildcard\"; should not read as an exception")
+			t.Fatalf("6641 says \"never the wildcard\" and has no marker phrase; should not read as an exception")
+		}
+	}
+	for _, r := range table.RowsForPort(7777) {
+		if r.WildcardOK() {
+			t.Fatalf("7777 mentions \"wildcard\" with no marker phrase and no negation; should still not read as an exception")
 		}
 	}
 
@@ -57,7 +72,7 @@ not a table row
 		found := false
 		for _, r := range table.RowsForPort(port) {
 			found = true
-			if r.Scope != ScopeEncap {
+			if r.Scope != listenerinventory.ScopeEncap {
 				t.Fatalf("%d scope = %v, want Encap", port, r.Scope)
 			}
 			if !r.WildcardOK() {
@@ -84,7 +99,7 @@ not a table row
 	}
 
 	imds := table.RowsForPort(80)
-	if len(imds) != 1 || imds[0].Addr != "169.254.169.254" || imds[0].Scope != ScopeGuest {
+	if len(imds) != 1 || imds[0].Addr != "169.254.169.254" || imds[0].Scope != listenerinventory.ScopeGuest {
 		t.Fatalf("imds row parsed as %+v", imds)
 	}
 
@@ -106,18 +121,18 @@ func TestIsWildcardAddr(t *testing.T) {
 		"127.0.0.1": false,
 	}
 	for addr, want := range cases {
-		if got := IsWildcardAddr(addr); got != want {
+		if got := listenerinventory.IsWildcardAddr(addr); got != want {
 			t.Errorf("IsWildcardAddr(%q) = %v, want %v", addr, got, want)
 		}
 	}
 }
 
 func TestParse_RealDoc(t *testing.T) {
-	root, err := RepoRoot()
+	root, err := listenerinventory.RepoRoot()
 	if err != nil {
 		t.Fatalf("RepoRoot: %v", err)
 	}
-	table, err := ParseFile(DocPath(root))
+	table, err := listenerinventory.ParseFile(listenerinventory.DocPath(root))
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -125,10 +140,10 @@ func TestParse_RealDoc(t *testing.T) {
 		t.Fatalf("got %d rows from the real inventory, expected considerably more", len(table.Rows))
 	}
 
-	wantWildcardOK := map[int]Scope{
-		5300: ScopeCluster,
-		500:  ScopeEncap,
-		4500: ScopeEncap,
+	wantWildcardOK := map[int]listenerinventory.Scope{
+		5300: listenerinventory.ScopeCluster,
+		500:  listenerinventory.ScopeEncap,
+		4500: listenerinventory.ScopeEncap,
 	}
 	for port, scope := range wantWildcardOK {
 		rows := table.RowsForPort(port)
@@ -149,11 +164,13 @@ func TestParse_RealDoc(t *testing.T) {
 		}
 	}
 
+	// 6641/6642 say "never the wildcard address" — read as no exception
+	// because the marker phrase is absent, not because "never" was spotted.
 	wantNoException := []int{6641, 6642}
 	for _, port := range wantNoException {
 		for _, r := range table.RowsForPort(port) {
-			if r.Scope == ScopeCluster && r.WildcardOK() {
-				t.Errorf("port %d should NOT declare a wildcard exception (its row says \"never\")", port)
+			if r.Scope == listenerinventory.ScopeCluster && r.WildcardOK() {
+				t.Errorf("port %d should NOT declare a wildcard exception (no marker phrase present)", port)
 			}
 		}
 	}

@@ -52,34 +52,24 @@ type Row struct {
 	Auth     string
 }
 
-// WildcardOK reports whether this row's own Purpose/Auth prose declares that
-// the listener binds the wildcard address by design — the doc-declared
-// exception a bind-site or runtime check must honor rather than a
-// hardcoded port list. It looks for an unnegated "wildcard" or "0.0.0.0"
-// mention: text like "never the wildcard address" does not count.
-func (r Row) WildcardOK() bool {
-	return declaresWildcard(r.Purpose) || declaresWildcard(r.Auth)
-}
+// wildcardExceptionMarker is the exact phrase a row's Purpose or Auth column
+// must contain to declare a wildcard-bind exception. This check is
+// deliberately fail-closed: no other wording counts, including a mention of
+// "wildcard" or "0.0.0.0" with no marker, and including a negated mention
+// like "never the wildcard address". Both resolve to no exception, for the
+// same reason — the marker is absent — rather than one relying on the
+// absence of a negation word an author didn't think to use.
+const wildcardExceptionMarker = "binds the wildcard by design"
 
-func declaresWildcard(text string) bool {
-	lower := strings.ToLower(text)
-	for _, kw := range []string{"wildcard", "0.0.0.0"} {
-		searchFrom := 0
-		for {
-			i := strings.Index(lower[searchFrom:], kw)
-			if i < 0 {
-				break
-			}
-			pos := searchFrom + i
-			start := max(pos-40, 0)
-			window := lower[start:pos]
-			if !strings.Contains(window, "not") && !strings.Contains(window, "never") {
-				return true
-			}
-			searchFrom = pos + len(kw)
-		}
-	}
-	return false
+// WildcardOK reports whether this row's own Purpose/Auth prose declares,
+// via the exact marker above, that the listener binds the wildcard address
+// by design. This is the doc-declared exception a bind-site or runtime
+// check must honor rather than a hardcoded port list. The comparison folds
+// case only — sentence-initial "Binds the wildcard by design." still
+// counts — nothing else about the marker is fuzzy.
+func (r Row) WildcardOK() bool {
+	return strings.Contains(strings.ToLower(r.Purpose), wildcardExceptionMarker) ||
+		strings.Contains(strings.ToLower(r.Auth), wildcardExceptionMarker)
 }
 
 // Table is the parsed inbound-listeners inventory.

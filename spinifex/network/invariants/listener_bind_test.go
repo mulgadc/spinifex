@@ -1,5 +1,11 @@
 package invariants
 
+//test:in-package — this file shares repoRoot, relTo and itoa with the rest
+// of this package's test files (layers_test.go), all of which are
+// unexported by design so an external caller cannot depend on them. Every
+// other file here is in-package for the same reason; splitting this one
+// file out would mean duplicating those helpers rather than reusing them.
+
 import (
 	"bufio"
 	"fmt"

@@ -338,6 +338,9 @@ if run_ok "initialize"; then
         && pass "initialize: delivered port applied" || fail "initialize: port not applied"
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "initialize: ssl enabled" || fail "initialize: ssl not enabled"
+    grep -q "^ssl_min_protocol_version = 'TLSv1.3'$" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && pass "initialize: the TLS floor is pinned at 1.3" \
+        || fail "initialize: no TLS floor, so the server accepts 1.0 through 1.2"
     grep -q 'shared_buffers = 128MB' "${PGDATA}/conf.d/10-rds-parameters.conf" \
         && pass "initialize: resolved parameters installed" || fail "initialize: no parameter include"
     grep -q 'ALTER ROLE :"master" WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD' "${PSQL_CALLS}" \
@@ -864,6 +867,11 @@ if run_ok "no-cert"; then
         && pass "no-cert: ssl off" || fail "no-cert: ssl not off"
     grep -q 'ssl_cert_file' "${PGDATA}/conf.d/90-rds-init.conf" \
         && fail "no-cert: points at a cert that was never delivered" || pass "no-cert: no cert paths"
+    # The floor is not conditional on this boot's cert: nothing re-runs rds-init
+    # before the next reload, so a boot that skipped it would serve without one.
+    grep -q "^ssl_min_protocol_version = 'TLSv1.3'$" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && pass "no-cert: the TLS floor is pinned anyway" \
+        || fail "no-cert: the floor was skipped along with the cert paths"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
 fi

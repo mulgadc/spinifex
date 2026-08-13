@@ -473,7 +473,7 @@ install_tls() {
 
 # The 90- prefix sorts last within the include directory and MariaDB takes the
 # last occurrence of a setting, so a resolved parameter can never move the
-# endpoint's port, redirect the datadir or turn off TLS.
+# endpoint's port, redirect the datadir, turn off TLS or lower the protocol floor.
 #
 # innodb_buffer_pool_chunk_size and innodb_buffer_pool_instances are deliberately
 # absent although they are platform-owned: 11.8 removed the second outright, so
@@ -512,6 +512,11 @@ skip-symbolic-links
 # that refuses to start says why somewhere nothing collects. The bootstrap server
 # already logs to this directory, which keeps both halves of a boot in one place.
 log_error = ${ENGINE_LOG}
+
+# The protocol floor, pinned here rather than left to the parameter group. It is
+# unconditional because it costs nothing when no certificate was delivered, and
+# tls_version is read only at startup.
+tls_version = TLSv1.3
 EOF
     if [ "${_ssl}" = "on" ]; then
         # Offered, not enforced, matching the PostgreSQL image's pg_hba: clients

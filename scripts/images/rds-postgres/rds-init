@@ -376,7 +376,12 @@ EOF
 }
 
 # The 90- prefix sorts last within include_dir and the last setting wins, so a
-# resolved parameter can never move the endpoint's port or turn off TLS.
+# resolved parameter can never move the endpoint's port, turn off TLS or lower
+# the protocol floor.
+#
+# The floor is written whether or not a cert was delivered: it costs nothing with
+# ssl off, and making it conditional would mean a boot without a cert leaves the
+# next reload — which does not re-run rds-init — with no floor at all.
 write_rds_conf() {
     _ssl="$1"
     _tmp="${PGDATA}/conf.d/.90-rds-init.conf.new"
@@ -387,6 +392,7 @@ listen_addresses = '*'
 port = ${RDS_PORT}
 unix_socket_directories = '${SOCKET_DIR}'
 ssl = ${_ssl}
+ssl_min_protocol_version = 'TLSv1.3'
 EOF
     if [ "${_ssl}" = "on" ]; then
         cat >> "${_tmp}" <<EOF

@@ -35,7 +35,11 @@ var enginePostgres = Engine{
 
 // The curated PostgreSQL 18 table: a validated subset of the engine's ~350 GUCs,
 // because a static parameter the engine refuses at startup is a boot loop with
-// the bad config already on the data volume. Platform-owned settings are absent.
+// the bad config already on the data volume.
+//
+// Platform-owned settings are absent, except the ones AWS exposes as modifiable
+// and this platform pins: those are present and unmodifiable, so a refusal reads
+// as policy rather than as a missing feature.
 var postgresParameterCatalog = buildParameterCatalog(
 	// Connections. max_connections is what a size-derived default matters most
 	// for: RDS's own formula is LEAST({DBInstanceClassMemory/9531392}, 5000).
@@ -333,6 +337,19 @@ var postgresParameterCatalog = buildParameterCatalog(
 		Name: "track_io_timing", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Default: "on",
 		Description: "Whether block read and write times are collected.",
+	},
+
+	// TLS. The floor is pinned rather than offered: 1.3 is the version every
+	// platform-internal boundary already requires, and a client too old for it
+	// could not have reached the API that created the instance.
+	//
+	// The certificate and key paths stay absent instead, because they name files
+	// rds-init mints and installs — a customer setting them is not a stricter
+	// policy but a broken endpoint.
+	ParameterSpec{
+		Name: "ssl_min_protocol_version", DataType: ParamTypeString, ApplyType: ApplyTypeDynamic,
+		IsModifiable: false, Default: "TLSv1.3",
+		Description: "Minimum TLS protocol version the server accepts from a client.",
 	},
 )
 

@@ -31,10 +31,11 @@ func TestParameterCatalog_DefaultsSatisfyTheirOwnConstraintsAtEveryClass(t *test
 
 					value := spec.DefaultAt(memoryMiB)
 					assert.NotEmpty(t, value, "%s has an empty default at %s", name, class)
-					// Validated by the same function a customer's value goes through, so
-					// a default cannot be something the API would reject.
-					_, err := engine.validateParameterValue(name, value)
-					assert.NoError(t, err, "the default %q of %s is not a value %s accepts", value, name, class)
+					// The same checks a customer's value goes through, minus the
+					// modifiability gate a pinned entry would stop at: its default still
+					// has to be a literal the engine parses.
+					assert.NoError(t, spec.validateValue(value),
+						"the default %q of %s is not a value %s accepts", value, name, class)
 				}
 
 				// The defaults also have to satisfy the engine's combination checks,
@@ -171,6 +172,115 @@ func TestValidateParameterValue_AcceptsEveryPostgresSpellingOfABoolean(t *testin
 	for _, value := range []string{"on", "OFF", "true", "False", "yes", "no", "1", "0"} {
 		_, err := enginePostgres.validateParameterValue("autovacuum", value)
 		assert.NoError(t, err, "autovacuum rejected %q, which the engine accepts", value)
+	}
+}
+
+// The value one name carries in a resolved set, exactly as the guest is handed
+// it: resolvedValues lowercases, which the combination checks want and an
+// assertion about what is written into an option file does not.
+func resolvedParameter(t *testing.T, resolved []Parameter, name string) string {
+	t.Helper()
+	for _, param := range resolved {
+		if param.Name == name {
+			return param.Value
+		}
+	}
+	t.Fatalf("the resolved set carries no %s", name)
+	return ""
+}
+
+// Every spelling the API accepts is canonicalised before it leaves the control
+// plane, so the guest has one literal to compare rather than a vocabulary that
+// differs between the two engines.
+func TestResolveEffectiveParameters_CanonicalisesEveryBooleanSpelling(t *testing.T) {
+	tests := []struct {
+		engine    Engine
+		name      string
+		spellings map[string]string
+	}{
+		{
+			engine: enginePostgres, name: "autovacuum",
+			spellings: map[string]string{
+				"on": "1", "ON": "1", "true": "1", "True": "1", "yes": "1", "1": "1",
+				"off": "0", "OFF": "0", "false": "0", "False": "0", "no": "0", "0": "0",
+			},
+		},
+		// MariaDB's catalog narrows the vocabulary to the six mysqld parses, so the
+		// canonicalisation has to hold over that set rather than PostgreSQL's eight.
+		{
+			engine: engineMariaDB, name: "autocommit",
+			spellings: map[string]string{
+				"on": "1", "ON": "1", "true": "1", "1": "1",
+				"off": "0", "OFF": "0", "false": "0", "0": "0",
+			},
+		},
+	}
+	for _, tc := range tests {
+		for spelling, want := range tc.spellings {
+			t.Run(tc.engine.Name+"/"+spelling, func(t *testing.T) {
+				resolved, err := tc.engine.ResolveEffectiveParameters(SmallestInstanceClass(),
+					map[string]string{tc.name: spelling})
+				require.NoError(t, err)
+				assert.Equal(t, want, resolvedParameter(t, resolved, tc.name))
+			})
+		}
+	}
+}
+
+// The catalog's own defaults go through it too, so no boolean reaches an option
+// file in whichever spelling the catalog entry happens to be written in.
+func TestResolveEffectiveParameters_CanonicalisesTheDefaultsToo(t *testing.T) {
+	for _, engine := range catalogEngines {
+		t.Run(engine.Name, func(t *testing.T) {
+			resolved, err := engine.ResolveEffectiveParameters(SmallestInstanceClass(), nil)
+			require.NoError(t, err)
+
+			booleans := 0
+			for _, param := range resolved {
+				spec, ok := engine.LookupParameter(param.Name)
+				require.True(t, ok)
+				if spec.DataType != ParamTypeBoolean {
+					continue
+				}
+				booleans++
+				assert.Contains(t, []string{"1", "0"}, param.Value,
+					"%s reaches the guest as %q", param.Name, param.Value)
+			}
+			assert.NotZero(t, booleans, "no boolean in the set, so this asserts nothing")
+		})
+	}
+}
+
+// The catalog's first present-and-unmodifiable entries. AWS exposes both as
+// modifiable, so being absent would read as a platform gap where a refusal
+// naming the parameter reads as policy.
+func TestParameterCatalog_TLSFloorIsPinnedAndNotModifiable(t *testing.T) {
+	tests := []struct {
+		engine Engine
+		name   string
+	}{
+		{enginePostgres, "ssl_min_protocol_version"},
+		{engineMariaDB, "tls_version"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.engine.Name, func(t *testing.T) {
+			spec, ok := tc.engine.LookupParameter(tc.name)
+			require.True(t, ok, "%s exposes no %s", tc.engine.Name, tc.name)
+			assert.Equal(t, "TLSv1.3", spec.Default)
+			assert.False(t, spec.IsModifiable)
+
+			_, err := tc.engine.validateParameterValue(tc.name, "TLSv1.2")
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
+			assert.Contains(t, err.Error(), "parameter "+tc.name+" is not modifiable")
+
+			// Pinned in the catalog and inert unless it is also in the set the guest
+			// installs, which is the half a customer's group cannot reach.
+			resolved, err := tc.engine.ResolveEffectiveParameters(SmallestInstanceClass(), nil)
+			require.NoError(t, err)
+			assert.Equal(t, "TLSv1.3", resolvedParameter(t, resolved, tc.name))
+		})
 	}
 }
 

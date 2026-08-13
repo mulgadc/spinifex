@@ -41,7 +41,11 @@ var engineMariaDB = Engine{
 
 // The curated MariaDB 11.8 table: a validated subset, because a static parameter
 // the server refuses at startup is a boot loop with the bad config already on
-// the data volume. Platform-owned settings are absent, not unmodifiable.
+// the data volume.
+//
+// Platform-owned settings are absent, except the ones AWS exposes as modifiable
+// and this platform pins: those are present and unmodifiable, so a refusal reads
+// as policy rather than as a missing feature.
 var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 	// Connections and threads. max_connections is what a size-derived default
 	// matters most for: RDS's own formula is {DBInstanceClassMemory/12582880}.
@@ -352,6 +356,15 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 		Name: "event_scheduler", DataType: ParamTypeEnum, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Enum: []string{"on", "off"}, Default: "off",
 		Description: "Whether the scheduled event executor thread runs.",
+	},
+
+	// TLS. Pinned to the same floor as the PostgreSQL engine and static because
+	// mariadbd reads tls_version only at startup. ssl_cert and ssl_key stay absent:
+	// they name files rds-init mints, so a customer setting them breaks the endpoint.
+	ParameterSpec{
+		Name: "tls_version", DataType: ParamTypeString, ApplyType: ApplyTypeStatic,
+		IsModifiable: false, Default: "TLSv1.3",
+		Description: "TLS protocol versions the server accepts, as a comma-separated list.",
 	},
 ))
 

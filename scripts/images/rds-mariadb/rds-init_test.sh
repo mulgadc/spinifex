@@ -495,6 +495,9 @@ if run_ok "initialize"; then
         || fail "initialize: log_error unset, so a failed start goes to syslog"
     grep -q "^ssl_cert = " "${PLATFORM_FILE}" && grep -q "^ssl_key = " "${PLATFORM_FILE}" \
         && pass "initialize: TLS offered" || fail "initialize: TLS not configured"
+    grep -q "^tls_version = TLSv1.3$" "${PLATFORM_FILE}" \
+        && pass "initialize: the TLS floor is pinned at 1.3" \
+        || fail "initialize: no TLS floor, so the server accepts 1.0 through 1.2"
     grep -q "require_secure_transport" "${PLATFORM_FILE}" \
         && fail "initialize: TLS enforced before the enforcement phase" \
         || pass "initialize: TLS offered rather than enforced"
@@ -935,6 +938,11 @@ write_handoff initialize 's3cr3t' ''
 if run_ok "no-cert"; then
     grep -q '^ssl_cert' "${PLATFORM_FILE}" \
         && fail "no-cert: points at a cert that was never delivered" || pass "no-cert: no cert paths"
+    # The floor is not conditional on this boot's cert: mariadbd reads tls_version
+    # at startup only, so a boot that skipped it serves the whole boot without one.
+    grep -q "^tls_version = TLSv1.3$" "${PLATFORM_FILE}" \
+        && pass "no-cert: the TLS floor is pinned anyway" \
+        || fail "no-cert: the floor was skipped along with the cert paths"
     grep -q '^CALL `_spinifex_rds`.`create_database`' "${CLIENT_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
 fi

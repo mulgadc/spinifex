@@ -55,8 +55,9 @@ type ParameterSpec struct {
 	DataType    string
 	ApplyType   string
 	Description string
-	// False for the handful of settings the platform owns — changing them would
-	// break the endpoint, the agent's socket access or the serving certificate.
+	// False for a setting AWS exposes but this platform pins, so the refusal names
+	// it and reads as policy. One AWS owns too is absent from the catalog instead,
+	// which reads as the engine not offering it.
 	IsModifiable bool
 
 	Default string
@@ -176,6 +177,24 @@ func (s ParameterSpec) booleanSpellings() []string {
 	return defaultBooleanSpellings
 }
 
+// The one spelling a boolean reaches the guest as. Both engines parse 1 and 0,
+// only PostgreSQL parses all eight the API accepts, and a guest deriving
+// behaviour from a value has one literal to compare rather than a vocabulary.
+//
+// The set is closed: an override reaches this only after it was validated
+// against the engine's own spellings, so anything else is a catalog default the
+// engine would not have parsed either.
+func canonicalBoolean(name, value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "yes", "1":
+		return "1", nil
+	case "off", "false", "no", "0":
+		return "0", nil
+	}
+	return "", awserrors.Errorf(awserrors.ErrorServerInternal,
+		"the catalog default %q of parameter %s is not a boolean", value, name)
+}
+
 // Integral bounds print without a decimal point, so an integer parameter's range
 // does not read as a real one's.
 func formatBound(v float64) string {
@@ -229,53 +248,61 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s is not modifiable", spec.Name)
 	}
-	if err := rejectFormulaValue(spec.Name, value); err != nil {
+	if err := spec.validateValue(value); err != nil {
 		return ParameterSpec{}, err
+	}
+	return spec, nil
+}
+
+// The type, range and engine-specific checks for one value, without the
+// modifiability gate. A pinned entry's own default goes through these too: it is
+// still a literal the engine has to parse.
+func (s ParameterSpec) validateValue(value string) error {
+	if err := rejectFormulaValue(s.Name, value); err != nil {
+		return err
 	}
 
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"parameter %s was given an empty value", spec.Name)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s was given an empty value", s.Name)
 	}
-	switch spec.DataType {
+	switch s.DataType {
 	case ParamTypeInteger:
 		n, err := strconv.ParseInt(trimmed, 10, 64)
 		if err != nil {
-			return ParameterSpec{}, typeError(spec, value, "an integer")
+			return typeError(s, value, "an integer")
 		}
-		if float64(n) < spec.Min || float64(n) > spec.Max {
-			return ParameterSpec{}, rangeError(spec, value)
+		if float64(n) < s.Min || float64(n) > s.Max {
+			return rangeError(s, value)
 		}
 	case ParamTypeReal:
 		f, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
-			return ParameterSpec{}, typeError(spec, value, "a number")
+			return typeError(s, value, "a number")
 		}
-		if f < spec.Min || f > spec.Max {
-			return ParameterSpec{}, rangeError(spec, value)
+		if f < s.Min || f > s.Max {
+			return rangeError(s, value)
 		}
 	case ParamTypeBoolean:
-		if !slices.Contains(spec.booleanSpellings(), strings.ToLower(trimmed)) {
-			return ParameterSpec{}, typeError(spec, value,
-				"a boolean ("+strings.Join(spec.booleanSpellings(), ", ")+")")
+		if !slices.Contains(s.booleanSpellings(), strings.ToLower(trimmed)) {
+			return typeError(s, value,
+				"a boolean ("+strings.Join(s.booleanSpellings(), ", ")+")")
 		}
 	case ParamTypeEnum:
-		if !slices.Contains(spec.Enum, strings.ToLower(trimmed)) {
-			return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
+		if !slices.Contains(s.Enum, strings.ToLower(trimmed)) {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"parameter %s does not accept %q; allowed values are %s", s.Name, value, strings.Join(s.Enum, ", "))
 		}
 	case ParamTypeString:
-		if err := validateStringParameter(spec, trimmed); err != nil {
-			return ParameterSpec{}, err
+		if err := validateStringParameter(s, trimmed); err != nil {
+			return err
 		}
 	}
-	if spec.Validate != nil {
-		if err := spec.Validate(trimmed); err != nil {
-			return ParameterSpec{}, err
-		}
+	if s.Validate != nil {
+		return s.Validate(trimmed)
 	}
-	return spec, nil
+	return nil
 }
 
 const maxStringParameterBytes = 1024
@@ -311,7 +338,7 @@ func rangeError(spec ParameterSpec, value string) error {
 // The full parameter set an instance runs with: every catalog default evaluated
 // at the instance's class, overlaid with the group's stored overrides. The
 // result is literals only, sorted by name so a re-resolve that changed nothing
-// produces a byte-identical include.
+// produces a byte-identical include, and every boolean canonicalised.
 //
 // Overrides are re-validated rather than trusted: a catalog whose bounds
 // tightened must not keep handing the engine a value it would now reject.
@@ -337,6 +364,13 @@ func (e Engine) ResolveEffectiveParameters(instanceClass string, overrides map[s
 				return nil, err
 			}
 			value = override
+		}
+		if spec.DataType == ParamTypeBoolean {
+			canonical, err := canonicalBoolean(name, value)
+			if err != nil {
+				return nil, err
+			}
+			value = canonical
 		}
 		resolved = append(resolved, Parameter{Name: name, Value: value})
 	}

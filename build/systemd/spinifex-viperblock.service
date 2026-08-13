@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex Viperblock (Block Storage)
 PartOf=spinifex.target
@@ -51,7 +51,8 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectProc=invisible
+# ProtectProc must stay default: hidepid=invisible hides spinifex-daemon's
+# QEMU /proc entries (different uid) orphan nbdkit reaping must see.
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK

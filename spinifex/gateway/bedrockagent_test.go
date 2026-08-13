@@ -8,6 +8,9 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +224,39 @@ func TestCreateKnowledgeBase_MissingDimensionsIsValidationException(t *testing.T
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
+// TestCreateKnowledgeBase_RollbackFailureIsLoggedNotSwallowed proves that
+// when kb.Create fails (forcing the just-created index's rollback delete)
+// and that rollback delete itself also fails, the caller still sees kb.Create's
+// own error unchanged -- not the rollback's -- while the rollback failure is
+// logged at Error level with the orphaned index id, so an orphan stays
+// observable instead of vanishing silently.
+func TestCreateKnowledgeBase_RollbackFailureIsLoggedNotSwallowed(t *testing.T) {
+	var buf strings.Builder
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.DiscardHandler)) })
+
+	// A KBStore with no JetStream client makes kb.Create fail deterministically
+	// (independent of the randomly generated knowledge base id), so the
+	// rollback path is reached without needing to force a real id collision.
+	kb := handlers_ochrevector.NewKBStore(nil)
+	vector := &fakeBedrockAgentVectorService{deleteIndexErr: errors.New("rollback backend unavailable")}
+
+	_, err := CreateKnowledgeBase(context.Background(), bedrockAgentTestAccount, "us-east-1", kb, vector, validCreateKBInput())
+	require.Error(t, err)
+	// The caller-visible error is kb.Create's own failure, not the rollback's.
+	assert.Contains(t, err.Error(), "knowledge base store has no JetStream client configured")
+	assert.NotContains(t, err.Error(), "rollback backend unavailable")
+
+	require.Len(t, vector.deletedIndexIDs, 1, "rollback delete must still be attempted")
+	orphanedIndexID := vector.deletedIndexIDs[0]
+
+	logOutput := buf.String()
+	assert.Contains(t, logOutput, "level=ERROR")
+	assert.Contains(t, logOutput, "orphaned index")
+	assert.Contains(t, logOutput, orphanedIndexID)
+	assert.Contains(t, logOutput, "rollback backend unavailable")
+}
+
 func TestDeleteKnowledgeBase_CascadesDataSourcesAndDeletesBoundIndex(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
@@ -250,6 +286,45 @@ func TestDeleteKnowledgeBase_UnknownIDReturnsNotFound(t *testing.T) {
 	_, err := DeleteKnowledgeBase(context.Background(), bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("does-not-exist")})
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+}
+
+// TestDeleteKnowledgeBase_TreatsMissingIndexAsAlreadyDeleted proves a bound
+// index that is already gone (ErrIndexNotFound) does not abort the delete
+// before KBStore.Delete runs: a KB record must never be left dangling,
+// pointing at an index that no longer exists, just because that index
+// happened to be deleted (or never provisioned) out from under it. Delete is
+// idempotent w.r.t. a missing index, mirroring KBStore.Delete's own
+// idempotent contract.
+func TestDeleteKnowledgeBase_TreatsMissingIndexAsAlreadyDeleted(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-gone", Status: handlers_ochrevector.StateReady}))
+
+	vector := &fakeBedrockAgentVectorService{deleteIndexErr: handlers_ochrevector.ErrIndexNotFound}
+	_, err := DeleteKnowledgeBase(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("kb-1")})
+	require.NoError(t, err)
+
+	got, err := kb.Get(ctx, bedrockAgentTestAccount, "kb-1")
+	require.NoError(t, err)
+	assert.Nil(t, got, "the KB record must not dangle once its bound index is confirmed gone")
+}
+
+// TestDeleteKnowledgeBase_GenuineIndexDeleteErrorStillAborts proves the
+// ErrIndexNotFound tolerance above is narrow: any other DeleteIndex failure
+// must still abort before KBStore.Delete runs, so the KB record survives to
+// be retried.
+func TestDeleteKnowledgeBase_GenuineIndexDeleteErrorStillAborts(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady}))
+
+	vector := &fakeBedrockAgentVectorService{deleteIndexErr: errors.New("backend unavailable")}
+	_, err := DeleteKnowledgeBase(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("kb-1")})
+	require.Error(t, err)
+
+	got, err := kb.Get(ctx, bedrockAgentTestAccount, "kb-1")
+	require.NoError(t, err)
+	assert.NotNil(t, got, "a genuine index-delete failure must leave the KB record in place for retry")
 }
 
 func createDataSourceInput(chunking *bedrockagent.VectorIngestionConfiguration) *bedrockagent.CreateDataSourceInput {
@@ -369,15 +444,57 @@ func TestGetIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
 	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
+		ID: "ds-1", KnowledgeBaseID: "kb-1",
+		Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
+	}))
 
 	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other"},
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"}},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
 	})
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+}
+
+// TestGetIngestionJob_RejectsWrongDataSource proves a job addressed through
+// the wrong dataSourceId path segment is rejected even when its IndexID
+// matches the knowledge base: a job that really belongs to one data source
+// must not be readable by guessing a second, unrelated data source's id
+// under the same KB. Regression test for the ownership check ListIngestionJobs
+// already had but GetIngestionJob was missing.
+func TestGetIngestionJob_RejectsWrongDataSource(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
+		ID: "ds-a", KnowledgeBaseID: "kb-1",
+		Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-a", Prefix: "a/"},
+	}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
+		ID: "ds-b", KnowledgeBaseID: "kb-1",
+		Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-b", Prefix: "b/"},
+	}))
+
+	// job-1 really belongs to ds-a (matching Bucket+Prefix), but the request
+	// below addresses it through ds-b's path.
+	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-a", Prefix: "a/"}},
+	}}
+	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-b"), IngestionJobId: aws.String("job-1"),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+
+	// Addressed through its real data source, the same job resolves fine.
+	out, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-a"), IngestionJobId: aws.String("job-1"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "job-1", aws.StringValue(out.IngestionJob.IngestionJobId))
 }
 
 func TestListIngestionJobs_FiltersToBoundIndexAndDataSourceSourceSpec(t *testing.T) {

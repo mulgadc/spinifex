@@ -401,8 +401,13 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 		UpdatedAt:         now,
 	}
 	if err := kb.Create(ctx, accountID, rec); err != nil {
+		// The KB claim failed, but the index it would have bound to already
+		// exists: kb.Create's error is still the operation result returned
+		// below, so a rollback failure here must not be swallowed -- log it
+		// at Error with the orphaned index id so it stays observable even
+		// though the caller never sees it.
 		if _, delErr := vector.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: id}, accountID); delErr != nil {
-			slog.WarnContext(ctx, "bedrock-agent: rollback delete index after knowledge base claim failure", "index", id, "err", delErr)
+			slog.ErrorContext(ctx, "bedrock-agent: rollback delete index after knowledge base claim failure left an orphaned index", "index", id, "err", delErr)
 		}
 		if errors.Is(err, handlers_ochrevector.ErrKBExists) {
 			return nil, errors.New(awserrors.ErrorConflictException)
@@ -496,7 +501,12 @@ func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *handlers_och
 		}
 	}
 
-	if _, err := vector.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: rec.IndexID}, accountID); err != nil {
+	// A missing bound index is treated as already deleted, not a failure:
+	// the KB record must not be left dangling with no way to retry the
+	// delete just because its index is already gone (Delete is idempotent
+	// w.r.t. the index). Any other error still aborts before the record
+	// itself is removed.
+	if _, err := vector.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: rec.IndexID}, accountID); err != nil && !errors.Is(err, handlers_ochrevector.ErrIndexNotFound) {
 		return nil, translateVectorErr(err)
 	}
 	if err := kb.Delete(ctx, accountID, id); err != nil {
@@ -758,9 +768,16 @@ func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochre
 }
 
 // GetIngestionJob resolves jobId via VectorService.DescribeJob, then verifies
-// it belongs to the addressed knowledge base (its IndexID matches the KB's
-// bound index) before returning it, so a foreign/mismatched knowledgeBaseId
-// in the path cannot be used to read another KB's job by guessing its id.
+// it belongs to both the addressed knowledge base (its IndexID matches the
+// KB's bound index) and the addressed data source (its Source matches the
+// data source's own Source, see sourceSpecMatchesDataSource) before
+// returning it, so a foreign/mismatched knowledgeBaseId or dataSourceId in
+// the path cannot be used to read another KB/data source's job by guessing
+// its id. The data-source check is the same Bucket+Prefix best-effort match
+// ListIngestionJobs uses -- JobRecord carries no DataSourceID (see
+// sourceSpecMatchesDataSource) -- so a real DataSourceID on JobRecord would
+// close this exactly, but that crosses into the .9 ingest path and is left
+// as a follow-up.
 func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.GetIngestionJobInput) (*bedrockagent.GetIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" || aws.StringValue(input.IngestionJobId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -777,11 +794,19 @@ func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochreve
 		return nil, errKBNotFound(kbID)
 	}
 
+	dsRec, err := ds.Get(ctx, accountID, dsID)
+	if err != nil {
+		return nil, err
+	}
+	if dsRec == nil || dsRec.KnowledgeBaseID != kbID {
+		return nil, errDataSourceNotFound(dsID)
+	}
+
 	resp, err := vector.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
-	if resp.Job.IndexID != kbRec.IndexID {
+	if resp.Job.IndexID != kbRec.IndexID || !sourceSpecMatchesDataSource(resp.Job.Source, dsRec.Source) {
 		return nil, errIngestionJobNotFound(jobID)
 	}
 

@@ -28,6 +28,7 @@ import (
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -162,6 +163,19 @@ type GatewayConfig struct {
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
 	BedrockGuardrails *gateway_bedrock.GuardrailStore
+	// BedrockAgentKB and BedrockAgentDataSources persist bedrock-agent
+	// knowledge-base and data-source resource metadata (D-arch: gateway-owned,
+	// not the daemon-owned vector engine). Nil for either fails
+	// BedrockAgent_Request with ServerInternal rather than panicking, the same
+	// as an unconfigured gw.NATSConn does for every other service.
+	BedrockAgentKB          *handlers_ochrevector.KBStore
+	BedrockAgentDataSources *handlers_ochrevector.DataSourceStore
+	// BedrockAgentVector forwards CreateIndex/DeleteIndex/Ingest/DescribeJob/
+	// ListJobs calls to .9's daemon-side VectorService over NATS
+	// (handlers_ochrevector.NewNATSVectorService). It is the interface, not
+	// the concrete client, so a test can inject a fake without a live NATS
+	// connection.
+	BedrockAgentVector handlers_ochrevector.VectorService
 }
 
 var supportedServices = map[string]bool{
@@ -178,6 +192,7 @@ var supportedServices = map[string]bool{
 	"spinifex":             true,
 	"bedrock":              true,
 	"bedrock-runtime":      true,
+	"bedrock-agent":        true,
 }
 
 // EC2ErrorResponse is the EC2 query-API error envelope.
@@ -402,6 +417,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.Bedrock_Request(w, r)
 	case "bedrock-runtime":
 		err = gw.BedrockRuntime_Request(w, r)
+	case "bedrock-agent":
+		err = gw.BedrockAgent_Request(w, r)
 	case "ecs":
 		err = gw.ECS_Request(w, r)
 	case "ecr":
@@ -616,9 +633,9 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime use AWS JSON 1.1;
-	// query/XML services fall through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" {
+	// EKS, ECR, ACM, ECS, tagging, and bedrock/bedrock-runtime/bedrock-agent use
+	// AWS JSON 1.1; query/XML services fall through.
+	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" || svc == "bedrock-agent" {
 		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

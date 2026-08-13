@@ -1,9 +1,6 @@
 // Package networkconnections embeds the inbound-listener inventory doc that
-// lives alongside it. //go:embed cannot reach outside its own directory, so
-// this package exists to give that traversal a compile-time home: callers
-// get the doc's bytes without shelling out to a Go toolchain at runtime,
-// which matters for test binaries that run on nodes with no toolchain
-// installed.
+// lives alongside it, so test binaries can read it on nodes with no Go
+// toolchain. //go:embed cannot reach outside its own directory.
 package networkconnections
 
 import _ "embed"

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -213,6 +214,12 @@ const (
 // reference to its NBD endpoint. A referencing process, or a scan that could
 // not complete, both leave it running: the caller gets a loud log either way.
 func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason) {
+	if hidden, herr := procHidepidInvisible(procRoot); hidden {
+		slog.Warn("recovery: proc mount hides other users' process entries; a live referencer could be invisible to this scan, leaving unclaimed nbdkit running",
+			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", herr)
+		return
+	}
+
 	referencingPID, referenced, err := endpointReferencer(procRoot, disc)
 	if err != nil {
 		slog.Warn("recovery: could not scan for processes using an unclaimed nbdkit's endpoint, leaving it running",
@@ -246,6 +253,35 @@ func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReaso
 
 	slog.Info("recovery: reaped unclaimed nbdkit process with no live referencer",
 		"pid", disc.PID, "volume", disc.Volume, "reason", reason)
+}
+
+// procHidepidInvisible reports whether procRoot's mount hides another uid's
+// /proc/<pid> entry outright (hidepid=invisible/2), so a referencer never
+// reaches os.ReadDir. Missing mountinfo reports false; any other read error cannot be ruled out.
+func procHidepidInvisible(procRoot string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(procRoot, "self", "mountinfo"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return true, err
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		sep := slices.Index(fields, "-")
+		if sep < 0 || sep+3 >= len(fields) || len(fields) < 6 {
+			continue
+		}
+		if fields[4] != "/proc" || fields[sep+1] != "proc" {
+			continue
+		}
+		opts := fields[5] + "," + fields[sep+3]
+		if strings.Contains(opts, "hidepid=invisible") || strings.Contains(opts, "hidepid=2") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // endpointReferencer reports whether any process other than disc's own PID

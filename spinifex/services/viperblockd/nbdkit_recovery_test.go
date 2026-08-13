@@ -510,6 +510,80 @@ func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.
 	assert.Contains(t, logs.String(), "volume=vol-reap-eacces1")
 }
 
+// writeMountinfoFixture writes procRoot/self/mountinfo with a single "/proc"
+// entry carrying opts, standing in for the real /proc/self/mountinfo that
+// procHidepidInvisible parses on a live node.
+func writeMountinfoFixture(t *testing.T, procRoot, opts string) {
+	t.Helper()
+	dir := filepath.Join(procRoot, "self")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	line := fmt.Sprintf("36 35 0:29 / /proc %s shared:1 - proc proc rw\n", opts)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mountinfo"), []byte(line), 0644))
+}
+
+// TestProcHidepidInvisible_DetectsNamedAndLegacyValues proves the mountinfo
+// parser recognizes both the named hidepid=invisible option and its legacy
+// numeric equivalent, and does not false-positive on an unrelated mount.
+func TestProcHidepidInvisible_DetectsNamedAndLegacyValues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts string
+		want bool
+	}{
+		{"named invisible", "rw,nosuid,nodev,noexec,relatime,hidepid=invisible", true},
+		{"legacy numeric 2", "rw,nosuid,nodev,noexec,relatime,hidepid=2", true},
+		{"hidepid off", "rw,nosuid,nodev,noexec,relatime,hidepid=off", false},
+		{"hidepid noaccess (EACCES-style, already handled)", "rw,nosuid,nodev,noexec,relatime,hidepid=1", false},
+		{"no hidepid option at all", "rw,nosuid,nodev,noexec,relatime", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			procRoot := t.TempDir()
+			writeMountinfoFixture(t, procRoot, tc.opts)
+
+			got, err := procHidepidInvisible(procRoot)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestProcHidepidInvisible_MissingMountinfoIsNotEvidence proves a fabricated
+// procRoot with no self/mountinfo at all (every other test's fixture shape)
+// is read as "not detected", not as an error -- so it never regresses tests
+// written before this fail-safe existed.
+func TestProcHidepidInvisible_MissingMountinfoIsNotEvidence(t *testing.T) {
+	got, err := procHidepidInvisible(t.TempDir())
+	require.NoError(t, err)
+	assert.False(t, got)
+}
+
+// TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan is the
+// bug this fix closes: under hidepid=invisible a live referencer's
+// /proc/<pid> directory entry is simply absent, not unreadable, so
+// endpointReferencer would return a clean "not found" with no error at all.
+// reapOrphanedNbdkit must detect the hazardous mount itself and decline
+// before trusting that clean result, exactly as it declines on EACCES.
+func TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan(t *testing.T) {
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), "vol-reap-hidepid.sock")
+	listenUnix(t, socket)
+
+	procRoot := t.TempDir() // no referencer entries at all: a clean scan
+	writeMountinfoFixture(t, procRoot, "rw,nosuid,nodev,noexec,relatime,hidepid=invisible")
+
+	logs := captureLogs(t)
+	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-hidepid1", Socket: socket}
+	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, utils.ProcessAlive(pid), "hidepid=invisible must never be read as a clean 'no referencer' scan")
+	_, err := os.Stat(socket)
+	assert.NoError(t, err, "an orphan left running because entries could be hidden must keep its socket")
+	assert.Contains(t, logs.String(), "hides other users' process entries")
+	assert.Contains(t, logs.String(), fmt.Sprintf("pid=%d", pid))
+	assert.Contains(t, logs.String(), "volume=vol-reap-hidepid1")
+}
+
 // TestRecoverMountedVolumes_DuplicateVolume_UnusedDuplicateReaped extends
 // TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce: the duplicate
 // recovery declines to adopt must not just be skipped but reaped, while the

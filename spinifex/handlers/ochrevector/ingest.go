@@ -189,6 +189,31 @@ func (s *IngestService) Reconcile(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Sweep is the scheduler tick the daemon runs on a timer: it claims and runs
+// every PENDING job, and re-drives any RUNNING job a crashed worker abandoned
+// (stale past jobStaleAfter). RunJob is idempotent, so a re-run never
+// double-writes a document. Reconcile stays the narrower crash-recovery method.
+func (s *IngestService) Sweep(ctx context.Context) error {
+	jobs, err := s.Jobs.ListAll(ctx)
+	if err != nil {
+		return fmt.Errorf("ochrevector: sweep ingest jobs: list all: %w", err)
+	}
+	now := time.Now().UTC()
+	var errs []error
+	for _, job := range jobs {
+		switch {
+		case job.State == JobStatePending:
+		case job.State == JobStateRunning && now.Sub(job.UpdatedAt) >= jobStaleAfter:
+		default:
+			continue
+		}
+		if err := s.RunJob(ctx, job); err != nil {
+			errs = append(errs, fmt.Errorf("ochrevector: sweep job %s: %w", job.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // ingestDocError is one document's ingestion failure, tagged with whether it
 // originated from the embedder (after exhausted retries) so RunJob can tell
 // an isolated per-doc miss from every document failing the same way.

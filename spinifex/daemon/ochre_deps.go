@@ -141,7 +141,33 @@ func (d *Daemon) startOchreVector() {
 	// (there is none today beyond observability) must never see a non-nil
 	// service whose subjects are not yet actually serving.
 	d.ochreVectorService = vectorService
+	go d.runOchreIngestScheduler(ingest)
 	slog.Info("Ochre vector store enabled")
+}
+
+// ochreIngestSweepInterval paces the scheduler tick that drives PENDING ingest
+// jobs and re-drives stale RUNNING ones.
+const ochreIngestSweepInterval = 15 * time.Second
+
+// runOchreIngestScheduler drives the ingestion sweep on a timer until the
+// daemon context is cancelled. An initial sweep keeps submit latency low; the
+// ticker then re-drives PENDING and crash-abandoned RUNNING jobs.
+func (d *Daemon) runOchreIngestScheduler(ingest *handlers_ochrevector.IngestService) {
+	if err := ingest.Sweep(d.ctx); err != nil {
+		slog.Warn("Ochre vector store: initial ingest sweep", "err", err)
+	}
+	ticker := time.NewTicker(ochreIngestSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ingest.Sweep(d.ctx); err != nil {
+				slog.Warn("Ochre vector store: ingest sweep", "err", err)
+			}
+		}
+	}
 }
 
 // connectOchreAppliance drives Ensure then Connect as one retryable unit, up

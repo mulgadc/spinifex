@@ -459,3 +459,90 @@ func TestIngestService_Reconcile_IgnoresPendingAndTerminalJobs(t *testing.T) {
 	assert.Equal(t, JobStatePending, got.State, "Reconcile only re-drives RUNNING jobs, not PENDING ones")
 	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt"))
 }
+
+// TestIngestService_Sweep_RunsPendingJobToReady proves Sweep is what actually
+// drives a fresh PENDING job to completion -- the gap Reconcile deliberately
+// leaves open, since nothing else ever calls RunJob for a PENDING job.
+func TestIngestService_Sweep_RunsPendingJobToReady(t *testing.T) {
+	svc, _, backend, store, embedder := newIngestTestSetup(t)
+	ctx := context.Background()
+	key := ingestPrefix + "doc1.txt"
+	putObject(t, store, key, "a pending job the scheduler must claim and run")
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.Equal(t, JobStatePending, job.State)
+
+	require.NoError(t, svc.Sweep(ctx))
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStateReady, got.State)
+	assert.Equal(t, 1, got.DocumentsDone)
+	assert.Equal(t, 1, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", key))
+	assert.Positive(t, embedder.callCount())
+}
+
+// TestIngestService_Sweep_RedrivesStaleRunningJob proves Sweep also covers
+// Reconcile's crash-recovery case, so a single scheduler tick handles both.
+func TestIngestService_Sweep_RedrivesStaleRunningJob(t *testing.T) {
+	svc, _, backend, store, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+	key := ingestPrefix + "doc1.txt"
+	putObject(t, store, key, "a stale running job the scheduler must re-drive")
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, job.ID, JobStateRunning))
+	forceJobUpdatedAt(t, svc.Jobs, ingestAccountA, job.ID, time.Now().UTC().Add(-2*jobStaleAfter))
+
+	require.NoError(t, svc.Sweep(ctx))
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStateReady, got.State)
+	assert.Equal(t, 1, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", key))
+}
+
+// TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone proves Sweep
+// does not touch a RUNNING job still within its grace period, nor a job
+// already in a terminal state (READY or FAILED).
+func TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone(t *testing.T) {
+	svc, _, backend, store, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	freshKey := ingestPrefix + "fresh.txt"
+	putObject(t, store, freshKey, "still in flight, must not be touched")
+	freshJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, freshJob.ID, JobStateRunning))
+
+	readyJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, readyJob.ID, JobStateReady))
+
+	failedJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, failedJob.ID, JobStateFailed))
+
+	require.NoError(t, svc.Sweep(ctx))
+
+	gotFresh, err := svc.Jobs.Get(ctx, ingestAccountA, freshJob.ID)
+	require.NoError(t, err)
+	require.NotNil(t, gotFresh)
+	assert.Equal(t, JobStateRunning, gotFresh.State, "a RUNNING job within the grace period must be left alone")
+
+	gotReady, err := svc.Jobs.Get(ctx, ingestAccountA, readyJob.ID)
+	require.NoError(t, err)
+	require.NotNil(t, gotReady)
+	assert.Equal(t, JobStateReady, gotReady.State)
+
+	gotFailed, err := svc.Jobs.Get(ctx, ingestAccountA, failedJob.ID)
+	require.NoError(t, err)
+	require.NotNil(t, gotFailed)
+	assert.Equal(t, JobStateFailed, gotFailed.State)
+
+	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", freshKey))
+}

@@ -108,7 +108,7 @@ func TestStartIngest_MissingIndexErrors(t *testing.T) {
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
-	_, err := svc.StartIngest(ctx, ingestAccountA, "idx-does-not-exist", testSource())
+	_, err := svc.StartIngest(ctx, ingestAccountA, "idx-does-not-exist", testSource(), "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrIndexNotFound)
 }
@@ -118,7 +118,7 @@ func TestStartIngest_ReturnsPendingJobWithoutRunning(t *testing.T) {
 	ctx := context.Background()
 	putObject(t, store, ingestPrefix+"doc1.txt", "hello world")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NotNil(t, job)
 	assert.Equal(t, JobStatePending, job.State)
@@ -130,6 +130,28 @@ func TestStartIngest_ReturnsPendingJobWithoutRunning(t *testing.T) {
 	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt"))
 }
 
+// TestStartIngest_StampsDataSourceID proves a non-empty dataSourceID argument
+// lands on the reserved job record unchanged, and an empty one (a direct
+// ochre.vector.ingest caller with no bedrock-agent DataSource) leaves it
+// empty rather than defaulting to some placeholder value.
+func TestStartIngest_StampsDataSourceID(t *testing.T) {
+	svc, _, _, _, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "ds-1")
+	require.NoError(t, err)
+	assert.Equal(t, "ds-1", job.DataSourceID)
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ds-1", got.DataSourceID)
+
+	noDSJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+	assert.Empty(t, noDSJob.DataSourceID)
+}
+
 func TestRunJob_HappyPath(t *testing.T) {
 	svc, registry, backend, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()
@@ -139,7 +161,7 @@ func TestRunJob_HappyPath(t *testing.T) {
 	putObject(t, store, ingestPrefix+"doc3.txt", "and a third one, for good measure")
 
 	source := testSource()
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source)
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source, "")
 	require.NoError(t, err)
 
 	require.NoError(t, svc.RunJob(ctx, *job))
@@ -180,7 +202,7 @@ func TestRunJob_IdempotentRerun(t *testing.T) {
 	key := ingestPrefix + "doc1.txt"
 	putObject(t, store, key, "the quick brown fox jumps over the lazy dog")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 
 	require.NoError(t, svc.RunJob(ctx, *job))
@@ -218,7 +240,7 @@ func TestRunJob_PerDocumentFailureIsSkippedAndRecorded(t *testing.T) {
 	putObject(t, store, badKey, "this document contains POISON and will fail to embed")
 	embedder.failIfContains = "POISON"
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.RunJob(ctx, *job))
 
@@ -250,7 +272,7 @@ func TestRunJob_EmbedderFullyDownFailsJob(t *testing.T) {
 	putObject(t, store, ingestPrefix+"doc2.txt", "document two")
 	embedder.failAll = true
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 
 	err = svc.RunJob(ctx, *job)
@@ -273,7 +295,7 @@ func TestRunJob_EmptyDocumentClearsExistingRows(t *testing.T) {
 	key := ingestPrefix + "empty.txt"
 	putObject(t, store, key, "   \n\t  ")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.RunJob(ctx, *job))
 
@@ -311,7 +333,7 @@ func TestIngestService_Reconcile_RedrivesStaleRunningJob(t *testing.T) {
 	key := ingestPrefix + "doc1.txt"
 	putObject(t, store, key, "a document that a crashed worker never finished")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, job.ID, JobStateRunning))
 
@@ -333,7 +355,7 @@ func TestIngestService_Reconcile_LeavesFreshRunningJobAlone(t *testing.T) {
 	key := ingestPrefix + "doc1.txt"
 	putObject(t, store, key, "still in flight")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, job.ID, JobStateRunning))
 
@@ -384,7 +406,7 @@ func TestRunJob_AllDocumentsFailNonEmbedReason_FailsJob(t *testing.T) {
 	jobs := NewJobStore(js)
 	svc := NewIngestService(jobs, registry, backend, store, embedder)
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 
 	err = svc.RunJob(ctx, *job)
@@ -418,7 +440,7 @@ func TestRunJob_StampsSourceMetadataOntoRows(t *testing.T) {
 	source := testSource()
 	source.Metadata = map[string]string{"category": "handbook", "team": "platform"}
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source)
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source, "")
 	require.NoError(t, err)
 	require.NoError(t, svc.RunJob(ctx, *job))
 
@@ -435,7 +457,7 @@ func TestRunJob_StampsSourceMetadataOntoRows(t *testing.T) {
 	// selects the one document.
 	otherKey := ingestPrefix + "doc2.txt"
 	putObject(t, store, otherKey, "a second document, same source tags")
-	job2, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source)
+	job2, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source, "")
 	require.NoError(t, err)
 	require.NoError(t, svc.RunJob(ctx, *job2))
 
@@ -452,7 +474,7 @@ func TestIngestService_Reconcile_IgnoresPendingAndTerminalJobs(t *testing.T) {
 	ctx := context.Background()
 	putObject(t, store, ingestPrefix+"doc1.txt", "pending, never run")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	forceJobUpdatedAt(t, svc.Jobs, ingestAccountA, job.ID, time.Now().UTC().Add(-2*jobStaleAfter))
 
@@ -473,7 +495,7 @@ func TestIngestService_Sweep_RunsPendingJobToReady(t *testing.T) {
 	key := ingestPrefix + "doc1.txt"
 	putObject(t, store, key, "a pending job the scheduler must claim and run")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.Equal(t, JobStatePending, job.State)
 
@@ -496,7 +518,7 @@ func TestIngestService_Sweep_RedrivesStaleRunningJob(t *testing.T) {
 	key := ingestPrefix + "doc1.txt"
 	putObject(t, store, key, "a stale running job the scheduler must re-drive")
 
-	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, job.ID, JobStateRunning))
 	forceJobUpdatedAt(t, svc.Jobs, ingestAccountA, job.ID, time.Now().UTC().Add(-2*jobStaleAfter))
@@ -519,15 +541,15 @@ func TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone(t *testing.T
 
 	freshKey := ingestPrefix + "fresh.txt"
 	putObject(t, store, freshKey, "still in flight, must not be touched")
-	freshJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	freshJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, freshJob.ID, JobStateRunning))
 
-	readyJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	readyJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, readyJob.ID, JobStateReady))
 
-	failedJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource())
+	failedJob, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
 	require.NoError(t, err)
 	require.NoError(t, svc.Jobs.SetState(ctx, ingestAccountA, failedJob.ID, JobStateFailed))
 

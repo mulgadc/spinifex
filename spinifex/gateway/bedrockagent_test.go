@@ -1,7 +1,7 @@
 // In-package: exercises the unexported AWS<->internal mapper helpers
-// (kbStatusToAWS, embeddingModelIDFromARN, sourceSpecMatchesDataSource, ...)
-// directly, alongside the operation-level tests through the exported
-// Create/Get/List/Delete functions.
+// (kbStatusToAWS, embeddingModelIDFromARN, ...) directly, alongside the
+// operation-level tests through the exported Create/Get/List/Delete
+// functions.
 //
 //test:in-package
 package gateway
@@ -168,13 +168,6 @@ func TestTranslateVectorErr(t *testing.T) {
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexNotFound), awserrors.ErrorResourceNotFoundException))
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrJobNotFound), awserrors.ErrorResourceNotFoundException))
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexExists), awserrors.ErrorConflictException))
-}
-
-func TestSourceSpecMatchesDataSource(t *testing.T) {
-	ds := handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "docs/"}
-	assert.True(t, sourceSpecMatchesDataSource(handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "docs/"}, ds))
-	assert.False(t, sourceSpecMatchesDataSource(handlers_ochrevector.SourceSpec{Bucket: "other", Prefix: "docs/"}, ds))
-	assert.False(t, sourceSpecMatchesDataSource(handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "other/"}, ds))
 }
 
 func validCreateKBInput() *bedrockagent.CreateKnowledgeBaseInput {
@@ -426,7 +419,7 @@ func TestStartIngestionJob_BuildsIngestRequestFromDataSourceAgainstBoundIndex(t 
 	}))
 
 	vector := &fakeBedrockAgentVectorService{ingestResp: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", State: handlers_ochrevector.JobStatePending},
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStatePending},
 	}}
 	out, err := StartIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.StartIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"),
@@ -435,6 +428,7 @@ func TestStartIngestionJob_BuildsIngestRequestFromDataSourceAgainstBoundIndex(t 
 
 	require.NotNil(t, vector.ingestReq)
 	assert.Equal(t, "idx-1", vector.ingestReq.IndexID)
+	assert.Equal(t, "ds-1", vector.ingestReq.DataSourceID)
 	assert.Equal(t, "b1", vector.ingestReq.Source.Bucket)
 	assert.Equal(t, "p1", vector.ingestReq.Source.Prefix)
 	assert.Equal(t, bedrockagent.IngestionJobStatusStarting, aws.StringValue(out.IngestionJob.Status))
@@ -450,7 +444,7 @@ func TestGetIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 	}))
 
 	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"}},
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
@@ -462,26 +456,21 @@ func TestGetIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 // TestGetIngestionJob_RejectsWrongDataSource proves a job addressed through
 // the wrong dataSourceId path segment is rejected even when its IndexID
 // matches the knowledge base: a job that really belongs to one data source
-// must not be readable by guessing a second, unrelated data source's id
-// under the same KB. Regression test for the ownership check ListIngestionJobs
-// already had but GetIngestionJob was missing.
+// (its exact DataSourceID) must not be readable by guessing a second,
+// unrelated data source's id under the same KB. Regression test for the
+// ownership check ListIngestionJobs already had but GetIngestionJob was
+// missing.
 func TestGetIngestionJob_RejectsWrongDataSource(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
 	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
-		ID: "ds-a", KnowledgeBaseID: "kb-1",
-		Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-a", Prefix: "a/"},
-	}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
-		ID: "ds-b", KnowledgeBaseID: "kb-1",
-		Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-b", Prefix: "b/"},
-	}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-a", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-b", KnowledgeBaseID: "kb-1"}))
 
-	// job-1 really belongs to ds-a (matching Bucket+Prefix), but the request
+	// job-1 really belongs to ds-a (its exact DataSourceID), but the request
 	// below addresses it through ds-b's path.
 	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", Source: handlers_ochrevector.SourceSpec{Bucket: "bucket-a", Prefix: "a/"}},
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-a"},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-b"), IngestionJobId: aws.String("job-1"),
@@ -497,20 +486,38 @@ func TestGetIngestionJob_RejectsWrongDataSource(t *testing.T) {
 	assert.Equal(t, "job-1", aws.StringValue(out.IngestionJob.IngestionJobId))
 }
 
-func TestListIngestionJobs_FiltersToBoundIndexAndDataSourceSourceSpec(t *testing.T) {
+// TestGetIngestionJob_RejectsEmptyDataSourceID proves a job with no
+// DataSourceID at all (started directly against ochre.vector.ingest, not
+// through a bedrock-agent data source) is never returned through a
+// dataSourceId path, no matter which data source id is addressed.
+func TestGetIngestionJob_RejectsEmptyDataSourceID(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
 	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
-		ID: "ds-1", KnowledgeBaseID: "kb-1",
-		Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
-	}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+
+	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: ""},
+	}}
+	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+}
+
+func TestListIngestionJobs_FiltersToBoundIndexAndExactDataSourceID(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
 
 	now := time.Now().UTC()
 	vector := &fakeBedrockAgentVectorService{listJobsResp: handlers_ochrevector.ListJobsResponse{Jobs: []handlers_ochrevector.JobRecord{
-		{ID: "job-match", IndexID: "idx-1", Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"}, State: handlers_ochrevector.JobStateReady, CreatedAt: now, UpdatedAt: now},
-		{ID: "job-wrong-index", IndexID: "idx-2", Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"}, CreatedAt: now, UpdatedAt: now},
-		{ID: "job-wrong-source", IndexID: "idx-1", Source: handlers_ochrevector.SourceSpec{Bucket: "other"}, CreatedAt: now, UpdatedAt: now},
+		{ID: "job-match", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateReady, CreatedAt: now, UpdatedAt: now},
+		{ID: "job-wrong-index", IndexID: "idx-2", DataSourceID: "ds-1", CreatedAt: now, UpdatedAt: now},
+		{ID: "job-wrong-datasource", IndexID: "idx-1", DataSourceID: "ds-other", CreatedAt: now, UpdatedAt: now},
+		{ID: "job-no-datasource", IndexID: "idx-1", DataSourceID: "", CreatedAt: now, UpdatedAt: now},
 	}}}
 
 	out, err := ListIngestionJobs(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.ListIngestionJobsInput{

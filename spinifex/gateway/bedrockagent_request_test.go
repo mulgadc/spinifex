@@ -263,17 +263,18 @@ func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
 	kbID := createTestKnowledgeBase(t, gw)
 	dsID := createTestDataSource(t, gw, kbID)
 
-	// vector.Ingest doesn't stamp IndexID/Source on the returned job itself
-	// (that's jobRecordToOutput's job, driven by the KB's own bound index),
-	// but ListJobs/GetIngestionJob key off the fake's own scripted response,
-	// so both are seeded from the stores' own records here: IndexID from the
-	// KB, Source from the data source (sourceSpecMatchesDataSource's match key).
+	// vector.Ingest doesn't stamp IndexID/DataSourceID on the returned job
+	// itself (that's jobRecordToOutput's job, driven by the KB's own bound
+	// index), but ListJobs/GetIngestionJob key off the fake's own scripted
+	// response, so both are seeded from the stores' own records here: IndexID
+	// from the KB, DataSourceID from the data source's own id (the exact
+	// ownership match key GetIngestionJob/ListIngestionJobs use).
 	kbRec, err := gw.BedrockAgentKB.Get(context.Background(), bedrockAgentTestAccount, kbID)
 	require.NoError(t, err)
 	dsRec, err := gw.BedrockAgentDataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
 	require.NoError(t, err)
 	vector.ingestResp.Job.IndexID = kbRec.IndexID
-	vector.ingestResp.Job.Source = dsRec.Source
+	vector.ingestResp.Job.DataSourceID = dsRec.ID
 	vector.describeJobResp = handlers_ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
 	vector.listJobsResp = handlers_ochrevector.ListJobsResponse{Jobs: []handlers_ochrevector.JobRecord{vector.ingestResp.Job}}
 

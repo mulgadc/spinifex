@@ -162,6 +162,27 @@ func TestVectorService_Ingest_StampsIndexPinnedModel(t *testing.T) {
 	assert.Equal(t, JobStatePending, out.Job.State)
 }
 
+// TestVectorService_Ingest_ThreadsDataSourceIDOntoJob proves Ingest's
+// optional DataSourceID reaches the reserved job record unchanged, end to
+// end through the real IngestService.StartIngest, not just JobRecord's own
+// field plumbing.
+func TestVectorService_Ingest_ThreadsDataSourceIDOntoJob(t *testing.T) {
+	s := newAPITestSetup(t)
+	ctx := context.Background()
+	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 8}, apiAccountA)
+	require.NoError(t, err)
+
+	out, err := s.svc.Ingest(ctx, &IngestRequest{
+		IndexID: "idx-one", Source: SourceSpec{Bucket: "docs"}, DataSourceID: "ds-1",
+	}, apiAccountA)
+	require.NoError(t, err)
+	assert.Equal(t, "ds-1", out.Job.DataSourceID)
+
+	got, err := s.svc.DescribeJob(ctx, &DescribeJobRequest{JobID: out.Job.ID}, apiAccountA)
+	require.NoError(t, err)
+	assert.Equal(t, "ds-1", got.Job.DataSourceID)
+}
+
 func TestVectorService_Ingest_MissingIndexErrors(t *testing.T) {
 	s := newAPITestSetup(t)
 	_, err := s.svc.Ingest(context.Background(), &IngestRequest{IndexID: "no-such-index", Source: SourceSpec{Bucket: "docs"}}, apiAccountA)

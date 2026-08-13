@@ -56,9 +56,14 @@ type ListIndexesResponse struct {
 // EmbeddingModel/Dimension are ignored and overwritten server-side from the
 // index's own registered values (see vectorService.Ingest) -- an index's
 // embedding model is a property of the index (D6/D8), not of any one caller.
+// DataSourceID is optional: the bedrock-agent gateway stamps it from the
+// DataSource record driving this ingest, so the resulting job can later be
+// tied back to it exactly; a direct ochre.vector.ingest caller may leave it
+// empty.
 type IngestRequest struct {
-	IndexID string     `json:"indexId"`
-	Source  SourceSpec `json:"source"`
+	IndexID      string     `json:"indexId"`
+	Source       SourceSpec `json:"source"`
+	DataSourceID string     `json:"dataSourceId,omitempty"`
 }
 
 type IngestResponse struct {
@@ -126,7 +131,7 @@ var _ indexService = (*Service)(nil)
 // ingestStarter is the StartIngest surface vectorService delegates to;
 // *IngestService satisfies it structurally.
 type ingestStarter interface {
-	StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec) (*JobRecord, error)
+	StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec, dataSourceID string) (*JobRecord, error)
 }
 
 var _ ingestStarter = (*IngestService)(nil)
@@ -245,7 +250,7 @@ func (s *vectorService) Ingest(ctx context.Context, req *IngestRequest, accountI
 	source.EmbeddingModel = idx.EmbeddingModel
 	source.Dimension = idx.Dimension
 
-	job, err := s.ingest.StartIngest(ctx, accountID, req.IndexID, source)
+	job, err := s.ingest.StartIngest(ctx, accountID, req.IndexID, source, req.DataSourceID)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: ingest: %w", err)
 	}

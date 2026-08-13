@@ -705,8 +705,9 @@ func DeleteDataSource(ctx context.Context, accountID string, ds *handlers_ochrev
 }
 
 // jobRecordToOutput builds the AWS IngestionJob shape from job, scoped to the
-// addressed kbID/dsID (JobRecord itself carries only IndexID, not an
-// AWS-shaped knowledge-base/data-source id pair).
+// addressed kbID/dsID (the caller's own resolved ids, not necessarily rebuilt
+// from job.IndexID/job.DataSourceID, since AWS's IngestionJob always renders
+// under the path it was requested through).
 func jobRecordToOutput(kbID, dsID string, job handlers_ochrevector.JobRecord) *bedrockagent.IngestionJob {
 	var failureReasons []*string
 	for _, fd := range job.FailedDocuments {
@@ -735,7 +736,9 @@ func jobRecordToOutput(kbID, dsID string, job handlers_ochrevector.JobRecord) *b
 
 // StartIngestionJob builds an IngestRequest from dataSourceId's stored
 // SourceSpec, targets knowledgeBaseId's bound index, and calls
-// VectorService.Ingest.
+// VectorService.Ingest. dsRec.ID is stamped onto the request as DataSourceID,
+// so the resulting job carries an exact link back to the data source that
+// started it.
 func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.StartIngestionJobInput) (*bedrockagent.StartIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -759,7 +762,7 @@ func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochre
 		return nil, errDataSourceNotFound(dsID)
 	}
 
-	resp, err := vector.Ingest(ctx, &handlers_ochrevector.IngestRequest{IndexID: kbRec.IndexID, Source: dsRec.Source}, accountID)
+	resp, err := vector.Ingest(ctx, &handlers_ochrevector.IngestRequest{IndexID: kbRec.IndexID, Source: dsRec.Source, DataSourceID: dsRec.ID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
@@ -769,15 +772,12 @@ func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochre
 
 // GetIngestionJob resolves jobId via VectorService.DescribeJob, then verifies
 // it belongs to both the addressed knowledge base (its IndexID matches the
-// KB's bound index) and the addressed data source (its Source matches the
-// data source's own Source, see sourceSpecMatchesDataSource) before
-// returning it, so a foreign/mismatched knowledgeBaseId or dataSourceId in
-// the path cannot be used to read another KB/data source's job by guessing
-// its id. The data-source check is the same Bucket+Prefix best-effort match
-// ListIngestionJobs uses -- JobRecord carries no DataSourceID (see
-// sourceSpecMatchesDataSource) -- so a real DataSourceID on JobRecord would
-// close this exactly, but that crosses into the .9 ingest path and is left
-// as a follow-up.
+// KB's bound index) and the addressed data source (its DataSourceID matches
+// dataSourceId exactly) before returning it, so a foreign/mismatched
+// knowledgeBaseId or dataSourceId in the path cannot be used to read another
+// KB/data source's job by guessing its id. A job with an empty DataSourceID
+// (started directly against ochre.vector.ingest, with no bedrock-agent data
+// source involved) never matches any dataSourceId here.
 func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.GetIngestionJobInput) (*bedrockagent.GetIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" || aws.StringValue(input.IngestionJobId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -806,27 +806,16 @@ func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochreve
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
-	if resp.Job.IndexID != kbRec.IndexID || !sourceSpecMatchesDataSource(resp.Job.Source, dsRec.Source) {
+	if resp.Job.IndexID != kbRec.IndexID || resp.Job.DataSourceID != dsID {
 		return nil, errIngestionJobNotFound(jobID)
 	}
 
 	return &bedrockagent.GetIngestionJobOutput{IngestionJob: jobRecordToOutput(kbID, dsID, resp.Job)}, nil
 }
 
-// sourceSpecMatchesDataSource reports whether an ingestion job's stored
-// SourceSpec was built from ds's own SourceSpec (StartIngestionJob always
-// builds the job's Source from the data source's Source verbatim, see
-// StartIngestionJob above). Matched on Bucket+Prefix, the two fields that
-// identify which documents a data source covers: JobRecord itself carries no
-// DataSourceID (.9 has no such concept), so this is ListIngestionJobs' only
-// way to scope a KB-wide job list down to one data source.
-func sourceSpecMatchesDataSource(job, ds handlers_ochrevector.SourceSpec) bool {
-	return job.Bucket == ds.Bucket && job.Prefix == ds.Prefix
-}
-
 // ListIngestionJobs lists knowledgeBaseId's jobs via the new
-// VectorService.ListJobs, filtered to dataSourceId's own SourceSpec (see
-// sourceSpecMatchesDataSource) and sorted by start time.
+// VectorService.ListJobs, filtered to dataSourceId's own bound index and
+// exact DataSourceID, and sorted by start time.
 func ListIngestionJobs(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.ListIngestionJobsInput) (*bedrockagent.ListIngestionJobsOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -857,7 +846,7 @@ func ListIngestionJobs(ctx context.Context, accountID string, kb *handlers_ochre
 
 	summaries := make([]*bedrockagent.IngestionJobSummary, 0)
 	for _, job := range resp.Jobs {
-		if job.IndexID != kbRec.IndexID || !sourceSpecMatchesDataSource(job.Source, dsRec.Source) {
+		if job.IndexID != kbRec.IndexID || job.DataSourceID != dsID {
 			continue
 		}
 		out := jobRecordToOutput(kbID, dsID, job)

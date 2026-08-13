@@ -141,9 +141,9 @@ func (r *recordingRunner) run(_ context.Context, c command) (string, error) {
 
 func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	t.Helper()
-	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
-	cfg.PGData = t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cfg.PGData, "conf.d"), 0o700); err != nil {
+	cfg := testLoadConfig(t, enginePostgres)
+	cfg.EngineDataDir = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg.EngineDataDir, "conf.d"), 0o700); err != nil {
 		t.Fatalf("create conf.d: %v", err)
 	}
 	// The guest's postgres user does not exist here, and the chown of the
@@ -152,8 +152,8 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	if err != nil {
 		t.Fatalf("resolve the current user: %v", err)
 	}
-	cfg.PGUser = current.Username
-	return newPostgresEngine(cfg, run, nil, newEngineProbe(cfg, staticProbe(0)))
+	cfg.EngineUser = current.Username
+	return newPostgresEngine(cfg, run, nil, newPostgresProbe(cfg, staticProbe(0)))
 }
 
 // The password reaches psql through the environment and is re-quoted there,
@@ -341,10 +341,10 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	codes := []int{2, 2, 0}
 	probeCall := 0
 	cfg := testProbeConfig()
-	engine.probe = newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
+	engine.probe = newPostgresProbe(cfg, func(context.Context, string, ...string) (int, string, error) {
 		code := codes[min(probeCall, len(codes)-1)]
 		probeCall++
-		return code, nil
+		return code, "", nil
 	})
 	engine.repairTimeout = 100 * time.Millisecond
 	engine.repairPoll = time.Millisecond
@@ -372,7 +372,7 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
 		t.Errorf("third call = %+v, want the pending-restart read", runner.calls[2])
 	}
-	installed, err := os.ReadFile(engine.parametersPath())
+	installed, err := os.ReadFile(engine.params.installedPath())
 	if err != nil {
 		t.Fatalf("read installed parameters: %v", err)
 	}
@@ -392,32 +392,11 @@ func TestPostgresEngine_ApplyParametersKeepsRepairSetWhenRestartTimesOut(t *test
 	if err == nil || !strings.Contains(err.Error(), "wait for the engine") {
 		t.Fatalf("ApplyParameters error = %v, want the repair wait failure", err)
 	}
-	installed, readErr := os.ReadFile(engine.parametersPath())
+	installed, readErr := os.ReadFile(engine.params.installedPath())
 	if readErr != nil {
 		t.Fatalf("read installed parameters: %v", readErr)
 	}
 	if !strings.Contains(string(installed), "work_mem = '8192'") {
 		t.Errorf("installed parameters = %q, want the checked repair set retained", installed)
-	}
-}
-
-// Through the service manager, so the supervisor records the engine as stopped
-// and does not restart it underneath a VM that is going down.
-func TestPostgresEngine_StopGoesThroughTheServiceManager(t *testing.T) {
-	runner := &recordingRunner{}
-	engine := newTestEngine(t, runner.run)
-
-	if err := engine.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("ran %d commands, want 1", len(runner.calls))
-	}
-	call := runner.calls[0]
-	if filepath.Base(call.Name) != "rc-service" {
-		t.Errorf("ran %q, want rc-service", call.Name)
-	}
-	if len(call.Args) != 2 || call.Args[0] != "postgresql" || call.Args[1] != "stop" {
-		t.Errorf("args = %v, want [postgresql stop]", call.Args)
 	}
 }

@@ -117,6 +117,10 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 	if err := ValidateMasterUserPassword(masterPassword); err != nil {
 		return nil, err
 	}
+	dbName := aws.StringValue(input.DBName)
+	if err := engine.ValidateDBName(dbName); err != nil {
+		return nil, err
+	}
 
 	port := engine.DefaultPort
 	if input.Port != nil {
@@ -168,7 +172,7 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 		Port:                 port,
 		MasterUsername:       masterUsername,
 		MasterPassword:       masterPassword,
-		DBName:               aws.StringValue(input.DBName),
+		DBName:               dbName,
 		SecurityGroupIDs:     aws.StringValueSlice(input.VpcSecurityGroupIds),
 		DBSubnetGroupName:    aws.StringValue(input.DBSubnetGroupName),
 		DBParameterGroupName: paramGroup,

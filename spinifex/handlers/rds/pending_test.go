@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -372,6 +373,7 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 	// values; the new group sets nothing.
 	rec.Bootstrap.ResolvedParameters = []Parameter{{Name: "work_mem", Value: "262144"}}
 	rec.ParametersRolledBack = true
+	rec.ParameterApplyFailed = true
 	seedInstance(t, h.svc, rec)
 
 	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
@@ -382,10 +384,45 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 	for _, param := range issued[0].Parameters {
 		applied[param.Name] = param.Value
 	}
-	workMem, _ := LookupParameter("work_mem")
+	workMem, _ := enginePostgres.LookupParameter("work_mem")
 	assert.Equal(t, workMem.Default, applied["work_mem"],
 		"the old group's value should have reverted to the catalog default")
-	assert.False(t, h.record(t).ParametersRolledBack, "a successful corrected apply clears the rollback state")
+	stored := h.record(t)
+	assert.False(t, stored.ParametersRolledBack, "a successful corrected apply clears the rollback state")
+	assert.False(t, stored.ParameterApplyFailed, "and the failure the corrected apply recovered from")
+}
+
+// The failure leaves PendingModifiedValues set for the reconciler to retry, so
+// without it outranking the outstanding request the instance would report
+// applying on every pass while the engine runs the set it already had.
+func TestApplyPendingModifications_AFailedParameterApplyIsRecordedOnTheInstance(t *testing.T) {
+	h := newModifyHarnessWithAgent(t, true)
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBParameterGroupName: testDefaultGroup,
+		RequestedAt:          time.Now().UTC(),
+	})
+	seedInstance(t, h.svc, rec)
+
+	require.Error(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+	assert.True(t, rec.ParameterApplyFailed, "the caller's copy reports what the store holds")
+
+	stored := h.record(t)
+	assert.True(t, stored.ParameterApplyFailed)
+	require.NotNil(t, stored.PendingModifiedValues, "the modify is still outstanding for the reconciler")
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", aws.StringValue(groups[0].ParameterApplyStatus))
+
+	// The reconciler resumes an unapplied modify every pass, so the customer
+	// gets one event rather than one per retry.
+	require.Error(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+	failures := 0
+	for _, message := range h.eventMessages(t) {
+		if strings.Contains(message, "could not be applied") {
+			failures++
+		}
+	}
+	assert.Equal(t, 1, failures)
 }
 
 func parameterValue(params []Parameter, name string) string {

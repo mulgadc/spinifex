@@ -595,6 +595,10 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 		{"PortTooLow", func(in *rds.CreateDBInstanceInput) { in.Port = aws.Int64(80) }, awserrors.ErrorInvalidParameterValue},
 		{"ReservedUsername", func(in *rds.CreateDBInstanceInput) { in.MasterUsername = aws.String("rdsadmin") }, awserrors.ErrorInvalidParameterValue},
 		{"ShortPassword", func(in *rds.CreateDBInstanceInput) { in.MasterUserPassword = aws.String("short") }, awserrors.ErrorInvalidParameterValue},
+		{"DBNameHyphen", func(in *rds.CreateDBInstanceInput) { in.DBName = aws.String("my-db") }, awserrors.ErrorInvalidParameterValue},
+		{"DBNameTooLong", func(in *rds.CreateDBInstanceInput) {
+			in.DBName = aws.String(strings.Repeat("a", 64))
+		}, awserrors.ErrorInvalidParameterValue},
 	}
 
 	for _, tc := range cases {

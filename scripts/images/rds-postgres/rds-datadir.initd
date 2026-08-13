@@ -14,11 +14,16 @@ depend() {
 }
 
 start_pre() {
+    # This image's layout, stated here because the mount script is shared by
+    # every engine preset. A delivered RDS_DATA_MOUNT still wins, so the control
+    # plane can move the mount point without rebuilding the image.
+    RDS_DATA_MOUNT="/var/lib/postgresql"
+    RDS_ENGINE_USER="postgres"
     if [ -f "${AGENT_ENV}" ]; then
         # shellcheck disable=SC1090
         . "${AGENT_ENV}"
-        export RDS_HANDOFF_DIR RDS_DATA_MOUNT
     fi
+    export RDS_HANDOFF_DIR RDS_DATA_MOUNT RDS_ENGINE_USER
 }
 
 start() {

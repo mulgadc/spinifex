@@ -233,17 +233,32 @@ func (s *Service) confirmVMStopped(ctx context.Context, accountID, instanceID st
 }
 
 // Asks the engine to shut down cleanly, and records an event rather than
-// failing the call when it cannot. An engine that did not stop cleanly replays
-// its WAL on the next start; refusing to stop the VM over it would leave the
-// customer unable to stop an instance whose agent is wedged.
+// failing the call when it cannot. Refusing to stop the VM over it would leave
+// the customer unable to stop an instance whose agent is wedged.
 func (s *Service) stopEngineOrRecordFallback(ctx context.Context, accountID string, rec *DBInstanceRecord, operation string) {
 	if err := s.stopEngine(ctx, accountID, rec.DBInstanceIdentifier); err != nil {
 		slog.WarnContext(ctx, "rds: graceful engine stop failed; continuing",
 			"dbInstance", rec.DBInstanceIdentifier, "operation", operation, "err", err)
 		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
-			fmt.Sprintf("The database engine could not be shut down cleanly before %s; it will recover from its write-ahead log on the next start.", operation),
+			uncleanStopMessage(ctx, rec.Engine, operation),
 			EventCategoryNotification, EventCategoryAvailability)
 	}
+}
+
+// The half of the warning that holds for every engine. What the next start then
+// recovers does not: PostgreSQL replays every table from its write-ahead log,
+// MariaDB only its InnoDB ones.
+func uncleanStopMessage(ctx context.Context, engineName, operation string) string {
+	warning := fmt.Sprintf("The database engine could not be shut down cleanly before %s.", operation)
+	engine, err := LookupEngine(engineName)
+	if err != nil {
+		// The VM is going down either way, so the customer still gets the half of
+		// the warning that does not depend on knowing the engine.
+		slog.ErrorContext(ctx, "rds: the DB instance names an engine this build does not offer",
+			"engine", engineName, "err", err)
+		return warning
+	}
+	return warning + " " + engine.uncleanStopNote
 }
 
 // Moves the instance into a transitional state under CAS and returns the record

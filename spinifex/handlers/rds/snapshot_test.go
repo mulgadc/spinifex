@@ -224,7 +224,28 @@ func TestCreateDBSnapshot_FallsBackToCrashConsistentWhenTheQuiesceFails(t *testi
 	// The customer is told, because a crash-consistent snapshot recovers rather
 	// than restores instantly.
 	assert.Contains(t, eventMessages(h.events(t, EventSourceTypeDBInstance, testDBID)),
-		"The database engine could not be quiesced before the snapshot; the snapshot is crash consistent and will recover from its write-ahead log when it is restored.")
+		"The database engine could not be quiesced before the snapshot; the snapshot is crash consistent. "+
+			"It will recover from its write-ahead log when it is restored.")
+}
+
+// What such a snapshot recovers is the engine's own guarantee. Telling a MariaDB
+// customer a write-ahead log will bring back an Aria or MyISAM table would be a
+// false assurance about exactly the data most at risk.
+func TestCrashConsistentSnapshotMessage_IsEngineAware(t *testing.T) {
+	postgres := crashConsistentSnapshotMessage(t.Context(), "postgres")
+	assert.Contains(t, postgres, "crash consistent")
+	assert.Contains(t, postgres, "write-ahead log")
+
+	mariadb := crashConsistentSnapshotMessage(t.Context(), "mariadb")
+	assert.Contains(t, mariadb, "crash consistent")
+	assert.Contains(t, mariadb, "InnoDB tables will recover")
+	assert.Contains(t, mariadb, "may be left inconsistent")
+	assert.NotContains(t, mariadb, "write-ahead log")
+
+	// The snapshot has already been taken, so an engine this build cannot resolve
+	// still gets the half of the warning that does not depend on knowing it.
+	unknown := crashConsistentSnapshotMessage(t.Context(), "oracle")
+	assert.Equal(t, crashConsistentSnapshotWarning, unknown)
 }
 
 // The record only ever described a snapshot that now does not exist, so it goes

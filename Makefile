@@ -111,6 +111,12 @@ build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + Postg
 import-rds-postgres-image: ## Build + register the rds-postgres AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=rds-postgres IMPORT=1
 
+build-rds-mariadb-image: ## Build the spinifex-rds-mariadb AMI (Alpine + MariaDB 11.8 + rds-init; IMPORT=1 to register)
+	$(MAKE) build-system-image IMAGE=rds-mariadb
+
+import-rds-mariadb-image: ## Build + register the rds-mariadb AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=rds-mariadb IMPORT=1
+
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -396,7 +402,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

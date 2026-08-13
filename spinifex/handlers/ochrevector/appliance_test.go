@@ -594,6 +594,51 @@ func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
 	assert.Nil(t, rec, "the KV record must still be deleted despite the launcher failure")
 }
 
+// TestTeardown_WithStoresPurgesRegistryAndJobs proves an Appliance wired via
+// WithStores purges every index and job record on Teardown, so a
+// reprovisioned appliance never advertises metadata pointing at data that no
+// longer exists.
+func TestTeardown_WithStoresPurgesRegistryAndJobs(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.33", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.33", 5432)
+
+	registry := NewRegistry(js)
+	jobs := NewJobStore(js)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, registry.Reserve(ctx, "111111111111", Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, jobs.Reserve(ctx, "111111111111", JobRecord{ID: "job-one", CreatedAt: now, UpdatedAt: now}))
+
+	appliance.WithStores(registry, jobs)
+	require.NoError(t, appliance.Teardown(ctx))
+
+	remainingIndexes, err := registry.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, remainingIndexes, "Teardown must purge every index record")
+
+	remainingJobs, err := jobs.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, remainingJobs, "Teardown must purge every job record")
+}
+
+// TestTeardown_WithoutStoresStillWorks proves an Appliance that never calls
+// WithStores (every pre-existing caller and test) still tears down cleanly:
+// the registry/jobs purge is nil-safe, not a new required dependency.
+func TestTeardown_WithoutStoresStillWorks(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.34", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.34", 5432)
+
+	require.NoError(t, appliance.Teardown(context.Background()))
+}
+
 // TestBucket_RequiresJetStream proves bucket fails fast on a zero-value
 // Appliance rather than panicking on a nil JetStream client.
 func TestBucket_RequiresJetStream(t *testing.T) {

@@ -101,6 +101,30 @@ func TestRegistry_Delete(t *testing.T) {
 	require.NoError(t, reg.Delete(ctx, regAccountA, "idx-one"))
 }
 
+// TestRegistry_PurgeAll proves PurgeAll clears every record across every
+// account, not just one -- the appliance-teardown use case it exists for.
+func TestRegistry_PurgeAll(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, reg.Reserve(ctx, regAccountA, Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, reg.Reserve(ctx, regAccountB, Record{ID: "idx-two", CreatedAt: now, UpdatedAt: now}))
+
+	require.NoError(t, reg.PurgeAll(ctx))
+
+	all, err := reg.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, all)
+}
+
+// TestRegistry_PurgeAllOnEmptyBucketIsANoOp proves PurgeAll succeeds against
+// a registry with no records yet -- a bucket kv.Keys reports as ErrNoKeysFound.
+func TestRegistry_PurgeAllOnEmptyBucketIsANoOp(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	require.NoError(t, reg.PurgeAll(context.Background()))
+}
+
 func TestRegistry_ListAccountScoped(t *testing.T) {
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()

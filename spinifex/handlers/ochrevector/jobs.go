@@ -236,6 +236,29 @@ func (s *JobStore) SetState(ctx context.Context, accountID, jobID, state string)
 	})
 }
 
+// PurgeAll deletes every job record across every account, so a rebuilt
+// appliance's job history never references data that no longer exists.
+// Idempotent: an empty bucket is a no-op success.
+func (s *JobStore) PurgeAll(ctx context.Context) error {
+	kv, err := s.bucket(ctx)
+	if err != nil {
+		return err
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("ochrevector: list keys: %w", err)
+	}
+	for _, key := range keys {
+		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return fmt.Errorf("ochrevector: purge job %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
 // Delete removes accountID's jobID record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (s *JobStore) Delete(ctx context.Context, accountID, jobID string) error {

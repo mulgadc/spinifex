@@ -137,6 +137,12 @@ type Appliance struct {
 	// makes Connect skip all host-port work, so existing callers are unaffected.
 	hostPortDeps HostPortDeps
 	eniID        string
+
+	// registry and jobs are optional Teardown collaborators (WithStores): a
+	// nil pair (the zero value, and every test constructing an Appliance
+	// directly) skips the metadata purge, unchanged from before it existed.
+	registry *Registry
+	jobs     *JobStore
 }
 
 // NewAppliance constructs an Appliance over js, encrypting/decrypting the
@@ -165,6 +171,18 @@ func (a *Appliance) WithHostPort(deps HostPortDeps) *Appliance {
 	return a
 }
 
+// WithStores attaches the index registry and job store Teardown purges
+// alongside the appliance's own record, so a rebuilt appliance starts with
+// no stale metadata pointing at data that no longer exists. Optional: an
+// Appliance that never calls this skips the purge (back-compat default).
+func (a *Appliance) WithStores(registry *Registry, jobs *JobStore) *Appliance {
+	a.mu.Lock()
+	a.registry = registry
+	a.jobs = jobs
+	a.mu.Unlock()
+	return a
+}
+
 // TeardownHostPort removes this daemon's own VPC host port, if Connect ever
 // installed one. Not per-endpoint -- the port belongs to this node, not to
 // any one Connect call -- so this is meant for daemon shutdown, not for
@@ -177,16 +195,13 @@ func (a *Appliance) TeardownHostPort() error {
 	return removeApplianceHostPort(deps, eniID)
 }
 
-// Teardown removes the singleton platform appliance entirely: its backing
-// RDS instance, this daemon's VPC host port, then its KV record, in that
-// order so a crash partway through leaves a record an operator can retry
-// teardown against rather than an orphaned instance nothing names anymore.
-// Host-port removal is best-effort (logged, not fatal) so a stuck OVS port
-// never blocks reclaiming the RDS instance or the KV record; every step
-// still runs regardless of an earlier one's failure, and every failure is
-// joined into the returned error. Idempotent overall: tearing down an
-// already-absent appliance is a no-op success. Does not re-provision -- the
-// daemon's own Ensure does that on next startup, not this call.
+// Teardown removes the singleton platform appliance -- RDS instance, host
+// port, then (if WithStores was called) index/job metadata, then the KV
+// record -- so a rebuilt appliance starts coherent. Every step runs
+// regardless of an earlier one's failure, and every failure is joined into
+// the returned error. Idempotent overall: tearing down an already-absent
+// appliance is a no-op success. Does not re-provision -- the daemon's own
+// Ensure does that on next startup, not this call.
 func (a *Appliance) Teardown(ctx context.Context) error {
 	var errs []error
 
@@ -197,6 +212,23 @@ func (a *Appliance) Teardown(ctx context.Context) error {
 	if err := a.TeardownHostPort(); err != nil {
 		slog.Warn("ochrevector: appliance teardown: host port removal failed", "err", err)
 		errs = append(errs, fmt.Errorf("ochrevector: remove appliance host port: %w", err))
+	}
+
+	a.mu.Lock()
+	registry, jobs := a.registry, a.jobs
+	a.mu.Unlock()
+	// Purged after the data-bearing RDS instance is gone but before the
+	// appliance record: a crash here still leaves a record an operator can
+	// retry teardown against, re-attempting the (idempotent) purge too.
+	if registry != nil {
+		if err := registry.PurgeAll(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("ochrevector: purge index registry: %w", err))
+		}
+	}
+	if jobs != nil {
+		if err := jobs.PurgeAll(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("ochrevector: purge ingestion jobs: %w", err))
+		}
 	}
 
 	kv, err := a.bucket(ctx)

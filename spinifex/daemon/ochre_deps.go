@@ -77,6 +77,14 @@ func (d *Daemon) startOchreVector() {
 		NodeID:   d.node,
 	})
 
+	// registry and jobs need only js, never a live backend, so they are built
+	// (and attached) here rather than after Connect: Teardown must be able to
+	// purge them even for an appliance that never comes up. Reused below,
+	// once connected, rather than reconstructed.
+	registry := handlers_ochrevector.NewRegistry(js)
+	jobs := handlers_ochrevector.NewJobStore(js)
+	appliance.WithStores(registry, jobs)
+
 	// Publish the appliance and register the operator teardown subject BEFORE
 	// Connect: recovering a broken singleton is teardown's whole purpose, so it
 	// must stay reachable even when the appliance is unreachable and the connect
@@ -108,8 +116,8 @@ func (d *Daemon) startOchreVector() {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host),
 		d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 
-	registry := handlers_ochrevector.NewRegistry(js)
-	jobs := handlers_ochrevector.NewJobStore(js)
+	// registry and jobs were already built above (and attached to appliance
+	// via WithStores) before Connect was attempted; reused here, not rebuilt.
 	service := handlers_ochrevector.NewService(registry, backend)
 	ingest := handlers_ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
 

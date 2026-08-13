@@ -135,6 +135,30 @@ func TestJobStore_Delete(t *testing.T) {
 	require.NoError(t, store.Delete(ctx, jobAccountA, "job-one"))
 }
 
+// TestJobStore_PurgeAll proves PurgeAll clears every job record across every
+// account, not just one -- the appliance-teardown use case it exists for.
+func TestJobStore_PurgeAll(t *testing.T) {
+	store := newJobStoreTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, store.Reserve(ctx, jobAccountA, JobRecord{ID: "job-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, store.Reserve(ctx, jobAccountB, JobRecord{ID: "job-two", CreatedAt: now, UpdatedAt: now}))
+
+	require.NoError(t, store.PurgeAll(ctx))
+
+	all, err := store.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, all)
+}
+
+// TestJobStore_PurgeAllOnEmptyBucketIsANoOp proves PurgeAll succeeds against
+// a job store with no records yet -- a bucket kv.Keys reports as ErrNoKeysFound.
+func TestJobStore_PurgeAllOnEmptyBucketIsANoOp(t *testing.T) {
+	store := newJobStoreTestStore(t)
+	require.NoError(t, store.PurgeAll(context.Background()))
+}
+
 func TestJobStore_ListAccountScoped(t *testing.T) {
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()

@@ -287,6 +287,29 @@ func (reg *Registry) AppendSourceSpec(ctx context.Context, accountID, indexID st
 	return nil
 }
 
+// PurgeAll deletes every index record across every account, so a rebuilt
+// appliance's registry never advertises a table that no longer exists.
+// Idempotent: an empty bucket is a no-op success.
+func (reg *Registry) PurgeAll(ctx context.Context) error {
+	kv, err := reg.bucket(ctx)
+	if err != nil {
+		return err
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("ochrevector: list keys: %w", err)
+	}
+	for _, key := range keys {
+		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return fmt.Errorf("ochrevector: purge index %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
 // Delete removes accountID's indexID record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (reg *Registry) Delete(ctx context.Context, accountID, indexID string) error {

@@ -127,6 +127,16 @@ func TestModels_NonMIGCapableCompute(t *testing.T) {
 	}
 }
 
+// TestModels_MIGImpliesCompute pins the rule that MIG partitioning is only ever
+// offered on headless datacenter cards, so no entry can claim mig without compute.
+func TestModels_MIGImpliesCompute(t *testing.T) {
+	for id, info := range knownModels {
+		if info.mig && !info.compute {
+			t.Errorf("%s (%s) sets mig without compute", id, info.name)
+		}
+	}
+}
+
 func TestLookupModel_Unknown(t *testing.T) {
 	name, mem := lookupModel("10de", "ffff")
 	if name != "" {

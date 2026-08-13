@@ -2,7 +2,8 @@ package viperblockd
 
 // Rebuilds cfg.MountedVolumes from nbdkit processes that survived a
 // viperblockd restart, so findMountedVolume can find them again (see
-// orphan_scan.go for the equivalent problem/fix on the QEMU side).
+// orphan_scan.go for the equivalent problem/fix on the QEMU side), and reaps
+// the two classes of surviving nbdkit that recovery itself cannot adopt.
 
 import (
 	"bytes"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -170,10 +172,11 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 		}
 
 		// Two live nbdkits for one volume is the double-mount hazard itself:
-		// adopt the first and leave the second visible in the log.
+		// adopt the first and reap the rest if nothing is using them.
 		if _, ok := findMountedVolume(cfg, disc.Volume); ok {
 			slog.Warn("recovery: volume already recovered from another nbdkit process, skipping",
 				"pid", disc.PID, "volume", disc.Volume)
+			reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate)
 			continue
 		}
 
@@ -181,6 +184,7 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 		if err != nil {
 			slog.Error("recovery: failed to rebuild mounted volume registry entry, skipping",
 				"pid", disc.PID, "volume", disc.Volume, "err", err)
+			reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
 			continue
 		}
 
@@ -191,4 +195,123 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 		slog.Info("recovery: rebuilt mounted volume registry entry from surviving nbdkit process",
 			"pid", mv.PID, "volume", mv.Name, "socket", mv.Socket, "port", mv.Port)
 	}
+}
+
+// reapReason names which of recovery's two failure-to-adopt paths produced
+// an unclaimed nbdkit process, carried only for logging.
+type reapReason string
+
+const (
+	reapReasonUnadoptable reapReason = "unadoptable"
+	reapReasonDuplicate   reapReason = "duplicate"
+)
+
+// reapOrphanedNbdkit decides whether disc -- a corroborated nbdkit process
+// recovery could not fold into MountedVolumes -- may be safely signalled.
+// Reaping the wrong process destroys a running guest's data path, so disc is
+// only ever signalled once a scan of every other process on the host finds no
+// reference to its NBD endpoint. A referencing process, or a scan that could
+// not complete, both leave it running: the caller gets a loud log either way.
+func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason) {
+	referencingPID, referenced, err := endpointReferencer(procRoot, disc)
+	if err != nil {
+		slog.Warn("recovery: could not scan for processes using an unclaimed nbdkit's endpoint, leaving it running",
+			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
+		return
+	}
+	if referenced {
+		slog.Error("recovery: unclaimed nbdkit process is still referenced by a live process; left running deliberately, needs operator attention",
+			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "referencing_pid", referencingPID)
+		return
+	}
+
+	proc, err := os.FindProcess(disc.PID)
+	if err != nil {
+		slog.Error("recovery: failed to locate unclaimed nbdkit process to reap",
+			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
+		return
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		slog.Error("recovery: failed to signal unclaimed nbdkit process",
+			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
+		return
+	}
+
+	if disc.Socket != "" {
+		if err := os.Remove(disc.Socket); err != nil && !os.IsNotExist(err) {
+			slog.Warn("recovery: failed to remove socket file for reaped nbdkit process",
+				"pid", disc.PID, "volume", disc.Volume, "socket", disc.Socket, "err", err)
+		}
+	}
+
+	slog.Info("recovery: reaped unclaimed nbdkit process with no live referencer",
+		"pid", disc.PID, "volume", disc.Volume, "reason", reason)
+}
+
+// endpointReferencer reports whether any process other than disc's own PID
+// has disc's NBD endpoint on its own /proc/<pid>/cmdline: the socket path for
+// a unix mount, or the 127.0.0.1:<port> pair for a TCP one. That is how a
+// guest's QEMU process is handed its drive backend at launch, and it is the
+// only positive evidence available that an unclaimed nbdkit still serves a
+// live guest. A non-nil error means the scan itself could not be completed,
+// not that nothing was found -- callers must treat that as unknown, not safe.
+func endpointReferencer(procRoot string, disc discoveredNbdkit) (pid int, found bool, err error) {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return 0, false, err
+	}
+
+	for _, entry := range entries {
+		candidate, cerr := strconv.Atoi(entry.Name())
+		if cerr != nil || candidate <= 0 || candidate == disc.PID {
+			continue
+		}
+
+		cmdline, rerr := os.ReadFile(filepath.Join(procRoot, entry.Name(), "cmdline"))
+		if rerr != nil {
+			continue
+		}
+
+		if cmdlineReferencesEndpoint(cmdline, disc) {
+			return candidate, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// cmdlineReferencesEndpoint checks a NUL-separated /proc/<pid>/cmdline for
+// disc's endpoint. A socket mount's path appears verbatim in whichever
+// argument named it (QEMU's nbd+unix:///?socket=<path> file= or its
+// server.path=<path> -blockdev option). A TCP mount's 127.0.0.1:<port> pair
+// may appear joined in one argument (a boot/EFI drive's nbd://host:port) or
+// split across server.host=/server.port= within the same comma-joined
+// -blockdev argument, so both shapes are checked.
+func cmdlineReferencesEndpoint(cmdline []byte, disc discoveredNbdkit) bool {
+	args := bytes.Split(bytes.TrimRight(cmdline, "\x00"), []byte{0})
+
+	if disc.Socket != "" {
+		needle := []byte(disc.Socket)
+		for _, arg := range args {
+			if bytes.Contains(arg, needle) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if disc.Port <= 0 {
+		return false
+	}
+	joined := fmt.Appendf(nil, "127.0.0.1:%d", disc.Port)
+	serverPort := fmt.Appendf(nil, "server.port=%d", disc.Port)
+	serverHost := []byte("server.host=127.0.0.1")
+	for _, arg := range args {
+		if bytes.Contains(arg, joined) {
+			return true
+		}
+		if bytes.Contains(arg, serverPort) && bytes.Contains(arg, serverHost) {
+			return true
+		}
+	}
+	return false
 }

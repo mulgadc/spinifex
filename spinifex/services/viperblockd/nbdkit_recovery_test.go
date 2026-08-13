@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,6 +66,34 @@ func writeProcFixture(t *testing.T, procRoot string, pid int, comm string, argv 
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte(strings.Join(argv, "\x00")+"\x00"), 0644))
+}
+
+// spawnLongRunningProcess starts a real, short-lived-by-signal process so
+// reap tests can send it a genuine SIGTERM and observe a genuine exit,
+// instead of pretending a fabricated /proc entry is a live process (SIGTERM
+// only ever reaches the real kernel process table, never procRoot).
+func spawnLongRunningProcess(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-done
+	})
+	return pid
+}
+
+// writeReferencerFixture writes a /proc/<pid>/{comm,cmdline} pair for a
+// process whose argv carries volumeSocket's endpoint the way QEMU's -blockdev
+// does, so endpointReferencer has something positive to find. comm is
+// cosmetic only -- endpointReferencer does not filter by it, matching the
+// "any process on the host may be a legitimate referencer" fail-safe design.
+func writeReferencerFixture(t *testing.T, procRoot string, pid int, blockdevArg string) {
+	t.Helper()
+	writeProcFixture(t, procRoot, pid, "qemu-system-x86_64", []string{"qemu-system-x86_64", "-blockdev", blockdevArg})
 }
 
 // --- argv parsing ---
@@ -329,4 +359,173 @@ func TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "two nbdkits for one volume must produce one registry entry, not two")
+}
+
+// --- orphan reaping ---
+
+// TestReapOrphanedNbdkit_NoReferencer_SignalsAndRemovesSocket proves the
+// baseline case the bead asks for: an unclaimed nbdkit with nothing on the
+// host referencing its endpoint is signalled and its socket cleaned up.
+func TestReapOrphanedNbdkit_NoReferencer_SignalsAndRemovesSocket(t *testing.T) {
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), "vol-reap-unreferenced.sock")
+	listenUnix(t, socket)
+	procRoot := t.TempDir() // no other processes at all: nothing to find
+
+	logs := captureLogs(t)
+	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-unreferenced1", Socket: socket}
+	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+
+	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+		"an unreferenced orphan must be signalled and exit")
+	_, err := os.Stat(socket)
+	assert.True(t, os.IsNotExist(err), "the reaped orphan's socket file must be removed")
+	assert.Contains(t, logs.String(), "reaped unclaimed nbdkit process")
+	assert.Contains(t, logs.String(), fmt.Sprintf("pid=%d", pid))
+	assert.Contains(t, logs.String(), "volume=vol-reap-unreferenced1")
+	assert.Contains(t, logs.String(), "reason=unadoptable")
+}
+
+// TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged proves the
+// safety rule: an unclaimed nbdkit whose endpoint is still named on another
+// process's cmdline must never be signalled, however unadoptable it looked.
+func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), "vol-reap-referenced.sock")
+	listenUnix(t, socket)
+
+	procRoot := t.TempDir()
+	const referencerPID = 909090
+	writeReferencerFixture(t, procRoot, referencerPID,
+		fmt.Sprintf("driver=nbd,node-name=vol0,server.type=unix,server.path=%s,export=", socket))
+
+	logs := captureLogs(t)
+	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-referenced1", Socket: socket}
+	reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate)
+
+	// Give a real signal every chance to have landed before asserting it did not.
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, utils.ProcessAlive(pid), "a referenced orphan must never be signalled")
+	_, err := os.Stat(socket)
+	assert.NoError(t, err, "a live orphan's socket must not be removed")
+	assert.Contains(t, logs.String(), "left running deliberately")
+	assert.Contains(t, logs.String(), fmt.Sprintf("pid=%d", pid))
+	assert.Contains(t, logs.String(), "volume=vol-reap-referenced1")
+	assert.Contains(t, logs.String(), fmt.Sprintf("referencing_pid=%d", referencerPID))
+}
+
+// TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs proves
+// endpointReferencer recognizes a TCP endpoint even when QEMU's -blockdev
+// splits host and port into server.host=/server.port= within one argument,
+// not just the joined host:port form a boot/EFI drive uses.
+func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *testing.T) {
+	pid := spawnLongRunningProcess(t)
+	procRoot := t.TempDir()
+	const referencerPID = 909091
+	writeReferencerFixture(t, procRoot, referencerPID,
+		"driver=nbd,node-name=vol0,server.type=inet,server.host=127.0.0.1,server.port=10899,export=")
+
+	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-tcp1", Port: 10899}
+	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, utils.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
+}
+
+// TestRecoverMountedVolumes_DuplicateVolume_UnusedDuplicateReaped extends
+// TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce: the duplicate
+// recovery declines to adopt must not just be skipped but reaped, while the
+// adopted process is never touched, matching the bead's acceptance that no
+// volume is ever served by two processes.
+func TestRecoverMountedVolumes_DuplicateVolume_UnusedDuplicateReaped(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.constructVB = fileBackedConstructVB(t)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-duplicatereap1"
+	procRoot := t.TempDir()
+	socketDir := t.TempDir()
+
+	// Both candidates are real processes: scanNbdkitProcs' adoption order
+	// follows os.ReadDir's lexical sort of the PID directory names, which is
+	// not something this test controls, so either could end up "adopted".
+	// Using two real spawned PIDs means whichever one recovery declines to
+	// adopt is always safe to actually SIGTERM.
+	pids := map[int]string{}
+	for _, name := range []string{"a", "b"} {
+		pid := spawnLongRunningProcess(t)
+		socket := filepath.Join(socketDir, name+".sock")
+		listenUnix(t, socket)
+		writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
+		pids[pid] = socket
+	}
+
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
+
+	mv, ok := findMountedVolume(cfg, volumeName)
+	require.True(t, ok)
+	t.Cleanup(func() { mv.VB.StopWALSyncer() })
+	require.Contains(t, pids, mv.PID, "the adopted PID must be one of the two candidates")
+
+	var duplicatePID int
+	var duplicateSocket string
+	for pid, socket := range pids {
+		if pid != mv.PID {
+			duplicatePID, duplicateSocket = pid, socket
+		}
+	}
+
+	require.Eventually(t, func() bool { return !utils.ProcessAlive(duplicatePID) }, 2*time.Second, 20*time.Millisecond,
+		"the unused duplicate must be reaped")
+	assert.True(t, utils.ProcessAlive(mv.PID), "the adopted process must never be signalled")
+	_, err := os.Stat(duplicateSocket)
+	assert.True(t, os.IsNotExist(err), "the reaped duplicate's socket file must be removed")
+}
+
+// TestRecoverMountedVolumes_UnadoptableReapedAcrossRestarts covers the
+// restart-then-stop sequence the bead asks for, not a single mount/unmount
+// lifetime: a backend recovery cannot adopt (its volume no longer exists) is
+// reaped on the first restart's recovery pass, and a second pass -- standing
+// in for the field case's further stop/start cycles -- finds nothing left to
+// reap or log, proving the orphan does not survive the way it did before
+// this fix.
+func TestRecoverMountedVolumes_UnadoptableReapedAcrossRestarts(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.S3Host = fastFailingS3Host(t) // forces buildVB to fail: the volume is unadoptable
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-unadoptable-restart1"
+	procRoot := t.TempDir()
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), "o.sock") // short: unix socket paths cap at ~108 bytes
+	listenUnix(t, socket)
+	writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
+
+	// First restart's recovery pass: the volume cannot be rebuilt, and
+	// nothing references its endpoint, so it must be reaped.
+	logs := captureLogs(t)
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
+
+	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+		"an unadoptable backend with no referencer must be reaped on its first recovery pass")
+	assert.Contains(t, logs.String(), "reaped unclaimed nbdkit process")
+	_, ok := findMountedVolume(cfg, volumeName)
+	assert.False(t, ok, "a backend recovery could not rebuild must never appear in MountedVolumes")
+
+	// The kernel's real /proc would no longer list a PID that has exited;
+	// mirror that so the second pass sees exactly what a real restart would.
+	require.NoError(t, os.RemoveAll(filepath.Join(procRoot, strconv.Itoa(pid))))
+
+	// Second restart's recovery pass (standing in for further stop/start
+	// cycles): nothing survived, so there is nothing left to discover, reap
+	// or log -- unlike the field case, which was still there after six.
+	logs2 := captureLogs(t)
+	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
+
+	assert.NotContains(t, logs2.String(), "volume="+volumeName,
+		"a reaped orphan must not be rediscovered or re-logged on a later restart")
+	_, ok = findMountedVolume(cfg, volumeName)
+	assert.False(t, ok)
 }

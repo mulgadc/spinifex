@@ -448,7 +448,7 @@ jobs:
       cancel-in-progress: false
     env:
       CI_WAN_MODE: dhcp
-      CI_PASSWORD: ${{ secrets.CI_NODE_PASSWORD }}
+      CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
       # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
       # instances. Disjoint from cell-22's pool so a run that dies holding its
       # SNAT address cannot collide with the next cell.
@@ -585,7 +585,7 @@ jobs:
     env:
       MEM: 8G
       SMP: 8
-      PASSWORD: ${{ secrets.CI_NODE_PASSWORD }}
+      PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
       EXT_POOL_START: 192.168.0.235
       EXT_POOL_END: 192.168.0.239
       EXT_GATEWAY: 192.168.1.1

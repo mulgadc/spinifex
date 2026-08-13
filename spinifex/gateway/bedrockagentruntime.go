@@ -390,6 +390,10 @@ func queryResultToRetrievalResult(r handlers_ochrevector.QueryResult) *bedrockag
 	}
 }
 
+// defaultRetrieveResults matches AWS Retrieve's documented default so an
+// omitted numberOfResults returns 5, not the vector store's own K default.
+const defaultRetrieveResults = 5
+
 // Retrieve resolves knowledgeBaseId's bound index and runs a similarity query
 // against it: retrievalQuery.text -> Text, numberOfResults -> K, filter ->
 // translate() onto .9's Filter AST. Phase 5 is single-page (D2's scope is
@@ -413,6 +417,9 @@ func Retrieve(ctx context.Context, accountID string, kb *handlers_ochrevector.KB
 	numResults := 0
 	if input.RetrievalConfiguration != nil && input.RetrievalConfiguration.VectorSearchConfiguration != nil {
 		numResults = int(aws.Int64Value(input.RetrievalConfiguration.VectorSearchConfiguration.NumberOfResults))
+	}
+	if numResults <= 0 {
+		numResults = defaultRetrieveResults
 	}
 
 	filter, err := decodeRetrieveFilter(body)
@@ -511,6 +518,9 @@ func RetrieveAndGenerate(ctx context.Context, accountID string, kb *handlers_och
 	numResults := 0
 	if kbConfig.RetrievalConfiguration != nil && kbConfig.RetrievalConfiguration.VectorSearchConfiguration != nil {
 		numResults = int(aws.Int64Value(kbConfig.RetrievalConfiguration.VectorSearchConfiguration.NumberOfResults))
+	}
+	if numResults <= 0 {
+		numResults = defaultRetrieveResults
 	}
 
 	filter, err := decodeRetrieveAndGenerateFilter(body)

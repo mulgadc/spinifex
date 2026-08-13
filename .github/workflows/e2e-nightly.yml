@@ -464,8 +464,10 @@ jobs:
 
       - name: Configure work directories
         run: |
-          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/spx-work"
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -612,8 +614,10 @@ jobs:
 
       - name: Configure work directories
         run: |
-          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/spx-work"
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -718,9 +722,11 @@ jobs:
 
       - name: Configure work directories
         run: |
-          echo "TMPDIR=$RUNNER_TEMP/spx-work" >> "$GITHUB_ENV"
-          echo "PERF_RESULTS_ROOT=$RUNNER_TEMP/predastore-perf-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/spx-work"
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "PERF_RESULTS_ROOT=$E2E_ROOT/predastore-perf-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout Spinifex
         uses: actions/checkout@v7

@@ -32,10 +32,9 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		if fetched == nil {
 			return fmt.Errorf("bootstrap fetch returned no config")
 		}
-		// A control plane that predates the encrypted payload answers initialize
-		// with nothing to initialise with. Retrying re-dials the worker queue
-		// group until an upgraded node answers, so a mixed-version fleet heals
-		// within one boot rather than needing a reboot.
+		// A control plane predating the encrypted payload answers initialize with
+		// nothing to initialise with. Retrying re-dials the queue group until an
+		// upgraded node answers, so a mixed-version fleet heals within one boot.
 		if fetched.Mode == handlers_rds.BootstrapModeInitialize &&
 			(fetched.MasterUserPassword == nil || *fetched.MasterUserPassword == "") {
 			return fmt.Errorf("bootstrap fetch returned mode=%s with no master password", fetched.Mode)
@@ -181,12 +180,8 @@ func shellQuote(s string) string {
 }
 
 // postgresql.conf syntax, which MariaDB's option files also parse. Values are
-// quoted so a setting with a space or unit suffix survives; the engine accepts
-// quoted numerics and booleans too.
-//
-// Names are the engine's rather than the customer's: a setting the server takes
-// only through SET has a different spelling at startup, and writing the wrong one
-// leaves the engine refusing to boot on a file already on the data volume.
+// quoted so a space or unit suffix survives. Names are the engine's startup
+// spellings, not the customer's: the wrong one leaves the engine unable to boot.
 func renderParameters(engineName string, params []handlers_rds.Parameter) (string, error) {
 	engine, err := handlers_rds.LookupEngine(engineName)
 	if err != nil {

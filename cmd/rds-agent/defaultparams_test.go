@@ -1,5 +1,9 @@
 package main
 
+//test:in-package — the agent is a main package, which has no external test
+// package to import it from, and this covers the unexported default parameter
+// set the image bakes.
+
 import (
 	"os"
 	"path/filepath"

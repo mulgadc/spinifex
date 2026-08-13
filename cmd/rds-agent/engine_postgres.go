@@ -35,10 +35,9 @@ type postgresEngine struct {
 
 var _ engine = (*postgresEngine)(nil)
 
-// pg_isready is what gives PostgreSQL three states for free: exit 0 is serving,
-// exit 1 is a postmaster up and rejecting connections, and anything else is an
-// engine that is not there at all. Resolved on PATH, where the client package
-// puts it.
+// pg_isready gives PostgreSQL three states for free: exit 0 is serving, exit 1
+// is a postmaster up and rejecting connections, anything else is an engine that
+// is not there. Resolved on PATH, where the client package puts it.
 const postgresProbeBinary = "pg_isready"
 
 func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
@@ -78,10 +77,9 @@ func mustLookupEngine(name string) handlers_rds.Engine {
 	return engine
 }
 
-// The include the resolved parameter set is rendered to, and the copy of the
-// last one the engine accepted. Both live beside the data rather than in /etc,
-// matching rds-init: a class change boots a fresh root volume, which would
-// otherwise revert them.
+// The include the resolved set is rendered to, and the copy of the last one the
+// engine accepted. Both live beside the data rather than in /etc, matching
+// rds-init: a class change boots a fresh root volume and would revert them.
 const (
 	postgresParametersFile = "10-rds-parameters.conf"
 	// Deliberately not a .conf name: include_dir globs *.conf, so the rollback
@@ -150,10 +148,9 @@ ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 	return nil
 }
 
-// Installs the resolved set, validates it with the engine's own config parser
-// before the engine ever adopts it, and reloads. A value the engine refuses is
-// rolled back here rather than left on the data volume, where it would survive
-// every VM replace and turn the next restart into a boot loop.
+// Installs the resolved set, validates it with the engine's own parser before
+// the engine adopts it, and reloads. A refused value is rolled back here rather
+// than left on the data volume, where it would survive every VM replace.
 func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
@@ -170,10 +167,9 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 		}
 	}
 
-	// The check has to run against the file in place, because the engine parses
-	// the datadir's own include_dir. The window that leaves is closed from both
-	// ends: the rollback below, and the last-known-good restore the agent runs at
-	// boot when the engine does not come up.
+	// The check runs against the file in place, because the engine parses the
+	// datadir's own include_dir. The window that leaves is closed by the rollback
+	// below and the last-known-good restore the agent runs at boot.
 	restore, err := e.params.install(params)
 	if err != nil {
 		return nil, err
@@ -244,9 +240,8 @@ func (e *postgresEngine) RestoreLastKnownGoodParameters(ctx context.Context) (bo
 }
 
 // The engine's own parser, run offline against the datadir. Reading one setting
-// back is enough: postgres parses postgresql.conf and every include first, and
-// exits non-zero naming the file and line of an unknown parameter or a value
-// outside its range.
+// back is enough: postgres parses every include first and exits non-zero naming
+// the file and line of an unknown parameter or an out-of-range value.
 func (e *postgresEngine) checkConfig(ctx context.Context) error {
 	if _, err := e.run(ctx, command{
 		Name: filepath.Join(filepath.Dir(e.psql), "postgres"),

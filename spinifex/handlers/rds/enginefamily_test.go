@@ -1,5 +1,9 @@
 package handlers_rds
 
+//test:in-package — builds Engine values from unexported fields (catalog,
+// maxUsernameLen, validateDBName) and swaps the unexported engines and
+// enginesByFamily registries, none of which are reachable from outside.
+
 import (
 	"testing"
 	"time"

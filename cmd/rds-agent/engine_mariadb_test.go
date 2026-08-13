@@ -1,5 +1,9 @@
 package main
 
+//test:in-package — the agent is a main package, which has no external test
+// package to import it from, and these cases drive the unexported mariadbEngine
+// and its parameter store directly.
+
 import (
 	"context"
 	"errors"

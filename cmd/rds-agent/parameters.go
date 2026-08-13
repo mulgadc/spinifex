@@ -13,10 +13,8 @@ import (
 )
 
 // The generated parameter files and what it takes to install one. They live on
-// the data volume rather than under /etc, at the same paths rds-init writes them
-// to: a class change is a VM replacement, so a set under /etc would be discarded
-// with the boot volume and the instance would silently revert to catalog
-// defaults while the API still reported the customer's values.
+// the data volume at the paths rds-init writes: a class change replaces the VM,
+// so a set under /etc would revert to defaults while the API reported otherwise.
 type parameterStore struct {
 	dir string
 	// The include the resolved set is rendered to.
@@ -114,9 +112,8 @@ func (s parameterStore) chownToEngine(path string) error {
 }
 
 // Snapshots the installed set as the rollback target, but only once the engine
-// is running all of it. A set with a setting still pending a restart has not
-// been shown to serve, and promoting it would leave the rollback pointing at the
-// configuration that is about to fail.
+// is running all of it. A set still pending a restart has not been shown to
+// serve, so promoting it would point the rollback at a config about to fail.
 func recordLastGood(ctx context.Context, store parameterStore, pending pendingRestartFn) error {
 	if _, err := os.Stat(store.installedPath()); err != nil {
 		if os.IsNotExist(err) {
@@ -180,8 +177,7 @@ type pendingRestartFn func(ctx context.Context) ([]string, error)
 
 // The parameter-file state every engine keeps. The operations over it are free
 // functions above rather than methods here, so each implementation names its own
-// restart and pending-restart answers at the call site and the compiler checks
-// that it has them.
+// restart and pending answers at the call site where the compiler checks them.
 type parameterManager struct {
 	params parameterStore
 	probe  *engineProbe
@@ -197,10 +193,9 @@ const (
 	parameterRepairPoll    = time.Second
 )
 
-// Starts a down engine on the set that was just installed and waits for it to
-// serve. Reached when the engine went away during an apply: the installed set is
-// the newer of the two, so starting on it beats restoring one that already left
-// the engine unable to serve.
+// Starts a down engine on the set just installed and waits for it to serve.
+// Reached when the engine went away during an apply: the installed set is the
+// newer, so starting on it beats restoring one that already failed.
 func awaitRepairedEngine(ctx context.Context, probe *engineProbe, restart func(context.Context) error,
 	pending pendingRestartFn, timeout, poll time.Duration) ([]string, error) {
 	repairCtx, cancel := context.WithTimeout(ctx, timeout)

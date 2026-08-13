@@ -70,10 +70,9 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 	}
 }
 
-// The engine is reached over its unix socket as root, which the datadir's
-// unix_socket plugin authenticates from the connecting process' own uid — the
-// direct analogue of PostgreSQL's peer auth, and the reason the agent holds no
-// password of its own.
+// Reached over its unix socket as root, which the datadir's unix_socket plugin
+// authenticates from the connecting process' own uid. That is why the agent
+// holds no password of its own.
 type mariadbEngine struct {
 	quiesceState
 	parameterManager
@@ -167,15 +166,9 @@ func mariadbSocketPath(cfg config) string {
 	return filepath.Join(cfg.SocketDir, mariadbSocketFile)
 }
 
-// What every connection this agent makes to the local engine has in common, from
-// the probe's ping to a held quiesce session. One constructor because a client
-// this list misses reaches the engine on different terms than the rest.
-//
-// --no-defaults so no option file can move the connection. --skip-ssl because
-// the platform drop-in offers TLS a local socket gains nothing from, and whose
-// serving cert names the endpoint rather than this path, so a verifying client
-// is refused outright. No password: root is what the datadir's unix_socket
-// plugin authenticates, and the agent is root.
+// Every local connection, from the probe's ping to a held quiesce session.
+// --no-defaults so no option file can move it; --skip-ssl because the serving
+// cert names the endpoint rather than this socket, so a verifying client fails.
 func mariadbSocketConnectArgs(socket string) []string {
 	return []string{
 		"--no-defaults", "--protocol=socket", "--socket=" + socket,
@@ -200,20 +193,9 @@ func newMariaDBProbe(cfg config, run probeRunner) *engineProbe {
 	return newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg, run, processAlive))
 }
 
-// Three stages, because MariaDB has no single signal that separates an engine
-// still coming up from one that is not there at all: during InnoDB crash
-// recovery mariadbd opens neither its socket nor its port, so a ping fails
-// exactly as it would against nothing.
-//
-// Losing that distinction would break the rollback guard, which treats a
-// recovering engine as a reason to reset its deadline. An instance killed hard
-// mid-write can spend minutes replaying its redo log; read as absent, the guard
-// would roll the parameter file back and restart the server mid-recovery,
-// discarding the work — a rollback that exists to break a boot loop would create
-// one, on an instance whose parameters were never at fault.
-//
-// The port is not consulted. Both stages below reach the server over its unix
-// socket, whose path does not move with the port.
+// Three stages: during InnoDB crash recovery mariadbd opens neither socket nor
+// port, so a ping cannot tell a recovering engine from an absent one — and
+// reading recovery as absent has the rollback guard restart a server mid-replay.
 func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) probeStateFn {
 	pidFile, socket := cfg.EnginePidFile, mariadbSocketPath(cfg)
 	admin, client := filepath.Join(cfg.EngineBinDir, mariadbAdminBinary), filepath.Join(cfg.EngineBinDir, mariadbClientBinary)
@@ -243,9 +225,8 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 		}
 
 		// The process is up from here on, so every remaining failure is an engine
-		// that is not serving yet rather than one that is gone — including a probe
-		// binary that will not run at all. Reporting absent against a live server
-		// would have the rollback guard restart one that is making progress.
+		// not serving yet rather than one that is gone. Reporting absent against a
+		// live server would have the rollback guard restart one making progress.
 		switch code, stderr, err := runBounded(ctx, admin, append(slices.Clone(connect), "ping")...); {
 		case err != nil:
 			return engineRecovering, fmt.Sprintf("engine probe could not run: %v", err)
@@ -258,10 +239,9 @@ func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) pro
 				cfg.EngineErrorLog), stderr)
 		}
 
-		// ping answers successfully even on ER_ACCESS_DENIED, so on its own it
-		// certifies a server that may be unable to execute anything at all. The
-		// statement is a literal in the argv rather than on stdin because it
-		// carries nothing secret and a probe reads no result back.
+		// ping answers even on ER_ACCESS_DENIED, so on its own it certifies a server
+		// that may be unable to execute anything. The statement rides argv rather
+		// than stdin: it carries nothing secret and a probe reads no result back.
 		query := append(slices.Clone(connect), "--batch", "--skip-column-names", "--execute=SELECT 1")
 		switch code, stderr, err := runBounded(ctx, client, query...); {
 		case err != nil:
@@ -359,11 +339,8 @@ func (e *mariadbEngine) Stop(ctx context.Context) error {
 }
 
 // Only the parameter rollback and a failed apply call this: a restart the
-// control plane wants goes through RebootDBInstance, which cycles the VM.
-//
-// The serving copy is refreshed first, because the server is about to start on
-// whatever is installed. That is exactly what rds-init does on every boot, and
-// it is what keeps the two equal by construction whenever the engine starts.
+// control plane wants goes through RebootDBInstance, which cycles the VM. The
+// serving copy is refreshed first, since the server starts on what is installed.
 func (e *mariadbEngine) Restart(ctx context.Context) error {
 	if err := e.recordServingCopy(); err != nil {
 		return err
@@ -399,13 +376,8 @@ var mariadbBooleanValues = map[string]string{
 }
 
 // One SET GLOBAL right-hand side. MariaDB refuses a quoted literal for a numeric
-// or boolean system variable with ER_WRONG_TYPE_FOR_VAR, so the catalog's data
-// type decides the form rather than one shape serving every setting.
-//
-// A numeric is re-rendered from its parsed value and a boolean from a fixed
-// table, which is also what keeps an unquoted right-hand side safe to
-// interpolate: neither can carry anything the API validated but SQL would read
-// as more statement.
+// or boolean with ER_WRONG_TYPE_FOR_VAR, so the catalog's data type picks the
+// form; re-rendering from the parsed value is what keeps it safe to interpolate.
 func mariadbSetValue(dataType, value string) (string, error) {
 	switch dataType {
 	case handlers_rds.ParamTypeInteger:
@@ -446,10 +418,9 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 		return fmt.Errorf("set-password requires both %s and %s",
 			handlers_rds.CommandParamMasterUsername, handlers_rds.CommandParamMasterUserPassword)
 	}
-	// This runs as the server's own superuser over the socket, so a reserved name
-	// in the command payload would rotate the platform's account rather than the
-	// customer's. The rest of the rule matters just as much here, because the name
-	// is interpolated into the statement below rather than quoted by the client.
+	// This runs as the server's own superuser, so a reserved name in the payload
+	// would rotate the platform's account. The whole rule matters here, not just
+	// the reserved set: the name is interpolated below rather than client-quoted.
 	if err := e.rules.validateUsername(username); err != nil {
 		return fmt.Errorf("refusing to set the password of role %q: %w", username, err)
 	}
@@ -466,14 +437,9 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 	return nil
 }
 
-// Installs the resolved set and applies the half of it a running server can
-// adopt. MariaDB re-reads no configuration file while it is up, so SET GLOBAL is
-// the only way an immediate apply reaches it; the static half waits in the
-// installed file for the next start, and is what comes back as pending.
-//
-// There is no offline parser to check the set with first — MariaDB ships no
-// equivalent of postgres -C — so the safety net for a static value the server
-// will not start on is the boot-time rollback to the last accepted set.
+// Installs the resolved set and applies the half a running server can adopt.
+// MariaDB re-reads no file while up, so SET GLOBAL is the only immediate path.
+// It has no offline parser, so the safety net is the boot-time rollback.
 func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
@@ -515,14 +481,9 @@ func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_r
 	return e.pendingRestartParameters(ctx)
 }
 
-// The dynamic half of the set, in one invocation that stops at the first refusal
-// so the server's own message names the setting it would not take.
-//
-// Only names the catalog carries are emitted, which is also what keeps the
-// statement safe to build: a name is an identifier here, and the classification
-// that selects it comes from the same table the API validated the request
-// against. MariaDB cannot set several globals atomically, so a value set before
-// a refusal stays live until the next restart, when the restored file wins.
+// The dynamic half, in one invocation that stops at the first refusal so the
+// server names the setting it would not take. Only catalog names are emitted,
+// which is what makes the identifier safe to build into the statement.
 func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []handlers_rds.Parameter) error {
 	var b strings.Builder
 	b.WriteString("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';\n")
@@ -551,18 +512,9 @@ func (e *mariadbEngine) restartOnRepairSetLocked(ctx context.Context) ([]string,
 	return awaitRepairedEngine(ctx, e.probe, e.Restart, e.pendingRestartParameters, e.repairTimeout, e.repairPoll)
 }
 
-// MariaDB has no pending_restart. Nothing in information_schema reports a
-// setting the server has stored but not adopted, so the answer is computed from
-// the files instead: the catalog-static keys whose value in the installed
-// drop-in differs from the one the server actually started on.
-//
-// Comparing live values against the desired set was rejected. mysqld silently
-// rewrites values at startup — rounding the buffer pool and log file sizes, and
-// downgrading max_connections when it cannot obtain enough file descriptors —
-// and each rewrite would read as a permanent pending restart: un-clearable
-// pending-reboot state, permanent drift, and a last-known-good copy frozen for
-// good, silently disabling a recovery mechanism only exercised during an
-// incident.
+// MariaDB has no pending_restart, so this is computed from the files: the
+// catalog-static keys whose installed value differs from the one the server
+// started on. Live values are not compared — mysqld silently rewrites them.
 func (e *mariadbEngine) pendingRestartParameters(context.Context) ([]string, error) {
 	installed, err := readOptionFile(e.params.installedPath())
 	if err != nil {
@@ -665,20 +617,14 @@ func normaliseOptionName(name string) string {
 	return strings.ReplaceAll(strings.TrimSpace(name), "-", "_")
 }
 
-// How long any one BACKUP STAGE waits for the metadata locks it needs. Well
-// under the control plane's own quiesce timeout, so a stage that cannot take its
-// lock fails and is reported rather than being abandoned mid-wait with the
-// request still queued in front of live traffic.
+// How long any one BACKUP STAGE waits for its metadata locks. Well under the
+// control plane's quiesce timeout, so a stage that cannot take its lock is
+// reported rather than left queued in front of live traffic.
 const mariadbQuiesceLockWait = 20 * time.Second
 
-// MariaDB's own backup API rather than FLUSH TABLES WITH READ LOCK. FTWRL turns
-// a snapshot into a write outage: the whole database is read-only until it is
-// released, so a control plane that died after issuing quiesce would leave the
-// customer read-only for the full hold, on a schedule and unattended. Its
-// acquisition phase is unbounded too, with writes queueing behind a pending lock
-// request. BACKUP STAGE blocks commits rather than all writes and its flush
-// stage covers Aria and MyISAM, so it yields a better consistency point while
-// being far less disruptive — and it is what mariadb-backup itself uses.
+// MariaDB's own backup API rather than FLUSH TABLES WITH READ LOCK: FTWRL makes
+// the whole database read-only for the full hold, and its acquisition phase is
+// unbounded. BACKUP STAGE blocks commits instead, and covers Aria and MyISAM.
 func (e *mariadbEngine) Quiesce(ctx context.Context, label string, hold time.Duration) error {
 	if err := validateQuiesceRequest(label, hold); err != nil {
 		return err
@@ -704,10 +650,9 @@ func (e *mariadbEngine) Quiesce(ctx context.Context, label string, hold time.Dur
 		return fmt.Errorf("open a backup session: %w", err)
 	}
 
-	// The stages run in order and on one connection: MariaDB releases the whole
-	// hold with the session that took it, which is what bounds a control plane
-	// that dies mid-snapshot. Fed one at a time so a stage that cannot take its
-	// locks is named rather than reported as a line number.
+	// In order and on one connection: MariaDB releases the hold with the session
+	// that took it, which bounds a control plane that dies mid-snapshot. Fed one
+	// at a time so a stage that cannot take its locks is named.
 	stages := []string{
 		fmt.Sprintf("SET SESSION lock_wait_timeout = %d;\n", int(mariadbQuiesceLockWait.Seconds())),
 		"BACKUP STAGE START;\n",

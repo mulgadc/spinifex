@@ -64,9 +64,8 @@ func (p *engineProbe) setPort(port int) {
 }
 
 // What the engine is doing, before the seenHealthy latch collapses "never up"
-// and "was up and went away" into one health. The parameter rollback needs them
-// apart: a postmaster that is up and replaying WAL will come back on its own, one
-// that is not running at all after a parameter change will not.
+// and "went away" into one health. The rollback needs them apart: an engine
+// replaying WAL comes back on its own, one that is not running will not.
 type engineState int
 
 const (

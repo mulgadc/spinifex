@@ -9,18 +9,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
-// MariaDB 11.8 is the current LTS series and the only MariaDB in the pinned
-// Alpine base. MajorVersion is the version series the API pins to rather than an
-// integer major — PostgreSQL's version axis is one integer and MariaDB's is two
-// — so the family reads mariadb11.8, as AWS RDS's own family naming does.
+// MariaDB 11.8 is the current LTS series and the only one in the pinned Alpine
+// base. MajorVersion is the series rather than an integer major — MariaDB's
+// version axis is two — so the family reads mariadb11.8, as AWS RDS's does.
 var engineMariaDB = Engine{
 	Name:         "mariadb",
 	MajorVersion: "11.8",
 	DefaultPort:  3306,
-	// root is the superuser mariadb-install-db creates and rds-init keeps for
-	// itself, mariadb.sys owns the sys schema views, mysql is created as
-	// mysql@localhost under unix_socket auth, rdsadmin is AWS's management role,
-	// and PUBLIC is a role name the server refuses to create a user under.
+	// root is the superuser mariadb-install-db creates and rds-init keeps,
+	// mariadb.sys owns the sys schema views, mysql is created under unix_socket
+	// auth, rdsadmin is AWS's management role, PUBLIC the server refuses outright.
 	reservedUsernames:        []string{"root", "mariadb.sys", "mysql", "rdsadmin", "public"},
 	reservedUsernamePrefixes: []string{"mysql.", "mariadb."},
 	// The engine's own limit rather than AWS's documented 16. A client written
@@ -41,17 +39,9 @@ var engineMariaDB = Engine{
 		"non-transactional tables such as Aria and MyISAM may be left inconsistent.",
 }
 
-// The curated MariaDB 11.8 table, the same shape and approximate size as the
-// PostgreSQL one: a genuinely validated subset rather than the engine's full
-// variable set, because a static parameter the server refuses at startup is a
-// boot loop with the bad config already on the data volume.
-//
-// The platform-owned settings (port, datadir, socket, bind_address, the ssl_*
-// family, secure_file_priv, log_bin, default_storage_engine and the InnoDB
-// buffer pool chunk and instance counts) are deliberately absent rather than
-// present-and-unmodifiable, because they are not the customer's to set. The
-// chunk settings are also load-bearing: the size-derived buffer pool default and
-// the guest's file-comparison pending-restart both need that granularity fixed.
+// The curated MariaDB 11.8 table: a validated subset, because a static parameter
+// the server refuses at startup is a boot loop with the bad config already on
+// the data volume. Platform-owned settings are absent, not unmodifiable.
 var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 	// Connections and threads. max_connections is what a size-derived default
 	// matters most for: RDS's own formula is {DBInstanceClassMemory/12582880}.
@@ -313,9 +303,8 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 	},
 
 	// SQL behaviour.
-	// The default deliberately omits NO_AUTO_CREATE_USER, which MariaDB has been
-	// retiring: the platform's own default has to be one every supported patch
-	// release parses, or a routine image rebuild becomes a boot loop.
+	// The default omits NO_AUTO_CREATE_USER, which MariaDB is retiring: the
+	// platform default must parse on every supported patch release.
 	ParameterSpec{
 		Name: "sql_mode", DataType: ParamTypeString, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Validate: validateMariaDBSQLMode,
@@ -338,12 +327,9 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 		Default:     "utf8mb4_general_ci",
 		Description: "Default collation for new databases, which must belong to character_set_server.",
 	},
-	// The image loads no time zone tables, so a named zone would resolve to
-	// nothing; SYSTEM and a fixed offset are what the server can actually apply.
-	//
-	// MariaDB has no time_zone startup option — the name only exists for SET — so
-	// an option file naming it aborts the server before it opens the datadir.
-	// default_time_zone is the same setting spelt the way startup accepts.
+	// The image loads no time zone tables, so only SYSTEM and a fixed offset
+	// apply. MariaDB has no time_zone startup option, so an option file naming it
+	// aborts the server; default_time_zone is the spelling startup accepts.
 	ParameterSpec{
 		Name: "time_zone", DataType: ParamTypeString, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Default: "SYSTEM", Validate: validateMariaDBTimeZone,

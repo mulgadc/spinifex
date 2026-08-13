@@ -18,9 +18,8 @@ var enginePostgres = Engine{
 	MajorVersion: "18",
 	DefaultPort:  5432,
 	// rdsadmin is the management role AWS reserves; postgres is the cluster
-	// superuser initdb creates, which the master role must not collide with.
-	// rds_superuser is the group role the bootstrap grants the master its
-	// administrative privileges through.
+	// superuser initdb creates, which the master must not collide with;
+	// rds_superuser is the group the bootstrap grants the master through.
 	reservedUsernames:        []string{"rdsadmin", "postgres", "rds_superuser"},
 	reservedUsernamePrefixes: []string{"pg_"},
 	// NAMEDATALEN-1, where the engine's own limit and AWS's documented one
@@ -34,13 +33,9 @@ var enginePostgres = Engine{
 	uncleanStopNote:   "It will recover from its write-ahead log on the next start.",
 }
 
-// The curated PostgreSQL 18 table: a genuinely validated subset rather than the
-// engine's full ~350 GUCs, because a static parameter the engine refuses at
-// startup is a boot loop with the bad config already on the data volume.
-//
-// The platform-owned settings (port, listen_addresses, ssl*,
-// unix_socket_directories, data_directory) are deliberately absent rather than
-// present-and-unmodifiable, because they are not the customer's to set.
+// The curated PostgreSQL 18 table: a validated subset of the engine's ~350 GUCs,
+// because a static parameter the engine refuses at startup is a boot loop with
+// the bad config already on the data volume. Platform-owned settings are absent.
 var postgresParameterCatalog = buildParameterCatalog(
 	// Connections. max_connections is what a size-derived default matters most
 	// for: RDS's own formula is LEAST({DBInstanceClassMemory/9531392}, 5000).
@@ -239,9 +234,8 @@ var postgresParameterCatalog = buildParameterCatalog(
 	},
 
 	// Planner.
-	// The engine's own ceiling on a planner cost is DBL_MAX, which is not a bound
-	// worth reporting: a cost past four digits already makes the plan choice
-	// insensitive to it, so the range stays one a customer can read.
+	// The engine's ceiling is DBL_MAX, not a bound worth reporting: past four
+	// digits the plan choice is insensitive to it, so the range stays readable.
 	ParameterSpec{
 		Name: "random_page_cost", DataType: ParamTypeReal, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Min: 0, Max: 10000, Default: "1.1",
@@ -401,10 +395,9 @@ func effectiveCacheSizeFor(memoryMiB int64) string {
 	return strconv.FormatInt(clampInt64(memoryMiB*mibToBytes/16384, 1, 4194304), 10)
 }
 
-// max_connections = LEAST({DBInstanceClassMemory/9531392}, 5000). The floor is
-// what keeps db.t3.micro above superuser_reserved_connections plus the workers
-// autovacuum and replication need, which is where the smallest class would
-// otherwise fail to start.
+// max_connections = LEAST({DBInstanceClassMemory/9531392}, 5000). The floor
+// keeps db.t3.micro above superuser_reserved_connections plus the autovacuum and
+// replication workers, which is where the smallest class would fail to start.
 func maxConnectionsFor(memoryMiB int64) string {
 	return strconv.FormatInt(clampInt64(memoryMiB*mibToBytes/9531392, 20, 5000), 10)
 }

@@ -117,11 +117,9 @@ var engineLayouts = map[string]engineLayout{
 		service:   "mariadb",
 		dataMount: "/var/lib/mysql",
 		port:      3306,
-		// Alpine's packaged service starts mysqld_safe with
-		// --pid-file=/run/mysqld/$RC_SVCNAME.pid, and a command-line option beats
-		// the configuration file, so this is the path rather than anything the
-		// platform drop-in could name. setup.sh asserts it against the packaged
-		// init script at build time.
+		// Alpine's service passes --pid-file=/run/mysqld/$RC_SVCNAME.pid, and the
+		// command line beats the option file, so this is the path rather than
+		// anything the drop-in names. setup.sh asserts it at build time.
 		pidFile: "/run/mysqld/mariadb.pid",
 		// log_error in the platform drop-in rds-init writes. Without it
 		// mysqld_safe would send the server's errors to syslog, which nothing

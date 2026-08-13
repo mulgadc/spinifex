@@ -1,5 +1,8 @@
 package handlers_rds
 
+//test:in-package — reaches the unexported engineForFamily and the engineMariaDB
+// registry entry, neither of which the package exports.
+
 import (
 	"strconv"
 	"strings"

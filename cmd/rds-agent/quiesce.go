@@ -16,10 +16,8 @@ import (
 )
 
 // Both engines tie a backup hold to the session that took it: PostgreSQL aborts
-// a non-exclusive backup when its session ends, and MariaDB releases a BACKUP
-// STAGE with the connection that started it. That is what makes the hold
-// self-expiring — a control plane that dies mid snapshot cannot leave the engine
-// in backup mode forever.
+// a non-exclusive backup when its session ends, MariaDB releases a BACKUP STAGE
+// with its connection. That is what makes the hold self-expiring.
 type engineSession interface {
 	// Runs sql and waits for the engine to finish it.
 	Exec(ctx context.Context, sql string) error

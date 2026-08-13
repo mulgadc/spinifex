@@ -979,12 +979,14 @@ echo ""
 # ==========================================================================
 echo "Phase 8: Node Failure"
 echo "========================================"
-echo "Stopping services on node2 ($NODE2_IP) to simulate node failure..."
+echo "Abruptly killing spinifex services on node2 ($NODE2_IP) to simulate an unclean node failure..."
 
-# Stop services on node2 only — SPINIFEX_FORCE_LOCAL_STOP prevents coordinated
-# cluster shutdown which would kill all nodes via NATS
-peer_ssh "$NODE2_IP" "sudo systemctl stop spinifex.target" || {
-    echo "  WARNING: systemctl stop returned non-zero (may be expected)"
+# spinifex.target has no process of its own and PartOf= only propagates
+# stop/restart jobs (not kill), so SIGKILL each unit directly. --kill-whom=main
+# hits only the service's own process, leaving qemu/nbdkit orphaned for reattach.
+NODE2_KILL_UNITS="spinifex-daemon.service spinifex-viperblock.service spinifex-predastore.service spinifex-nats.service spinifex-awsgw.service spinifex-vpcd.service spinifex-northstar.service spinifex-qmp-collector.service spinifex-ui.service"
+peer_ssh "$NODE2_IP" "sudo systemctl kill -s SIGKILL --kill-whom=main $NODE2_KILL_UNITS" || {
+    echo "  WARNING: systemctl kill returned non-zero (may be expected)"
 }
 
 # Wait for NATS cluster to detect the failure and reform
@@ -1048,6 +1050,8 @@ echo "Phase 9: Node Recovery"
 echo "========================================"
 echo "Restarting services on node2 ($NODE2_IP)..."
 
+# Each killed unit's Restart=on-failure will already have respawned it within
+# RestartSec=5; this start is the backstop for anything that did not.
 peer_ssh "$NODE2_IP" "sudo systemctl start spinifex.target" || {
     echo "  ERROR: Failed to restart services on node2"
     fail_test "Node2 restart"

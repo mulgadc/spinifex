@@ -426,7 +426,10 @@ var unitBodyHashes = map[string]map[int]string{
 	"spinifex-nats-watchdog.timer":   {1: "9d43a8d2aa4fd80ab5f944d7620c666fd2a255850de2e6494479b8746922c979"},
 	"spinifex-nats.service":          {1: "f7f9900b95e364dc2575684a9bf16fa1f96a903a3a4aa773a34c04d761106838"},
 	"spinifex-northstar.service":     {1: "030c382aed20f4383acdb7df7a830d48dd76dc29be5965b595cc3842ae43a3f1"},
-	"spinifex-predastore.service":    {1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8"},
+	"spinifex-predastore.service": {
+		1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8",
+		2: "157e9a7683ac58760ad96679cad9f94121294f34d5cb668d1e586ba0686b4968",
+	},
 	"spinifex-qmp-collector.service": {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
 	"spinifex-shutdown.service":      {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},
 	"spinifex-system.slice":          {1: "ca450c2b28a8b13dd767957fa9469bd74bd222d7abed79945e83d564d5ce16dd"},

@@ -1,4 +1,4 @@
-# spinifex-unit-version: 2
+# spinifex-unit-version: 3
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
@@ -39,6 +39,7 @@ PrivateDevices=no
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
+DeviceAllow=/dev/vhost-net rw
 DeviceAllow=char-vfio rw
 DeviceAllow=/dev/vfio/vfio rw
 ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/server.pem /etc/spinifex/server.key /etc/spinifex/ca.pem

@@ -13,13 +13,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// rdsCreateSubject and rdsDescribeSubject mirror handlers/rds's
-// SubjectCreateDBInstance/SubjectDescribeDBInstances. Restated as literals
-// rather than imported, so this launcher stays decoupled from the rds
-// handler package (it talks to RDS only over NATS, like any other client).
+// rdsCreateSubject, rdsDescribeSubject and rdsDeleteSubject mirror
+// handlers/rds's SubjectCreateDBInstance/SubjectDescribeDBInstances/
+// SubjectDeleteDBInstance. Restated as literals rather than imported, so
+// this launcher stays decoupled from the rds handler package (it talks to
+// RDS only over NATS, like any other client).
 const (
 	rdsCreateSubject   = "rds.CreateDBInstance"
 	rdsDescribeSubject = "rds.DescribeDBInstances"
+	rdsDeleteSubject   = "rds.DeleteDBInstance"
 )
 
 // rdsAvailableStatus mirrors handlers/rds's StatusAvailable ("available"),
@@ -41,6 +43,7 @@ const (
 const (
 	rdsCreateTimeout   = 5 * time.Minute
 	rdsDescribeTimeout = 30 * time.Second
+	rdsDeleteTimeout   = 5 * time.Minute
 )
 
 // launchPollInterval paces Launch's wait between DescribeDBInstances polls
@@ -102,6 +105,28 @@ func (l *rdsLauncher) create(ctx context.Context, identifier, masterUsername, ma
 			return nil
 		}
 		return fmt.Errorf("ochrevector: create appliance db instance %s: %w", identifier, err)
+	}
+	return nil
+}
+
+// Delete removes identifier's backing RDS DB instance, skipping any final
+// snapshot: the appliance is a system resource, not customer data worth
+// retaining past its own teardown. Idempotent: an identifier already gone
+// (or never created) is a no-op success.
+func (l *rdsLauncher) Delete(ctx context.Context, identifier string) error {
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	input := &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier: aws.String(identifier),
+		SkipFinalSnapshot:    aws.Bool(true),
+	}
+	_, err := utils.NATSRequest[rds.DeleteDBInstanceOutput](ctx, l.nc, rdsDeleteSubject, input, rdsDeleteTimeout, utils.GlobalAccountID)
+	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorDBInstanceNotFound) {
+			return nil
+		}
+		return fmt.Errorf("ochrevector: delete appliance db instance %s: %w", identifier, err)
 	}
 	return nil
 }

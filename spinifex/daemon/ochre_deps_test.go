@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestStartOchreVector_DisabledSkipsConstruction pins the config gate's
@@ -24,4 +27,18 @@ func TestStartOchreVector_DisabledSkipsConstruction(t *testing.T) {
 
 	assert.Nil(t, d.ochreVectorService)
 	assert.Nil(t, d.natsSubscriptions, "disabled path must not touch the subscriptions map")
+}
+
+// TestHandleOchreApplianceTeardown_NilApplianceRefuses proves the handler
+// refuses with a clear error rather than a nil-pointer panic when the
+// appliance never came up (disabled, still starting, or already torn down by
+// an earlier call) -- it must never touch d.ochreVectorService in that case.
+func TestHandleOchreApplianceTeardown_NilApplianceRefuses(t *testing.T) {
+	d := &Daemon{}
+
+	out, err := d.handleOchreApplianceTeardown(context.Background(), &handlers_ochrevector.TeardownApplianceRequest{}, "")
+
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Contains(t, err.Error(), "not enabled or not up")
 }

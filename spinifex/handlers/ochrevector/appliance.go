@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/url"
 	"sync"
@@ -50,6 +51,11 @@ const (
 	ApplianceStateAvailable    = "AVAILABLE"
 )
 
+// SubjectTeardownAppliance is the operator-only NATS subject for destroying
+// the platform appliance singleton (D2): reached solely via `spx admin ochre
+// appliance teardown`, never through the tenant-facing awsgw surface.
+const SubjectTeardownAppliance = "ochre.appliance.teardown"
+
 // applianceStaleAfter bounds how long a PROVISIONING record may sit before a
 // losing caller treats it as abandoned by a crashed winner and resumes the
 // launch itself, rather than waiting on it forever.
@@ -86,6 +92,12 @@ type ApplianceRecord struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
+// TeardownApplianceRequest has no fields: the appliance is a fixed,
+// deployment-wide singleton (D2), never identified by a caller-supplied ID.
+type TeardownApplianceRequest struct{}
+
+type TeardownApplianceResponse struct{}
+
 // ApplianceConnInfo is the appliance's connection endpoint: safe to log,
 // return over an API, or hand to a caller freely, since it never carries the
 // master password.
@@ -103,6 +115,11 @@ type ApplianceConnInfo struct {
 // an identifier it already launched.
 type ApplianceLauncher interface {
 	Launch(ctx context.Context, identifier, masterUsername, masterPassword string) (endpoint string, port int, err error)
+
+	// Delete removes identifier's backing instance. Idempotent: an identifier
+	// already gone (or never launched) is a no-op success, so Teardown never
+	// fails on a resource it already reclaimed.
+	Delete(ctx context.Context, identifier string) error
 }
 
 // Appliance owns the singleton platform Postgres appliance: its encrypted
@@ -158,6 +175,40 @@ func (a *Appliance) TeardownHostPort() error {
 	eniID := a.eniID
 	a.mu.Unlock()
 	return removeApplianceHostPort(deps, eniID)
+}
+
+// Teardown removes the singleton platform appliance entirely: its backing
+// RDS instance, this daemon's VPC host port, then its KV record, in that
+// order so a crash partway through leaves a record an operator can retry
+// teardown against rather than an orphaned instance nothing names anymore.
+// Host-port removal is best-effort (logged, not fatal) so a stuck OVS port
+// never blocks reclaiming the RDS instance or the KV record; every step
+// still runs regardless of an earlier one's failure, and every failure is
+// joined into the returned error. Idempotent overall: tearing down an
+// already-absent appliance is a no-op success. Does not re-provision -- the
+// daemon's own Ensure does that on next startup, not this call.
+func (a *Appliance) Teardown(ctx context.Context) error {
+	var errs []error
+
+	if err := a.launcher.Delete(ctx, ApplianceIdentifier); err != nil {
+		errs = append(errs, fmt.Errorf("ochrevector: delete appliance db instance: %w", err))
+	}
+
+	if err := a.TeardownHostPort(); err != nil {
+		slog.Warn("ochrevector: appliance teardown: host port removal failed", "err", err)
+		errs = append(errs, fmt.Errorf("ochrevector: remove appliance host port: %w", err))
+	}
+
+	kv, err := a.bucket(ctx)
+	if err != nil {
+		errs = append(errs, err)
+		return errors.Join(errs...)
+	}
+	if err := kv.Delete(ctx, appliancePostgresKey); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		errs = append(errs, fmt.Errorf("ochrevector: delete appliance record: %w", err))
+	}
+
+	return errors.Join(errs...)
 }
 
 // ensureHostPort gives this daemon a routed presence in the appliance's VPC,

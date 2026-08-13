@@ -28,6 +28,9 @@ type fakeLauncher struct {
 	endpoint    string
 	port        int
 	err         error
+
+	deleteCalls []string
+	deleteErr   error
 }
 
 var _ ApplianceLauncher = (*fakeLauncher)(nil)
@@ -42,6 +45,19 @@ func (f *fakeLauncher) Launch(_ context.Context, identifier, _ string, masterPas
 		return "", 0, f.err
 	}
 	return f.endpoint, f.port, nil
+}
+
+func (f *fakeLauncher) Delete(_ context.Context, identifier string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteCalls = append(f.deleteCalls, identifier)
+	return f.deleteErr
+}
+
+func (f *fakeLauncher) deleteCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.deleteCalls)
 }
 
 func (f *fakeLauncher) callCount() int {
@@ -480,6 +496,102 @@ func TestAppliance_TeardownHostPort(t *testing.T) {
 
 	require.NoError(t, appliance.TeardownHostPort())
 	assert.Equal(t, []string{"eni-installed"}, h.hostPort.removals())
+}
+
+// TestTeardown_DeletesRecordLauncherAndHostPort proves Teardown drives all
+// three steps: the launcher's Delete for the fixed appliance identifier, the
+// daemon's own host port removal, and the KV record.
+func TestTeardown_DeletesRecordLauncherAndHostPort(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.30", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.30", 5432)
+
+	h := newHostPortHarness()
+	appliance.WithHostPort(h.deps())
+	appliance.mu.Lock()
+	appliance.eniID = "eni-installed"
+	appliance.mu.Unlock()
+
+	require.NoError(t, appliance.Teardown(context.Background()))
+
+	assert.Equal(t, []string{ApplianceIdentifier}, launcher.deleteCalls)
+	assert.Equal(t, []string{"eni-installed"}, h.hostPort.removals())
+
+	kv, err := appliance.bucket(context.Background())
+	require.NoError(t, err)
+	rec, _, err := appliance.getRecord(context.Background(), kv)
+	require.NoError(t, err)
+	assert.Nil(t, rec, "the KV record must be gone after teardown")
+}
+
+// TestTeardown_NoExistingApplianceIsANoOp proves tearing down an appliance
+// that was never provisioned (or already torn down) succeeds rather than
+// erroring on an absent KV record or an already-gone RDS instance.
+func TestTeardown_NoExistingApplianceIsANoOp(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	launcher := &fakeLauncher{}
+	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
+	require.NoError(t, err)
+
+	assert.NoError(t, appliance.Teardown(context.Background()))
+	assert.Equal(t, 1, launcher.deleteCallCount())
+
+	// Tearing down again must still be a no-op success.
+	assert.NoError(t, appliance.Teardown(context.Background()))
+}
+
+// TestTeardown_StillDeletesRecordWhenHostPortRemovalFails proves a host-port
+// removal failure is best-effort: it does not stop the KV record from being
+// deleted, but it is still surfaced in the joined error rather than swallowed.
+func TestTeardown_StillDeletesRecordWhenHostPortRemovalFails(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.31", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.31", 5432)
+
+	h := newHostPortHarness()
+	h.hostPort.failRemove = errors.New("ovs-vsctl exploded")
+	appliance.WithHostPort(h.deps())
+	appliance.mu.Lock()
+	appliance.eniID = "eni-installed"
+	appliance.mu.Unlock()
+
+	err = appliance.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ovs-vsctl exploded")
+
+	kv, err := appliance.bucket(context.Background())
+	require.NoError(t, err)
+	rec, _, err := appliance.getRecord(context.Background(), kv)
+	require.NoError(t, err)
+	assert.Nil(t, rec, "the KV record must still be deleted despite the host-port failure")
+}
+
+// TestTeardown_JoinsLauncherAndRecordErrors proves a launcher.Delete failure
+// does not stop the KV record from being deleted, and both failures are
+// joined into the returned error.
+func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{deleteErr: errors.New("rds unreachable")}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.32", 5432)
+
+	err = appliance.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rds unreachable")
+
+	kv, err := appliance.bucket(context.Background())
+	require.NoError(t, err)
+	rec, _, err := appliance.getRecord(context.Background(), kv)
+	require.NoError(t, err)
+	assert.Nil(t, rec, "the KV record must still be deleted despite the launcher failure")
 }
 
 // TestBucket_RequiresJetStream proves bucket fails fast on a zero-value

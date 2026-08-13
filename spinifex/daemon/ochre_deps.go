@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -131,6 +132,10 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
 		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
+		// Operator-only: teardown of the platform appliance singleton itself,
+		// not a tenant vector-store action, so it is reached solely through
+		// `spx admin ochre appliance teardown`, never awsgw.
+		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.handleOchreApplianceTeardown), "spinifex-workers"},
 	}
 	if err := d.registerNatsSubs(subs); err != nil {
 		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)
@@ -168,6 +173,33 @@ func (d *Daemon) runOchreIngestScheduler(ingest *handlers_ochrevector.IngestServ
 			}
 		}
 	}
+}
+
+// handleOchreApplianceTeardown answers SubjectTeardownAppliance: destroys the
+// platform appliance singleton, then clears this daemon's own references so
+// nothing keeps issuing queries against a torn-down backend. A daemon whose
+// appliance never came up (disabled, still starting, or already torn down by
+// an earlier call) has nothing to act on, which is reported as an error
+// rather than silently accepted -- an operator asking to tear down expects
+// one to have existed.
+func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, _ *handlers_ochrevector.TeardownApplianceRequest, _ string) (*handlers_ochrevector.TeardownApplianceResponse, error) {
+	d.mu.Lock()
+	appliance := d.ochreAppliance
+	d.mu.Unlock()
+	if appliance == nil {
+		return nil, errors.New("ochrevector: platform appliance is not enabled or not up on this node")
+	}
+
+	if err := appliance.Teardown(ctx); err != nil {
+		return nil, fmt.Errorf("ochrevector: teardown platform appliance: %w", err)
+	}
+
+	d.mu.Lock()
+	d.ochreAppliance = nil
+	d.ochreVectorService = nil
+	d.mu.Unlock()
+
+	return &handlers_ochrevector.TeardownApplianceResponse{}, nil
 }
 
 // connectOchreAppliance drives Ensure then Connect as one retryable unit, up

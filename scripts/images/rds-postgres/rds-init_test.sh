@@ -343,7 +343,9 @@ if run_ok "initialize"; then
     grep -q '^local all all peer$' "${PGDATA}/pg_hba.conf" \
         && pass "initialize: the local socket keeps peer auth" \
         || fail "initialize: the local peer rule rds-agent runs SQL over is gone"
-    grep -q "^include_if_exists 'hba.d/20-rds-force-ssl.conf'$" "${PGDATA}/pg_hba.conf" \
+    # Double quotes, because pg_hba quotes with " and not ': a single-quoted path
+    # is a filename that does not exist and include_if_exists skips it silently.
+    grep -q "^include_if_exists \"hba.d/20-rds-force-ssl.conf\"$" "${PGDATA}/pg_hba.conf" \
         && pass "initialize: the enforcement include is hooked" \
         || fail "initialize: no enforcement include"
     [ -d "${PGDATA}/hba.d" ] \
@@ -941,7 +943,7 @@ if run_ok "enforce-off"; then
     [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
         && fail "enforce-off: the stale rule from the restored volume survived" \
         || pass "enforce-off: the stale rule was removed"
-    grep -q "^include_if_exists '${FORCE_SSL_RULE}'$" "${PGDATA}/pg_hba.conf" \
+    grep -q "^include_if_exists \"${FORCE_SSL_RULE}\"$" "${PGDATA}/pg_hba.conf" \
         && pass "enforce-off: the include stays, so removing the file is a clean stop" \
         || fail "enforce-off: the include was dropped along with the rule"
 fi

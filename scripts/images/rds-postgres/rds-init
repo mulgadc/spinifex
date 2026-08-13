@@ -422,6 +422,10 @@ install_tls() {
 # The whole file, regenerated every boot rather than appended to initdb's.
 # pg_hba is first-match-wins, so initdb's loopback lines sort above anything
 # appended and no rule appended at the end could ever govern a local client.
+#
+# The include path is double-quoted because pg_hba quotes with " and not ':
+# single quotes would become part of the filename, and include_if_exists skips a
+# file it cannot find without a word, which reads as enforcing and does not.
 write_pg_hba() {
     _hba="${PGDATA}/pg_hba.conf"
     _tmp="${PGDATA}/.pg_hba.conf.new"
@@ -433,7 +437,7 @@ write_pg_hba() {
 # loopback too, so initdb's own 127.0.0.1 and ::1 lines are not carried over.
 # The local socket is how rds-init and rds-agent run privileged SQL.
 local all all peer
-include_if_exists '${HBA_FORCE_SSL_INCLUDE}'
+include_if_exists "${HBA_FORCE_SSL_INCLUDE}"
 host all all 0.0.0.0/0 scram-sha-256
 host all all ::/0     scram-sha-256
 EOF

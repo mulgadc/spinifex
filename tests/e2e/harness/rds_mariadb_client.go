@@ -91,20 +91,20 @@ func mariadbCommand(conn MariaDBConn, sql string) string {
 	if port == 0 {
 		port = MariaDBEnginePort
 	}
-	env := "MYSQL_PWD=" + shellQuote(conn.Password)
+	env := "MYSQL_PWD=" + ShellQuote(conn.Password)
 	args := []string{
 		"mariadb", "--batch", "--skip-column-names", "--connect-timeout=30",
-		"--host", shellQuote(conn.Host),
+		"--host", ShellQuote(conn.Host),
 		"--port", strconv.FormatInt(port, 10),
-		"--user", shellQuote(conn.User),
-		"--database", shellQuote(conn.DBName),
+		"--user", ShellQuote(conn.User),
+		"--database", ShellQuote(conn.DBName),
 	}
 	if conn.SSLRootCert != "" {
-		args = append(args, "--ssl-ca="+shellQuote(conn.SSLRootCert))
+		args = append(args, "--ssl-ca="+ShellQuote(conn.SSLRootCert))
 	}
 	if conn.VerifyServerCert {
 		args = append(args, "--ssl-verify-server-cert")
 	}
-	args = append(args, "--execute", shellQuote(sql))
+	args = append(args, "--execute", ShellQuote(sql))
 	return env + " " + strings.Join(args, " ")
 }

@@ -59,9 +59,6 @@ type engine interface {
 	engineOps
 	parameterRecovery
 	servingParameterRecorder
-	// Follows the port the control plane assigned, once the bootstrap fetch
-	// lands. Called from a different goroutine than the commands that read it.
-	setPort(port int)
 }
 
 // The guest layout an engine preset lays down, keyed by the engine the image

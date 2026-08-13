@@ -148,21 +148,8 @@ func (e Engine) ValidateVersion(version string) error {
 // Mirrors the engine's own rules rather than a generic identifier check, so a
 // name the control plane accepts cannot fail at initdb time inside the guest.
 func (e Engine) ValidateMasterUsername(username string) error {
-	if username == "" {
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername is required")
-	}
-	if len(username) > e.maxUsernameLen {
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"MasterUsername must be at most %d characters", e.maxUsernameLen)
-	}
-	if !isLetter(rune(username[0])) {
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUsername must begin with a letter")
-	}
-	for _, r := range username {
-		if !isLetter(r) && !isDigit(r) && r != '_' {
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"MasterUsername may contain only letters, digits and underscores")
-		}
+	if err := validateIdentifier("MasterUsername", username, e.maxUsernameLen, false); err != nil {
+		return err
 	}
 	return e.ValidateUsernameNotReserved(username)
 }
@@ -196,23 +183,33 @@ func (e Engine) ValidateDBName(name string) error {
 // safe to interpolate into the CREATE DATABASE rds-init builds inside the guest.
 func dbNameRule(maxLen int) func(string) error {
 	return func(name string) error {
-		switch {
-		case name == "":
-			return nil
-		case len(name) > maxLen:
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"DBName must be at most %d characters", maxLen)
-		case !isLetter(rune(name[0])):
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBName must begin with a letter")
-		}
-		for _, r := range name {
-			if !isLetter(r) && !isDigit(r) && r != '_' {
-				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-					"DBName may contain only letters, digits and underscores")
-			}
-		}
-		return nil
+		return validateIdentifier("DBName", name, maxLen, true)
 	}
+}
+
+// The character rule both identifiers share, stated once. Only the length limit
+// and whether an empty value is legal differ between them, so field names the
+// parameter each message is about.
+func validateIdentifier(field, value string, maxLen int, allowEmpty bool) error {
+	switch {
+	case value == "":
+		if allowEmpty {
+			return nil
+		}
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is required", field)
+	case len(value) > maxLen:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"%s must be at most %d characters", field, maxLen)
+	case !isLetter(rune(value[0])):
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s must begin with a letter", field)
+	}
+	for _, r := range value {
+		if !isLetter(r) && !isDigit(r) && r != '_' {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"%s may contain only letters, digits and underscores", field)
+		}
+	}
+	return nil
 }
 
 // Bounds and the printable-ASCII range AWS accepts. The password is never

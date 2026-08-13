@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -19,6 +17,7 @@ import (
 // agent drops to the postgres OS user rather than holding a password of its own.
 type postgresEngine struct {
 	quiesceState
+	parameterManager
 
 	// The control plane's own metadata for this engine, resolved once at
 	// startup: the live password apply runs as the cluster superuser, so it
@@ -32,17 +31,6 @@ type postgresEngine struct {
 	pgData    string
 	socketDir string
 	osUser    string
-	probe     *engineProbe
-	// Set from the bootstrap config, on a different goroutine than the commands
-	// that read it.
-	port atomic.Int64
-
-	params parameterStore
-	// Serializes parameter installs, serving snapshots and rollback restores so
-	// none can copy or replace an intermediate configuration.
-	paramMu       sync.Mutex
-	repairTimeout time.Duration
-	repairPoll    time.Duration
 }
 
 var _ engine = (*postgresEngine)(nil)
@@ -102,7 +90,7 @@ const (
 )
 
 func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
-	e := &postgresEngine{
+	return &postgresEngine{
 		meta:      postgresEngineMeta,
 		run:       run,
 		startSess: startSess,
@@ -112,23 +100,19 @@ func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, p
 		pgData:    cfg.EngineDataDir,
 		socketDir: cfg.SocketDir,
 		osUser:    cfg.EngineUser,
-		probe:     probe,
-		params: parameterStore{
-			dir:       filepath.Join(cfg.EngineDataDir, "conf.d"),
-			installed: postgresParametersFile,
-			lastGood:  postgresLastGoodFile,
-			osUser:    cfg.EngineUser,
-			engine:    enginePostgres,
+		parameterManager: parameterManager{
+			probe: probe,
+			params: parameterStore{
+				dir:       filepath.Join(cfg.EngineDataDir, "conf.d"),
+				installed: postgresParametersFile,
+				lastGood:  postgresLastGoodFile,
+				osUser:    cfg.EngineUser,
+				engine:    enginePostgres,
+			},
+			repairTimeout: parameterRepairTimeout,
+			repairPoll:    parameterRepairPoll,
 		},
-		repairTimeout: parameterRepairTimeout,
-		repairPoll:    parameterRepairPoll,
 	}
-	e.port.Store(int64(cfg.EnginePort))
-	return e
-}
-
-func (e *postgresEngine) setPort(port int) {
-	e.port.Store(int64(port))
 }
 
 // The role name and the password ride the environment and are re-quoted by
@@ -304,7 +288,7 @@ func (e *postgresEngine) psqlArgs() []string {
 		"--no-psqlrc", "--quiet", "--no-align", "--tuples-only",
 		"-v", "ON_ERROR_STOP=1",
 		"-h", e.socketDir,
-		"-p", strconv.FormatInt(e.port.Load(), 10),
+		"-p", strconv.FormatInt(e.probe.port.Load(), 10),
 		"-U", e.osUser,
 		"-d", "postgres",
 		"-f", "-",

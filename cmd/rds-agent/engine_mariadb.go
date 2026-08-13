@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -77,23 +76,15 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 // password of its own.
 type mariadbEngine struct {
 	quiesceState
+	parameterManager
 
 	rules     controlPlaneRules
 	run       commandRunner
 	startSess sessionRunner
 	client    string
-	admin     string
 	socket    string
 	rcService string
 	service   string
-	probe     *engineProbe
-
-	params parameterStore
-	// Serializes parameter installs, serving snapshots and rollback restores so
-	// none can copy or replace an intermediate configuration.
-	paramMu       sync.Mutex
-	repairTimeout time.Duration
-	repairPoll    time.Duration
 }
 
 var _ engine = (*mariadbEngine)(nil)
@@ -150,24 +141,25 @@ func newMariaDBEngine(cfg config, rules controlPlaneRules, run commandRunner, st
 		run:       run,
 		startSess: startSess,
 		client:    filepath.Join(cfg.EngineBinDir, mariadbClientBinary),
-		admin:     filepath.Join(cfg.EngineBinDir, mariadbAdminBinary),
 		socket:    mariadbSocketPath(cfg),
 		rcService: cfg.RCService,
 		service:   cfg.EngineService,
-		probe:     probe,
-		params: parameterStore{
-			// The mount point rather than the datadir one level inside it: the
-			// include directory has to outlive the sweep a failed bootstrap runs.
-			dir:       filepath.Join(cfg.DataMount, "conf.d"),
-			installed: mariadbParametersFile,
-			lastGood:  mariadbLastGoodFile,
-			serving:   mariadbServingFile,
-			header:    mariadbParametersHeader,
-			osUser:    cfg.EngineUser,
-			engine:    engineMariaDB,
+		parameterManager: parameterManager{
+			probe: probe,
+			params: parameterStore{
+				// The mount point rather than the datadir one level inside it: the
+				// include directory has to outlive the sweep a failed bootstrap runs.
+				dir:       filepath.Join(cfg.DataMount, "conf.d"),
+				installed: mariadbParametersFile,
+				lastGood:  mariadbLastGoodFile,
+				serving:   mariadbServingFile,
+				header:    mariadbParametersHeader,
+				osUser:    cfg.EngineUser,
+				engine:    engineMariaDB,
+			},
+			repairTimeout: parameterRepairTimeout,
+			repairPoll:    parameterRepairPoll,
 		},
-		repairTimeout: parameterRepairTimeout,
-		repairPoll:    parameterRepairPoll,
 	}
 }
 
@@ -190,11 +182,6 @@ func mariadbSocketConnectArgs(socket string) []string {
 		"--user=" + mariadbSuperuser, "--skip-ssl",
 	}
 }
-
-// Nothing this implementation runs needs the assigned port: every connection it
-// makes is over the engine's unix socket, and the platform drop-in rds-init
-// writes is what puts the server on the port. The probe follows it separately.
-func (e *mariadbEngine) setPort(int) {}
 
 // Reports whether a pid is a live process. EPERM is a process this agent may not
 // signal rather than one that is gone, which matters because a stale pidfile

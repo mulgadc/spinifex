@@ -289,23 +289,23 @@ func psqlCommand(conn PSQLConn, sql string) string {
 		port = PostgresEnginePort
 	}
 	env := []string{
-		"PGPASSWORD=" + shellQuote(conn.Password),
+		"PGPASSWORD=" + ShellQuote(conn.Password),
 		"PGCONNECT_TIMEOUT=30",
 	}
 	if conn.SSLMode != "" {
-		env = append(env, "PGSSLMODE="+shellQuote(conn.SSLMode))
+		env = append(env, "PGSSLMODE="+ShellQuote(conn.SSLMode))
 	}
 	if conn.SSLRootCert != "" {
-		env = append(env, "PGSSLROOTCERT="+shellQuote(conn.SSLRootCert))
+		env = append(env, "PGSSLROOTCERT="+ShellQuote(conn.SSLRootCert))
 	}
 	args := []string{
 		"psql", "--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
 		"--set", "ON_ERROR_STOP=1",
-		"--host", shellQuote(conn.Host),
+		"--host", ShellQuote(conn.Host),
 		"--port", strconv.FormatInt(port, 10),
-		"--username", shellQuote(conn.User),
-		"--dbname", shellQuote(conn.DBName),
-		"--command", shellQuote(sql),
+		"--username", ShellQuote(conn.User),
+		"--dbname", ShellQuote(conn.DBName),
+		"--command", ShellQuote(sql),
 	}
 	return strings.Join(env, " ") + " " + strings.Join(args, " ")
 }
@@ -321,7 +321,7 @@ func ResolveInGuest(t *testing.T, tgt SSHTarget, host string) []string {
 	t.Helper()
 	// getent exits non-zero on NXDOMAIN, so the lookup's own failure is
 	// swallowed in the guest: an error back here is an SSH fault, not an answer.
-	out, err := GuestExec(tgt, "getent hosts "+shellQuote(host)+" || true")
+	out, err := GuestExec(tgt, "getent hosts "+ShellQuote(host)+" || true")
 	if err != nil {
 		t.Fatalf("ResolveInGuest %s: %v\n%s", host, err, out)
 	}

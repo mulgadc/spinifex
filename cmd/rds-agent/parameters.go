@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -176,6 +177,20 @@ func restoreLastGood(ctx context.Context, store parameterStore, probe *enginePro
 // Each implementation answers it its own way, and both the apply and the serving
 // snapshot are gated on the same answer.
 type pendingRestartFn func(ctx context.Context) ([]string, error)
+
+// The parameter-file state every engine keeps. The operations over it are free
+// functions above rather than methods here, so each implementation names its own
+// restart and pending-restart answers at the call site and the compiler checks
+// that it has them.
+type parameterManager struct {
+	params parameterStore
+	probe  *engineProbe
+	// Serializes parameter installs, serving snapshots and rollback restores so
+	// none can copy or replace an intermediate configuration.
+	paramMu       sync.Mutex
+	repairTimeout time.Duration
+	repairPoll    time.Duration
+}
 
 const (
 	parameterRepairTimeout = 90 * time.Second

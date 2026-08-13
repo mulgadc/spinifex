@@ -61,7 +61,6 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 	a.hb.clearBootstrapFailure()
 	if cfg.Port > 0 {
 		a.probe.setPort(int(cfg.Port))
-		a.engine.setPort(int(cfg.Port))
 	}
 	if cfg.BootstrapPending && cfg.PayloadID != "" {
 		a.pending = &pendingBootstrap{

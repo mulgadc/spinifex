@@ -28,7 +28,7 @@ func NodeUnitState(node Node, unit string) (string, error) {
 	ssh := NewPeerSSH()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := ssh.Run(ctx, node.Addr, "systemctl is-active -- "+shellQuote(unit))
+	out, err := ssh.Run(ctx, node.Addr, "systemctl is-active -- "+ShellQuote(unit))
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -50,15 +50,11 @@ func PeerFileContents(t *testing.T, node Node, path string) []byte {
 	ssh := NewPeerSSH()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := ssh.Run(ctx, node.Addr, "sudo cat -- "+shellQuote(path))
+	out, err := ssh.Run(ctx, node.Addr, "sudo cat -- "+ShellQuote(path))
 	if err != nil {
 		t.Fatalf("read %s on %s: %v", path, node.Name, err)
 	}
 	return out
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // StopNode simulates a hard node outage by stopping the spinifex service units

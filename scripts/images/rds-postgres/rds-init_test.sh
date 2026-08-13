@@ -967,6 +967,26 @@ grep -q 'neither 1 nor 0' "${WORK}/out" \
     && pass "enforce-unparsable: refusal names the unreadable value" \
     || fail "enforce-unparsable: no refusal naming the value"
 
+# --- Case 7f: a rule path that is not a regular file is refused, not moved into ---
+# The same shape the pg_hba guard covers: mv would put the temp file inside the
+# directory and report success, leaving the include pointing at one.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+if run_ok "enforce-rule-dir-setup"; then
+    rm -f "${PGDATA}/${FORCE_SSL_RULE}"
+    mkdir "${PGDATA}/${FORCE_SSL_RULE}"
+    write_handoff attach '' ''
+    write_parameters "${TLS_PARAM} = '1'"
+    run_fails "enforce-rule-dir"
+    grep -q 'directory rather than the TLS enforcement rule' "${WORK}/out" \
+        && pass "enforce-rule-dir: refusal names the unusable rule path" \
+        || fail "enforce-rule-dir: no refusal naming the rule path"
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}/.20-rds-force-ssl.conf.new" ] \
+        && fail "enforce-rule-dir: the rule was moved into the directory" \
+        || pass "enforce-rule-dir: nothing was moved into the directory"
+fi
+
 # --- Case 8: no handoff at all ---
 reset_state
 rm -rf "${HANDOFF}"

@@ -41,7 +41,9 @@ type engineOps interface {
 // a control-plane directive: nothing issues it, the agent runs it when the
 // engine fails to come up after a parameter change.
 type parameterRecovery interface {
-	// Reports whether the installed set differed and was replaced.
+	// Reports whether the installed set differed and was replaced. True with a
+	// non-nil error is a set already on disk whose re-derived TLS enforcement did
+	// not land: the caller still has to restart and report.
 	RestoreLastKnownGoodParameters(ctx context.Context) (bool, error)
 	Restart(ctx context.Context) error
 }

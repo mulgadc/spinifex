@@ -388,6 +388,12 @@ hostnossl all all ::/0 reject
 EOF
     chown "${PG_USER}:${PG_USER}" "${_tmp}"
     chmod 0600 "${_tmp}"
+
+    # mv onto a directory of that name would move the temp file inside it and
+    # report success, leaving the include pointing at a directory.
+    if [ -d "${_rule}" ]; then
+        fail "${_rule} is a directory rather than the TLS enforcement rule; refusing to start the engine on client authentication rds-init does not control"
+    fi
     mv -f "${_tmp}" "${_rule}" ||
         fail "the TLS enforcement rule ${_rule} could not be installed"
 }

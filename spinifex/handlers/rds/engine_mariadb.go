@@ -370,9 +370,10 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 	// A real global system variable, unlike PostgreSQL's placeholder: the value in
 	// the file is the enforcement, and SET GLOBAL applies it live. A unix socket
 	// counts as a secure transport, so neither rds-init nor rds-agent is affected.
+	// On by default, which is a deliberate divergence: AWS leaves it off here.
 	ParameterSpec{
 		Name: "require_secure_transport", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Default: "0",
+		IsModifiable: true, Default: "1",
 		Description: "Whether the server requires TLS of client connections over TCP.",
 	},
 ))

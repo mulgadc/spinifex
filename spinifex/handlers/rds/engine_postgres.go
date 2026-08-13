@@ -360,7 +360,7 @@ var postgresParameterCatalog = buildParameterCatalog(
 	// classification would report it applied while nothing had changed.
 	ParameterSpec{
 		Name: "rds.force_ssl", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
-		IsModifiable: true, Default: "0",
+		IsModifiable: true, Default: "1",
 		Description: "Whether the server requires TLS of client connections.",
 	},
 )

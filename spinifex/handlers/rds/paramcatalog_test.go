@@ -306,7 +306,7 @@ func TestParameterCatalog_EachEngineExposesItsTLSEnforcementParameter(t *testing
 			assert.Equal(t, ParamTypeBoolean, spec.DataType)
 			assert.Equal(t, ApplyTypeDynamic, spec.ApplyType)
 			assert.True(t, spec.IsModifiable, "a customer can turn enforcement off, exactly as on AWS")
-			assert.Equal(t, "0", spec.Default)
+			assert.Equal(t, "1", spec.Default, "an instance with no parameter group of its own enforces TLS")
 
 			// The guest derives enforcement from this name rather than from the engine
 			// it happens to be running, so the two have to agree on it.

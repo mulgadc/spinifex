@@ -531,5 +531,36 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyVa
 	for name, override := range overrides {
 		values[name] = override.Value
 	}
-	return engine.ResolveEffectiveParameters(instanceClass, values)
+	resolved, err := engine.ResolveEffectiveParameters(instanceClass, values)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkTLSEnforceable(engine, group, resolved); err != nil {
+		return nil, err
+	}
+	return resolved, nil
+}
+
+// A set that requires TLS of every client connection needs a deployment that can
+// serve one, so a binding is refused here rather than at the boot that would
+// otherwise start an instance nothing can reach. A formed deployment always
+// holds a cluster CA, so this is not expected to fire.
+func (s *Service) checkTLSEnforceable(engine Engine, group string, resolved []Parameter) error {
+	name := engine.TLSEnforcementParameter()
+	if name == "" || resolvedValues(resolved)[name] != "1" {
+		return nil
+	}
+	available, err := s.tlsAvailable()
+	if err != nil {
+		return awserrors.Errorf(awserrors.ErrorServerInternal,
+			"cannot determine whether this deployment can serve TLS: %v", err)
+	}
+	if available {
+		return nil
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+		"parameter %s requires TLS of every client connection under DB parameter group %s, "+
+			"and this deployment has no cluster CA configured to serve it; "+
+			"configure the cluster CA, or set %s to 0 in %s",
+		name, group, name, group)
 }

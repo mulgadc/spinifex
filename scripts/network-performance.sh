@@ -1,5 +1,5 @@
 #!/bin/bash
-# network-performance.sh — iperf3 throughput from several clients to one server.
+# network-performance.sh — iperf throughput from several clients to one server.
 #
 # Runs from a workstation and drives both ends over SSH. Pointed at instance
 # private addresses it measures the VPC data plane (Geneve overlay); pointed at
@@ -9,9 +9,9 @@
 #   network-performance.sh --server IP --clients IP,IP,IP [options]
 #
 # Options:
-#   --server HOST    Host to SSH to and run `iperf3 -s` on
+#   --server HOST    Host to SSH to and run `iperf -s` on
 #   --server-ip IP   Address the clients dial (default: --server)
-#   --clients LIST   Comma-separated hosts to SSH to and run `iperf3 -c` on
+#   --clients LIST   Comma-separated hosts to SSH to and run `iperf -c` on
 #   --user NAME      SSH user for every host (default: ubuntu)
 #   --key PATH       SSH identity
 #   --parallel N     Streams per client (default: 4)
@@ -65,29 +65,35 @@ on() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$1" "${@:2}"; }
 IFS=',' read -ra CLIENT_LIST <<<"$CLIENTS"
 mkdir -p "$OUT_DIR"
 
-# iperf3 rather than iperf 2, because -J gives JSON. A text-scraping comparison
-# is not something worth maintaining for a nightly regression check. Note the
-# port differs: iperf3 listens on 5201, iperf 2 on 5001.
+# iperf 2, which listens on 5001. `-y C` gives CSV, so the result is still
+# machine-readable for a nightly comparison without scraping prose.
 install_iperf() {
-    on "$1" "command -v iperf3 >/dev/null ||
-        { sudo apt-get update -qq && sudo apt-get install -y -qq iperf3; }" ||
-        fail "$1: could not install iperf3"
+    local err
+    err=$(on "$1" "command -v iperf >/dev/null ||
+        { sudo apt-get update -qq && sudo apt-get install -y -qq iperf; }" 2>&1) ||
+        fail "$1: could not install iperf
+$(sed 's/^/         | /' <<<"$err")"
 }
 
-log "installing iperf3 on $SERVER and ${#CLIENT_LIST[@]} client(s)"
+log "installing iperf on $SERVER and ${#CLIENT_LIST[@]} client(s)"
 install_iperf "$SERVER"
 for c in "${CLIENT_LIST[@]}"; do
     install_iperf "$c"
 done
 
 # -D daemonises. Killed in the trap so a failed run does not leave a listener
-# holding 5201 against the next one.
-cleanup() { on "$SERVER" "sudo pkill -f 'iperf3 -s' >/dev/null 2>&1" || true; }
+# holding 5001 against the next one.
+cleanup() { on "$SERVER" "sudo pkill -f 'iperf -s' >/dev/null 2>&1" || true; }
 trap cleanup EXIT
 
-log "starting iperf3 -s on $SERVER"
-on "$SERVER" "sudo pkill -f 'iperf3 -s' >/dev/null 2>&1; iperf3 -s -D" ||
-    fail "$SERVER: could not start iperf3 -s"
+log "starting iperf -s on $SERVER"
+# The remote output is carried into the failure rather than discarded. A bare
+# "could not start" says nothing about whether the package is missing, the port
+# is taken, or sudo refused.
+start_err=$(on "$SERVER" "sudo pkill -f 'iperf -s' >/dev/null 2>&1
+                          iperf -s -D" 2>&1) ||
+    fail "$SERVER: could not start iperf -s
+$(sed 's/^/         | /' <<<"$start_err")"
 sleep 2
 
 log "running $PARALLEL streams for ${DURATION}s from each client to $SERVER_IP, concurrently"
@@ -95,8 +101,8 @@ pids=()
 for c in "${CLIENT_LIST[@]}"; do
     # Concurrently, because simultaneous clients are what stresses the plane.
     # One at a time would measure a single flow's best case.
-    on "$c" "iperf3 -c $SERVER_IP -P $PARALLEL -t $DURATION -i 1 -J" \
-        > "$OUT_DIR/$c.json" 2>"$OUT_DIR/$c.err" &
+    on "$c" "iperf -c $SERVER_IP -P $PARALLEL -t $DURATION -i 1 -y C" \
+        > "$OUT_DIR/$c.csv" 2>"$OUT_DIR/$c.err" &
     pids+=($!)
 done
 
@@ -105,11 +111,23 @@ for pid in "${pids[@]}"; do
     wait "$pid" || failed=1
 done
 
+# CSV columns: timestamp,src,sport,dst,dport,id,interval,bytes,bits_per_second.
+# With -P the aggregate rows carry id -1; taking the last of them gives the
+# whole-run total rather than one interval. A single stream emits no such row,
+# so fall back to the last row of all.
+csv_bps() {
+    local bps
+    bps=$(awk -F, '$6 == -1 {v = $9} END {print v + 0}' "$1" 2>/dev/null)
+    [ "${bps:-0}" != "0" ] || bps=$(awk -F, 'END {print $9 + 0}' "$1" 2>/dev/null)
+    echo "${bps:-0}"
+}
+
 for c in "${CLIENT_LIST[@]}"; do
-    gbits=$(jq -r '(.end.sum_received.bits_per_second // 0) / 1000000000
-                   | . * 100 | round / 100' "$OUT_DIR/$c.json" 2>/dev/null || echo 0)
-    if [ "$gbits" = "0" ] || [ -z "$gbits" ]; then
-        log "  $c -> $SERVER_IP   FAILED ($(head -1 "$OUT_DIR/$c.err" 2>/dev/null))"
+    gbits=$(awk -v b="$(csv_bps "$OUT_DIR/$c.csv")" \
+        'BEGIN {printf "%.2f", b / 1000000000}')
+    if [ "$gbits" = "0.00" ]; then
+        log "  $c -> $SERVER_IP   FAILED"
+        sed 's/^/           | /' "$OUT_DIR/$c.err" 2>/dev/null | head -3
         failed=1
     else
         log "  $c -> $SERVER_IP   $gbits Gbit/s"

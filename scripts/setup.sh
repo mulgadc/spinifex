@@ -691,7 +691,7 @@ APT_RUNTIME_PACKAGES="nbdkit
 qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
-jq curl iproute2 netcat-openbsd wget unzip xz-utils file
+jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 

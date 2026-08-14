@@ -337,7 +337,7 @@ func TestHotPlugENI_MatchesColdBootNICOptions(t *testing.T) {
 	// The cold-boot path renders the same NIC as command-line strings. Compare
 	// against those so the two paths cannot drift independently.
 	coldNetDev := TapNetDev("hostnet-eni-1", TapDeviceName("eni-abc123"), queues).Value
-	coldDevice := NetDevice(v.Config.MachineType, "hostnet-eni-1", "02:00:00:aa:bb:cc", queues).Value
+	coldDevice := NetDevice(v.Config.MachineType, "hostnet-eni-1", "02:00:00:aa:bb:cc", queues, 0).Value
 
 	if got := netdevArgs["vhost"]; got != true {
 		t.Errorf("netdev_add vhost = %v, want true (cold boot renders %q)", got, coldNetDev)

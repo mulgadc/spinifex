@@ -28,12 +28,19 @@ func WithIPSec(enabled bool) Option {
 	return func(m *liveManager) { m.ipsecEnabled = enabled }
 }
 
+// WithUnderlayMTU sets the fabric MTU the advertised guest MTU is derived from.
+// Defaults to DefaultUnderlayMTU.
+func WithUnderlayMTU(mtu int) Option {
+	return func(m *liveManager) { m.underlayMTU = mtu }
+}
+
 // NewLiveManager returns a topology.Manager driving OVN via the given client.
 func NewLiveManager(client ovn.Client, opts ...Option) Manager {
 	m := &liveManager{
 		ovn:          client,
 		dnsServer:    defaultDNSServer,
 		ipsecEnabled: true,
+		underlayMTU:  DefaultUnderlayMTU,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -45,6 +52,7 @@ type liveManager struct {
 	ovn          ovn.Client
 	dnsServer    func() string
 	ipsecEnabled bool
+	underlayMTU  int
 }
 
 var _ Manager = (*liveManager)(nil)
@@ -234,7 +242,7 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 
 	dhcpOpts := &nbdb.DHCPOptions{
 		CIDR:    cidr,
-		Options: BuildSubnetDHCPOptions(gwIP, routerMAC, m.dnsServer(), m.ipsecEnabled),
+		Options: BuildSubnetDHCPOptions(gwIP, routerMAC, m.dnsServer(), m.underlayMTU, m.ipsecEnabled),
 		ExternalIDs: map[string]string{
 			"spinifex:subnet_id": spec.SubnetID,
 			"spinifex:vpc_id":    spec.VPCID,

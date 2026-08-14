@@ -141,6 +141,9 @@ type Config struct {
 	// IPSecEnabled mirrors network.ipsec_enabled, so the DHCP MTU can drop the
 	// 34-byte ESP allowance on a cluster running the overlay in plaintext.
 	IPSecEnabled bool
+	// UnderlayMTU is the fabric MTU between nodes; the advertised guest MTU is
+	// derived from it.
+	UnderlayMTU int
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -471,7 +474,7 @@ func launchService(cfg *Config) error {
 	if dns := resolverDNSServer(cfg); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
-	topoOpts = append(topoOpts, topology.WithIPSec(cfg.IPSecEnabled))
+	topoOpts = append(topoOpts, topology.WithIPSec(cfg.IPSecEnabled), topology.WithUnderlayMTU(cfg.UnderlayMTU))
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
 	igwPool, publicPool := selectExternalPools(cfg.ExternalMode, cfg.ExternalPools)
@@ -669,6 +672,7 @@ func launchService(cfg *Config) error {
 		GatewayClaim:  host.NewGatewayClaimProber(cfg.OVNSBAddr),
 		DNSServer:     resolverDNSServer(cfg),
 		IPSecDisabled: !cfg.IPSecEnabled,
+		UnderlayMTU:   cfg.UnderlayMTU,
 		// Re-read intent at prune time so a guest launched during a long apply
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {

@@ -368,7 +368,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 			tapName := spec.Name
 
 			instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev("net0", tapName, queues))
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac, queues))
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac, queues, m.deps.GuestMTU))
 			slog.Info("VPC networking configured", "tap", tapName, "bridge", spec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac, "queues", queues)
 			if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
 				return err
@@ -400,7 +400,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 				Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
 			})
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", "", 0))
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", "", 0, m.deps.GuestMTU))
 		}
 
 		if instance.MgmtMAC != "" {
@@ -419,7 +419,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 			// Single-queue: the mgmt NIC carries control-plane traffic only, so
 			// it takes vhost but not the per-queue kernel threads.
 			instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev("mgmt0", mgmtTap, 1))
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC, 1))
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC, 1, 0))
 			if err := m.appendSystemNetcfgFwCfg(instance); err != nil {
 				return fmt.Errorf("attach system netcfg: %w", err)
 			}
@@ -670,7 +670,7 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 
 	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: nb.String()})
 	devMac := GenerateDevMAC(instance.ID)
-	instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "dev0", devMac, 0))
+	instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "dev0", devMac, 0, 0))
 	slog.Info("DEV_NETWORKING: added dev NIC with SSH hostfwd",
 		"bindIP", bindIP, "port", sshDebugPort, "mac", devMac, "instanceId", instance.ID)
 }

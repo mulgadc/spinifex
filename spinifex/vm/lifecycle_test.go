@@ -703,7 +703,7 @@ func TestAppendDevHostfwdNIC_ExtraHostfwdNil_ShortCircuit(t *testing.T) {
 	require.Len(t, instance.Config.NetDevs, 1)
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value)
 	require.Len(t, instance.Config.Devices, 1)
-	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", GenerateDevMAC("i-no-extra")), instance.Config.Devices[0].Value)
+	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s,rx_queue_size=1024,tx_queue_size=1024", GenerateDevMAC("i-no-extra")), instance.Config.Devices[0].Value)
 }
 
 func TestAppendDevHostfwdNIC_ExtraPortFails_WarningContinues(t *testing.T) {
@@ -812,7 +812,7 @@ func TestAppendDevHostfwdNIC_ExtraHostfwd_HappyPath(t *testing.T) {
 	require.Len(t, instance.Config.NetDevs, 1)
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:18080-:8080", instance.Config.NetDevs[0].Value)
 	require.Len(t, instance.Config.Devices, 1)
-	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", GenerateDevMAC("i-extra-ok")), instance.Config.Devices[0].Value)
+	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s,rx_queue_size=1024,tx_queue_size=1024", GenerateDevMAC("i-extra-ok")), instance.Config.Devices[0].Value)
 }
 
 // ---------------------------------------------------------------------------

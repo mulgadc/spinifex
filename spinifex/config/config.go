@@ -62,12 +62,21 @@ type ExternalPool struct {
 	GwLrpRangeEnd   string `mapstructure:"gw_lrp_range_end"`
 }
 
+// DefaultUnderlayMTU is the standard Ethernet payload, and the assumption a
+// cluster runs under until an operator raises the fabric and says so.
+const DefaultUnderlayMTU = 1500
+
 // NetworkConfig holds cluster-wide external network settings.
 type NetworkConfig struct {
 	ExternalMode  string         `mapstructure:"external_mode"`  // "pool" or "" (disabled)
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
+	// UnderlayMTU is the MTU the fabric between nodes can actually carry, and the
+	// figure the advertised guest MTU is derived from. Cluster-wide because every
+	// OVN network rides the same tunnels. Raise it only after verifying the switch
+	// end to end; overstating it blackholes large frames silently.
+	UnderlayMTU int `mapstructure:"underlay_mtu"`
 	// FirewallEnabled toggles the host firewall that scopes cluster ports to cluster
 	// members. Three-state on purpose: nil means the install path decides, via the
 	// mode file setup.sh writes. An explicit false tears down an existing policy.
@@ -439,6 +448,7 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 
 	// Default ipsec_enabled to true; operators must explicitly set false to disable.
 	viper.SetDefault("network.ipsec_enabled", true)
+	viper.SetDefault("network.underlay_mtu", DefaultUnderlayMTU)
 
 	// No default for network.firewall_enabled on purpose. Setting one here would
 	// make the key always present and hide the difference between "unset" and

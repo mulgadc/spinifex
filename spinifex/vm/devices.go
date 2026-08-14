@@ -47,14 +47,26 @@ func TapNetDev(id, ifname string, queues int) NetDev {
 	return NetDev{Value: b.String()}
 }
 
+// NICQueueSize is the virtio-net ring depth, in descriptors. QEMU's default of
+// 256 is a packet-rate ceiling rather than a memory saving: a vCPU preempted
+// for a fraction of a millisecond fills all 256 slots and the overflow is
+// dropped. 1024 is the maximum and what RHEV and Proxmox both ship.
+const NICQueueSize = 1024
+
 // NetDevice returns the appropriate QEMU virtio-net device string for
 // machineType, wiring netdev and mac. mac is omitted when empty.
+//
+// mtu > 0 sets VIRTIO_NET_F_MTU, giving the guest a device-level ceiling that
+// does not depend on it taking a DHCP lease. It complements the DHCP option
+// rather than replacing it — statically addressed and IPv6-only guests never
+// see the lease — and is immutable while the device is live, so a cluster MTU
+// change still needs a stop/start to reach a running guest.
 //
 // queues > 1 enables multiqueue, which needs one MSI-X vector per rx and tx
 // queue plus one for config and one for control — 2N+2. Understating vectors
 // silently drops the NIC back to fewer queues, so it is derived here rather
 // than passed in. MMIO machines have no MSI-X and are left single-queue.
-func NetDevice(machineType, netdev, mac string, queues int) Device {
+func NetDevice(machineType, netdev, mac string, queues, mtu int) Device {
 	var b strings.Builder
 	if IsMMIO(machineType) {
 		b.WriteString("virtio-net-device")
@@ -65,8 +77,14 @@ func NetDevice(machineType, netdev, mac string, queues int) Device {
 	if mac != "" {
 		fmt.Fprintf(&b, ",mac=%s", mac)
 	}
-	if !IsMMIO(machineType) && queues > 1 {
-		fmt.Fprintf(&b, ",mq=on,vectors=%d", 2*queues+2)
+	if mtu > 0 {
+		fmt.Fprintf(&b, ",host_mtu=%d", mtu)
+	}
+	if !IsMMIO(machineType) {
+		fmt.Fprintf(&b, ",rx_queue_size=%d,tx_queue_size=%d", NICQueueSize, NICQueueSize)
+		if queues > 1 {
+			fmt.Fprintf(&b, ",mq=on,vectors=%d", 2*queues+2)
+		}
 	}
 	return Device{Value: b.String()}
 }

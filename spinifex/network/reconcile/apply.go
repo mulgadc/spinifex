@@ -133,7 +133,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 		}
 
-		want := topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer, r.ipsecEnabled)
+		want := topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer, r.underlayMTU, r.ipsecEnabled)
 		existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID)
 		switch {
 		case err != nil || existing == nil:

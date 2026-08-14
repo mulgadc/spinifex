@@ -379,8 +379,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # Gated like every other step, not just always(): a cell the dispatch
+      # deselected never checked out or ran tofu init, so destroying would fail
+      # on missing plugins and report the cell red for correctly doing nothing.
       - name: Teardown
-        if: always()
+        if: always() && steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_HOST: ${{ matrix.host }}
@@ -397,7 +400,7 @@ jobs:
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
       - name: Upload tofu log
-        if: always()
+        if: always() && steps.gate.outputs.selected == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: tofu-log-cell-${{ matrix.cell }}-${{ github.run_id }}

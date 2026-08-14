@@ -325,7 +325,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 			// Single-queue: the pre-built Config's netdevs come from the
 			// launcher, and a tap with more queues than its netdev asks for
 			// would leave the extra queues unopened.
-			tapSpec := IMDSPrimaryTapSpec(instance.ENIId, 1)
+			tapSpec := IMDSPrimaryTapSpec(instance.ENIId, 1, m.deps.GuestMTU)
 			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
 				slog.Error("Failed to set up tap device (direct-boot)", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)
@@ -335,7 +335,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 				return err
 			}
 			for _, extra := range instance.ExtraENIs {
-				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac, 1)
+				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac, 1, m.deps.GuestMTU)
 				if err := m.deps.NetworkPlumber.SetupTap(extraSpec); err != nil {
 					slog.Error("Failed to set up extra ENI tap (direct-boot)", "eni", extra.ENIID, "err", err)
 					return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
@@ -360,7 +360,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 				return fmt.Errorf("ensure IMDS bridge: %w", err)
 			}
 			queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
-			spec := IMDSPrimaryTapSpec(instance.ENIId, queues)
+			spec := IMDSPrimaryTapSpec(instance.ENIId, queues, m.deps.GuestMTU)
 			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("setup tap device: %w", err)

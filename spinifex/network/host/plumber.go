@@ -61,7 +61,14 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 		return fmt.Errorf("create tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)
 	}
 
-	if out, err := utils.SudoCommand("ip", "link", "set", spec.Name, "up").CombinedOutput(); err != nil {
+	// MTU is set in the same call as bring-up so a fabric that cannot carry the
+	// requested size fails the launch here, rather than leaving the tap at 1500
+	// while the guest believes it has more and blackholes every large frame.
+	upArgs := []string{"link", "set", spec.Name, "up"}
+	if spec.MTU > 0 {
+		upArgs = append(upArgs, "mtu", strconv.Itoa(spec.MTU))
+	}
+	if out, err := utils.SudoCommand("ip", upArgs...).CombinedOutput(); err != nil {
 		if cleanErr := deleteTapLink(spec.Name).Run(); cleanErr != nil {
 			slog.Warn("Failed to clean up tap after bring-up failure", "tap", spec.Name, "err", cleanErr)
 		}

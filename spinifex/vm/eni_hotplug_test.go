@@ -393,7 +393,7 @@ func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
 		t.Fatalf("SetupTap calls = %d, want 1", len(plumber.setupCalls))
 	}
 	got := plumber.setupCalls[0]
-	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", NICQueues(v.Config.CPUCount, true))
+	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", NICQueues(v.Config.CPUCount, true), mgr.deps.GuestMTU)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SetupTap spec = %+v, want %+v", got, want)
 	}

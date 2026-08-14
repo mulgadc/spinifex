@@ -278,7 +278,7 @@ func (m *Manager) setupENITap(instanceID, eniID, mac string, queues int) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil
 	}
-	spec := VPCTapSpec(eniID, mac, queues)
+	spec := VPCTapSpec(eniID, mac, queues, m.deps.GuestMTU)
 	if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 		return fmt.Errorf("setup tap %s for eni %s on instance %s: %w", spec.Name, eniID, instanceID, err)
 	}

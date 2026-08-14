@@ -23,20 +23,47 @@ ConnectX-5 (MT27800) on a 100 GbE fabric, `t3.xlarge` guests (4 vCPU), Ubuntu 26
 kernel 6.12. Throughput is `iperf` between guest private addresses over the VPC
 overlay, 4 streams, 60s.
 
+## Read this first: the dominant cost is not on this page
+
+The single largest gap between a guest and its host is not any tunable below. It is
+that **the VPC overlay currently gets no hardware segmentation offload**, so the host
+CPU segments every guest packet in software.
+
+Measured with the same script, same parameters, on the same NIC and switch, three
+clients into one server at 4 streams each:
+
+| | Host, on the underlay | Guest, over the VPC | |
+| --- | --- | --- | --- |
+| aggregate | **92.6 Gbit/s** | **17.6 Gbit/s** | **5.3x** |
+| frame on the wire | 1518 B | 1518 B | identical |
+| TSO super-packets | 4,165,267 | **0** | |
+| wire packets per descriptor | 39.3 | 1.0 | |
+
+The guest's own offloads are fine — its GSO super-packets reach the host intact at
+~64 KB. They are then broken into individual 1518-byte frames in software between the
+tap and the NIC. The cause is under investigation and is not yet fixed; it is
+independent of IPsec, and it is larger than every item in the table below combined.
+
+Until it is resolved, treat the figures on this page as tuning within a constraint,
+not as the ceiling.
+
 ## Summary — what moved the needle
 
 | Change | Effect |
 | --- | --- |
 | UDP receive buffer sysctl | Fixes storage faults. No throughput change. |
 | vhost-net on the guest NIC | QEMU main loop 60% of a core → 3%. No throughput change on its own. |
-| IPsec off (trusted links) | **2.5x** |
+| Guest NIC RX ring 256 → 1024 | Removes a drop source under burst. |
 | Guest NIC multiqueue | **−12% with IPsec on, +54% with IPsec off** |
-| Guest MTU 1408 → 1442 | ~10%, only valid with IPsec off |
-| Jumbo frames | Unavailable — fabric caps at 1500 |
+| IPsec off (trusted links only) | **2.5x** — see the warning in §2 |
+| Guest MTU 1408 → 1442 | ~10%, and only valid with IPsec off |
+| Jumbo frames | Untested end to end. Needs a switch that carries it. |
 
-End to end, mean per-client throughput went from **1.23 Gbit/s to 6.64 Gbit/s (5.4x)**
-and aggregate into one guest from 3.69 to **19.92 Gbit/s**. Single-client runs reach
-10–15 Gbit/s.
+On a trusted-fabric configuration (IPsec off, multiqueue on) mean per-client
+throughput went from **1.23 Gbit/s to 6.64 Gbit/s** and aggregate into one guest from
+3.69 to **19.92 Gbit/s**. That 5.4x is *relative to an encrypted baseline* — it is
+mostly the cost of encryption being removed, not tuning headroom being found. The
+default, encrypted configuration is the one most clusters should run.
 
 ## 1. Kernel tunables (sysctl)
 
@@ -171,10 +198,16 @@ failure this budget exists to prevent.
 
 ### Jumbo frames — check the fabric first
 
-The installer exposes `SPINIFEX_LAN_MTU` and `SPINIFEX_VPC_MTU`, and the ConnectX-5
-supports up to 9978. Jumbo frames would be the largest single win available, because
-at 1442 bytes a 10 Gbit/s flow is ~850k packets/sec and almost all the cost is
-per-packet.
+Set `network.underlay_mtu` in `/etc/spinifex/spinifex.toml` to the figure the fabric
+between nodes actually carries. It defaults to 1500. The guest MTU is derived from it
+— 9000 gives a guest 8942, or 8908 with IPsec — and reaches the guest three ways: the
+DHCP option, the virtio device's `host_mtu`, and the host-side tap. A running guest
+needs a stop/start to pick up a new `host_mtu`.
+
+Jumbo would substantially mitigate the software-segmentation cost described at the top
+of this page, because it cuts the descriptor count roughly sixfold. It does not remove
+it. Note that the 92.6 Gbit/s host figure above was measured at MTU **1500**, so the
+fabric is not the binding constraint it was once assumed to be.
 
 **But the host NICs are only half the path.** On the test cluster, raising both the
 physical NIC and `br-vpc` to 9000 on all four nodes produced total packet loss above
@@ -220,6 +253,12 @@ ethtool -l enp0s16      # in the guest
 
 ## Open questions
 
+- **Why does the overlay lose GSO between the tap and the NIC?** The two candidates
+  are the mlx5 driver declining to offload a Geneve-encapsulated GSO skb on this
+  firmware, and something in the OVS datapath dropping GSO before the driver sees it.
+  They are distinguishable by running the same measurement over a VXLAN tunnel, which
+  takes a different path through the driver's feature check. This is the highest-value
+  open question on the page by a wide margin.
 - Does `pcrypt` make single-SA IPsec scale across cores, and can OVN be made to
   request it?
 - Would multiple SAs per node pair restore RSS spread while keeping encryption?

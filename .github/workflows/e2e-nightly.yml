@@ -570,7 +570,9 @@ jobs:
         working-directory: mulga/scripts/iso-builder
         run: |
           set -euo pipefail
-          SSH_IDENTITY="$HOME/.ssh/spinifex-key.pub" \
+          # KEEP_NODE: the harness owns the only VM there is and tears it down
+          # on exit, so without this the workload step below has no node left.
+          KEEP_NODE=1 SSH_IDENTITY="$HOME/.ssh/spinifex-key.pub" \
             ./test/test-smoke.sh | tee /tmp/smoke-$GITHUB_RUN_ID.log
           ip=$(sed -n 's/^\[smoke\] node address: //p' /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
           [ -n "$ip" ] || { echo "::error::smoke test did not report a node address"; exit 1; }
@@ -635,6 +637,9 @@ jobs:
           sudo pkill -f spinifex-smoke-test || true
           rm -rf /tmp/cell21-artifacts-$GITHUB_RUN_ID /tmp/cell21.env \
                  /tmp/smoke-$GITHUB_RUN_ID.log
+          # KEEP_NODE leaves the node's disk and serial log behind for us.
+          sleep 2
+          rm -f "$TMPDIR"/tmp.*.qcow2 "$TMPDIR"/tmp.*.log "$TMPDIR"/tmp.*-node.log
 
   iso-multi:
     name: cell-22 (iso/dhcp/three-node)

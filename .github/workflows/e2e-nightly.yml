@@ -606,6 +606,9 @@ jobs:
           serial=$(sed -n 's/^\[smoke\] serial log preserved: //p' \
                    /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
           [ -n "$serial" ] && cp "$serial" /tmp/cell21-artifacts-$GITHUB_RUN_ID/serial.log || true
+          node=$(sed -n 's/^\[smoke\] node logs preserved: //p' \
+                 /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$node" ] && cp "$node" /tmp/cell21-artifacts-$GITHUB_RUN_ID/node.log || true
 
       - uses: actions/upload-artifact@v7
         if: always()

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection"
         required: false
 
 permissions:
@@ -933,3 +933,97 @@ jobs:
       - name: Clean up results
         if: always()
         run: rm -rf "$PERF_RESULTS_ROOT"
+
+  # Fault injection, not throughput. Cell-23 asks how fast predastore is when
+  # every node is healthy; this asks whether it survives one that is not.
+  #
+  # After cell-23 rather than beside it: both want a quiet single runner, and a
+  # benchmark sharing a machine with a fault injection run measures the wrong
+  # thing. The port offset keeps them apart even so.
+  stress:
+    name: cell-24 (predastore/fault-injection)
+    needs: [matrix, baremetal, iso-single, iso-multi, performance]
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',24,') )
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 30
+    env:
+      # Freezes a follower. STRESS_HOST=leader is a known failure: a gate keeps
+      # the frozen node first in its meta read order and pays the full client
+      # timeout per key, so listing slows in proportion to object count.
+      STRESS_HOST: follower
+      # Clear of cell-23's default 10000, so the two never collide on a runner
+      # that lets them overlap.
+      STRESS_PORT_OFFSET: "20000"
+    steps:
+      - name: Clean Workspace
+        run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "STRESS_RESULTS_ROOT=$E2E_ROOT/predastore-stress-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      # A frozen node is indistinguishable from a slow one, so a run on a
+      # loaded or nearly full disk fails as a timeout and reads as a real
+      # fault. The checks are the cheap way to tell those apart afterwards.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-stress.*' \
+               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          if [ "$avail_gb" -lt 10 ]; then
+            echo "::error::$TMPDIR has ${avail_gb} GiB free; the run needs headroom above predastore's 5% watermark."
+            exit 1
+          fi
+
+      # Leftovers from a run killed before its cleanup trap: a surviving node
+      # holds its ports and fails this run somewhere unrelated.
+      - name: Clear stale nodes
+        run: pkill -KILL -f '/bin/s3d -config' || true
+
+      - name: Run fault injection
+        working-directory: predastore
+        run: make e2e-stress
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: predastore-stress-${{ github.run_id }}
+          path: ${{ env.STRESS_RESULTS_ROOT }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Clean up
+        if: always()
+        run: |
+          pkill -KILL -f '/bin/s3d -config' || true
+          rm -rf "$STRESS_RESULTS_ROOT"

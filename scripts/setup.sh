@@ -15,7 +15,7 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, users, sudoers, firewall, timesync, files,
-#                                directories, env, systemd, logrotate, udev,
+#                                directories, env, systemd, sysctl, logrotate, udev,
 #                                fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
@@ -1165,6 +1165,24 @@ EOF
     info "Systemd units installed and enabled (per-service users)"
 }
 
+# --- Install kernel tunables ---
+# Predastore carries blob, meta and raft over QUIC, and quic-go asks for a 7 MiB
+# UDP receive buffer. Left at the kernel default of 208 KiB it silently drops
+# datagrams under load, which fails shard writes and corrupts guest volumes.
+install_sysctl() {
+    stage "installing kernel tunables"
+    $SUDO install -d /etc/sysctl.d
+    $SUDO tee /etc/sysctl.d/99-spinifex-net.conf > /dev/null << 'SYSCTL'
+# Managed by spinifex setup.sh — do not edit.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+SYSCTL
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO sysctl -q --system 2>/dev/null || true
+    fi
+    info "Kernel tunables installed (net.core.rmem_max/wmem_max = 16MB)"
+}
+
 # --- Install logrotate ---
 install_logrotate() {
     stage "installing logrotate config"
@@ -1356,6 +1374,7 @@ main() {
     stage_enabled env        && install_systemd_env
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
+    stage_enabled sysctl     && install_sysctl
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap

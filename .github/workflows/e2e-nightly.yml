@@ -449,6 +449,10 @@ jobs:
     env:
       CI_WAN_MODE: dhcp
       CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+      # What a real node gets. The harness default of 4G is a dev-box size, and
+      # importing an 820 MiB AMI on top of the running stack does not fit in it.
+      MEM: 8G
+      SMP: 8
       # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
       # instances. Disjoint from cell-22's pool so a run that dies holding its
       # SNAT address cannot collide with the next cell.
@@ -597,6 +601,11 @@ jobs:
           mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
           cp -r /tmp/smoke-$GITHUB_RUN_ID.log /tmp/spinifex-disk-bench \
                 /tmp/spinifex-network-bench /tmp/cell21-artifacts-$GITHUB_RUN_ID/ 2>/dev/null || true
+          # The guest's own view. Without it a node that dies mid-test is only
+          # visible as the harness command that stopped producing output.
+          serial=$(sed -n 's/^\[smoke\] serial log preserved: //p' \
+                   /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$serial" ] && cp "$serial" /tmp/cell21-artifacts-$GITHUB_RUN_ID/serial.log || true
 
       - uses: actions/upload-artifact@v7
         if: always()

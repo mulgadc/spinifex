@@ -442,7 +442,9 @@ jobs:
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',21,')
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 45
+    # ISO build, install, boot and pool re-form is ~35 of these on its own,
+    # before the workload step imports an AMI and launches an instance.
+    timeout-minutes: 90
     concurrency:
       group: iso-qemu-rack
       cancel-in-progress: false
@@ -616,6 +618,11 @@ jobs:
           node=$(sed -n 's/^\[smoke\] node logs preserved: //p' \
                  /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
           [ -n "$node" ] && cp "$node" /tmp/cell21-artifacts-$GITHUB_RUN_ID/node.log || true
+          # QEMU's stderr no longer reaches the step log: it is redirected so a
+          # kept-alive VM cannot hold the step's stdout open.
+          qemu=$(sed -n 's/^\[smoke\] qemu log preserved: //p' \
+                 /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$qemu" ] && cp "$qemu" /tmp/cell21-artifacts-$GITHUB_RUN_ID/qemu.log || true
 
       - uses: actions/upload-artifact@v7
         if: always()

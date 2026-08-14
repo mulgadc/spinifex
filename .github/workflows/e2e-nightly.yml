@@ -559,10 +559,15 @@ jobs:
       - name: Prepare SSH key
         run: |
           set -euo pipefail
-          if [ ! -f "$HOME/.ssh/spinifex-key" ]; then
-            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-            ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/spinifex-key" -C "spinifex-ci"
-          fi
+          mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+          # Two keys, because the guest key must not share a name with the one
+          # smoke-test.sh registers from the node: the node holds that private
+          # half, and IMDS caches material by key name for five minutes, so
+          # re-importing over it is invisible to the guests.
+          for k in spinifex-key spinifex-workload-key; do
+            [ -f "$HOME/.ssh/$k" ] ||
+              ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/$k" -C "$k-ci"
+          done
 
       # Boots the ISO, installs unattended, reads the lease off the serial
       # console, runs the in-guest smoke test, and installs the key for the
@@ -591,11 +596,11 @@ jobs:
           NODES=(${{ steps.smoke.outputs.node_ip }})
           NODE_NAMES=(spinifex-ci)
           SSH_USER=spinifex
-          SSH_KEY_PATH=$HOME/.ssh/spinifex-key
-          # Two different keys as far as the script is concerned: SSH_KEY_PATH
-          # reaches the guests, SSH_IDENTITY reaches the node. Both are this one,
-          # and without the second the node SSH falls back to the runner's
-          # default identity, which the node has never seen.
+          SSH_KEY_PATH=$HOME/.ssh/spinifex-workload-key
+          # SSH_KEY_PATH reaches the guests, SSH_IDENTITY reaches the node, and
+          # they are deliberately different keys. Without the second, node SSH
+          # falls back to the runner's default identity, which the node has
+          # never seen.
           SSH_IDENTITY=$HOME/.ssh/spinifex-key
           EXT_POOL_START=$EXT_POOL_START
           EXT_POOL_END=$EXT_POOL_END

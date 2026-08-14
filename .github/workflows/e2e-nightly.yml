@@ -917,7 +917,13 @@ jobs:
       # collide with a cluster left on the default ports.
       - name: Run throughput benchmark
         working-directory: predastore
-        run: make e2e-performance
+        run: |
+          set -euo pipefail
+          # Into the results directory, so the artifact reads on its own rather
+          # than needing the job log it was printed into. The benchmark only
+          # ever creates this directory, so a log placed here first survives.
+          mkdir -p "$PERF_RESULTS_ROOT"
+          make e2e-performance 2>&1 | tee "$PERF_RESULTS_ROOT/e2e-performance.log"
 
       # Report-only. The baseline comparison and the -10% gate are mulga-wpjsx;
       # until the run-to-run spread is known from real nights, a threshold would

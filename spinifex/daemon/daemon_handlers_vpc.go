@@ -40,6 +40,65 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) {
 	d.ensureDefaultVPCInfrastructureFor(ctx, evt.AccountID)
 }
 
+// handleEnsureDefaultVpc is the request/reply form of handleAccountCreated, for
+// callers that must not return before the account can launch anything.
+// EnsureDefaultVPC is idempotent, so this and the event handler racing on the
+// same account is harmless.
+func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+
+	var req struct {
+		AccountID string `json:"account_id"`
+	}
+	reply := struct {
+		VpcID string `json:"vpc_id,omitempty"`
+		Error string `json:"error,omitempty"`
+	}{}
+
+	respond := func() {
+		data, err := json.Marshal(reply)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to marshal EnsureDefaultVpc reply", "error", err)
+			return
+		}
+		if err := msg.Respond(data); err != nil {
+			slog.ErrorContext(ctx, "Failed to respond to EnsureDefaultVpc", "error", err)
+		}
+	}
+	defer respond()
+
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		reply.Error = "malformed request"
+		utils.MarkSpanError(span, err)
+		return
+	}
+	if req.AccountID == "" {
+		reply.Error = "empty account ID"
+		return
+	}
+	if d.vpcService == nil {
+		reply.Error = "VPC service unavailable"
+		return
+	}
+
+	info, err := d.vpcService.EnsureDefaultVPC(req.AccountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to ensure default VPC on request",
+			"accountID", req.AccountID, "error", err)
+		utils.MarkSpanError(span, err)
+		reply.Error = "could not create default VPC"
+		return
+	}
+	if info == nil || info.VpcId == "" {
+		reply.Error = "default VPC has no ID"
+		return
+	}
+
+	d.ensureDefaultVPCInfrastructureFor(ctx, req.AccountID)
+	reply.VpcID = info.VpcId
+}
+
 // ensureDefaultVPCInfrastructure attaches an IGW and a default 0.0.0.0/0 route
 // to each well-known account's default VPC. The default SG is provisioned by
 // EnsureDefaultVPC / CreateVpc itself, so this routine is IGW-only. Accounts

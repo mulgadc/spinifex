@@ -99,6 +99,15 @@ func (svc *Service) Reload() (err error) {
 type awsgwTOML struct {
 	Ratelimit ratelimit.Config      `toml:"ratelimit"`
 	Quota     handlers_quota.Limits `toml:"quota"`
+	Signup    signupConfig          `toml:"signup"`
+}
+
+// signupConfig is the [signup] section governing /admin/CreateAccount. Absent
+// leaves MaxAccounts at zero, which means uncapped — the behaviour of every
+// cluster that has not opted into self-service signup.
+type signupConfig struct {
+	MaxAccounts int    `toml:"max_accounts"`
+	ConsoleURL  string `toml:"console_url"`
 }
 
 // loadAWSGWConfig reads and parses awsgw.toml once, returning the [ratelimit] and
@@ -241,6 +250,7 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	throttleCfg := awsgwCfg.Ratelimit
 	quotaCfg := awsgwCfg.Quota
+	signupCfg := awsgwCfg.Signup
 
 	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
@@ -411,6 +421,8 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAccessAdmin:      bedrockAccess,
 		BedrockProvisioned:      bedrockProvisioned,
 		BedrockGuardrails:       bedrockGuardrails,
+		SignupMaxAccounts:       signupCfg.MaxAccounts,
+		SignupConsoleURL:        signupCfg.ConsoleURL,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

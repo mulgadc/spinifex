@@ -91,8 +91,10 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `spx admin account create` | `--name` | Connects to NATS → CAS loop on `spinifex-account-counter:next_id` for sequential 12-digit ID → creates Account record in `spinifex-accounts` KV → creates `admin` user in new account → creates access key for admin → creates AdministratorAccess policy (Action:*, Resource:*) → attaches policy → prints credentials |
+| `spx admin account create` | `--name` (required) | Connects to NATS → refuses if an account already holds the name (case- and whitespace-insensitive) → reserves the name in `spinifex-account-names` KV → CAS loop on `spinifex-account-counter:next_id` for sequential 12-digit ID → creates Account record in `spinifex-accounts` KV → creates default VPC → creates `admin` user, AdministratorAccess policy (Action:*, Resource:*) and one access key → prints credentials and writes a `spinifex-<name>` AWS CLI profile |
+| `spx admin account create --remote` | `--name` (required), `--endpoint` (default: this node's AWS gateway), `--region` (default: this node's region), `--ca-bundle` (default: this node's CA), `--client-token` (default: generated), `--source` (default: `spx-cli`) | Same account, created through `POST /admin/CreateAccount` over SigV4 instead of NATS — the path the public signup form uses, so a shell can exercise it. Credentials come from the standard AWS chain (env vars or `AWS_PROFILE`), never from the cluster master key; the caller must be an IAM user in the super-admin account holding `spinifex:CreateAccount`. Reuse the printed `--client-token` to retry: a fresh token would create a second account. |
 | `spx admin account list` | — | Connects to NATS → IAMService.ListAccounts() → prints table with Account ID, Name, Status, Created |
+| `spx admin signup-principal create` | — | Creates the `signup` IAM user in the super-admin account with an inline policy allowing exactly `spinifex:CreateAccount`, revokes any access key left from a previous run, and mints one new key. The secret is printed once — store it as a Cloudflare Worker secret, never in a config file. Revoke with `aws iam delete-access-key`. |
 
 ### Image Management
 
@@ -141,6 +143,20 @@ Self-hosted models are served from the `ubuntu-26.04-vllm-serving-x86_64` system
 | Command | Flags | Description |
 |---------|-------|-------------|
 | `spx admin eks restore-snapshot` | `--cluster` (required), `--snapshot` (optional, defaults to the latest snapshot in predastore), `--account` (optional, defaults to the bootstrap account) | Single-CP total-loss DR path (fail-safe): validates the snapshot exists in predastore BEFORE any mutation (a typo'd/missing key hard-fails, never resets into an empty datastore) → launches a fresh control-plane VM as a cluster-init seed (replaying the persisted create-time launch template) → sets a required-snapshot `RecoveryDirective` (`cluster-reset`) so the boot-time recovery agent aborts rather than resets-into-empty if it cannot fetch the snapshot → persists the replacement in cluster meta BEFORE re-pointing the NLB (so an NLB failure is convergeable by the reconciler, returned as a provisional status, not a hard error) → re-points the cluster NLB's apiserver and konnectivity target groups from the old CP's ENI to the new one → fences the old CP with retries, failing loudly if it cannot be confirmed terminated (split-brain guard). Any failure before the meta commit unwinds the fresh CP (terminate + clear directive) so a re-run does not stack a second resetting control plane. The returned status is provisional — success means the sequence completed, not that etcd is restored and serving; verify cluster health. HA clusters (a spread with a potentially surviving quorum) are rejected — recover those via quorum reformation instead. |
+
+## Private Admin API
+
+Not an AWS API: a Spinifex-internal surface on the AWS gateway, JSON in and JSON out, one method per path segment at `POST /admin/<Method>`. It exists so the public signup form can create a tenant account without an operator shell.
+
+Requests are SigV4-signed with `service=spinifex` and the gateway's configured region (`region` in `awsgw.toml`; production is `us-west-1`). The caller must be an IAM **user** in the super-admin account (`000000000001`) holding `spinifex:<Method>` — assumed-role sessions are refused outright. Every gate denies with the same `AccessDenied`, so a caller cannot learn which one it failed. Every response carries `X-Amzn-RequestId`, repeated as `requestId` in an error body.
+
+| Method | Request | Response | Notes |
+|--------|---------|----------|-------|
+| `POST /admin/CreateAccount` | `name` (email address, required), `clientToken` (32–128 chars of `[A-Za-z0-9_-]`, required), `source` (free-form provenance tag, max 64 chars) | `accountId`, `accountName`, `adminUser`, `accessKeyId`, `secretAccessKey`, `defaultVpcId`, `consoleUrl` | Creates a tenant account with an `admin` user, an AdministratorAccess policy, one access key and a default VPC. The secret is returned **once**; replaying the same `clientToken` within 24 hours returns the identical response and is the only way to re-obtain it. |
+
+Errors are `{"error":{"code":…,"message":…},"requestId":…}`. `OperationInProgress` (409), `ServiceUnavailable` (503) and `InternalError` (500) are retryable with backoff, **always reusing the same `clientToken`** — a fresh token after a failure creates a duplicate account. `AccountAlreadyExists` (409), `IdempotentParameterMismatch` (400), `LimitExceeded` (400, `[signup] max_accounts` reached), `InvalidParameterValue`, `MissingParameter`, `InvalidRequest`, `InvalidAction`, `MethodNotAllowed` (405) and `AccessDenied` (403) are not.
+
+The endpoint is unreachable until an operator runs `spx admin signup-principal create`; there is no config toggle. Revocation is `aws iam delete-access-key`, which is immediate and cluster-wide.
 
 ## AWS-Compatible API
 

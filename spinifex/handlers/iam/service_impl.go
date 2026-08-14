@@ -709,6 +709,13 @@ func (s *IAMServiceImpl) DecryptSecret(ciphertext string) (string, error) {
 	return s.key.DecryptBase64(ciphertext)
 }
 
+// EncryptSecret encrypts plaintext to a base64-encoded AES-256-GCM ciphertext
+// using the same master key DecryptSecret reads, so a value it produces is
+// storable anywhere an access-key secret already is.
+func (s *IAMServiceImpl) EncryptSecret(plaintext string) (string, error) {
+	return s.key.EncryptBase64(plaintext)
+}
+
 // SeedBootstrap seeds the system root user and optional admin account into NATS KV.
 // Uses conditional create for multi-node safety; first node wins, others skip silently.
 func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {

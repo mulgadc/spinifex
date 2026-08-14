@@ -25,6 +25,12 @@ var (
 // ErrClusterUnavailable is returned when the NATS connection is not currently connected.
 var ErrClusterUnavailable = errors.New("cluster unavailable: NATS disconnected")
 
+// SubjectEnsureDefaultVpc is the request/reply subject on which the daemon
+// builds an account's default VPC and acknowledges. It lives here rather than
+// beside either party so the gateway does not import the daemon, nor the
+// reverse.
+const SubjectEnsureDefaultVpc = "ec2.EnsureDefaultVpc"
+
 // natsRetryEscalateAttempt is the threshold at which retry logs escalate from Warn to Error (rate-limited to 1/min).
 // ~30 attempts at the 60 s backoff cap ≈ ~30 min disconnected, suggesting config error not transient restart.
 const natsRetryEscalateAttempt = 30

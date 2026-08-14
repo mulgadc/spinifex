@@ -32,3 +32,15 @@ func SetVerboseFlag(v bool) func() {
 	_ = flag.Value.Set(strconv.FormatBool(v))
 	return func() { _ = flag.Value.Set(orig) }
 }
+
+// TrustsWholeAccount exposes trustsWholeAccount for testing.
+var TrustsWholeAccount = trustsWholeAccount
+
+// LocalGatewayEndpoint exposes localGatewayEndpoint for testing.
+var LocalGatewayEndpoint = localGatewayEndpoint
+
+// NewClientToken exposes newClientToken for testing.
+var NewClientToken = newClientToken
+
+// AdminHTTPClient exposes adminHTTPClient for testing.
+var AdminHTTPClient = adminHTTPClient

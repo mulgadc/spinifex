@@ -5,7 +5,9 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"net"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,6 +40,15 @@ var predastoreHealthCacheTTL = 5 * time.Second
 // and exercise every verdict — including the timeout path — without a live
 // predastore process.
 var nodeStatusFn = pds.NodeStatus
+
+// gateDialFn opens a TCP connection to a predastore S3 gate, indirected so
+// tests can stub the dial and exercise the single-host verdicts without a live
+// listener. A bare TCP connect is enough: it completes once the process is
+// accepting, before any TLS, which is exactly "the predastore process is up".
+var gateDialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
 
 // probeFunc reports one service's real health, in place of the "ok" every
 // service otherwise reports simply for being named in spinifex.toml.
@@ -108,15 +119,25 @@ func probePredastore(ctx context.Context, d *Daemon) string {
 // that runs no predastore — has nothing local to probe and reports ok: that
 // is not a failure of this host's own service, and the raft quorum as a
 // whole is what `spx admin storage status` reports on, across every host
-// that does run a meta node.
+// that does run a meta node. A single-host install has no reachable meta
+// socket at all and falls back to probing the local gate — see probeLocalGate.
 func computePredastoreHealth(ctx context.Context, d *Daemon) string {
-	nodes, cfg, err := localMetaNodes(d)
+	nodes, cfg, hostID, err := localMetaNodes(d)
 	if err != nil {
 		slog.Warn("predastore health probe: could not resolve local meta nodes", "err", err)
 		return predastoreHealthUnreachable
 	}
 	if len(nodes) == 0 {
 		return predastoreHealthOK
+	}
+
+	// Single-host: the meta node talks over an in-process pipe and binds no
+	// QUIC socket, so this daemon — a separate process — can never dial it.
+	// Probe predastore's one cross-process listener, the S3 gate, instead: a
+	// gate that accepts a connection is a predastore process serving, and on a
+	// single voter raft is trivially leader.
+	if predastoreIsSingleHost(cfg, hostID) {
+		return probeLocalGate(ctx, d, cfg, hostID)
 	}
 
 	rootCAs, err := loadPredastoreTrustRoot(d)
@@ -142,25 +163,82 @@ func computePredastoreHealth(ctx context.Context, d *Daemon) string {
 	return verdict
 }
 
+// predastoreIsSingleHost reports whether no predastore node runs off this
+// host, which is the only condition under which a local node opens a network
+// socket. When none does, the meta node is pipe-only and unreachable to a
+// separate process, so the raft QUIC probe cannot apply.
+func predastoreIsSingleHost(cfg *pds.Config, hostID pds.HostID) bool {
+	for _, h := range cfg.Hosts {
+		if h.ID != hostID && len(h.Nodes) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// probeLocalGate reports predastore's health on a single-host install by
+// connecting to the local S3 gate — its one cross-process listener. A host
+// running no gate exposes no socket to probe and reports ok rather than
+// failing a service it cannot answer for on a channel that cannot exist.
+func probeLocalGate(ctx context.Context, d *Daemon, cfg *pds.Config, hostID pds.HostID) string {
+	addr, ok := localGateAddr(cfg, hostID)
+	if !ok {
+		return predastoreHealthOK
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, predastoreProbeTimeout)
+	defer cancel()
+
+	conn, err := gateDialFn(probeCtx, "tcp", addr)
+	if err != nil {
+		slog.Debug("predastore health probe: gate unreachable", "addr", addr, "err", err)
+		return predastoreHealthUnreachable
+	}
+	_ = conn.Close()
+	return predastoreHealthOK
+}
+
+// localGateAddr is the dial address of the S3 gate on this host, and whether
+// the host runs one. A wildcard or empty bind is dialled on the loopback,
+// since the daemon and predastore share the host.
+func localGateAddr(cfg *pds.Config, hostID pds.HostID) (string, bool) {
+	for _, h := range cfg.Hosts {
+		if h.ID != hostID {
+			continue
+		}
+		for _, n := range h.Nodes {
+			if n.Role != pds.RoleGate {
+				continue
+			}
+			host := pds.NodeBindAddr(h, n)
+			if host == "" || host == "0.0.0.0" || host == "::" {
+				host = "127.0.0.1"
+			}
+			return net.JoinHostPort(host, strconv.Itoa(n.Port)), true
+		}
+	}
+	return "", false
+}
+
 // localMetaNodes returns the meta node ids pinned to this daemon's predastore
 // host, and the config they were parsed from. A node with no predastore host
 // id configured — this node runs no predastore at all — returns an empty
 // slice and no error, which computePredastoreHealth treats as "ok" rather
 // than "unreachable": it is not this host's job to answer for a service it
 // was never asked to run.
-func localMetaNodes(d *Daemon) ([]pds.NodeID, *pds.Config, error) {
+func localMetaNodes(d *Daemon) ([]pds.NodeID, *pds.Config, pds.HostID, error) {
 	if d.config.Predastore.HostID <= 0 {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 
 	cfgPath := predastoreConfigPath(d.configPath)
 	cfg, err := pds.LoadConfig(cfgPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load predastore config %s: %w", cfgPath, err)
+		return nil, nil, 0, fmt.Errorf("load predastore config %s: %w", cfgPath, err)
 	}
 
-	nodes := pds.MetaNodesOnHost(cfg, pds.HostID(d.config.Predastore.HostID))
-	return nodes, cfg, nil
+	hostID := pds.HostID(d.config.Predastore.HostID)
+	return pds.MetaNodesOnHost(cfg, hostID), cfg, hostID, nil
 }
 
 // predastoreConfigPath is where the predastore process reads its own config:

@@ -311,6 +311,8 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 // NIC happened to arrive — a divergence that surfaces as an irreproducible
 // customer report rather than a test failure.
 func TestHotPlugENI_MatchesColdBootNICOptions(t *testing.T) {
+	setMultiqueueForTest(t, true)
+
 	mgr, v, stub, _ := newHotPlugTestVMWithPlumber(t, 2)
 	v.Config.CPUCount = 4
 	v.Config.MachineType = "q35"

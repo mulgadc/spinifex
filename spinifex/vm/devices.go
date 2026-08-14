@@ -13,6 +13,11 @@ func IsMMIO(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
 }
 
+// MultiqueueNICs enables per-vCPU queue pairs on guest NICs. Off by default:
+// spreading one flow over several queues reorders packets, and TCP reads that
+// as loss. Measured cost on a 4-vCPU guest was ~15%, 1.76 -> 1.50 Gbit/s.
+var MultiqueueNICs = false
+
 // MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
 // thread per queue, so an unbounded count would put 64 of them behind a large
 // instance for throughput a handful already saturates.
@@ -22,7 +27,7 @@ const MaxNICQueues = 8
 // vCPUs, clamped to [1, MaxNICQueues]. The guest's virtio_net negotiates
 // min(vcpus, queues), so matching vCPUs lets every core drive its own queue.
 func NICQueues(vcpus int) int {
-	if vcpus < 1 {
+	if !MultiqueueNICs || vcpus < 1 {
 		return 1
 	}
 	return min(vcpus, MaxNICQueues)
@@ -30,11 +35,9 @@ func NICQueues(vcpus int) int {
 
 // TapNetDev returns the QEMU -netdev argument for a tap-backed NIC.
 //
-// vhost=on is what makes the NIC fast: it moves the datapath into the kernel
-// vhost-net thread. Without it QEMU copies every packet on its main loop
-// thread, which caps a guest around 1.7 Gbit/s no matter how many streams or
-// vCPUs it has. queues > 1 requests a multiqueue tap, which the tap device
-// itself must already have been created with (see TapSpec.Queues).
+// vhost=on moves the datapath into a kernel vhost-net thread; without it QEMU
+// copies every packet on its main loop, measured at 60% of a core under load
+// against 3% with it. queues > 1 needs a tap created multi_queue.
 func TapNetDev(id, ifname string, queues int) NetDev {
 	var b strings.Builder
 	fmt.Fprintf(&b, "tap,id=%s,ifname=%s,script=no,downscript=no,vhost=on", id, ifname)

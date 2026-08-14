@@ -83,8 +83,8 @@ func TestTapNetDev_Multiqueue(t *testing.T) {
 	assert.Equal(t, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=4", nd.Value)
 }
 
-// vhost=on is the whole point of the change: without it QEMU copies every
-// packet on its main loop and the guest is capped around 1.7 Gbit/s.
+// vhost=on is unconditional: without it QEMU copies every packet on its main
+// loop, measured at 60% of a core under load against 3% with it.
 func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
 	for _, queues := range []int{0, 1, 2, 8} {
 		nd := TapNetDev("net0", "tapabc", queues)
@@ -92,7 +92,17 @@ func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
 	}
 }
 
-func TestNICQueues(t *testing.T) {
+// Multiqueue is off by default because spreading one flow over several queues
+// reorders packets, which TCP reads as loss.
+func TestNICQueues_SingleQueueByDefault(t *testing.T) {
+	for _, vcpus := range []int{-1, 0, 1, 2, 4, 8, 96} {
+		assert.Equal(t, 1, NICQueues(vcpus), "vcpus=%d", vcpus)
+	}
+}
+
+func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
+	setMultiqueueForTest(t, true)
+
 	tests := []struct {
 		vcpus int
 		want  int
@@ -103,6 +113,14 @@ func TestNICQueues(t *testing.T) {
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, NICQueues(tt.vcpus), "vcpus=%d", tt.vcpus)
 	}
+}
+
+// setMultiqueueForTest flips the package default and restores it afterwards.
+func setMultiqueueForTest(t *testing.T, on bool) {
+	t.Helper()
+	prev := MultiqueueNICs
+	MultiqueueNICs = on
+	t.Cleanup(func() { MultiqueueNICs = prev })
 }
 
 func TestBlkDevice_PCI(t *testing.T) {

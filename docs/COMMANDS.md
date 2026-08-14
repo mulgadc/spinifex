@@ -156,7 +156,7 @@ Requests are SigV4-signed with `service=spinifex` and the gateway's configured r
 
 Errors are `{"error":{"code":…,"message":…},"requestId":…}`. `OperationInProgress` (409), `ServiceUnavailable` (503) and `InternalError` (500) are retryable with backoff, **always reusing the same `clientToken`** — a fresh token after a failure creates a duplicate account. `AccountAlreadyExists` (409), `IdempotentParameterMismatch` (400), `LimitExceeded` (400, `[signup] max_accounts` reached), `InvalidParameterValue`, `MissingParameter`, `InvalidRequest`, `InvalidAction`, `MethodNotAllowed` (405) and `AccessDenied` (403) are not.
 
-The endpoint is unreachable until an operator runs `spx admin signup-principal create`; there is no config toggle. Revocation is `aws iam delete-access-key`, which is immediate and cluster-wide.
+The endpoint is unreachable until an operator runs `spx admin signup-principal create`; there is no config toggle. Revocation is `aws iam delete-access-key`, which is immediate and cluster-wide. Set `[signup] console_url` in `awsgw.toml` to this cluster's console before enabling signup — it ships empty, and an empty value means `consoleUrl` comes back blank.
 
 ## AWS-Compatible API
 

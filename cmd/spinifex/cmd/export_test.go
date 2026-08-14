@@ -3,7 +3,10 @@
 
 package cmd
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
 
 // Test hooks for the external cmd_test package.
 
@@ -44,3 +47,20 @@ var NewClientToken = newClientToken
 
 // AdminHTTPClient exposes adminHTTPClient for testing.
 var AdminHTTPClient = adminHTTPClient
+
+// CreateAccountRemote exposes createAccountRemote for testing.
+var CreateAccountRemote = createAccountRemote
+
+// AdminTarget builds the unexported target struct for testing.
+func AdminTarget(endpoint, region, caBundle string) adminTarget {
+	return adminTarget{endpoint: endpoint, region: region, caBundle: caBundle}
+}
+
+// DecodeAdminError exposes decodeAdminError for testing.
+var DecodeAdminError = decodeAdminError
+
+// RetryableAdminError reports whether the CLI would suggest retrying err.
+func RetryableAdminError(err error) bool {
+	var adminErr *adminError
+	return errors.As(err, &adminErr) && retryableAdminErrors[adminErr.Code]
+}

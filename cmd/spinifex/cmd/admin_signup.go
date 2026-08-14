@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -283,76 +284,14 @@ func runAccountCreateRemote(cmd *cobra.Command, name string) {
 		clientToken = newClientToken()
 	}
 
-	body, err := json.Marshal(gateway.CreateAccountRequest{
-		Name:        name,
-		ClientToken: clientToken,
-		Source:      source,
-	})
+	out, err := createAccountRemote(ctx, adminTarget{endpoint: endpoint, region: region, caBundle: caBundle},
+		gateway.CreateAccountRequest{Name: name, ClientToken: clientToken, Source: source})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(endpoint, "/")+"/admin/CreateAccount", bytes.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	signer, err := gwsign.NewIMDS(ctx, region)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving AWS credentials: %v\n", err)
-		os.Exit(1)
-	}
-	sum := sha256.Sum256(body)
-	if err := signer.Sign(req, hex.EncodeToString(sum[:]), "spinifex", region); err != nil {
-		fmt.Fprintf(os.Stderr, "Error signing request: %v\n", err)
-		os.Exit(1)
-	}
-
-	client, err := adminHTTPClient(caBundle)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error calling %s: %v\n", endpoint, err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxResponseBytes))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: gateway returned HTTP %d with an unreadable body: %v\n", resp.StatusCode, err)
-		os.Exit(1)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var errBody struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-			RequestID string `json:"requestId"`
-		}
-		if err := json.Unmarshal(payload, &errBody); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: gateway returned HTTP %d: %s\n", resp.StatusCode, payload)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "Error: %s: %s (HTTP %d, requestId %s)\n",
-			errBody.Error.Code, errBody.Error.Message, resp.StatusCode, errBody.RequestID)
-		if retryableAdminErrors[errBody.Error.Code] {
+		var adminErr *adminError
+		if errors.As(err, &adminErr) && retryableAdminErrors[adminErr.Code] {
 			fmt.Fprintf(os.Stderr, "Retry with --client-token %s to resume; a new token would create a second account.\n", clientToken)
 		}
-		os.Exit(1)
-	}
-
-	var out gateway.CreateAccountResponse
-	if err := json.Unmarshal(payload, &out); err != nil {
-		fmt.Fprintf(os.Stderr, "Error decoding response: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -365,6 +304,100 @@ func runAccountCreateRemote(cmd *cobra.Command, name string) {
 	fmt.Printf("  Default VPC:       %s\n", out.DefaultVpcID)
 	fmt.Printf("  Console:           %s\n", out.ConsoleURL)
 	fmt.Printf("  Client Token:      %s\n", clientToken)
+}
+
+// adminTarget is where a remote /admin call goes and how it is signed.
+type adminTarget struct {
+	endpoint string
+	region   string
+	caBundle string
+}
+
+// adminError is a structured error from the /admin surface. The code is
+// carried separately from the message so the caller can decide whether a
+// retry is safe without matching on text.
+type adminError struct {
+	Code       string
+	Message    string
+	RequestID  string
+	StatusCode int
+}
+
+func (e *adminError) Error() string {
+	return fmt.Sprintf("%s: %s (HTTP %d, requestId %s)", e.Code, e.Message, e.StatusCode, e.RequestID)
+}
+
+// createAccountRemote signs and sends POST /admin/CreateAccount. Credentials
+// come from the standard AWS chain, so this never reads the cluster master
+// key — it is the same request the signup Worker makes.
+func createAccountRemote(ctx context.Context, target adminTarget, req gateway.CreateAccountRequest) (*gateway.CreateAccountResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(target.endpoint, "/")+"/admin/CreateAccount", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	signer, err := gwsign.NewIMDS(ctx, target.region)
+	if err != nil {
+		return nil, fmt.Errorf("resolve AWS credentials: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	if err := signer.Sign(httpReq, hex.EncodeToString(sum[:]), "spinifex", target.region); err != nil {
+		return nil, fmt.Errorf("sign request: %w", err)
+	}
+
+	client, err := adminHTTPClient(target.caBundle)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call %s: %w", target.endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeAdminError(resp.StatusCode, payload)
+	}
+
+	var out gateway.CreateAccountResponse
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// decodeAdminError turns a non-200 into an adminError. A body that is not the
+// JSON envelope is reported verbatim rather than as a decode failure, since
+// then the response came from something other than the gateway.
+func decodeAdminError(statusCode int, payload []byte) error {
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil || body.Error.Code == "" {
+		return fmt.Errorf("gateway returned HTTP %d: %s", statusCode, payload)
+	}
+	return &adminError{
+		Code:       body.Error.Code,
+		Message:    body.Error.Message,
+		RequestID:  body.RequestID,
+		StatusCode: statusCode,
+	}
 }
 
 // newClientToken returns a fresh idempotency token in the character set the

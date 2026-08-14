@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -35,8 +36,20 @@ in low-connectivity or highly contested environments
 `,
 }
 
+// cliLogLevel is the level of the CLI's default logger, retuned by initCLILogger
+// once flags are parsed. Service subcommands replace the handler outright via
+// initTelemetry, so this governs CLI invocations only.
+var cliLogLevel = new(slog.LevelVar)
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
+	// Claim the process logger before any command runs. Libraries spx links log
+	// at Info and above; on a CLI those records are noise that corrupts piped
+	// output, so they go to stderr and are dropped below Error by default.
+	// Commands report their own failures through fmt.Fprintf(os.Stderr, ...).
+	cliLogLevel.Set(slog.LevelError)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cliLogLevel})))
+
 	err := rootCmd.Execute()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -44,8 +57,29 @@ func Execute() {
 	}
 }
 
+// initCLILogger retunes the CLI logger from SPX_LOG_LEVEL, then --verbose so an
+// explicit flag wins over the environment. There is no root --debug flag: four
+// service subcommands already define one with a service-specific meaning, and a
+// root persistent flag of the same name would silently shadow differently
+// depending on which command ran. SPX_LOG_LEVEL=debug covers that case.
+func initCLILogger() {
+	if name := os.Getenv("SPX_LOG_LEVEL"); name != "" {
+		var level slog.Level
+		if err := level.UnmarshalText([]byte(name)); err == nil {
+			cliLogLevel.Set(level)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid SPX_LOG_LEVEL %q\n", name)
+		}
+	}
+	if verbose, _ := rootCmd.PersistentFlags().GetBool("verbose"); verbose {
+		cliLogLevel.Set(slog.LevelInfo)
+	}
+}
+
 func init() {
-	cobra.OnInitialize(initConfig)
+	cobra.OnInitialize(initCLILogger, initConfig)
+
+	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "log at info level (default: errors only)")
 
 	// Global flags
 	rootCmd.PersistentFlags().String("config", "", "config file (required)")

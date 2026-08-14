@@ -33,14 +33,12 @@ rate = 1
 burst = 5
 
 # Self-service account creation via POST /admin/CreateAccount.
-# max_accounts caps how many accounts may exist; 0 means uncapped.
-# console_url is returned to a new account as the place to sign in; set it to
-# this cluster's console before enabling signup.
-# The endpoint is unreachable until an IAM user in the super-admin account is
-# granted spinifex:CreateAccount, so these values alone do not expose it.
+# max_accounts caps how many accounts may exist; 0 means uncapped, and an
+# absent section defaults to 128. The endpoint is unreachable until an IAM user
+# in the super-admin account is granted spinifex:CreateAccount, so this value
+# alone does not expose it.
 [signup]
 max_accounts = 128
-console_url = ""
 
 # Per-account service quotas (default off)
 [quota]

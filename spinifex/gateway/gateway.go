@@ -161,9 +161,6 @@ type GatewayConfig struct {
 	// to exist. Zero means uncapped, which is the behaviour of every cluster
 	// that has not opted into self-service signup.
 	SignupMaxAccounts int
-	// SignupConsoleURL is handed to a newly created account as its sign-in
-	// link. Empty omits the field rather than emitting a broken URL.
-	SignupConsoleURL string
 }
 
 var supportedServices = map[string]bool{

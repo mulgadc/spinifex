@@ -302,7 +302,6 @@ func runAccountCreateRemote(cmd *cobra.Command, name string) {
 	fmt.Printf("  Access Key ID:     %s\n", out.AccessKeyID)
 	fmt.Printf("  Secret Access Key: %s\n", out.SecretAccessKey)
 	fmt.Printf("  Default VPC:       %s\n", out.DefaultVpcID)
-	fmt.Printf("  Console:           %s\n", out.ConsoleURL)
 	fmt.Printf("  Client Token:      %s\n", clientToken)
 }
 

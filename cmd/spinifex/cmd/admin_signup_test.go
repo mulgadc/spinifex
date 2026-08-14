@@ -148,7 +148,7 @@ func newAdminTestServer(t *testing.T, status int, body string, got *http.Request
 }
 
 const createAccountOK = `{"accountId":"000000000042","accountName":"ben@example.com","adminUser":"admin",` +
-	`"accessKeyId":"AKIATEST","secretAccessKey":"secret","defaultVpcId":"vpc-1","consoleUrl":"https://console.example.com"}`
+	`"accessKeyId":"AKIATEST","secretAccessKey":"secret","defaultVpcId":"vpc-1"}`
 
 // The request must be SigV4-signed for service spinifex at the configured
 // region, and must reach /admin/CreateAccount as a POST.

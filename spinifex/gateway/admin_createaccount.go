@@ -59,7 +59,6 @@ type CreateAccountResponse struct {
 	AccessKeyID     string `json:"accessKeyId"`
 	SecretAccessKey string `json:"secretAccessKey"`
 	DefaultVpcID    string `json:"defaultVpcId"`
-	ConsoleURL      string `json:"consoleUrl"`
 }
 
 // adminIdemRecord is the stored provisioning state for one client token.
@@ -223,14 +222,6 @@ func (gw *GatewayConfig) provisionNewAccount(
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	// Empty means the response tells a new account nowhere to sign in, which
-	// the caller cannot distinguish from a working one. Not fatal: the account
-	// is real and usable, and refusing it here would strand the credentials.
-	if gw.SignupConsoleURL == "" {
-		slog.Warn("CreateAccount: [signup] console_url is unset — the response names no console",
-			"accountID", account.AccountID)
-	}
-
 	slog.Info("CreateAccount: account created",
 		"accountID", account.AccountID, "source", req.Source, "defaultVpcID", vpcID)
 
@@ -241,7 +232,6 @@ func (gw *GatewayConfig) provisionNewAccount(
 		AccessKeyID:     provisioned.AccessKeyID,
 		SecretAccessKey: provisioned.SecretAccessKey,
 		DefaultVpcID:    vpcID,
-		ConsoleURL:      gw.SignupConsoleURL,
 	}, nil
 }
 

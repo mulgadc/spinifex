@@ -255,7 +255,6 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 		IAMService:        svc,
 		NATSConn:          nc,
 		SignupMaxAccounts: 128,
-		SignupConsoleURL:  "https://console.example.com",
 	}
 }
 
@@ -281,7 +280,6 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 	assert.NotEmpty(t, created.AccessKeyID)
 	assert.NotEmpty(t, created.SecretAccessKey)
 	assert.Equal(t, "vpc-0a1b2c3d", created.DefaultVpcID)
-	assert.Equal(t, "https://console.example.com", created.ConsoleURL)
 
 	// The replay is the only way to re-obtain the secret, so it must match.
 	second, err := gw.adminCreateAccount(ctx, body)
@@ -363,21 +361,4 @@ func TestAdminCreateAccountNeverLogsTheSecret(t *testing.T) {
 	require.NotEmpty(t, created.SecretAccessKey)
 	assert.NotContains(t, logged.String(), created.SecretAccessKey)
 	assert.NotContains(t, logged.String(), testClientToken)
-}
-
-// An unset console_url must be visible in the log rather than only in a blank
-// field of a response the operator never sees.
-func TestAdminCreateAccountWarnsOnMissingConsoleURL(t *testing.T) {
-	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-
-	gw := newCreateAccountGateway(t)
-	gw.SignupConsoleURL = ""
-
-	out, err := gw.adminCreateAccount(t.Context(), createAccountBody(t, "ben@example.com", testClientToken))
-	require.NoError(t, err)
-	assert.Empty(t, out.(*CreateAccountResponse).ConsoleURL)
-	assert.Contains(t, logged.String(), "console_url is unset")
 }

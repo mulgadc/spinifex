@@ -152,11 +152,11 @@ Requests are SigV4-signed with `service=spinifex` and the gateway's configured r
 
 | Method | Request | Response | Notes |
 |--------|---------|----------|-------|
-| `POST /admin/CreateAccount` | `name` (email address, required), `clientToken` (32–128 chars of `[A-Za-z0-9_-]`, required), `source` (free-form provenance tag, max 64 chars) | `accountId`, `accountName`, `adminUser`, `accessKeyId`, `secretAccessKey`, `defaultVpcId`, `consoleUrl` | Creates a tenant account with an `admin` user, an AdministratorAccess policy, one access key and a default VPC. The secret is returned **once**; replaying the same `clientToken` within 24 hours returns the identical response and is the only way to re-obtain it. |
+| `POST /admin/CreateAccount` | `name` (email address, required), `clientToken` (32–128 chars of `[A-Za-z0-9_-]`, required), `source` (free-form provenance tag, max 64 chars) | `accountId`, `accountName`, `adminUser`, `accessKeyId`, `secretAccessKey`, `defaultVpcId` | Creates a tenant account with an `admin` user, an AdministratorAccess policy, one access key and a default VPC. The secret is returned **once**; replaying the same `clientToken` within 24 hours returns the identical response and is the only way to re-obtain it. |
 
 Errors are `{"error":{"code":…,"message":…},"requestId":…}`. `OperationInProgress` (409), `ServiceUnavailable` (503) and `InternalError` (500) are retryable with backoff, **always reusing the same `clientToken`** — a fresh token after a failure creates a duplicate account. `AccountAlreadyExists` (409), `IdempotentParameterMismatch` (400), `LimitExceeded` (400, `[signup] max_accounts` reached), `InvalidParameterValue`, `MissingParameter`, `InvalidRequest`, `InvalidAction`, `MethodNotAllowed` (405) and `AccessDenied` (403) are not.
 
-The endpoint is unreachable until an operator runs `spx admin signup-principal create`; there is no config toggle. Revocation is `aws iam delete-access-key`, which is immediate and cluster-wide. Set `[signup] console_url` in `awsgw.toml` to this cluster's console before enabling signup — it ships empty, and an empty value means `consoleUrl` comes back blank.
+The endpoint is unreachable until an operator runs `spx admin signup-principal create`; there is no config toggle. Revocation is `aws iam delete-access-key`, which is immediate and cluster-wide. `[signup] max_accounts` in `awsgw.toml` caps how many accounts may exist; it defaults to 128 when the section is absent, and 0 means uncapped.
 
 ## AWS-Compatible API
 

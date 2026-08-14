@@ -113,6 +113,51 @@ func TestOVSPlumber_SetupTap_MultiQueue(t *testing.T) {
 	}
 }
 
+// The tap is the guest's first hop and does not fragment, so it has to carry
+// the same MTU the guest was told. Leaving it at the 1500 default silently
+// drops every frame a jumbo guest sends.
+func TestOVSPlumber_SetupTap_MTU(t *testing.T) {
+	cases := []struct {
+		name string
+		mtu  int
+		want []string
+	}{
+		{"unset leaves kernel default", 0, nil},
+		{"overlay", 1442, []string{"mtu", "1442"}},
+		{"jumbo", 8942, []string{"mtu", "8942"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var upArgs []string
+			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+				if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "set" && slices.Contains(args, "up") {
+					upArgs = args
+				}
+				return exec.Command("/bin/true")
+			}))
+
+			p := NewOVSPlumber()
+			if err := p.SetupTap(vm.TapSpec{Name: "tapmtu-test", Bridge: "br-int", MTU: tc.mtu}); err != nil {
+				t.Fatalf("SetupTap: %v", err)
+			}
+			if upArgs == nil {
+				t.Fatal("no ip link set up invocation captured")
+			}
+			idx := slices.Index(upArgs, "mtu")
+			if tc.want == nil {
+				if idx >= 0 {
+					t.Errorf("mtu set for zero-MTU spec: %v", upArgs)
+				}
+				return
+			}
+			if idx < 0 || !slices.Equal(upArgs[idx:idx+2], tc.want) {
+				t.Errorf("up args = %v, want to contain %v", upArgs, tc.want)
+			}
+		})
+	}
+}
+
 // "lo" is always present so os.Stat hits the pre-create cleanup branch.
 func TestOVSPlumber_SetupTap_PreExistingKernelTap(t *testing.T) {
 	failLinkDel := true

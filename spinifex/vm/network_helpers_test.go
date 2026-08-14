@@ -121,11 +121,12 @@ func TestOVSIfaceID(t *testing.T) {
 }
 
 func TestVPCTapSpec(t *testing.T) {
-	got := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", 4)
+	got := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", 4, 1442)
 	want := TapSpec{
 		Name:   "tapabc123",
 		Bridge: "br-int",
 		Queues: 4,
+		MTU:    1442,
 		ExternalIDs: map[string]string{
 			"iface-id":     "port-eni-abc123",
 			"attached-mac": "02:00:00:aa:bb:cc",
@@ -137,11 +138,12 @@ func TestVPCTapSpec(t *testing.T) {
 }
 
 func TestIMDSPrimaryTapSpec(t *testing.T) {
-	got := IMDSPrimaryTapSpec("eni-abc123", 4)
+	got := IMDSPrimaryTapSpec("eni-abc123", 4, 1442)
 	want := TapSpec{
 		Name:   "tapabc123",
 		Bridge: IMDSBridgeName,
 		Queues: 4,
+		MTU:    1442,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("IMDSPrimaryTapSpec = %+v, want %+v", got, want)
@@ -337,11 +339,11 @@ func TestSetupExtraENINICs_AppendsOnePerExtra(t *testing.T) {
 	if len(plumber.setupCalls) != 2 {
 		t.Fatalf("expected 2 SetupTap calls, got %d", len(plumber.setupCalls))
 	}
-	want0 := VPCTapSpec("eni-aaa", "02:00:00:aa:aa:aa", NICQueues(instance.Config.CPUCount))
+	want0 := VPCTapSpec("eni-aaa", "02:00:00:aa:aa:aa", NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs), m.deps.GuestMTU)
 	if !reflect.DeepEqual(plumber.setupCalls[0], want0) {
 		t.Errorf("first setup call = %+v, want %+v", plumber.setupCalls[0], want0)
 	}
-	want1 := VPCTapSpec("eni-bbb", "02:00:00:bb:bb:bb", NICQueues(instance.Config.CPUCount))
+	want1 := VPCTapSpec("eni-bbb", "02:00:00:bb:bb:bb", NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs), m.deps.GuestMTU)
 	if !reflect.DeepEqual(plumber.setupCalls[1], want1) {
 		t.Errorf("second setup call = %+v, want %+v", plumber.setupCalls[1], want1)
 	}

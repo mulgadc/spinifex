@@ -1002,6 +1002,8 @@ var vpcdStartCmd = &cobra.Command{
 			NorthstarInternalDomain: handlers_dns.ResolveInternalDomain(&nodeConfig),
 			ResolverNameservers:     handlers_dns.ResolverNameserverIPs(clusterConfig),
 			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
+			IPSecEnabled:            clusterConfig.Network.IPSecEnabled,
+			UnderlayMTU:             clusterConfig.Network.UnderlayMTU,
 		})
 		if err != nil {
 			fmt.Println("Error starting vpcd service:", err)

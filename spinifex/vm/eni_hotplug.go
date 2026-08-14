@@ -86,7 +86,7 @@ func (m *Manager) HotPlugENI(ctx context.Context, instance *VM, eniID, mac strin
 	// A hot-plugged ENI must land on the same vhost/multiqueue settings the
 	// cold-boot path uses, or an instance performs differently depending on
 	// how its NIC arrived.
-	queues := NICQueues(instance.Config.CPUCount)
+	queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
 
 	// Step 1: tap device + OVS port on br-int (carries OVN iface-id binding).
 	if err := m.setupENITap(instance.ID, eniID, mac, queues); err != nil {
@@ -278,7 +278,7 @@ func (m *Manager) setupENITap(instanceID, eniID, mac string, queues int) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil
 	}
-	spec := VPCTapSpec(eniID, mac, queues)
+	spec := VPCTapSpec(eniID, mac, queues, m.deps.GuestMTU)
 	if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 		return fmt.Errorf("setup tap %s for eni %s on instance %s: %w", spec.Name, eniID, instanceID, err)
 	}

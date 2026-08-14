@@ -26,6 +26,7 @@ fi
 # Final fallback
 NATS_HOST="${NATS_HOST:-127.0.0.1}"
 
+# shellcheck disable=SC2034  # loop count only, index unused
 for i in $(seq 1 "$TIMEOUT"); do
     if nc -z "$NATS_HOST" "$NATS_PORT" 2>/dev/null; then
         exit 0

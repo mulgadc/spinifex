@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -16,6 +17,12 @@ import (
 // the same bucket the control plane depends on, under a reserved prefix no
 // other consumer reads.
 const canaryKey = "_watchdog.canary"
+
+// errProbeInconclusive marks a failure that happened before the probe ever
+// reached JetStream: config load, connect, or bucket open. The watchdog must
+// treat this as "learned nothing", not as JetStream refusing a write — during
+// recovery the bucket may simply not exist yet.
+var errProbeInconclusive = errors.New("probe did not reach JetStream")
 
 var nodeJSProbeCmd = &cobra.Command{
 	Use:   "js-probe",
@@ -42,6 +49,9 @@ func runNodeJSProbe(cmd *cobra.Command, _ []string) {
 
 	if err := probeJetStreamWrite(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "js-probe: %v\n", err)
+		if errors.Is(err, errProbeInconclusive) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 	fmt.Println("js-probe: ok")
@@ -52,21 +62,26 @@ func runNodeJSProbe(cmd *cobra.Command, _ []string) {
 // than a bucket of its own: a dedicated bucket is a separate stream that can be
 // placed on a different node, so it could stay writable while the bucket the
 // control plane actually depends on is wedged.
+//
+// Every stage before canaryRoundTrip is wrapped in errProbeInconclusive: the
+// probe has observed nothing about JetStream's write path yet, so a caller
+// must not read config, connect, or bucket-open failures as a JetStream
+// failure.
 func probeJetStreamWrite(ctx context.Context) error {
 	_, nc, err := loadConfigAndConnect()
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return fmt.Errorf("%w: connect: %w", errProbeInconclusive, err)
 	}
 	defer nc.Close()
 
 	js, err := jetstream.New(nc)
 	if err != nil {
-		return fmt.Errorf("jetstream: %w", err)
+		return fmt.Errorf("%w: jetstream: %w", errProbeInconclusive, err)
 	}
 
 	kv, err := js.KeyValue(ctx, daemon.ClusterStateBucket)
 	if err != nil {
-		return fmt.Errorf("open bucket %s: %w", daemon.ClusterStateBucket, err)
+		return fmt.Errorf("%w: open bucket %s: %w", errProbeInconclusive, daemon.ClusterStateBucket, err)
 	}
 	return canaryRoundTrip(ctx, kv)
 }

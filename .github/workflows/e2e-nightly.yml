@@ -465,6 +465,9 @@ jobs:
       EXT_POOL_END: 192.168.0.234
       EXT_GATEWAY: 192.168.1.1
       EXT_PREFIX_LEN: 23
+      # Pins where the benchmark writes, so collecting and removing it later are
+      # both exact. Left to itself the harness picks a timestamped name.
+      BENCH_OUT: /tmp/cell21-bench-${{ github.run_id }}
     steps:
       - name: Clean Workspace
         run: |
@@ -616,8 +619,15 @@ jobs:
         if: always()
         run: |
           mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
-          cp -r /tmp/smoke-$GITHUB_RUN_ID.log /tmp/spinifex-disk-bench \
-                /tmp/spinifex-network-bench /tmp/cell21-artifacts-$GITHUB_RUN_ID/ 2>/dev/null || true
+          cp /tmp/smoke-$GITHUB_RUN_ID.log /tmp/cell21-artifacts-$GITHUB_RUN_ID/ ||
+            echo "::warning::no smoke log to collect"
+          # fio JSON and the summary table. Warned about rather than swallowed:
+          # a benchmark that ran and produced nothing is worth knowing about.
+          if [ -d "$BENCH_OUT" ]; then
+            cp -r "$BENCH_OUT" /tmp/cell21-artifacts-$GITHUB_RUN_ID/benchmark
+          else
+            echo "::warning::no benchmark results at $BENCH_OUT"
+          fi
           # The guest's own view. Without it a node that dies mid-test is only
           # visible as the harness command that stopped producing output.
           serial=$(sed -n 's/^\[smoke\] serial log preserved: //p' \
@@ -638,7 +648,9 @@ jobs:
           name: e2e-artifacts-cell-21-${{ github.run_id }}
           path: /tmp/cell21-artifacts-${{ github.run_id }}
           if-no-files-found: warn
-          retention-days: 14
+          # Matches the predastore benchmark in cell-23: a night's numbers are
+          # only useful against the nights before them.
+          retention-days: 90
 
       - name: Teardown
         if: always()
@@ -651,7 +663,11 @@ jobs:
           fi
           sudo pkill -f spinifex-smoke-test || true
           rm -rf /tmp/cell21-artifacts-$GITHUB_RUN_ID /tmp/cell21.env \
-                 /tmp/smoke-$GITHUB_RUN_ID.log
+                 /tmp/smoke-$GITHUB_RUN_ID.log "$BENCH_OUT"
+          # Runs before BENCH_OUT existed left a timestamped directory behind
+          # every night. Sweep anything older than a day.
+          find /tmp -maxdepth 1 -name 'spinifex-benchmark-*' -type d -mmin +1440 \
+               -exec rm -rf {} + 2>/dev/null || true
           # KEEP_NODE leaves the node's disk and serial log behind for us.
           sleep 2
           rm -f "$TMPDIR"/tmp.*.qcow2 "$TMPDIR"/tmp.*.log "$TMPDIR"/tmp.*-node.log
@@ -691,6 +707,10 @@ jobs:
           mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
             { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          # Pinned so the per-node serial logs can be collected afterwards, and
+          # kept beside TMPDIR rather than in /tmp: it also holds nine 40G node
+          # disks, which is what the tmpfs assertion below is about.
+          echo "WORK_DIR=$E2E_ROOT/work/cell22-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -773,14 +793,20 @@ jobs:
       # customer can use it.
       - name: Install, form and verify the cluster
         working-directory: mulga/scripts/iso-builder
-        run: ./test/test-cluster.sh
+        run: |
+          set -euo pipefail
+          ./test/test-cluster.sh 2>&1 | tee /tmp/cell22-$GITHUB_RUN_ID.log
 
       - name: Collect logs
         if: always()
         run: |
           mkdir -p /tmp/cell22-artifacts-$GITHUB_RUN_ID
-          cp -r /tmp/spinifex-disk-bench /tmp/spinifex-network-bench \
-                /tmp/cell22-artifacts-$GITHUB_RUN_ID/ 2>/dev/null || true
+          cp /tmp/cell22-$GITHUB_RUN_ID.log /tmp/cell22-artifacts-$GITHUB_RUN_ID/ ||
+            echo "::warning::no cluster log to collect"
+          # Serial only. The same directory holds the nodes' disk images, which
+          # are gigabytes and must not go into an artifact.
+          cp "$WORK_DIR"/*-serial.log /tmp/cell22-artifacts-$GITHUB_RUN_ID/ 2>/dev/null ||
+            echo "no per-node serial logs — the run passed and cleaned up after itself"
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -788,13 +814,14 @@ jobs:
           name: e2e-artifacts-cell-22-${{ github.run_id }}
           path: /tmp/cell22-artifacts-${{ github.run_id }}
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
       - name: Teardown
         if: always()
         run: |
           sudo pkill -f spinifex-cluster-test || true
-          rm -rf /tmp/cell22-artifacts-$GITHUB_RUN_ID
+          rm -rf /tmp/cell22-artifacts-$GITHUB_RUN_ID /tmp/cell22-$GITHUB_RUN_ID.log \
+                 "$WORK_DIR"
 
   # Predastore throughput ("cell 23"). Predastore has no runners of its own and
   # spinifex depends on it, so the benchmark lives here and checks predastore

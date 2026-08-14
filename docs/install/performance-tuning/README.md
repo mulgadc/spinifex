@@ -131,11 +131,29 @@ Genuinely promising but untested: `pcrypt`, which parallelises a single SA's cry
 across cores while preserving ordering. It requires the SA to be created with a
 `pcrypt(...)` template, which OVN does not currently expose.
 
+### What disabling it is worth
+
+Measured on the test rig, three clients into one guest, 4 streams each, 60s:
+
+| | IPsec on (default) | IPsec off | |
+| --- | --- | --- | --- |
+| aggregate into one guest | 3.58 Gbit/s | **17.6 Gbit/s** | **4.9x** |
+| per client | 1.19 Gbit/s | **5.88 Gbit/s** | |
+| guest MTU | 1408 | 1442 | applied automatically |
+| NIC queue pairs | 1 | 4 | follows `ipsec_enabled` |
+| busiest receive core | 97.4% | under 15%, spread over 16 cores | |
+
+The MTU and multiqueue changes are not separate knobs — both follow
+`ipsec_enabled` on their own, because the sign of the multiqueue result flips
+with it (see §3). Turning encryption off is the whole change.
+
+This is the largest single lever available today, and the trade is explicit: all
+east-west guest traffic goes on the wire unencrypted.
+
 ### Disabling it for trusted links
 
 Only for topologies where the underlay is physically trusted — a single rack, a
-private VLAN, no untrusted tenant on the fabric. This turns off encryption for all
-east-west guest traffic.
+private VLAN, no untrusted tenant on the fabric.
 
 In `/etc/spinifex/spinifex.toml` on **every** node:
 
@@ -150,6 +168,18 @@ Then restart the daemon: `systemctl restart spinifex-daemon`. Confirm with
 Note that `ovn-nbctl set NB_Global . ipsec=false` is **not** sufficient on its own —
 the daemon reconciles that value, so a manual override is transient. Change the
 config file.
+
+**Restart guests after changing this in either direction.** The guest MTU moves
+with the setting, but a running guest holds its DHCP lease for up to an hour and
+its device-level `host_mtu` until it is stopped and started. Going from off to on
+narrows the path from 1442 to 1408 while the guest still believes 1442, which
+blackholes large segments until it is restarted.
+
+**Expect launches to fail for a minute or two after the change.** Re-enabling
+IPsec makes `RunInstances` return `ServerInternal` with `vpc.add-nat` timing out,
+because the OVN flows-ready barrier cannot confirm while ovn-controller reprograms
+every tunnel for the new SAs. It clears once `ip xfrm state` settles. The error
+is reported as a capacity problem, which it is not.
 
 ## 3. Guest NIC: vhost-net and multiqueue
 

@@ -588,6 +588,11 @@ jobs:
           NODE_NAMES=(spinifex-ci)
           SSH_USER=spinifex
           SSH_KEY_PATH=$HOME/.ssh/spinifex-key
+          # Two different keys as far as the script is concerned: SSH_KEY_PATH
+          # reaches the guests, SSH_IDENTITY reaches the node. Both are this one,
+          # and without the second the node SSH falls back to the runner's
+          # default identity, which the node has never seen.
+          SSH_IDENTITY=$HOME/.ssh/spinifex-key
           EXT_POOL_START=$EXT_POOL_START
           EXT_POOL_END=$EXT_POOL_END
           EXT_GATEWAY=$EXT_GATEWAY

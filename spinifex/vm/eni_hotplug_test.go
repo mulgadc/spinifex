@@ -311,12 +311,11 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 // NIC happened to arrive — a divergence that surfaces as an irreproducible
 // customer report rather than a test failure.
 func TestHotPlugENI_MatchesColdBootNICOptions(t *testing.T) {
-	setMultiqueueForTest(t, true)
-
 	mgr, v, stub, _ := newHotPlugTestVMWithPlumber(t, 2)
+	mgr.deps.MultiqueueNICs = true
 	v.Config.CPUCount = 4
 	v.Config.MachineType = "q35"
-	queues := NICQueues(v.Config.CPUCount)
+	queues := NICQueues(v.Config.CPUCount, true)
 
 	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
 		t.Fatalf("HotPlugENI: %v", err)
@@ -394,7 +393,7 @@ func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
 		t.Fatalf("SetupTap calls = %d, want 1", len(plumber.setupCalls))
 	}
 	got := plumber.setupCalls[0]
-	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", NICQueues(v.Config.CPUCount))
+	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc", NICQueues(v.Config.CPUCount, true))
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SetupTap spec = %+v, want %+v", got, want)
 	}

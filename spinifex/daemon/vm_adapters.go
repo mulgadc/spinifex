@@ -615,6 +615,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		ShutdownSignal:             d.shuttingDown.Load,
 		CrashHandler:               d.vmMgr.HandleCrash,
 		TransitionState:            d.TransitionState,
+		MultiqueueNICs:             d.clusterConfig != nil && !d.clusterConfig.Network.IPSecEnabled,
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
 		DetachDelay:                d.detachDelay,

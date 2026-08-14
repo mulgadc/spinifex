@@ -13,11 +13,6 @@ func IsMMIO(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
 }
 
-// MultiqueueNICs enables per-vCPU queue pairs on guest NICs. Off by default:
-// spreading one flow over several queues reorders packets, and TCP reads that
-// as loss. Measured cost on a 4-vCPU guest was ~15%, 1.76 -> 1.50 Gbit/s.
-var MultiqueueNICs = false
-
 // MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
 // thread per queue, so an unbounded count would put 64 of them behind a large
 // instance for throughput a handful already saturates.
@@ -26,8 +21,13 @@ const MaxNICQueues = 8
 // NICQueues returns the queue-pair count for a NIC on a guest with vcpus
 // vCPUs, clamped to [1, MaxNICQueues]. The guest's virtio_net negotiates
 // min(vcpus, queues), so matching vCPUs lets every core drive its own queue.
-func NICQueues(vcpus int) int {
-	if !MultiqueueNICs || vcpus < 1 {
+//
+// Whether multiqueue helps depends on what is downstream, and the sign flips.
+// Behind IPsec it costs ~12%: ESP funnels a node pair onto one core, so extra
+// queues only reorder packets, which TCP reads as loss. Without it the sending
+// host's single vhost thread saturates first and queues are worth +54%.
+func NICQueues(vcpus int, multiqueue bool) int {
+	if !multiqueue || vcpus < 1 {
 		return 1
 	}
 	return min(vcpus, MaxNICQueues)

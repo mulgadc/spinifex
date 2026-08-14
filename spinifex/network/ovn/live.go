@@ -801,6 +801,18 @@ func (c *LiveClient) CreateDHCPOptions(ctx context.Context, opts *nbdb.DHCPOptio
 	return "", nil
 }
 
+func (c *LiveClient) UpdateDHCPOptionsOptions(ctx context.Context, uuid string, options map[string]string) error {
+	row := &nbdb.DHCPOptions{UUID: uuid, Options: options}
+	ops, err := c.client.Where(row).Update(row, &row.Options)
+	if err != nil {
+		return fmt.Errorf("update DHCP options ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update DHCP options transact: %w", err)
+	}
+	return nil
+}
+
 func (c *LiveClient) DeleteDHCPOptions(ctx context.Context, uuid string) error {
 	opts := &nbdb.DHCPOptions{UUID: uuid}
 	ops, err := c.client.Where(opts).Delete()

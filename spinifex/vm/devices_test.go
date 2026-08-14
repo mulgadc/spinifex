@@ -92,17 +92,15 @@ func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
 	}
 }
 
-// Multiqueue is off by default because spreading one flow over several queues
-// reorders packets, which TCP reads as loss.
-func TestNICQueues_SingleQueueByDefault(t *testing.T) {
+// Disabled means one queue whatever the vCPU count: behind IPsec, extra queues
+// only reorder packets, which TCP reads as loss.
+func TestNICQueues_SingleQueueWhenDisabled(t *testing.T) {
 	for _, vcpus := range []int{-1, 0, 1, 2, 4, 8, 96} {
-		assert.Equal(t, 1, NICQueues(vcpus), "vcpus=%d", vcpus)
+		assert.Equal(t, 1, NICQueues(vcpus, false), "vcpus=%d", vcpus)
 	}
 }
 
 func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
-	setMultiqueueForTest(t, true)
-
 	tests := []struct {
 		vcpus int
 		want  int
@@ -111,16 +109,8 @@ func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
 		{16, MaxNICQueues}, {96, MaxNICQueues},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, NICQueues(tt.vcpus), "vcpus=%d", tt.vcpus)
+		assert.Equal(t, tt.want, NICQueues(tt.vcpus, true), "vcpus=%d", tt.vcpus)
 	}
-}
-
-// setMultiqueueForTest flips the package default and restores it afterwards.
-func setMultiqueueForTest(t *testing.T, on bool) {
-	t.Helper()
-	prev := MultiqueueNICs
-	MultiqueueNICs = on
-	t.Cleanup(func() { MultiqueueNICs = prev })
 }
 
 func TestBlkDevice_PCI(t *testing.T) {

@@ -147,7 +147,7 @@ func (m *Manager) setupExtraENINICs(instance *VM) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil
 	}
-	queues := NICQueues(instance.Config.CPUCount)
+	queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
 	for idx, extra := range instance.ExtraENIs {
 		spec := VPCTapSpec(extra.ENIID, extra.ENIMac, queues)
 		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {

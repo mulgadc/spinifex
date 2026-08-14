@@ -138,6 +138,9 @@ type Config struct {
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT,
 	// appended to the transit /24 in the spinifex_nat_exempt set. nat mode only.
 	NATExemptCIDRs []string
+	// IPSecEnabled mirrors network.ipsec_enabled, so the DHCP MTU can drop the
+	// 34-byte ESP allowance on a cluster running the overlay in plaintext.
+	IPSecEnabled bool
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -468,6 +471,7 @@ func launchService(cfg *Config) error {
 	if dns := resolverDNSServer(cfg); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
+	topoOpts = append(topoOpts, topology.WithIPSec(cfg.IPSecEnabled))
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
 	igwPool, publicPool := selectExternalPools(cfg.ExternalMode, cfg.ExternalPools)
@@ -653,17 +657,18 @@ func launchService(cfg *Config) error {
 	}()
 
 	rec, err := reconcile.New(reconcile.Config{
-		OVN:          liveClient,
-		SG:           sgMgr,
-		NAT:          natMgr,
-		Routes:       routeMgr,
-		IGW:          igwMgr,
-		Topology:     topoMgr,
-		LocalAZ:      cfg.AZ,
-		NodeHostname: holder,
-		Chassis:      chassisNames,
-		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:    resolverDNSServer(cfg),
+		OVN:           liveClient,
+		SG:            sgMgr,
+		NAT:           natMgr,
+		Routes:        routeMgr,
+		IGW:           igwMgr,
+		Topology:      topoMgr,
+		LocalAZ:       cfg.AZ,
+		NodeHostname:  holder,
+		Chassis:       chassisNames,
+		GatewayClaim:  host.NewGatewayClaimProber(cfg.OVNSBAddr),
+		DNSServer:     resolverDNSServer(cfg),
+		IPSecDisabled: !cfg.IPSecEnabled,
 		// Re-read intent at prune time so a guest launched during a long apply
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {

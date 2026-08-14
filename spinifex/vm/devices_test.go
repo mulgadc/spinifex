@@ -42,12 +42,12 @@ func TestIsMMIO(t *testing.T) {
 
 func TestNetDevice_PCI(t *testing.T) {
 	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
-	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024,tx_queue_size=1024", d.Value)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024", d.Value)
 }
 
 func TestNetDevice_PCI_NoMAC(t *testing.T) {
 	d := NetDevice("q35", "net0", "", 0, 0)
-	assert.Equal(t, "virtio-net-pci,netdev=net0,rx_queue_size=1024,tx_queue_size=1024", d.Value)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,rx_queue_size=1024", d.Value)
 }
 
 func TestNetDevice_MMIO(t *testing.T) {
@@ -60,11 +60,24 @@ func TestNetDevice_MMIO_NoMAC(t *testing.T) {
 	assert.Equal(t, "virtio-net-device,netdev=net0", d.Value)
 }
 
+// QEMU caps tx_queue_size at 256 for every backend but vhost-user/vhost-vdpa,
+// and rejects a larger value instead of clamping it, so emitting one at all
+// fails the launch with "must be a power of 2 between 256 and 256".
+func TestNetDevice_NeverSetsTxQueueSize(t *testing.T) {
+	for _, machineType := range []string{"q35", "microvm"} {
+		for _, queues := range []int{0, 1, 4, 8} {
+			d := NetDevice(machineType, "net0", "02:00:00:aa:bb:cc", queues, 1442)
+			assert.NotContains(t, d.Value, "tx_queue_size",
+				"machineType=%s queues=%d", machineType, queues)
+		}
+	}
+}
+
 // vectors must be 2N+2 (N rx + N tx + config + control). Understating it makes
 // QEMU silently fall back to fewer queues, so the arithmetic is pinned here.
 func TestNetDevice_PCI_Multiqueue(t *testing.T) {
 	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 4, 0)
-	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024,tx_queue_size=1024,mq=on,vectors=10", d.Value)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024,mq=on,vectors=10", d.Value)
 }
 
 // MMIO has no MSI-X, so a queue count must not produce mq/vectors there.

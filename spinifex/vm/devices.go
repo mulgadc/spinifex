@@ -47,11 +47,15 @@ func TapNetDev(id, ifname string, queues int) NetDev {
 	return NetDev{Value: b.String()}
 }
 
-// NICQueueSize is the virtio-net ring depth, in descriptors. QEMU's default of
-// 256 is a packet-rate ceiling rather than a memory saving: a vCPU preempted
-// for a fraction of a millisecond fills all 256 slots and the overflow is
-// dropped. 1024 is the maximum and what RHEV and Proxmox both ship.
-const NICQueueSize = 1024
+// NICRxQueueSize is the virtio-net receive ring depth, in descriptors. QEMU's
+// default of 256 is a packet-rate ceiling rather than a memory saving: a vCPU
+// preempted for a fraction of a millisecond fills all 256 slots and the
+// overflow is dropped. 1024 is the maximum and what RHEV and Proxmox ship.
+//
+// There is deliberately no transmit equivalent. QEMU caps tx_queue_size at 256
+// for every backend except vhost-user and vhost-vdpa, and rejects a larger
+// value outright rather than clamping it, which fails the launch.
+const NICRxQueueSize = 1024
 
 // NetDevice returns the appropriate QEMU virtio-net device string for
 // machineType, wiring netdev and mac. mac is omitted when empty.
@@ -81,7 +85,7 @@ func NetDevice(machineType, netdev, mac string, queues, mtu int) Device {
 		fmt.Fprintf(&b, ",host_mtu=%d", mtu)
 	}
 	if !IsMMIO(machineType) {
-		fmt.Fprintf(&b, ",rx_queue_size=%d,tx_queue_size=%d", NICQueueSize, NICQueueSize)
+		fmt.Fprintf(&b, ",rx_queue_size=%d", NICRxQueueSize)
 		if queues > 1 {
 			fmt.Fprintf(&b, ",mq=on,vectors=%d", 2*queues+2)
 		}

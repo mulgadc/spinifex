@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex NATS JetStream liveness watchdog
 PartOf=spinifex.target
@@ -16,6 +16,10 @@ ExecStart=/var/lib/spinifex/nats-js-watchdog.sh
 # cutting it off. Only the failing path runs that long; a healthy node exits on
 # the first sample.
 TimeoutStopSec=45
+# Same 34s worst case bounds the start side: without this the unit inherits
+# oneshot's infinite default, so a genuinely hung run would sit in
+# activating(start) forever and could not be retriggered by its timer.
+TimeoutStartSec=120
 
 # Hardening (kept compatible with talking to PID1 over /run/systemd).
 NoNewPrivileges=yes

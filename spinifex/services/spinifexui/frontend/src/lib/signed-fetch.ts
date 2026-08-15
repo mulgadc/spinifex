@@ -3,8 +3,8 @@ import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
 
 import type { SessionCredentials } from "./auth"
+import { getRegion } from "./cluster-config"
 
-const AWS_REGION = "ap-southeast-2"
 const GATEWAY_PORT = 9999
 
 interface SignedFetchOptions {
@@ -75,7 +75,7 @@ export async function signedFetch<T>({
       // gateway's ASIA path verifies it.
       sessionToken: credentials.sessionToken,
     },
-    region: AWS_REGION,
+    region: getRegion(),
     service,
     sha256: Sha256,
   })

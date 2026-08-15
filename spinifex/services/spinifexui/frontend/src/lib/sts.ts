@@ -6,8 +6,7 @@ import {
   getCredentials,
   type SessionCredentials,
 } from "./auth"
-
-const AWS_REGION = "ap-southeast-2"
+import { getRegion } from "./cluster-config"
 
 // SDK signs against the real backend host so the SigV4 signature includes the
 // correct Host header; middleware rewrites the outgoing URL to the same-origin
@@ -38,7 +37,7 @@ function buildStsClient(credentials: {
 }): STSClient {
   const client = new STSClient({
     endpoint: AWSGW_SIGN_ENDPOINT,
-    region: AWS_REGION,
+    region: getRegion(),
     credentials,
   })
   addProxyRewrite(client)

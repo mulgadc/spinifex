@@ -140,3 +140,27 @@ func TestFindAccountByName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, missing)
 }
+
+// A corrupt entry must surface as an error. Treating it as absent would let a
+// second account be created under a name that is already indexed.
+func TestAccountNameIndexRejectsCorruptEntry(t *testing.T) {
+	index, js := newAccountNameIndex(t)
+	ctx := t.Context()
+
+	require.NoError(t, index.Reserve(ctx, "ben@example.com", "token-a"))
+
+	kv, err := js.KeyValue(ctx, handlers_iam.KVBucketAccountNames)
+	require.NoError(t, err)
+	keys, err := kv.Keys(ctx)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	_, err = kv.Put(ctx, keys[0], []byte("not json"))
+	require.NoError(t, err)
+
+	_, _, err = index.Lookup(ctx, "ben@example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal reservation")
+
+	// The same corruption must not be mistaken for a free name.
+	assert.Error(t, index.Reserve(ctx, "ben@example.com", "token-b"))
+}

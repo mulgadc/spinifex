@@ -237,3 +237,31 @@ func TestAdminRequestRejectsNonPost(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	assert.Equal(t, awserrors.ErrorMethodNotAllowed, decodeAdminError(t, rec).Error.Code)
 }
+
+// authorizedAdminRequest builds a request that clears every authorization gate,
+// so the guards behind them can be tested on their own.
+func authorizedAdminRequest(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("method", "CreateAccount")
+
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	ctx = context.WithValue(ctx, ctxService, "spinifex")
+	ctx = context.WithValue(ctx, ctxAccountID, admin.DefaultAccountID())
+	ctx = context.WithValue(ctx, ctxIdentity, "admin")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+
+	rec := httptest.NewRecorder()
+	gw.Admin_Request(rec, req.WithContext(ctx))
+	return rec
+}
+
+// An authorized caller must still get a clear answer when the cluster is not
+// reachable, rather than a panic or a silent success.
+func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}
+
+	rec := authorizedAdminRequest(gw, `{}`)
+
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, decodeAdminError(t, rec).Error.Code)
+}

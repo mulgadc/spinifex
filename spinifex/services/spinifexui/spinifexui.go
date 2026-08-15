@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -37,6 +38,33 @@ type Config struct {
 	TLSKey  string `json:"tls_key"`
 	// BaseDir is the base directory for PID files and state.
 	BaseDir string `json:"base_dir"`
+	// Region is the cluster's AWS-parity region, served to the browser so the
+	// console can sign requests for the cluster it is actually talking to.
+	Region string `json:"region"`
+}
+
+// clusterConfig is the body of GET /api/config. It carries only non-secret
+// facts, matching the unauthenticated posture of /api/ca.pem.
+type clusterConfig struct {
+	Region string `json:"region"`
+}
+
+// clusterConfigHandler serves the facts the SPA needs before it can sign
+// anything. no-store keeps a caching proxy in front of several clusters from
+// serving one the other's region.
+func clusterConfigHandler(region string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if region == "" {
+			slog.Error("Cluster region is not configured; the console cannot sign requests")
+			http.Error(w, "Cluster region is not configured", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := json.NewEncoder(w).Encode(clusterConfig{Region: region}); err != nil {
+			slog.Error("Failed to write cluster config", "error", err)
+		}
+	}
 }
 
 // Service represents the spinifex-ui service.
@@ -214,6 +242,8 @@ func (svc *Service) launchService() error {
 		w.Header().Set("Content-Disposition", `attachment; filename="spinifex-ca.pem"`)
 		http.ServeFile(w, r, caCertPath)
 	})
+
+	mux.HandleFunc("/api/config", clusterConfigHandler(svc.Config.Region))
 
 	// SPA catch-all.
 	mux.Handle("/", spaHandler)

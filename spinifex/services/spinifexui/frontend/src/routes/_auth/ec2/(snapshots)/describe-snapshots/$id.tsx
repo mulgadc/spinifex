@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { getRegion } from "@/lib/cluster-config"
 import { formatDateTime } from "@/lib/utils"
 import {
   useCopySnapshot,
@@ -70,7 +71,7 @@ function SnapshotDetail() {
     null,
   )
 
-  const currentRegion = regionsData.Regions?.[0]?.RegionName ?? "ap-southeast-2"
+  const currentRegion = regionsData.Regions?.[0]?.RegionName ?? getRegion()
 
   const canDelete = snapshot?.State === "completed"
   const canRegister = snapshot?.State === "completed"

@@ -1,8 +1,7 @@
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
-
-const AWS_REGION = "ap-southeast-2"
+import { getRegion } from "@/lib/cluster-config"
 
 // registryHostFrom strips the trailing "/{repo}" path from a repositoryUri to
 // recover the registry host docker logs in to. Returns "" when the URI is unset.
@@ -28,7 +27,7 @@ export function PushCommands({
   const uri = repositoryUri ?? `${host}/${repositoryName}`
 
   const commands = [
-    `aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${host}`,
+    `aws ecr get-login-password --region ${getRegion()} | docker login --username AWS --password-stdin ${host}`,
     `docker build -t ${repositoryName} .`,
     `docker tag ${repositoryName}:latest ${uri}:latest`,
     `docker push ${uri}:latest`,

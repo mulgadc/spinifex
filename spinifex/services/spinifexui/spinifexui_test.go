@@ -540,3 +540,31 @@ func TestStart_GracefulShutdownIsNotAnError(t *testing.T) {
 		t.Fatal("Start did not return after Shutdown")
 	}
 }
+
+func TestClusterConfigHandler_ServesRegion(t *testing.T) {
+	rec := httptest.NewRecorder()
+	clusterConfigHandler("us-west-1")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"region":"us-west-1"}`, rec.Body.String())
+}
+
+// A proxy fronting several clusters must not be able to serve one cluster's
+// region to another.
+func TestClusterConfigHandler_IsNotCacheable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	clusterConfigHandler("us-west-1")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+}
+
+// Failing loudly beats serving a default: a wrong region reaches the gateway as
+// an opaque credential error.
+func TestClusterConfigHandler_FailsWhenRegionUnset(t *testing.T) {
+	rec := httptest.NewRecorder()
+	clusterConfigHandler("")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "region\":")
+}

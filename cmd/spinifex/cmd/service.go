@@ -815,6 +815,18 @@ var awsgwStatusCmd = &cobra.Command{
 	},
 }
 
+// consoleRegion is the region the console signs with. awsgw pins signature
+// verification to this same node field, so reading it from anywhere else —
+// including the cluster-wide [aws] region — would let the two drift and fail
+// authentication with an opaque credential error.
+func consoleRegion(clusterConfig *config.ClusterConfig) (string, error) {
+	region := clusterConfig.Nodes[clusterConfig.Node].Region
+	if region == "" {
+		return "", fmt.Errorf("node %q has no region configured; the console cannot sign requests", clusterConfig.Node)
+	}
+	return region, nil
+}
+
 var spinifexUIStartCmd = &cobra.Command{
 	Use:           "start",
 	Short:         "Start the spinifex-ui service",
@@ -829,6 +841,15 @@ var spinifexUIStartCmd = &cobra.Command{
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
 		baseDir := viper.GetString("spinifex-ui-base-dir")
 
+		cfg, err := loadLocalConfig()
+		if err != nil {
+			return fmt.Errorf("load config for spinifex-ui service: %w", err)
+		}
+		region, err := consoleRegion(cfg)
+		if err != nil {
+			return err
+		}
+
 		defer initTelemetry("spinifex-ui", false)()
 
 		svc, err := service.New("spinifex-ui", &spinifexui.Config{
@@ -837,6 +858,7 @@ var spinifexUIStartCmd = &cobra.Command{
 			TLSCert: tlsCert,
 			TLSKey:  tlsKey,
 			BaseDir: baseDir,
+			Region:  region,
 		})
 
 		if err != nil {

@@ -773,6 +773,18 @@ func TestValidateKeyPairExists_Found(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// The id-keyed metadata is what a listing has to find, and a listing is served
+// from one replica's view. Validation must not depend on it: the material is
+// addressed by name and a direct read of it answers the question on its own.
+func TestValidateKeyPairExists_FoundWithoutTheMetadataListing(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	putStoredObject(t, store, "keys/"+testAccountID+"/listing-lagged", testED25519PubKey)
+
+	err := svc.ValidateKeyPairExists(context.Background(), testAccountID, "listing-lagged")
+	assert.NoError(t, err)
+}
+
 func TestValidateKeyPairExists_NotFound(t *testing.T) {
 	svc, _ := newTestKeyService()
 

@@ -12,6 +12,29 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
+// resolveEndpointError maps a failed endpoint resolution onto the AWS code the
+// daemon put on the wire, falling back to ServiceUnavailable for an un-coded
+// transport failure.
+func resolveEndpointError(err error) error {
+	if code, ok := awserrors.ResolveErrorCode(err); ok {
+		return errors.New(code)
+	}
+	return errors.New(awserrors.ErrorServiceUnavailableException)
+}
+
+// selfHostInvokeAdapter selects the InvokeAdapter for a self-host catalog
+// entry by family: familyMeta serves through the Llama adapter (honouring a
+// PT-account scope); any other family is refused rather than mis-served.
+func selfHostInvokeAdapter(family string, endpointResolver EndpointResolver, ptAccountID string) (InvokeAdapter, error) {
+	if family != familyMeta {
+		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	if ptAccountID != "" {
+		return newLlamaInvokeAdapterForAccount(endpointResolver, ptAccountID), nil
+	}
+	return newLlamaInvokeAdapter(endpointResolver), nil
+}
+
 // InvokeAdapter translates a Bedrock InvokeModel raw request body into a
 // backend's native wire format and back, returning the response bytes
 // verbatim with their content-type. Unlike Provider (Converse), the wire
@@ -110,10 +133,9 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	var a InvokeAdapter
 	switch {
 	case entry.Provider == tierSelfHost:
-		if ptAccountID != "" {
-			a = newLlamaInvokeAdapterForAccount(rt.endpointResolver, ptAccountID)
-		} else {
-			a = newLlamaInvokeAdapter(rt.endpointResolver)
+		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
+		if err != nil {
+			return nil, "", err
 		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
@@ -271,10 +293,9 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 	var a InvokeAdapter
 	switch {
 	case entry.Provider == tierSelfHost:
-		if ptAccountID != "" {
-			a = newLlamaInvokeAdapterForAccount(rt.endpointResolver, ptAccountID)
-		} else {
-			a = newLlamaInvokeAdapter(rt.endpointResolver)
+		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
+		if err != nil {
+			return nil, err
 		}
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {

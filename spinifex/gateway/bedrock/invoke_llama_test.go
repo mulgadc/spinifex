@@ -3,6 +3,8 @@ package gateway_bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,6 +105,30 @@ func TestLlamaInvokeAdapter_InvokeModel_UnresolvedEndpointReturnsModelNotReady(t
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
 }
 
+// TestLlamaInvokeAdapter_InvokeModel_EndpointErrorPropagatesCode proves a
+// resolver err carrying an admission-refusal code (wrapped the way
+// decodedNATSError's Unwrap tree does) surfaces faithfully rather than being
+// flattened to ServiceUnavailableException.
+func TestLlamaInvokeAdapter_InvokeModel_EndpointErrorPropagatesCode(t *testing.T) {
+	wrapped := fmt.Errorf("endpoint resolve: %w", errors.New(awserrors.ErrorModelNotReadyException))
+	a := newLlamaInvokeAdapter(errEndpointResolver{err: wrapped})
+
+	_, _, err := a.InvokeModel(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestLlamaInvokeAdapter_InvokeModel_EndpointErrorFallsBackToServiceUnavailable
+// proves an un-coded transport failure still falls back to
+// ServiceUnavailableException rather than surfacing raw transport text.
+func TestLlamaInvokeAdapter_InvokeModel_EndpointErrorFallsBackToServiceUnavailable(t *testing.T) {
+	a := newLlamaInvokeAdapter(errEndpointResolver{err: errors.New("nats: timeout")})
+
+	_, _, err := a.InvokeModel(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+}
+
 // llamaCompletionsStreamFixture is a canned OpenAI /v1/completions streaming
 // SSE body: two text deltas, a finish_reason chunk, a trailing usage-only
 // chunk, then [DONE].
@@ -181,6 +207,27 @@ func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_UnresolvedEndpointRetu
 	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestLlamaInvokeAdapter_InvokeModelWithResponseStream_EndpointErrorPropagatesCode
+// mirrors the InvokeModel case for the streaming entry point.
+func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_EndpointErrorPropagatesCode(t *testing.T) {
+	wrapped := fmt.Errorf("endpoint resolve: %w", errors.New(awserrors.ErrorModelNotReadyException))
+	a := newLlamaInvokeAdapter(errEndpointResolver{err: wrapped})
+
+	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestLlamaInvokeAdapter_InvokeModelWithResponseStream_EndpointErrorFallsBackToServiceUnavailable
+// mirrors the InvokeModel case for the streaming entry point.
+func TestLlamaInvokeAdapter_InvokeModelWithResponseStream_EndpointErrorFallsBackToServiceUnavailable(t *testing.T) {
+	a := newLlamaInvokeAdapter(errEndpointResolver{err: errors.New("nats: timeout")})
+
+	_, err := a.InvokeModelWithResponseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
 }
 
 func TestLlamaInvokeStreamSource_MidStreamDecodeErrorSurfacesAsStreamFault(t *testing.T) {

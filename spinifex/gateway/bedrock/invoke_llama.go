@@ -159,7 +159,7 @@ func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, bo
 	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("llama invoke: endpoint resolution failed", "model", modelID, "err", err)
-		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
+		return nil, "", resolveEndpointError(err)
 	}
 	if !ok {
 		return nil, "", errors.New(awserrors.ErrorModelNotReadyException)
@@ -243,7 +243,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("llama invoke-stream: endpoint resolution failed", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+		return nil, resolveEndpointError(err)
 	}
 	if !ok {
 		return nil, errors.New(awserrors.ErrorModelNotReadyException)

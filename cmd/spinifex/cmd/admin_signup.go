@@ -108,6 +108,11 @@ func init() {
 	accountCreateCmd.Flags().String("ca-bundle", "", "CA certificate for --remote (default: this node's CA)")
 	accountCreateCmd.Flags().String("client-token", "", "Idempotency token for --remote (default: generated; reuse it to retry)")
 	accountCreateCmd.Flags().String("source", "spx-cli", "Provenance tag recorded in the gateway log for --remote")
+
+	accountListCmd.Flags().Bool("remote", false, "List over POST /admin/ListAccounts instead of connecting to NATS")
+	accountListCmd.Flags().String("endpoint", "", "Gateway endpoint for --remote (default: this node's AWS gateway)")
+	accountListCmd.Flags().String("region", "", "SigV4 region for --remote (default: this node's region)")
+	accountListCmd.Flags().String("ca-bundle", "", "CA certificate for --remote (default: this node's CA)")
 }
 
 // runSignupPrincipalCreate provisions the signup principal in the super-admin

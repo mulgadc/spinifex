@@ -94,3 +94,18 @@ var PrintTeardownResult = printTeardownResult
 
 // PromptAccountName exposes promptAccountName for testing.
 var PromptAccountName = promptAccountName
+
+// OperatorPrincipalPolicyDocument exposes the operator inline policy for testing.
+var OperatorPrincipalPolicyDocument = operatorPrincipalPolicyDocument
+
+// OperatorPrincipalActions exposes the reported action list for testing.
+var OperatorPrincipalActions = operatorPrincipalActions
+
+// SignupPrincipalPolicyDocument exposes the signup inline policy for testing.
+var SignupPrincipalPolicyDocument = signupPrincipalPolicyDocument
+
+// PrintAccountTable exposes printAccountTable for testing.
+var PrintAccountTable = printAccountTable
+
+// AccountSummaries exposes accountSummaries for testing.
+var AccountSummaries = accountSummaries

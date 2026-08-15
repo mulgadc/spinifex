@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -18,10 +19,10 @@ import (
 // DefaultBaseURL is the public Hugging Face Hub API and file host.
 const DefaultBaseURL = "https://huggingface.co"
 
-// defaultTimeout bounds a single HTTP call (metadata lookups and the
-// per-chunk read deadline implied by http.Client), not a whole file
-// download, which can run for as long as the server keeps streaming.
-const defaultTimeout = 30 * time.Second
+// headerTimeout bounds dial + time-to-first-byte, NOT the body stream.
+// A whole-request http.Client.Timeout would guillotine a multi-GB shard
+// mid-download; a header timeout still fails fast on a dead/hung server.
+const headerTimeout = 30 * time.Second
 
 // Client resolves a Hugging Face repo revision to an immutable commit SHA,
 // lists its file tree, and streams individual files. BaseURL is overridable
@@ -39,7 +40,20 @@ func NewClient(token string) *Client {
 	return &Client{
 		BaseURL: DefaultBaseURL,
 		Token:   token,
-		HTTP:    &http.Client{Timeout: defaultTimeout},
+		HTTP:    defaultHTTPClient(),
+	}
+}
+
+// defaultHTTPClient streams downloads without a whole-request timeout,
+// bounding only dial and response-header latency so large shards can read
+// for as long as the server keeps sending.
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: headerTimeout}).DialContext,
+			ResponseHeaderTimeout: headerTimeout,
+			IdleConnTimeout:       90 * time.Second,
+		},
 	}
 }
 
@@ -154,7 +168,7 @@ func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: defaultTimeout}
+	return defaultHTTPClient()
 }
 
 // mapStatusError maps a non-2xx Hugging Face response to a clear

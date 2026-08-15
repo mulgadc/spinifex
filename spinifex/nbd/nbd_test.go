@@ -375,6 +375,72 @@ func TestBuildArgs_GCEnabledDefaultFalse(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_ThreadsForwarded(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		Threads:    32,
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	idx := slices.Index(args, "-t")
+	if idx < 0 {
+		t.Fatalf("expected -t in args, got: %v", args)
+	}
+	if args[idx+1] != "32" {
+		t.Errorf("-t value = %q, want 32", args[idx+1])
+	}
+}
+
+// TestBuildArgs_ThreadsOmittedWhenUnset pins that an unset value leaves nbdkit
+// on its own default rather than passing -t 0, which nbdkit would reject.
+func TestBuildArgs_ThreadsOmittedWhenUnset(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if slices.Index(args, "-t") >= 0 || slices.Index(args, "--threads") >= 0 {
+		t.Errorf("expected no thread flag when unset, got: %v", args)
+	}
+}
+
+// TestBuildArgs_ThreadsPrecedesPluginPath pins -t as a server option: nbdkit
+// treats everything after the plugin path as plugin arguments.
+func TestBuildArgs_ThreadsPrecedesPluginPath(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		Threads:    64,
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	threadsIdx := slices.Index(args, "-t")
+	pluginIdx := slices.Index(args, cfg.PluginPath)
+	if threadsIdx < 0 || pluginIdx < 0 {
+		t.Fatalf("missing expected args in: %v", args)
+	}
+	if threadsIdx >= pluginIdx {
+		t.Error("-t should come before the plugin path")
+	}
+}
+
 func assertArgs(t *testing.T, expected, got []string) {
 	t.Helper()
 	if len(expected) != len(got) {

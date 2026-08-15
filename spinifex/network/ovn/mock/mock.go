@@ -422,6 +422,17 @@ func (m *Client) CreateDHCPOptions(_ context.Context, opts *nbdb.DHCPOptions) (s
 	return opts.UUID, nil
 }
 
+func (m *Client) UpdateDHCPOptionsOptions(_ context.Context, uuid string, options map[string]string) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	stored, exists := m.DHCPOpts[uuid]
+	if !exists {
+		return fmt.Errorf("DHCP options %q not found", uuid)
+	}
+	stored.Options = options
+	return nil
+}
+
 func (m *Client) DeleteDHCPOptions(_ context.Context, uuid string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

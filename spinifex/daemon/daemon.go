@@ -927,6 +927,7 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
+		{utils.SubjectEnsureDefaultVpc, d.handleEnsureDefaultVpc, "spinifex-workers"},
 		// Coordinated cluster shutdown phases (fan-out, no queue group)
 		{"spinifex.cluster.shutdown.gate", d.handleShutdownGate, ""},
 		{"spinifex.cluster.shutdown.drain", d.handleShutdownDrain, ""},

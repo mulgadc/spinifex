@@ -91,6 +91,15 @@ type Config struct {
 	// "{a, b}"). Empty falls back to the topology default to keep both code
 	// paths in sync.
 	DNSServer string
+	// IPSecDisabled mirrors network.ipsec_enabled = false. It widens the MTU
+	// advertised over DHCP, since a plaintext overlay has no 34-byte ESP header
+	// to budget for. Inverted so the zero value is the conservative MTU: a
+	// caller that leaves it unset advertises small, which is merely slower,
+	// where advertising large on an encrypted path blackholes big segments.
+	IPSecDisabled bool
+	// UnderlayMTU is the fabric MTU the advertised guest MTU is derived from.
+	// Zero falls back to the 1500 default, same as an unset config key.
+	UnderlayMTU int
 	// FreshIntent re-reads intent from the control-plane store on demand.
 	// pruneOrphanEIPs uses it to refresh its live-port view at prune time: a
 	// prune pass lists OVN NAT rows live but is otherwise driven by the intent
@@ -115,6 +124,8 @@ type reconciler struct {
 	chassis      []string
 	gwClaim      GatewayClaimVerifier
 	dnsServer    string
+	ipsecEnabled bool
+	underlayMTU  int
 	reloadIntent func(ctx context.Context) (IntentState, error)
 }
 
@@ -155,6 +166,8 @@ func New(cfg Config) (Reconciler, error) {
 		chassis:      cfg.Chassis,
 		gwClaim:      cfg.GatewayClaim,
 		dnsServer:    dnsServer,
+		ipsecEnabled: !cfg.IPSecDisabled,
+		underlayMTU:  cfg.UnderlayMTU,
 		reloadIntent: cfg.FreshIntent,
 	}, nil
 }

@@ -13,6 +13,7 @@ import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
+import { getRegion } from "@/lib/cluster-config"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteCluster } from "@/mutations/eks"
 import { eksClusterQueryOptions } from "@/queries/eks"
@@ -21,8 +22,6 @@ import { AccessTab } from "./access-tab"
 import { AddonsTab } from "./addons-tab"
 import { NetworkingTab } from "./networking-tab"
 import { NodegroupsTab } from "./nodegroups-tab"
-
-const AWS_REGION = "ap-southeast-2"
 
 function statusVariant(status: string | undefined) {
   switch (status ?? "") {
@@ -59,7 +58,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         { type: "flag" as const, value: " --name " },
         { type: "value" as const, value: clusterName },
         { type: "flag" as const, value: " --region " },
-        { type: "value" as const, value: AWS_REGION },
+        { type: "value" as const, value: getRegion() },
       ],
     },
     {

@@ -8,7 +8,13 @@ import { useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   Collapsible,
   CollapsibleContent,
@@ -28,6 +34,7 @@ import {
   setSessionCredentials,
 } from "@/lib/auth"
 import { clearClients } from "@/lib/awsClient"
+import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"
 
 export const Route = createFileRoute("/login")({
@@ -76,7 +83,10 @@ function LoginPage() {
       <div className="flex w-full max-w-sm flex-col gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>AWS Credentials</CardTitle>
+            <CardTitle>Spinifex Credentials</CardTitle>
+            <CardDescription>
+              Use the credentials provided with your Spinifex account.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {reason === "expired" && !authError && (
@@ -130,7 +140,9 @@ function LoginPage() {
           </CardContent>
         </Card>
 
-        <CertificateInstallBanner />
+        {isDirectHostAccess(window.location.hostname) && (
+          <CertificateInstallBanner />
+        )}
       </div>
     </div>
   )

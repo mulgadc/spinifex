@@ -23,6 +23,10 @@ const (
 	// SystemInstanceEgressPriority sits above the 1100 drop gate so a system
 	// instance egresses even on an otherwise drop-gated subnet. Scoped to /32.
 	SystemInstanceEgressPriority = 1200
+
+	// systemInstanceEgressAction lifts the drop gate and leaves the routing
+	// decision alone, so the instance follows the router's default route.
+	systemInstanceEgressAction = "allow"
 )
 
 // RouteSpec is a static route on a VPC's LogicalRouter. OutputPort is required
@@ -45,9 +49,9 @@ type SubnetEgressSpec struct {
 	ExcludeCIDRs []netip.Prefix
 }
 
-// SystemInstanceEgressSpec describes a per-instance reroute at
-// SystemInstanceEgressPriority. The /32 src match confines the reroute to one
-// system instance; peers in the same subnet are untouched.
+// SystemInstanceEgressSpec describes a per-instance exemption from the subnet
+// drop gate at SystemInstanceEgressPriority. The /32 src match confines it to
+// one system instance; peers in the same subnet are untouched.
 type SystemInstanceEgressSpec struct {
 	SubnetID     string
 	SrcIP        netip.Addr
@@ -269,8 +273,11 @@ func (m *routeManager) AddSystemInstanceEgress(ctx context.Context, vpcID string
 	if !spec.SrcIP.IsValid() {
 		return fmt.Errorf("system instance egress: SrcIP required")
 	}
+	if spec.Nexthop == "" {
+		return fmt.Errorf("system instance egress: Nexthop required (the VPC has no gateway to egress through)")
+	}
 	if spec.OutputPort == "" {
-		return fmt.Errorf("system instance egress: OutputPort required (ovn-northd drops policy reroute otherwise)")
+		return fmt.Errorf("system instance egress: OutputPort required")
 	}
 	router := topology.VPCRouter(vpcID)
 	match := systemInstanceEgressMatch(spec.SubnetID, spec.SrcIP, spec.Prefix, spec.ExcludeCIDRs)
@@ -280,7 +287,7 @@ func (m *routeManager) AddSystemInstanceEgress(ctx context.Context, vpcID string
 		return fmt.Errorf("find LR policy %q on %s: %w", match, router, err)
 	}
 	if existing != nil {
-		if existing.Action == "reroute" && existing.Nexthop != nil && *existing.Nexthop == spec.Nexthop &&
+		if existing.Action == systemInstanceEgressAction && existing.Nexthop == nil &&
 			existing.ExternalIDs["spinifex:output_port"] == spec.OutputPort {
 			return nil
 		}
@@ -289,12 +296,13 @@ func (m *routeManager) AddSystemInstanceEgress(ctx context.Context, vpcID string
 		}
 	}
 
-	nexthop := spec.Nexthop
+	// allow, not reroute: the policy exists only to lift the subnet's drop gate
+	// and the router's default route already points at the gateway. northd
+	// discards a reroute whose nexthop sits outside every LRP subnet.
 	row := &nbdb.LogicalRouterPolicy{
 		Priority: SystemInstanceEgressPriority,
 		Match:    match,
-		Action:   "reroute",
-		Nexthop:  &nexthop,
+		Action:   systemInstanceEgressAction,
 		Options:  map[string]string{},
 		ExternalIDs: map[string]string{
 			"spinifex:subnet":      spec.SubnetID,
@@ -304,7 +312,7 @@ func (m *routeManager) AddSystemInstanceEgress(ctx context.Context, vpcID string
 		},
 	}
 	if err := m.ovn.AddLogicalRouterPolicy(ctx, router, row); err != nil {
-		return fmt.Errorf("add LR policy %q -> %s on %s: %w", match, spec.Nexthop, router, err)
+		return fmt.Errorf("add LR policy %q on %s: %w", match, router, err)
 	}
 	return nil
 }

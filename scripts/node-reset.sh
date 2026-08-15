@@ -138,10 +138,27 @@ run sudo rm -f /etc/openvswitch/system-id.conf
 # Delete the OVN DBs outright — a caller re-running setup-ovn.sh gets fresh
 # empty ones. This is what clears stale chassis rows and port bindings, which
 # otherwise accumulate across resets and wedge ovn-controller in a commit loop.
+# The firewall policy under $ETC_DIR/firewall is installed state, not cluster
+# state, but the wipe below cannot tell them apart and takes the lot. Losing it
+# is silent and permanent: `spinifex-firewall-apply set-peers` fails on every
+# attempt with "no firewall policy", so the daemon never re-arms and the node
+# stays open forever. Read the arming mode now and regenerate the stage after
+# the wipe. peers.nft is the one file here that really is cluster state, and
+# regenerating does not bring it back.
+FIREWALL_MODE=""
+if [ -r "$ETC_DIR/firewall/mode" ]; then
+    FIREWALL_MODE=$(sudo cat "$ETC_DIR/firewall/mode" 2>/dev/null | tr -d '[:space:]')
+fi
+
 log "removing OVN databases"
 run sudo systemctl stop ovn-central 2>/dev/null || true
 run sudo systemctl stop ovn-controller 2>/dev/null || true
 run sudo rm -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnsb_db.db
+
+# The RAFT membership flags live in this file, not in the databases just
+# deleted. Left behind, ovn-central recreates the DB as a cluster member and
+# blocks dialling a peer that has itself been reset.
+run sudo rm -f /etc/default/ovn-central
 
 if ip link show veth-wan-br >/dev/null 2>&1; then
     log "  deleting veth pair: veth-wan-br <-> veth-wan-ovs"
@@ -205,6 +222,17 @@ if ! $DRY_RUN; then
             exit 1
         fi
     done
+fi
+
+# Put the firewall policy back. Only this stage runs, so the node stays on the
+# build it was already running — nothing is downloaded or reinstalled.
+SETUP_SH=/usr/local/share/spinifex/setup.sh
+if [ -n "$FIREWALL_MODE" ] && [ -x "$SETUP_SH" ]; then
+    log "restoring the host firewall policy (mode: $FIREWALL_MODE)"
+    run sudo env SETUP_STAGES=firewall "$SETUP_SH" --firewall "$FIREWALL_MODE" ||
+        log "  WARNING: could not restore the firewall policy — this node will not re-arm"
+elif [ -n "$FIREWALL_MODE" ]; then
+    log "  WARNING: $SETUP_SH is missing, cannot restore the firewall policy"
 fi
 
 if [ ! -d /etc/spinifex ]; then

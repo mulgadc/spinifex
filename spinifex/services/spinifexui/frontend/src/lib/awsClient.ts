@@ -9,8 +9,7 @@ import { S3Client } from "@aws-sdk/client-s3"
 import { HttpRequest } from "@smithy/protocol-http"
 
 import { getCredentials } from "./auth"
-
-const AWS_REGION = "ap-southeast-2"
+import { getRegion } from "./cluster-config"
 
 // SDK signs against the real backend host so the SigV4 signature includes
 // the correct Host header value. Middleware rewrites the outgoing URL
@@ -36,7 +35,7 @@ export function getEc2Client(): EC2Client {
     }
     ec2Client = new EC2Client({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -66,7 +65,7 @@ export function getEksClient(): EKSClient {
     }
     eksClient = new EKSClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -96,7 +95,7 @@ export function getElbv2Client(): ElasticLoadBalancingV2Client {
     }
     elbv2Client = new ElasticLoadBalancingV2Client({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -126,7 +125,7 @@ export function getAcmClient(): ACMClient {
     }
     acmClient = new ACMClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -156,7 +155,7 @@ export function getIamClient(): IAMClient {
     }
     iamClient = new IAMClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -186,7 +185,7 @@ export function getEcrClient(): ECRClient {
     }
     ecrClient = new ECRClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -216,7 +215,7 @@ export function getEcsClient(): ECSClient {
     }
     ecsClient = new ECSClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
@@ -246,7 +245,7 @@ export function getS3Client(): S3Client {
     }
     s3Client = new S3Client({
       endpoint: S3_SIGN_ENDPOINT,
-      region: AWS_REGION,
+      region: getRegion(),
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,

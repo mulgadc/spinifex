@@ -13,19 +13,84 @@ func IsMMIO(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
 }
 
+// MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
+// thread per queue, so an unbounded count would put 64 of them behind a large
+// instance for throughput a handful already saturates.
+const MaxNICQueues = 8
+
+// NICQueues returns the queue-pair count for a NIC on a guest with vcpus
+// vCPUs, clamped to [1, MaxNICQueues]. The guest's virtio_net negotiates
+// min(vcpus, queues), so matching vCPUs lets every core drive its own queue.
+//
+// Whether multiqueue helps depends on what is downstream, and the sign flips.
+// Behind IPsec it costs ~12%: ESP funnels a node pair onto one core, so extra
+// queues only reorder packets, which TCP reads as loss. Without it the sending
+// host's single vhost thread saturates first and queues are worth +54%.
+func NICQueues(vcpus int, multiqueue bool) int {
+	if !multiqueue || vcpus < 1 {
+		return 1
+	}
+	return min(vcpus, MaxNICQueues)
+}
+
+// TapNetDev returns the QEMU -netdev argument for a tap-backed NIC.
+//
+// vhost=on moves the datapath into a kernel vhost-net thread; without it QEMU
+// copies every packet on its main loop, measured at 60% of a core under load
+// against 3% with it. queues > 1 needs a tap created multi_queue.
+func TapNetDev(id, ifname string, queues int) NetDev {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tap,id=%s,ifname=%s,script=no,downscript=no,vhost=on", id, ifname)
+	if queues > 1 {
+		fmt.Fprintf(&b, ",queues=%d", queues)
+	}
+	return NetDev{Value: b.String()}
+}
+
+// NICRxQueueSize is the virtio-net receive ring depth, in descriptors. QEMU's
+// default of 256 is a packet-rate ceiling rather than a memory saving: a vCPU
+// preempted for a fraction of a millisecond fills all 256 slots and the
+// overflow is dropped. 1024 is the maximum and what RHEV and Proxmox ship.
+//
+// There is deliberately no transmit equivalent. QEMU caps tx_queue_size at 256
+// for every backend except vhost-user and vhost-vdpa, and rejects a larger
+// value outright rather than clamping it, which fails the launch.
+const NICRxQueueSize = 1024
+
 // NetDevice returns the appropriate QEMU virtio-net device string for
 // machineType, wiring netdev and mac. mac is omitted when empty.
-func NetDevice(machineType, netdev, mac string) Device {
-	var transport string
+//
+// mtu > 0 sets VIRTIO_NET_F_MTU, giving the guest a device-level ceiling that
+// does not depend on it taking a DHCP lease. It complements the DHCP option
+// rather than replacing it — statically addressed and IPv6-only guests never
+// see the lease — and is immutable while the device is live, so a cluster MTU
+// change still needs a stop/start to reach a running guest.
+//
+// queues > 1 enables multiqueue, which needs one MSI-X vector per rx and tx
+// queue plus one for config and one for control — 2N+2. Understating vectors
+// silently drops the NIC back to fewer queues, so it is derived here rather
+// than passed in. MMIO machines have no MSI-X and are left single-queue.
+func NetDevice(machineType, netdev, mac string, queues, mtu int) Device {
+	var b strings.Builder
 	if IsMMIO(machineType) {
-		transport = "virtio-net-device"
+		b.WriteString("virtio-net-device")
 	} else {
-		transport = "virtio-net-pci"
+		b.WriteString("virtio-net-pci")
 	}
+	fmt.Fprintf(&b, ",netdev=%s", netdev)
 	if mac != "" {
-		return Device{Value: fmt.Sprintf("%s,netdev=%s,mac=%s", transport, netdev, mac)}
+		fmt.Fprintf(&b, ",mac=%s", mac)
 	}
-	return Device{Value: fmt.Sprintf("%s,netdev=%s", transport, netdev)}
+	if mtu > 0 {
+		fmt.Fprintf(&b, ",host_mtu=%d", mtu)
+	}
+	if !IsMMIO(machineType) {
+		fmt.Fprintf(&b, ",rx_queue_size=%d", NICRxQueueSize)
+		if queues > 1 {
+			fmt.Fprintf(&b, ",mq=on,vectors=%d", 2*queues+2)
+		}
+	}
+	return Device{Value: b.String()}
 }
 
 // BlkDevice returns the appropriate QEMU virtio-blk device string for

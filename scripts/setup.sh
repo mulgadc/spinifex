@@ -14,8 +14,8 @@
 #                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
-#                                deps, aws, users, sudoers, firewall, files,
-#                                directories, env, systemd, logrotate, udev,
+#                                deps, aws, users, sudoers, firewall, timesync, files,
+#                                directories, env, systemd, sysctl, logrotate, udev,
 #                                fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
@@ -29,12 +29,21 @@ ENDPOINT_SYSCTL_HELPER="/usr/local/lib/spinifex/spinifex-set-endpoint-sysctl"
 IPSEC_STATE_HELPER="/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 
 # The firewall policy and the peer addresses it scopes cluster ports to. The
-# policy ships with the node; the peers are written by install-node.sh, which is
+# policy ships with the node; the peers are written by spinifex-daemon, which is
 # the only component that knows every node's resolved planes.
 FIREWALL_DIR="/etc/spinifex/firewall"
 FIREWALL_RULES="${FIREWALL_DIR}/spinifex.nft"
 FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
+FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
+FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
+FIREWALL_MODE_FILE="${FIREWALL_DIR}/mode"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
+
+# Whether the policy is armed, not merely installed. The ISO is an appliance on
+# hardware we define, so a default-deny policy is the product; a curl-to-bash
+# install lands on a machine that was already doing something, where arming a
+# drop policy uninvited can cut off services we know nothing about.
+INSTALL_SPINIFEX_FIREWALL="${INSTALL_SPINIFEX_FIREWALL:-}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -287,9 +296,36 @@ HELPER
     $SUDO chmod 0755 "${IPSEC_STATE_HELPER}"
 }
 
+# Every port sshd actually listens on, so a host hardened onto a non-standard
+# port is not locked out by its own firewall. Reads the Include drop-ins too,
+# since Debian's default config ends with one. Falls back to 22, which is what
+# sshd itself does when no Port is set.
+sshd_ports() {
+    _cfg="/etc/ssh/sshd_config"
+    _files="$_cfg"
+    if [ -r "$_cfg" ]; then
+        for _inc in $(awk '$1 == "Include" { $1 = ""; print }' "$_cfg" 2>/dev/null); do
+            for _f in $_inc; do
+                [ -r "$_f" ] && _files="$_files $_f"
+            done
+        done
+    fi
+
+    # shellcheck disable=SC2086
+    _ports=$(awk '$1 == "Port" && $2 ~ /^[0-9]+$/ && $2+0 > 0 && $2+0 < 65536 { print $2 }' \
+        $_files 2>/dev/null | sort -un | tr '\n' ' ')
+    [ -n "$_ports" ] || _ports="22"
+
+    _out=""
+    for _p in $_ports; do
+        if [ -z "$_out" ]; then _out="$_p"; else _out="$_out, $_p"; fi
+    done
+    printf '%s' "$_out"
+}
+
 # The policy is written here rather than shipped in the tarball so the ISO chroot
 # and the ansible path get an identical file without a packaging step. Installed
-# but NOT enabled: the peer set is empty until install-node.sh resolves the
+# but NOT enabled: the peer set is empty until spinifex-daemon resolves the
 # cluster's planes, and a drop policy with no peers would break formation.
 install_firewall() {
     stage "installing host firewall policy"
@@ -310,6 +346,8 @@ install_firewall() {
 # the other table. OUTPUT is untouched: the IMDS reply path egresses under
 # per-tap policy routing.
 
+include "/etc/spinifex/firewall/local.nft"
+include "/etc/spinifex/firewall/open-ports.nft"
 include "/etc/spinifex/firewall/peers.nft"
 
 # Create-then-delete so the replace is atomic and the delete cannot fail on a
@@ -344,13 +382,31 @@ table inet spinifex_filter {
         # Public plane. 9999 is also how every guest agent (lb, eks, ecs, rds)
         # reaches its control plane over br-mgmt: they speak SigV4 to the AWS
         # gateway, never NATS, so no cluster port needs to face the guests.
-        tcp dport { 22, 3000, 8443, 9999 } accept
+        # 443 has no listener yet and is held for the nginx TLS edge, so the
+        # rollout does not need a firewall change on every node.
+        tcp dport $spinifex_ssh_ports accept
+        tcp dport { 443, 3000, 8443, 9999 } accept
+
+        # Transiently open to any source, for cluster formation. A node dialling
+        # in to join is not a peer yet, so the peer-scoped rule below cannot let
+        # it in; `spx admin init` opens the formation port here for the length of
+        # the formation window and closes it again afterwards. Normally holds
+        # only the sentinel, which no packet can match.
+        tcp dport $spinifex_open_ports accept
+
+        # 53 is open on every node, deliberately: northstar serves public
+        # authoritative DNS and binds its advertise address. A node running no
+        # public zone answers here too, which is the accepted cost of not
+        # templating the policy per node.
         tcp dport 53 accept
         udp dport 53 accept
 
         # Cluster plane, peer-scoped. On a single-NIC node the planes collapse
         # onto the public address, which is why these are peer addresses rather
-        # than an interface or a CIDR.
+        # than an interface or a CIDR. 4432 stays here rather than joining the
+        # public rule above: outside formation it is the daemon cluster manager,
+        # whose /health and /local/* routes report node topology, service
+        # inventory and running instances to anyone who asks.
         ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
@@ -369,6 +425,33 @@ RULES
     $SUDO chmod 0644 "$FIREWALL_RULES"
     info "  $FIREWALL_RULES"
 
+    # Host-local facts the policy needs that the daemon has no view of. Separate
+    # from peers.nft because the daemon rewrites that file and would drop this.
+    # Refreshed on every setup.sh run, so an sshd port change is picked up by an
+    # upgrade rather than needing the file edited by hand.
+    _ssh_ports="$(sshd_ports)"
+    $SUDO tee "$FIREWALL_LOCAL" > /dev/null << LOCAL
+# Managed by scripts/setup.sh — edits are overwritten on upgrade.
+define spinifex_ssh_ports = { ${_ssh_ports} }
+LOCAL
+    $SUDO chmod 0644 "$FIREWALL_LOCAL"
+    info "  $FIREWALL_LOCAL (sshd ports: ${_ssh_ports})"
+
+    # Reset closed on every run, so an install or upgrade that interrupts a
+    # formation window cannot leave the port open indefinitely.
+    $SUDO tee "$FIREWALL_OPEN" > /dev/null << 'OPENPORTS'
+# Managed by spinifex-firewall-apply. Rewritten for the formation window only.
+define spinifex_open_ports = { 0 }
+OPENPORTS
+    $SUDO chmod 0644 "$FIREWALL_OPEN"
+    info "  $FIREWALL_OPEN (closed)"
+
+    # Armed or merely installed. The daemon reads this when the config carries no
+    # explicit firewall_enabled, which is the normal case on both install paths.
+    printf '%s\n' "$INSTALL_SPINIFEX_FIREWALL" | $SUDO tee "$FIREWALL_MODE_FILE" > /dev/null
+    $SUDO chmod 0644 "$FIREWALL_MODE_FILE"
+    info "  $FIREWALL_MODE_FILE ($INSTALL_SPINIFEX_FIREWALL)"
+
     $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
 #!/bin/sh
 # Applies the spinifex host firewall. Fails without changing the ruleset when
@@ -378,8 +461,18 @@ set -eu
 
 RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
+OPEN="/etc/spinifex/firewall/open-ports.nft"
 
-[ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
+# 0 is a sentinel that keeps the set non-empty, because nft rejects an empty
+# one. No packet can match it: the kernel has no destination port 0.
+write_open_ports() {
+    _tmp=$(mktemp)
+    printf '%s\n' \
+        '# Managed by spinifex-firewall-apply. Rewritten for the formation window only.' \
+        "define spinifex_open_ports = { $1 }" > "$_tmp"
+    install -m 0644 "$_tmp" "$OPEN"
+    rm -f "$_tmp"
+}
 
 # set-peers reads two comma-separated address lists on stdin (cluster peers,
 # then encap peers) and rewrites the peer file before applying. Every address is
@@ -387,11 +480,41 @@ PEERS="/etc/spinifex/firewall/peers.nft"
 # grant, so a caller must not be able to inject nft syntax through it.
 # disable removes spinifex's own table and the peer file, leaving every other
 # table alone. Idempotent, so it is safe on a node that never had the policy.
+# Deliberately ahead of the policy-file check below: turning the firewall off is
+# the recovery path, and refusing to run it because the policy is missing leaves
+# an operator with a node they can neither arm nor disarm.
 if [ "${1:-}" = "disable" ]; then
     nft delete table inet spinifex_filter 2>/dev/null || true
     rm -f "$PEERS"
     systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
+fi
+
+# Every remaining verb writes the policy, so it has to exist. Failing here
+# changes nothing, which leaves a node whose daemon has not yet resolved cluster
+# membership reachable rather than cut off from a cluster it cannot name.
+[ -r "$RULES" ] || { echo "no firewall policy at $RULES" >&2; exit 1; }
+
+# open-port and close-port hold a single port open to any source while a cluster
+# forms. One slot, not a list: the only caller is `spx admin init` opening its
+# formation port, and a set that can only ever hold one entry cannot be grown
+# into a general-purpose hole in the policy.
+if [ "${1:-}" = "open-port" ] || [ "${1:-}" = "close-port" ]; then
+    port="${2:-}"
+    case "$port" in
+        '' | *[!0-9]*) echo "port must be a number: '$port'" >&2; exit 2 ;;
+    esac
+    [ "$port" -gt 0 ] && [ "$port" -lt 65536 ] || {
+        echo "port out of range: $port" >&2
+        exit 2
+    }
+
+    if [ "$1" = "open-port" ]; then write_open_ports "0, $port"; else write_open_ports "0"; fi
+
+    # Nothing to reload on a node that is installed but not armed: the table is
+    # not loaded, so every port is already open and the file is enough.
+    [ -r "$PEERS" ] || exit 0
+    exec nft -f "$RULES"
 fi
 
 if [ "${1:-}" = "set-peers" ]; then
@@ -439,6 +562,12 @@ if [ "${1:-}" = "set-peers" ]; then
         exit 1
     fi
     rm -f "$tmp" "$bak"
+
+    # The policy is loaded, so make it survive a reboot too. `disable` turns this
+    # unit off, and forming a cluster means disabling the firewall on every node
+    # first; without this, re-arming would look complete while silently leaving
+    # the node bare after its next boot. Idempotent and quiet in the normal case.
+    systemctl enable spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
 fi
 
@@ -453,7 +582,43 @@ APPLY
     $SUDO chown root:root "$FIREWALL_APPLY"
     $SUDO chmod 0755 "$FIREWALL_APPLY"
     info "  $FIREWALL_APPLY"
-    info "Host firewall installed (applied by spinifex-daemon once peers resolve)"
+
+    if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
+        info "Host firewall installed and armed (applied by spinifex-daemon once peers resolve)"
+    else
+        info "Host firewall installed but NOT armed — this machine may already be"
+        info "running services a default-deny policy would cut off."
+        info "  Allowed if armed: ssh (${_ssh_ports}), 53, 443, 3000, 8443, 9999"
+        info "  Everything else on this host stops accepting new connections."
+        info "  Arm it later by setting network.firewall_enabled = true in"
+        info "  /etc/spinifex/spinifex.toml, or re-run this installer with --firewall=on"
+    fi
+}
+
+# Debian's stock chrony.conf carries `makestep 1 3`: step the clock only for the
+# first three updates, then slew at ~83us/s, which is roughly 7 seconds of
+# correction per day. A node that burns those three before the network is usable
+# then crawls toward correct time for days, and SigV4 rejects its requests the
+# whole time. A drop-in rather than an edit to chrony.conf, which is a dpkg
+# conffile and would prompt on every future upgrade.
+install_chrony_conf() {
+    stage "installing chrony drop-in"
+
+    if [ ! -d /etc/chrony/conf.d ]; then
+        warn "No /etc/chrony/conf.d — skipping chrony drop-in"
+        return
+    fi
+
+    $SUDO tee /etc/chrony/conf.d/spinifex.conf > /dev/null << 'CHRONY'
+# Managed by scripts/setup.sh — edits are overwritten.
+# Step at any offset over a second, however many times it takes. The clock can
+# jump backwards under load, which is the accepted cost: everything
+# latency-sensitive here uses the monotonic clock, and a node minutes out of
+# step fails every signed request until it converges.
+makestep 1 -1
+CHRONY
+    $SUDO chmod 0644 /etc/chrony/conf.d/spinifex.conf
+    info "  /etc/chrony/conf.d/spinifex.conf"
 }
 
 install_sudoers() {
@@ -526,7 +691,7 @@ APT_RUNTIME_PACKAGES="nbdkit
 qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
-jq curl iproute2 netcat-openbsd wget unzip xz-utils file
+jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
@@ -923,6 +1088,11 @@ fix_file_ownership() {
                 || fatal "Failed to set ownership on /var/lib/spinifex/$d"
             $SUDO chmod -R u+rwX,g+rwX,o-rwx "/var/lib/spinifex/$d" \
                 || fatal "Failed to set permissions on /var/lib/spinifex/$d"
+            # setgid on directories only, so subdirectories a root run creates
+            # keep the spinifex group instead of falling back to root and locking
+            # the admin CLI out of the tree it is meant to write.
+            $SUDO find "/var/lib/spinifex/$d" -type d -exec chmod g+s {} + \
+                || fatal "Failed to set setgid on /var/lib/spinifex/$d"
         fi
     done
 
@@ -993,6 +1163,24 @@ EOF
     # gets the policy back at boot, before any service opens a socket.
     $SUDO systemctl enable spinifex-firewall.service
     info "Systemd units installed and enabled (per-service users)"
+}
+
+# --- Install kernel tunables ---
+# Predastore carries blob, meta and raft over QUIC, and quic-go asks for a 7 MiB
+# UDP receive buffer. Left at the kernel default of 208 KiB it silently drops
+# datagrams under load, which fails shard writes and corrupts guest volumes.
+install_sysctl() {
+    stage "installing kernel tunables"
+    $SUDO install -d /etc/sysctl.d
+    $SUDO tee /etc/sysctl.d/99-spinifex-net.conf > /dev/null << 'SYSCTL'
+# Managed by spinifex setup.sh — do not edit.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+SYSCTL
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO sysctl -q --system 2>/dev/null || true
+    fi
+    info "Kernel tunables installed (net.core.rmem_max/wmem_max = 16MB)"
 }
 
 # --- Install logrotate ---
@@ -1133,6 +1321,26 @@ EOF
 
 # --- Main ---
 main() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --firewall=*) INSTALL_SPINIFEX_FIREWALL="${1#*=}" ;;
+            --firewall)   INSTALL_SPINIFEX_FIREWALL="${2:-}"; shift ;;
+            *) fatal "unknown option: $1" ;;
+        esac
+        shift
+    done
+
+    case "${INSTALL_SPINIFEX_FIREWALL}" in
+        on|off) ;;
+        # Unset resolves by install path: the ISO arms, everything else does not.
+        "") if [ "${ISO_BUILD:-0}" = "1" ]; then
+                INSTALL_SPINIFEX_FIREWALL="on"
+            else
+                INSTALL_SPINIFEX_FIREWALL="off"
+            fi ;;
+        *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
+    esac
+
     info "Spinifex installer"
     echo ""
 
@@ -1160,11 +1368,13 @@ main() {
     stage_enabled users      && create_service_users
     stage_enabled sudoers    && install_sudoers
     stage_enabled firewall   && install_firewall
+    stage_enabled timesync   && install_chrony_conf
     stage_enabled files      && install_files
     stage_enabled directories && create_directories
     stage_enabled env        && install_systemd_env
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
+    stage_enabled sysctl     && install_sysctl
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap

@@ -27,6 +27,19 @@ burst = 40
 rate = 2
 burst = 40
 
+# API request throttling for self-service account creation.
+[ratelimit.action.CreateAccount]
+rate = 1
+burst = 5
+
+# Self-service account creation via POST /admin/CreateAccount.
+# max_accounts caps how many accounts may exist; 0 means uncapped, and an
+# absent section defaults to 128. The endpoint is unreachable until an IAM user
+# in the super-admin account is granted spinifex:CreateAccount, so this value
+# alone does not expose it.
+[signup]
+max_accounts = 128
+
 # Per-account service quotas (default off)
 [quota]
 enabled = false

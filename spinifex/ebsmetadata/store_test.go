@@ -3,6 +3,7 @@ package ebsmetadata
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -69,10 +70,10 @@ func TestListVolumes_ReturnsAllStoredVolumes(t *testing.T) {
 	}
 }
 
-// TestListVolumes_CorruptObjectReturnsError covers the UnmarshalVolume error
-// path: an object under the volumes prefix that isn't a valid Volume record
-// must fail the whole listing rather than being silently skipped.
-func TestListVolumes_CorruptObjectReturnsError(t *testing.T) {
+// corruptVolumeStore returns a store holding one good volume and one object
+// under the volumes prefix that is not a valid Volume record.
+func corruptVolumeStore(t *testing.T) (*Store, context.Context) {
+	t.Helper()
 	objects := objectstore.NewMemoryObjectStore()
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
@@ -85,9 +86,68 @@ func TestListVolumes_CorruptObjectReturnsError(t *testing.T) {
 		Bucket: aws.String("control-plane"), Key: aws.String(key), Body: bytes.NewReader([]byte("not json")),
 	})
 	require.NoError(t, err)
+	return store, ctx
+}
 
-	_, err = store.ListVolumes(ctx)
+// One undecodable document must not hide every other volume in the cluster:
+// a single bad object under the prefix used to fail the whole listing, which
+// is how one volume made DescribeVolumes fail for every account.
+func TestListVolumes_SkipsCorruptObject(t *testing.T) {
+	store, ctx := corruptVolumeStore(t)
+
+	volumes, err := store.ListVolumes(ctx)
+	require.NoError(t, err)
+	require.Len(t, volumes, 1, "the readable volume must still be listed")
+	assert.Equal(t, "vol-good", volumes[0].VolumeID)
+}
+
+// The strict listing keeps the old contract, for callers whose answer would be
+// wrong rather than merely partial.
+func TestListVolumesStrict_CorruptObjectReturnsError(t *testing.T) {
+	store, ctx := corruptVolumeStore(t)
+
+	_, err := store.ListVolumesStrict(ctx)
 	require.Error(t, err)
+}
+
+// A document that cannot be fetched at all is as unusable as one that cannot
+// be decoded, and was the shape that took DescribeVolumes down: the object
+// existed, was listed, and every read of it failed.
+func TestListVolumes_SkipsUnreadableObject(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
+	key, err := VolumeKey("vol-unreadable")
+	require.NoError(t, err)
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-unreadable", CapacityGiB: 1}))
+
+	failing := &getFailsStore{ObjectStore: objects, failKey: key}
+	broken := NewStore(failing, "control-plane")
+
+	volumes, err := broken.ListVolumes(ctx)
+	require.NoError(t, err, "an unreadable document must not fail the whole listing")
+	require.Len(t, volumes, 1)
+	assert.Equal(t, "vol-good", volumes[0].VolumeID)
+
+	_, err = broken.ListVolumesStrict(ctx)
+	require.Error(t, err, "the strict listing must still report the failure")
+}
+
+// getFailsStore fails GetObject for one key, standing in for an object whose
+// shards no longer reconstruct.
+type getFailsStore struct {
+	objectstore.ObjectStore
+
+	failKey string
+}
+
+func (s *getFailsStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if in.Key != nil && *in.Key == s.failKey {
+		return nil, errors.New("reconstruction failed")
+	}
+	return s.ObjectStore.GetObject(ctx, in)
 }
 
 // TestListVolumes_NotConfigured covers the nil-store guard shared by every

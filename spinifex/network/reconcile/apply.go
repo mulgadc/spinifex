@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"strings"
 	"time"
@@ -132,10 +133,13 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 		}
 
-		if existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID); err != nil || existing == nil {
+		want := topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer, r.underlayMTU, r.ipsecEnabled)
+		existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID)
+		switch {
+		case err != nil || existing == nil:
 			opts := &nbdb.DHCPOptions{
 				CIDR:    spec.CIDR.String(),
-				Options: topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer),
+				Options: want,
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,
@@ -143,6 +147,15 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 			if _, dErr := r.ovn.CreateDHCPOptions(ctx, opts); dErr != nil {
 				slog.Warn("reconcile/apply: create DHCP options failed (non-fatal)", "subnet_id", subnetID, "err", dErr)
+			}
+		case !maps.Equal(existing.Options, want):
+			// Converge, don't leave create-time values in place. Toggling
+			// network.ipsec_enabled moves the MTU, and a subnet left advertising
+			// the wide figure on an encrypted path blackholes large segments.
+			if dErr := r.ovn.UpdateDHCPOptionsOptions(ctx, existing.UUID, want); dErr != nil {
+				slog.Warn("reconcile/apply: update DHCP options failed (non-fatal)", "subnet_id", subnetID, "err", dErr)
+			} else {
+				slog.Info("reconcile/apply: converged DHCP options", "subnet_id", subnetID, "mtu", want["mtu"])
 			}
 		}
 

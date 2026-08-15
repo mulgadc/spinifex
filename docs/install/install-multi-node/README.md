@@ -30,6 +30,7 @@ resources:
 - [Prerequisites](#prerequisites)
 - [Instructions](#instructions)
 - [Converting ISO-Installed Nodes](#converting-iso-installed-nodes)
+- [Firewall and Cluster Membership](#firewall-and-cluster-membership)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -140,13 +141,23 @@ export AWS_AZ=us-east-1a
 
 Skip this section if you installed with the binary installer (Option A).
 
-The ISO installs each server as a **running standalone single-node cluster** — it initializes Spinifex, starts a standalone OVN database, and brings up `spinifex.target` at first boot. That is the right behaviour for a single server, and it means forming a cluster is a conversion rather than a fresh setup. Two extra things are needed:
+The ISO installs each server as a **running standalone single-node cluster** — it initializes Spinifex, starts a standalone OVN database, brings up `spinifex.target`, and arms the host firewall at first boot. That is the right behaviour for a single server, and it means forming a cluster is a conversion rather than a fresh setup. Three extra things are needed:
 
 **Before Step 3**, stop services on every server:
 
 ```bash
 sudo systemctl stop spinifex.target
 ```
+
+**Before Step 3**, also turn the firewall off on every server:
+
+```bash
+sudo /usr/local/lib/spinifex/spinifex-firewall-apply disable
+```
+
+Each server's firewall currently allows internal cluster traffic only from itself, because that is the whole cluster as far as it knows. Step 3 has servers 2 and 3 connect to server 1's OVN database, and Step 4 has them connect to its formation server — neither is recognised yet, so both are blocked until the firewall is out of the way. Stopping `spinifex.target` does not do this: the firewall lives in the kernel and outlives the services.
+
+Turn it back on after Step 6 — see [Firewall and cluster membership](#firewall-and-cluster-membership).
 
 **In Step 4**, pass `--force` to `spx admin init` and `spx admin join`. Servers 2 and 3 each arrived with their own CA and master key from the single-node install, and joining replaces them with server 1's. `--force` is how you confirm that.
 
@@ -279,6 +290,74 @@ If this returns a list of available instance types, your cluster is working.
 
 Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create a VPC, and launch your first instance.
 
+## Firewall and Cluster Membership
+
+Spinifex ships an optional host firewall. It divides the node's ports into two groups:
+
+| | Ports | Who can reach them |
+|---|---|---|
+| **Public** | SSH, 443, 3000 (console), 8443 (S3), 9999 (AWS gateway), 53 (DNS) | anyone |
+| **Internal** | OVN, NATS, formation, Geneve and the rest of the cluster plane | **cluster members only** |
+
+The internal group is the point. Before this existed, OVN and NATS were reachable from the public internet on a WAN-facing node.
+
+"Cluster members" is not a list you maintain. Each node works it out from the cluster it belongs to and rewrites its own rules whenever membership changes — you never edit the peer list by hand.
+
+### Is it on?
+
+| How the node was installed | Firewall |
+|---|---|
+| From the ISO | **on** |
+| `curl \| bash` or `setup.sh` | **off** |
+| `setup.sh --firewall=on` | **on** |
+
+The binary installer defaults to off deliberately: it runs on servers that already have an operating system and services on them, and switching on a default-deny policy uninvited could cut off something Spinifex knows nothing about. **For production, turn it on** — either at install time:
+
+```bash
+curl -fsSL https://install.mulgadc.com | bash -s -- --firewall=on
+```
+
+or afterwards, by setting it in `/etc/spinifex/spinifex.toml` and restarting the daemon:
+
+```toml
+[network]
+firewall_enabled = true
+```
+
+Before you do, check what else the machine is serving. Anything listening on a port outside the public group above stops accepting new connections.
+
+### Turning it off and on around cluster changes
+
+A node only recognises the members of the cluster it currently belongs to, so during formation — when the nodes do not yet know each other — internal traffic between them is blocked. Turn the firewall off while you form the cluster, and on again once it is up:
+
+```bash
+# Off — before forming or expanding a cluster. Run on every node.
+sudo /usr/local/lib/spinifex/spinifex-firewall-apply disable
+
+# On — once the cluster is formed and verified. Run on every node.
+sudo systemctl restart spinifex-daemon
+```
+
+Restarting the daemon is what re-arms it: the node rebuilds its peer list from the cluster it is now part of, reloads the rules, and re-enables the boot-time unit so the policy survives a reboot. It also happens on its own within five minutes if you would rather wait.
+
+### Checking it
+
+```bash
+sudo nft list table inet spinifex_filter | grep spinifex_peers
+```
+
+Every node's addresses should be listed — on a multi-NIC node, that is its WAN, LAN and VPC addresses, so expect several entries per node. A missing node means its cluster traffic is being dropped.
+
+Dropped packets are logged, rate-limited, so this tells you whether a connection problem is the firewall or something else:
+
+```bash
+sudo journalctl -k | grep 'spinifex-fw drop'
+```
+
+### Adding a node later
+
+Expanding an existing cluster is the same shape as forming one: the node you are adding is not a member yet. Turn the firewall off on the existing nodes and on the new one, add the node, then re-arm all of them. Verify with the `nft list` command above that every node now lists the newcomer.
+
 ## Troubleshooting
 
 ### Nodes Not Joining
@@ -288,6 +367,14 @@ The init command must still be running when join executes. If init exited, re-ru
 ```bash
 curl -sk https://$SPINIFEX_NODE1:4432/health
 ```
+
+If that command hangs rather than failing quickly, it is the firewall on node 1 — a refused connection means nothing is listening, but a hang means the packets are being dropped. Node 1 does not recognise the joining node as a cluster member yet. Confirm it on node 1:
+
+```bash
+sudo journalctl -k | grep 'spinifex-fw drop'
+```
+
+Turn the firewall off on **every** node and retry the join, then re-arm once the cluster is up — see [Firewall and cluster membership](#firewall-and-cluster-membership). The joining node retries for 20 minutes by default, so it is often still waiting while you fix this.
 
 ### Join Refuses: "this node is already initialized"
 

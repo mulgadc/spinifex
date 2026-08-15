@@ -615,6 +615,8 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		ShutdownSignal:             d.shuttingDown.Load,
 		CrashHandler:               d.vmMgr.HandleCrash,
 		TransitionState:            d.TransitionState,
+		MultiqueueNICs:             d.clusterConfig != nil && !d.clusterConfig.Network.IPSecEnabled,
+		GuestMTU:                   d.guestOverlayMTU(),
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
 		DetachDelay:                d.detachDelay,
@@ -903,4 +905,13 @@ func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) error {
 	}
 	slog.Info("GPU released", "gpus", instance.GPUAttachments, "instanceId", instance.ID)
 	return nil
+}
+
+// guestOverlayMTU is the MTU a guest NIC advertises via VIRTIO_NET_F_MTU. Same
+// derivation as the DHCP option, so the two cannot disagree.
+func (d *Daemon) guestOverlayMTU() int {
+	if d.clusterConfig == nil {
+		return 0
+	}
+	return topology.SubnetMTU(d.clusterConfig.Network.UnderlayMTU, d.clusterConfig.Network.IPSecEnabled)
 }

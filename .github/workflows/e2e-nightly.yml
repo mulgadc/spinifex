@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run (blank = all)"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection"
         required: false
 
 permissions:
@@ -379,8 +379,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # Gated like every other step, not just always(): a cell the dispatch
+      # deselected never checked out or ran tofu init, so destroying would fail
+      # on missing plugins and report the cell red for correctly doing nothing.
       - name: Teardown
-        if: always()
+        if: always() && steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_HOST: ${{ matrix.host }}
@@ -397,7 +400,7 @@ jobs:
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
       - name: Upload tofu log
-        if: always()
+        if: always() && steps.gate.outputs.selected == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: tofu-log-cell-${{ matrix.cell }}-${{ github.run_id }}
@@ -426,3 +429,613 @@ jobs:
       # There's no matrix leg here, just the one fixed baremetal cell.
       otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=20,ci.matrix=baremetal/pxe/real-hw
     secrets: inherit
+
+  # ISO cells. Unlike 1-19 these need no tofu: the harnesses run QEMU directly
+  # on the runner. The nodes are therefore L1, which keeps the instances they
+  # launch at L2 and their benchmark numbers comparable between the two cells.
+  #
+  # Serialised against each other because the guest MACs are fixed
+  # (52:54:00:12:...): stable MACs are what make DHCP discovery work, and two
+  # concurrent runs would put duplicates on the rack LAN, which is a confusing
+  # failure for everyone on it, not just CI.
+  iso-single:
+    name: cell-21 (iso/dhcp/single)
+    if: >-
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',21,')
+    runs-on: [self-hosted, ci-single]
+    # ISO build, install, boot and pool re-form is ~35 of these on its own,
+    # before the workload step imports an AMI and launches an instance.
+    timeout-minutes: 90
+    concurrency:
+      group: iso-qemu-rack
+      cancel-in-progress: false
+    env:
+      CI_WAN_MODE: dhcp
+      CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+      # What a real node gets. The harness default of 4G is a dev-box size, and
+      # importing an 820 MiB AMI on top of the running stack does not fit in it.
+      MEM: 8G
+      SMP: 8
+      # .230 is consumed by the OVN router's SNAT, leaving .231-.234 for
+      # instances. Disjoint from cell-22's pool so a run that dies holding its
+      # SNAT address cannot collide with the next cell.
+      EXT_POOL_START: 192.168.0.230
+      EXT_POOL_END: 192.168.0.234
+      EXT_GATEWAY: 192.168.1.1
+      EXT_PREFIX_LEN: 23
+      # Pins where the benchmark writes, so collecting and removing it later are
+      # both exact. Left to itself the harness picks a timestamped name.
+      BENCH_OUT: /tmp/cell21-bench-${{ github.run_id }}
+    steps:
+      - name: Clean Workspace
+        run: |
+          sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          path: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          path: mulga/spinifex
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: mulga/spinifex
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: mulga/viperblock
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: mulga/predastore
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: mulga/northstar
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: ${{ steps.siblings.outputs.bluebottle }}
+          path: mulga/bluebottle
+
+      # Assert the host can do what the cell assumes, before spending 40
+      # minutes finding out it cannot. A checklist in a plan doc goes stale;
+      # this does not.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          ip link show "${BRIDGE:-br-wan}" >/dev/null ||
+            { echo "::error::bridge br-wan not found on this runner"; exit 1; }
+          grep -qE "^allow +${BRIDGE:-br-wan}$" /etc/qemu/bridge.conf ||
+            { echo "::error::br-wan not permitted in /etc/qemu/bridge.conf"; exit 1; }
+          command -v sshpass >/dev/null ||
+            { echo "::error::sshpass not installed"; exit 1; }
+          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
+          [ "$free_mb" -ge 8192 ] ||
+            { echo "::error::need 8 GiB available, have ${free_mb} MiB"; exit 1; }
+          # A 40G image on tmpfs competes with the 8 GiB the VM itself needs.
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          [ "$fstype" != tmpfs ] ||
+            { echo "::error::$TMPDIR is tmpfs — the node disk would be in RAM"; exit 1; }
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          [ "$avail_gb" -ge 60 ] ||
+            { echo "::error::need 60 GiB on $TMPDIR, have ${avail_gb} GiB"; exit 1; }
+
+      - name: Build artefacts
+        working-directory: mulga/scripts/iso-builder
+        run: make build-rootfs build-squashfs build-initramfs
+
+      # One key for both halves of the cell. test-workload.sh SSHes to the node
+      # AND registers the same key as the EC2 key pair it uses to reach the
+      # instances, so the key test-smoke.sh installs has to be that one — its
+      # default ~/.ssh/id_*.pub would leave the workload step locked out.
+      - name: Prepare SSH key
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+          # Two keys, because the guest key must not share a name with the one
+          # smoke-test.sh registers from the node: the node holds that private
+          # half, and IMDS caches material by key name for five minutes, so
+          # re-importing over it is invisible to the guests.
+          for k in spinifex-key spinifex-workload-key; do
+            [ -f "$HOME/.ssh/$k" ] ||
+              ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/$k" -C "$k-ci"
+          done
+
+      # Boots the ISO, installs unattended, reads the lease off the serial
+      # console, runs the in-guest smoke test, and installs the key for the
+      # next step.
+      - name: Install and smoke test
+        id: smoke
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          set -euo pipefail
+          # KEEP_NODE: the harness owns the only VM there is and tears it down
+          # on exit, so without this the workload step below has no node left.
+          KEEP_NODE=1 SSH_IDENTITY="$HOME/.ssh/spinifex-key.pub" \
+            ./test/test-smoke.sh | tee /tmp/smoke-$GITHUB_RUN_ID.log
+          ip=$(sed -n 's/^\[smoke\] node address: //p' /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$ip" ] || { echo "::error::smoke test did not report a node address"; exit 1; }
+          echo "node_ip=$ip" >> "$GITHUB_OUTPUT"
+
+      # The customer path: AMI, key, VPC, instance, SSH in. --benchmark records
+      # host and guest disk numbers so a regression shows up as a number rather
+      # than a story.
+      - name: Workload and benchmark
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          set -euo pipefail
+          cat > /tmp/cell21.env <<EOF
+          NODES=(${{ steps.smoke.outputs.node_ip }})
+          NODE_NAMES=(spinifex-ci)
+          SSH_USER=spinifex
+          SSH_KEY_PATH=$HOME/.ssh/spinifex-workload-key
+          # SSH_KEY_PATH reaches the guests, SSH_IDENTITY reaches the node, and
+          # they are deliberately different keys. Without the second, node SSH
+          # falls back to the runner's default identity, which the node has
+          # never seen.
+          SSH_IDENTITY=$HOME/.ssh/spinifex-key
+          EXT_POOL_START=$EXT_POOL_START
+          EXT_POOL_END=$EXT_POOL_END
+          EXT_GATEWAY=$EXT_GATEWAY
+          EXT_PREFIX_LEN=$EXT_PREFIX_LEN
+          EOF
+          ./test/test-workload.sh --env /tmp/cell21.env --benchmark
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
+          cp /tmp/smoke-$GITHUB_RUN_ID.log /tmp/cell21-artifacts-$GITHUB_RUN_ID/ ||
+            echo "::warning::no smoke log to collect"
+          # fio JSON and the summary table. Warned about rather than swallowed:
+          # a benchmark that ran and produced nothing is worth knowing about.
+          if [ -d "$BENCH_OUT" ]; then
+            cp -r "$BENCH_OUT" /tmp/cell21-artifacts-$GITHUB_RUN_ID/benchmark
+          else
+            echo "::warning::no benchmark results at $BENCH_OUT"
+          fi
+          # The guest's own view. Without it a node that dies mid-test is only
+          # visible as the harness command that stopped producing output.
+          serial=$(sed -n 's/^\[smoke\] serial log preserved: //p' \
+                   /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$serial" ] && cp "$serial" /tmp/cell21-artifacts-$GITHUB_RUN_ID/serial.log || true
+          node=$(sed -n 's/^\[smoke\] node logs preserved: //p' \
+                 /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$node" ] && cp "$node" /tmp/cell21-artifacts-$GITHUB_RUN_ID/node.log || true
+          # QEMU's stderr no longer reaches the step log: it is redirected so a
+          # kept-alive VM cannot hold the step's stdout open.
+          qemu=$(sed -n 's/^\[smoke\] qemu log preserved: //p' \
+                 /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
+          [ -n "$qemu" ] && cp "$qemu" /tmp/cell21-artifacts-$GITHUB_RUN_ID/qemu.log || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts-cell-21-${{ github.run_id }}
+          path: /tmp/cell21-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          # Matches the predastore benchmark in cell-23: a night's numbers are
+          # only useful against the nights before them.
+          retention-days: 90
+
+      - name: Teardown
+        if: always()
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          # No env file means the workload step never ran, so there is nothing
+          # of its to clean up.
+          if [ -f /tmp/cell21.env ]; then
+            ./test/test-workload.sh --env /tmp/cell21.env --cleanup || true
+          fi
+          sudo pkill -f spinifex-smoke-test || true
+          rm -rf /tmp/cell21-artifacts-$GITHUB_RUN_ID /tmp/cell21.env \
+                 /tmp/smoke-$GITHUB_RUN_ID.log "$BENCH_OUT"
+          # Runs before BENCH_OUT existed left a timestamped directory behind
+          # every night. Sweep anything older than a day.
+          find /tmp -maxdepth 1 -name 'spinifex-benchmark-*' -type d -mmin +1440 \
+               -exec rm -rf {} + 2>/dev/null || true
+          # KEEP_NODE leaves the node's disk and serial log behind for us.
+          sleep 2
+          rm -f "$TMPDIR"/tmp.*.qcow2 "$TMPDIR"/tmp.*.log "$TMPDIR"/tmp.*-node.log
+
+  iso-multi:
+    name: cell-22 (iso/dhcp/three-node)
+    # After cell-21 rather than beside it: same concurrency group, and running
+    # them together would need 32 GiB on one box.
+    needs: [iso-single]
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',22,') )
+    runs-on: [self-hosted, ci-multi]
+    timeout-minutes: 90
+    concurrency:
+      group: iso-qemu-rack
+      cancel-in-progress: false
+    env:
+      MEM: 8G
+      SMP: 8
+      PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+      EXT_POOL_START: 192.168.0.235
+      EXT_POOL_END: 192.168.0.239
+      EXT_GATEWAY: 192.168.1.1
+      EXT_PREFIX_LEN: 23
+    steps:
+      - name: Clean Workspace
+        run: |
+          sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          # Pinned so the per-node serial logs can be collected afterwards, and
+          # kept beside TMPDIR rather than in /tmp: it also holds nine 40G node
+          # disks, which is what the tmpfs assertion below is about.
+          echo "WORK_DIR=$E2E_ROOT/work/cell22-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          path: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          path: mulga/spinifex
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: mulga/spinifex
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: ${{ steps.siblings.outputs.viperblock }}
+          path: mulga/viperblock
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: mulga/predastore
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: ${{ steps.siblings.outputs.northstar }}
+          path: mulga/northstar
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: ${{ steps.siblings.outputs.bluebottle }}
+          path: mulga/bluebottle
+
+      # 3 x 8 GiB plus 9 sparse 40G disks, before the instances the cluster
+      # launches on top.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
+          [ "$free_mb" -ge 26624 ] ||
+            { echo "::error::need 26 GiB available, have ${free_mb} MiB"; exit 1; }
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          [ "$fstype" != tmpfs ] ||
+            { echo "::error::$TMPDIR is tmpfs — nine node disks would be in RAM"; exit 1; }
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          [ "$avail_gb" -ge 120 ] ||
+            { echo "::error::need 120 GiB on $TMPDIR ($fstype), have ${avail_gb} GiB"; exit 1; }
+
+      - name: Build artefacts
+        working-directory: mulga/scripts/iso-builder
+        run: make build-rootfs build-squashfs build-initramfs
+
+      # Four phases: install three nodes, convert to one cluster, assert it
+      # formed (including the external pool), then pull node 1's power and
+      # assert the survivors hold quorum.
+      #
+      # Phase 5 (test-workload.sh, as cell-21 runs it) is not wired yet: the
+      # nodes are still on user-mode NAT and reachable only through the
+      # harness's own port forwards, and test-cluster.sh does not open the
+      # formation port. Both land with mulga-yxtda and the bridged WAN mode;
+      # until then this cell proves the cluster forms and survives, not that a
+      # customer can use it.
+      - name: Install, form and verify the cluster
+        working-directory: mulga/scripts/iso-builder
+        run: |
+          set -euo pipefail
+          ./test/test-cluster.sh 2>&1 | tee /tmp/cell22-$GITHUB_RUN_ID.log
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/cell22-artifacts-$GITHUB_RUN_ID
+          cp /tmp/cell22-$GITHUB_RUN_ID.log /tmp/cell22-artifacts-$GITHUB_RUN_ID/ ||
+            echo "::warning::no cluster log to collect"
+          # Serial only. The same directory holds the nodes' disk images, which
+          # are gigabytes and must not go into an artifact.
+          cp "$WORK_DIR"/*-serial.log /tmp/cell22-artifacts-$GITHUB_RUN_ID/ 2>/dev/null ||
+            echo "no per-node serial logs — the run passed and cleaned up after itself"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts-cell-22-${{ github.run_id }}
+          path: /tmp/cell22-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Teardown
+        if: always()
+        run: |
+          sudo pkill -f spinifex-cluster-test || true
+          rm -rf /tmp/cell22-artifacts-$GITHUB_RUN_ID /tmp/cell22-$GITHUB_RUN_ID.log \
+                 "$WORK_DIR"
+
+  # Predastore throughput ("cell 23"). Predastore has no runners of its own and
+  # spinifex depends on it, so the benchmark lives here and checks predastore
+  # out as a sibling.
+  #
+  # needs: is the whole point. A throughput benchmark sharing a host with a cell
+  # measures the neighbour, and ci-single and ci-multi both resolve to
+  # bottlebrush, so "a different label" would not have separated them. needs: on
+  # a matrix job waits for every leg, so this starts on a quiet machine.
+  #
+  # always() because a failed cell must not silently skip the benchmark and
+  # leave a green-looking night with no number in it.
+  performance:
+    name: cell-23 (predastore/throughput)
+    needs: [matrix, baremetal, iso-single, iso-multi]
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',23,') )
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 60
+    env:
+      # Two-minute samples. The 30s smoke preset is too short to compare nights.
+      PERF_PRESET: compare
+    steps:
+      - name: Clean Workspace
+        run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "PERF_RESULTS_ROOT=$E2E_ROOT/predastore-perf-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      # Which predastore branch to measure: the same-named branch when one
+      # exists, dev otherwise. Matches how the e2e path already picks siblings,
+      # so a cross-repo change is benchmarked as a set.
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      # The benchmark works in $TMPDIR and predastore refuses writes below a 5%
+      # free-space watermark. Without this the symptom is several hundred
+      # "storage pool is at capacity" lines from warp and no statement of how
+      # much space there actually was.
+      #
+      # TMPDIR is pointed at the runner's disk above, and the tmpfs assertion is
+      # the one that matters: a storage benchmark on a RAM-backed filesystem
+      # measures memcpy. It would report a number that looks excellent, sit in
+      # the baseline, and never notice a disk regression.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          case "$fstype" in
+            tmpfs|ramfs)
+              echo "::error::$TMPDIR is $fstype — a storage benchmark there measures RAM"
+              exit 1 ;;
+          esac
+          # Work dirs from runs that were killed before their cleanup trap ran.
+          # -mtime +0 so a concurrent run's directory is never in scope.
+          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-performance.*' \
+               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          pct_used=$(df --output=pcent "$TMPDIR" | tail -1 | tr -dc '0-9')
+          if [ "$pct_used" -ge 90 ] || [ "$avail_gb" -lt 20 ]; then
+            echo "::error::$TMPDIR ($fstype) is ${pct_used}% full with ${avail_gb} GiB free."
+            echo "::error::The benchmark needs headroom above predastore's 5% watermark."
+            exit 1
+          fi
+
+      # PERF_PORT_OFFSET defaults to 10000, so the benchmark's own nodes do not
+      # collide with a cluster left on the default ports.
+      - name: Run throughput benchmark
+        working-directory: predastore
+        run: |
+          set -euo pipefail
+          # Into the results directory, so the artifact reads on its own rather
+          # than needing the job log it was printed into. The benchmark only
+          # ever creates this directory, so a log placed here first survives.
+          mkdir -p "$PERF_RESULTS_ROOT"
+          make e2e-performance 2>&1 | tee "$PERF_RESULTS_ROOT/e2e-performance.log"
+
+      # Report-only. The baseline comparison and the -10% gate are mulga-wpjsx;
+      # until the run-to-run spread is known from real nights, a threshold would
+      # be a guess, and a gate that cries wolf gets muted.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: predastore-perf-${{ github.run_id }}
+          path: ${{ env.PERF_RESULTS_ROOT }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Clean up results
+        if: always()
+        run: rm -rf "$PERF_RESULTS_ROOT"
+
+  # Fault injection, not throughput. Cell-23 asks how fast predastore is when
+  # every node is healthy; this asks whether it survives one that is not.
+  #
+  # After cell-23 rather than beside it: both want a quiet single runner, and a
+  # benchmark sharing a machine with a fault injection run measures the wrong
+  # thing. The port offset keeps them apart even so.
+  stress:
+    name: cell-24 (predastore/fault-injection)
+    needs: [matrix, baremetal, iso-single, iso-multi, performance]
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',24,') )
+    runs-on: [self-hosted, ci-single]
+    timeout-minutes: 30
+    env:
+      # Freezes a follower. STRESS_HOST=leader is a known failure: a gate keeps
+      # the frozen node first in its meta read order and pays the full client
+      # timeout per key, so listing slows in proportion to object count.
+      STRESS_HOST: follower
+      # Clear of cell-23's default 10000, so the two never collide on a runner
+      # that lets them overlap.
+      STRESS_PORT_OFFSET: "20000"
+    steps:
+      - name: Clean Workspace
+        run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "STRESS_RESULTS_ROOT=$E2E_ROOT/predastore-stress-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      # A frozen node is indistinguishable from a slow one, so a run on a
+      # loaded or nearly full disk fails as a timeout and reads as a real
+      # fault. The checks are the cheap way to tell those apart afterwards.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-stress.*' \
+               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          if [ "$avail_gb" -lt 10 ]; then
+            echo "::error::$TMPDIR has ${avail_gb} GiB free; the run needs headroom above predastore's 5% watermark."
+            exit 1
+          fi
+
+      # Leftovers from a run killed before its cleanup trap: a surviving node
+      # holds its ports and fails this run somewhere unrelated.
+      - name: Clear stale nodes
+        run: pkill -KILL -f '/bin/s3d -config' || true
+
+      - name: Run fault injection
+        working-directory: predastore
+        run: |
+          set -euo pipefail
+          # events.txt carries the timeline and the FAIL line, but not the build
+          # output or anything Warp wrote before the harness took over. The
+          # harness only creates this directory, so a log placed here survives.
+          mkdir -p "$STRESS_RESULTS_ROOT"
+          make e2e-stress 2>&1 | tee "$STRESS_RESULTS_ROOT/e2e-stress.log"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: predastore-stress-${{ github.run_id }}
+          path: ${{ env.STRESS_RESULTS_ROOT }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Clean up
+        if: always()
+        run: |
+          pkill -KILL -f '/bin/s3d -config' || true
+          rm -rf "$STRESS_RESULTS_ROOT"

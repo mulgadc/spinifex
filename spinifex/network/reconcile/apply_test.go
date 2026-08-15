@@ -758,3 +758,42 @@ func TestFloatingIPSpecs(t *testing.T) {
 		t.Errorf("want 3 specs (2 EIP + 1 auto), got %d: %+v", len(specs), specs)
 	}
 }
+
+// A DHCPOptions row is created once and then never revisited by the original
+// apply path, so toggling network.ipsec_enabled on a live cluster left the
+// create-time MTU in place forever. Going from off to on that means a subnet
+// still advertising 1442 on an ESP path, which blackholes large segments.
+func TestApplySubnets_ConvergesDriftedDHCPOptions(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+	intent := freshIntent(t)
+
+	// First pass creates the row. The test reconciler leaves IPSecDisabled
+	// unset, so it lands on the conservative MTU.
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	before, err := m.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-a")
+	if err != nil {
+		t.Fatalf("FindDHCPOptionsByExternalID: %v", err)
+	}
+	if got := before.Options["mtu"]; got != "1408" {
+		t.Fatalf("mtu after create = %q, want \"1408\"", got)
+	}
+
+	// Operator disables IPsec; the next pass must widen the advertised MTU.
+	rec.ipsecEnabled = false
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile after IPsec toggle: %v", err)
+	}
+	after, err := m.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-a")
+	if err != nil {
+		t.Fatalf("FindDHCPOptionsByExternalID: %v", err)
+	}
+	if got := after.Options["mtu"]; got != "1442" {
+		t.Errorf("mtu after disabling IPsec = %q, want \"1442\" — DHCP options are not converged, only created", got)
+	}
+	if after.UUID != before.UUID {
+		t.Errorf("DHCP options row was replaced (%s -> %s), want an in-place update", before.UUID, after.UUID)
+	}
+}

@@ -136,3 +136,45 @@ debug = false
 	assert.False(t, parsed.Quota.Enabled)
 	assert.Equal(t, 0, parsed.Quota.VCPUs)
 }
+
+// An absent [signup] section must cap self-service creation rather than leave
+// it open, while an explicit 0 stays the documented way to lift the cap.
+func TestResolveSignupMaxAccounts(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{
+			name:    "no section defaults",
+			content: "version = \"3\"\n",
+			want:    defaultSignupMaxAccounts,
+		},
+		{
+			name:    "section without key defaults",
+			content: "version = \"3\"\n[signup]\n",
+			want:    defaultSignupMaxAccounts,
+		},
+		{
+			name:    "explicit zero is uncapped",
+			content: "version = \"3\"\n[signup]\nmax_accounts = 0\n",
+			want:    0,
+		},
+		{
+			name:    "explicit value wins",
+			content: "version = \"3\"\n[signup]\nmax_accounts = 4\n",
+			want:    4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "awsgw.toml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o644))
+
+			parsed, err := loadAWSGWConfig(path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, resolveSignupMaxAccounts(parsed.Signup))
+		})
+	}
+}

@@ -101,6 +101,28 @@ func (svc *Service) Reload() (err error) {
 type awsgwTOML struct {
 	Ratelimit ratelimit.Config      `toml:"ratelimit"`
 	Quota     handlers_quota.Limits `toml:"quota"`
+	Signup    signupConfig          `toml:"signup"`
+}
+
+// signupConfig is the [signup] section governing /admin/CreateAccount.
+// MaxAccounts is a pointer so an absent key can take the default while an
+// explicit 0 still means uncapped.
+type signupConfig struct {
+	MaxAccounts *int `toml:"max_accounts"`
+}
+
+// defaultSignupMaxAccounts caps self-service account creation when [signup] is
+// absent. A cluster that never opted in is unreachable anyway — the endpoint
+// needs a principal — so the default costs nothing and bounds the damage a
+// leaked signup key can do.
+const defaultSignupMaxAccounts = 128
+
+// resolveSignupMaxAccounts applies the default to an absent key.
+func resolveSignupMaxAccounts(cfg signupConfig) int {
+	if cfg.MaxAccounts == nil {
+		return defaultSignupMaxAccounts
+	}
+	return *cfg.MaxAccounts
 }
 
 // loadAWSGWConfig reads and parses awsgw.toml once, returning the [ratelimit] and
@@ -253,6 +275,7 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	throttleCfg := awsgwCfg.Ratelimit
 	quotaCfg := awsgwCfg.Quota
+	signupMaxAccounts := resolveSignupMaxAccounts(awsgwCfg.Signup)
 
 	// OCI Distribution v2 registry: blob/manifest bytes stream straight to
 	// predastore from the gateway; repo/tag/manifest metadata and in-progress
@@ -433,6 +456,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAccessAdmin:      bedrockAccess,
 		BedrockProvisioned:      bedrockProvisioned,
 		BedrockGuardrails:       bedrockGuardrails,
+		SignupMaxAccounts:       signupMaxAccounts,
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,

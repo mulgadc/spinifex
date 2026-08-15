@@ -49,6 +49,13 @@ type NBDKitConfig struct {
 	// NBD read-only transmission flag and passes readonly=true to the plugin's
 	// Open. The plugin refuses writes on that flag.
 	ReadOnly bool `json:"read_only"`
+
+	// Threads is nbdkit's -t, the worker threads served per NBD connection.
+	// It only takes effect because the Go plugin binding declares
+	// thread_model=parallel. QEMU opens one connection per volume, so this
+	// bounds in-flight requests for the whole volume. 0 omits the flag and
+	// leaves nbdkit on its own default.
+	Threads int `json:"threads"`
 }
 
 // Block size constraints advertised to clients through nbdkit's
@@ -73,6 +80,11 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 
 	if cfg.ReadOnly {
 		args = append(args, "-r")
+	}
+
+	// Server option, so it has to precede the plugin path below.
+	if cfg.Threads > 0 {
+		args = append(args, "-t", strconv.Itoa(cfg.Threads))
 	}
 
 	args = append(args, "--filter=blocksize-policy")

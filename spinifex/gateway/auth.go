@@ -173,6 +173,13 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				}
 			}
 
+			// /admin carries its method in the path and a JSON body, so the
+			// query-arg parse above finds no Action. Without this every admin
+			// method would share one "unknown" throttle bucket and trace label.
+			if method, ok := adminPathMethod(r.URL.Path); ok {
+				ctx = context.WithValue(ctx, ctxAction, method)
+			}
+
 			slog.Debug("SigV4 authentication successful",
 				"accessKey", sig.Credential.AccessKeyID,
 				"identity", principal.identity,

@@ -387,9 +387,16 @@ var viperblockStartCmd = &cobra.Command{
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
 			EncryptionKeyFile: encryptionKeyFile,
+			Threads:           nodeConfig.EBS.ResolvedThreads(),
+			CacheSizeMB:       nodeConfig.EBS.ResolvedCacheSizeMB(),
 			Debug:             debug,
 		})
 
+		// Exit non-zero, or systemd records a clean stop and Restart=on-failure
+		// never fires. Startup here can fail for reasons that clear on their own —
+		// during formation the JetStream bucket has no leader yet — and a node that
+		// silently keeps a dead EBS provider fails every volume request with "no
+		// responders" until someone restarts it by hand.
 		if err != nil {
 			return fmt.Errorf("create viperblock service: %w", err)
 		}
@@ -808,6 +815,18 @@ var awsgwStatusCmd = &cobra.Command{
 	},
 }
 
+// consoleRegion is the region the console signs with. awsgw pins signature
+// verification to this same node field, so reading it from anywhere else —
+// including the cluster-wide [aws] region — would let the two drift and fail
+// authentication with an opaque credential error.
+func consoleRegion(clusterConfig *config.ClusterConfig) (string, error) {
+	region := clusterConfig.Nodes[clusterConfig.Node].Region
+	if region == "" {
+		return "", fmt.Errorf("node %q has no region configured; the console cannot sign requests", clusterConfig.Node)
+	}
+	return region, nil
+}
+
 var spinifexUIStartCmd = &cobra.Command{
 	Use:           "start",
 	Short:         "Start the spinifex-ui service",
@@ -822,6 +841,15 @@ var spinifexUIStartCmd = &cobra.Command{
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
 		baseDir := viper.GetString("spinifex-ui-base-dir")
 
+		cfg, err := loadLocalConfig()
+		if err != nil {
+			return fmt.Errorf("load config for spinifex-ui service: %w", err)
+		}
+		region, err := consoleRegion(cfg)
+		if err != nil {
+			return err
+		}
+
 		defer initTelemetry("spinifex-ui", false)()
 
 		svc, err := service.New("spinifex-ui", &spinifexui.Config{
@@ -830,6 +858,7 @@ var spinifexUIStartCmd = &cobra.Command{
 			TLSCert: tlsCert,
 			TLSKey:  tlsKey,
 			BaseDir: baseDir,
+			Region:  region,
 		})
 
 		if err != nil {
@@ -994,6 +1023,8 @@ var vpcdStartCmd = &cobra.Command{
 			NorthstarInternalDomain: handlers_dns.ResolveInternalDomain(&nodeConfig),
 			ResolverNameservers:     handlers_dns.ResolverNameserverIPs(clusterConfig),
 			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
+			IPSecEnabled:            clusterConfig.Network.IPSecEnabled,
+			UnderlayMTU:             clusterConfig.Network.UnderlayMTU,
 		})
 		if err != nil {
 			return fmt.Errorf("create vpcd service: %w", err)

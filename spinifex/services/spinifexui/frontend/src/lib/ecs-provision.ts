@@ -3,8 +3,8 @@ import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
 
 import { getCredentials } from "@/lib/auth"
+import { getRegion } from "@/lib/cluster-config"
 
-const AWS_REGION = "ap-southeast-2"
 const GATEWAY_PORT = 9999
 const TARGET = "AmazonEC2ContainerServiceV20141113.ProvisionCapacity"
 
@@ -76,7 +76,7 @@ export async function provisionCapacity(
       secretAccessKey: credentials.secretAccessKey,
       sessionToken: credentials.sessionToken,
     },
-    region: AWS_REGION,
+    region: getRegion(),
     service: "ecs",
     sha256: Sha256,
   })

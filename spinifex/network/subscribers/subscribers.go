@@ -68,6 +68,30 @@ func New(cfg Config) (*Subscriber, error) {
 	}, nil
 }
 
+// addNATConcurrency bounds how many vpc.add-nat requests are in flight at once.
+// Comfortably above a spread launch across a large cluster, low enough that a
+// runaway caller cannot spawn unbounded goroutines against OVN.
+const addNATConcurrency = 32
+
+// concurrently lets a subscription overlap its handlers. NATS delivers to a
+// subscription serially, which is right for handlers that return quickly and
+// wrong for vpc.add-nat: it holds its reply across the OVN flows barrier, so a
+// launch of N instances becomes N barriers back to back and the later callers
+// pass their deadline and roll back. The barriers are independent — each one
+// syncs after its own write — so overlapping them is safe and turns N barriers
+// into roughly one. The semaphore is acquired on the delivery goroutine, so
+// exceeding the limit applies backpressure rather than growing without bound.
+func concurrently(limit int, h nats.MsgHandler) nats.MsgHandler {
+	sem := make(chan struct{}, limit)
+	return func(msg *nats.Msg) {
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			h(msg)
+		}()
+	}
+}
+
 // Subscribe registers queue subs for every VPC lifecycle topic. On
 // partial failure, unsubscribes prior subs before returning the error.
 func (s *Subscriber) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
@@ -85,7 +109,7 @@ func (s *Subscriber) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 		{TopicUpdatePortSGs, s.handleUpdatePortSGs},
 		{TopicIGWAttach, s.handleIGWAttach},
 		{TopicIGWDetach, s.handleIGWDetach},
-		{TopicAddNAT, s.handleAddNAT},
+		{TopicAddNAT, concurrently(addNATConcurrency, s.handleAddNAT)},
 		{TopicDeleteNAT, s.handleDeleteNAT},
 		{TopicAddNATGateway, s.handleAddNATGateway},
 		{TopicDeleteNATGateway, s.handleDeleteNATGateway},

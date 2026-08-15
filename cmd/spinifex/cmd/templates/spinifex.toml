@@ -117,6 +117,18 @@ encryption_key_file = "{{.EncryptionKeyFile}}"
 
 [nodes.{{.Node}}.ebs]
 provider = "viperblockd"
+# Per-volume export tunables. Both are applied per nbdkit process and there is
+# one of those per volume, so the host cost of each is the value times the
+# volume count. Uncomment to override; a service restart plus a volume
+# detach/reattach is needed for either to take effect on an existing volume.
+#
+# default_threads: nbdkit -t, worker threads per NBD connection. QEMU opens one
+# connection per volume, so this is the whole per-volume in-flight ceiling.
+#default_threads = 16
+#
+# cache_size_mb: per-volume plaintext read cache. 0 disables it. Auxiliary -efi
+# volumes are uncached regardless.
+#cache_size_mb = 128
 
 [nodes.{{.Node}}.vpcd]
 ovn_nb_addr = "{{.OVNNBAddr}}"

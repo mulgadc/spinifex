@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +23,14 @@ var _ vm.NetworkPlumber = (*OVSPlumber)(nil)
 // NewOVSPlumber returns the default plumber wired to utils.SudoCommand.
 func NewOVSPlumber() *OVSPlumber { return &OVSPlumber{} }
 
+// deleteTapLink removes a tap by name. `ip link del` rather than `ip tuntap
+// del`: the latter re-opens the device with TUNSETIFF and fails with EINVAL on
+// a multi_queue tap unless the caller repeats the exact creation flags, which
+// a delete-by-name path does not know. RTM_DELLINK is flag-agnostic.
+func deleteTapLink(name string) *exec.Cmd {
+	return utils.SudoCommand("ip", "link", "del", "dev", name)
+}
+
 // SetupTap creates the kernel tap, brings it up, and attaches it to spec.Bridge.
 // Pre-create del-port is unconditional: OVS conf.db survives reboot but kernel
 // taps don't, and --may-exist would silently keep stale external_ids.
@@ -30,7 +39,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 		slog.Warn("Pre-create del-port failed (continuing)", "tap", spec.Name, "bridge", spec.Bridge, "err", err)
 	}
 	if _, err := os.Stat("/sys/class/net/" + spec.Name); err == nil {
-		if err := utils.SudoCommand("ip", "tuntap", "del", "dev", spec.Name, "mode", "tap").Run(); err != nil {
+		if err := deleteTapLink(spec.Name).Run(); err != nil {
 			slog.Warn("Pre-create tap del failed (continuing)", "tap", spec.Name, "err", err)
 		}
 	}
@@ -39,6 +48,12 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	// must be owned by the calling euid (kernel TUNSETIFF check). Use numeric
 	// uid/gid to avoid NSS lookup failures in hardened systemd units.
 	addArgs := []string{"tuntap", "add", "dev", spec.Name, "mode", "tap"}
+	// multi_queue must be set at creation: QEMU opens the tap once per queue
+	// and each TUNSETIFF has to carry IFF_MULTI_QUEUE, which a single-queue
+	// tap rejects. The flag is inert for a netdev that asks for one queue.
+	if spec.Queues > 1 {
+		addArgs = append(addArgs, "multi_queue")
+	}
 	if uid := os.Geteuid(); uid != 0 {
 		addArgs = append(addArgs, "user", strconv.Itoa(uid), "group", strconv.Itoa(os.Getegid()))
 	}
@@ -46,8 +61,15 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 		return fmt.Errorf("create tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)
 	}
 
-	if out, err := utils.SudoCommand("ip", "link", "set", spec.Name, "up").CombinedOutput(); err != nil {
-		if cleanErr := utils.SudoCommand("ip", "tuntap", "del", "dev", spec.Name, "mode", "tap").Run(); cleanErr != nil {
+	// MTU is set in the same call as bring-up so a fabric that cannot carry the
+	// requested size fails the launch here, rather than leaving the tap at 1500
+	// while the guest believes it has more and blackholes every large frame.
+	upArgs := []string{"link", "set", spec.Name, "up"}
+	if spec.MTU > 0 {
+		upArgs = append(upArgs, "mtu", strconv.Itoa(spec.MTU))
+	}
+	if out, err := utils.SudoCommand("ip", upArgs...).CombinedOutput(); err != nil {
+		if cleanErr := deleteTapLink(spec.Name).Run(); cleanErr != nil {
 			slog.Warn("Failed to clean up tap after bring-up failure", "tap", spec.Name, "err", cleanErr)
 		}
 		return fmt.Errorf("bring up tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)
@@ -63,7 +85,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 		}
 	}
 	if out, err := utils.SudoCommand("ovs-vsctl", addPortArgs...).CombinedOutput(); err != nil {
-		if cleanErr := utils.SudoCommand("ip", "tuntap", "del", "dev", spec.Name, "mode", "tap").Run(); cleanErr != nil {
+		if cleanErr := deleteTapLink(spec.Name).Run(); cleanErr != nil {
 			slog.Warn("Failed to clean up tap after OVS failure", "tap", spec.Name, "err", cleanErr)
 		}
 		return fmt.Errorf("add tap %s to %s: %s: %w", spec.Name, spec.Bridge, strings.TrimSpace(string(out)), err)
@@ -86,7 +108,7 @@ func (p *OVSPlumber) CleanupTap(name string) error {
 		return nil
 	}
 
-	if out, err := utils.SudoCommand("ip", "tuntap", "del", "dev", name, "mode", "tap").CombinedOutput(); err != nil {
+	if out, err := deleteTapLink(name).CombinedOutput(); err != nil {
 		return fmt.Errorf("delete tap %s: %s: %w", name, strings.TrimSpace(string(out)), err)
 	}
 

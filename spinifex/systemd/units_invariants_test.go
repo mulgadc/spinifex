@@ -158,6 +158,9 @@ func TestRG9_TierConfinement(t *testing.T) {
 	for _, dev := range []string{
 		"DeviceAllow=/dev/kvm rw",
 		"DeviceAllow=/dev/net/tun rw",
+		// vhost-net carries the guest NIC datapath; DevicePolicy=closed denies
+		// the open with EPERM without it and no vhost=on guest can launch.
+		"DeviceAllow=/dev/vhost-net rw",
 		"DeviceAllow=char-vfio rw",
 		"DeviceAllow=/dev/vfio/vfio rw",
 	} {
@@ -419,6 +422,7 @@ var unitBodyHashes = map[string]map[int]string{
 	"spinifex-daemon.service": {
 		1: "04b0f23b9cda322e4012d589acc196abe466b619dec5ac0d832897b9af2f926c",
 		2: "97a2d4c72967a9bdf9545ff74593de532e8469568bb717c9958d33b77e62d0ed",
+		3: "8059fe13a678b8cb2a383ae75c069560cf39adece9a9394e17781998c711cd57",
 	},
 	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
 	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},

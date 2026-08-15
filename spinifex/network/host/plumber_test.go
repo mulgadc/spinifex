@@ -74,12 +74,96 @@ func TestOVSPlumber_SetupTap_AddPortArgs(t *testing.T) {
 	}
 }
 
+// A multiqueue netdev needs a multi_queue tap: QEMU opens the tap once per
+// queue and each TUNSETIFF carries IFF_MULTI_QUEUE, which a single-queue tap
+// rejects. The flag must appear at creation, not afterwards.
+func TestOVSPlumber_SetupTap_MultiQueue(t *testing.T) {
+	cases := []struct {
+		name   string
+		queues int
+		want   bool
+	}{
+		{"unset", 0, false},
+		{"single queue", 1, false},
+		{"multiqueue", 4, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var addArgs []string
+			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+				if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "add" {
+					addArgs = args
+				}
+				return exec.Command("/bin/true")
+			}))
+
+			p := NewOVSPlumber()
+			spec := vm.TapSpec{Name: "tapmq-test", Bridge: "br-int", Queues: tc.queues}
+			if err := p.SetupTap(spec); err != nil {
+				t.Fatalf("SetupTap: %v", err)
+			}
+			if addArgs == nil {
+				t.Fatal("no ip tuntap add invocation captured")
+			}
+			if got := slices.Contains(addArgs, "multi_queue"); got != tc.want {
+				t.Errorf("multi_queue present = %v, want %v (args=%v)", got, tc.want, addArgs)
+			}
+		})
+	}
+}
+
+// The tap is the guest's first hop and does not fragment, so it has to carry
+// the same MTU the guest was told. Leaving it at the 1500 default silently
+// drops every frame a jumbo guest sends.
+func TestOVSPlumber_SetupTap_MTU(t *testing.T) {
+	cases := []struct {
+		name string
+		mtu  int
+		want []string
+	}{
+		{"unset leaves kernel default", 0, nil},
+		{"overlay", 1442, []string{"mtu", "1442"}},
+		{"jumbo", 8942, []string{"mtu", "8942"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var upArgs []string
+			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+				if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "set" && slices.Contains(args, "up") {
+					upArgs = args
+				}
+				return exec.Command("/bin/true")
+			}))
+
+			p := NewOVSPlumber()
+			if err := p.SetupTap(vm.TapSpec{Name: "tapmtu-test", Bridge: "br-int", MTU: tc.mtu}); err != nil {
+				t.Fatalf("SetupTap: %v", err)
+			}
+			if upArgs == nil {
+				t.Fatal("no ip link set up invocation captured")
+			}
+			idx := slices.Index(upArgs, "mtu")
+			if tc.want == nil {
+				if idx >= 0 {
+					t.Errorf("mtu set for zero-MTU spec: %v", upArgs)
+				}
+				return
+			}
+			if idx < 0 || !slices.Equal(upArgs[idx:idx+2], tc.want) {
+				t.Errorf("up args = %v, want to contain %v", upArgs, tc.want)
+			}
+		})
+	}
+}
+
 // "lo" is always present so os.Stat hits the pre-create cleanup branch.
 func TestOVSPlumber_SetupTap_PreExistingKernelTap(t *testing.T) {
-	failTuntapDel := true
+	failLinkDel := true
 	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
-		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" && failTuntapDel {
-			failTuntapDel = false
+		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" && failLinkDel {
+			failLinkDel = false
 			return exec.Command("/bin/false")
 		}
 		return exec.Command("/bin/true")
@@ -152,10 +236,10 @@ func TestOVSPlumber_SetupTap_ErrorBranches(t *testing.T) {
 }
 
 func TestOVSPlumber_CleanupTap_PresentKernelTap(t *testing.T) {
-	var sawTuntapDel bool
+	var sawLinkDel bool
 	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
-		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" {
-			sawTuntapDel = true
+		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" {
+			sawLinkDel = true
 		}
 		return exec.Command("/bin/true")
 	}))
@@ -164,8 +248,33 @@ func TestOVSPlumber_CleanupTap_PresentKernelTap(t *testing.T) {
 	if err := p.CleanupTap("lo"); err != nil {
 		t.Fatalf("CleanupTap: %v", err)
 	}
-	if !sawTuntapDel {
-		t.Errorf("expected ip tuntap del to be invoked, got no call")
+	if !sawLinkDel {
+		t.Errorf("expected ip link del to be invoked, got no call")
+	}
+}
+
+// `ip tuntap del` re-opens the device with TUNSETIFF and fails with EINVAL on
+// a multi_queue tap, leaking it. Deletion must go through RTM_DELLINK, which
+// does not care how the tap was created.
+func TestOVSPlumber_TapDeletionNeverUsesTuntapDel(t *testing.T) {
+	var calls [][]string
+	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, append([]string{name}, args...))
+		return exec.Command("/bin/true")
+	}))
+
+	p := NewOVSPlumber()
+	if err := p.CleanupTap("lo"); err != nil {
+		t.Fatalf("CleanupTap: %v", err)
+	}
+	// "lo" exists, so SetupTap also takes its pre-create delete branch.
+	if err := p.SetupTap(vm.TapSpec{Name: "lo", Bridge: "br-int", Queues: 4}); err != nil {
+		t.Fatalf("SetupTap: %v", err)
+	}
+	for _, c := range calls {
+		if len(c) >= 3 && c[0] == "ip" && c[1] == "tuntap" && c[2] == "del" {
+			t.Errorf("tap deletion used `ip tuntap del`, which fails on multi_queue taps: %v", c)
+		}
 	}
 }
 
@@ -183,9 +292,9 @@ func TestOVSPlumber_CleanupTap_DelPortLoggedWarn(t *testing.T) {
 	}
 }
 
-func TestOVSPlumber_CleanupTap_TuntapDelFailure(t *testing.T) {
+func TestOVSPlumber_CleanupTap_LinkDelFailure(t *testing.T) {
 	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
-		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" {
+		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" {
 			return exec.Command("/bin/false")
 		}
 		return exec.Command("/bin/true")

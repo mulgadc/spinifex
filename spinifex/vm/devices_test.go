@@ -41,23 +41,89 @@ func TestIsMMIO(t *testing.T) {
 }
 
 func TestNetDevice_PCI(t *testing.T) {
-	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc")
-	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024", d.Value)
 }
 
 func TestNetDevice_PCI_NoMAC(t *testing.T) {
-	d := NetDevice("q35", "net0", "")
-	assert.Equal(t, "virtio-net-pci,netdev=net0", d.Value)
+	d := NetDevice("q35", "net0", "", 0, 0)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,rx_queue_size=1024", d.Value)
 }
 
 func TestNetDevice_MMIO(t *testing.T) {
-	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc")
+	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc", 1, 0)
 	assert.Equal(t, "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
 }
 
 func TestNetDevice_MMIO_NoMAC(t *testing.T) {
-	d := NetDevice("microvm,x-option-roms=off", "net0", "")
+	d := NetDevice("microvm,x-option-roms=off", "net0", "", 0, 0)
 	assert.Equal(t, "virtio-net-device,netdev=net0", d.Value)
+}
+
+// QEMU caps tx_queue_size at 256 for every backend but vhost-user/vhost-vdpa,
+// and rejects a larger value instead of clamping it, so emitting one at all
+// fails the launch with "must be a power of 2 between 256 and 256".
+func TestNetDevice_NeverSetsTxQueueSize(t *testing.T) {
+	for _, machineType := range []string{"q35", "microvm"} {
+		for _, queues := range []int{0, 1, 4, 8} {
+			d := NetDevice(machineType, "net0", "02:00:00:aa:bb:cc", queues, 1442)
+			assert.NotContains(t, d.Value, "tx_queue_size",
+				"machineType=%s queues=%d", machineType, queues)
+		}
+	}
+}
+
+// vectors must be 2N+2 (N rx + N tx + config + control). Understating it makes
+// QEMU silently fall back to fewer queues, so the arithmetic is pinned here.
+func TestNetDevice_PCI_Multiqueue(t *testing.T) {
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 4, 0)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024,mq=on,vectors=10", d.Value)
+}
+
+// MMIO has no MSI-X, so a queue count must not produce mq/vectors there.
+func TestNetDevice_MMIO_IgnoresQueues(t *testing.T) {
+	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc", 4, 0)
+	assert.Equal(t, "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:cc", d.Value)
+}
+
+func TestTapNetDev_SingleQueue(t *testing.T) {
+	nd := TapNetDev("net0", "tapabc", 1)
+	assert.Equal(t, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on", nd.Value)
+}
+
+func TestTapNetDev_Multiqueue(t *testing.T) {
+	nd := TapNetDev("net0", "tapabc", 4)
+	assert.Equal(t, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=4", nd.Value)
+}
+
+// vhost=on is unconditional: without it QEMU copies every packet on its main
+// loop, measured at 60% of a core under load against 3% with it.
+func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
+	for _, queues := range []int{0, 1, 2, 8} {
+		nd := TapNetDev("net0", "tapabc", queues)
+		assert.Contains(t, nd.Value, "vhost=on", "queues=%d", queues)
+	}
+}
+
+// Disabled means one queue whatever the vCPU count: behind IPsec, extra queues
+// only reorder packets, which TCP reads as loss.
+func TestNICQueues_SingleQueueWhenDisabled(t *testing.T) {
+	for _, vcpus := range []int{-1, 0, 1, 2, 4, 8, 96} {
+		assert.Equal(t, 1, NICQueues(vcpus, false), "vcpus=%d", vcpus)
+	}
+}
+
+func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
+	tests := []struct {
+		vcpus int
+		want  int
+	}{
+		{-1, 1}, {0, 1}, {1, 1}, {2, 2}, {4, 4}, {8, 8},
+		{16, MaxNICQueues}, {96, MaxNICQueues},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, NICQueues(tt.vcpus, true), "vcpus=%d", tt.vcpus)
+	}
 }
 
 func TestBlkDevice_PCI(t *testing.T) {
@@ -116,4 +182,23 @@ func TestVolumeBlkDeviceQMPArgs_OnErrorReport(t *testing.T) {
 	args := VolumeBlkDeviceQMPArgs("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
 	assert.Equal(t, "report", args["werror"])
 	assert.Equal(t, "report", args["rerror"])
+}
+
+// host_mtu is how a guest that never takes a DHCP lease — statically addressed,
+// or IPv6-only — still learns the overlay ceiling.
+func TestNetDevice_HostMTU(t *testing.T) {
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 1442)
+	assert.Contains(t, d.Value, "host_mtu=1442")
+
+	off := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.NotContains(t, off.Value, "host_mtu", "zero must omit the option, not emit host_mtu=0")
+}
+
+// The ring depth is a packet-rate knob, so it must reach an MMIO guest's peer
+// too — but MMIO has no MSI-X, and the queue-size options ride the PCI device.
+func TestNetDevice_MMIO_NoQueueSizes(t *testing.T) {
+	d := NetDevice("microvm", "net0", "02:00:00:aa:bb:cc", 4, 1442)
+	assert.NotContains(t, d.Value, "rx_queue_size")
+	assert.NotContains(t, d.Value, "mq=on")
+	assert.Contains(t, d.Value, "host_mtu=1442")
 }

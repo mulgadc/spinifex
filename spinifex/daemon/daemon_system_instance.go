@@ -814,7 +814,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 
 	// Wire netdevs and devices for each NIC in declaration order.
 	// Tap device creation happens later in startQEMU (host-side only here).
-	allNICs := buildNICNetdevs(instanceID, input, machineType)
+	allNICs := buildNICNetdevs(instanceID, input, machineType, d.guestOverlayMTU())
 	cfg.NetDevs = append(cfg.NetDevs, allNICs.netdevs...)
 	cfg.Devices = append(cfg.Devices, allNICs.devices...)
 
@@ -839,7 +839,7 @@ func microvmMachineType() string {
 // net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
 // are only included when corresponding ExtraENIs entries exist. A gap at
 // net1 (single-node hosts with no br-mgmt) is expected and fine for QEMU.
-func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string) nicNetdevResult {
+func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string, guestMTU int) nicNetdevResult {
 	var res nicNetdevResult
 
 	for i, nic := range input.NICs {
@@ -849,10 +849,10 @@ func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInpu
 		netID := fmt.Sprintf("net%d", i)
 		// Resolve the tap name from the corresponding ENI.
 		tapName := tapNameForNIC(i, nic, instanceID, input)
-		res.netdevs = append(res.netdevs, vm.NetDev{
-			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, tapName),
-		})
-		res.devices = append(res.devices, vm.NetDevice(machineType, netID, nic.MAC))
+		// Single-queue, matching the taps the direct-boot path pre-creates.
+		// vhost still applies: it is the datapath, not the queue count.
+		res.netdevs = append(res.netdevs, vm.TapNetDev(netID, tapName, 1))
+		res.devices = append(res.devices, vm.NetDevice(machineType, netID, nic.MAC, 1, guestMTU))
 	}
 
 	return res

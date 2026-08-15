@@ -1249,8 +1249,9 @@ func unsubscribeOwnerSubjects(volumeName string, subs []*nats.Subscription) {
 func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*viperblock.VB, int, error) {
 	s3cfg := cfg.volumeS3Config(volumeName)
 
-	// TODO: Improve based on system availability. Default 128MB cache
-	defaultCache := (128 * 1024 * 1024) / int(viperblock.DefaultBlockSize)
+	// Operator-set via [nodes.<node>.ebs] cache_size_mb. Costed per volume:
+	// one nbdkit process holds one of these, and there is one per volume.
+	defaultCache := (cfg.CacheSizeMB * 1024 * 1024) / int(viperblock.DefaultBlockSize)
 
 	vbconfig := viperblock.VB{
 		VolumeName: volumeName,
@@ -1258,7 +1259,6 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		BaseDir:    cfg.BaseDir,
 		Cache: viperblock.Cache{
 			Config: viperblock.CacheConfig{
-				// TODO: Improve, based on system memory
 				Size: defaultCache,
 			},
 		},
@@ -1293,7 +1293,7 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		}
 		nbdCacheSize = 0
 	} else {
-		slog.InfoContext(ctx, "Enabling 128MB cache for main volume", "volume", volumeName, "blocks", defaultCache)
+		slog.InfoContext(ctx, "Enabling read cache for main volume", "volume", volumeName, "mb", cfg.CacheSizeMB, "blocks", defaultCache)
 		if err := vb.SetCacheSize(defaultCache, 0); err != nil {
 			slog.ErrorContext(ctx, "Failed to set cache size", "err", err)
 		}
@@ -1439,6 +1439,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		GCEnabled:         cfg.GCEnabled,
 		EncryptionKeyFile: cfg.EncryptionKeyFile,
 		ReadOnly:          readOnly,
+		Threads:           cfg.Threads,
 	}
 
 	// Create a unique error channel for this specific mount request

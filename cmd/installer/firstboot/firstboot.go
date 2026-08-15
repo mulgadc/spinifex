@@ -146,6 +146,21 @@ hostnamectl set-hostname %s
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolvconf/resolv.conf.d/base
 resolvconf -u
 
+# The RTC on a fresh machine can be badly wrong — a flat CMOS battery is routine
+# on refurbished hardware. Credentials and TLS certificates are minted further
+# down, and a certificate issued against a wrong clock carries a NotBefore that
+# outlives the correction, so the clock has to be right before that happens.
+# chronyd is already running; makestep forces an immediate correction instead of
+# waiting out the slew. Bounded and non-fatal: an air-gapped install must still
+# complete, and rtcsync writes the corrected time back so later boots start close.
+echo "[firstboot] syncing clock before credentials are minted"
+chronyc -a makestep >/dev/null 2>&1 || true
+if chronyc waitsync 12 0.1 0 5 >/dev/null 2>&1; then
+    echo "[firstboot] clock synced: $(date -uIs)"
+else
+    echo "[firstboot] WARNING: clock not synced, continuing with $(date -uIs)"
+fi
+
 # Configure OVN networking.
 # br-wan (and br-lan if present) are Linux bridges managed by systemd-networkd
 # (declared in /etc/systemd/network/ by the installer). setup-ovn.sh
@@ -207,6 +222,12 @@ fi
 
 # Enable services to start, on reboot
 systemctl enable spinifex.target spinifex-banner.service
+# setup.sh enables this on the package install path, but the ISO chroot returns
+# before that line (no systemd to talk to), so the ISO needs it here. An nft
+# ruleset is runtime state and does not survive a reboot; without this the unit
+# never reapplies the policy and the node comes back up open. Enabled, not
+# started: ConditionPathExists holds it inert until the daemon writes a peer file.
+systemctl enable spinifex-firewall.service
 # WantedBy=timers.target only self-activates once enabled — without this the
 # JetStream ENOSPC-latch watchdog never runs and a full disk needs a manual restart.
 systemctl enable --now spinifex-nats-watchdog.timer

@@ -27,9 +27,25 @@ var firewallApplyHelper = "/usr/local/lib/spinifex/spinifex-firewall-apply"
 // firewallPeersPath is read (not written) here to skip a no-op reconcile.
 var firewallPeersPath = "/etc/spinifex/firewall/peers.nft"
 
+// firewallModePath records the choice the install path made: "on" for the ISO,
+// "off" for a curl-to-bash install onto a machine that was already doing
+// something. Absent on every node installed before the flag existed, which is
+// why its absence means "on" rather than "off".
+var firewallModePath = "/etc/spinifex/firewall/mode"
+
+// firewallTableCheck reports whether spinifex's own table is loaded. A var so
+// tests can stand in for the ruleset. Read-only, so it needs no sudo grant.
+var firewallTableCheck = func() bool {
+	return exec.Command("nft", "list", "table", "inet", "spinifex_filter").Run() == nil
+}
+
 // natsRoutePattern pulls the address out of a nats-route:// URL, whose userinfo
 // carries the cluster token and must not be mistaken for the host.
 var natsRoutePattern = regexp.MustCompile(`nats-route://(?:[^@/]*@)?([0-9.]+):\d+`)
+
+// encapDefinePattern reads back the tunnel set from a peer file this package
+// rendered, so the two must keep the same shape.
+var encapDefinePattern = regexp.MustCompile(`define spinifex_encap_peers = \{ ([^}]*) \}`)
 
 // ovnEncapCommand is a var so tests can stand in for the Southbound query.
 // Unprivileged: the remote is TCP, so this needs no local socket and no sudo
@@ -60,6 +76,15 @@ var firewallReconcileInterval = 5 * time.Minute
 // until something happens to restart the daemon; and without the periodic
 // re-run a membership change is never picked up at all.
 func MaintainFirewall(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig) {
+	// Said once, because both quiet outcomes reconcile to nothing and log
+	// nothing, which in a journal is indistinguishable from a node that armed.
+	switch {
+	case clusterConfig == nil:
+		slog.Info("firewall: membership unknown, leaving any loaded policy alone")
+	case !firewallWanted(clusterConfig):
+		slog.Info("firewall: switched off for this node, no peer set will be written")
+	}
+
 	delay := firewallRetryDelay
 	for {
 		if err := ReconcileFirewall(configPath, clusterConfig); err != nil {
@@ -93,28 +118,39 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 	// Off means off on a node that was previously on, not merely "skip": leaving
 	// a stale drop policy loaded after an operator disables it would be the kind
 	// of surprise the toggle exists to avoid.
-	if !clusterConfig.Network.FirewallEnabled {
+	if !firewallWanted(clusterConfig) {
 		return disableFirewall()
 	}
 
 	// Encap addresses are not in the cluster config, and guessing them from the
 	// lan plane would drop Geneve on any node whose vpc bridge is genuinely
-	// separate. The Southbound Encap table is authoritative, so when it cannot
-	// be read the reconcile is skipped rather than narrowed onto a guess.
-	encap, err := ovnEncapAddrs(clusterConfig)
-	if err != nil {
-		return fmt.Errorf("read OVN encap addresses: %w", err)
-	}
-
+	// separate. The Southbound Encap table is authoritative, so a set that
+	// cannot be read is never narrowed onto a guess.
+	//
 	// Every chassis, or none. Chassis register as each node's ovn-controller
 	// starts, so a partial answer is the normal state early in a bootstrap, and
 	// writing it would drop Geneve from every node not yet in it. More than
 	// expected is fine — a decommissioned chassis lingering in the DB only makes
-	// the set wider. Waiting costs nothing: the node stays open until the set is
-	// known good, which is the same fail-open posture as the rest of this.
-	if expected := len(clusterConfig.Nodes); len(encap) < expected {
-		return fmt.Errorf("OVN reports %d of %d chassis encap addresses; not writing a partial peer set",
-			len(encap), expected)
+	// the set wider.
+	encap, encapErr := ovnEncapAddrs(clusterConfig)
+	if encapErr == nil {
+		if expected := len(clusterConfig.Nodes); len(encap) < expected {
+			encapErr = fmt.Errorf("OVN reports %d of %d chassis encap addresses", len(encap), expected)
+		}
+	}
+
+	if encapErr != nil {
+		// Waiting costs nothing on a node with no policy loaded: it stays open
+		// until the set is known good. It costs everything on a node armed for a
+		// smaller cluster, because the ports a joining node needs in order to
+		// register its chassis are the ones that stale set is blocking — so the
+		// chassis list can never complete, and the wait deadlocks. Hold the
+		// tunnel set already loaded and let the peer set widen without it.
+		loaded, ok := loadedEncapPeers()
+		if !ok {
+			return fmt.Errorf("read OVN encap addresses: %w", encapErr)
+		}
+		encap = loaded
 	}
 
 	peers := clusterPeerAddrs(configPath, clusterConfig, encap)
@@ -122,8 +158,12 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 		return nil
 	}
 
+	// An unchanged peer file is only a reason to skip if the policy it describes
+	// is actually loaded. A ruleset is runtime state and does not survive a
+	// reboot, so on a node whose boot-time unit is absent, masked or failed this
+	// is the only thing that puts the policy back.
 	desired := renderPeersFile(peers, encap)
-	if current, err := os.ReadFile(firewallPeersPath); err == nil && string(current) == desired {
+	if current, err := os.ReadFile(firewallPeersPath); err == nil && string(current) == desired && firewallTableCheck() {
 		return nil
 	}
 
@@ -134,7 +174,54 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 	}
 
 	slog.Info("firewall: peer sets reconciled", "peers", len(peers), "encap_peers", len(encap))
+
+	// Widened on a held-over tunnel set, so this is not converged yet: report it
+	// and let the caller's backoff retry sooner than the steady-state interval.
+	// Geneve to a node that has just joined stays blocked until it does.
+	if encapErr != nil {
+		return fmt.Errorf("peer set widened but tunnel set held over: %w", encapErr)
+	}
 	return nil
+}
+
+// loadedEncapPeers reads the tunnel endpoints back out of the peer file the
+// daemon last wrote. A readable file with a usable set is also the signal that
+// this node is already armed, which is the case the caller needs to tell apart.
+func loadedEncapPeers() ([]string, bool) {
+	data, err := os.ReadFile(firewallPeersPath)
+	if err != nil {
+		return nil, false
+	}
+	match := encapDefinePattern.FindSubmatch(data)
+	if match == nil {
+		return nil, false
+	}
+
+	var out []string
+	for field := range strings.SplitSeq(string(match[1]), ",") {
+		if addr := strings.TrimSpace(field); isPlainIPv4(addr) {
+			out = append(out, addr)
+		}
+	}
+	return out, len(out) > 0
+}
+
+// firewallWanted resolves whether the policy should be armed on this node.
+// Explicit config wins, then the install path's choice, then on.
+//
+// The order matters in one direction in particular: a node installed before the
+// mode file existed has neither, and must keep the policy it already has. That
+// is why the final fallback is on and not off.
+func firewallWanted(clusterConfig *config.ClusterConfig) bool {
+	if v := clusterConfig.Network.FirewallEnabled; v != nil {
+		return *v
+	}
+
+	mode, err := os.ReadFile(firewallModePath)
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(mode)) != "off"
 }
 
 // disableFirewall removes only spinifex's own table. A no-op when it was never

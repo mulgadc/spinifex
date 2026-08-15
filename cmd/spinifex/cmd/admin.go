@@ -26,8 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -42,6 +41,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -569,9 +569,11 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// Create the specified image directory
 	imagePath := fmt.Sprintf("%s/%s/%s/%s", imageDir, image.Distro, image.Version, image.Arch)
 
-	// Create config directory
-	if err := os.MkdirAll(imagePath, 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
+	// 0770, matching the root:spinifex convention setup.sh gives the shared data
+	// dirs. At 0700 the first sudo import leaves a directory no group member can
+	// descend into, so every later import without sudo fails on mkdir.
+	if err := os.MkdirAll(imagePath, 0770); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating image directory %s: %v\n", imagePath, err)
 		os.Exit(1)
 	}
 
@@ -1330,18 +1332,32 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if masterKeyExisted {
 		// Preserve path: reuse the existing identity. The system credentials must
 		// match what seeded the NATS KV `system` secret, so load them rather than
-		// mint new ones. The admin credentials are not recovered: bootstrap.json is
-		// consumed and deleted by awsgw after first boot, and the operator's copy
-		// already lives in ~/.aws/credentials. Leaving them empty makes
-		// finalizeNodeSetup refresh only ~/.aws/config (endpoint/CA for a changed
-		// bind IP), not the credentials.
+		// mint new ones.
 		accessKey, secretKey, err = loadSystemCredentials(configDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("\n🔐 Preserved existing identity (master key, credentials and CA unchanged)")
+
+		// The admin pair is minted afresh rather than preserved, because it cannot
+		// be read back: bootstrap.json is consumed and deleted by awsgw on first
+		// start. The half of the identity that survives a re-init is on local disk,
+		// but the IAM store lives in NATS and predastore — so forming a cluster out
+		// of already-initialized nodes rebuilds it and the old access key stops
+		// existing. Carrying an empty pair through instead is worse than useless:
+		// it reaches every joiner's bootstrap.json, where seeding rejects the empty
+		// key ID and awsgw fails to start on every restart, forever.
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+
+		fmt.Println("\n🔐 Preserved existing identity (master key and CA unchanged)")
 		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Admin credentials reissued in %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 	} else {
 		// Fresh install: mint system + admin credentials and seed the bootstrap files.
 		accessKey, err = admin.GenerateAWSAccessKey()
@@ -1796,6 +1812,10 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
+	// The host firewall scopes this port to known peers, and a node joining is
+	// not one yet. Closed again on every exit below.
+	closeFormationPort := openFormationPort(port)
+
 	fmt.Printf("\n📡 Formation server started on %s\n", formationAddr)
 	fmt.Printf("   Waiting for %d more node(s) to join...\n", expectedNodes-1)
 	fmt.Printf("   Token expires in %s\n\n", tokenTTL)
@@ -1806,6 +1826,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	if err := fs.WaitForCompletion(formationTimeout); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		fs.Shutdown(context.Background())
+		closeFormationPort()
 		os.Remove(tokenPath)
 		os.Exit(1)
 	}
@@ -1924,6 +1945,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	// Shutdown formation server
 	fs.Shutdown(context.Background())
+	closeFormationPort()
 	if err := os.Remove(tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Warn("Failed to remove join token file", "path", tokenPath, "error", err)
 	}
@@ -2577,12 +2599,23 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 	return svc, cfg, nc, func() { nc.Close() }, nil
 }
 
-// adminAccessPolicyDocument is the AdministratorAccess policy document that
-// grants full access to all actions and resources.
-const adminAccessPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
+// openAccountNameIndex opens the account-name reservation index over an
+// existing NATS connection.
+func openAccountNameIndex(ctx context.Context, nc *nats.Conn) (*handlers_iam.AccountNameIndex, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("get JetStream context: %w", err)
+	}
+	return handlers_iam.NewAccountNameIndex(ctx, js)
+}
 
 func runAccountCreate(cmd *cobra.Command, args []string) {
 	name, _ := cmd.Flags().GetString("name")
+
+	if remote, _ := cmd.Flags().GetBool("remote"); remote {
+		runAccountCreateRemote(cmd, name)
+		return
+	}
 
 	svc, cfg, nc, cleanup, err := initIAMServiceFromConfig()
 	if err != nil {
@@ -2591,60 +2624,73 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	}
 	defer cleanup()
 
-	// 1. Create the account
-	account, err := svc.CreateAccount(name)
+	ctx := context.Background()
+
+	// Reject a duplicate before allocating an account ID. CreateAccount does not
+	// check names, so without this two runs of the same command silently produce
+	// two accounts that differ only by ID.
+	existing, err := handlers_iam.FindAccountByName(svc, name)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking existing accounts: %v\n", err)
+		os.Exit(1)
+	}
+	if existing != nil {
+		fmt.Fprintf(os.Stderr, "Error: account %q already exists (account ID %s)\n",
+			existing.AccountName, existing.AccountID)
+		os.Exit(1)
+	}
+
+	// Reserve the name so a concurrent create — including one through
+	// /admin/CreateAccount — cannot take it between the check above and the
+	// create below. The CLI has no client token, so it owns the reservation by
+	// a per-invocation identifier.
+	names, err := openAccountNameIndex(ctx, nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	reservationOwner := "spx-cli-" + uuid.NewString()
+	switch err := names.Reserve(ctx, name, reservationOwner); {
+	case errors.Is(err, handlers_iam.ErrNameTaken):
+		fmt.Fprintf(os.Stderr, "Error: account %q already exists\n", name)
+		os.Exit(1)
+	case errors.Is(err, handlers_iam.ErrNameInFlight):
+		fmt.Fprintf(os.Stderr, "Error: another account creation for %q is in progress\n", name)
+		os.Exit(1)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "Error reserving account name: %v\n", err)
+		os.Exit(1)
+	}
+
+	account, err := svc.CreateAccount(handlers_iam.NormalizeAccountName(name))
+	if err != nil {
+		if relErr := names.Release(ctx, name, reservationOwner); relErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not release name reservation: %v\n", relErr)
+		}
 		fmt.Fprintf(os.Stderr, "Error creating account: %v\n", err)
 		os.Exit(1)
 	}
 	accountID := account.AccountID
 
+	if err := names.Commit(ctx, name, accountID, reservationOwner); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not index account name: %v\n", err)
+	}
+
 	// Create default VPC for the new account (belt-and-suspenders: daemon also
 	// does this via iam.account.created event, but daemon may not be running).
 	nodeConfig := cfg.Nodes[cfg.Node]
-	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(context.Background(), &nodeConfig, nc)
+	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(ctx, &nodeConfig, nc)
 	if vpcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC service: %v\n", vpcErr)
 	} else if _, vpcErr = vpcSvc.EnsureDefaultVPC(accountID); vpcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC: %v\n", vpcErr)
 	}
 
-	// 2. Create admin user
-	_, err = svc.CreateUser(accountID, &iam.CreateUserInput{
-		UserName: aws.String("admin"),
-	})
+	// Shared with /admin/CreateAccount so the CLI and the remote endpoint cannot
+	// drift in what an account is made of.
+	provisioned, err := handlers_iam.ProvisionAccount(svc, accountID, account.AccountName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating admin user: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 3. Create access key for admin user
-	akOut, err := svc.CreateAccessKey(accountID, &iam.CreateAccessKeyInput{
-		UserName: aws.String("admin"),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating access key: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 4. Create AdministratorAccess policy scoped to this account
-	policyARN := fmt.Sprintf("arn:aws:iam::%s:policy/AdministratorAccess", accountID)
-	_, err = svc.CreatePolicy(accountID, &iam.CreatePolicyInput{
-		PolicyName:     aws.String("AdministratorAccess"),
-		PolicyDocument: aws.String(adminAccessPolicyDocument),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating admin policy: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 5. Attach policy to admin user
-	_, err = svc.AttachUserPolicy(accountID, &iam.AttachUserPolicyInput{
-		UserName:  aws.String("admin"),
-		PolicyArn: aws.String(policyARN),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error attaching policy: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error provisioning account: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -2666,8 +2712,8 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	configPath := filepath.Join(homeDir, ".aws", "config")
 
 	if err := admin.UpdateAWSINIFile(credPath, profileName, map[string]string{
-		"aws_access_key_id":     *akOut.AccessKey.AccessKeyId,
-		"aws_secret_access_key": *akOut.AccessKey.SecretAccessKey,
+		"aws_access_key_id":     provisioned.AccessKeyID,
+		"aws_secret_access_key": provisioned.SecretAccessKey,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not update AWS credentials: %v\n", err)
 	}
@@ -2687,10 +2733,10 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	// Print credentials
 	fmt.Println("\nAccount created successfully!")
 	fmt.Printf("  Account ID:        %s\n", accountID)
-	fmt.Printf("  Account Name:      %s\n", name)
-	fmt.Printf("  Admin User:        admin\n")
-	fmt.Printf("  Access Key ID:     %s\n", *akOut.AccessKey.AccessKeyId)
-	fmt.Printf("  Secret Access Key: %s\n", *akOut.AccessKey.SecretAccessKey)
+	fmt.Printf("  Account Name:      %s\n", provisioned.AccountName)
+	fmt.Printf("  Admin User:        %s\n", provisioned.AdminUser)
+	fmt.Printf("  Access Key ID:     %s\n", provisioned.AccessKeyID)
+	fmt.Printf("  Secret Access Key: %s\n", provisioned.SecretAccessKey)
 	fmt.Printf("  AWS Profile:       %s\n", profileName)
 	fmt.Println("\nUse with:")
 	fmt.Printf("  AWS_PROFILE=%s aws ec2 describe-instances\n", profileName)

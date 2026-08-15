@@ -25,6 +25,12 @@ var (
 // ErrClusterUnavailable is returned when the NATS connection is not currently connected.
 var ErrClusterUnavailable = errors.New("cluster unavailable: NATS disconnected")
 
+// SubjectEnsureDefaultVpc is the request/reply subject on which the daemon
+// builds an account's default VPC and acknowledges. It lives here rather than
+// beside either party so the gateway does not import the daemon, nor the
+// reverse.
+const SubjectEnsureDefaultVpc = "ec2.EnsureDefaultVpc"
+
 // LoadCertPool reads a PEM CA certificate from path and returns a pool
 // trusting exactly it. Shared by every caller that verifies a peer against
 // the cluster CA (e.g. /etc/spinifex/ca.pem) rather than the system trust

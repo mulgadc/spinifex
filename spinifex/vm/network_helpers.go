@@ -13,10 +13,17 @@ import (
 // TapSpec parameterises a single tap-on-OVS-bridge plumbing operation.
 // VPC taps populate ExternalIDs (iface-id, attached-mac) for OVN binding;
 // management taps leave it nil since br-mgmt is a plain L2 standalone bridge.
+// Queues > 1 creates the tap multi-queue, which a netdev asking for the same
+// count requires; the two must agree or QEMU falls back to one queue.
 type TapSpec struct {
 	Name        string
 	Bridge      string
 	ExternalIDs map[string]string
+	Queues      int
+	// MTU is the host-side ceiling on the tap. It must match the figure the
+	// guest is given, or the larger of the two silently drops frames: the tap
+	// is the first hop and does not fragment. Zero leaves the kernel default.
+	MTU int
 }
 
 // TapDeviceName returns the Linux tap device name for an ENI.
@@ -50,10 +57,14 @@ func OVSIfaceID(eniID string) string {
 
 // VPCTapSpec returns the TapSpec for a VPC ENI's tap on br-int. The
 // external_ids carry the OVN binding (iface-id) and the kernel-attached MAC.
-func VPCTapSpec(eniID, mac string) TapSpec {
+// queues must match the count the matching netdev asks for, and mtu the
+// figure advertised to the guest.
+func VPCTapSpec(eniID, mac string, queues, mtu int) TapSpec {
 	return TapSpec{
 		Name:   TapDeviceName(eniID),
 		Bridge: "br-int",
+		Queues: queues,
+		MTU:    mtu,
 		ExternalIDs: map[string]string{
 			"iface-id":     OVSIfaceID(eniID),
 			"attached-mac": mac,
@@ -69,10 +80,14 @@ const IMDSBridgeName = "br-imds"
 // IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds, where
 // its egress meets the IMDS demux flows. It carries no external_ids — the
 // br-imds<->br-int patch's br-int end carries the OVN iface-id binding instead.
-func IMDSPrimaryTapSpec(eniID string) TapSpec {
+// queues must match the count the matching netdev asks for, and mtu the
+// figure advertised to the guest.
+func IMDSPrimaryTapSpec(eniID string, queues, mtu int) TapSpec {
 	return TapSpec{
 		Name:   TapDeviceName(eniID),
 		Bridge: IMDSBridgeName,
+		Queues: queues,
+		MTU:    mtu,
 	}
 }
 
@@ -140,18 +155,17 @@ func (m *Manager) setupExtraENINICs(instance *VM) error {
 	if m.deps.NetworkPlumber == nil {
 		return nil
 	}
+	queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
 	for idx, extra := range instance.ExtraENIs {
-		spec := VPCTapSpec(extra.ENIID, extra.ENIMac)
+		spec := VPCTapSpec(extra.ENIID, extra.ENIMac, queues, m.deps.GuestMTU)
 		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 			slog.Error("Failed to set up tap device for extra ENI", "eni", extra.ENIID, "err", err)
 			return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
 		}
 		extraTapName := spec.Name
 		netID := fmt.Sprintf("net%d", idx+1)
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, extraTapName),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, netID, extra.ENIMac))
+		instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev(netID, extraTapName, queues))
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, netID, extra.ENIMac, queues, m.deps.GuestMTU))
 		slog.Info("Extra VPC NIC configured",
 			"tap", extraTapName, "eni", extra.ENIID, "mac", extra.ENIMac, "subnet", extra.SubnetID)
 	}

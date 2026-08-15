@@ -163,6 +163,12 @@ type GatewayConfig struct {
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
 	BedrockGuardrails *gateway_bedrock.GuardrailStore
+
+	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
+	// to exist. Zero means uncapped, which is the behaviour of every cluster
+	// that has not opted into self-service signup.
+	SignupMaxAccounts int
+
 	// BedrockAgentKB and BedrockAgentDataSources persist bedrock-agent
 	// knowledge-base and data-source resource metadata (D-arch: gateway-owned,
 	// not the daemon-owned vector engine). Nil for either fails
@@ -267,6 +273,11 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 				gw.writeThrottleError,
 			))
 		}
+
+		// Private super-admin surface. A distinct path prefix rather than an
+		// Action on the spinifex namespace, so the edge proxy can restrict it
+		// by location without parsing a signed request body.
+		auth.HandleFunc("/admin/{method}", gw.Admin_Request)
 
 		auth.HandleFunc("/*", gw.Request)
 	})

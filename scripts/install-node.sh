@@ -37,8 +37,17 @@
 #                            Confirmed separately from --yes; unattended runs
 #                            must set SPX_WIPE_CONFIRM=wipe.
 #   --smoke                  Run smoke-test.sh --create-vpc on the first host
+#   --no-firewall            Leave the host firewall alone, for debugging
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
+#
+# THE HOST FIREWALL
+#
+# Nodes installed from the ISO boot armed, scoped to the only cluster member
+# they know: themselves. Forming a cluster means talking to hosts that are not
+# members yet, so the policy is taken down before the OVN database cluster is
+# built and put back once the cluster is up. Skipping this does not produce a
+# slow formation, it produces one that cannot happen at all.
 #
 # WHAT THIS DESTROYS
 #
@@ -70,6 +79,7 @@ PORT=4432
 TOKEN_TTL="30m"
 RUN_SMOKE=false
 WIPE=false
+MANAGE_FIREWALL=true
 ASSUME_YES=false
 DRY_RUN=false
 
@@ -77,6 +87,17 @@ DRY_RUN=false
 # once the last node has joined.
 TOKEN_TIMEOUT=180
 FORMATION_TIMEOUT=600
+
+# How long to wait for every node to re-arm from the formed cluster. The daemon
+# retries on a backoff that widens to five minutes, but the restart below puts
+# it at the short end of that.
+FIREWALL_TIMEOUT=180
+
+# How long to wait for every ovn-controller to register its chassis.
+CHASSIS_TIMEOUT=120
+
+FIREWALL_HELPER="/usr/local/lib/spinifex/spinifex-firewall-apply"
+FIREWALL_PEERS="/etc/spinifex/firewall/peers.nft"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -103,9 +124,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --smoke)        RUN_SMOKE=true; shift ;;
         --wipe)         WIPE=true; shift ;;
+        --no-firewall)  MANAGE_FIREWALL=false; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -346,6 +368,34 @@ for host in "${HOSTS[@]}"; do
     on "$host" "sudo systemctl stop spinifex.target" || fail "$host: could not stop spinifex.target"
 done
 
+# --- Disarm the host firewall ----------------------------------------------
+#
+# The policy lives in the kernel and outlives the services, so stopping the
+# target above did not touch it. Every ISO node is armed for a cluster of one,
+# which blocks the OVN raft ports the next phase needs: nodes 2 and 3 dial the
+# first host on 6643/6644 and it does not recognise them yet. `disable` is
+# idempotent, so a node that never had a policy is left alone.
+
+declare -a WAS_ARMED
+for i in $(seq 0 $((N - 1))); do WAS_ARMED[i]=false; done
+
+if $MANAGE_FIREWALL; then
+    log "disarming the host firewall while the cluster forms"
+    for i in $(seq 0 $((N - 1))); do
+        host="${HOSTS[$i]}"
+        if [ "$(out "$host" "sudo test -r $FIREWALL_PEERS && echo armed")" = "armed" ]; then
+            WAS_ARMED[i]=true
+        fi
+        on "$host" "if [ -x $FIREWALL_HELPER ]; then sudo $FIREWALL_HELPER disable; fi" ||
+            fail "$host: could not disarm the host firewall"
+        if ${WAS_ARMED[$i]}; then
+            log "  $host disarmed"
+        else
+            log "  $host had no policy loaded"
+        fi
+    done
+fi
+
 # --- Wipe ------------------------------------------------------------------
 #
 # node-reset.sh is not part of the release tarball, so it is pushed from this
@@ -396,10 +446,20 @@ done
 log "building the OVN database ($([ "$DB_NODES" -eq 3 ] && echo "RAFT across 3" || echo standalone))"
 
 if [ "$DB_NODES" -eq 3 ]; then
+    # Computed before the database nodes are built, not after, because they need
+    # it too. setup-ovn.sh writes ovn-northd's NB/SB connections from this list
+    # and skips doing so when it is the localhost default, which is what a
+    # database node gets when --ovn-remote is left off. A northd that dials only
+    # its local member stops advancing nb_cfg the moment raft leadership moves
+    # elsewhere, and every `ovn-nbctl --wait=hv` then runs to its timeout — which
+    # takes out the vpc.add-nat flows barrier and fails instance launches.
+    OVN_REMOTE="tcp:${LAN_IPS[0]}:6642,tcp:${LAN_IPS[1]}:6642,tcp:${LAN_IPS[2]}:6642"
+
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
         --db-cluster-local-addr=${LAN_IPS[0]} \
         --lan-addr=${LAN_IPS[0]} \
+        --ovn-remote=$OVN_REMOTE \
         --recreate-db \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: could not create the OVN database cluster"
     log "  ${HOSTS[0]} created the database cluster"
@@ -410,12 +470,11 @@ if [ "$DB_NODES" -eq 3 ]; then
             --db-cluster-local-addr=${LAN_IPS[$i]} \
             --db-cluster-remote-addr=${LAN_IPS[0]} \
             --lan-addr=${LAN_IPS[$i]} \
+            --ovn-remote=$OVN_REMOTE \
             --recreate-db \
             --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: could not join the OVN database cluster"
         log "  ${HOSTS[$i]} joined the database cluster"
     done
-
-    OVN_REMOTE="tcp:${LAN_IPS[0]}:6642,tcp:${LAN_IPS[1]}:6642,tcp:${LAN_IPS[2]}:6642"
 else
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
@@ -543,7 +602,11 @@ fi
 
 log "starting spinifex.target on every host"
 for host in "${HOSTS[@]}"; do
-    on "$host" "sudo systemctl start spinifex.target" || fail "$host: could not start spinifex.target"
+    # --no-block, because a blocking start never returns on a host whose services
+    # cannot come up: they land in a restart loop and systemd waits on the job
+    # indefinitely. Verify below is what decides whether the start worked.
+    on "$host" "sudo systemctl start --no-block spinifex.target" ||
+        fail "$host: could not start spinifex.target"
 done
 
 if $DRY_RUN; then
@@ -582,30 +645,129 @@ if [ "$DB_NODES" -eq 3 ]; then
     log "  OVN Northbound: 3 members, $(grep -oiE '^Role: .*' <<<"$status" | head -1)"
 fi
 
-sb=$(out "${HOSTS[0]}" "sudo ovn-sbctl show 2>/dev/null")
-chassis=$(grep -c '^Chassis' <<<"$sb" || true)
-log "  OVN Southbound: $chassis chassis registered (expected $N)"
+# sb_show — the Southbound contents, read in a way that works on a clustered
+# database. Two things make the obvious `ovn-sbctl show` wrong here: a clustered
+# DB has no unix socket to fall back on, and a follower refuses to answer at all
+# unless leader-only is turned off. Both fail by printing to stderr and exiting
+# non-zero, so a naive read looks exactly like a cluster with no chassis at all.
+sb_show() {
+    out "${HOSTS[0]}" \
+        "sudo ovn-sbctl --db=tcp:${LAN_IPS[0]}:6642 --no-leader-only show 2>/dev/null ||
+         sudo ovn-sbctl --no-leader-only show 2>/dev/null"
+}
 
-# Each chassis must be named for its node, not left on a UUID: that name is the
-# IPsec peer identity, so a mismatch here is a cluster whose Geneve tunnels will
-# not authenticate.
-for name in "${NODE_NAMES[@]}"; do
-    grep -q "^Chassis \"\?$name\"\?" <<<"$sb" ||
-        log "  WARNING: no chassis named '$name' in the Southbound DB. ovn-controller may
-       still be registering — if it persists, IPsec will fail to authenticate.
-       Check 'sudo ovs-vsctl get Open_vSwitch . external_ids:system-id' on that host."
+# ovn-controller registers its chassis a moment after it connects, so this is
+# worth a few retries before it means anything.
+sb=""
+chassis=0
+elapsed=0
+while [ "$elapsed" -lt "$CHASSIS_TIMEOUT" ]; do
+    sb=$(sb_show)
+    chassis=$(grep -c '^Chassis' <<<"$sb" || true)
+    [ "$chassis" -eq "$N" ] && break
+    sleep 5
+    elapsed=$((elapsed + 5))
 done
 
-# --- Host firewall ---------------------------------------------------------
-#
-# Not applied here. spinifex-daemon reconciles the peer sets from cluster
-# membership on every startup, so it also picks up nodes added or replaced after
-# formation, which a one-shot write from this script would not.
+[ -n "$sb" ] ||
+    fail "cannot read the OVN Southbound database from ${HOSTS[0]}.
+       Try 'sudo ovn-sbctl --db=tcp:${LAN_IPS[0]}:6642 --no-leader-only show' there."
 
-echo ""
-log "host firewall: reconciled by spinifex-daemon from cluster membership."
-log "               Check with 'sudo nft list table inet spinifex_filter' on a node,"
-log "               or disable it cluster-wide with network.firewall_enabled = false."
+# The chassis name is the IPsec peer identity, so a chassis left on its
+# package-generated UUID authenticates as a name no certificate carries and
+# every Geneve tunnel to it fails. A missing one means that node has no overlay
+# networking, which is worth stopping for rather than noting in passing.
+missing_chassis=""
+for name in "${NODE_NAMES[@]}"; do
+    grep -q "^Chassis \"\?$name\"\?" <<<"$sb" || missing_chassis+=" $name"
+done
+[ -z "$missing_chassis" ] ||
+    fail "no chassis registered for:$missing_chassis (found $chassis of $N)
+       Those nodes have no overlay networking. Check 'systemctl status ovn-controller'
+       and 'sudo ovs-vsctl get Open_vSwitch . external_ids:system-id' on them."
+
+log "  OVN Southbound: $chassis chassis registered"
+
+# --- Re-arm the host firewall ----------------------------------------------
+#
+# The daemon derives the peer sets from cluster membership, so starting the
+# target above already armed each node for the cluster it is now part of. The
+# restart is for timing rather than correctness: it puts reconciliation at the
+# short end of a backoff that widens to five minutes.
+#
+# Only nodes that arrived armed are re-armed and checked. One that had the
+# policy switched off by config should stay off, and re-arming it here would be
+# this script quietly overriding that.
+
+# fw_set <host> <define> — addresses in one define of the peer file the daemon
+# wrote. The file is the daemon's own statement of what it believes the cluster
+# to be, which is what needs checking; the loaded table is verified separately.
+fw_set() {
+    out "$1" "sudo grep -oP 'define $2 = \{ \K[^}]*' $FIREWALL_PEERS" |
+        tr ',' '\n' | tr -d ' \r' | grep . || true
+}
+
+if $MANAGE_FIREWALL; then
+    echo ""
+    log "re-arming the host firewall"
+    for host in "${HOSTS[@]}"; do
+        on "$host" "sudo systemctl restart spinifex-daemon" ||
+            fail "$host: could not restart spinifex-daemon to re-arm the firewall"
+    done
+
+    # Every plane address of every node, which is what each node's peer set has
+    # to cover: the policy matches on source address, so a node reaching a peer
+    # over its lan plane is a different rule hit than over its wan plane.
+    EXPECTED_PEERS=$(printf '%s\n' "${WAN_IPS[@]}" "${LAN_IPS[@]}" "${VPC_IPS[@]}" | sort -u)
+
+    for i in $(seq 0 $((N - 1))); do
+        host="${HOSTS[$i]}"
+        if ! ${WAS_ARMED[$i]}; then
+            log "  $host: firewall was not armed before forming, leaving it off"
+            continue
+        fi
+
+        elapsed=0
+        missing=""
+        encap_count=0
+        while [ "$elapsed" -lt "$FIREWALL_TIMEOUT" ]; do
+            loaded=$(fw_set "$host" spinifex_peers)
+            encap_count=$(fw_set "$host" spinifex_encap_peers | grep -c . || true)
+
+            missing=""
+            while IFS= read -r addr; do
+                grep -qxF "$addr" <<<"$loaded" || missing+=" $addr"
+            done <<<"$EXPECTED_PEERS"
+
+            [ -z "$missing" ] && [ "$encap_count" -eq "$N" ] && break
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+
+        # A node missing from a peer set is not cosmetic: that node's cluster
+        # traffic is being dropped, and the cluster is degraded in a way nothing
+        # else reports until something fails hours later.
+        [ -z "$missing" ] ||
+            fail "$host: firewall peer set is missing$missing
+       This node will drop cluster traffic from those addresses. Check
+       'journalctl -u spinifex-daemon' on it for a reconcile that did not complete."
+        [ "$encap_count" -eq "$N" ] ||
+            fail "$host: firewall tunnel set has $encap_count of $N chassis addresses.
+       Geneve to the missing nodes is blocked. ovn-controller may still be
+       registering — check 'sudo ovn-sbctl show'."
+
+        out "$host" "sudo nft list table inet spinifex_filter >/dev/null 2>&1 && echo loaded" |
+            grep -q loaded ||
+            fail "$host: the peer file is correct but no policy is loaded in the kernel.
+       Check 'sudo systemctl status spinifex-firewall.service'."
+
+        log "  $host armed: $(grep -c . <<<"$loaded") peers, $encap_count tunnel endpoints"
+    done
+else
+    echo ""
+    log "host firewall: left alone (--no-firewall). If these nodes arrived armed they"
+    log "               are still scoped to themselves and will drop cluster traffic."
+fi
 
 # The pool is the one thing the operator supplied by hand and the one thing
 # nothing else validates, so print what actually landed. dns_servers in

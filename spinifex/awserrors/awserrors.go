@@ -12,6 +12,7 @@ type ErrorMessage struct {
 }
 
 var (
+	ErrorAccountAlreadyExists                                  = "AccountAlreadyExists"
 	ErrorAccountDisabled                                       = "AccountDisabled"
 	ErrorActiveVpcPeeringConnectionPerVpcLimitExceeded         = "ActiveVpcPeeringConnectionPerVpcLimitExceeded"
 	ErrorAddressLimitExceeded                                  = "AddressLimitExceeded"
@@ -327,6 +328,7 @@ var (
 	ErrorLogDestinationNotFound                               = "LogDestinationNotFound"
 	ErrorLogDestinationPermissionIssue                        = "LogDestinationPermissionIssue"
 	ErrorMalformedQueryString                                 = "MalformedQueryString"
+	ErrorMethodNotAllowed                                     = "MethodNotAllowed"
 	ErrorMaxConfigLimitExceededException                      = "MaxConfigLimitExceededException"
 	ErrorMaxIOPSLimitExceeded                                 = "MaxIOPSLimitExceeded"
 	ErrorMaxScheduledInstanceCapacityExceeded                 = "MaxScheduledInstanceCapacityExceeded"
@@ -352,6 +354,7 @@ var (
 	ErrorNonEBSInstance                                       = "NonEBSInstance"
 	ErrorNotExportable                                        = "NotExportable"
 	ErrorNotImplemented                                       = "NotImplemented"
+	ErrorOperationInProgress                                  = "OperationInProgress"
 	ErrorOperationNotPermitted                                = "OperationNotPermitted"
 	ErrorOptInRequired                                        = "OptInRequired"
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded         = "OutstandingVpcPeeringConnectionLimitExceeded"
@@ -719,7 +722,8 @@ func IsNotFound(err error) bool {
 }
 
 var ErrorLookup = map[string]ErrorMessage{
-	ErrorAccountDisabled: {HTTPCode: 400, Message: "The functionality you have requested has been administratively disabled for this account."},
+	ErrorAccountAlreadyExists:                                  {HTTPCode: 409, Message: "An account already exists for that name."},
+	ErrorAccountDisabled:                                       {HTTPCode: 400, Message: "The functionality you have requested has been administratively disabled for this account."},
 	ErrorActiveVpcPeeringConnectionPerVpcLimitExceeded:         {HTTPCode: 400, Message: "You've reached the limit on the number of active VPC peering connections you can have for the specified VPC."},
 	ErrorAddressLimitExceeded:                                  {HTTPCode: 400, Message: "You've reached the limit on the number of Elastic IP addresses that you can allocate. For more information, see Elastic IP address limit."},
 	ErrorAsnConflict:                                           {HTTPCode: 400, Message: "The Autonomous System Numbers (ASNs) of the specified customer gateway and the specified virtual private gateway are the same."},
@@ -1034,6 +1038,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorLogDestinationNotFound:                                {HTTPCode: 404, Message: "The specified Amazon S3 bucket does not exist. Ensure that you have specified the ARN for an existing Amazon S3 bucket, and that the ARN is in the correct format."},
 	ErrorLogDestinationPermissionIssue:                         {HTTPCode: 400, Message: "You do not have sufficient permissions to publish flow logs to the specific Amazon S3 bucket."},
 	ErrorMalformedQueryString:                                  {HTTPCode: 400, Message: "The query string contains a syntax error."},
+	ErrorMethodNotAllowed:                                      {HTTPCode: 405, Message: "The HTTP method is not allowed for this endpoint."},
 	ErrorMaxConfigLimitExceededException:                       {HTTPCode: 400, Message: "You\u2019ve exceeded your maximum allowed Spot placement configurations. You can retry configurations that you used within the last 24 hours, or wait for 24 hours before specifying a new configuration. For more information, see Spot placement score."},
 	ErrorMaxIOPSLimitExceeded:                                  {HTTPCode: 400, Message: "You've reached the limit on your IOPS usage for the AWS Region. For more information, see Quotas for Amazon EBS."},
 	ErrorMaxScheduledInstanceCapacityExceeded:                  {HTTPCode: 400, Message: "You've attempted to launch more instances than you purchased."},
@@ -1059,6 +1064,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorNonEBSInstance:                                        {HTTPCode: 400, Message: "The specified instance does not support Amazon EBS. Restart the instance and try again, to ensure that the code is run on an instance with updated code."},
 	ErrorNotExportable:                                         {HTTPCode: 400, Message: "The specified instance cannot be exported. You can only export certain instances. For more information, see Considerations for instance export."},
 	ErrorNotImplemented:                                        {HTTPCode: 501, Message: "Operation not implemented"},
+	ErrorOperationInProgress:                                   {HTTPCode: 409, Message: "An operation for this request is already in progress. Retry with the same client token."},
 	ErrorOperationNotPermitted:                                 {HTTPCode: 400, Message: "The specified operation is not allowed. This error can occur for a number of reasons; for example, you might be trying to terminate an instance that has termination protection enabled, or trying to detach the primary network interface (eth0) from an instance."},
 	ErrorOptInRequired:                                         {HTTPCode: 403, Message: "You are not authorized to use the requested service. Ensure that you have subscribed to the service you are trying to use. If you are new to AWS, your account might take some time to be activated while your credit card details are being verified."},
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded:          {HTTPCode: 400, Message: "You've reached the limit on the number of VPC peering connection requests that you can create for the specified VPC."},

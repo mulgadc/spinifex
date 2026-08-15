@@ -621,7 +621,9 @@ func snapshotMatchesFilters(cfg *SnapshotConfig, filters map[string][]string) bo
 // snapshot. A clone records its source in its ebsmetadata document; missing one
 // here would let a delete strip the chunks a live clone still reads.
 func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (bool, error) {
-	volumes, err := s.metadata.ListVolumes(ctx)
+	// Strict: a volume that failed to read is not evidence that no clone reads
+	// the snapshot's chunks, and this answer gates deleting them.
+	volumes, err := s.metadata.ListVolumesStrict(ctx)
 	if err != nil {
 		return false, fmt.Errorf("snapshotInUseByVolumes: failed to list volumes: %w", err)
 	}

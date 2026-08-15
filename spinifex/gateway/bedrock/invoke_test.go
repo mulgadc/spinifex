@@ -12,6 +12,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// errEndpointResolver returns a caller-supplied non-nil err from every
+// resolve call, driving the endpoint-resolution failure branch a real daemon
+// outage or admission refusal would trigger.
+type errEndpointResolver struct {
+	err error
+}
+
+var _ EndpointResolver = errEndpointResolver{}
+
+func (r errEndpointResolver) Endpoint(_ context.Context, _ string) (string, bool, error) {
+	return "", false, r.err
+}
+
+func (r errEndpointResolver) EndpointForAccount(_ context.Context, _, _ string) (string, bool, error) {
+	return "", false, r.err
+}
+
+// withCatalogEntry appends entry to the package-level catalog for the
+// duration of the test, restoring the original slice on cleanup — the
+// dispatch tests need a self-host entry outside the shipped family set.
+func withCatalogEntry(t *testing.T, entry catalogEntry) {
+	t.Helper()
+	original := catalog
+	catalog = append(append([]catalogEntry{}, catalog...), entry)
+	t.Cleanup(func() { catalog = original })
+}
+
 func TestInvokeRouter_SelfHostSuccess(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -121,4 +148,47 @@ func TestInvokeStreamRouter_SelfHostNoEndpointReturnsModelNotReady(t *testing.T)
 	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "meta.llama3-2-1b-instruct-v1:0", []byte(`{"prompt":"hello"}`), "", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestInvokeRouter_SelfHostUnhandledFamilyReturnsValidationException proves a
+// self-host entry outside the shipped family set is refused outright rather
+// than mis-served through Llama's native request schema — the fake endpoint
+// server records whether it was ever called at all.
+func TestInvokeRouter_SelfHostUnhandledFamilyReturnsValidationException(t *testing.T) {
+	modelID := "self-host.unhandled-family-v1:0"
+	withCatalogEntry(t, catalogEntry{ModelID: modelID, Provider: tierSelfHost, Family: "mistral"})
+
+	var called bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
+	_, _, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+	assert.False(t, called, "an unhandled self-host family must never reach the Llama-serving endpoint")
+}
+
+// TestInvokeStreamRouter_SelfHostUnhandledFamilyReturnsValidationException
+// mirrors TestInvokeRouter_SelfHostUnhandledFamilyReturnsValidationException
+// for the streaming router.
+func TestInvokeStreamRouter_SelfHostUnhandledFamilyReturnsValidationException(t *testing.T) {
+	modelID := "self-host.unhandled-family-v1:0"
+	withCatalogEntry(t, catalogEntry{ModelID: modelID, Provider: tierSelfHost, Family: "mistral"})
+
+	var called bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, nil)
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+	assert.False(t, called, "an unhandled self-host family must never reach the Llama-serving endpoint")
 }

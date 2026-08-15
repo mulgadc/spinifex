@@ -163,7 +163,7 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("vllm: endpoint resolution failed", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+		return nil, resolveEndpointError(err)
 	}
 	if !ok {
 		return nil, errors.New(awserrors.ErrorModelNotReadyException)
@@ -288,7 +288,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
 		slog.Error("vllm stream: endpoint resolution failed", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+		return nil, resolveEndpointError(err)
 	}
 	if !ok {
 		return nil, errors.New(awserrors.ErrorModelNotReadyException)

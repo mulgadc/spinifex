@@ -95,6 +95,43 @@ func TestWeightsStore_GetWeights_ReturnsSourceURIAndSnapshot(t *testing.T) {
 	}, entry)
 }
 
+// TestWeightsStore_PutWeightsWithRevision_RoundTrips covers D3: a pull-staged
+// model's upstream commit SHA survives the KV round trip and comes back on
+// both GetWeights and ListWeights.
+func TestWeightsStore_PutWeightsWithRevision_RoundTrips(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+
+	ctx := context.Background()
+	require.NoError(t, store.PutWeightsWithRevision(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://ochre-weights/meta-llama/Llama-3.2-1B-Instruct/abc123/", "snap-0001", "abc123def456"))
+
+	entry, ok, err := store.GetWeights(ctx, "meta.llama3-2-1b-instruct-v1:0")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "abc123def456", entry.SourceRevision)
+
+	entries, err := store.ListWeights(ctx)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "abc123def456", entries[0].SourceRevision)
+}
+
+// TestWeightsStore_PutWeights_LeavesSourceRevisionEmpty covers the offline
+// stage path: weights staged with no pull manifest must record an empty
+// SourceRevision, not fail or fabricate one.
+func TestWeightsStore_PutWeights_LeavesSourceRevisionEmpty(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+
+	ctx := context.Background()
+	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
+
+	entry, ok, err := store.GetWeights(ctx, "meta.llama3-2-1b-instruct-v1:0")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Empty(t, entry.SourceRevision)
+}
+
 // TestWeightsStore_ListWeights_Empty covers the no-keys-yet case: an empty
 // bucket must report an empty list, not an error (jetstream.ErrNoKeysFound).
 func TestWeightsStore_ListWeights_Empty(t *testing.T) {

@@ -35,6 +35,10 @@ func weightsKey(modelID string) string {
 type weightsRecord struct {
 	SnapshotID string `json:"snapshot_id"`
 	SourceURI  string `json:"source_uri"`
+	// SourceRevision is the upstream hub commit SHA the weights were pulled
+	// at, if known. Empty for weights staged from an operator-supplied S3
+	// prefix with no 'ochre-pull.json' manifest -- the offline stage path.
+	SourceRevision string `json:"source_revision,omitempty"`
 }
 
 // WeightsResolver resolves a self-hosted model's deployment-specific weights
@@ -119,17 +123,26 @@ func (s *WeightsStore) GetWeights(ctx context.Context, modelID string) (WeightsE
 	if err != nil || !ok {
 		return WeightsEntry{}, ok, err
 	}
-	return WeightsEntry{ModelID: modelID, SourceURI: rec.SourceURI, SnapshotID: rec.SnapshotID}, true, nil
+	return WeightsEntry{ModelID: modelID, SourceURI: rec.SourceURI, SnapshotID: rec.SnapshotID, SourceRevision: rec.SourceRevision}, true, nil
 }
 
 // PutWeights records modelID's staged weights artifact: the snapshot ID
 // endpoints COW-clone from, and the source S3 URI it was materialised from.
+// It leaves SourceRevision empty; use PutWeightsWithRevision when 'stage'
+// found a pull manifest at the source prefix.
 func (s *WeightsStore) PutWeights(ctx context.Context, modelID, sourceURI, snapshotID string) error {
+	return s.PutWeightsWithRevision(ctx, modelID, sourceURI, snapshotID, "")
+}
+
+// PutWeightsWithRevision records modelID's staged weights artifact along with
+// the upstream hub commit SHA it was pulled at, if known (empty when 'stage'
+// found no 'ochre-pull.json' manifest at the source prefix).
+func (s *WeightsStore) PutWeightsWithRevision(ctx context.Context, modelID, sourceURI, snapshotID, sourceRevision string) error {
 	kv, err := s.bucket(ctx)
 	if err != nil {
 		return err
 	}
-	value, err := json.Marshal(weightsRecord{SnapshotID: snapshotID, SourceURI: sourceURI})
+	value, err := json.Marshal(weightsRecord{SnapshotID: snapshotID, SourceURI: sourceURI, SourceRevision: sourceRevision})
 	if err != nil {
 		return fmt.Errorf("encode weights record for %s: %w", modelID, err)
 	}
@@ -142,9 +155,10 @@ func (s *WeightsStore) PutWeights(ctx context.Context, modelID, sourceURI, snaps
 // WeightsEntry is one staged model's KV record, decoded back from
 // weightsKey's base64url-encoded modelID for operator-facing listing.
 type WeightsEntry struct {
-	ModelID    string
-	SourceURI  string
-	SnapshotID string
+	ModelID        string
+	SourceURI      string
+	SnapshotID     string
+	SourceRevision string
 }
 
 // ListWeights returns every staged model and its record, sorted by model
@@ -179,7 +193,7 @@ func (s *WeightsStore) ListWeights(ctx context.Context) ([]WeightsEntry, error) 
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			continue
 		}
-		entries = append(entries, WeightsEntry{ModelID: string(modelID), SourceURI: rec.SourceURI, SnapshotID: rec.SnapshotID})
+		entries = append(entries, WeightsEntry{ModelID: string(modelID), SourceURI: rec.SourceURI, SnapshotID: rec.SnapshotID, SourceRevision: rec.SourceRevision})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ModelID < entries[j].ModelID })
 	return entries, nil

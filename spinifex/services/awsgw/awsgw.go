@@ -25,6 +25,7 @@ import (
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
@@ -366,6 +367,15 @@ func launchService(config *config.ClusterConfig) error {
 	// inference enforcement can read it back, but nothing enforces it yet.
 	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, len(config.Nodes), nodeConfig.Region)
 
+	// bedrock-agent knowledge-base + data-source resource metadata: gateway-
+	// owned (D-arch), opened directly against JetStream the same way the
+	// bedrock stores above are, rather than a second NATS hop through the
+	// daemon. bedrockAgentVector forwards CreateIndex/Ingest/DescribeJob/
+	// ListJobs/etc to .9's daemon-side VectorService over NATS.
+	bedrockAgentKB := handlers_ochrevector.NewKBStore(js)
+	bedrockAgentDataSources := handlers_ochrevector.NewDataSourceStore(js)
+	bedrockAgentVector := handlers_ochrevector.NewNATSVectorService(natsConn)
+
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by
 	// deliveryConsumer to any account with a configured destination bucket
@@ -423,6 +433,9 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAccessAdmin:      bedrockAccess,
 		BedrockProvisioned:      bedrockProvisioned,
 		BedrockGuardrails:       bedrockGuardrails,
+		BedrockAgentKB:          bedrockAgentKB,
+		BedrockAgentDataSources: bedrockAgentDataSources,
+		BedrockAgentVector:      bedrockAgentVector,
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

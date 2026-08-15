@@ -33,12 +33,14 @@ services:
       - "acm.*"
       - "iam.*"
       - "rds.*"
+      - "ochre.vector.*"
     depends_on:
       - "ec2.*"
       - "elbv2.*"
       - "acm.*"
       - "iam.*"
       - "rds.*"
+      - "ochre.vector.*"
 
   spinifex_daemon:
     path: spinifex/services/spinifex
@@ -134,6 +136,7 @@ services:
       - "ochre.vector.ingest"
       - "ochre.vector.describeJob"
       - "ochre.vector.query"
+      - "ochre.vector.listJobs"
     publishes:
       # → vpcd
       - "vpc.create"

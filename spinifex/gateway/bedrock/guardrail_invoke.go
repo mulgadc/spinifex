@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
@@ -266,20 +267,19 @@ func invokeGuardrailRedactedCompletion(backend string, respBody []byte, texts []
 	return respBody, nil
 }
 
-// extractInvokeStreamChunkText extracts the assistant-text delta (if any)
-// carried in one raw provider-native invoke-stream chunk, for buffered
-// OUTPUT guardrail accumulation. ok is false when the chunk carries no
-// assistant text (e.g. a control/metadata event), not a decode error.
-func extractInvokeStreamChunkText(backend string, chunk []byte) (text string, ok bool) {
+// extractInvokeStreamChunkText pulls the assistant-text delta from one raw
+// invoke-stream chunk for buffered OUTPUT accumulation. ok=false is a benign
+// no-text chunk; decodeErr=true is a real JSON-decode failure (fail closed).
+func extractInvokeStreamChunkText(backend string, chunk []byte) (text string, ok bool, decodeErr bool) {
 	switch {
 	case backend == tierSelfHost:
 		var c struct {
 			Generation string `json:"generation"`
 		}
 		if json.Unmarshal(chunk, &c) != nil {
-			return "", false
+			return "", false, true
 		}
-		return c.Generation, c.Generation != ""
+		return c.Generation, c.Generation != "", false
 	case strings.HasPrefix(backend, providerPrefix):
 		switch strings.TrimPrefix(backend, providerPrefix) {
 		case vendorAnthropic:
@@ -289,13 +289,16 @@ func extractInvokeStreamChunkText(backend string, chunk []byte) (text string, ok
 					Text string `json:"text"`
 				} `json:"delta"`
 			}
-			if json.Unmarshal(chunk, &c) != nil || c.Type != "content_block_delta" {
-				return "", false
+			if json.Unmarshal(chunk, &c) != nil {
+				return "", false, true
 			}
-			return c.Delta.Text, c.Delta.Text != ""
+			if c.Type != "content_block_delta" {
+				return "", false, false
+			}
+			return c.Delta.Text, c.Delta.Text != "", false
 		}
 	}
-	return "", false
+	return "", false, false
 }
 
 // llamaGuardedStreamChunks builds the two-chunk (delta + final) Llama
@@ -443,6 +446,7 @@ func (g *guardrailInvokeStreamSource) Next(ctx context.Context) ([]byte, bool, e
 		return nil, false, nil
 	}
 
+	var extractionFailed bool
 	for {
 		chunk, ok, err := g.inner.Next(ctx)
 		if err != nil {
@@ -451,12 +455,31 @@ func (g *guardrailInvokeStreamSource) Next(ctx context.Context) ([]byte, bool, e
 		if !ok {
 			break
 		}
+		text, hasText, decodeErr := extractInvokeStreamChunkText(g.backend, chunk)
+		if decodeErr {
+			extractionFailed = true
+			break
+		}
 		g.buffered = append(g.buffered, chunk)
-		if text, hasText := extractInvokeStreamChunkText(g.backend, chunk); hasText {
+		if hasText {
 			g.text.WriteString(text)
 		}
 	}
 	g.assessed = true
+
+	if extractionFailed {
+		slog.Error("invoke-stream: failed to decode assistant chunk for guardrail OUTPUT check, blocking", "backend", g.backend)
+		view, verr := loadGuardrailView(ctx, g.store, g.accountID, g.ident, g.version)
+		if verr != nil {
+			return nil, false, verr
+		}
+		var berr error
+		g.queue, berr = buildGuardedInvokeStreamChunks(g.backend, view.BlockedOutputsMessaging, true)
+		if berr != nil {
+			return nil, false, berr
+		}
+		return g.Next(ctx)
+	}
 
 	original := g.text.String()
 	blocked, message, redacted, _, err := enforceGuardrail(ctx, g.store, g.accountID, g.ident, g.version,

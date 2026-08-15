@@ -26,7 +26,10 @@ const (
 	// stop the reconcile at the unreachable path instead of the quorum gate.
 	firewallPhantomNode = `printf '\n[nodes.e2ephantom]\nhost = "10.99.99.99"\n'`
 
-	firewallQuorumLog = "chassis encap addresses; not writing a partial peer set"
+	// The reconcile reports the short list as "OVN reports N of M chassis encap
+	// addresses", and MaintainFirewall carries it into the retry warning. There
+	// is no separate message for the gate itself.
+	firewallQuorumLog = "chassis encap addresses"
 )
 
 // runFirewallChassisQuorum proves the daemon refuses to write a peer set built
@@ -82,11 +85,15 @@ func runFirewallChassisQuorum(t *testing.T, fix *Fixture) {
 
 	// Backoff starts at 15s, so the first attempt lands well inside this window.
 	journal := "sudo journalctl -u spinifex-daemon --since '" + since + "' --no-pager"
-	require.Eventuallyf(t, func() bool {
+	var tail string
+	if !assert.Eventually(t, func() bool {
 		out, err := firewallRunErr(node, journal)
+		tail = out
 		return err == nil && strings.Contains(out, firewallQuorumLog)
-	}, 90*time.Second, 3*time.Second,
-		"%s never logged the chassis quorum gate; it either wrote a partial peer set or failed somewhere earlier", node.Name)
+	}, 90*time.Second, 3*time.Second) {
+		t.Fatalf("%s never logged the chassis quorum gate; it either wrote a partial peer set or failed somewhere earlier\n%s%s",
+			node.Name, firewallWhyNoPeers(node), firewallTail(tail, 25))
+	}
 
 	harness.Step(t, "assert no peer file was written while the chassis list is short")
 	present := strings.TrimSpace(firewallRun(t,
@@ -162,6 +169,15 @@ func firewallWhyNoPeers(node harness.Node) string {
 		fmt.Fprintf(&b, "         %s: %s\n", probe.label, strings.TrimSpace(out))
 	}
 	return b.String()
+}
+
+// firewallTail keeps a failure message readable when the journal window is wide.
+func firewallTail(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // firewallRestore puts the saved config back and restarts the daemon so the

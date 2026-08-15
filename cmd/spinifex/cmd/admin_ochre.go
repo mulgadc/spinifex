@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,9 +20,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -73,12 +78,51 @@ explicit act.`,
 	Run: runOchreWeightsRemove,
 }
 
+var ochreWeightsPullCmd = &cobra.Command{
+	Use:   "pull",
+	Short: "Fetch a self-host model's weights from Hugging Face into predastore",
+	Long: `pull resolves --revision to an immutable commit SHA, lists the repo's file
+tree, downloads only *.safetensors shards plus the fixed config/tokenizer
+set, and streams each into predastore under --s3-uri (or a keyed default
+when omitted). It never touches the offline 'stage' path or the weights KV
+store itself; it prints the resulting s3:// URI for 'weights stage --s3-uri'.
+
+Refuses before any object lands if --model-id is not a self-host catalog
+entry, the repo has no safetensors, or the hub returns 401/403 (a gated repo
+with no usable token). A failure partway through removes every object
+already written so 'stage' never sees a half-model.`,
+	Run: runOchreWeightsPull,
+}
+
+// ochreCredentialsCmd groups vendor credential management for pull's
+// optional stored-token fallback (D2); it holds no Run of its own.
+var ochreCredentialsCmd = &cobra.Command{
+	Use:   "credentials",
+	Short: "Manage stored provider credentials for self-host model pulls",
+}
+
+var ochreCredentialsSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "Store a vendor API token/licence credential",
+	Long: `set stores --vendor's token, encrypted at rest under the cluster's IAM master
+key, in the bedrock-credentials KV bucket. --account defaults to the
+platform account, since self-host models are platform-level, not per-tenant.
+
+The token itself is never a command-line argument: --token must be '-', and
+the secret is read from stdin, so it never appears in shell history or a
+process listing.`,
+	Run: runOchreCredentialsSet,
+}
+
 func init() {
 	adminCmd.AddCommand(ochreCmd)
 	ochreCmd.AddCommand(ochreWeightsCmd)
+	ochreCmd.AddCommand(ochreCredentialsCmd)
 	ochreWeightsCmd.AddCommand(ochreWeightsStageCmd)
 	ochreWeightsCmd.AddCommand(ochreWeightsListCmd)
 	ochreWeightsCmd.AddCommand(ochreWeightsRemoveCmd)
+	ochreWeightsCmd.AddCommand(ochreWeightsPullCmd)
+	ochreCredentialsCmd.AddCommand(ochreCredentialsSetCmd)
 
 	ochreWeightsStageCmd.Flags().String("model-id", "", "Catalog model ID to stage weights for (required)")
 	ochreWeightsStageCmd.Flags().String("s3-uri", "", "predastore S3 URI holding the model's Hugging Face files, e.g. s3://bucket/prefix/ (required)")
@@ -88,6 +132,20 @@ func init() {
 
 	ochreWeightsRemoveCmd.Flags().String("model-id", "", "Model ID to remove from staged weights (required)")
 	_ = ochreWeightsRemoveCmd.MarkFlagRequired("model-id")
+
+	ochreWeightsPullCmd.Flags().String("model-id", "", "Self-host catalog model ID this pull is for (required)")
+	ochreWeightsPullCmd.Flags().String("hf-repo", "", "Hugging Face repo, e.g. meta-llama/Llama-3.2-1B-Instruct (required)")
+	ochreWeightsPullCmd.Flags().String("revision", "main", "Hugging Face branch, tag or commit SHA to resolve and pin")
+	ochreWeightsPullCmd.Flags().String("s3-uri", "", "predastore destination prefix, e.g. s3://bucket/prefix/ (default: s3://ochre-weights/<repo>/<sha>/)")
+	ochreWeightsPullCmd.Flags().String("hf-token", "", "Hugging Face token for a gated repo (falls back to HF_TOKEN, then a stored platform credential)")
+	_ = ochreWeightsPullCmd.MarkFlagRequired("model-id")
+	_ = ochreWeightsPullCmd.MarkFlagRequired("hf-repo")
+
+	ochreCredentialsSetCmd.Flags().String("vendor", "", "Vendor to store a credential for, e.g. huggingface (required)")
+	ochreCredentialsSetCmd.Flags().String("account", "", "Account ID to store the credential under (default: platform account)")
+	ochreCredentialsSetCmd.Flags().String("token", "", "Must be '-': reads the secret from stdin (required)")
+	_ = ochreCredentialsSetCmd.MarkFlagRequired("vendor")
+	_ = ochreCredentialsSetCmd.MarkFlagRequired("token")
 }
 
 // requiredWeightsFiles are the fixed-name Hugging Face artefacts stage
@@ -104,6 +162,233 @@ var requiredWeightsFiles = []string{
 // older ones only tokenizer.model (SentencePiece) -- e.g. Llama 3.x keeps
 // tokenizer.model under original/, not at the prefix root. Either is enough.
 var tokenizerFileNames = []string{"tokenizer.json", "tokenizer.model"}
+
+// vendorHuggingFace is the CredentialStore vendor key 'ochre credentials
+// set' and pull's stored-credential fallback share for the Hugging Face
+// licence token (D2).
+const vendorHuggingFace = "huggingface"
+
+// ochrePullManifestFile is the fixed name 'weights pull' writes into the
+// destination prefix and 'weights stage' reads back (D3), recording which
+// upstream commit a staged model's weights came from.
+const ochrePullManifestFile = "ochre-pull.json"
+
+// ochrePullManifest is the JSON body of ochrePullManifestFile.
+type ochrePullManifest struct {
+	HFRepo      string    `json:"hf_repo"`
+	RevisionSHA string    `json:"revision_sha"`
+	PulledAt    time.Time `json:"pulled_at"`
+}
+
+// allowedPullFileNames are the fixed-name Hugging Face artefacts pull fetches
+// alongside safetensors shards -- config and tokenizer files needed to serve,
+// never weights themselves. Matched by basename so a nested path (e.g.
+// Llama's original/tokenizer.model) still qualifies.
+var allowedPullFileNames = map[string]bool{
+	"config.json":                  true,
+	"tokenizer_config.json":        true,
+	"tokenizer.json":               true,
+	"tokenizer.model":              true,
+	"generation_config.json":       true,
+	"special_tokens_map.json":      true,
+	"model.safetensors.index.json": true,
+}
+
+// selectPullFiles filters a Hugging Face tree listing down to the
+// safetensors-only set pull downloads (D4): every *.safetensors file plus
+// the fixed config/tokenizer set. Anything else -- notably .bin/.pt pickle
+// checkpoints, which can execute code on load -- is dropped silently rather
+// than aborting the whole pull.
+func selectPullFiles(entries []hfhub.TreeEntry) []hfhub.TreeEntry {
+	var selected []hfhub.TreeEntry
+	for _, e := range entries {
+		if e.Type != "file" {
+			continue
+		}
+		if strings.HasSuffix(e.Path, ".safetensors") || allowedPullFileNames[path.Base(e.Path)] {
+			selected = append(selected, e)
+		}
+	}
+	return selected
+}
+
+// anySafetensors reports whether entries contains at least one *.safetensors
+// file. selectPullFiles's config/tokenizer set alone is never enough --
+// D4 aborts a pull with no actual weights to serve.
+func anySafetensors(entries []hfhub.TreeEntry) bool {
+	for _, e := range entries {
+		if strings.HasSuffix(e.Path, ".safetensors") {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultPullPrefix derives D7's fallback destination when --s3-uri is
+// omitted: keyed by the exact repo and resolved commit SHA, so re-pulling
+// the same commit lands at the same, self-deduping URI.
+func defaultPullPrefix(hfRepo, sha string) string {
+	return fmt.Sprintf("s3://ochre-weights/%s/%s/", strings.Trim(hfRepo, "/"), sha)
+}
+
+// putPullManifest writes ochrePullManifestFile into bucket/prefix, the last
+// step of a successful pull (D3).
+func putPullManifest(ctx context.Context, store objectstore.ObjectStore, bucket, prefix string, manifest ochrePullManifest) error {
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("encode pull manifest: %w", err)
+	}
+	key := prefix + ochrePullManifestFile
+	if _, err := store.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(key), Body: bytes.NewReader(data)}); err != nil {
+		return fmt.Errorf("put pull manifest s3://%s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// readPullManifest reads and decodes bucket/prefix's ochre-pull.json, if
+// present. A missing manifest is not an error: stage's offline path (an
+// operator-supplied prefix with no pull manifest) must keep working
+// unchanged, so ok is simply false.
+func readPullManifest(ctx context.Context, store objectstore.ObjectStore, bucket, prefix string) (ochrePullManifest, bool, error) {
+	key := prefix + ochrePullManifestFile
+	out, err := store.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return ochrePullManifest{}, false, nil
+		}
+		return ochrePullManifest{}, false, fmt.Errorf("get pull manifest s3://%s/%s: %w", bucket, key, err)
+	}
+	defer out.Body.Close()
+
+	var manifest ochrePullManifest
+	if err := json.NewDecoder(out.Body).Decode(&manifest); err != nil {
+		return ochrePullManifest{}, false, fmt.Errorf("decode pull manifest s3://%s/%s: %w", bucket, key, err)
+	}
+	return manifest, true, nil
+}
+
+// cleanupPulledObjects best-effort deletes every key already written by a
+// pull that failed partway through (D5): a half-uploaded prefix must never
+// be left for 'stage' to mistake for a complete model. A delete failure is
+// logged, not returned -- the original pull error is what the operator needs.
+func cleanupPulledObjects(ctx context.Context, store objectstore.ObjectStore, bucket string, keys []string) {
+	for _, key := range keys {
+		if _, err := store.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not clean up s3://%s/%s after a failed pull: %v\n", bucket, key, err)
+		}
+	}
+}
+
+// pullOneFile downloads hfPath from the hub to a local temp file and PUTs it
+// to bucket/key. A temp file is required, not a direct HTTP-to-S3 pipe:
+// predastore's PutObject signs the request over an io.ReadSeeker, which an
+// HTTP response body is not. tmpDir is cleaned up by the caller.
+func pullOneFile(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, hfRepo, sha, hfPath, bucket, key, tmpDir string) error {
+	body, _, err := hf.DownloadFile(ctx, hfRepo, sha, hfPath)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	tmpFile, err := os.CreateTemp(tmpDir, "part-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, body); err != nil {
+		return fmt.Errorf("download to temp file: %w", err)
+	}
+	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek temp file: %w", err)
+	}
+
+	if _, err := store.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(key), Body: tmpFile}); err != nil {
+		return fmt.Errorf("put s3://%s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// pullFilesToPrefix downloads and uploads every selected file, one at a time
+// so at most one file is ever held on local disk (D6). Keys are flattened to
+// each file's basename to match the flat layout 'stage' validates -- e.g.
+// Llama's original/tokenizer.model lands at <prefix>tokenizer.model. It
+// returns the keys written so far even on error, so the caller can clean up
+// a partial prefix (D5).
+func pullFilesToPrefix(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, hfRepo, sha, bucket, prefix string, files []hfhub.TreeEntry) ([]string, error) {
+	tmpDir, err := os.MkdirTemp("", "spinifex-ochre-pull-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var uploaded []string
+	for _, f := range files {
+		key := prefix + path.Base(f.Path)
+		if err := pullOneFile(ctx, hf, store, hfRepo, sha, f.Path, bucket, key, tmpDir); err != nil {
+			return uploaded, fmt.Errorf("pull %s: %w", f.Path, err)
+		}
+		uploaded = append(uploaded, key)
+	}
+	return uploaded, nil
+}
+
+// runPullWeights holds 'ochre weights pull' decision and side-effect logic:
+// catalog validation, ref resolution to an immutable commit SHA (D3), tree
+// listing and safetensors-only filtering (D4), streaming each selected file
+// into predastore (D6), and finally the ochre-pull.json manifest. It never
+// touches the weights KV store; 'stage' consumes the printed s3:// URI
+// separately. A failure removes every object already written (D5).
+func runPullWeights(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, modelID, hfRepo, revision, s3URIFlag string) (string, error) {
+	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
+		if !found {
+			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
+		}
+		return "", fmt.Errorf("%q is a provider-served model, not self-host; weights pull does not apply", modelID)
+	}
+
+	fmt.Printf("Resolving %s@%s ...\n", hfRepo, revision)
+	sha, err := hf.ResolveRevision(ctx, hfRepo, revision)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("Listing files at %s@%s ...\n", hfRepo, sha)
+	tree, err := hf.ListTree(ctx, hfRepo, sha)
+	if err != nil {
+		return "", err
+	}
+
+	selected := selectPullFiles(tree)
+	if !anySafetensors(selected) {
+		return "", fmt.Errorf("%s@%s has no *.safetensors files; refusing to pull pickle-format (.bin) weights", hfRepo, sha)
+	}
+
+	s3URI := s3URIFlag
+	if s3URI == "" {
+		s3URI = defaultPullPrefix(hfRepo, sha)
+	}
+	bucket, prefix, err := parseWeightsS3URI(s3URI)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("Pulling %d file(s) into s3://%s/%s ...\n", len(selected), bucket, prefix)
+	uploaded, err := pullFilesToPrefix(ctx, hf, store, hfRepo, sha, bucket, prefix, selected)
+	if err != nil {
+		cleanupPulledObjects(ctx, store, bucket, uploaded)
+		return "", err
+	}
+
+	manifest := ochrePullManifest{HFRepo: hfRepo, RevisionSHA: sha, PulledAt: time.Now().UTC()}
+	if err := putPullManifest(ctx, store, bucket, prefix, manifest); err != nil {
+		cleanupPulledObjects(ctx, store, bucket, uploaded)
+		return "", err
+	}
+
+	return fmt.Sprintf("s3://%s/%s", bucket, prefix), nil
+}
 
 // parseWeightsS3URI splits an s3://bucket/prefix URI into its bucket and
 // prefix. The prefix is normalised to end with '/' so downstream listing and
@@ -386,6 +671,16 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 		return "", err
 	}
 
+	// A pull manifest is optional: absent means an operator-supplied prefix
+	// from the offline path, which stage has always supported and must keep
+	// supporting unchanged.
+	var sourceRevision string
+	if manifest, ok, err := readPullManifest(ctx, store, bucket, prefix); err != nil {
+		return "", err
+	} else if ok {
+		sourceRevision = manifest.RevisionSHA
+	}
+
 	tmpDir, err := os.MkdirTemp(tmpDirFlag, "spinifex-weights-tmp-*")
 	if err != nil {
 		return "", fmt.Errorf("could not create temp dir: %w", err)
@@ -408,7 +703,7 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 		return "", err
 	}
 
-	if err := weightsStore.PutWeights(ctx, modelID, sourceURI, snapshotID); err != nil {
+	if err := weightsStore.PutWeightsWithRevision(ctx, modelID, sourceURI, snapshotID, sourceRevision); err != nil {
 		return "", err
 	}
 
@@ -563,7 +858,7 @@ func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.Weight
 		return "No models staged.", nil
 	}
 
-	tableData := pterm.TableData{{"MODEL ID", "SOURCE URI", "SNAPSHOT ID", "STATUS"}}
+	tableData := pterm.TableData{{"MODEL ID", "SOURCE URI", "REVISION", "SNAPSHOT ID", "STATUS"}}
 	for _, e := range entries {
 		live, err := checkSnapshotLive(ctx, e.SnapshotID)
 		if err != nil {
@@ -573,7 +868,11 @@ func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.Weight
 		if !live {
 			status = weightsStatusDangling
 		}
-		tableData = append(tableData, []string{e.ModelID, e.SourceURI, e.SnapshotID, status})
+		revision := e.SourceRevision
+		if revision == "" {
+			revision = "-"
+		}
+		tableData = append(tableData, []string{e.ModelID, e.SourceURI, revision, e.SnapshotID, status})
 	}
 	return pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Srender()
 }
@@ -654,6 +953,141 @@ func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
 		return
 	}
 	fmt.Printf("✅ Removed staged-weights entry for %s (snapshot %s and source objects untouched).\n", modelID, entry.SnapshotID)
+}
+
+// resolveHFToken applies pull's token resolution order (D2): the --hf-token
+// flag, then HF_TOKEN env (the must-have path, self-sufficient on its own),
+// then a stored platform credential for vendor "huggingface". The stored
+// credential step is a best-effort fallback: a cluster with no IAM master
+// key provisioned yet simply yields no token rather than failing the pull.
+func resolveHFToken(ctx context.Context, cmd *cobra.Command, cfg *config.ClusterConfig, nc *nats.Conn) string {
+	if token, _ := cmd.Flags().GetString("hf-token"); token != "" {
+		return token
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		return token
+	}
+
+	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
+	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	if err != nil {
+		return ""
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return ""
+	}
+	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, len(cfg.Nodes), nil)
+	token, ok, err := credStore.Resolve(ctx, utils.GlobalAccountID, vendorHuggingFace)
+	if err != nil || !ok {
+		return ""
+	}
+	return token
+}
+
+func runOchreWeightsPull(cmd *cobra.Command, _ []string) {
+	modelID, _ := cmd.Flags().GetString("model-id")
+	hfRepo, _ := cmd.Flags().GetString("hf-repo")
+	revision, _ := cmd.Flags().GetString("revision")
+	s3URI, _ := cmd.Flags().GetString("s3-uri")
+
+	appConfig, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+	defer nc.Close()
+	node := appConfig.Nodes[appConfig.Node]
+
+	ctx := context.Background()
+	token := resolveHFToken(ctx, cmd, appConfig, nc)
+
+	hf := hfhub.NewClient(token)
+	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+
+	finalURI, err := runPullWeights(ctx, hf, store, modelID, hfRepo, revision, s3URI)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		ochreExit(1)
+		return
+	}
+	fmt.Printf("✅ Pulled %s@%s into %s\n", hfRepo, revision, finalURI)
+	fmt.Println(finalURI)
+}
+
+// readTokenFromStdin reads a credential from r, trimming exactly one
+// trailing newline (matching 'printf "%s" "$TOKEN" | cmd --token -' or a
+// piped 'echo'). The token is never logged.
+func readTokenFromStdin(r io.Reader) (string, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("read token from stdin: %w", err)
+	}
+	token := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	if token == "" {
+		return "", fmt.Errorf("no token read from stdin")
+	}
+	return token, nil
+}
+
+// ochreCredentialsStore connects to the cluster, loads the node's IAM master
+// key from disk -- the same on-disk key initIAMServiceFromConfig uses -- and
+// returns a CredentialStore ready for PutCredential/Resolve.
+func ochreCredentialsStore() (*gateway_bedrock.CredentialStore, func(), error) {
+	cfg, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
+	}
+	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
+	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	if err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("load master key: %w", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("jetstream context: %w", err)
+	}
+	return gateway_bedrock.NewCredentialStore(js, masterKey, len(cfg.Nodes), nil), func() { nc.Close() }, nil
+}
+
+func runOchreCredentialsSet(cmd *cobra.Command, _ []string) {
+	vendor, _ := cmd.Flags().GetString("vendor")
+	accountID, _ := cmd.Flags().GetString("account")
+	tokenFlag, _ := cmd.Flags().GetString("token")
+
+	if tokenFlag != "-" {
+		fmt.Fprintln(os.Stderr, "Error: --token must be '-' (the secret is read from stdin, never a command-line argument)")
+		ochreExit(1)
+		return
+	}
+	if accountID == "" {
+		accountID = utils.GlobalAccountID
+	}
+
+	token, err := readTokenFromStdin(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+
+	store, cleanup, err := ochreCredentialsStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+	defer cleanup()
+
+	if err := store.PutCredential(context.Background(), accountID, vendor, token); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		ochreExit(1)
+		return
+	}
+	fmt.Printf("✅ Stored %s credential for account %s\n", vendor, accountID)
 }
 
 var adminOchreAccessCmd = &cobra.Command{

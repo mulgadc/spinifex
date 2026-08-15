@@ -817,6 +817,9 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeVolumes", handleNATSRequest(d.volumeService.DescribeVolumes), "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},
 		{"ec2.DeleteVolume", handleNATSRequest(d.volumeService.DeleteVolume), "spinifex-workers"},
+		// Cluster-wide on purpose: the QMP detach is instance-scoped, so a
+		// volume held by an unreachable host has no other way out.
+		{"ec2.ForceDetachVolume", handleNATSRequest(d.volumeService.ForceDetachVolume), "spinifex-workers"},
 		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
 		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
 		{"ec2.CreateSnapshot", handleNATSRequest(d.snapshotService.CreateSnapshot), "spinifex-workers"},

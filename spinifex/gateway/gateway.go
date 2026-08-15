@@ -111,6 +111,9 @@ type GatewayConfig struct {
 	STSService   handlers_sts.STSService
 	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
 	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
+	// accountStatus caches which accounts are ACTIVE, so enforcing account
+	// status does not add a KV read to every authenticated request.
+	accountStatus *accountStatusCache
 	// Quota enforces per-account service quotas. Built unconditionally; a disabled
 	// config yields a no-op Service whose Exempt always returns true. Nil only in
 	// unit tests of unrelated routes, where no handler reaches the quota checks.

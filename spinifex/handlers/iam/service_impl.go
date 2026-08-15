@@ -1071,6 +1071,89 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 	return accounts, nil
 }
 
+// UndeletableAccountIDs are the two accounts no teardown may ever remove: the
+// internal system account and the super admin. Held here rather than only in
+// the caller so a new caller cannot bypass the rule by forgetting it.
+var UndeletableAccountIDs = map[string]string{
+	"000000000000": "system",
+	"000000000001": "super admin",
+}
+
+// ErrAccountUndeletable reports a refusal to delete a protected account. It is
+// deliberately distinct from a permissions error: no credential grants it.
+var ErrAccountUndeletable = errors.New("account is protected and cannot be deleted")
+
+// SetAccountStatus writes a new status and returns the updated account. It
+// refuses to move an account out of TERMINATING: teardown has already begun
+// destroying data, so restoring service would hand back a hollowed-out account.
+func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, error) {
+	switch status {
+	case AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating:
+	default:
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+
+	account, err := s.GetAccount(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if account.Status == AccountStatusTerminating && status != AccountStatusTerminating {
+		return nil, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
+	}
+	if account.Status == status {
+		return account, nil
+	}
+
+	account.Status = status
+	data, err := json.Marshal(account)
+	if err != nil {
+		return nil, fmt.Errorf("marshal account: %w", err)
+	}
+	if _, err := s.accountsBucket.Put(context.Background(), accountID, data); err != nil {
+		return nil, fmt.Errorf("store account status: %w", err)
+	}
+
+	slog.Info("Account status changed", "accountID", accountID, "status", status)
+	return account, nil
+}
+
+// DeleteAccount removes the account record itself. It is the last step of a
+// teardown and does nothing about the account's resources — a caller that has
+// not emptied the account first strands every resource it owned, because the
+// ownership record is what attributes them.
+func (s *IAMServiceImpl) DeleteAccount(accountID string) error {
+	if reason, protected := UndeletableAccountIDs[accountID]; protected {
+		return fmt.Errorf("%s (%s): %w", accountID, reason, ErrAccountUndeletable)
+	}
+
+	account, err := s.GetAccount(accountID)
+	if err != nil {
+		return err
+	}
+	if account.Status != AccountStatusTerminating {
+		return fmt.Errorf("account %s is %s, not %s: %w",
+			accountID, account.Status, AccountStatusTerminating, ErrAccountUndeletable)
+	}
+
+	if err := s.accountsBucket.Delete(context.Background(), accountID); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	slog.Info("Account deleted", "accountID", accountID, "name", account.AccountName)
+
+	if s.natsConn != nil {
+		evt, err := json.Marshal(struct {
+			AccountID   string `json:"account_id"`
+			AccountName string `json:"account_name"`
+		}{AccountID: accountID, AccountName: account.AccountName})
+		if err != nil {
+			slog.Error("Failed to marshal account deletion event", "accountID", accountID, "error", err)
+		} else if err := s.natsConn.Publish("iam.account.deleted", evt); err != nil {
+			slog.Error("Failed to publish account deletion event", "accountID", accountID, "error", err)
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Policy CRUD
 // ---------------------------------------------------------------------------

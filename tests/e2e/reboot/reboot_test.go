@@ -1038,13 +1038,12 @@ echo "=== ofproto/trace north-south DNAT (real ingress per br-int patch port, dl
 if [ -n "$GWMAC" ]; then
   for p in $(sudo ovs-vsctl list-ports br-int 2>/dev/null | grep -aE 'patch-br-int-to-ext'); do
     echo "--- in_port=$p ---"
-    sudo ovs-appctl ofproto/trace br-int "in_port=$p,tcp,dl_src=02:00:00:00:00:01,dl_dst=$GWMAC,nw_src=192.168.0.11,nw_dst=$EIP,tp_src=40000,tp_dst=80" 2>&1 \
-      | grep -aE 'bridge|ct_|nat|dnat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -120
+    sudo ovs-appctl ofproto/trace br-int "in_port=$p,tcp,dl_src=02:00:00:00:00:01,dl_dst=$GWMAC,nw_src=192.168.0.11,nw_dst=$EIP,nw_ttl=64,tp_src=40000,tp_dst=80" 2>&1 | head -200
   done
 else
   echo "(no cr-gw MAC resolved — ARP itself failed)"
 fi
-echo "=== south->north RETURN trace (guest reply -> un-DNAT -> WAN) ==="
+echo "=== south->north RETURN trace, unfiltered (guest reply -> un-DNAT -> WAN) ==="
 PRIV=$(sudo ovn-nbctl --no-leader-only --bare --columns=logical_ip find NAT external_ip="\"$EIP\"" 2>/dev/null | head -1)
 CLIENT=$({ sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "dst=$EIP" | grep -aoE 'src=[0-9.]+' | head -1 | cut -d= -f2)
 [ -z "$CLIENT" ] && CLIENT=192.168.1.1
@@ -1058,8 +1057,7 @@ SUBNET_GW=$(echo "$PRIV" | awk -F. '{print $1"."$2"."$3".1"}')
 LRPMAC=$(sudo ovs-ofctl dump-flows br-int 2>/dev/null | grep -a "arp_tpa=$SUBNET_GW," | grep -aoE 'mod_dl_src:[0-9a-f:]+' | head -1 | cut -d: -f2-)
 echo "PRIV=[$PRIV] CLIENT=[$CLIENT] GLSP=[$GLSP] GMAC=[$GMAC] TAP=[$TAP] LRPMAC=[$LRPMAC]"
 if [ -n "$TAP" ] && [ -n "$GMAC" ] && [ -n "$LRPMAC" ]; then
-  sudo ovs-appctl ofproto/trace br-int "in_port=$TAP,tcp,dl_src=$GMAC,dl_dst=$LRPMAC,nw_src=$PRIV,nw_dst=$CLIENT,tp_src=80,tp_dst=40000,tcp_flags=ack" 2>&1 \
-    | grep -aE 'bridge|ct_|nat|dnat|snat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -150
+  sudo ovs-appctl ofproto/trace br-int "in_port=$TAP,tcp,dl_src=$GMAC,dl_dst=$LRPMAC,nw_src=$PRIV,nw_dst=$CLIENT,nw_ttl=64,tp_src=80,tp_dst=40000,tcp_flags=ack" 2>&1 | head -300
 else
   echo "(return-trace discovery incomplete — skipping)"
 fi
@@ -1072,6 +1070,8 @@ sleep 1
 curl -s --connect-timeout 2 --max-time 4 "http://$EIP/" >/dev/null 2>&1 &
 wait $TCPID 2>/dev/null
 echo "=== (end tap capture) ==="
+echo "=== datapath megaflows carrying the guest reply (what the kernel actually did, not a trace) ==="
+sudo ovs-appctl dpctl/dump-flows -m 2>/dev/null | grep -aF "src=$PRIV" | head -30 || echo "(none)"
 echo "=== PERSISTED-STATE DUMP (survives ovn-controller restart) ==="
 echo "--- external next-hop MACs (regenerated each boot) ---"
 for IF in veth-wan-ovs veth-wan-br br-wan br-ext; do
@@ -1096,6 +1096,26 @@ sudo ovn-nbctl --no-leader-only --columns=priority,match,action,nexthop list Log
 echo "--- NB LSP addresses + port_security (source if drop is physical port-sec) ---"
 sudo ovn-nbctl --no-leader-only --columns=name,addresses,port_security list Logical_Switch_Port 2>/dev/null | grep -aF -A0 "$PRIV" | head -20 || echo "(none)"
 echo "=== (end NB-source dump) ==="
+echo "=== ATTRIBUTION OF ANY DROP CARRYING THE GUEST SOURCE (OF cookie -> SB Logical_Flow) ==="
+echo "--- note: OVN table 79 is MAC-binding accounting; its drop is a counted clone, not a loss ---"
+DROPS=$(sudo ovs-ofctl dump-flows br-int 2>/dev/null | grep -a 'actions=drop' | grep -aF "nw_src=$PRIV")
+echo "${DROPS:-(none)}" | head -20
+LF=$(mktemp)
+sudo ovn-sbctl --no-leader-only --columns=_uuid,pipeline,table_id,priority,match,actions \
+  list Logical_Flow >"$LF" 2>/dev/null
+for C in $(echo "$DROPS" | grep -aoE 'cookie=0x[0-9a-f]+' | cut -d= -f2 | sort -u); do
+  P=$(printf '%%08x' "$C" 2>/dev/null)
+  echo "--- cookie $C is Logical_Flow $P* ---"
+  awk -v p="$P" 'BEGIN{RS=""} index($0,p)' "$LF" | head -12
+  grep -qaF "$P" "$LF" || echo "  (no SB lflow — installed by ovn-controller itself, not northd)"
+done
+rm -f "$LF"
+echo "--- is_chassis_resident inputs: bindings this ovn-controller claims locally ---"
+sudo ovn-appctl -t ovn-controller debug/dump-local-bindings 2>&1 | head -40
+echo "--- Port_Binding for guest LSP $GLSP (chassis must be this chassis) ---"
+sudo ovn-sbctl --no-leader-only list Port_Binding "$GLSP" 2>&1 \
+  | grep -aE '_uuid|chassis|logical_port|^up|requested' | head -20
+echo "=== (end drop attribution) ==="
 `, fix.albPublicIP)
 
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)

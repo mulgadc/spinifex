@@ -1018,7 +1018,13 @@ jobs:
 
       - name: Run fault injection
         working-directory: predastore
-        run: make e2e-stress
+        run: |
+          set -euo pipefail
+          # events.txt carries the timeline and the FAIL line, but not the build
+          # output or anything Warp wrote before the harness took over. The
+          # harness only creates this directory, so a log placed here survives.
+          mkdir -p "$STRESS_RESULTS_ROOT"
+          make e2e-stress 2>&1 | tee "$STRESS_RESULTS_ROOT/e2e-stress.log"
 
       - uses: actions/upload-artifact@v7
         if: always()

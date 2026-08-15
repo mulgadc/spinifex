@@ -550,6 +550,9 @@ var (
 	ErrorModelNotReadyException      = "ModelNotReadyException"
 	ErrorServiceUnavailableException = "ServiceUnavailableException"
 	ErrorModelErrorException         = "ModelErrorException"
+	// ErrorConflictException is bedrock-agent's wire code for an id already
+	// claimed by another resource (CreateKnowledgeBase/CreateDataSource).
+	ErrorConflictException = "ConflictException"
 	// ErrorServiceQuotaExceededException is for genuine per-account limits
 	// (e.g. Ochre's tokens-per-month cap) — unlike ErrorModelNotReadyException,
 	// which is reserved for transient capacity conditions that breach no quota.
@@ -647,6 +650,19 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"bedrock-runtime": {
 		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockResourceNotFoundMessage},
 	},
+	// bedrock-agent addresses knowledge bases/data sources/ingestion jobs, not
+	// foundation models, so it needs its own wording rather than either the
+	// EKS default or bedrockResourceNotFoundMessage above.
+	"bedrock-agent": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockAgentResourceNotFoundMessage},
+	},
+	// bedrock-agent-runtime addresses the same knowledge-base resources as
+	// bedrock-agent (Retrieve/RetrieveAndGenerate resolve a knowledgeBaseId),
+	// so it shares bedrock-agent's wording rather than either the EKS default
+	// or bedrockResourceNotFoundMessage.
+	"bedrock-agent-runtime": {
+		ErrorResourceNotFoundException: {HTTPCode: 404, Message: bedrockAgentResourceNotFoundMessage},
+	},
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},
@@ -656,6 +672,11 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 // for the shared ResourceNotFoundException wire code, which otherwise tells a
 // Bedrock caller to go and list EKS clusters.
 const bedrockResourceNotFoundMessage = "Could not resolve the foundation model from the provided model identifier."
+
+// bedrockAgentResourceNotFoundMessage overrides the EKS wording ErrorLookup
+// carries for the shared ResourceNotFoundException wire code, which
+// otherwise tells a bedrock-agent caller to go and list EKS clusters.
+const bedrockAgentResourceNotFoundMessage = "The specified knowledge base, data source, or ingestion job resource could not be found."
 
 // LookupErrorMessage returns the ErrorMessage for code, scoped to service
 // where errorLookupByService has an override, otherwise ErrorLookup's global
@@ -1220,4 +1241,5 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorServiceUnavailableException:   {HTTPCode: 503, Message: "The service isn't currently available. Try again later."},
 	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
+	ErrorConflictException:             {HTTPCode: 409, Message: "There was a conflict performing an operation."},
 }

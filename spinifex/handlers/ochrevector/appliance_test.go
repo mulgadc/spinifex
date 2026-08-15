@@ -629,6 +629,37 @@ func TestTeardown_WithStoresPurgesRegistryAndJobs(t *testing.T) {
 	assert.Empty(t, remainingJobs, "Teardown must purge every job record")
 }
 
+// TestTeardown_WithKBStoresPurgesKnowledgeBasesAndDataSources proves an
+// Appliance wired via WithKBStores purges every gateway-owned knowledge-base
+// and data-source record on Teardown, so a reprovisioned appliance never
+// leaves KB/DataSource metadata pointing at an index that no longer exists.
+func TestTeardown_WithKBStoresPurgesKnowledgeBasesAndDataSources(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.35", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.35", 5432)
+
+	kb := NewKBStore(js)
+	ds := NewDataSourceStore(js)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, kb.Create(ctx, "111111111111", KBRecord{ID: "kb-one", IndexID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, ds.Create(ctx, "111111111111", DataSourceRecord{ID: "ds-one", KnowledgeBaseID: "kb-one", CreatedAt: now, UpdatedAt: now}))
+
+	appliance.WithKBStores(kb, ds)
+	require.NoError(t, appliance.Teardown(ctx))
+
+	remainingKBs, err := kb.List(ctx, "111111111111")
+	require.NoError(t, err)
+	assert.Empty(t, remainingKBs, "Teardown must purge every knowledge base record")
+
+	remainingDS, err := ds.List(ctx, "111111111111")
+	require.NoError(t, err)
+	assert.Empty(t, remainingDS, "Teardown must purge every data source record")
+}
+
 // TestTeardown_WithoutStoresStillWorks proves an Appliance that never calls
 // WithStores (every pre-existing caller and test) still tears down cleanly:
 // the registry/jobs purge is nil-safe, not a new required dependency.

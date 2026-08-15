@@ -3,6 +3,8 @@ package gateway_bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -74,6 +76,42 @@ func TestVLLMProvider_Converse_UnresolvedEndpointReturnsModelNotReady(t *testing
 	_, err := p.Converse(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestVLLMProvider_Converse_EndpointErrorPropagatesCode proves a resolver err
+// carrying an admission-refusal code (wrapped the way decodedNATSError's
+// Unwrap tree does) surfaces faithfully rather than being flattened to
+// ServiceUnavailableException.
+func TestVLLMProvider_Converse_EndpointErrorPropagatesCode(t *testing.T) {
+	wrapped := fmt.Errorf("endpoint resolve: %w", errors.New(awserrors.ErrorModelNotReadyException))
+	p := newVLLMProvider(errEndpointResolver{err: wrapped})
+
+	input := &bedrockruntime.ConverseInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	}
+
+	_, err := p.Converse(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestVLLMProvider_Converse_EndpointErrorFallsBackToServiceUnavailable proves
+// an un-coded transport failure still falls back to
+// ServiceUnavailableException rather than surfacing raw transport text.
+func TestVLLMProvider_Converse_EndpointErrorFallsBackToServiceUnavailable(t *testing.T) {
+	p := newVLLMProvider(errEndpointResolver{err: errors.New("nats: timeout")})
+
+	input := &bedrockruntime.ConverseInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	}
+
+	_, err := p.Converse(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
 }
 
 // vllmStreamFixture is a canned OpenAI chat-completions streaming SSE body:
@@ -179,6 +217,39 @@ func TestVLLMProvider_ConverseStream_UnresolvedEndpointReturnsModelNotReady(t *t
 	_, err := p.ConverseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestVLLMProvider_ConverseStream_EndpointErrorPropagatesCode mirrors the
+// Converse case for the streaming entry point.
+func TestVLLMProvider_ConverseStream_EndpointErrorPropagatesCode(t *testing.T) {
+	wrapped := fmt.Errorf("endpoint resolve: %w", errors.New(awserrors.ErrorModelNotReadyException))
+	p := newVLLMProvider(errEndpointResolver{err: wrapped})
+
+	input := &bedrockruntime.ConverseStreamInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	}
+
+	_, err := p.ConverseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorModelNotReadyException, err.Error())
+}
+
+// TestVLLMProvider_ConverseStream_EndpointErrorFallsBackToServiceUnavailable
+// mirrors the Converse case for the streaming entry point.
+func TestVLLMProvider_ConverseStream_EndpointErrorFallsBackToServiceUnavailable(t *testing.T) {
+	p := newVLLMProvider(errEndpointResolver{err: errors.New("nats: timeout")})
+
+	input := &bedrockruntime.ConverseStreamInput{
+		Messages: []*bedrockruntime.Message{
+			{Role: aws.String(bedrockruntime.ConversationRoleUser), Content: []*bedrockruntime.ContentBlock{{Text: aws.String("hello")}}},
+		},
+	}
+
+	_, err := p.ConverseStream(context.Background(), "meta.llama3-2-1b-instruct-v1:0", input)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
 }
 
 func TestVLLMProvider_ConverseStream_UpstreamNon2xxMapsStatus(t *testing.T) {

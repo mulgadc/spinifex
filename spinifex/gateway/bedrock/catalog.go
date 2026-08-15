@@ -20,6 +20,10 @@ const (
 	providerPrefix  = "provider:"
 	vendorAnthropic = "anthropic"
 	modelARNFormat  = "arn:aws:bedrock:*::foundation-model/%s"
+	// familyMeta is the self-host model family served by the Llama invoke
+	// adapter. Any other self-host family is unhandled and refused explicitly
+	// rather than mis-served through Llama's native request schema.
+	familyMeta = "meta"
 )
 
 // catalogEntry is one static catalog record. Model IDs mirror AWS exactly so
@@ -42,6 +46,7 @@ type catalogEntry struct {
 	ModelName                     string
 	ProviderName                  string
 	Provider                      string // "self-host" or "provider:<vendor>"
+	Family                        string // self-host only; selects the invoke adapter (see familyMeta)
 	InputModalities               []string
 	OutputModalities              []string
 	ResponseStreamingSupported    bool
@@ -57,16 +62,13 @@ type catalogEntry struct {
 
 // catalog is the static model set: two self-hosted open models and one
 // Anthropic-direct model. Later phases extend this list.
-//
-// Both self-host entries are Meta models on purpose: self-host InvokeModel
-// dispatch picks llamaInvokeAdapter for every self-host entry, so a model of
-// another family would be served with Llama's native request schema.
 var catalog = []catalogEntry{
 	{
 		ModelID:                    "meta.llama3-2-1b-instruct-v1:0",
 		ModelName:                  "Llama 3.2 1B Instruct",
 		ProviderName:               "Meta",
 		Provider:                   tierSelfHost,
+		Family:                     familyMeta,
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
@@ -83,6 +85,7 @@ var catalog = []catalogEntry{
 		ModelName:                  "Llama 3.2 3B Instruct",
 		ProviderName:               "Meta",
 		Provider:                   tierSelfHost,
+		Family:                     familyMeta,
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,

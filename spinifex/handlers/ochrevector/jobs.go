@@ -48,9 +48,13 @@ type FailedDoc struct {
 // RUNNING -> READY (completed, possibly with per-document failures) or
 // FAILED (the job itself could not complete, e.g. embedder fully down).
 type JobRecord struct {
-	ID              string      `json:"id"`
-	AccountID       string      `json:"accountId"`
-	IndexID         string      `json:"indexId"`
+	ID        string `json:"id"`
+	AccountID string `json:"accountId"`
+	IndexID   string `json:"indexId"`
+	// DataSourceID ties this job to the bedrock-agent DataSource it was
+	// started from, if any: empty for a job started directly against
+	// ochre.vector.ingest with no data source involved.
+	DataSourceID    string      `json:"dataSourceId,omitempty"`
 	Source          SourceSpec  `json:"source"`
 	State           string      `json:"state"`
 	DocumentsTotal  int         `json:"documentsTotal"`

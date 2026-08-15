@@ -77,13 +77,17 @@ func (d *Daemon) startOchreVector() {
 		NodeID:   d.node,
 	})
 
-	// registry and jobs need only js, never a live backend, so they are built
-	// (and attached) here rather than after Connect: Teardown must be able to
-	// purge them even for an appliance that never comes up. Reused below,
-	// once connected, rather than reconstructed.
+	// registry, jobs, kb and ds need only js, never a live backend, so they
+	// are built (and attached) here rather than after Connect: Teardown must
+	// be able to purge them even for an appliance that never comes up.
+	// registry/jobs are reused below, once connected, rather than
+	// reconstructed; kb/ds are gateway-owned metadata this daemon never reads
+	// or writes itself -- they exist here solely so Teardown can purge them
+	// alongside registry/jobs.
 	registry := handlers_ochrevector.NewRegistry(js)
 	jobs := handlers_ochrevector.NewJobStore(js)
 	appliance.WithStores(registry, jobs)
+	appliance.WithKBStores(handlers_ochrevector.NewKBStore(js), handlers_ochrevector.NewDataSourceStore(js))
 
 	// Publish the appliance and register the operator teardown subject BEFORE
 	// Connect: recovering a broken singleton is teardown's whole purpose, so it
@@ -146,6 +150,7 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
 		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
+		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(vectorService.ListJobs), "spinifex-workers"},
 	}
 	if err := d.registerNatsSubs(subs); err != nil {
 		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)

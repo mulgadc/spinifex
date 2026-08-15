@@ -19,6 +19,7 @@ const (
 	SubjectIngest      = "ochre.vector.ingest"
 	SubjectDescribeJob = "ochre.vector.describeJob"
 	SubjectQuery       = "ochre.vector.query"
+	SubjectListJobs    = "ochre.vector.listJobs"
 )
 
 // CreateIndexRequest names a new index and its fixed, per-index properties
@@ -55,9 +56,14 @@ type ListIndexesResponse struct {
 // EmbeddingModel/Dimension are ignored and overwritten server-side from the
 // index's own registered values (see vectorService.Ingest) -- an index's
 // embedding model is a property of the index (D6/D8), not of any one caller.
+// DataSourceID is optional: the bedrock-agent gateway stamps it from the
+// DataSource record driving this ingest, so the resulting job can later be
+// tied back to it exactly; a direct ochre.vector.ingest caller may leave it
+// empty.
 type IngestRequest struct {
-	IndexID string     `json:"indexId"`
-	Source  SourceSpec `json:"source"`
+	IndexID      string     `json:"indexId"`
+	Source       SourceSpec `json:"source"`
+	DataSourceID string     `json:"dataSourceId,omitempty"`
 }
 
 type IngestResponse struct {
@@ -89,9 +95,17 @@ type QueryResponse struct {
 	Results []QueryResult `json:"results"`
 }
 
+// ListJobsRequest has no fields: accountID comes from the caller context
+// (D10), never the payload, mirroring ListIndexesRequest.
+type ListJobsRequest struct{}
+
+type ListJobsResponse struct {
+	Jobs []JobRecord `json:"jobs"`
+}
+
 // VectorService is the tenant vector-store surface: index CRUD, ingestion,
-// job status, and similarity query. Every method's accountID argument is
-// supplied by the transport alone (a NATS message header for the daemon
+// job status/listing, and similarity query. Every method's accountID argument
+// is supplied by the transport alone (a NATS message header for the daemon
 // subscription, D10) -- no request type above carries an account field, so a
 // spoofed payload account can never widen a caller's own scope.
 type VectorService interface {
@@ -100,6 +114,7 @@ type VectorService interface {
 	ListIndexes(ctx context.Context, req *ListIndexesRequest, accountID string) (*ListIndexesResponse, error)
 	Ingest(ctx context.Context, req *IngestRequest, accountID string) (*IngestResponse, error)
 	DescribeJob(ctx context.Context, req *DescribeJobRequest, accountID string) (*DescribeJobResponse, error)
+	ListJobs(ctx context.Context, req *ListJobsRequest, accountID string) (*ListJobsResponse, error)
 	Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error)
 }
 
@@ -116,15 +131,16 @@ var _ indexService = (*Service)(nil)
 // ingestStarter is the StartIngest surface vectorService delegates to;
 // *IngestService satisfies it structurally.
 type ingestStarter interface {
-	StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec) (*JobRecord, error)
+	StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec, dataSourceID string) (*JobRecord, error)
 }
 
 var _ ingestStarter = (*IngestService)(nil)
 
-// jobGetter is the job-lookup surface DescribeJob delegates to; *JobStore
-// satisfies it structurally.
+// jobGetter is the job-lookup/listing surface DescribeJob and ListJobs
+// delegate to; *JobStore satisfies it structurally.
 type jobGetter interface {
 	Get(ctx context.Context, accountID, jobID string) (*JobRecord, error)
+	List(ctx context.Context, accountID string) ([]JobRecord, error)
 }
 
 var _ jobGetter = (*JobStore)(nil)
@@ -234,7 +250,7 @@ func (s *vectorService) Ingest(ctx context.Context, req *IngestRequest, accountI
 	source.EmbeddingModel = idx.EmbeddingModel
 	source.Dimension = idx.Dimension
 
-	job, err := s.ingest.StartIngest(ctx, accountID, req.IndexID, source)
+	job, err := s.ingest.StartIngest(ctx, accountID, req.IndexID, source, req.DataSourceID)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: ingest: %w", err)
 	}
@@ -253,6 +269,15 @@ func (s *vectorService) DescribeJob(ctx context.Context, req *DescribeJobRequest
 		return nil, ErrJobNotFound
 	}
 	return &DescribeJobResponse{Job: *job}, nil
+}
+
+// ListJobs returns every ingestion job record owned by accountID.
+func (s *vectorService) ListJobs(ctx context.Context, _ *ListJobsRequest, accountID string) (*ListJobsResponse, error) {
+	jobs, err := s.jobs.List(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("ochrevector: list jobs: %w", err)
+	}
+	return &ListJobsResponse{Jobs: jobs}, nil
 }
 
 // Query resolves IndexID's pinned embedding model from the registry (D8),
@@ -330,6 +355,10 @@ func (c *NATSVectorService) Ingest(ctx context.Context, req *IngestRequest, acco
 
 func (c *NATSVectorService) DescribeJob(ctx context.Context, req *DescribeJobRequest, accountID string) (*DescribeJobResponse, error) {
 	return utils.NATSRequest[DescribeJobResponse](ctx, c.nc, SubjectDescribeJob, req, c.timeout, accountID)
+}
+
+func (c *NATSVectorService) ListJobs(ctx context.Context, req *ListJobsRequest, accountID string) (*ListJobsResponse, error) {
+	return utils.NATSRequest[ListJobsResponse](ctx, c.nc, SubjectListJobs, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error) {

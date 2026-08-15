@@ -67,9 +67,11 @@ func NewIngestService(jobs *JobStore, registry *Registry, backend VectorBackend,
 }
 
 // StartIngest validates indexID exists for accountID, then reserves a new
-// PENDING job for source. It does not run the job -- a scheduler/daemon
-// calls RunJob later (Stage 4); tests call RunJob directly.
-func (s *IngestService) StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec) (*JobRecord, error) {
+// PENDING job for source, tagged with dataSourceID (empty when the caller has
+// no bedrock-agent DataSource, e.g. a direct ochre.vector.ingest call). It
+// does not run the job -- a scheduler/daemon calls RunJob later (Stage 4);
+// tests call RunJob directly.
+func (s *IngestService) StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec, dataSourceID string) (*JobRecord, error) {
 	idxRec, err := s.Registry.Get(ctx, accountID, indexID)
 	if err != nil {
 		return nil, err
@@ -80,12 +82,13 @@ func (s *IngestService) StartIngest(ctx context.Context, accountID, indexID stri
 
 	now := time.Now().UTC()
 	rec := JobRecord{
-		ID:        utils.GenerateResourceID("job"),
-		IndexID:   indexID,
-		Source:    source,
-		State:     JobStatePending,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:           utils.GenerateResourceID("job"),
+		IndexID:      indexID,
+		DataSourceID: dataSourceID,
+		Source:       source,
+		State:        JobStatePending,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	if err := s.Jobs.Reserve(ctx, accountID, rec); err != nil {
 		return nil, err

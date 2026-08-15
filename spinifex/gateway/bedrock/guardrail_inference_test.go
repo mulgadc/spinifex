@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
@@ -720,4 +721,196 @@ func TestGuardrailStreamSource_TraceDisabledOmitsAssessment(t *testing.T) {
 	metadata := events[len(events)-1]
 	require.Equal(t, converseStreamEventMetadata, metadata.Kind)
 	assert.Nil(t, metadata.Metadata.Trace)
+}
+
+// TestAnthropicInvokeAdapter_UndecodableOutputBlocksWithMessaging proves the
+// OUTPUT hook's fail-closed building blocks for the Anthropic family end to
+// end at the adapter boundary: anthropicInvokeAdapter.InvokeModel forwards
+// the upstream body verbatim (unlike Llama's, which always re-marshals a
+// validated Go struct before returning), so a malformed upstream response
+// really does reach extractAnthropicCompletionTexts undecodable in
+// production -- exactly the extraction failure invoke.go's OUTPUT hook now
+// fails closed on, using invokeGuardrailBlockedResponse to build the guarded
+// reply.
+func TestAnthropicInvokeAdapter_UndecodableOutputBlocksWithMessaging(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer ts.Close()
+
+	a := &anthropicInvokeAdapter{httpClient: ts.Client(), baseURL: ts.URL}
+	reqBody := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	respBody, _, err := a.InvokeModel(context.Background(), "anthropic.claude-3-5-sonnet-20240620-v1:0", reqBody, "sk-test")
+	require.NoError(t, err, "the adapter forwards a non-2xx-but-still-200 malformed body verbatim rather than erroring itself")
+	assert.Equal(t, "not json", string(respBody))
+
+	_, ok := extractAnthropicCompletionTexts(respBody)
+	require.False(t, ok, "a non-JSON upstream body must fail to decode as the expected shape")
+
+	blocked, err := invokeGuardrailBlockedResponse(providerPrefix+vendorAnthropic, "anthropic.claude-3-5-sonnet-20240620-v1:0", "The model response violates our policy.")
+	require.NoError(t, err)
+
+	texts, ok := extractAnthropicCompletionTexts(blocked)
+	require.True(t, ok)
+	assert.Equal(t, []string{"The model response violates our policy."}, texts)
+	assert.NotContains(t, string(blocked), "not json")
+}
+
+// TestLlamaCompletionGuardrailHelpers_UndecodableBodyBlocksWithMessaging
+// exercises the same extractLlamaCompletionTexts/invokeGuardrailBlockedResponse
+// pair the OUTPUT hook's fail-closed branch calls for the Llama family.
+// Unlike Anthropic, llamaInvokeAdapter.InvokeModel always re-marshals a
+// validated llamaInvokeResponse before returning, so an undecodable body can
+// never actually reach the hook through the real self-host adapter chain --
+// this proves the building blocks fail closed regardless.
+func TestLlamaCompletionGuardrailHelpers_UndecodableBodyBlocksWithMessaging(t *testing.T) {
+	badBody := []byte(`{"generation": 12345}`)
+
+	_, ok := extractLlamaCompletionTexts(badBody)
+	require.False(t, ok, "a numeric generation field must fail to decode as the expected string shape")
+
+	blocked, err := invokeGuardrailBlockedResponse(tierSelfHost, "meta.llama3-2-1b-instruct-v1:0", "The model response violates our policy.")
+	require.NoError(t, err)
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(blocked, &out))
+	assert.Equal(t, "The model response violates our policy.", out.Generation)
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, out.StopReason)
+	assert.NotContains(t, string(blocked), "12345")
+}
+
+// TestInvokeRouter_GuardrailOutputPath_DeletedMidRequest_FailsClosed proves
+// loadGuardrailView's reload on the OUTPUT path fails closed: the guardrail
+// is deleted from inside the backend handler, after the INPUT check already
+// passed (the backend is only ever reached once INPUT allowed the request
+// through) but before the OUTPUT check runs its own reload.
+func TestInvokeRouter_GuardrailOutputPath_DeletedMidRequest_FailsClosed(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-output-guardrail-deleted-mid-request"))
+	require.NoError(t, err)
+
+	modelID := "meta.llama3-2-1b-instruct-v1:0"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, derr := DeleteGuardrail(context.Background(), grCallerAccount, store, &bedrock.DeleteGuardrailInput{GuardrailIdentifier: createOut.GuardrailId})
+		assert.NoError(t, derr)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [{"text": "hi", "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+		}`))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store)
+
+	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+	assert.Nil(t, respBody, "a fail-closed OUTPUT-path guardrail-load failure must not leak a body")
+}
+
+// TestGuardrailInvokeStreamSource_OutputBlock_UndecodableChunk_Llama drives
+// guardrailInvokeStreamSource.Next directly with a scripted chunk sequence
+// (independent of any real backend) whose second chunk fails to decode --
+// the buffered/SYNC invoke-stream analog of TestInvokeRouter_
+// GuardrailOutputBlock_UndecodableBody_Anthropic.
+func TestGuardrailInvokeStreamSource_OutputBlock_UndecodableChunk_Llama(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-output-undecodable-llama"))
+	require.NoError(t, err)
+
+	inner := &fakeInvokeStreamSource{chunks: [][]byte{
+		[]byte(`{"generation":"partial safe text "}`),
+		[]byte(`{"generation": 123}`),
+	}}
+	g := newGuardrailInvokeStreamSource(inner, store, grCallerAccount, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion, tierSelfHost)
+
+	chunks := drainInvokeStream(t, g)
+	require.Len(t, chunks, 2, "the guarded blocked sequence replaces the raw buffer wholesale")
+
+	var delta llamaInvokeStreamChunk
+	require.NoError(t, json.Unmarshal(chunks[0], &delta))
+	assert.Equal(t, "The model response violates our policy.", delta.Generation)
+
+	var final llamaInvokeStreamFinalChunk
+	require.NoError(t, json.Unmarshal(chunks[1], &final))
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, final.StopReason)
+
+	for _, c := range chunks {
+		assert.NotContains(t, string(c), "partial safe text")
+	}
+}
+
+// TestGuardrailInvokeStreamSource_OutputBlock_UndecodableChunk_Anthropic is
+// TestGuardrailInvokeStreamSource_OutputBlock_UndecodableChunk_Llama's
+// Anthropic-family sibling: a content_block_delta chunk whose text field is
+// the wrong JSON type fails to decode outright, distinct from a
+// structurally valid control chunk (content_block_start/stop) carrying no
+// text at all.
+func TestGuardrailInvokeStreamSource_OutputBlock_UndecodableChunk_Anthropic(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-output-undecodable-anthropic"))
+	require.NoError(t, err)
+
+	backend := providerPrefix + vendorAnthropic
+	inner := &fakeInvokeStreamSource{chunks: [][]byte{
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial safe text "}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":123}}`),
+	}}
+	g := newGuardrailInvokeStreamSource(inner, store, grCallerAccount, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion, backend)
+
+	chunks := drainInvokeStream(t, g)
+	require.Len(t, chunks, 5, "anthropicGuardedStreamChunks' minimal event sequence")
+
+	var contentDelta struct {
+		Delta struct {
+			Text string `json:"text"`
+		} `json:"delta"`
+	}
+	require.NoError(t, json.Unmarshal(chunks[1], &contentDelta))
+	assert.Equal(t, "The model response violates our policy.", contentDelta.Delta.Text)
+
+	var msgDelta struct {
+		Delta struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+	}
+	require.NoError(t, json.Unmarshal(chunks[3], &msgDelta))
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, msgDelta.Delta.StopReason)
+
+	for _, c := range chunks {
+		assert.NotContains(t, string(c), "partial safe text")
+	}
+}
+
+// TestGuardrailInvokeStreamSource_EmptyCompletion_PassesThroughUnblocked_Regression
+// proves a genuinely empty completion (every chunk decodes fine, none carry
+// assistant text) is forwarded unchanged rather than blocked -- the decode-
+// failure signal must never fire on a benign control/empty chunk.
+func TestGuardrailInvokeStreamSource_EmptyCompletion_PassesThroughUnblocked_Regression(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("invoke-stream-output-empty-regression"))
+	require.NoError(t, err)
+
+	rawChunks := [][]byte{
+		[]byte(`{"generation":""}`),
+		[]byte(`{"generation":"","prompt_token_count":1,"generation_token_count":0,"stop_reason":"stop"}`),
+	}
+	inner := &fakeInvokeStreamSource{chunks: append([][]byte{}, rawChunks...)}
+	g := newGuardrailInvokeStreamSource(inner, store, grCallerAccount, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion, tierSelfHost)
+
+	chunks := drainInvokeStream(t, g)
+	require.Len(t, chunks, len(rawChunks))
+	for i, c := range chunks {
+		assert.JSONEq(t, string(rawChunks[i]), string(c))
+	}
 }

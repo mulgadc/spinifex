@@ -135,9 +135,21 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		return nil, err
 	}
 
+	// A retry carrying the stored token is answered from the record before
+	// anything else. Once the teardown has finished the account is gone, and an
+	// inventory would report the retry as a missing account.
+	replay, err := replayDeletionJob(ctx, jobs, &req)
+	if err != nil {
+		return nil, err
+	}
+	if replay != nil {
+		return deletionJobResponse(replay), nil
+	}
+
 	// Confirm the account is deletable before claiming the job, so a mistyped
-	// id or a protected account does not leave a job record behind.
-	if _, err := engine.Inventory(ctx, req.AccountID); err != nil {
+	// id, a wrong name confirmation or a protected account fails the request
+	// rather than a background job nobody is watching.
+	if err := engine.Precheck(req.AccountID, req.AccountName); err != nil {
 		return nil, teardownError("DeleteAccount", req.AccountID, err)
 	}
 
@@ -146,11 +158,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		return nil, err
 	}
 	if replay != nil {
-		slog.Info("DeleteAccount: replayed existing job",
-			"accountID", replay.AccountID, "deletionID", replay.DeletionID, "state", replay.State)
-		return &DeleteAccountResponse{
-			DeletionID: replay.DeletionID, AccountID: replay.AccountID, State: replay.State,
-		}, nil
+		return deletionJobResponse(replay), nil
 	}
 
 	gw.runAccountDeletion(engine, jobs, job)
@@ -377,6 +385,12 @@ func claimDeletionJob(
 		return nil, nil, errors.New(awserrors.ErrorInternalError)
 	}
 
+	// Another gateway claimed it between the replay check and here, so the same
+	// token has to be recognised a second time.
+	if replay, err := replayDeletionJob(ctx, jobs, req); err != nil || replay != nil {
+		return nil, replay, err
+	}
+
 	existing, err := readDeletionJob(ctx, jobs, req.AccountID)
 	if err != nil {
 		return nil, nil, err
@@ -386,13 +400,6 @@ func claimDeletionJob(
 		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
 
-	// A token bound to a different account name is a client bug, not a retry.
-	if existing.ClientToken == req.ClientToken {
-		if existing.AccountName != req.AccountName {
-			return nil, nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
-		}
-		return nil, existing, nil
-	}
 	if existing.State == DeletionStateRunning && !deletionJobStale(existing, now) {
 		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
@@ -411,6 +418,38 @@ func claimDeletionJob(
 	slog.Warn("DeleteAccount: retrying a job that did not finish",
 		"accountID", req.AccountID, "previousDeletionID", existing.DeletionID, "previousState", existing.State)
 	return job, nil, nil
+}
+
+// replayDeletionJob answers a retry from the stored record. A token bound to a
+// different account name is a client bug rather than a retry, so it is refused
+// here too instead of starting a second teardown under the same token.
+func replayDeletionJob(
+	ctx context.Context,
+	jobs jetstream.KeyValue,
+	req *DeleteAccountRequest,
+) (*accountDeletionJob, error) {
+	existing, err := readDeletionJob(ctx, jobs, req.AccountID)
+	if err != nil || existing == nil {
+		return nil, err
+	}
+	if existing.ClientToken != req.ClientToken {
+		return nil, nil
+	}
+	if existing.AccountName != req.AccountName {
+		return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+	}
+	return existing, nil
+}
+
+// deletionJobResponse acknowledges an existing job. It carries no stage detail:
+// DescribeAccountDeletion is where progress is read from, and duplicating it
+// here would make the two disagree.
+func deletionJobResponse(job *accountDeletionJob) *DeleteAccountResponse {
+	slog.Info("DeleteAccount: replayed existing job",
+		"accountID", job.AccountID, "deletionID", job.DeletionID, "state", job.State)
+	return &DeleteAccountResponse{
+		DeletionID: job.DeletionID, AccountID: job.AccountID, State: job.State,
+	}
 }
 
 // deletionJobStale reports whether a RUNNING job has stopped heartbeating for
@@ -483,9 +522,15 @@ func teardownError(method, accountID string, err error) error {
 }
 
 // isAccountNotFound recognises the IAM service's missing-account error, which
-// is a plain error value rather than a typed one.
+// is a plain error value rather than a typed one. Both spellings are matched
+// because the account store and its KV layer word it differently.
 func isAccountNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "account not found")
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "account not found") ||
+		strings.Contains(message, awserrors.ErrorIAMNoSuchEntity)
 }
 
 // validateDeleteAccountRequest rejects malformed input. Messages name the

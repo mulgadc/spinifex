@@ -15,7 +15,7 @@ import (
 // accountDeletePollInterval is how often --remote asks the gateway how far the
 // teardown has got. The work is minutes long, so a tighter poll would only add
 // load without telling the operator anything new.
-const accountDeletePollInterval = 10 * time.Second
+var accountDeletePollInterval = 10 * time.Second
 
 // runAccountDeleteRemote drives POST /admin/DeleteAccount and then follows the
 // job to completion, so the remote path reports the same outcome the local one

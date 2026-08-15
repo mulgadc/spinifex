@@ -46,6 +46,15 @@ func (e *Engine) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// Precheck applies the rules that decide whether a teardown may start at all,
+// without listing anything. A caller that runs the teardown in the background
+// needs these answered synchronously: a protected account, an unknown id or a
+// mistyped name confirmation must fail the request, not the job.
+func (e *Engine) Precheck(accountID, accountName string) error {
+	_, err := e.checkDeletable(accountID, accountName)
+	return err
+}
+
 // Inventory reports what a teardown would remove, grouped by stage, without
 // deleting anything or changing the account's status.
 func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, error) {

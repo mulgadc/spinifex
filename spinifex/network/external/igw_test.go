@@ -551,10 +551,10 @@ func TestEnsureSystemInstanceEgress(t *testing.T) {
 	assert.Nil(t, dnat, "egress-only: no inbound dnat_and_snat may be installed")
 }
 
-// TestEnsureEIPInstanceEgress installs the /32 reroute above the drop gate WITHOUT
+// TestEnsureEIPInstanceEgress installs the /32 exemption above the drop gate WITHOUT
 // any snat row: an EIP's dnat_and_snat already SNATs the instance, so a second plain
-// snat would be redundant. The reroute alone lets the EIP's inbound-connection reply
-// bypass the subnet drop gate.
+// snat would be redundant. The exemption alone lets the EIP's inbound-connection
+// reply bypass the subnet drop gate.
 func TestEnsureEIPInstanceEgress(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -569,23 +569,27 @@ func TestEnsureEIPInstanceEgress(t *testing.T) {
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
-	var reroute, drop *nbdb.LogicalRouterPolicy
+	var exempt, drop *nbdb.LogicalRouterPolicy
 	for i := range policies {
 		switch policies[i].Priority {
 		case policy.SystemInstanceEgressPriority:
-			reroute = &policies[i]
+			exempt = &policies[i]
 		case policy.SubnetEgressPriorityDrop:
 			drop = &policies[i]
 		}
 	}
-	require.NotNil(t, reroute, "EIP /32 reroute must be installed")
-	require.NotNil(t, drop, "drop gate must remain — the reroute exempts the EIP, not the subnet")
-	assert.Equal(t, "reroute", reroute.Action)
-	assert.Contains(t, reroute.Match, "ip4.src == 10.0.4.10/32")
-	assert.Greater(t, reroute.Priority, drop.Priority, "EIP reroute must sit above the drop gate")
+	require.NotNil(t, exempt, "EIP /32 exemption must be installed")
+	require.NotNil(t, drop, "drop gate must remain — the exemption covers the EIP, not the subnet")
+	// This manager is distributed-NAT with a link-local gateway LRP, so the pool
+	// gateway is outside every LRP subnet. A reroute there is silently discarded
+	// by northd and the drop gate below would swallow the EIP's replies.
+	assert.Equal(t, "allow", exempt.Action)
+	assert.Nil(t, exempt.Nexthop)
+	assert.Contains(t, exempt.Match, "ip4.src == 10.0.4.10/32")
+	assert.Greater(t, exempt.Priority, drop.Priority, "EIP exemption must sit above the drop gate")
 
 	for _, n := range m.NATs {
-		assert.NotEqual(t, "snat", n.Type, "EIP egress is reroute-only: dnat_and_snat already SNATs, no plain snat")
+		assert.NotEqual(t, "snat", n.Type, "EIP egress is policy-only: dnat_and_snat already SNATs, no plain snat")
 	}
 }
 

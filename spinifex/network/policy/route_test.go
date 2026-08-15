@@ -176,10 +176,12 @@ func TestRouteManager_AddSystemInstanceEgress_InstallsScopedPolicy(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, policies, 1)
 	p := policies[0]
-	assert.Equal(t, "reroute", p.Action)
+	// allow with no nexthop: northd silently discards a reroute whose nexthop is
+	// outside every LRP subnet, which is the case whenever the gateway LRP is the
+	// link-local /30 that distributed NAT uses.
+	assert.Equal(t, "allow", p.Action)
 	assert.Equal(t, SystemInstanceEgressPriority, p.Priority)
-	require.NotNil(t, p.Nexthop)
-	assert.Equal(t, "192.168.1.1", *p.Nexthop)
+	assert.Nil(t, p.Nexthop)
 	// Scoped to the single instance /32 source so peers in the subnet are untouched.
 	assert.Contains(t, p.Match, "ip4.src == 172.31.4.10/32")
 	assert.Contains(t, p.Match, topology.SubnetRouterPort("subnet-k3s"))
@@ -209,7 +211,9 @@ func TestRouteManager_AddSystemInstanceEgress_IsIdempotent(t *testing.T) {
 	assert.Len(t, policies, 1)
 }
 
-func TestRouteManager_AddSystemInstanceEgress_DriftReplacesNexthop(t *testing.T) {
+// A cluster that ran the reroute form still has those rows, and northd was
+// discarding every one of them. Reconcile has to convert them, not skip them.
+func TestRouteManager_AddSystemInstanceEgress_ReplacesLegacyReroute(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
@@ -222,15 +226,22 @@ func TestRouteManager_AddSystemInstanceEgress_DriftReplacesNexthop(t *testing.T)
 		Nexthop:    "192.168.1.1",
 		OutputPort: "gw-vpc-1",
 	}
-	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
-	spec.Nexthop = "192.168.1.254"
+	legacy := spec.Nexthop
+	require.NoError(t, m.AddLogicalRouterPolicy(ctx, topology.VPCRouter("vpc-1"), &nbdb.LogicalRouterPolicy{
+		Priority:    SystemInstanceEgressPriority,
+		Match:       systemInstanceEgressMatch(spec.SubnetID, spec.SrcIP, spec.Prefix, spec.ExcludeCIDRs),
+		Action:      "reroute",
+		Nexthop:     &legacy,
+		ExternalIDs: map[string]string{"spinifex:output_port": spec.OutputPort},
+	}))
+
 	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
 	require.Len(t, policies, 1)
-	require.NotNil(t, policies[0].Nexthop)
-	assert.Equal(t, "192.168.1.254", *policies[0].Nexthop)
+	assert.Equal(t, "allow", policies[0].Action)
+	assert.Nil(t, policies[0].Nexthop)
 }
 
 func TestRouteManager_AddSystemInstanceEgress_RejectsMissingFields(t *testing.T) {
@@ -258,6 +269,12 @@ func TestRouteManager_AddSystemInstanceEgress_RejectsMissingFields(t *testing.T)
 	noPort := valid
 	noPort.OutputPort = ""
 	assert.Error(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", noPort))
+
+	// The policy only lifts the drop gate; without a gateway there is nothing for
+	// the default route to send the instance to, so lifting it strands traffic.
+	noNexthop := valid
+	noNexthop.Nexthop = ""
+	assert.Error(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", noNexthop))
 }
 
 func TestRouteManager_DeleteSystemInstanceEgress_RemovesAndIdempotent(t *testing.T) {

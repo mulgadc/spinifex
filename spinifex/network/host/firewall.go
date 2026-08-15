@@ -76,6 +76,15 @@ var firewallReconcileInterval = 5 * time.Minute
 // until something happens to restart the daemon; and without the periodic
 // re-run a membership change is never picked up at all.
 func MaintainFirewall(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig) {
+	// Said once, because both quiet outcomes reconcile to nothing and log
+	// nothing, which in a journal is indistinguishable from a node that armed.
+	switch {
+	case clusterConfig == nil:
+		slog.Info("firewall: membership unknown, leaving any loaded policy alone")
+	case !firewallWanted(clusterConfig):
+		slog.Info("firewall: switched off for this node, no peer set will be written")
+	}
+
 	delay := firewallRetryDelay
 	for {
 		if err := ReconcileFirewall(configPath, clusterConfig); err != nil {

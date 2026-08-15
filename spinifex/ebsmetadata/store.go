@@ -59,37 +59,28 @@ func (s *Store) DeleteVolume(ctx context.Context, volumeID string) error {
 	return err
 }
 
-// ListVolumes returns every ebsmetadata volume document.
+// ListVolumes returns every ebsmetadata volume document, skipping any it
+// cannot read or decode. One unreadable document must not make every volume in
+// the cluster invisible, so the tolerance is deliberate and each skip is logged.
 func (s *Store) ListVolumes(ctx context.Context) ([]Volume, error) {
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")
 	}
-	return s.listVolumeDocuments(ctx)
+	return s.listVolumeDocuments(ctx, true)
 }
 
-func (s *Store) listVolumeDocuments(ctx context.Context) ([]Volume, error) {
-	result, err := s.objects.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket), Prefix: aws.String("spinifex/ebsmetadata/v1/volumes/"),
-	})
-	if err != nil {
-		return nil, err
+// ListVolumesStrict is ListVolumes without the tolerance. It is for callers
+// whose answer would be wrong rather than merely partial: a volume that failed
+// to read is not evidence that no volume holds the resource being checked.
+func (s *Store) ListVolumesStrict(ctx context.Context) ([]Volume, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
 	}
-	volumes := make([]Volume, 0, len(result.Contents))
-	for _, object := range result.Contents {
-		if object.Key == nil {
-			continue
-		}
-		data, err := s.get(ctx, *object.Key)
-		if err != nil {
-			return nil, err
-		}
-		volume, err := UnmarshalVolume(data)
-		if err != nil {
-			return nil, err
-		}
-		volumes = append(volumes, volume)
-	}
-	return volumes, nil
+	return s.listVolumeDocuments(ctx, false)
+}
+
+func (s *Store) listVolumeDocuments(ctx context.Context, skipCorrupt bool) ([]Volume, error) {
+	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, skipCorrupt)
 }
 
 // ListAMIs returns every AMI document, skipping any it cannot decode. One
@@ -113,32 +104,59 @@ func (s *Store) ListAMIsStrict(ctx context.Context) ([]AMI, error) {
 }
 
 func (s *Store) listAMIDocuments(ctx context.Context, skipCorrupt bool) ([]AMI, error) {
+	return listDocuments(ctx, s, amiPrefix, "AMI", UnmarshalAMI, skipCorrupt)
+}
+
+// Prefixes the metadata documents live under, one per document kind.
+const (
+	volumePrefix = "spinifex/ebsmetadata/v1/volumes/"
+	amiPrefix    = "spinifex/ebsmetadata/v1/amis/"
+)
+
+// listDocuments reads and decodes every document under prefix.
+//
+// skipCorrupt tolerates a document that cannot be fetched as well as one that
+// cannot be decoded: an object whose shards no longer join is exactly as
+// unusable as one whose bytes will not parse, and either kind read wholesale
+// as a failure turns a single bad document into a cluster-wide outage.
+func listDocuments[T any](
+	ctx context.Context,
+	s *Store,
+	prefix, kind string,
+	unmarshal func([]byte) (T, error),
+	skipCorrupt bool,
+) ([]T, error) {
 	result, err := s.objects.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket), Prefix: aws.String("spinifex/ebsmetadata/v1/amis/"),
+		Bucket: aws.String(s.bucket), Prefix: aws.String(prefix),
 	})
 	if err != nil {
 		return nil, err
 	}
-	amis := make([]AMI, 0, len(result.Contents))
+
+	documents := make([]T, 0, len(result.Contents))
 	for _, object := range result.Contents {
 		if object.Key == nil {
 			continue
 		}
 		data, err := s.get(ctx, *object.Key)
 		if err != nil {
-			return nil, err
-		}
-		ami, err := UnmarshalAMI(data)
-		if err != nil {
-			if skipCorrupt && errors.Is(err, ErrCorruptDocument) {
-				slog.WarnContext(ctx, "skipping undecodable AMI document", "key", *object.Key, "err", err)
+			if skipCorrupt {
+				slog.WarnContext(ctx, "skipping unreadable "+kind+" document", "key", *object.Key, "err", err)
 				continue
 			}
 			return nil, err
 		}
-		amis = append(amis, ami)
+		document, err := unmarshal(data)
+		if err != nil {
+			if skipCorrupt && errors.Is(err, ErrCorruptDocument) {
+				slog.WarnContext(ctx, "skipping undecodable "+kind+" document", "key", *object.Key, "err", err)
+				continue
+			}
+			return nil, err
+		}
+		documents = append(documents, document)
 	}
-	return amis, nil
+	return documents, nil
 }
 
 func (s *Store) PutAMI(ctx context.Context, ami AMI) error {

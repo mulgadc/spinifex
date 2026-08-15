@@ -51,7 +51,7 @@ func FindOrphanVolumes(ctx context.Context, provider ebsprovider.EBSProvider, me
 	// Strict listing on purpose: a document this cannot decode must abort the
 	// scan, never be treated as absent. Reporting a volume as orphaned because
 	// its document was unreadable would point an operator at live data.
-	documented, err := metadata.ListVolumes(ctx)
+	documented, err := metadata.ListVolumesStrict(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("orphan scan: list control-plane volumes: %w", err)
 	}

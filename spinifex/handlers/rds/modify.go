@@ -237,11 +237,15 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		if plan.ParameterGroup != "" {
 			targetGroup = plan.ParameterGroup
 		}
+		engine, err := LookupEngine(rec.Engine)
+		if err != nil {
+			return nil, err
+		}
 		kv, err := s.bucket(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := s.resolveGroupParameters(ctx, kv, accountID, targetGroup, targetClass); err != nil {
+		if _, err := s.resolveGroupParameters(ctx, kv, accountID, engine, targetGroup, targetClass); err != nil {
 			return nil, err
 		}
 	}

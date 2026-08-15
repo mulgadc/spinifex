@@ -79,6 +79,11 @@ type Deps struct {
 	// ConsumeCleanShutdownMarker reports whether the previous run wrote a clean
 	// shutdown marker, consuming it. Nil is treated as "no marker" (cautious recovery).
 	ConsumeCleanShutdownMarker func() bool
+
+	// BackingStoreReady reports whether this node's block-storage backend
+	// (predastore + viperblock) is confirmed up. Nil is treated as ready,
+	// preserving behaviour for tests and nodes with storage unwired.
+	BackingStoreReady func() bool
 }
 
 // Manager owns the in-memory map of running VMs on this node and every
@@ -107,6 +112,13 @@ func (m *Manager) SetDeps(deps Deps) { m.deps = deps }
 
 // NodeID returns the node identifier the manager was constructed with.
 func (m *Manager) NodeID() string { return m.deps.NodeID }
+
+// backingStoreReady reports whether the block-storage backend is confirmed up.
+// A nil probe is treated as ready, so an unreachable NBD socket is only ever
+// escalated to a kill when the store as a whole is known to be serving.
+func (m *Manager) backingStoreReady() bool {
+	return m.deps.BackingStoreReady == nil || m.deps.BackingStoreReady()
+}
 
 // Get returns the VM for id (and true) or (nil, false).
 func (m *Manager) Get(id string) (*VM, bool) {

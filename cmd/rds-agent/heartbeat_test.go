@@ -17,7 +17,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestEngine(t, runner.run)
 	content := []byte("work_mem = '4096'\n")
-	if err := os.WriteFile(engine.parametersPath(), content, 0o600); err != nil {
+	if err := os.WriteFile(engine.params.installedPath(), content, 0o600); err != nil {
 		t.Fatalf("write installed parameters: %v", err)
 	}
 
@@ -25,7 +25,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 	h := newHeartbeater(cp, engine.probe, engine, 0)
 	h.beat(context.Background())
 
-	lastGood, err := os.ReadFile(engine.lastGoodPath())
+	lastGood, err := os.ReadFile(engine.params.lastGoodPath())
 	if err != nil {
 		t.Fatalf("read last known good: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 }
 
 func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
-	h := newHeartbeater(newFakeControlPlane(), newEngineProbe(testProbeConfig(), staticProbe(2)), nil, 0)
+	h := newHeartbeater(newFakeControlPlane(), newPostgresProbe(testProbeConfig(), staticProbe(2)), nil, 0)
 	h.setBootstrapFailure("bootstrap fetch", errors.New(strings.Repeat("界", 1000)))
 
 	failure := h.bootstrapFailure.Load()
@@ -60,8 +60,8 @@ func TestHeartbeater_BoundsBootstrapFailure(t *testing.T) {
 func TestHeartbeater_ChecksServingParametersOnEveryHealthyProbe(t *testing.T) {
 	code := 0
 	cfg := testProbeConfig()
-	probe := newEngineProbe(cfg, func(context.Context, string, ...string) (int, error) {
-		return code, nil
+	probe := newPostgresProbe(cfg, func(context.Context, string, ...string) (int, string, error) {
+		return code, "", nil
 	})
 	recorder := &countingServingRecorder{}
 	h := newHeartbeater(newFakeControlPlane(), probe, recorder, 0)

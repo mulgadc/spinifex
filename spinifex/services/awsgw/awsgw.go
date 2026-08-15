@@ -3,6 +3,7 @@ package awsgw
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -172,6 +173,16 @@ func launchService(config *config.ClusterConfig) error {
 		return err
 	}
 	defer natsConn.Close()
+
+	// The same cluster CA verifies predastore meta nodes GetStorageStatus
+	// dials directly, across every host in the cluster.
+	var rootCAs *x509.CertPool
+	if nodeConfig.NATS.CACert != "" {
+		rootCAs, err = utils.LoadCertPool(nodeConfig.NATS.CACert)
+		if err != nil {
+			return fmt.Errorf("load cluster CA: %w", err)
+		}
+	}
 
 	// Append Base dir if config has no leading path
 	if nodeConfig.BaseDir != "" && !strings.HasPrefix(nodeConfig.AWSGW.Config, "/") {
@@ -411,6 +422,7 @@ func launchService(config *config.ClusterConfig) error {
 		Debug:                   nodeConfig.AWSGW.Debug,
 		DisableLogging:          false,
 		NATSConn:                natsConn,
+		RootCAs:                 rootCAs,
 		Config:                  nodeConfig.AWSGW.Config,
 		ExpectedNodes:           len(config.Nodes),
 		Region:                  nodeConfig.Region,

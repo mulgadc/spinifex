@@ -103,6 +103,48 @@ func TestInstallVPCHostPortDoesNotMaskHostAddress(t *testing.T) {
 	}
 }
 
+// A replaced appliance leaves its vhp- port behind at the reused subnet IP.
+// Installing the new port must prune that stale namesake first, or two devs
+// claim one address and the kernel can route to the dead one.
+func TestInstallVPCHostPortPrunesCollidingPort(t *testing.T) {
+	s := newStubRunner()
+	s.expect("ovs-vsctl", nil, nil)
+	// Distinct prefixes so the stub matches deterministically: the readiness
+	// probe (`ip -4 -o addr show`) reports a stale vhp- namesake at our addr.
+	s.expect("ip -4", []byte("7: vhp-stalest    inet 10.246.29.9/24 brd 10.246.29.255 scope global vhp-stalest\\    valid_lft forever preferred_lft forever\n"), nil)
+	s.expect("ip link", nil, nil)
+	s.expect("ip addr", nil, nil)
+
+	d := testVPCHostPort()
+	if err := installVPCHostPort(context.Background(), s, d); err != nil {
+		t.Fatalf("installVPCHostPort: %v", err)
+	}
+	if !s.called("ovs-vsctl --if-exists del-port br-int vhp-stalest") {
+		t.Errorf("stale colliding vhp port was not pruned; calls: %v", s.calls)
+	}
+	if s.called("ovs-vsctl --if-exists del-port br-int " + d.Name) {
+		t.Errorf("must not prune the port being installed; calls: %v", s.calls)
+	}
+}
+
+// Only our own vhp- ports are pruned: the port being installed (post-reboot it
+// already holds the addr) and any foreign dev sharing it must be left alone.
+func TestPruneCollidingVPCHostPortsLeavesKeepAndForeign(t *testing.T) {
+	s := newStubRunner()
+	s.expect("ovs-vsctl", nil, nil)
+	keep := VPCHostPortName("eni-0123456789abcdef0")
+	s.expect("ip -4", []byte(
+		"3: "+keep+"    inet 10.246.29.9/24 scope global "+keep+"\n"+
+			"9: eth0    inet 10.246.29.9/24 scope global eth0\n"), nil)
+
+	if err := pruneCollidingVPCHostPorts(context.Background(), s, keep, netip.MustParsePrefix("10.246.29.9/24")); err != nil {
+		t.Fatalf("pruneCollidingVPCHostPorts: %v", err)
+	}
+	if s.called("ovs-vsctl --if-exists del-port") {
+		t.Errorf("nothing should be pruned (keep + foreign dev); calls: %v", s.calls)
+	}
+}
+
 func TestRemoveVPCHostPort(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)

@@ -56,6 +56,7 @@ Each subdirectory holds a `manifest.conf`, init scripts, and a `setup.sh` that `
 | `eks-node/` | The unified Alpine EKS node AMI (K3s server *or* agent, selected at first boot). `setup.sh` installs the pinned, SHA-verified K3s binary and the role init scripts. |
 | `eks-node-gpu/` | The Ubuntu EKS GPU worker AMI. Agent role only — GPU nodes never run the control plane — plus the NVIDIA GPU stack. |
 | `rds-postgres/` | The `spinifex-rds-postgres` AMI. `setup.sh` sets exec bits on the OpenRC services and creates the root-only directory cloud-init drops the agent env file and gateway CA into. |
+| `rds-mariadb/` | The `spinifex-rds-mariadb` AMI. Same layout as `rds-postgres/`, plus the `/etc/my.cnf.d` include drop-in and the `conf.d/mariadb` dependency that keeps the packaged service off an unbootstrapped datadir. |
 | `ubuntu-gpu-{amd,nvidia}-setup.sh` | Chroot setup for GPU-capable Ubuntu guest images: ROCm CLI tools and AMD firmware, or the DKMS-built headless NVIDIA driver. Guest-side only — host VFIO setup is `spx admin gpu setup`. |
 
 ### `images/eks-node/` — in-guest helpers

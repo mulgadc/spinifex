@@ -7,9 +7,10 @@ import (
 	"hash/fnv"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -119,20 +120,11 @@ func staggerOffset(instanceID string, period time.Duration) time.Duration {
 func labelKey(name string, labels map[string]string) string {
 	var b strings.Builder
 	b.WriteString(name)
-	for _, k := range sortedKeys(labels) {
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
 		b.WriteByte('|')
 		b.WriteString(k)
 		b.WriteByte('=')
 		b.WriteString(labels[k])
 	}
 	return b.String()
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

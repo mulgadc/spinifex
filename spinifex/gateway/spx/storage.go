@@ -2,15 +2,14 @@ package spx
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
+	pds "github.com/mulgadc/predastore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 )
@@ -45,13 +44,17 @@ type StorageEncodingOutput struct {
 	ParityShards int    `json:"parity_shards"`
 }
 
-var storageHTTPClient = &http.Client{
-	Timeout: 1 * time.Second,
-}
+// metaNodeQueryTimeout bounds the whole parallel round of meta node dials, so
+// one unreachable node cannot stall the CLI command waiting on the others.
+const metaNodeQueryTimeout = 2 * time.Second
 
-// GetStorageStatus fetches predastore topology via NATS, then queries each
-// meta node's /status and /health endpoints in parallel.
-func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
+// GetStorageStatus fetches predastore topology via NATS, then dials each meta
+// node's raft status directly and in parallel. rootCAs is the cluster CA
+// pool: every meta node in the cluster is queried, not just a local one, so
+// verifying each one's identity against the shared CA (rather than a local
+// TLS config only the node owning it could read) is what makes every dial
+// trusted.
+func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutput, error) {
 	msg, err := nc.Request("spinifex.storage.config", []byte("{}"), 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("storage config request: %w", err)
@@ -64,7 +67,7 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 
 	metaStatuses := make([]MetaNodeStatus, len(cfg.MetaNodes))
 	var wg sync.WaitGroup
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), metaNodeQueryTimeout)
 	defer cancel()
 
 	for i, meta := range cfg.MetaNodes {
@@ -76,7 +79,7 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 		wg.Add(1)
 		go func(idx int, host string, port int) {
 			defer wg.Done()
-			queryMetaNodeStatus(ctx, &metaStatuses[idx], host, port)
+			queryMetaNodeStatus(ctx, &metaStatuses[idx], rootCAs, host, port)
 		}(i, meta.Host, meta.Port)
 	}
 	wg.Wait()
@@ -93,61 +96,65 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 	}, nil
 }
 
-// predastoreStatusResponse matches the predastore s3db.StatusResponse JSON shape.
-type predastoreStatusResponse struct {
-	NodeID     string `json:"node_id"`
-	State      string `json:"state"`
-	Leader     string `json:"leader"`
-	LeaderAddr string `json:"leader_addr"`
-	Term       string `json:"term"`
-	CommitIdx  string `json:"commit_index"`
-	AppliedIdx string `json:"applied_index"`
-	IsLeader   bool   `json:"is_leader"`
-}
+// queryMetaNodeStatus dials one meta node's raft status directly — the
+// opcode-multiplexed RPC predastore's meta nodes actually speak, not the
+// HTTPS endpoints they never served — and fills out with what it reports. A
+// node that does not answer within ctx leaves out untouched (Healthy stays
+// false and every raft field stays blank), matching the CLI's existing
+// contract for an unhealthy node.
+func queryMetaNodeStatus(ctx context.Context, out *MetaNodeStatus, rootCAs *x509.CertPool, host string, port int) {
+	nodeID, ok := metaNodeID(out.ID)
+	if !ok {
+		slog.Debug("queryMetaNodeStatus: invalid node id", "id", out.ID, "host", host, "port", port)
+		return
+	}
 
-func queryMetaNodeStatus(ctx context.Context, out *MetaNodeStatus, host string, port int) {
-	// Resolve 0.0.0.0 to a routable address for HTTPS.
+	// Resolve 0.0.0.0 to a routable address.
 	queryHost := host
 	if queryHost == "0.0.0.0" {
 		queryHost = "127.0.0.1"
 	}
 
-	healthURL := "https://" + net.JoinHostPort(queryHost, strconv.Itoa(port)) + "/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	if err != nil {
-		return
-	}
-	resp, err := storageHTTPClient.Do(req)
-	if err != nil {
-		slog.Debug("queryMetaNodeStatus: health check failed", "host", host, "port", port, "err", err)
-		return
-	}
-	resp.Body.Close()
-	out.Healthy = resp.StatusCode == http.StatusOK
-
-	statusURL := "https://" + net.JoinHostPort(queryHost, strconv.Itoa(port)) + "/status"
-	req, err = http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-	if err != nil {
-		return
-	}
-	resp, err = storageHTTPClient.Do(req)
-	if err != nil {
-		slog.Debug("queryMetaNodeStatus: status check failed", "host", host, "port", port, "err", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	var status predastoreStatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		slog.Debug("queryMetaNodeStatus: failed to decode status", "host", host, "port", port, "err", err)
-		return
+	// A single-host, single-node config is all NodeStatus needs to resolve
+	// and dial this one node: it queries that replica only, never redirects,
+	// and asks for no local TLS identity of its own.
+	cfg := &pds.Config{
+		Hosts: []pds.HostConfig{
+			{
+				ID:    pds.HostID(nodeID),
+				Addr:  queryHost,
+				Nodes: []pds.NodeConfig{{ID: nodeID, Role: pds.RoleMeta, Port: port}},
+			},
+		},
 	}
 
+	status, err := pds.NodeStatus(ctx, cfg, nodeID, rootCAs)
+	if err != nil {
+		slog.Debug("queryMetaNodeStatus: status probe failed", "id", out.ID, "host", host, "port", port, "err", err)
+		return
+	}
+	applyMetaStatus(out, status)
+}
+
+// metaNodeID converts a meta node's id — plain int on the wire, predastore's
+// NodeID (uint64) internally — validating it is never negative first, since
+// predastore ids never are and a blind conversion could wrap.
+func metaNodeID(id int) (pds.NodeID, bool) {
+	if id < 0 {
+		return 0, false
+	}
+	return pds.NodeID(id), true //#nosec G115 -- id validated non-negative above
+}
+
+// applyMetaStatus maps a predastore raft Status into a MetaNodeStatus.
+// Reaching here means the node answered, so Healthy is unconditionally true.
+func applyMetaStatus(out *MetaNodeStatus, status pds.Status) {
+	out.Healthy = true
 	out.State = status.State
 	out.Leader = status.Leader
 	out.LeaderAddr = status.LeaderAddr
 	out.Term = status.Term
-	out.CommitIdx = status.CommitIdx
-	out.AppliedIdx = status.AppliedIdx
+	out.CommitIdx = status.CommitIndex
+	out.AppliedIdx = status.AppliedIndex
 	out.IsLeader = status.IsLeader
 }

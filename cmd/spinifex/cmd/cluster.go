@@ -248,7 +248,9 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 
 		// Unsubscribe from progress
 		if progressSub != nil {
-			progressSub.Unsubscribe()
+			if err := progressSub.Unsubscribe(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to unsubscribe from progress: %v\n", err)
+			}
 		}
 
 		// Print results
@@ -262,10 +264,9 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		ackedCount := len(acks)
-		if ackedCount < nodeCount && !force {
-			fmt.Fprintf(os.Stderr, "[%s] Only %d/%d nodes responded. Use --force to continue.\n",
-				strings.ToUpper(phase), ackedCount, nodeCount)
+		ackedCount, abort := shutdownPhaseOutcome(phase, acks, nodeCount, force)
+		if abort != "" {
+			fmt.Fprintln(os.Stderr, abort)
 			os.Exit(1)
 		}
 
@@ -319,7 +320,7 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 
 	for _, phase := range []string{"gate", "drain"} {
 		topic := "spinifex.cluster.shutdown." + phase
-		req := daemon.ShutdownRequest{Phase: phase, Timeout: int(timeout.Seconds())}
+		req := localDrainRequest(phase, node, timeout)
 		reqData, err := json.Marshal(req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error marshaling request: %v\n", err)
@@ -421,6 +422,51 @@ var (
 	localShutdownACKRetryBaseDelay = 250 * time.Millisecond
 	localShutdownACKRetryMaxDelay  = 2 * time.Second
 )
+
+// localDrainRequest builds a phase request scoped to one node. Target is what
+// keeps it local: the phase subjects are fan-out, so an untargeted request
+// gates and drains every node in the cluster off one node's target stop.
+func localDrainRequest(phase, node string, timeout time.Duration) daemon.ShutdownRequest {
+	return daemon.ShutdownRequest{
+		Phase:   phase,
+		Timeout: int(timeout.Seconds()),
+		Target:  node,
+	}
+}
+
+// shutdownPhaseOutcome decides whether a phase may advance. A node that
+// answered with an error has not completed the phase, and counting it as done
+// would tear storage out from under guests that never stopped. Returns the
+// completed count and, when the run must stop, the message to print.
+func shutdownPhaseOutcome(phase string, acks []daemon.ShutdownACK, nodeCount int, force bool) (completed int, abort string) {
+	completed, failed := summariseShutdownACKs(acks)
+	if force {
+		return completed, ""
+	}
+
+	if len(failed) > 0 {
+		return completed, fmt.Sprintf("[%s] %d node(s) failed the phase: %s. Use --force to continue.",
+			strings.ToUpper(phase), len(failed), strings.Join(failed, ", "))
+	}
+	if completed < nodeCount {
+		return completed, fmt.Sprintf("[%s] Only %d/%d nodes completed. Use --force to continue.",
+			strings.ToUpper(phase), completed, nodeCount)
+	}
+	return completed, ""
+}
+
+// summariseShutdownACKs splits a phase's ACKs into the count that completed
+// cleanly and the names of the nodes that answered with an error.
+func summariseShutdownACKs(acks []daemon.ShutdownACK) (completed int, failed []string) {
+	for _, ack := range acks {
+		if ack.Error != "" {
+			failed = append(failed, ack.Node)
+			continue
+		}
+		completed++
+	}
+	return completed, failed
+}
 
 // collectShutdownACKsFn indirects collectShutdownACKs so tests can simulate a
 // slow-to-resubscribe daemon without a real NATS round trip.

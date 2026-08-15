@@ -22,6 +22,13 @@ rc-update add mulga-mgmt-net boot
 # so the delivery lands in a root-only directory.
 install -d -m 0700 /etc/spinifex-rds
 
+# The engine this image bakes. rds-agent builds its engine implementation from
+# this file, so running the wrong implementation is structurally impossible
+# rather than merely validated against; a VM launched as another engine is
+# refused before anything touches the datadir.
+printf 'postgres\n' > /etc/spinifex-rds/engine
+chmod 0444 /etc/spinifex-rds/engine
+
 # Empty in the image: rds-datadir mounts over it at boot. Postgres-owned so the
 # engine can traverse it if the volume's own root is stricter.
 install -d -m 0750 -o postgres -g postgres /var/lib/postgresql

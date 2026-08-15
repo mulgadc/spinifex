@@ -153,7 +153,7 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 			slog.WarnContext(ctx, "rds: the engine could not be quiesced; taking a crash-consistent snapshot",
 				"dbInstance", rec.DBInstanceIdentifier, "dbSnapshot", dbSnapshotIdentifier, "err", quiesceErr)
 			s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
-				"The database engine could not be quiesced before the snapshot; the snapshot is crash consistent and will recover from its write-ahead log when it is restored.",
+				crashConsistentSnapshotMessage(ctx, rec.Engine),
 				EventCategoryNotification, EventCategoryBackup)
 		} else {
 			defer s.releaseQuiesce(ctx, accountID, rec.DBInstanceIdentifier)
@@ -182,6 +182,24 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: empty snapshot id", rec.DBInstanceIdentifier)
 	}
 	return aws.StringValue(snapshot.SnapshotId), crashConsistent, nil
+}
+
+// The half of the warning that holds for every engine. What restoring such a
+// snapshot then recovers does not: PostgreSQL replays every table from its
+// write-ahead log, MariaDB only its InnoDB ones.
+const crashConsistentSnapshotWarning = "The database engine could not be quiesced before the snapshot; " +
+	"the snapshot is crash consistent."
+
+func crashConsistentSnapshotMessage(ctx context.Context, engineName string) string {
+	engine, err := LookupEngine(engineName)
+	if err != nil {
+		// The snapshot has already been taken, so the customer still gets the half
+		// of the warning that does not depend on knowing the engine.
+		slog.ErrorContext(ctx, "rds: the DB instance names an engine this build does not offer",
+			"engine", engineName, "err", err)
+		return crashConsistentSnapshotWarning
+	}
+	return crashConsistentSnapshotWarning + " " + engine.crashRecoveryNote
 }
 
 // Releases the quiesce on a context detached from the caller's, so a snapshot

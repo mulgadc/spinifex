@@ -233,8 +233,8 @@ func crossSubnetSSHIngress() *ec2.IpPermission {
 func crossSubnetDBIngress() *ec2.IpPermission {
 	return &ec2.IpPermission{
 		IpProtocol: aws.String("tcp"),
-		FromPort:   aws.Int64(harness.DBEnginePort),
-		ToPort:     aws.Int64(harness.DBEnginePort),
+		FromPort:   aws.Int64(harness.PostgresEnginePort),
+		ToPort:     aws.Int64(harness.PostgresEnginePort),
 		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(crossSubnetClientCIDR)}},
 	}
 }

@@ -534,6 +534,26 @@ var AvailableImages = map[string]Images{
 			"rds-data-volume-contract": "format-auth-v1",
 		},
 	},
+
+	// Same resolution path as rds-postgres — only the engine tags differ, which
+	// is what keeps a MariaDB request off the PostgreSQL image and vice versa.
+	"spinifex-rds-mariadb": {
+		Name:         "spinifex-rds-mariadb",
+		Description:  "Mulga RDS MariaDB image — Alpine 3.24.1 + MariaDB 11.8 + rds-init (install-db, master password, parameters and TLS applied at first boot)",
+		Distro:       "alpine",
+		Version:      "3.24.1",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-rds-mariadb-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-mariadb-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags: map[string]string{
+			"spinifex:managed-by": "rds", "engine": "mariadb", "engine-version": "11.8",
+			"rds-data-volume-contract": "format-auth-v1",
+		},
+	},
 }
 
 func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string, err error) {

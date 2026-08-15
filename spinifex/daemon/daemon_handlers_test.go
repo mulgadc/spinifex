@@ -1932,6 +1932,40 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 // This test verifies the wiring is correct by sending a NATS request and
 // checking for a valid JSON response.
 
+// delegateHandlerCase describes one delegate handler round-trip: subscribe
+// handler on topic, request input, expect either expectedCode ("" → success)
+// or a non-empty success object (allowEmpty → `{}` is acceptable).
+type delegateHandlerCase struct {
+	name         string
+	topic        string
+	handler      func(*nats.Msg)
+	input        any
+	expectedCode string
+	allowEmpty   bool
+}
+
+// runDelegateHandlerCases drives each case as a subtest over nc, asserting the
+// reply against assertExpectedResponse.
+func runDelegateHandlerCases(t *testing.T, nc *nats.Conn, cases []delegateHandlerCase) {
+	t.Helper()
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			sub, err := nc.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
+			require.NoError(t, err)
+			defer sub.Unsubscribe()
+
+			reqData, err := json.Marshal(tt.input)
+			require.NoError(t, err)
+
+			reply, err := natsRequest(nc, tt.topic, reqData, 5*time.Second)
+			require.NoError(t, err)
+			require.NotNil(t, reply)
+
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
+		})
+	}
+}
+
 func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
@@ -1943,14 +1977,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 		vmmock.New())
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string // "" means a success response is expected
-		allowEmpty   bool   // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "DeleteKeyPair",
 			topic:   "ec2.test.DeleteKeyPair",
@@ -2029,22 +2056,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // assertExpectedResponse decodes a NATS reply payload and asserts either
@@ -2288,14 +2300,7 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 func TestDelegateHandlers_VPC(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string // "" → success expected
-		allowEmpty   bool   // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "CreateVpc",
 			topic:   "ec2.test.CreateVpc",
@@ -2360,35 +2365,13 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 func TestDelegateHandlers_IGW(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "CreateInternetGateway",
 			topic:   "ec2.test.CreateInternetGateway",
@@ -2430,22 +2413,7 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 func TestHandleEC2CreateVpc_SuccessPath(t *testing.T) {
@@ -2579,14 +2547,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	require.NoError(t, err)
 	daemon.eigwService = eigwSvc
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:         "CreateEgressOnlyInternetGateway",
 			topic:        "ec2.test.CreateEgressOnlyIGW",
@@ -2609,22 +2570,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- handleEC2ModifyVolume success path ---
@@ -3485,14 +3431,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "AllocateAddress",
 			topic:   "ec2.test.AllocateAddress",
@@ -3528,22 +3467,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- Bead 6: Security Group daemon handler tests ---
@@ -3565,14 +3489,7 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 	require.NoError(t, json.Unmarshal(reply.Data, &vpcOut))
 	vpcID := *vpcOut.Vpc.VpcId
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "CreateSecurityGroup",
 			topic:   "ec2.test.CreateSecurityGroup",
@@ -3626,22 +3543,7 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- Bead 7: Route Table daemon handler tests ---
@@ -3656,14 +3558,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:         "CreateRouteTable",
 			topic:        "ec2.test.CreateRouteTable",
@@ -3745,22 +3640,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- Bead 8: Placement Group daemon handler tests ---
@@ -3774,14 +3654,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	require.NoError(t, err)
 	daemon.placementGroupService = pgSvc
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:    "CreatePlacementGroup",
 			topic:   "ec2.test.CreatePlacementGroup",
@@ -3871,22 +3744,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- Bead 9: VPC attribute daemon handler tests (untested handlers) ---
@@ -3908,14 +3766,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 	require.NoError(t, json.Unmarshal(reply.Data, &vpcOut))
 	vpcID := *vpcOut.Vpc.VpcId
 
-	tests := []struct {
-		name         string
-		topic        string
-		handler      func(*nats.Msg)
-		input        any
-		expectedCode string
-		allowEmpty   bool // true → success may be `{}` (void no-op handler)
-	}{
+	tests := []delegateHandlerCase{
 		{
 			name:         "ModifySubnetAttribute",
 			topic:        "ec2.test.ModifySubnetAttribute",
@@ -3953,22 +3804,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sub, err := daemon.natsConn.QueueSubscribe(tt.topic, "spinifex-workers", tt.handler)
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
-
-			reqData, err := json.Marshal(tt.input)
-			require.NoError(t, err)
-
-			reply, err := natsRequest(daemon.natsConn, tt.topic, reqData, 5*time.Second)
-			require.NoError(t, err)
-			require.NotNil(t, reply)
-
-			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
-		})
-	}
+	runDelegateHandlerCases(t, daemon.natsConn, tests)
 }
 
 // --- respondWithJSON tests ---

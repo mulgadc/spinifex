@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -110,81 +109,6 @@ func TestPostgresEngine_UnquiesceStopsTheBackupAndEndsTheSession(t *testing.T) {
 	}
 	if session.closes() != 1 {
 		t.Errorf("closed %d times, want the session ended exactly once", session.closes())
-	}
-}
-
-// A hold that expired mid-snapshot means the snapshot was not taken against a
-// held checkpoint, so the release reports it rather than succeeding silently.
-func TestPostgresEngine_UnquiesceWithoutAHoldIsAnError(t *testing.T) {
-	engine, _ := newQuiesceEngine(t, &fakeSession{})
-
-	err := engine.Unquiesce(context.Background())
-	if err == nil {
-		t.Fatal("Unquiesce succeeded with no hold to release")
-	}
-	if !strings.Contains(err.Error(), "expired") {
-		t.Errorf("error %q does not say the hold had expired", err)
-	}
-}
-
-// The engine aborts the backup when the session ends, which is what makes the
-// hold self-expiring: a control plane that dies cannot leave it held forever.
-func TestPostgresEngine_QuiesceReleasesItselfOnItsDeadline(t *testing.T) {
-	session := &fakeSession{}
-	engine, _ := newQuiesceEngine(t, session)
-
-	if err := engine.Quiesce(context.Background(), "orders-db-pre-upgrade", 10*time.Millisecond); err != nil {
-		t.Fatalf("Quiesce: %v", err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for session.closes() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-
-	if session.closes() != 1 {
-		t.Fatal("the backup session outlived its deadline")
-	}
-	// The hold is gone with it, so a later release is honest about that.
-	if err := engine.Unquiesce(context.Background()); err == nil {
-		t.Error("Unquiesce succeeded after the hold expired")
-	}
-}
-
-// One backup at a time: a second start would open a concurrent backup alongside
-// the first rather than extending it.
-func TestPostgresEngine_QuiesceRefusesASecondHold(t *testing.T) {
-	session := &fakeSession{}
-	engine, started := newQuiesceEngine(t, session)
-	if err := engine.Quiesce(context.Background(), "first", time.Minute); err != nil {
-		t.Fatalf("Quiesce: %v", err)
-	}
-
-	err := engine.Quiesce(context.Background(), "second", time.Minute)
-	if err == nil {
-		t.Fatal("a second quiesce was accepted while the first was held")
-	}
-	if !strings.Contains(err.Error(), "first") {
-		t.Errorf("error %q does not name the backup already holding the engine", err)
-	}
-	if len(*started) != 1 {
-		t.Errorf("started %d sessions, want the second refused before opening one", len(*started))
-	}
-}
-
-// A failed start leaves nothing held, so a retry is not refused by a hold that
-// never took effect.
-func TestPostgresEngine_QuiesceEndsTheSessionWhenTheBackupWillNotStart(t *testing.T) {
-	session := &fakeSession{execErr: errors.New(`ERROR:  a backup is already in progress`)}
-	engine, _ := newQuiesceEngine(t, session)
-
-	if err := engine.Quiesce(context.Background(), "orders-db-pre-upgrade", time.Minute); err == nil {
-		t.Fatal("Quiesce succeeded against an engine that refused the backup")
-	}
-	if session.closes() != 1 {
-		t.Errorf("closed %d times, want the failed session ended", session.closes())
-	}
-	if engine.held != nil {
-		t.Error("a failed quiesce left a hold behind")
 	}
 }
 

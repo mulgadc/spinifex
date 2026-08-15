@@ -111,6 +111,12 @@ build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + Postg
 import-rds-postgres-image: ## Build + register the rds-postgres AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=rds-postgres IMPORT=1
 
+build-rds-mariadb-image: ## Build the spinifex-rds-mariadb AMI (Alpine + MariaDB 11.8 + rds-init; IMPORT=1 to register)
+	$(MAKE) build-system-image IMAGE=rds-mariadb
+
+import-rds-mariadb-image: ## Build + register the rds-mariadb AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=rds-mariadb IMPORT=1
+
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -134,8 +140,21 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
 # integration and race tests skipped to keep quick, they run in CI.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-package-check test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-package-check test-harness test-build-scripts
 	@echo -e "\n ✅ Preflight passed — safe to commit."
+
+# Shell suites + shellcheck for build/scripts/, the systemd-unit helpers that
+# ship on every node (unlike scripts/images/, kept in preflight: a wrong
+# restart decision here is an outage, not asset churn).
+test-build-scripts:
+	@echo -e "\n....Running build/scripts/**/*_test.sh...."
+	@for t in $$(find build/scripts -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		sh "$$t" || exit 1; \
+	done
+	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh...."
+	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort)
+	@echo "  test-build-scripts ok"
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
 # default `go test ./spinifex/...`. Runs with mocked AWS clients — no
@@ -311,9 +330,9 @@ install-system:
 		ovn-central ovn-host openvswitch-switch dhcpcd-base
 
 install-go:
-	@echo -e "\n....Installing Go 1.26.5 for $(ARCH) ($(GO_ARCH))...."
+	@echo -e "\n....Installing Go 1.26.6 for $(ARCH) ($(GO_ARCH))...."
 	@if [ ! -d "/usr/local/go" ]; then \
-		curl -L https://go.dev/dl/go1.26.5.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
+		curl -L https://go.dev/dl/go1.26.6.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
 	else \
 		echo "Go already installed in /usr/local/go"; \
 	fi
@@ -396,7 +415,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

@@ -1,5 +1,5 @@
 ---
-title: "RDS Quickstart"
+title: "RDS Quickstart (PostgreSQL)"
 description: "Stand up a managed PostgreSQL database on Spinifex with Terraform — a VPC, a DB subnet group, a parameter group, an aws_db_instance, and a client VM inside the VPC that connects to it with psql."
 category: "Terraform Workbooks"
 tags:
@@ -16,7 +16,7 @@ sections:
   - troubleshooting
 resources:
   - title: "RDS CLI Reference"
-    url: "https://github.com/mulgadc/spinifex/blob/main/docs/COMMANDS.md#rds-postgresql"
+    url: "https://github.com/mulgadc/spinifex/blob/main/docs/COMMANDS.md#rds-postgresql-and-mariadb"
   - title: "Terraform AWS Provider — aws_db_instance"
     url: "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/db_instance"
   - title: "Spinifex Repository"
@@ -25,9 +25,11 @@ resources:
     url: "https://opentofu.org/"
 ---
 
-# Terraform: RDS Quickstart
+# Terraform: RDS Quickstart (PostgreSQL)
 
 > The smallest end-to-end RDS example on Spinifex: a VPC with a public client subnet and a private DB subnet, a DB subnet group, a parameter group, a PostgreSQL DB instance, and a client VM with `psql` already pointed at the endpoint.
+
+This workbook is **PostgreSQL throughout** — the engine, the `postgres18` parameter group, port `5432`, the client package and the `~/.pgpass` credential are all PostgreSQL's. Spinifex also serves MariaDB 11.8 under `engine = "mariadb"`; running this workbook against it means changing `engine`, `engine_version`, the parameter-group `family` to `mariadb11.8`, the security-group port to `3306` and the client to `mariadb-client`. See the [RDS command reference](https://github.com/mulgadc/spinifex/blob/main/docs/COMMANDS.md#rds-postgresql-and-mariadb) for both engines' pins, families and limits. Note that `mysql` is not an accepted engine and is not an alias for `mariadb`.
 
 ## Overview
 
@@ -127,7 +129,7 @@ psql "sslmode=verify-full sslrootcert=/home/ubuntu/ca.pem" \
 | `spinifex_endpoint` | `https://127.0.0.1:9999` | Gateway as seen from the host running Terraform. |
 | `instance_type` | `t3.small` | EC2 type for the **client** VM. |
 | `db_instance_class` | `db.t3.micro` | DB class. One of the curated `db.*` subset. |
-| `engine_version` | `18` | PostgreSQL major. `18` is the only version served. |
+| `engine_version` | `18` | PostgreSQL major. `18` is the only version served, and a minor such as `18.4` is rejected. |
 | `db_name` | `appdb` | Database created at bootstrap. |
 | `db_username` | `appuser` | Master user. `postgres`, `rdsadmin`, `rds_superuser` and `pg_*` are reserved. |
 | `db_password` | `QuickstartS3cret1` | Master password — override it. No `/`, `"`, `@` or spaces. |

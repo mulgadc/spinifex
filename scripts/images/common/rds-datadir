@@ -1,10 +1,14 @@
 #!/bin/sh
 # rds-datadir — select, authorize, prepare, and mount the exact data volume
-# assigned by the control plane before rds-init touches the PostgreSQL datadir.
+# assigned by the control plane before rds-init touches the engine's datadir.
+#
+# Shared by every RDS image preset. The mount point and the OS user that owns it
+# are the one engine-specific pair here, and both are supplied by the preset's
+# own service rather than defaulted, so no image can inherit another's layout.
 set -eu
 
-DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/postgresql}"
-PG_USER="${RDS_PG_USER:-postgres}"
+DATA_MOUNT="${RDS_DATA_MOUNT:-}"
+ENGINE_USER="${RDS_ENGINE_USER:-}"
 SYS_BLOCK="${RDS_SYS_BLOCK:-/sys/block}"
 DEV_DIR="${RDS_DEV_DIR:-/dev}"
 MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
@@ -103,6 +107,14 @@ consume_format_authorization() {
 }
 
 main() {
+    # An unset layout is a broken image, not something to guess at: mounting the
+    # customer's volume where the engine is not looking would read as an empty
+    # datadir and bootstrap a second, empty database beside their data.
+    [ -n "${DATA_MOUNT}" ] ||
+        fail "RDS_DATA_MOUNT is not set; refusing to guess where this engine's datadir belongs"
+    [ -n "${ENGINE_USER}" ] ||
+        fail "RDS_ENGINE_USER is not set; refusing to guess which user owns this engine's datadir"
+
     load_handoff
 
     command -v blkid >/dev/null 2>&1 ||
@@ -184,8 +196,8 @@ main() {
 
     mount -t "${_fstype}" "${_dev}" "${DATA_MOUNT}" ||
         fail "could not mount ${_dev} at ${DATA_MOUNT}"
-    chown "${PG_USER}:${PG_USER}" "${DATA_MOUNT}" ||
-        fail "could not set ${PG_USER} ownership on ${DATA_MOUNT}"
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${DATA_MOUNT}" ||
+        fail "could not set ${ENGINE_USER} ownership on ${DATA_MOUNT}"
     chmod 0750 "${DATA_MOUNT}"
 
     log "${DATA_MOUNT} ready on ${_dev}"

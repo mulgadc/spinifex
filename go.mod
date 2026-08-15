@@ -1,6 +1,6 @@
 module github.com/mulgadc/spinifex
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/aws/aws-sdk-go v1.55.8
@@ -19,11 +19,12 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.72
 	github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3
 	github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059
-	github.com/mulgadc/predastore v1.16.1-0.20260812012531-12c90bd2e14a
+	github.com/mulgadc/predastore v1.16.1-0.20260813022738-0b4392b43cae
 	github.com/mulgadc/viperblock v1.16.1-0.20260812124023-7e0df2323c75
 	github.com/nats-io/nats-server/v2 v2.14.4
 	github.com/nats-io/nats.go v1.52.0
@@ -126,6 +127,9 @@ require (
 	github.com/hashicorp/raft v1.7.3 // indirect
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect

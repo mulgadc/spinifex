@@ -5,6 +5,7 @@ package awsmodel
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/user"
@@ -232,19 +233,10 @@ func (m *Model) Shape(name string) (*Shape, bool) {
 }
 
 // Operations returns all operation keys in stable order.
-func (m *Model) Operations() []string { return sortedKeys(m.operations) }
+func (m *Model) Operations() []string { return slices.Sorted(maps.Keys(m.operations)) }
 
 // Shapes returns all shape names in stable order.
-func (m *Model) Shapes() []string { return sortedKeys(m.shapes) }
-
-func sortedKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
-}
+func (m *Model) Shapes() []string { return slices.Sorted(maps.Keys(m.shapes)) }
 
 func (m *Model) validateReferences() error {
 	validate := func(owner string, ref *ShapeRef) error {

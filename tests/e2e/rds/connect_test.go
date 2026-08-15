@@ -138,7 +138,7 @@ func TestConnectivity(t *testing.T) {
 			if _, err := harness.TryPSQL(client, byIP, "SELECT 1;"); err != nil {
 				return nil
 			}
-			return fmt.Errorf("%s still accepts connections through a group that does not admit %d", id, harness.DBEnginePort)
+			return fmt.Errorf("%s still accepts connections through a group that does not admit %d", id, harness.PostgresEnginePort)
 		}, sgSettleTimeout, 5*time.Second)
 
 		harness.Step(t, "Restoring the original groups on %q", id)

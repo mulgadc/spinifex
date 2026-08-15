@@ -97,6 +97,9 @@ type Config struct {
 	NatsToken string
 	// NatsCACert is the path to the CA certificate for NATS TLS.
 	NatsCACert string
+	// CACert is the path to the deployment CA. IMDS serves it at
+	// /spinifex/ca.pem so a guest can install it into its own trust store.
+	CACert string
 	// OVNNBAddr is the OVN Northbound DB address (e.g., "tcp:127.0.0.1:6641").
 	OVNNBAddr string
 	// OVNSBAddr is the OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642"), used for monitoring.
@@ -529,6 +532,7 @@ func launchService(cfg *Config) error {
 		listTaps,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,
+		cfg.CACert,
 		cfg.ResolverNameservers,
 	)
 	if err != nil {

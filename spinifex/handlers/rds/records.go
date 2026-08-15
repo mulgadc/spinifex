@@ -138,6 +138,9 @@ type DBInstanceRecord struct {
 	// Set when the guest rolls back a parameter set that prevented startup.
 	// Cleared only after a corrected set installs successfully.
 	ParametersRolledBack bool `json:"parametersRolledBack,omitempty"`
+	// Set when a live apply failed, so the group holds a value this engine never
+	// adopted. Cleared only after a later apply succeeds.
+	ParameterApplyFailed bool `json:"parameterApplyFailed,omitempty"`
 
 	// Inline rather than a separate key space, so the record delete that ends the
 	// instance also ends its tags.

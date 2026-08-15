@@ -34,11 +34,12 @@ import (
 // plane publishes is region-qualified.
 const defaultRegion = "ap-southeast-2"
 
-// The instance spec every test in the suite creates from. The class is the
-// floor and the storage is the API's own minimum: nothing here needs more, and
-// each DB VM booted is charged against the phase's instance budget. Only a
-// class-sensitive assertion names a bigger class, and only a grow names a
-// bigger size.
+// The PostgreSQL instance spec most of the suite creates from; the MariaDB
+// cases carry their own engine, database name and credentials and share the
+// class and storage. The class is the floor and the storage is the API's own
+// minimum: nothing here needs more, and each DB VM booted is charged against the
+// phase's instance budget. Only a class-sensitive assertion names a bigger
+// class, and only a grow names a bigger size.
 const (
 	dbInstancePfx = "rds-e2e"
 	dbEngine      = "postgres"
@@ -51,17 +52,25 @@ const (
 	dbMasterPassword = "e2eSup3rSecret1"
 )
 
-// The suite's DB-VM concurrency cap, in GiB of guest memory. Each DB instance is
-// a guest with its own data volume on a node that is also running the cluster,
+// The suite's whole guest-memory allowance on the node, in GiB. Each DB instance
+// is a guest with its own data volume on a node that is also running the cluster,
 // and the phase budget — 25 minutes wall clock — is written against four floor
-// instances alive at once. Every instance-owning test runs in parallel and takes
-// its allowance from here.
+// instances alive at once.
 //
 // Denominated in memory rather than instances because the node admits a launch
 // on live MemAvailable: a budget counting VMs lets a test holding two db.t3.small
 // through a cap written for four db.t3.micro, and the launch is then refused with
 // InsufficientInstanceCapacity rather than made to wait.
-const maxConcurrentDBVMGiB = 4
+const totalVMBudgetGiB = 4
+
+// The two nano client VMs, which come out of the same node memory but no test's
+// reservation. Deducted up front rather than acquired: a test asking for one
+// while holding its own DB reservation would deadlock against itself.
+const clientVMBudgetGiB = 1
+
+// What is left for DB instances. Every instance-owning test runs in parallel and
+// takes its allowance from here.
+const maxConcurrentDBVMGiB = totalVMBudgetGiB - clientVMBudgetGiB
 
 // What each class the suite names costs against that budget.
 var dbClassGiB = map[string]int64{
@@ -306,18 +315,27 @@ func validCreateInput(id string) *rds.CreateDBInstanceInput {
 
 // createDBInstance creates the suite's standard instance and returns the create
 // response's own view of it — status creating, no endpoint yet.
+func createDBInstance(t *testing.T, f *Fixture, id string, opts ...func(*rds.CreateDBInstanceInput)) *rds.DBInstance {
+	t.Helper()
+	return createDBInstanceFrom(t, f, validCreateInput(id), opts...)
+}
+
+// createDBInstanceFrom is createDBInstance for a request the caller assembled
+// itself, which is what the MariaDB cases need: their engine, database name and
+// credentials are not the suite's PostgreSQL defaults.
 //
-// Every test that owns an instance goes through here, because the three things a
+// Every test that owns an instance bottoms out here, because the three things a
 // test that boots a DB VM must not forget are registered here: the teardown, so
 // a failed run does not charge the next one, the failure-only diagnostic bundle,
 // without which "create timed out" names no owning phase, and the charge against
 // the test's DB-VM reservation.
-func createDBInstance(t *testing.T, f *Fixture, id string, opts ...func(*rds.CreateDBInstanceInput)) *rds.DBInstance {
+func createDBInstanceFrom(t *testing.T, f *Fixture, in *rds.CreateDBInstanceInput,
+	opts ...func(*rds.CreateDBInstanceInput)) *rds.DBInstance {
 	t.Helper()
-	in := validCreateInput(id)
 	for _, opt := range opts {
 		opt(in)
 	}
+	id := aws.StringValue(in.DBInstanceIdentifier)
 	markDBCreateStarted(id)
 	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — the instance under test
 	require.NoError(t, err, "create-db-instance %s", id)

@@ -101,3 +101,10 @@ func TestMultinodeIPSec(t *testing.T) {
 	t.Parallel()
 	runIPSec(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeListenerInvariant is read-only over SSH; launches no AWS
+// resources and mutates no cluster state.
+func TestMultinodeListenerInvariant(t *testing.T) {
+	t.Parallel()
+	runListenerInvariant(t, requireMultiNodeFixture(t))
+}

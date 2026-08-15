@@ -73,7 +73,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetStorageStatus(gw.NATSConn)
+		output, err = gateway_spx.GetStorageStatus(gw.NATSConn, gw.RootCAs)
 	case "PromoteImage":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)

@@ -31,6 +31,22 @@ var ErrClusterUnavailable = errors.New("cluster unavailable: NATS disconnected")
 // reverse.
 const SubjectEnsureDefaultVpc = "ec2.EnsureDefaultVpc"
 
+// LoadCertPool reads a PEM CA certificate from path and returns a pool
+// trusting exactly it. Shared by every caller that verifies a peer against
+// the cluster CA (e.g. /etc/spinifex/ca.pem) rather than the system trust
+// store.
+func LoadCertPool(path string) (*x509.CertPool, error) {
+	caCert, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w %s: %w", ErrCACertRead, path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("%w from %s", ErrCACertParse, path)
+	}
+	return pool, nil
+}
+
 // natsRetryEscalateAttempt is the threshold at which retry logs escalate from Warn to Error (rate-limited to 1/min).
 // ~30 attempts at the 60 s backoff cap ≈ ~30 min disconnected, suggesting config error not transient restart.
 const natsRetryEscalateAttempt = 30
@@ -65,13 +81,9 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 	}
 
 	if caCertPath != "" {
-		caCert, err := os.ReadFile(caCertPath)
+		pool, err := LoadCertPool(caCertPath)
 		if err != nil {
-			return nil, fmt.Errorf("%w %s: %w", ErrCACertRead, caCertPath, err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("%w from %s", ErrCACertParse, caCertPath)
+			return nil, err
 		}
 		natsOpts = append(natsOpts, nats.Secure(&tls.Config{
 			RootCAs:          pool,

@@ -185,6 +185,13 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, started.DeletionID, replayed.DeletionID)
 	assert.Equal(t, DeletionStateCompleted, replayed.State)
+
+	// A caller that lost its token and generated a fresh one is told the same
+	// thing, rather than that the account it just deleted does not exist.
+	third, err := gw.adminDeleteAccount(t.Context(),
+		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("f", 32)))
+	require.NoError(t, err)
+	assert.Equal(t, DeletionStateCompleted, third.(*DeleteAccountResponse).State)
 }
 
 // Reusing a token for a different account name is a client bug. Treating it as
@@ -278,8 +285,9 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 	assert.Equal(t, DeletionStateRunning, response.State)
 }
 
-// A completed job means the account is gone. Saying so beats starting a second
-// teardown that would only fail on a missing account record.
+// A completed job means the account is gone. Saying so beats the missing-account
+// error a fresh token would otherwise get, which is what a harness retrying a
+// lost response actually does.
 func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")

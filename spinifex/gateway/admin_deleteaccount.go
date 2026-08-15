@@ -403,11 +403,6 @@ func claimDeletionJob(
 	if existing.State == DeletionStateRunning && !deletionJobStale(existing, now) {
 		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
-	if existing.State == DeletionStateCompleted {
-		// The account is gone. Saying so is more useful than starting a second
-		// teardown that would fail on a missing account record.
-		return nil, existing, nil
-	}
 
 	// A failed job, or one whose gateway stopped heartbeating, is retried under
 	// a new deletion id. Teardown is idempotent: it re-lists what is left.
@@ -432,13 +427,20 @@ func replayDeletionJob(
 	if err != nil || existing == nil {
 		return nil, err
 	}
-	if existing.ClientToken != req.ClientToken {
-		return nil, nil
+	if existing.ClientToken == req.ClientToken {
+		if existing.AccountName != req.AccountName {
+			return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+		}
+		return existing, nil
 	}
-	if existing.AccountName != req.AccountName {
-		return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+
+	// A finished teardown answers any token. The account is gone, so starting a
+	// second one would only fail on a missing account record — which is what a
+	// caller retrying under a fresh token would otherwise be told.
+	if existing.State == DeletionStateCompleted {
+		return existing, nil
 	}
-	return existing, nil
+	return nil, nil
 }
 
 // deletionJobResponse acknowledges an existing job. It carries no stage detail:

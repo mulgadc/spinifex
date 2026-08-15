@@ -4,16 +4,19 @@ package multinode
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const (
 	firewallPeersFile  = "/etc/spinifex/firewall/peers.nft"
+	firewallModeFile   = "/etc/spinifex/firewall/mode"
 	firewallConfigFile = "/etc/spinifex/spinifex.toml"
 	firewallConfigBak  = "/var/tmp/spinifex.toml.e2e-firewall-quorum"
 
@@ -43,9 +46,21 @@ func runFirewallChassisQuorum(t *testing.T, fix *Fixture) {
 	// the operator gateway both lean on the first.
 	node := fix.Cluster.Nodes[len(fix.Cluster.Nodes)-1]
 
-	baseline := string(harness.PeerFileContents(t, node, firewallPeersFile))
-	require.Containsf(t, baseline, "spinifex_encap_peers",
-		"%s has no encap peer set to start from, so there is nothing to protect", node.Name)
+	firewallArm(t, node)
+
+	// A wait, not a read: with the policy on, the daemon writes the peer set once
+	// every chassis has registered, and it retries on a backoff. install-node.sh
+	// allows the same 180s for the same thing.
+	harness.Step(t, "wait for %s to write a peer set", node.Name)
+	var baseline string
+	if !assert.Eventually(t, func() bool {
+		out, err := firewallRunErr(node, "sudo cat "+firewallPeersFile)
+		baseline = out
+		return err == nil && strings.Contains(out, "spinifex_encap_peers")
+	}, 180*time.Second, 5*time.Second) {
+		t.Fatalf("%s never wrote an encap peer set to %s, so there is nothing to protect\n%s",
+			node.Name, firewallPeersFile, firewallWhyNoPeers(node))
+	}
 
 	harness.Step(t, "add a phantom node to %s, raising the expected chassis count by one", node.Name)
 	firewallRun(t, node, "sudo cp -a "+firewallConfigFile+" "+firewallConfigBak)
@@ -100,6 +115,53 @@ func runFirewallChassisQuorum(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "peer_set_restored", "byte-identical")
 
 	firewallRun(t, node, "sudo rm -f "+firewallConfigBak)
+}
+
+// firewallArm switches the host firewall on for the duration of the test, and
+// back to whatever the installer chose afterwards. Only the ISO arms by
+// default, so on every other install path the policy under test is not loaded.
+func firewallArm(t *testing.T, node harness.Node) {
+	t.Helper()
+
+	// Absent means on, the same way the daemon reads it: a node installed before
+	// the mode file existed keeps the policy it already has.
+	mode := strings.TrimSpace(firewallRun(t, node,
+		"sudo cat "+firewallModeFile+" 2>/dev/null || echo on"))
+	if mode == "on" {
+		return
+	}
+
+	harness.Step(t, "arm the host firewall on %s, which was installed %q", node.Name, mode)
+
+	// Registered before the policy is switched on, so it runs after the config
+	// restore below it and leaves the node the way the installer left it. The
+	// daemon removes the loaded ruleset itself once the mode says off again.
+	t.Cleanup(func() {
+		_, _ = firewallRunErr(node, "printf '%s\\n' "+harness.ShellQuote(mode)+
+			" | sudo tee "+firewallModeFile+" >/dev/null && sudo systemctl restart spinifex-daemon")
+	})
+
+	firewallRun(t, node, "printf 'on\\n' | sudo tee "+firewallModeFile+
+		" >/dev/null && sudo systemctl restart spinifex-daemon")
+}
+
+// firewallWhyNoPeers reports what decides whether the daemon can write a peer
+// set. The daemon's own journal is the authority on the chassis count: asking
+// ovn-sbctl here would query a follower and report an empty cluster.
+func firewallWhyNoPeers(node harness.Node) string {
+	var b strings.Builder
+	for _, probe := range []struct{ label, cmd string }{
+		{"firewall mode", "sudo cat " + firewallModeFile + " 2>/dev/null || echo '(absent, means on)'"},
+		{"nodes named in the config", "sudo grep -c '^\\[nodes\\.' " + firewallConfigFile},
+		{"daemon on firewall", "sudo journalctl -u spinifex-daemon --no-pager -n 400 | grep -i firewall | tail -10"},
+	} {
+		out, err := firewallRunErr(node, probe.cmd)
+		if err != nil {
+			out = "(" + err.Error() + ")"
+		}
+		fmt.Fprintf(&b, "         %s: %s\n", probe.label, strings.TrimSpace(out))
+	}
+	return b.String()
 }
 
 // firewallRestore puts the saved config back and restarts the daemon so the

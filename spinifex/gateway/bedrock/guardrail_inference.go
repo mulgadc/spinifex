@@ -11,37 +11,48 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 )
 
-// enforceGuardrail is the single resolve->load->filter path Converse and
-// ConverseStream both call, mirroring ApplyGuardrail's own sequence. An
-// unresolvable or foreign guardrail fails closed: ResourceNotFoundException.
-func enforceGuardrail(ctx context.Context, store *GuardrailStore, accountID, ident, version, source string, texts []string) (blocked bool, blockedMessage string, redactedTexts []string, assessments []*bedrockruntime.GuardrailAssessment, err error) {
+// loadGuardrailView resolves ident to the stored record's configured view for
+// version (DRAFT when empty), the resolve->load->version-select prologue shared
+// with enforceGuardrail. An unresolvable or foreign guardrail fails closed.
+func loadGuardrailView(ctx context.Context, store *GuardrailStore, accountID, ident, version string) (guardrailView, error) {
 	if store == nil || ident == "" {
-		return false, "", texts, nil, errGuardrailNotFound(ident, "")
+		return guardrailView{}, errGuardrailNotFound(ident, "")
 	}
 	id, err := resolveGuardrailID(ident, store.region, accountID)
 	if err != nil {
-		return false, "", texts, nil, err
+		return guardrailView{}, err
 	}
 
 	kv, err := store.bucket(ctx)
 	if err != nil {
-		return false, "", texts, nil, err
+		return guardrailView{}, err
 	}
 	rec, found, err := getGuardrailRecord(ctx, kv, accountID, id)
 	if err != nil {
-		return false, "", texts, nil, err
+		return guardrailView{}, err
 	}
 	if !found {
-		return false, "", texts, nil, errGuardrailNotFound(id, "")
+		return guardrailView{}, errGuardrailNotFound(id, "")
 	}
 
 	view := rec.guardrailView
 	if version != "" && version != guardrailDraftVersion {
 		snap, ok := rec.Versions[version]
 		if !ok {
-			return false, "", texts, nil, errGuardrailNotFound(id, version)
+			return guardrailView{}, errGuardrailNotFound(id, version)
 		}
 		view = snap.guardrailView
+	}
+	return view, nil
+}
+
+// enforceGuardrail is the single resolve->load->filter path Converse and
+// ConverseStream both call, mirroring ApplyGuardrail's own sequence. An
+// unresolvable or foreign guardrail fails closed: ResourceNotFoundException.
+func enforceGuardrail(ctx context.Context, store *GuardrailStore, accountID, ident, version, source string, texts []string) (blocked bool, blockedMessage string, redactedTexts []string, assessments []*bedrockruntime.GuardrailAssessment, err error) {
+	view, err := loadGuardrailView(ctx, store, accountID, ident, version)
+	if err != nil {
+		return false, "", texts, nil, err
 	}
 
 	action, gassessments, outputs, _ := applyGuardrailPolicies(view, texts, source)

@@ -194,8 +194,16 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 
 	texts, extractOK := extractInvokeCompletionTexts(backend, respBody)
 	if !extractOK {
-		slog.Error("invoke: failed to extract completion text for guardrail OUTPUT check, forwarding unguarded", "model", modelID, "backend", backend)
-		return respBody, contentType, err
+		slog.Error("invoke: failed to extract completion text for guardrail OUTPUT check, blocking", "model", modelID, "backend", backend)
+		view, verr := loadGuardrailView(ctx, rt.guardrails, accountID, guardrailIdent, guardrailVersion)
+		if verr != nil {
+			return nil, "", verr
+		}
+		respBody, err = invokeGuardrailBlockedResponse(backend, modelID, view.BlockedOutputsMessaging)
+		if err != nil {
+			return nil, "", err
+		}
+		return respBody, "application/json", nil
 	}
 	var blockedOut bool
 	var messageOut string

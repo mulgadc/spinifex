@@ -1329,8 +1329,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3 h1:EJ8JMQB9YQmtTDIrnPpbeti7U42MiWfwUhse6m2pJqM=
 github.com/mulgadc/bluebottle v1.16.1-0.20260812012137-683e88e465e3/go.mod h1:bhJitsX6VKkbmQ1dVh3vPUmoSeQsvtn5Jm4D8hUyq2s=
-github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059 h1:CK3Ed0Rg5dGvpSeMFTGpE1nf+390Rbf5hePOcnm1+kM=
-github.com/mulgadc/northstar v1.16.1-0.20260812012604-5d7a622ad059/go.mod h1:vyfhxWlBlAnJfUeSEt+z/Z6KrfReC/uzZM3WTllorYM=
+github.com/mulgadc/northstar v1.16.1-0.20260815211305-45682dc038c2 h1:Jhja5eM0ESlYMn7FrcqjhPujNdeUZdOxIXL5xJ4CM2g=
+github.com/mulgadc/northstar v1.16.1-0.20260815211305-45682dc038c2/go.mod h1:6PoTvvzGwSmXq+VnkbXuLj43wvoJN9y/LURY4suk7cc=
 github.com/mulgadc/predastore v1.16.1-0.20260813022738-0b4392b43cae h1:itP5arN88Xv/xe4kI/5TWC/fkawnOeIR8MF1AL7aC48=
 github.com/mulgadc/predastore v1.16.1-0.20260813022738-0b4392b43cae/go.mod h1:S5vcni7R3VYi3nccelMagKbWdX58WtbKf0I1R/7MmNI=
 github.com/mulgadc/viperblock v1.16.1-0.20260812124023-7e0df2323c75 h1:eqB0VOuFPldBHuQ7ELYZHSRxq+3MXbMMi9D5bfVUwe8=

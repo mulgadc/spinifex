@@ -1,8 +1,9 @@
-package cmd
+package cmd_test
 
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/cmd/spinifex/cmd"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ func TestConsoleRegion_ReadsTheServingNode(t *testing.T) {
 		},
 	}
 
-	region, err := consoleRegion(cfg)
+	region, err := cmd.ConsoleRegion(cfg)
 
 	require.NoError(t, err)
 	assert.Equal(t, "us-west-1", region)
@@ -30,14 +31,14 @@ func TestConsoleRegion_FailsWhenNodeHasNoRegion(t *testing.T) {
 		Nodes: map[string]config.Config{"node1": {}},
 	}
 
-	_, err := consoleRegion(cfg)
+	_, err := cmd.ConsoleRegion(cfg)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "node1")
 }
 
 func TestConsoleRegion_FailsWhenNodeIsAbsent(t *testing.T) {
-	_, err := consoleRegion(&config.ClusterConfig{Node: "ghost"})
+	_, err := cmd.ConsoleRegion(&config.ClusterConfig{Node: "ghost"})
 
 	require.Error(t, err)
 }

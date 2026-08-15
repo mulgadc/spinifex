@@ -64,3 +64,6 @@ func RetryableAdminError(err error) bool {
 	var adminErr *adminError
 	return errors.As(err, &adminErr) && retryableAdminErrors[adminErr.Code]
 }
+
+// ConsoleRegion exposes consoleRegion for testing.
+var ConsoleRegion = consoleRegion

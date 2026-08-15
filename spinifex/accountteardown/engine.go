@@ -22,6 +22,11 @@ type Engine struct {
 	Reapers  []Reaper
 	Timeouts Timeouts
 	Logger   *slog.Logger
+
+	// OnStage reports each finished stage as it happens, so a caller running a
+	// teardown in the background can publish progress. A teardown takes minutes
+	// and this is the only view into it while it runs.
+	OnStage func(ctx context.Context, stage StageResult)
 }
 
 // NewEngine builds an engine with the default timeouts.
@@ -99,6 +104,9 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 			return result, err
 		}
 		result.Stages = append(result.Stages, stageResult)
+		if e.OnStage != nil {
+			e.OnStage(ctx, stageResult)
+		}
 	}
 
 	if stuck := result.StuckCount(); stuck > 0 {

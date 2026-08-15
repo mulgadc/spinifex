@@ -19,7 +19,10 @@ import (
 // is rejected before any parsing, so adding a handler is a deliberate act
 // rather than a side effect of adding a function.
 var adminMethods = map[string]bool{
-	"CreateAccount": true,
+	"CreateAccount":           true,
+	"DeleteAccount":           true,
+	"DescribeAccountDeletion": true,
+	"ListAccounts":            true,
 }
 
 // adminPathPrefix is the private admin surface's URL prefix. It is matched
@@ -107,6 +110,12 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "CreateAccount":
 		output, err = gw.adminCreateAccount(ctx, body)
+	case "DeleteAccount":
+		output, err = gw.adminDeleteAccount(ctx, body)
+	case "DescribeAccountDeletion":
+		output, err = gw.adminDescribeAccountDeletion(ctx, body)
+	case "ListAccounts":
+		output, err = gw.adminListAccounts(ctx, body)
 	default:
 		// Unreachable: adminMethods gates the switch. Fail closed anyway so
 		// adding a name to the map without a case cannot silently return 200.

@@ -10,16 +10,14 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 )
 
-// accountDeleteTimeout bounds the whole teardown. Instance termination is the
-// long pole and a large account is many stages of it, so this is generous —
-// the per-stage drain budget is what actually decides when to give up.
-const accountDeleteTimeout = 30 * time.Minute
+// accountDeleteTimeout is the outer bound on the whole teardown. It must stay
+// well above the sum of the per-stage drain budgets, which are what actually
+// decide when to give up on a resource; cutting in before them would abandon a
+// large account midway with no stuck report to show for it.
+const accountDeleteTimeout = 2 * time.Hour
 
 var accountDeleteCmd = &cobra.Command{
 	Use:   "delete <account-id>",
@@ -55,10 +53,19 @@ func init() {
 	accountDeleteCmd.Flags().Bool("force", false, "Escalate past state guards for resources that will not delete")
 	accountDeleteCmd.Flags().Bool("yes", false, "Skip the interactive confirmation (requires --name)")
 	accountDeleteCmd.Flags().String("name", "", "Account name, which must match the stored record")
+	accountDeleteCmd.Flags().Bool("remote", false, "Delete over POST /admin/DeleteAccount instead of connecting to NATS")
+	accountDeleteCmd.Flags().String("endpoint", "", "Gateway endpoint for --remote (default: this node's AWS gateway)")
+	accountDeleteCmd.Flags().String("region", "", "SigV4 region for --remote (default: this node's region)")
+	accountDeleteCmd.Flags().String("ca-bundle", "", "CA certificate for --remote (default: this node's CA)")
+	accountDeleteCmd.Flags().String("client-token", "", "Idempotency token for --remote (default: generated; reuse it to follow the same teardown)")
 }
 
 func runAccountDelete(cmd *cobra.Command, args []string) error {
 	accountID := args[0]
+	if remote, _ := cmd.Flags().GetBool("remote"); remote {
+		return runAccountDeleteRemote(cmd, accountID)
+	}
+
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
 	assumeYes, _ := cmd.Flags().GetBool("yes")
@@ -73,28 +80,10 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), accountDeleteTimeout)
 	defer cancel()
 
-	names, err := openAccountNameIndex(ctx, nc)
+	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), svc)
 	if err != nil {
-		return fmt.Errorf("open account name index: %w", err)
+		return err
 	}
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf("get JetStream context: %w", err)
-	}
-	// Absent when the cluster never enabled quotas, which is not a reason to
-	// refuse a teardown: there is simply no counter to remove.
-	usage, err := kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountUsage, 1)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: quota usage bucket unavailable, its counter will not be removed: %v\n", err)
-		usage = nil
-	}
-
-	reapers := accountteardown.EC2Reapers(nc, len(cfg.Nodes))
-	reapers = append(reapers, accountteardown.IAMReapers(svc)...)
-	reapers = append(reapers, accountteardown.AccountReapers(svc, names, usage)...)
-
-	engine := accountteardown.NewEngine(accountteardown.NewIAMAccounts(svc), reapers...)
 
 	if dryRun {
 		result, err := engine.Inventory(ctx, accountID)
@@ -182,13 +171,20 @@ func printTeardownPlan(result *accountteardown.Result) {
 func printTeardownResult(result *accountteardown.Result) {
 	fmt.Println()
 	for _, stage := range result.Stages {
-		if len(stage.Deleted) == 0 && len(stage.Stuck) == 0 {
-			continue
-		}
-		fmt.Printf("  %-12s %d deleted, %d stuck (%s)\n",
-			stage.Stage, len(stage.Deleted), len(stage.Stuck), stage.Elapsed)
-		for _, stuck := range stage.Stuck {
-			fmt.Printf("    STUCK %s: %s\n", stuck.Resource, stuck.Reason)
-		}
+		printTeardownStage(stage)
+	}
+}
+
+// printTeardownStage reports one finished stage. A stage that removed nothing
+// and left nothing behind is not printed: an account with no ECS clusters
+// should not read as seven lines of activity.
+func printTeardownStage(stage accountteardown.StageResult) {
+	if len(stage.Deleted) == 0 && len(stage.Stuck) == 0 {
+		return
+	}
+	fmt.Printf("  %-12s %d deleted, %d stuck (%s)\n",
+		stage.Stage, len(stage.Deleted), len(stage.Stuck), stage.Elapsed)
+	for _, stuck := range stage.Stuck {
+		fmt.Printf("    STUCK %s: %s\n", stuck.Resource, stuck.Reason)
 	}
 }

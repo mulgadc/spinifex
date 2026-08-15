@@ -28,7 +28,8 @@ func TestAdminPathMethod(t *testing.T) {
 		wantOK bool
 	}{
 		{"known method", "/admin/CreateAccount", "CreateAccount", true},
-		{"unknown method", "/admin/DeleteAccount", "", false},
+		{"deletion method", "/admin/DeleteAccount", "DeleteAccount", true},
+		{"unknown method", "/admin/PurgeEverything", "", false},
 		{"nested path", "/admin/CreateAccount/extra", "", false},
 		{"bare prefix", "/admin/", "", false},
 		{"not admin", "/", "", false},
@@ -183,7 +184,7 @@ func decodeAdminError(t *testing.T, rec *httptest.ResponseRecorder) adminErrorBo
 func TestAdminRequestUnknownMethod(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 
-	rec := adminRequest(gw, "DeleteAccount", `{}`)
+	rec := adminRequest(gw, "PurgeEverything", `{}`)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, awserrors.ErrorInvalidAction, decodeAdminError(t, rec).Error.Code)
@@ -241,9 +242,15 @@ func TestAdminRequestRejectsNonPost(t *testing.T) {
 // authorizedAdminRequest builds a request that clears every authorization gate,
 // so the guards behind them can be tested on their own.
 func authorizedAdminRequest(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", strings.NewReader(body))
+	return authorizedAdminRequestForMethod(gw, "CreateAccount", body)
+}
+
+// authorizedAdminRequestForMethod is the same for a named method, so a grant
+// that covers one method can be shown not to cover another.
+func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/admin/"+method, strings.NewReader(body))
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("method", "CreateAccount")
+	rctx.URLParams.Add("method", method)
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")

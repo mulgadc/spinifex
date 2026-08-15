@@ -1,5 +1,8 @@
 package gateway
 
+//test:in-package — the status gate is an unexported step of the auth
+// middleware, and its cache is deliberately not part of the package's API.
+
 import (
 	"errors"
 	"net/http"

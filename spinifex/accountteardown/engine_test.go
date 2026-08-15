@@ -1,5 +1,9 @@
 package accountteardown
 
+//test:in-package — the engine drives unexported reapers and the protected
+// account list, and the stage ordering it guarantees is only observable from
+// inside the package.
+
 import (
 	"context"
 	"errors"

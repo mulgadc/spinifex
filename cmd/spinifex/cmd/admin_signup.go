@@ -48,9 +48,10 @@ const signupPrincipalPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Ef
 // default VPC, so it is comfortably longer than the gateway's own wait.
 const adminRequestTimeout = 90 * time.Second
 
-// adminMaxResponseBytes caps the response read. The endpoint answers in a few
-// hundred bytes; the cap keeps a misdirected endpoint from streaming into memory.
-const adminMaxResponseBytes = 64 << 10
+// adminMaxResponseBytes caps the response read. Most answers are a few hundred
+// bytes; a teardown inventory is one line per resource, so the cap is sized for
+// a large account rather than for the common case.
+const adminMaxResponseBytes = 1 << 20
 
 // retryableAdminErrors are the only codes worth retrying, and only with the
 // same client token. Suggesting a retry for the rest invites a caller to send
@@ -254,37 +255,19 @@ func runAccountCreateRemote(cmd *cobra.Command, name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), adminRequestTimeout)
 	defer cancel()
 
-	endpoint, _ := cmd.Flags().GetString("endpoint")
-	region, _ := cmd.Flags().GetString("region")
-	caBundle, _ := cmd.Flags().GetString("ca-bundle")
 	clientToken, _ := cmd.Flags().GetString("client-token")
 	source, _ := cmd.Flags().GetString("source")
 
-	// The local node's config supplies defaults when the command runs on a
-	// cluster member; off-cluster callers pass the flags instead.
-	if endpoint == "" || region == "" || caBundle == "" {
-		if cfg, err := loadLocalConfig(); err == nil {
-			node := cfg.Nodes[cfg.Node]
-			if endpoint == "" {
-				endpoint = localGatewayEndpoint(node)
-			}
-			if region == "" {
-				region = node.Region
-			}
-			if caBundle == "" {
-				caBundle = filepath.Join(cfg.NodeBaseDir(), "config", "ca.pem")
-			}
-		}
-	}
-	if endpoint == "" || region == "" {
-		fmt.Fprintln(os.Stderr, "Error: --endpoint and --region are required when no local node config is available")
+	target, err := resolveAdminTarget(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	if clientToken == "" {
 		clientToken = newClientToken()
 	}
 
-	out, err := createAccountRemote(ctx, adminTarget{endpoint: endpoint, region: region, caBundle: caBundle},
+	out, err := createAccountRemote(ctx, target,
 		gateway.CreateAccountRequest{Name: name, ClientToken: clientToken, Source: source})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -312,6 +295,34 @@ type adminTarget struct {
 	caBundle string
 }
 
+// resolveAdminTarget fills the endpoint, region and CA from this node's config
+// when the command runs on a cluster member. Off-cluster callers pass flags,
+// which always win over what the local config says.
+func resolveAdminTarget(cmd *cobra.Command) (adminTarget, error) {
+	endpoint, _ := cmd.Flags().GetString("endpoint")
+	region, _ := cmd.Flags().GetString("region")
+	caBundle, _ := cmd.Flags().GetString("ca-bundle")
+
+	if endpoint == "" || region == "" || caBundle == "" {
+		if cfg, err := loadLocalConfig(); err == nil {
+			node := cfg.Nodes[cfg.Node]
+			if endpoint == "" {
+				endpoint = localGatewayEndpoint(node)
+			}
+			if region == "" {
+				region = node.Region
+			}
+			if caBundle == "" {
+				caBundle = filepath.Join(cfg.NodeBaseDir(), "config", "ca.pem")
+			}
+		}
+	}
+	if endpoint == "" || region == "" {
+		return adminTarget{}, errors.New("--endpoint and --region are required when no local node config is available")
+	}
+	return adminTarget{endpoint: endpoint, region: region, caBundle: caBundle}, nil
+}
+
 // adminError is a structured error from the /admin surface. The code is
 // carried separately from the message so the caller can decide whether a
 // retry is safe without matching on text.
@@ -330,51 +341,59 @@ func (e *adminError) Error() string {
 // come from the standard AWS chain, so this never reads the cluster master
 // key — it is the same request the signup Worker makes.
 func createAccountRemote(ctx context.Context, target adminTarget, req gateway.CreateAccountRequest) (*gateway.CreateAccountResponse, error) {
+	var out gateway.CreateAccountResponse
+	if err := callAdmin(ctx, target, "CreateAccount", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// callAdmin signs and sends one POST /admin/<method>, decoding the success body
+// into out. Credentials come from the standard AWS chain, so this never reads
+// the cluster master key.
+func callAdmin(ctx context.Context, target adminTarget, method string, req, out any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return fmt.Errorf("marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(target.endpoint, "/")+"/admin/CreateAccount", bytes.NewReader(body))
+		strings.TrimRight(target.endpoint, "/")+"/admin/"+method, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	signer, err := gwsign.NewIMDS(ctx, target.region)
 	if err != nil {
-		return nil, fmt.Errorf("resolve AWS credentials: %w", err)
+		return fmt.Errorf("resolve AWS credentials: %w", err)
 	}
 	sum := sha256.Sum256(body)
 	if err := signer.Sign(httpReq, hex.EncodeToString(sum[:]), "spinifex", target.region); err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
+		return fmt.Errorf("sign request: %w", err)
 	}
 
 	client, err := adminHTTPClient(target.caBundle)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("call %s: %w", target.endpoint, err)
+		return fmt.Errorf("call %s: %w", target.endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
+		return fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, decodeAdminError(resp.StatusCode, payload)
+		return decodeAdminError(resp.StatusCode, payload)
 	}
-
-	var out gateway.CreateAccountResponse
-	if err := json.Unmarshal(payload, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
 	}
-	return &out, nil
+	return nil
 }
 
 // decodeAdminError turns a non-200 into an adminError. A body that is not the

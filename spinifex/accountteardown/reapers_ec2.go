@@ -239,15 +239,40 @@ func (r *addressReaper) List(ctx context.Context, accountID string) ([]Resource,
 // Delete disassociates before releasing. An associated address cannot be
 // released, and the association usually outlives the instance by a moment.
 func (r *addressReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	if _, err := gateway_ec2_eip.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
-		AssociationId: aws.String(resource.ID),
-	}, r.nc, accountID); err != nil && !isAlreadyGone(err) && !isNotAssociated(err) {
+	associationID, err := r.associationID(ctx, accountID, resource.ID)
+	if err != nil && !isAlreadyGone(err) {
 		return err
 	}
-	_, err := gateway_ec2_eip.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
+	if associationID != "" {
+		if _, err := gateway_ec2_eip.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
+			AssociationId: aws.String(associationID),
+		}, r.nc, accountID); err != nil && !isAlreadyGone(err) && !isNotAssociated(err) {
+			return err
+		}
+	}
+	_, err = gateway_ec2_eip.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
+}
+
+// associationID reads the address's current association rather than carrying it
+// from the listing, because a delete may also be driven from an id an operator
+// supplied. An empty answer means unattached, which is not an error.
+func (r *addressReaper) associationID(ctx context.Context, accountID, allocationID string) (string, error) {
+	out, err := gateway_ec2_eip.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
+		AllocationIds: []*string{aws.String(allocationID)},
+	}, r.nc, accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, address := range out.Addresses {
+		if address == nil || address.AllocationId == nil || *address.AllocationId != allocationID {
+			continue
+		}
+		return aws.StringValue(address.AssociationId), nil
+	}
+	return "", nil
 }
 
 type igwReaper struct{ nc *nats.Conn }

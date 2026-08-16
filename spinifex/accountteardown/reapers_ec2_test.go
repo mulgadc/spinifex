@@ -290,7 +290,11 @@ func TestAddressReaperDisassociatesBeforeReleasing(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.reply("ec2.DescribeAddresses", ec2.DescribeAddressesOutput{
 		Addresses: []*ec2.Address{
-			{AllocationId: aws.String("eipalloc-1"), PublicIp: aws.String("203.0.113.7")},
+			{
+				AllocationId:  aws.String("eipalloc-1"),
+				AssociationId: aws.String("eipassoc-1"),
+				PublicIp:      aws.String("203.0.113.7"),
+			},
 			{PublicIp: aws.String("203.0.113.8")},
 		},
 	})
@@ -302,20 +306,67 @@ func TestAddressReaperDisassociatesBeforeReleasing(t *testing.T) {
 	assert.Equal(t, "203.0.113.7", found[0].Detail)
 
 	require.NoError(t, reaper.Delete(testCtx(t), "000000000042", found[0], false))
-	assert.Equal(t, []string{"ec2.DescribeAddresses", "ec2.DisassociateAddress", "ec2.ReleaseAddress"},
-		cluster.called())
+	assert.Equal(t, []string{
+		"ec2.DescribeAddresses", "ec2.DescribeAddresses",
+		"ec2.DisassociateAddress", "ec2.ReleaseAddress",
+	}, cluster.called())
 }
 
-// An address that was never associated is the normal case, not a failure.
+// The allocation id is not the association id. Sending the former is answered
+// InvalidAssociationID.NotFound, which reads as never-associated, so the
+// address stays associated and the release is refused.
+func TestAddressReaperDisassociatesByAssociationID(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.reply("ec2.DescribeAddresses", ec2.DescribeAddressesOutput{
+		Addresses: []*ec2.Address{{
+			AllocationId:  aws.String("eipalloc-1"),
+			AssociationId: aws.String("eipassoc-1"),
+			PublicIp:      aws.String("203.0.113.7"),
+		}},
+	})
+
+	reaper := &addressReaper{nc: cluster.nc}
+	require.NoError(t, reaper.Delete(testCtx(t), "000000000042",
+		Resource{Kind: "address", ID: "eipalloc-1", Detail: "203.0.113.7"}, false))
+
+	var disassociate ec2.DisassociateAddressInput
+	cluster.request(t, "ec2.DisassociateAddress", &disassociate)
+	assert.Equal(t, "eipassoc-1", aws.StringValue(disassociate.AssociationId))
+
+	var describe ec2.DescribeAddressesInput
+	cluster.request(t, "ec2.DescribeAddresses", &describe)
+	require.Len(t, describe.AllocationIds, 1)
+	assert.Equal(t, "eipalloc-1", aws.StringValue(describe.AllocationIds[0]))
+}
+
+// An address that was never associated is the normal case, not a failure. It
+// has nothing to disassociate, so the call is skipped rather than made and
+// forgiven — a real error from it should still stop the release.
 func TestAddressReaperReleasesAnUnassociatedAddress(t *testing.T) {
 	cluster := newFakeCluster(t)
-	cluster.fail("ec2.DisassociateAddress", "InvalidAssociationID.NotFound")
+	cluster.reply("ec2.DescribeAddresses", ec2.DescribeAddressesOutput{
+		Addresses: []*ec2.Address{{AllocationId: aws.String("eipalloc-1"), PublicIp: aws.String("203.0.113.7")}},
+	})
 
 	reaper := &addressReaper{nc: cluster.nc}
 	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "address", ID: "eipalloc-1"}, false)
 
 	require.NoError(t, err)
-	assert.Contains(t, cluster.called(), "ec2.ReleaseAddress")
+	assert.Equal(t, []string{"ec2.DescribeAddresses", "ec2.ReleaseAddress"}, cluster.called())
+}
+
+// An address already gone by the time its stage runs is a success: teardown
+// re-runs after a crash and would otherwise never finish.
+func TestAddressReaperTreatsAMissingAddressAsDeleted(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.fail("ec2.DescribeAddresses", "InvalidAllocationID.NotFound")
+	cluster.fail("ec2.ReleaseAddress", "InvalidAllocationID.NotFound")
+
+	reaper := &addressReaper{nc: cluster.nc}
+	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "address", ID: "eipalloc-1"}, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ec2.DescribeAddresses", "ec2.ReleaseAddress"}, cluster.called())
 }
 
 // An attached gateway cannot be deleted, and its VPC cannot be deleted while

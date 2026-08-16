@@ -74,6 +74,25 @@ func TestLoadOrCreateSigningKey_SkipsAnUnreadableKey(t *testing.T) {
 	assert.Len(t, verify, 1, "an unreadable key contributes no verify key")
 }
 
+// A key listed and then deleted before it is read is the ordinary race against
+// another node's rotator pruning it, not a reason to refuse to start.
+func TestLoadOrCreateSigningKey_SkipsAKeyDeletedWhileReading(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+
+	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	require.NoError(t, err)
+
+	kv, err := js.KeyValue(t.Context(), SigningBucket)
+	require.NoError(t, err)
+	require.NoError(t, kv.Delete(t.Context(), signingKeyName("never-existed")))
+
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	require.NoError(t, err)
+	assert.Equal(t, good.Kid, key.Kid)
+	assert.Len(t, verify, 1)
+}
+
 // Every key failing is the master key being wrong for the whole bucket. Minting
 // a fresh one alongside would invalidate every issued token and hide the cause,
 // so it fails closed instead.

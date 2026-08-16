@@ -137,6 +137,13 @@ func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (a
 			continue
 		}
 		entry, err := kv.Get(ctx, name)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Listed but gone by the time it was read, which is the ordinary
+			// race against another node's rotator pruning it. Any other get
+			// error is the store failing and is still returned.
+			slog.WarnContext(ctx, "ECR auth bridge: signing key vanished between list and read", "key", name)
+			continue
+		}
 		if err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("kv get %s: %w", name, err)
 		}

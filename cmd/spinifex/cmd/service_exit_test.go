@@ -258,6 +258,7 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			cmd:  spinifexUIStartCmd,
 			setup: func(t *testing.T) {
 				resetGlobalViper(t)
+				viper.Set("config", writeSpinifexToml(t, minimalClusterToml))
 				viper.Set("spinifex-ui-base-dir", t.TempDir())
 				viper.Set("spinifex-ui-tls-cert", filepath.Join(t.TempDir(), "missing.pem"))
 			},

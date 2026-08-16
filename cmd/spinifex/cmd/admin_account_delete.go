@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/spf13/cobra"
 )
 
@@ -80,7 +82,15 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), accountDeleteTimeout)
 	defer cancel()
 
-	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), svc)
+	node := cfg.Nodes[cfg.Node]
+	buckets := objectstore.NewS3ObjectStoreFromConfig(
+		admin.DialTarget(node.Predastore.Host),
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), svc, buckets)
 	if err != nil {
 		return err
 	}

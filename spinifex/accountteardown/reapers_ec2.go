@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
@@ -542,6 +543,7 @@ var notFoundMarkers = []string{
 	awserrors.ErrorEKSResourceNotFound,
 	awserrors.ErrorDBInstanceNotFound,
 	awserrors.ErrorDBSubnetGroupNotFound, awserrors.ErrorDBParameterGroupNotFound,
+	s3.ErrCodeNoSuchBucket, s3.ErrCodeNoSuchKey, s3.ErrCodeNoSuchUpload,
 }
 
 func isAlreadyGone(err error) bool {

@@ -22,7 +22,15 @@ func NewClusterEngine(
 	nc *nats.Conn,
 	expectedNodes int,
 	svc handlers_iam.IAMService,
+	buckets BucketStore,
 ) (*Engine, error) {
+	// Refused rather than skipped. A teardown missing its bucket reaper still
+	// reports every stage drained and still deletes the account record, leaving
+	// the tenant's objects behind with nothing able to attribute them to anyone.
+	if buckets == nil {
+		return nil, fmt.Errorf("teardown needs an object store to reap buckets with")
+	}
+
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
@@ -49,6 +57,7 @@ func NewClusterEngine(
 	reapers = append(reapers, EKSReapers(nc)...)
 	reapers = append(reapers, RDSReapers(nc)...)
 	reapers = append(reapers, EC2Reapers(nc, expectedNodes)...)
+	reapers = append(reapers, S3Reapers(buckets)...)
 	reapers = append(reapers, IAMReapers(svc)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 

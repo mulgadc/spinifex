@@ -111,7 +111,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, gw.NATSConn, gw.ExpectedNodes, gw.IAMService)
+	engine, err := accountteardown.NewClusterEngine(ctx, gw.NATSConn, gw.ExpectedNodes, gw.IAMService, gw.BucketStore)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)

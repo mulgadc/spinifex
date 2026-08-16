@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -55,8 +57,36 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 		IAMService:     svc,
 		NATSConn:       nc,
 		ExpectedNodes:  1,
+		BucketStore:    emptyBucketStore{},
 	}
 }
+
+// emptyBucketStore stands in for predastore: the tenant owns no buckets, so
+// the storage stage drains empty and these tests exercise the job record
+// rather than the reapers. Teardown refuses without one, which is the point.
+type emptyBucketStore struct{}
+
+func (emptyBucketStore) ListBucketsForOwner(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (emptyBucketStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	return &s3.ListObjectsV2Output{}, nil
+}
+
+func (emptyBucketStore) DeleteObject(context.Context, *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	return &s3.DeleteObjectOutput{}, nil
+}
+
+func (emptyBucketStore) ListMultipartUploads(context.Context, string) ([]objectstore.MultipartUploadRef, error) {
+	return nil, nil
+}
+
+func (emptyBucketStore) AbortMultipartUpload(context.Context, objectstore.MultipartUploadRef) error {
+	return nil
+}
+
+func (emptyBucketStore) DeleteBucket(context.Context, string) error { return nil }
 
 // newTenantAccount creates an account that is safe to delete. Account ids are
 // sequential and the first belongs to the super admin, which is protected, so

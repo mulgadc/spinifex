@@ -441,6 +441,7 @@ func launchService(config *config.ClusterConfig) error {
 		RegistryHost:            registryHost,
 		AZ:                      nodeConfig.AZ,
 		IAMService:              iamService,
+		BucketStore:             objStore,
 		STSService:              stsService,
 		Version:                 version,
 		Commit:                  commit,

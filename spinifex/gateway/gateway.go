@@ -22,6 +22,7 @@ import (
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -108,9 +109,14 @@ type GatewayConfig struct {
 	RegistryHost string
 	AZ           string // Availability zone this gateway is running in
 	IAMService   handlers_iam.IAMService
-	STSService   handlers_sts.STSService
-	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
+	// BucketStore reaps a tenant's S3 buckets during account teardown. It
+	// signs with the config service credential, which predastore already
+	// trusts to reach any bucket, so this grants enumeration, not access.
+	// Nil makes DeleteAccount refuse rather than tear down around the data.
+	BucketStore accountteardown.BucketStore
+	STSService  handlers_sts.STSService
+	RateLimiter *AuthRateLimiter     // Per-IP auth failure rate limiter
+	Throttler   *ratelimit.Throttler // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
 	// status does not add a KV read to every authenticated request.
 	accountStatus *accountStatusCache

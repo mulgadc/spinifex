@@ -21,9 +21,10 @@ const (
 	// whitelists; it must match exactly for IMDS role-cred vending to admit it.
 	ecsAssumeRolePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 
-	// ecsInstanceRolePolicyDoc grants the container-instance agent the ECS
-	// control-plane actions the gateway enforces for assumed-role principals.
-	ecsInstanceRolePolicyDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ecs:*","Resource":"*"}]}`
+	// ecsInstanceRolePolicyDoc grants the agent the ECS control-plane actions the
+	// gateway enforces for assumed-role principals, plus ECR read so it can pull
+	// task images via the instance role when a task carries no execution role.
+	ecsInstanceRolePolicyDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ecs:*","Resource":"*"},{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"*"}]}`
 )
 
 // ensureECSInstanceProfile find-or-creates the ecsInstanceRole, its ecs:* policy

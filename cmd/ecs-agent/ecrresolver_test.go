@@ -115,17 +115,44 @@ func TestECRResolver_NonECRAnonymous(t *testing.T) {
 }
 
 func TestIsECRRef(t *testing.T) {
-	cases := map[string]bool{
-		"nginx:alpine":            false,
-		"docker.io/library/nginx": false,
-		"ghcr.io/org/app:1":       false,
-		"registry:5000/app:1":     false,
-		"123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1": true,
-		"123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/x":    true,
+	cases := []struct {
+		ref, gatewayHost string
+		want             bool
+	}{
+		{"nginx:alpine", "192.168.1.13:9999", false},
+		{"docker.io/library/nginx", "192.168.1.13:9999", false},
+		{"ghcr.io/org/app:1", "192.168.1.13:9999", false},
+		{"registry:5000/app:1", "192.168.1.13:9999", false},
+		{"123456789012.dkr.ecr.us-east-1.spinifex.internal/app:1", "192.168.1.13:9999", true},
+		{"123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/x", "192.168.1.13:9999", true},
+		// Co-located gateway registry advertised as a bare host/IP.
+		{"192.168.1.13:9999/bunyip:latest", "192.168.1.13:9999", true},
+		{"192.168.1.13:9999/bunyip:latest", "", false},
 	}
-	for ref, want := range cases {
-		if got := isECRRef(ref); got != want {
-			t.Errorf("isECRRef(%q) = %v, want %v", ref, got, want)
+	for _, c := range cases {
+		if got := isECRRef(c.ref, c.gatewayHost); got != c.want {
+			t.Errorf("isECRRef(%q, %q) = %v, want %v", c.ref, c.gatewayHost, got, c.want)
 		}
+	}
+}
+
+// TestECRResolver_Authorize_BareHostGateway asserts that a ref whose host
+// equals the agent's own gateway host authenticates via the co-located ECR
+// registry, even though it lacks a ".dkr.ecr." name.
+func TestECRResolver_Authorize_BareHostGateway(t *testing.T) {
+	srv := gatewayStub(t, "AWS:jwt", "https://192.168.1.13:9999", http.StatusOK)
+	creds := stubCreds{c: credentials.Credentials{
+		AccessKeyID: "AKIA", SecretAccessKey: "secret", SessionToken: "sess",
+		Expiration: time.Now().Add(time.Hour),
+	}}
+	r := newECRResolver(creds, "us-east-1", srv.URL, trusting(srv))
+
+	host := strings.TrimPrefix(srv.URL, "https://")
+	user, pass, _, err := r.Authorize(context.Background(), host+"/bunyip:latest")
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if user != "AWS" || pass != "jwt" {
+		t.Errorf("got %q:%q, want AWS:jwt", user, pass)
 	}
 }

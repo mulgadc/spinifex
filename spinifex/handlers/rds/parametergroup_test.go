@@ -490,6 +490,50 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	assert.NotEmpty(t, aws.StringValue(shared.AllowedValues))
 }
 
+// The canonical spelling the guest is handed is not what the API reports back:
+// a Terraform plan comparing what it wrote against what it reads would otherwise
+// show drift on every boolean, forever.
+func TestDescribeDBParameters_ReportsTheCustomersBooleanSpelling(t *testing.T) {
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(),
+		modifyParameters(testParameterGroup, parameter("autovacuum", "off", "")), testAccountID)
+	require.NoError(t, err)
+
+	params := describedParameters(t, h, testParameterGroup)
+	require.NotNil(t, params["autovacuum"])
+	assert.Equal(t, "off", aws.StringValue(params["autovacuum"].ParameterValue))
+	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["autovacuum"].Source))
+
+	resolved, err := enginePostgres.ResolveEffectiveParameters("db.t3.micro", map[string]string{"autovacuum": "off"})
+	require.NoError(t, err)
+	assert.Equal(t, "0", resolvedParameter(t, resolved, "autovacuum"),
+		"the guest should be handed the canonical spelling rather than the customer's")
+}
+
+// Reported so a security-conscious plan can read the floor, refused so it cannot
+// lower it. The refusal is the ordinary not-modifiable one, which names the
+// parameter rather than claiming the engine has no such setting.
+func TestDBParameterGroup_ReportsThePinnedTLSFloorAndRefusesToChangeIt(t *testing.T) {
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	floor := describedParameters(t, h, testParameterGroup)["ssl_min_protocol_version"]
+	require.NotNil(t, floor)
+	assert.Equal(t, "TLSv1.3", aws.StringValue(floor.ParameterValue))
+	assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(floor.Source))
+	assert.False(t, aws.BoolValue(floor.IsModifiable))
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(),
+		modifyParameters(testParameterGroup, parameter("ssl_min_protocol_version", "TLSv1.2", "")), testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+	assert.Contains(t, err.Error(), "parameter ssl_min_protocol_version is not modifiable")
+}
+
 func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T) {
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)

@@ -180,6 +180,11 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assert.Equal(t, modifyNote, strings.TrimSpace(note),
 			"the row written before both modifications must survive the replace")
 
+		// The replacement is a fresh VM running rds-init over the re-attached data
+		// volume, which is the boot-time half of enforcement. A replacement that
+		// came back accepting plaintext would present as a healthy instance.
+		assertRefusesPlaintext(t, client, conn)
+
 		// The defaults are formulas over class memory, so a
 		// class change that did not re-resolve them leaves a 2 GiB instance running a
 		// 1 GiB configuration.

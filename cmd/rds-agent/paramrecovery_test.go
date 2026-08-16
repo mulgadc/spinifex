@@ -404,6 +404,47 @@ func TestParamGuard_RollsBackReportsAndRestartsWhenTheEngineNeverComesUp(t *test
 	}
 }
 
+// PostgreSQL re-derives TLS enforcement from the set it has just put back, so
+// the file can be replaced and the call still fail. The rollback has happened
+// either way, and the worse outcome is an instance left down and unreported.
+func TestParamGuard_ReportsAndRestartsWhenOnlyTheEnforcementFailed(t *testing.T) {
+	engine := &fakeRecovery{restored: true, restoreErr: errors.New("write the TLS enforcement rule: read-only file system")}
+	cp := newFakeControlPlane()
+	guard := newParamGuard(engine, stubProbe(t, 2, nil), cp)
+	guard.id = identity{DBInstanceIdentifier: "db-1"}
+	guard.after, guard.poll = 20*time.Millisecond, time.Millisecond
+	guard.Run(t.Context())
+
+	if engine.restarts != 1 {
+		t.Errorf("restarts = %d, want the engine restarted on the set already put back", engine.restarts)
+	}
+	states := cp.snapshotStates()
+	if len(states) != 1 {
+		t.Fatalf("submitted states = %d, want the rollback still reported", len(states))
+	}
+	if states[0].health != handlers_rds.EngineHealthUnhealthy || states[0].message != handlers_rds.ParameterRollbackMessage {
+		t.Errorf("rollback state = %+v, want the unhealthy rollback report", states[0])
+	}
+}
+
+// The other half of the same contract: a restore that replaced nothing leaves
+// the instance on the set it is already failing under, so restarting it would
+// only churn a cluster that is down for a reason the rollback cannot fix.
+func TestParamGuard_DoesNotRestartWhenTheRestoreReplacedNothing(t *testing.T) {
+	engine := &fakeRecovery{restored: false, restoreErr: errors.New("read the last known good parameters: input/output error")}
+	cp := newFakeControlPlane()
+	guard := newParamGuard(engine, stubProbe(t, 2, nil), cp)
+	guard.after, guard.poll = 20*time.Millisecond, time.Millisecond
+	guard.Run(t.Context())
+
+	if engine.restarts != 0 {
+		t.Errorf("restarts = %d, want none when nothing was rolled back", engine.restarts)
+	}
+	if states := cp.snapshotStates(); len(states) != 0 {
+		t.Errorf("submitted states = %d, want no rollback report", len(states))
+	}
+}
+
 func TestParamGuard_DoesNothingWhenTheEngineIsServing(t *testing.T) {
 	engine := &fakeRecovery{restored: true}
 	newTestGuard(engine, stubProbe(t, 0, nil)).Run(t.Context())

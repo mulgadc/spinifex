@@ -28,9 +28,10 @@ var engineMariaDB = Engine{
 	// MariaDB maps a database name onto a directory name and its client has no
 	// identifier interpolation, so rds-init builds CREATE DATABASE by shell
 	// interpolation and this rule is the barrier rather than defence in depth.
-	validateDBName:       dbNameRule(64),
-	catalog:              mariadbParameterCatalog,
-	validateCombinations: validateMariaDBParameterCombinations,
+	validateDBName:          dbNameRule(64),
+	catalog:                 mariadbParameterCatalog,
+	validateCombinations:    validateMariaDBParameterCombinations,
+	tlsEnforcementParameter: "require_secure_transport",
 	// Only InnoDB keeps a redo log. Aria and MyISAM have none, so a datadir torn
 	// mid-write can leave one of their tables inconsistent with no way back.
 	crashRecoveryNote: "InnoDB tables will recover from the redo log when it is restored; " +
@@ -41,8 +42,12 @@ var engineMariaDB = Engine{
 
 // The curated MariaDB 11.8 table: a validated subset, because a static parameter
 // the server refuses at startup is a boot loop with the bad config already on
-// the data volume. Platform-owned settings are absent, not unmodifiable.
-var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
+// the data volume.
+//
+// Platform-owned settings are absent, except the ones AWS exposes as modifiable
+// and this platform pins: those are present and unmodifiable, so a refusal reads
+// as policy rather than as a missing feature.
+var mariadbParameterCatalog = buildParameterCatalog(
 	// Connections and threads. max_connections is what a size-derived default
 	// matters most for: RDS's own formula is {DBInstanceClassMemory/12582880}.
 	ParameterSpec{
@@ -353,22 +358,25 @@ var mariadbParameterCatalog = withMariaDBBooleanSpellings(buildParameterCatalog(
 		IsModifiable: true, Enum: []string{"on", "off"}, Default: "off",
 		Description: "Whether the scheduled event executor thread runs.",
 	},
-))
 
-// MariaDB parses 0, 1, ON, OFF, TRUE and FALSE for a boolean system variable and
-// refuses yes and no, which PostgreSQL accepts. Narrowing the whole catalog in
-// one place keeps every boolean spec free of the distinction.
-var mariadbBooleanSpellings = []string{"on", "off", "true", "false", "1", "0"}
-
-func withMariaDBBooleanSpellings(catalog map[string]ParameterSpec) map[string]ParameterSpec {
-	for name, spec := range catalog {
-		if spec.DataType == ParamTypeBoolean {
-			spec.Enum = mariadbBooleanSpellings
-			catalog[name] = spec
-		}
-	}
-	return catalog
-}
+	// TLS. Pinned to the same floor as the PostgreSQL engine and static because
+	// mariadbd reads tls_version only at startup. ssl_cert and ssl_key stay absent:
+	// they name files rds-init mints, so a customer setting them breaks the endpoint.
+	ParameterSpec{
+		Name: "tls_version", DataType: ParamTypeString, ApplyType: ApplyTypeStatic,
+		IsModifiable: false, Default: "TLSv1.3",
+		Description: "TLS protocol versions the server accepts, as a comma-separated list.",
+	},
+	// A real global system variable, unlike PostgreSQL's placeholder: the value in
+	// the file is the enforcement, and SET GLOBAL applies it live. A unix socket
+	// counts as a secure transport, so neither rds-init nor rds-agent is affected.
+	// On by default, which is a deliberate divergence: AWS leaves it off here.
+	ParameterSpec{
+		Name: "require_secure_transport", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
+		IsModifiable: true, Default: "1",
+		Description: "Whether the server requires TLS of client connections over TCP.",
+	},
+)
 
 // The InnoDB buffer pool ceiling, above the three-quarters default but below the
 // whole guest: the pool is a single allocation the kernel will not overcommit

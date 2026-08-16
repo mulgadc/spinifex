@@ -115,6 +115,11 @@ func TestLifecycle(t *testing.T) {
 
 		out := harness.PSQL(t, client, conn, fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", lifecycleTable))
 		assert.Equal(t, lifecycleNote, strings.TrimSpace(out), "the row written before the stop must still be there")
+
+		// This instance has no parameter group of its own, so enforcement here is
+		// the catalog default alone: a start that came back accepting plaintext
+		// would be a database whose owner never chose that.
+		assertRefusesPlaintext(t, client, conn)
 	})
 
 	t.Run("RebootRestartsTheEngineAndKeepsTheData", func(t *testing.T) {
@@ -265,29 +270,8 @@ func TestLifecycle(t *testing.T) {
 // assertion is about how that one value reaches the engine.
 func createParameterGroupWithStatic(t *testing.T, f *Fixture, name string) {
 	t.Helper()
-	_, err := f.AWS.RDS.CreateDBParameterGroup(&rds.CreateDBParameterGroupInput{
-		DBParameterGroupName:   aws.String(name),
-		DBParameterGroupFamily: aws.String(dbParameterGroupFamily),
-		Description:            aws.String("rds e2e static parameter group"),
-	})
-	require.NoError(t, err, "create-db-parameter-group %s", name)
-	t.Cleanup(func() {
-		if _, err := f.AWS.RDS.DeleteDBParameterGroup(&rds.DeleteDBParameterGroupInput{
-			DBParameterGroupName: aws.String(name),
-		}); err != nil && !harness.ErrorCodeIs(err, "DBParameterGroupNotFound") {
-			t.Logf("cleanup: delete-db-parameter-group %s: %v", name, err)
-		}
-	})
-
-	_, err = f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
-		DBParameterGroupName: aws.String(name),
-		Parameters: []*rds.Parameter{{
-			ParameterName:  aws.String(staticParameterName),
-			ParameterValue: aws.String(staticParameterValue),
-			ApplyMethod:    aws.String("pending-reboot"),
-		}},
-	})
-	require.NoError(t, err, "modify-db-parameter-group %s", name)
+	createParameterGroup(t, f, name)
+	setGroupParameter(t, f, name, staticParameterName, staticParameterValue, "pending-reboot")
 }
 
 // The engine's own start time, which moves only across a real restart.

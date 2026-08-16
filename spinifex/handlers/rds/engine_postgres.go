@@ -24,10 +24,11 @@ var enginePostgres = Engine{
 	reservedUsernamePrefixes: []string{"pg_"},
 	// NAMEDATALEN-1, where the engine's own limit and AWS's documented one
 	// coincide. A database name is the same identifier limit.
-	maxUsernameLen:       63,
-	validateDBName:       dbNameRule(63),
-	catalog:              postgresParameterCatalog,
-	validateCombinations: validatePostgresParameterCombinations,
+	maxUsernameLen:          63,
+	validateDBName:          dbNameRule(63),
+	catalog:                 postgresParameterCatalog,
+	validateCombinations:    validatePostgresParameterCombinations,
+	tlsEnforcementParameter: "rds.force_ssl",
 	// Every table is WAL-logged, so a torn datadir recovers in full.
 	crashRecoveryNote: "It will recover from its write-ahead log when it is restored.",
 	uncleanStopNote:   "It will recover from its write-ahead log on the next start.",
@@ -35,7 +36,11 @@ var enginePostgres = Engine{
 
 // The curated PostgreSQL 18 table: a validated subset of the engine's ~350 GUCs,
 // because a static parameter the engine refuses at startup is a boot loop with
-// the bad config already on the data volume. Platform-owned settings are absent.
+// the bad config already on the data volume.
+//
+// Platform-owned settings are absent, except the ones AWS exposes as modifiable
+// and this platform pins: those are present and unmodifiable, so a refusal reads
+// as policy rather than as a missing feature.
 var postgresParameterCatalog = buildParameterCatalog(
 	// Connections. max_connections is what a size-derived default matters most
 	// for: RDS's own formula is LEAST({DBInstanceClassMemory/9531392}, 5000).
@@ -333,6 +338,30 @@ var postgresParameterCatalog = buildParameterCatalog(
 		Name: "track_io_timing", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
 		IsModifiable: true, Default: "on",
 		Description: "Whether block read and write times are collected.",
+	},
+
+	// TLS. The floor is pinned rather than offered: 1.3 is the version every
+	// platform-internal boundary already requires, and a client too old for it
+	// could not have reached the API that created the instance.
+	//
+	// The certificate and key paths stay absent instead, because they name files
+	// rds-init mints and installs — a customer setting them is not a stricter
+	// policy but a broken endpoint.
+	ParameterSpec{
+		Name: "ssl_min_protocol_version", DataType: ParamTypeString, ApplyType: ApplyTypeDynamic,
+		IsModifiable: false, Default: "TLSv1.3",
+		Description: "Minimum TLS protocol version the server accepts from a client.",
+	},
+	// PostgreSQL has no server setting for this. The name is AWS's, and here it is
+	// a placeholder custom variable that SHOW answers and nothing enforces: the
+	// engine's only mechanism is pg_hba.conf, which the guest derives from this
+	// value. Dynamic because the guest applies it with a reload, and because a
+	// placeholder never appears in pg_settings.pending_restart — a static
+	// classification would report it applied while nothing had changed.
+	ParameterSpec{
+		Name: "rds.force_ssl", DataType: ParamTypeBoolean, ApplyType: ApplyTypeDynamic,
+		IsModifiable: true, Default: "1",
+		Description: "Whether the server requires TLS of client connections.",
 	},
 )
 

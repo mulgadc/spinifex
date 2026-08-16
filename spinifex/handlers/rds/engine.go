@@ -36,6 +36,10 @@ type Engine struct {
 	// Cross-parameter checks a resolved set must satisfy, which are the
 	// combinations the engine itself would refuse to start under.
 	validateCombinations func([]Parameter) error
+	// The engine's own name for the setting that requires TLS of a client
+	// connection, which is AWS's name for it. Named here so the control plane and
+	// the guest agree on the key without either spelling out an engine.
+	tlsEnforcementParameter string
 
 	// What a snapshot taken without a quiesce actually recovers on restore, which
 	// is the engine's own guarantee and not a shared one.
@@ -71,6 +75,14 @@ func indexEnginesByFamily() map[string]Engine {
 		}
 		if engine.uncleanStopNote == "" {
 			panic("rds: engine " + engine.Name + " registers no unclean-stop note")
+		}
+		// A name no catalog entry answers to would leave the guest deriving
+		// enforcement from a key nothing ever writes, which reads as not enforcing.
+		if name := engine.tlsEnforcementParameter; name != "" {
+			spec, ok := engine.catalog[name]
+			if !ok || spec.DataType != ParamTypeBoolean {
+				panic("rds: engine " + engine.Name + " names " + name + ", which is not a boolean parameter it exposes")
+			}
 		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {

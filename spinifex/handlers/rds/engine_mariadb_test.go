@@ -175,7 +175,7 @@ func TestMariaDBCatalog_IsSeparateFromPostgres(t *testing.T) {
 func TestMariaDBCatalog_OmitsPlatformOwnedSettings(t *testing.T) {
 	owned := []string{
 		"port", "datadir", "socket", "bind_address",
-		"ssl_ca", "ssl_cert", "ssl_key", "require_secure_transport",
+		"ssl_ca", "ssl_cert", "ssl_key",
 		"secure_file_priv", "skip_symbolic_links", "log_bin",
 		"default_storage_engine",
 		"innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances",
@@ -299,21 +299,24 @@ func TestMariaDBCatalog_AcceptsEngineSpelledValues(t *testing.T) {
 
 // MariaDB refuses yes and no for a boolean system variable where PostgreSQL
 // accepts them, so a value the API takes must be one mysqld will parse.
-func TestMariaDBCatalog_TakesOnlyTheEnginesBooleanSpellings(t *testing.T) {
-	for _, value := range []string{"on", "OFF", "true", "False", "1", "0"} {
-		_, err := engineMariaDB.validateParameterValue("slow_query_log", value)
-		assert.NoError(t, err, "slow_query_log rejected %q, which the engine accepts", value)
-	}
-	for _, value := range []string{"yes", "no"} {
-		_, err := engineMariaDB.validateParameterValue("slow_query_log", value)
-		require.Error(t, err, "slow_query_log accepted %q, which the engine refuses", value)
-		assert.Contains(t, err.Error(), "takes a boolean")
-	}
+// mariadbd's own parser refuses yes and no, but no value reaches it unresolved:
+// the resolver canonicalises every boolean to 1 or 0 first. So the API takes all
+// eight spellings here as it does on PostgreSQL, and the engine still only ever
+// sees the two it parses.
+func TestMariaDBCatalog_TakesEveryBooleanSpelling(t *testing.T) {
+	for _, param := range []string{"slow_query_log", "require_secure_transport"} {
+		t.Run(param, func(t *testing.T) {
+			for _, value := range []string{"on", "OFF", "true", "False", "yes", "No", "1", "0"} {
+				_, err := engineMariaDB.validateParameterValue(param, value)
+				assert.NoError(t, err, "%s rejected %q, which the API accepts", param, value)
+			}
 
-	spec, ok := engineMariaDB.LookupParameter("slow_query_log")
-	require.True(t, ok)
-	assert.Equal(t, "on,off,true,false,1,0", spec.AllowedValues(),
-		"a customer has to be able to read which spellings this engine takes")
+			spec, ok := engineMariaDB.LookupParameter(param)
+			require.True(t, ok)
+			assert.Equal(t, "on,off,true,false,yes,no,1,0", spec.AllowedValues(),
+				"a customer has to be able to read which spellings are accepted")
+		})
+	}
 }
 
 func TestMariaDBCatalog_RejectsFatalCombinations(t *testing.T) {

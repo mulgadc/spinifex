@@ -26,6 +26,13 @@ const (
 	// the original.
 	rotatedPassword = "e2eR0tatedSecret2"
 
+	// PostgreSQL's enforcement parameter, under AWS's own name, and the phrase
+	// its refusal carries. The engine has no server setting for this: the reject
+	// rule is a pg_hba fact, and "no encryption" is how a pg_hba refusal of an
+	// unencrypted connection names itself to the client.
+	forceSSLParameter = "rds.force_ssl"
+	plaintextRefusal  = "no encryption"
+
 	// How long a security-group change has to take effect at the datapath. The
 	// control-plane call returns as soon as the ENI is re-associated; the flow
 	// tables behind it settle a moment later.
@@ -45,12 +52,20 @@ func TestConnectivity(t *testing.T) {
 	t.Parallel()
 	reserveDBVMs(t, dbClass)
 
-	id := fmt.Sprintf("%s-connect-%d", dbInstancePfx, time.Now().Unix())
+	suffix := time.Now().Unix()
+	id := fmt.Sprintf("%s-connect-%d", dbInstancePfx, suffix)
+	// An empty group, so the instance boots on the catalog's own defaults exactly
+	// as one with no group of its own would. It exists only because turning
+	// enforcement off is something a customer does through a group of their own.
+	paramGroup := fmt.Sprintf("%s-tls-%d", dbInstancePfx, suffix)
+	createParameterGroup(t, f, paramGroup)
 
 	// Started before the client VM is built so the two boots overlap: the create
 	// returns immediately and the engine bootstraps while apt runs in the client.
 	harness.Phase(t, "Creating DB instance %q", id)
-	createDBInstance(t, f, id)
+	createDBInstance(t, f, id, func(in *rds.CreateDBInstanceInput) {
+		in.DBParameterGroupName = aws.String(paramGroup)
+	})
 
 	client := rdsClient(t, f)
 	instance := waitForAvailable(t, f, id)
@@ -116,6 +131,41 @@ func TestConnectivity(t *testing.T) {
 					"a verify-full connection must report itself encrypted")
 			})
 		}
+	})
+
+	// The suite's only direct proof that enforcement is live. The agent's own
+	// check reads pg_hba_file_rules back, which says what the engine *would* load;
+	// only a connection the engine actually turns away says what it did load.
+	t.Run("PlaintextIsRefusedAndTLSIsNot", func(t *testing.T) {
+		assertRefusesPlaintext(t, client, byIP)
+
+		encrypted := byIP
+		encrypted.SSLMode = "require"
+		out := harness.PSQL(t, client, encrypted, "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();")
+		assert.Equal(t, "t", strings.TrimSpace(out),
+			"sslmode=require satisfies enforcement without the client validating anything")
+	})
+
+	// Enforcement is the customer's to turn off, as it is on AWS, and both
+	// directions land on a reload rather than a restart.
+	t.Run("EnforcementFlipsWithoutARestart", func(t *testing.T) {
+		plaintext := byIP
+		plaintext.SSLMode = "disable"
+
+		// Registered before the flip: a failure part-way would otherwise leave every
+		// later test — and the instance's own teardown — on a database serving in
+		// the clear.
+		t.Cleanup(func() { setGroupParameter(t, f, paramGroup, forceSSLParameter, "1", "immediate") })
+
+		harness.Step(t, "Turning %s off on %q", forceSSLParameter, id)
+		setGroupParameter(t, f, paramGroup, forceSSLParameter, "0", "immediate")
+		out := harness.PSQL(t, client, plaintext, "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();")
+		assert.Equal(t, "f", strings.TrimSpace(out),
+			"with enforcement off the same connection must be accepted, and in the clear")
+
+		harness.Step(t, "Turning %s back on on %q", forceSSLParameter, id)
+		setGroupParameter(t, f, paramGroup, forceSSLParameter, "1", "immediate")
+		assertRefusesPlaintext(t, client, byIP)
 	})
 
 	// The endpoint ENI is injected into the customer's subnet, so the only thing
@@ -202,6 +252,22 @@ func TestConnectivity(t *testing.T) {
 		assert.Contains(t, out, "authentication",
 			"the old password must be refused by the engine, not by the network")
 	})
+}
+
+// assertRefusesPlaintext is the assertion every PostgreSQL transition repeats:
+// enforcement lives on the data volume, so an instance that came back not
+// enforcing is available, healthy and serving in the clear.
+//
+// The refusal is matched on the reason rather than the whole message, which
+// differs from AWS's own wording for the same rejection.
+func assertRefusesPlaintext(t *testing.T, tgt harness.SSHTarget, conn harness.PSQLConn) {
+	t.Helper()
+	plaintext := conn
+	plaintext.SSLMode = "disable"
+	out, err := harness.TryPSQL(tgt, plaintext, "SELECT 1;")
+	require.Error(t, err, "a plaintext connection must be refused: %s", out)
+	assert.Contains(t, out, plaintextRefusal,
+		"the engine must turn the connection away for being unencrypted, not for some other reason")
 }
 
 // The suite's one sanctioned skip on the client leg: with no base domain the

@@ -1,7 +1,9 @@
 #!/bin/sh
 # Self-contained POSIX test for rds-init: the initialize path (initdb, master
 # password, initial database), the idempotent attach path, the data-volume
-# guard, TLS install and the parameter include. No PostgreSQL, no root: initdb,
+# guard, TLS install, the generated pg_hba and the parameter include.
+#
+# No PostgreSQL, no root: initdb,
 # pg_ctl and psql are stubbed on PATH alongside install/chown/su (the script
 # drops privileges and sets file ownership), and every path it touches is
 # redirected into a temp dir via its env knobs.
@@ -90,7 +92,16 @@ echo "# stock postgresql.conf" > "${pgdata}/postgresql.conf"
 if [ "${PG_HBA_AS_DIR:-0}" = "1" ]; then
     mkdir "${pgdata}/pg_hba.conf"
 else
-    echo "local all all peer" > "${pgdata}/pg_hba.conf"
+    # What a real initdb --auth-local=peer --auth-host=scram-sha-256 leaves: the
+    # loopback TCP and replication rules rds-init takes over rather than keeps.
+    cat > "${pgdata}/pg_hba.conf" <<'HBA'
+local all all peer
+host all all 127.0.0.1/32 scram-sha-256
+host all all ::1/128 scram-sha-256
+local replication all peer
+host replication all 127.0.0.1/32 scram-sha-256
+host replication all ::1/128 scram-sha-256
+HBA
 fi
 exit 0
 EOF
@@ -183,6 +194,11 @@ pass() { echo "ok: $*"; }
 
 DATA_MOUNT="${WORK}/data"
 PGDATA="${DATA_MOUNT}/18/data"
+HBA_DIR="${PGDATA}/hba.d"
+# The enforcement rule as pg_hba includes it: relative to the file that
+# references it, which puts it inside the datadir.
+FORCE_SSL_RULE="hba.d/20-rds-force-ssl.conf"
+TLS_PARAM="rds.force_ssl"
 SENTINEL="${PGDATA}/rds-bootstrap-incomplete"
 RECEIPT_DIR="${DATA_MOUNT}/.spinifex-rds/bootstrap"
 RECEIPT="${RECEIPT_DIR}/receipt.env"
@@ -239,6 +255,12 @@ write_parameters() {
 
 # reset_state clears everything the previous case left behind: a fresh datadir,
 # an attached data volume, and empty stub-call logs.
+#
+# The serving cert is part of that baseline. A formed deployment always has a
+# cluster CA, so every bootstrap fetch carries one, and enforcement defaults to
+# on for a parameter set that does not name it — a case starting without a cert
+# would be refused for a reason it is not about. The cases that are about a
+# missing cert drop it themselves.
 reset_state() {
     rm -rf "${WORK}/data" "${WORK}/run" "${WORK}/log"
     mkdir -p "${DATA_MOUNT}"
@@ -248,6 +270,15 @@ reset_state() {
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
     unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT STAMP_OVERRIDE || true
+    write_tls
+}
+
+# drop_tls: the deployment could not serve TLS at all, which is what the
+# fail-closed cases need. Removes both the delivered cert and any this or an
+# earlier boot installed.
+drop_tls() {
+    rm -f "${HANDOFF}/server.crt" "${HANDOFF}/server.key"
+    rm -f "${WORK}/run/postgresql/tls/server.crt" "${WORK}/run/postgresql/tls/server.key"
 }
 
 # run_env: invoke a command with every path knob pointed into the temp dir.
@@ -298,13 +329,40 @@ if run_ok "initialize"; then
     grep -q -- '--data-checksums' "${INITDB_CALLS}" \
         && pass "initialize: data checksums on" || fail "initialize: no --data-checksums"
     grep -q 'host all all 0.0.0.0/0 scram-sha-256' "${PGDATA}/pg_hba.conf" \
-        && pass "initialize: remote scram hba rule appended" || fail "initialize: no hba rule"
+        && pass "initialize: remote scram hba rule written" || fail "initialize: no hba rule"
+
+    # pg_hba is first-match-wins, so initdb's loopback rules sorting above the
+    # catch-all would shadow anything the platform appends below them. rds-init
+    # owns the whole file; the catch-alls cover loopback themselves.
+    grep -qE '127\.0\.0\.1/32|::1/128' "${PGDATA}/pg_hba.conf" \
+        && fail "initialize: initdb's loopback TCP rules survived above the catch-all" \
+        || pass "initialize: initdb's loopback TCP rules are gone"
+    grep -q 'replication' "${PGDATA}/pg_hba.conf" \
+        && fail "initialize: initdb's replication rules survived" \
+        || pass "initialize: initdb's replication rules are gone"
+    grep -q '^local all all peer$' "${PGDATA}/pg_hba.conf" \
+        && pass "initialize: the local socket keeps peer auth" \
+        || fail "initialize: the local peer rule rds-agent runs SQL over is gone"
+    # Double quotes, because pg_hba quotes with " and not ': a single-quoted path
+    # is a filename that does not exist and include_if_exists skips it silently.
+    grep -q "^include_if_exists \"hba.d/20-rds-force-ssl.conf\"$" "${PGDATA}/pg_hba.conf" \
+        && pass "initialize: the enforcement include is hooked" \
+        || fail "initialize: no enforcement include"
+    [ -d "${PGDATA}/hba.d" ] \
+        && pass "initialize: the enforcement include directory exists" \
+        || fail "initialize: no hba.d for the include to resolve into"
+    [ -e "${PGDATA}/.pg_hba.conf.new" ] \
+        && fail "initialize: the pg_hba temp file was left in the datadir" \
+        || pass "initialize: pg_hba installed by rename, temp file gone"
     grep -q "^include_dir = 'conf.d'" "${PGDATA}/postgresql.conf" \
         && pass "initialize: include_dir hooked" || fail "initialize: no include_dir"
     grep -q '^port = 6543' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "initialize: delivered port applied" || fail "initialize: port not applied"
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "initialize: ssl enabled" || fail "initialize: ssl not enabled"
+    grep -q "^ssl_min_protocol_version = 'TLSv1.3'$" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && pass "initialize: the TLS floor is pinned at 1.3" \
+        || fail "initialize: no TLS floor, so the server accepts 1.0 through 1.2"
     grep -q 'shared_buffers = 128MB' "${PGDATA}/conf.d/10-rds-parameters.conf" \
         && pass "initialize: resolved parameters installed" || fail "initialize: no parameter include"
     grep -q 'ALTER ROLE :"master" WITH LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD' "${PSQL_CALLS}" \
@@ -517,6 +575,37 @@ grep -q 'spans more than one line' "${WORK}/out" \
     && pass "multiline-password: refusal names the reason" \
     || fail "multiline-password: no refusal message"
 
+# --- Case 3f: attach converges on the generated pg_hba, legacy block and all ---
+# The file was written once at initdb and never revisited, so a datadir in the
+# field carries initdb's rules with two scram lines appended below them. Attach
+# must land the generated file, byte for byte with a fresh instance's.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_tls
+write_parameters
+if run_ok "hba-legacy-setup"; then
+    cp "${PGDATA}/pg_hba.conf" "${WORK}/hba.fresh"
+    {
+        echo "local all all peer"
+        echo "host all all 127.0.0.1/32 scram-sha-256"
+        echo "host all all ::1/128 scram-sha-256"
+        echo ""
+        echo "# Managed by rds-init."
+        echo "host all all 0.0.0.0/0 scram-sha-256"
+        echo "host all all ::/0     scram-sha-256"
+    } > "${PGDATA}/pg_hba.conf"
+    write_handoff attach '' appdb
+    write_parameters
+    if run_ok "hba-legacy-attach"; then
+        cmp -s "${WORK}/hba.fresh" "${PGDATA}/pg_hba.conf" \
+            && pass "hba-legacy: attach converges on a fresh instance's file" \
+            || fail "hba-legacy: attach left a pg_hba differing from a fresh instance's"
+        grep -qE '127\.0\.0\.1/32|::1/128' "${PGDATA}/pg_hba.conf" \
+            && fail "hba-legacy: the legacy loopback rules survived the rewrite" \
+            || pass "hba-legacy: the legacy loopback rules are gone"
+    fi
+fi
+
 # --- Case 4: an empty datadir in attach mode means the data volume is missing ---
 reset_state
 write_handoff attach '' appdb
@@ -551,6 +640,9 @@ run_fails "initdb-fail"
 unset INITDB_FAIL
 
 # --- Case 6a: a post-initdb failure is covered by the cleanup trap ---
+# A pg_hba.conf that is not a regular file is also the shape that would make the
+# rename move the new rules *into* it and report success, leaving initdb's rules
+# in force and the engine started on authentication rds-init does not control.
 reset_state
 write_handoff initialize 's3cr3t' appdb
 PG_HBA_AS_DIR=1
@@ -559,6 +651,9 @@ run_fails "post-initdb-fail"
 [ -e "${PGDATA}/PG_VERSION" ] \
     && fail "post-initdb-fail: datadir kept before the former late trap point" \
     || pass "post-initdb-fail: datadir cleared"
+grep -q 'rules rds-init does not control' "${WORK}/out" \
+    && pass "post-initdb-fail: refusal names the unusable pg_hba" \
+    || fail "post-initdb-fail: no refusal naming the pg_hba"
 unset PG_HBA_AS_DIR
 
 # --- Case 6b: a failed emptiness probe must abort before initdb ---
@@ -818,16 +913,112 @@ if run_ok "legacy-setup"; then
     fi
 fi
 
-# --- Case 7: no serving cert -> TLS off rather than a failed start ---
+# --- Case 7: no serving cert and no enforcement -> TLS off, not a failed start ---
 reset_state
+drop_tls
 write_handoff initialize 's3cr3t' ''
+write_parameters "rds.force_ssl = '0'"
 if run_ok "no-cert"; then
     grep -q '^ssl = off' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "no-cert: ssl off" || fail "no-cert: ssl not off"
     grep -q 'ssl_cert_file' "${PGDATA}/conf.d/90-rds-init.conf" \
         && fail "no-cert: points at a cert that was never delivered" || pass "no-cert: no cert paths"
+    # The floor is not conditional on this boot's cert: nothing re-runs rds-init
+    # before the next reload, so a boot that skipped it would serve without one.
+    grep -q "^ssl_min_protocol_version = 'TLSv1.3'$" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && pass "no-cert: the TLS floor is pinned anyway" \
+        || fail "no-cert: the floor was skipped along with the cert paths"
     grep -q 'CREATE DATABASE' "${PSQL_CALLS}" \
         && fail "no-dbname: created a database without a DBName" || pass "no-dbname: no initial database"
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && fail "no-cert: wrote an enforcement rule the engine cannot serve" \
+        || pass "no-cert: not enforcing"
+fi
+
+# --- Case 7a: a set that requires TLS on a deployment that cannot serve it ---
+# The other half of the same rule: a configuration asking for TLS is never
+# quietly downgraded to plaintext, and the engine is not started at all.
+reset_state
+drop_tls
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+run_fails "enforce-no-cert"
+grep -q 'no serving certificate was delivered' "${WORK}/out" \
+    && pass "enforce-no-cert: refusal names the missing certificate" \
+    || fail "enforce-no-cert: no refusal naming the certificate"
+[ -s "${PGCTL_CALLS}" ] \
+    && fail "enforce-no-cert: the engine was started anyway" \
+    || pass "enforce-no-cert: the engine was not started"
+
+# --- Case 7b: enforcement is derived from the installed parameters ---
+# PostgreSQL has no server setting for this, so the value in the file is inert:
+# the rule the pg_hba includes is the whole of the enforcement.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+if run_ok "enforce-on"; then
+    grep -q '^hostnossl all all 0.0.0.0/0 reject$' "${PGDATA}/${FORCE_SSL_RULE}" \
+        && pass "enforce-on: the reject rule is in place" || fail "enforce-on: no reject rule"
+    grep -q '^hostnossl all all ::/0 reject$' "${PGDATA}/${FORCE_SSL_RULE}" \
+        && pass "enforce-on: the IPv6 reject rule is in place" || fail "enforce-on: no IPv6 reject rule"
+    [ -e "${HBA_DIR}/.20-rds-force-ssl.conf.new" ] \
+        && fail "enforce-on: the temp file was left beside the rule" \
+        || pass "enforce-on: the rule was installed by rename"
+fi
+
+# --- Case 7c: a set that turns enforcement off removes a rule left on the volume ---
+# A snapshot carries hba.d with it, so restoring one taken while enforcing into a
+# group that does not would otherwise keep rejecting every plaintext client.
+write_handoff attach '' ''
+write_parameters "${TLS_PARAM} = '0'"
+if run_ok "enforce-off"; then
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && fail "enforce-off: the stale rule from the restored volume survived" \
+        || pass "enforce-off: the stale rule was removed"
+    grep -q "^include_if_exists \"${FORCE_SSL_RULE}\"$" "${PGDATA}/pg_hba.conf" \
+        && pass "enforce-off: the include stays, so removing the file is a clean stop" \
+        || fail "enforce-off: the include was dropped along with the rule"
+fi
+
+# --- Case 7d: an absent key enforces, which is what converts a legacy instance ---
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "shared_buffers = '16384'"
+if run_ok "enforce-absent-key"; then
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}" ] \
+        && pass "enforce-absent-key: a set predating the parameter enforces" \
+        || fail "enforce-absent-key: a set predating the parameter did not enforce"
+fi
+
+# --- Case 7e: a value that is neither 1 nor 0 is fatal, not read as off ---
+# The resolver canonicalises every boolean, so this can only be a file the
+# platform did not write.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = 'yes'"
+run_fails "enforce-unparsable"
+grep -q 'neither 1 nor 0' "${WORK}/out" \
+    && pass "enforce-unparsable: refusal names the unreadable value" \
+    || fail "enforce-unparsable: no refusal naming the value"
+
+# --- Case 7f: a rule path that is not a regular file is refused, not moved into ---
+# The same shape the pg_hba guard covers: mv would put the temp file inside the
+# directory and report success, leaving the include pointing at one.
+reset_state
+write_handoff initialize 's3cr3t' ''
+write_parameters "${TLS_PARAM} = '1'"
+if run_ok "enforce-rule-dir-setup"; then
+    rm -f "${PGDATA}/${FORCE_SSL_RULE}"
+    mkdir "${PGDATA}/${FORCE_SSL_RULE}"
+    write_handoff attach '' ''
+    write_parameters "${TLS_PARAM} = '1'"
+    run_fails "enforce-rule-dir"
+    grep -q 'directory rather than the TLS enforcement rule' "${WORK}/out" \
+        && pass "enforce-rule-dir: refusal names the unusable rule path" \
+        || fail "enforce-rule-dir: no refusal naming the rule path"
+    [ -e "${PGDATA}/${FORCE_SSL_RULE}/.20-rds-force-ssl.conf.new" ] \
+        && fail "enforce-rule-dir: the rule was moved into the directory" \
+        || pass "enforce-rule-dir: nothing was moved into the directory"
 fi
 
 # --- Case 8: no handoff at all ---

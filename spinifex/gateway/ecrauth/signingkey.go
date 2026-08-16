@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -80,11 +81,18 @@ func LoadOrCreateSigningKey(ctx context.Context, js jetstream.JetStream, masterK
 	if err != nil {
 		return nil, nil, err
 	}
-	active, verify, _, err := reloadKeys(ctx, kv, masterKey)
+	active, verify, _, undecodable, err := reloadKeys(ctx, kv, masterKey)
 	if err != nil {
 		return nil, nil, err
 	}
 	if active == nil {
+		// Keys are present and none of them opened. That is this node's master
+		// key being wrong for the whole bucket, not one stale entry, and minting
+		// a fresh key alongside would invalidate every issued token while hiding
+		// the cause.
+		if undecodable > 0 {
+			return nil, nil, fmt.Errorf("no signing key could be decrypted (%d stored): the IAM master key does not match this bucket", undecodable)
+		}
 		active, err = generateSigningKey(ctx, kv, masterKey)
 		if err != nil {
 			return nil, nil, err
@@ -107,12 +115,19 @@ func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []
 }
 
 // reloadKeys reads every stored signing key, returning the verify set, each
-// key's metadata, and the active (newest) decrypted key. active is nil for an
-// empty bucket. Used by both startup and the rotation scheduler.
-func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, err error) {
+// key's metadata, the active (newest) decrypted key, and how many stored keys
+// could not be decrypted. active is nil for an empty bucket. Used by both
+// startup and the rotation scheduler.
+//
+// A key that will not decrypt is counted and skipped rather than returned as an
+// error. Old keys are kept only to verify tokens already issued under them, so
+// one unreadable entry costs those tokens and nothing else — failing the whole
+// load instead takes the gateway down on every node, permanently, over a key no
+// live request needs.
+func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, undecodable int, err error) {
 	names, err := kvutil.Keys(ctx, kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, nil, nil, fmt.Errorf("list signing keys: %w", err)
+		return nil, nil, nil, 0, fmt.Errorf("list signing keys: %w", err)
 	}
 
 	verify = make(map[string]*ecdsa.PublicKey)
@@ -123,11 +138,14 @@ func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (a
 		}
 		entry, err := kv.Get(ctx, name)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("kv get %s: %w", name, err)
+			return nil, nil, nil, 0, fmt.Errorf("kv get %s: %w", name, err)
 		}
 		sk, err := decodeSigningKey(strings.TrimPrefix(name, signingKeyPrefix), entry.Value(), masterKey)
 		if err != nil {
-			return nil, nil, nil, err
+			undecodable++
+			slog.WarnContext(ctx, "ECR auth bridge: skipping unreadable signing key",
+				"key", name, "err", err)
+			continue
 		}
 		verify[sk.Kid] = &sk.priv.PublicKey
 		m := keyMeta{kid: sk.Kid, created: entry.Created()}
@@ -136,7 +154,7 @@ func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (a
 			active, activeMeta = sk, m
 		}
 	}
-	return active, verify, metas, nil
+	return active, verify, metas, undecodable, nil
 }
 
 // deleteSigningKey removes a rotated-out key from the bucket once its retention

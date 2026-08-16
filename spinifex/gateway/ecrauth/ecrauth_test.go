@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,6 +51,50 @@ func TestLoadOrCreateSigningKey_CreatesThenReloads(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, key1.Kid, key2.Kid, "persisted signing key must be reused")
 	assert.Len(t, verify2, 1)
+}
+
+// One unreadable key in the shared bucket must not stop the gateway starting.
+// It took every awsgw in the cluster down, permanently, over a key kept only to
+// verify tokens that had long since expired.
+func TestLoadOrCreateSigningKey_SkipsAnUnreadableKey(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+
+	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	require.NoError(t, err)
+
+	kv, err := js.KeyValue(t.Context(), SigningBucket)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), signingKeyName("stale-kid"), []byte("not decryptable with this master key"))
+	require.NoError(t, err)
+
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	require.NoError(t, err)
+	assert.Equal(t, good.Kid, key.Kid, "the readable key must still be active")
+	assert.Len(t, verify, 1, "an unreadable key contributes no verify key")
+}
+
+// Every key failing is the master key being wrong for the whole bucket. Minting
+// a fresh one alongside would invalidate every issued token and hide the cause,
+// so it fails closed instead.
+func TestLoadOrCreateSigningKey_FailsWhenNoKeyDecrypts(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+
+	_, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	require.NoError(t, err)
+	kv, err := js.KeyValue(t.Context(), SigningBucket)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), signingKeyName("stale-kid"), []byte("not decryptable with this master key"))
+	require.NoError(t, err)
+
+	_, _, err = LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "master key does not match")
+
+	entries, err := kvutil.Keys(t.Context(), kv)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "a failed load must not mint a key alongside the unreadable one")
 }
 
 func TestLoadOrCreateSigningKey_StoresEncrypted(t *testing.T) {

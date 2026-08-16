@@ -36,6 +36,8 @@ type fakeIAM struct {
 	attachedRole     []string
 	inlineRole       []string
 
+	oidcProviders []string
+
 	listUsersErr error
 	listKeysErr  error
 	scopeAsked   string
@@ -46,6 +48,22 @@ func newFakeIAM() *fakeIAM {
 }
 
 func (f *fakeIAM) record(call string) { f.calls = append(f.calls, call) }
+
+func (f *fakeIAM) ListOpenIDConnectProviders(_ string, _ *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error) {
+	f.record("ListOpenIDConnectProviders")
+	out := &iam.ListOpenIDConnectProvidersOutput{}
+	for _, arn := range f.oidcProviders {
+		out.OpenIDConnectProviderList = append(out.OpenIDConnectProviderList,
+			&iam.OpenIDConnectProviderListEntry{Arn: aws.String(arn)})
+	}
+	out.OpenIDConnectProviderList = append(out.OpenIDConnectProviderList, nil)
+	return out, nil
+}
+
+func (f *fakeIAM) DeleteOpenIDConnectProvider(_ string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error) {
+	f.record("DeleteOpenIDConnectProvider " + aws.StringValue(input.OpenIDConnectProviderArn))
+	return &iam.DeleteOpenIDConnectProviderOutput{}, nil
+}
 
 func (f *fakeIAM) ListUsers(_ string, _ *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
 	f.record("ListUsers")
@@ -227,12 +245,43 @@ func TestIAMReapersAreOrderedForRemoval(t *testing.T) {
 	var kinds []string
 	for _, reaper := range reapers {
 		kinds = append(kinds, reaper.Kind())
-		assert.Equal(t, StageIdentity, reaper.Stage())
 	}
 
 	assert.Equal(t, []string{
 		"access-key", "instance-profile", "iam-user", "iam-role", "iam-group", "iam-policy",
+		"oidc-provider",
 	}, kinds)
+
+	// Everything the account authenticates with goes in the identity stage,
+	// which is the second quiesce.
+	for _, reaper := range reapers[:indexOfKind(reapers, "oidc-provider")] {
+		assert.Equal(t, StageIdentity, reaper.Stage(), "%s is a credential", reaper.Kind())
+	}
+
+	// An OIDC provider is a trust anchor for an EKS cluster's service
+	// accounts, not a credential of this account's, and it outlives the
+	// cluster — so it is removed with the other platform leftovers.
+	assert.Equal(t, StagePlatform, reapers[indexOfKind(reapers, "oidc-provider")].Stage())
+}
+
+// Nothing else in teardown reaches an OIDC provider: EKS DeleteCluster does not
+// remove it, so an account would be left holding a trust anchor for a cluster
+// that no longer exists.
+func TestOIDCProviderReaperListsAndDeletesByARN(t *testing.T) {
+	svc := newFakeIAM()
+	svc.oidcProviders = []string{
+		"arn:aws:iam::000000000042:oidc-provider/oidc.spx.local/id/alpha",
+	}
+
+	reaper := &oidcProviderReaper{svc: svc}
+	found, err := reaper.List(testCtx(t), "000000000042")
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	assert.Equal(t, "arn:aws:iam::000000000042:oidc-provider/oidc.spx.local/id/alpha", found[0].ID)
+
+	require.NoError(t, reaper.Delete(testCtx(t), "000000000042", found[0], false))
+	assert.Contains(t, svc.calls,
+		"DeleteOpenIDConnectProvider arn:aws:iam::000000000042:oidc-provider/oidc.spx.local/id/alpha")
 }
 
 // Keys are addressed by user, so a key whose user is missed stays valid — the

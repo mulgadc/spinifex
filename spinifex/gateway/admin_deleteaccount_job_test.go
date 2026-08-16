@@ -23,10 +23,15 @@ import (
 
 const deleteClientToken = "8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e"
 
+// teardownSubjects are the service subjects the reapers drive. A subject with
+// no responder makes the request time out and the stage fail, so this list has
+// to keep step with the reapers NewClusterEngine wires.
+var teardownSubjects = []string{"ec2.>", "ecs.>", "eks.>", "rds.>"}
+
 // newDeleteAccountGateway wires a gateway against a real IAM service and
-// embedded JetStream, with a stub cluster answering the EC2 subjects the
-// reapers drive. The tenant has no resources, so every EC2 stage drains empty
-// and the test exercises the job record rather than the reapers.
+// embedded JetStream, with a stub cluster answering the subjects the reapers
+// drive. The tenant has no resources, so every stage drains empty and the test
+// exercises the job record rather than the reapers.
 func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -36,11 +41,13 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
 	require.NoError(t, err)
 
-	sub, err := nc.Subscribe("ec2.>", func(msg *nats.Msg) {
-		_ = msg.Respond([]byte(`{}`))
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	for _, subject := range teardownSubjects {
+		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+			_ = msg.Respond([]byte(`{}`))
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
 	require.NoError(t, nc.Flush())
 
 	return &GatewayConfig{

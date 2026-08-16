@@ -41,7 +41,14 @@ func NewClusterEngine(
 		usage = nil
 	}
 
-	reapers := EC2Reapers(nc, expectedNodes)
+	// Managed services first: their teardown stops the tasks and releases the
+	// ENIs riding on instances the EC2 reaper is about to terminate, and their
+	// compute does not always belong to the tenant, so the instance reaper
+	// cannot see it.
+	reapers := ECSReapers(nc)
+	reapers = append(reapers, EKSReapers(nc)...)
+	reapers = append(reapers, RDSReapers(nc)...)
+	reapers = append(reapers, EC2Reapers(nc, expectedNodes)...)
 	reapers = append(reapers, IAMReapers(svc)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 

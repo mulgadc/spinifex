@@ -22,7 +22,44 @@ func IAMReapers(svc handlers_iam.IAMService) []Reaper {
 		&iamRoleReaper{svc: svc},
 		&iamGroupReaper{svc: svc},
 		&iamPolicyReaper{svc: svc},
+
+		// Platform stage: an OIDC provider is what an EKS cluster's service
+		// accounts trust, so it outlives the cluster and is not an identity
+		// the account authenticates with.
+		&oidcProviderReaper{svc: svc},
 	}
+}
+
+// oidcProviderReaper removes the IAM OIDC providers EKS clusters register.
+// They survive their cluster's deletion, so nothing else in teardown reaches
+// them and an account would be left holding a trust anchor for a cluster that
+// no longer exists.
+type oidcProviderReaper struct{ svc handlers_iam.IAMService }
+
+func (r *oidcProviderReaper) Kind() string { return "oidc-provider" }
+func (r *oidcProviderReaper) Stage() Stage { return StagePlatform }
+
+func (r *oidcProviderReaper) List(_ context.Context, accountID string) ([]Resource, error) {
+	providers, err := r.svc.ListOpenIDConnectProviders(accountID, &iam.ListOpenIDConnectProvidersInput{})
+	if err != nil {
+		return nil, fmt.Errorf("list OIDC providers: %w", err)
+	}
+
+	var found []Resource
+	for _, provider := range providers.OpenIDConnectProviderList {
+		if provider == nil || provider.Arn == nil {
+			continue
+		}
+		found = append(found, Resource{Kind: r.Kind(), ID: *provider.Arn})
+	}
+	return found, nil
+}
+
+func (r *oidcProviderReaper) Delete(_ context.Context, accountID string, resource Resource, _ bool) error {
+	_, err := r.svc.DeleteOpenIDConnectProvider(accountID, &iam.DeleteOpenIDConnectProviderInput{
+		OpenIDConnectProviderArn: aws.String(resource.ID),
+	})
+	return ignoreAlreadyGone(err)
 }
 
 type accessKeyReaper struct{ svc handlers_iam.IAMService }

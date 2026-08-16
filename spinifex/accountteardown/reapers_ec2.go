@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
@@ -535,7 +536,13 @@ func (r *launchTemplateReaper) Delete(ctx context.Context, accountID string, res
 // notFoundMarkers are the AWS error-code fragments that mean the resource is
 // already gone. Teardown re-runs after a crash, so treating these as failures
 // would make a second pass unable to finish what the first one started.
-var notFoundMarkers = []string{".NotFound", "NoSuchEntity", "InvalidAllocationID.NotFound"}
+var notFoundMarkers = []string{
+	".NotFound", "NoSuchEntity", "InvalidAllocationID.NotFound",
+	awserrors.ErrorECSClusterNotFound, awserrors.ErrorECSServiceNotFound,
+	awserrors.ErrorEKSResourceNotFound,
+	awserrors.ErrorDBInstanceNotFound,
+	awserrors.ErrorDBSubnetGroupNotFound, awserrors.ErrorDBParameterGroupNotFound,
+}
 
 func isAlreadyGone(err error) bool {
 	if err == nil {

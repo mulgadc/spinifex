@@ -89,7 +89,7 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 	}
 
 	if s.deps.IAM == nil {
-		return nil, errors.New("ecs: capacity provisioning requires the IAM service (master key not provisioned)")
+		return nil, errors.New("ecs: capacity provisioning requires the IAM service, which this worker could not start")
 	}
 	if s.deps.Images == nil {
 		return nil, errors.New("ecs: capacity provisioning requires an image resolver")

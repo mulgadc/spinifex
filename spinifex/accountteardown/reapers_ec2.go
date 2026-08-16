@@ -543,6 +543,8 @@ var notFoundMarkers = []string{
 	awserrors.ErrorEKSResourceNotFound,
 	awserrors.ErrorDBInstanceNotFound,
 	awserrors.ErrorDBSubnetGroupNotFound, awserrors.ErrorDBParameterGroupNotFound,
+	awserrors.ErrorELBv2LoadBalancerNotFound, awserrors.ErrorELBv2TargetGroupNotFound,
+	awserrors.ErrorResourceNotFound,
 	s3.ErrCodeNoSuchBucket, s3.ErrCodeNoSuchKey, s3.ErrCodeNoSuchUpload,
 }
 

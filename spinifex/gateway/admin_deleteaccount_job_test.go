@@ -28,7 +28,7 @@ const deleteClientToken = "8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e"
 // teardownSubjects are the service subjects the reapers drive. A subject with
 // no responder makes the request time out and the stage fail, so this list has
 // to keep step with the reapers NewClusterEngine wires.
-var teardownSubjects = []string{"ec2.>", "ecs.>", "eks.>", "rds.>"}
+var teardownSubjects = []string{"ec2.>", "ecs.>", "eks.>", "rds.>", "elbv2.>", "acm.>", "bedrock.>"}
 
 // newDeleteAccountGateway wires a gateway against a real IAM service and
 // embedded JetStream, with a stub cluster answering the subjects the reapers

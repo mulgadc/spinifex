@@ -53,11 +53,21 @@ func NewClusterEngine(
 	// ENIs riding on instances the EC2 reaper is about to terminate, and their
 	// compute does not always belong to the tenant, so the instance reaper
 	// cannot see it.
-	reapers := ECSReapers(nc)
+	reapers := BedrockReapers(nc)
+	reapers = append(reapers, ECSReapers(nc)...)
 	reapers = append(reapers, EKSReapers(nc)...)
 	reapers = append(reapers, RDSReapers(nc)...)
+
+	// Before EC2, and the order matters within each stage because the sort that
+	// groups reapers by stage is stable. Load balancers and NAT gateways hold
+	// the subnets, security groups and addresses EC2's reapers delete, and a
+	// live spot request launches a replacement for anything already terminated.
+	reapers = append(reapers, ELBv2Reapers(nc)...)
+	reapers = append(reapers, EC2ExtraReapers(nc)...)
 	reapers = append(reapers, EC2Reapers(nc, expectedNodes)...)
+
 	reapers = append(reapers, S3Reapers(buckets)...)
+	reapers = append(reapers, ACMReapers(nc)...)
 	reapers = append(reapers, IAMReapers(svc)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 

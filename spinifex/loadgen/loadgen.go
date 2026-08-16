@@ -66,6 +66,10 @@ type Target struct {
 	// resource of the tenant's own to act on. Resolving it per request would
 	// put a second call inside every sample.
 	VPCID string
+	// VolumeID lets a run ask for one volume by id rather than for the whole
+	// listing. The difference between the two is the cost of the listing,
+	// which is otherwise indistinguishable from the cost of the request.
+	VolumeID string
 }
 
 // Stage is one step of a ramp. Exactly one of Concurrency or RPS applies,

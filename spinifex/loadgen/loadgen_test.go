@@ -333,3 +333,26 @@ func TestSummaryReportsTheCapacityNumber(t *testing.T) {
 		t.Errorf("summary does not state where the SLO broke:\n%s", summary)
 	}
 }
+
+// TestDescribeVolumesByIDRefusesToRunWithoutAVolume keeps the fast-path probe
+// honest. Its whole purpose is to be compared against the full listing, so
+// falling back to an unqualified read would silently measure the same thing
+// twice and report the listing as costing nothing.
+func TestDescribeVolumesByIDRefusesToRunWithoutAVolume(t *testing.T) {
+	t.Parallel()
+
+	ops, err := loadgen.ResolveOps([]string{"DescribeVolumesByID"})
+	if err != nil {
+		t.Fatalf("ResolveOps: %v", err)
+	}
+	if !loadgen.NeedsVolume(ops) {
+		t.Fatal("NeedsVolume must report true so the driver resolves one before the run")
+	}
+	if loadgen.NeedsVolume([]loadgen.Op{{Name: "DescribeVolumes"}}) {
+		t.Fatal("NeedsVolume must not claim the unqualified listing needs a volume id")
+	}
+
+	if err := ops[0].Call(context.Background(), &loadgen.Target{Account: "000000000001"}); err == nil {
+		t.Fatal("an unresolved volume id must fail the call, not read the whole listing instead")
+	}
+}

@@ -45,6 +45,21 @@ var registry = map[string]Op{
 			return err
 		},
 	},
+	// The same read as DescribeVolumes but for one known id, which takes the
+	// handler's fast path and skips the bucket listing entirely. Run the two
+	// together and the gap between them is what the listing costs.
+	"DescribeVolumesByID": {
+		Name: "DescribeVolumesByID", Kind: KindRead,
+		Call: func(ctx context.Context, t *Target) error {
+			if t.VolumeID == "" {
+				return fmt.Errorf("DescribeVolumesByID: no volume resolved for %s", t.Account)
+			}
+			_, err := t.Clients.EC2.DescribeVolumesWithContext(ctx, &ec2.DescribeVolumesInput{
+				VolumeIds: []*string{aws.String(t.VolumeID)},
+			})
+			return err
+		},
+	},
 	"DescribeSecurityGroups": {
 		Name: "DescribeSecurityGroups", Kind: KindRead,
 		Call: func(ctx context.Context, t *Target) error {
@@ -126,6 +141,33 @@ func NeedsVPC(ops []Op) bool {
 		}
 	}
 	return false
+}
+
+// NeedsVolume reports whether any selected operation needs a volume id.
+func NeedsVolume(ops []Op) bool {
+	for _, op := range ops {
+		if op.Name == "DescribeVolumesByID" {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveVolume finds one volume for the target to ask about by id. A tenant
+// with a running guest has a root volume; one with none cannot measure the
+// fast path, and saying so is better than measuring an empty listing instead.
+func ResolveVolume(ctx context.Context, target *Target) error {
+	out, err := target.Clients.EC2.DescribeVolumesWithContext(ctx, &ec2.DescribeVolumesInput{})
+	if err != nil {
+		return fmt.Errorf("loadgen: resolve volume for %s: %w", target.Account, err)
+	}
+	for _, volume := range out.Volumes {
+		if volume.VolumeId != nil && *volume.VolumeId != "" {
+			target.VolumeID = *volume.VolumeId
+			return nil
+		}
+	}
+	return fmt.Errorf("loadgen: account %s has no volume to ask about", target.Account)
 }
 
 // ResolveVPC finds a VPC for the target to act on. Every account has a default

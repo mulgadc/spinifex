@@ -128,6 +128,11 @@ func run() error {
 				return err
 			}
 		}
+		if loadgen.NeedsVolume(ops) {
+			if err := loadgen.ResolveVolume(ctx, target); err != nil {
+				return err
+			}
+		}
 		targets = append(targets, target)
 	}
 

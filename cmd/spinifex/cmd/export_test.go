@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strconv"
 	"time"
+
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // Test hooks for the external cmd_test package.
@@ -95,14 +97,49 @@ var PrintTeardownResult = printTeardownResult
 // PromptAccountName exposes promptAccountName for testing.
 var PromptAccountName = promptAccountName
 
-// OperatorPrincipalPolicyDocument exposes the operator inline policy for testing.
-var OperatorPrincipalPolicyDocument = operatorPrincipalPolicyDocument
+// ResolvePrincipalGrants exposes resolvePrincipalGrants for testing.
+var ResolvePrincipalGrants = resolvePrincipalGrants
 
-// OperatorPrincipalActions exposes the reported action list for testing.
-var OperatorPrincipalActions = operatorPrincipalActions
+// PrincipalPolicyDocument exposes principalPolicyDocument for testing.
+var PrincipalPolicyDocument = principalPolicyDocument
 
-// SignupPrincipalPolicyDocument exposes the signup inline policy for testing.
-var SignupPrincipalPolicyDocument = signupPrincipalPolicyDocument
+// PrincipalPolicyActions exposes principalPolicyActions for testing.
+var PrincipalPolicyActions = principalPolicyActions
+
+// ValidatePrincipalName exposes validatePrincipalName for testing.
+var ValidatePrincipalName = validatePrincipalName
+
+// AdminPrincipalPolicyName exposes the inline policy name for testing.
+const AdminPrincipalPolicyName = adminPrincipalPolicyName
+
+// PrincipalRowSpec mirrors the unexported listing row so the external test
+// package can build one.
+type PrincipalRowSpec struct {
+	UserName string
+	Grants   []string
+	Keys     int
+}
+
+// DropStalePrincipalPolicies exposes dropStalePrincipalPolicies for testing.
+var DropStalePrincipalPolicies = dropStalePrincipalPolicies
+
+// RevokePrincipalKeys exposes revokePrincipalKeys for testing.
+var RevokePrincipalKeys = revokePrincipalKeys
+
+// DescribePrincipal exposes describePrincipal for testing.
+func DescribePrincipal(svc handlers_iam.IAMService, accountID, userName string) (PrincipalRowSpec, error) {
+	row, err := describePrincipal(svc, accountID, userName)
+	return PrincipalRowSpec(row), err
+}
+
+// PrintPrincipalTable exposes printPrincipalTable for testing.
+func PrintPrincipalTable(accountID string, specs []PrincipalRowSpec) {
+	rows := make([]principalRow, 0, len(specs))
+	for _, spec := range specs {
+		rows = append(rows, principalRow(spec))
+	}
+	printPrincipalTable(accountID, rows)
+}
 
 // PrintAccountTable exposes printAccountTable for testing.
 var PrintAccountTable = printAccountTable

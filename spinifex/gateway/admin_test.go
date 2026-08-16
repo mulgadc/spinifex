@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -271,4 +272,18 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 	rec := authorizedAdminRequest(gw, `{}`)
 
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, decodeAdminError(t, rec).Error.Code)
+}
+
+// The credential-minting CLI grants these by name. A method served but absent
+// from the list would be uncallable by every key an operator issues.
+func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
+	names := AdminMethodNames()
+
+	require.Len(t, names, len(adminMethods))
+	assert.True(t, sort.StringsAreSorted(names), "names must be sorted for stable help text")
+	for _, name := range names {
+		method, ok := adminPathMethod(adminPathPrefix + name)
+		assert.True(t, ok, "%s is granted but not routed", name)
+		assert.Equal(t, name, method)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +24,18 @@ var adminMethods = map[string]bool{
 	"DeleteAccount":           true,
 	"DescribeAccountDeletion": true,
 	"ListAccounts":            true,
+}
+
+// AdminMethodNames returns the callable /admin/<Method> names in sorted order.
+// Tooling that mints a credential grants these by name, so the list has to come
+// from the router rather than from a copy that can drift out of step with it.
+func AdminMethodNames() []string {
+	names := make([]string, 0, len(adminMethods))
+	for name := range adminMethods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // adminPathPrefix is the private admin surface's URL prefix. It is matched

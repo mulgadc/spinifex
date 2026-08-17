@@ -26,20 +26,22 @@ type eipPublicIPRebinder interface {
 // re-issued elsewhere. vpcd has already released the old address, so a failure
 // here means an API-visible record still advertises an address nothing holds —
 // hence the error goes back on the reply rather than only to the log.
-func (d *Daemon) handleDHCPLeaseChanged(msg *nats.Msg) {
+func (d *Daemon) handleDHCPLeaseChanged(msg *nats.Msg) string {
 	var req dhcp.LeaseChangedRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		respondLeaseChanged(msg, fmt.Errorf("decode lease-changed request: %w", err))
-		return
+		return outcomeError
 	}
 	if req.ClientID == "" || req.NewIP == "" {
 		respondLeaseChanged(msg, fmt.Errorf("lease-changed request needs client_id and new_ip"))
-		return
+		return outcomeError
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), leaseRebindTimeout)
 	defer cancel()
-	respondLeaseChanged(msg, d.rebindLeaseRecord(ctx, req))
+	err := d.rebindLeaseRecord(ctx, req)
+	respondLeaseChanged(msg, err)
+	return outcomeFor(err == nil)
 }
 
 // rebindLeaseRecord dispatches to the service owning the moved address.
@@ -79,11 +81,11 @@ type eipAllocationChecker interface {
 // handleDHCPOwnerCheck answers whether the resource behind a lease still exists.
 // The reaper releases addresses on a "gone", so anything this cannot establish
 // with certainty is reported unknown.
-func (d *Daemon) handleDHCPOwnerCheck(msg *nats.Msg) {
+func (d *Daemon) handleDHCPOwnerCheck(msg *nats.Msg) string {
 	var req dhcp.OwnerCheckRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		respondOwnerCheck(msg, dhcp.OwnerStatusUnknown, fmt.Errorf("decode owner-check request: %w", err))
-		return
+		return outcomeError
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), ownerCheckTimeout)
@@ -91,6 +93,9 @@ func (d *Daemon) handleDHCPOwnerCheck(msg *nats.Msg) {
 
 	status, err := d.leaseOwnerStatus(ctx, req)
 	respondOwnerCheck(msg, status, err)
+	// A resolved "gone" is a successful lookup: the outcome tracks whether the
+	// check could be made, not what it found.
+	return outcomeFor(err == nil)
 }
 
 // leaseOwnerStatus resolves a lease to its owning record, per purpose.

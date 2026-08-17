@@ -207,7 +207,7 @@ func attachDetachErrorCode(err error) string {
 }
 
 // handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests.
-func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
+func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()
 
@@ -225,7 +225,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
 		slog.ErrorContext(ctx, "Request does not match ModifyVolumeInput")
-		return
+		return outcomeError
 	}
 
 	slog.InfoContext(ctx, "Processing ModifyVolume request", "volumeId", modifyVolumeInput.VolumeId, "accountID", accountID)
@@ -236,7 +236,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
 		utils.MarkSpanError(span, err)
 		respondWithServiceError(msg, err)
-		return
+		return outcomeError
 	}
 
 	respondWithJSON(msg, output)
@@ -256,4 +256,5 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) {
 	}
 
 	slog.InfoContext(ctx, "handleEC2ModifyVolume completed", "volumeId", modifyVolumeInput.VolumeId)
+	return outcomeSuccess
 }

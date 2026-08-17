@@ -70,7 +70,7 @@ func TestHandleEC2CreateCapacityReservation_RoundTrip(t *testing.T) {
 	require.GreaterOrEqual(t, daemon.resourceMgr.canAllocate(it, 1000), 1, "host must fit one for the round-trip")
 
 	subject := "ec2.CreateCapacityReservation." + daemon.node
-	sub, err := daemon.natsConn.Subscribe(subject, daemon.handleEC2CreateCapacityReservation)
+	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleEC2CreateCapacityReservation))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -123,7 +123,7 @@ func TestHandleEC2CreateCapacityReservation_Rejections(t *testing.T) {
 	overCount := int64(daemon.resourceMgr.canAllocate(it, 1000) + 1)
 
 	subject := "ec2.CreateCapacityReservation." + daemon.node
-	sub, err := daemon.natsConn.Subscribe(subject, daemon.handleEC2CreateCapacityReservation)
+	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleEC2CreateCapacityReservation))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -178,7 +178,7 @@ func TestHandleEC2DescribeCapacityReservations_Scoping(t *testing.T) {
 	seedReservation(daemon.resourceMgr, "cr-aaaaaaaaaaaaaaaaa", testAccountID, getTestInstanceType(t))
 	seedReservation(daemon.resourceMgr, "cr-bbbbbbbbbbbbbbbbb", "999999999999", getTestInstanceType(t))
 
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeCapacityReservations", daemon.handleEC2DescribeCapacityReservations)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeCapacityReservations", asMsgHandler(daemon.handleEC2DescribeCapacityReservations))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -222,7 +222,7 @@ func TestHandleEC2CancelCapacityReservation_ScopingAndAck(t *testing.T) {
 	}
 	require.NoError(t, daemon.resourceMgr.CreateReservation(rec))
 
-	sub, err := daemon.natsConn.Subscribe("ec2.CancelCapacityReservation", daemon.handleEC2CancelCapacityReservation)
+	sub, err := daemon.natsConn.Subscribe("ec2.CancelCapacityReservation", asMsgHandler(daemon.handleEC2CancelCapacityReservation))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -262,10 +262,10 @@ func TestHandleEC2CapacityReservation_LaunchSubjectLifecycle(t *testing.T) {
 	require.GreaterOrEqual(t, daemon.resourceMgr.canAllocate(it, 1000), 1)
 
 	createSubject := "ec2.CreateCapacityReservation." + daemon.node
-	createSub, err := daemon.natsConn.Subscribe(createSubject, daemon.handleEC2CreateCapacityReservation)
+	createSub, err := daemon.natsConn.Subscribe(createSubject, asMsgHandler(daemon.handleEC2CreateCapacityReservation))
 	require.NoError(t, err)
 	defer func() { _ = createSub.Unsubscribe() }()
-	cancelSub, err := daemon.natsConn.Subscribe("ec2.CancelCapacityReservation", daemon.handleEC2CancelCapacityReservation)
+	cancelSub, err := daemon.natsConn.Subscribe("ec2.CancelCapacityReservation", asMsgHandler(daemon.handleEC2CancelCapacityReservation))
 	require.NoError(t, err)
 	defer func() { _ = cancelSub.Unsubscribe() }()
 

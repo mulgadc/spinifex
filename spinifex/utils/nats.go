@@ -311,13 +311,15 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 
 // ServeNATSRequest unmarshals the request into *I, invokes fn, and replies with JSON or an awserrors envelope.
 // A consumer span joins the producer's trace when the message carries traceparent.
-func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
-	ServeNATSRequestCtx(msg, func(_ context.Context, in *I) (*O, error) { return fn(in) })
+// Reports whether the reply was a result rather than an error envelope, for
+// callers that record a request outcome; callers that do not may ignore it.
+func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) bool {
+	return ServeNATSRequestCtx(msg, func(_ context.Context, in *I) (*O, error) { return fn(in) })
 }
 
 // ServeNATSRequestCtx is ServeNATSRequest for handlers that take the consumer
 // span's context, so their logs and child spans correlate to the trace.
-func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *I) (*O, error)) {
+func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *I) (*O, error)) bool {
 	ctx, span := StartConsumerSpan(msg)
 	defer span.End()
 
@@ -325,21 +327,22 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		respondNATS(msg, errResp)
-		return
+		return false
 	}
 	out, err := fn(ctx, input)
 	if err != nil {
 		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error()))
-		return
+		return false
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
 		MarkSpanError(span, err)
 		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
-		return
+		return false
 	}
 	respondNATS(msg, data)
+	return true
 }
 
 func respondNATS(msg *nats.Msg, data []byte) {

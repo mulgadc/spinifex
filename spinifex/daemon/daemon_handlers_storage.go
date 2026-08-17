@@ -53,21 +53,21 @@ type predastoreBucket struct {
 
 // handleStorageConfig responds with parsed predastore config (topology only, no creds).
 // Used by the gateway to build the GetStorageStatus response.
-func (d *Daemon) handleStorageConfig(msg *nats.Msg) {
+func (d *Daemon) handleStorageConfig(msg *nats.Msg) string {
 	predastorePath := predastoreConfigPath(d.configPath)
 
 	data, err := os.ReadFile(predastorePath)
 	if err != nil {
 		slog.Debug("handleStorageConfig: failed to read predastore config", "path", predastorePath, "err", err)
 		respondWithError(msg, "InternalError")
-		return
+		return outcomeError
 	}
 
 	var cfg predastoreTOML
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		slog.Error("handleStorageConfig: failed to parse predastore config", "err", err)
 		respondWithError(msg, "InternalError")
-		return
+		return outcomeError
 	}
 
 	resp := types.StorageConfigResponse{
@@ -112,4 +112,5 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) {
 	}
 
 	respondWithJSON(msg, resp)
+	return outcomeSuccess
 }

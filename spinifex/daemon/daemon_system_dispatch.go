@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -34,29 +36,37 @@ type systemInstanceTerminateEnvelope struct {
 	Error string `json:"error,omitempty"`
 }
 
+// systemLaunchAction names the metric for every system.LaunchInstance subject.
+// The subject carries the instance type and node, which the action must not.
+const systemLaunchAction = "system.LaunchInstance"
+
 // handleSystemLaunchInstance is the NATS subscriber for system.LaunchInstance.
 // The launch runs in its own goroutine so a multi-minute VM boot cannot
 // head-of-line block concurrent launches to the same node.
-func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
+func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
+	start := time.Now()
 	d.systemDispatchWg.Go(func() {
+		outcome := outcomeError
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("system.LaunchInstance: handler panic", "subject", msg.Subject, "panic", r)
 				respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
 			}
+			otelsetup.RecordRequest(context.Background(), systemLaunchAction, outcome, time.Since(start))
 		}()
-		d.serveSystemLaunchInstance(msg)
+		outcome = d.serveSystemLaunchInstance(msg)
 	})
+	return outcomeDeferred
 }
 
 // serveSystemLaunchInstance is the synchronous body of handleSystemLaunchInstance,
 // run on a per-request goroutine.
-func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
+func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) string {
 	input := new(handlers_elbv2.SystemInstanceInput)
 	if err := json.Unmarshal(msg.Data, input); err != nil {
 		slog.Error("system.LaunchInstance: invalid JSON payload", "subject", msg.Subject, "err", err)
 		respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
-		return
+		return outcomeError
 	}
 
 	output, err := d.LaunchSystemInstance(input)
@@ -64,7 +74,7 @@ func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
 		slog.Error("system.LaunchInstance: LaunchSystemInstance failed",
 			"instanceType", input.InstanceType, "subject", msg.Subject, "err", err)
 		respondWithSystemLaunchError(msg, err.Error())
-		return
+		return outcomeError
 	}
 
 	// Bind a per-instance terminate subscription so future
@@ -76,6 +86,7 @@ func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
 	}
 
 	respondWithSystemLaunchOutput(msg, output)
+	return outcomeSuccess
 }
 
 // LaunchSystemInstanceOnNode launches a system VM on a specific host.

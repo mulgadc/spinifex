@@ -30,7 +30,7 @@ func requestErrorEnvelope(t *testing.T, subject string, fn func(context.Context,
 	require.NoError(t, err)
 	defer nc.Close()
 
-	sub, err := nc.Subscribe(subject, handleNATSRequest(fn))
+	sub, err := nc.Subscribe(subject, asMsgHandler(handleNATSRequest(fn)))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 

@@ -384,7 +384,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	daemon := createTestDaemon(t, natsURL)
 
 	// Subscribe to DescribeInstanceTypes (no queue group for fan-out)
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", handleNATSRequest(daemon.instanceService.DescribeInstanceTypes))
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", asMsgHandler(handleNATSRequest(daemon.instanceService.DescribeInstanceTypes)))
 	require.NoError(t, err, "Failed to subscribe to ec2.DescribeInstanceTypes")
 	defer sub.Unsubscribe()
 
@@ -1031,7 +1031,7 @@ func TestRunInstances_CountValidation(t *testing.T) {
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-test")
 
 	// Subscribe to the per-instance-type topic (matches production routing)
-	sub, err := daemon.natsConn.QueueSubscribe(topic, "spinifex-workers", daemon.handleEC2RunInstances)
+	sub, err := daemon.natsConn.QueueSubscribe(topic, "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1124,7 +1124,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Count how many types actually fit on this machine (excluding system types)
@@ -1158,7 +1158,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
@@ -1190,7 +1190,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		expectedCount := len(rm.instanceSubs)
@@ -1223,7 +1223,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Leave only 2 vCPUs and 2.5 GB schedulable — enough for a nano/micro plus
@@ -1253,7 +1253,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
@@ -1297,7 +1297,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Fill the node completely
@@ -1330,7 +1330,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		defer nc.Close()
 
-		handler := func(msg *nats.Msg) {}
+		handler := func(msg *nats.Msg) string { return outcomeSuccess }
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Pick a type that fits at init so it gets both a queue and a
@@ -4447,7 +4447,7 @@ func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
 		natsConn:      nc,
 		nodeID:        "test-node",
 		instanceSubs:  make(map[string]*nats.Subscription),
-		handler:       func(*nats.Msg) {},
+		handler:       func(*nats.Msg) string { return outcomeSuccess },
 	}
 
 	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, gpuMgr)

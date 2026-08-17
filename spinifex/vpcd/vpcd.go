@@ -43,11 +43,20 @@ const (
 	OvnExternalBridge = "br-ext"
 )
 
+// newFlowsBarrier binds the barrier to the same NB cluster the rest of vpcd
+// writes through. Without the address `ovn-nbctl` uses the local unix socket,
+// so a node that is not a member of the configured cluster confirms against a
+// database that never saw the write — slowly, then not at all.
+func newFlowsBarrier(nbAddr string) func() error {
+	return func() error { return waitForFlowsHV(nbAddr) }
+}
+
 // waitForFlowsHV runs `ovn-nbctl --wait=hv sync`, blocking until all chassis acknowledge the new NB sequence.
 // Bounded at 30 s; overruns log a Warn and return nil. Declared as a var so tests can stub it.
-var waitForFlowsHV = func() error {
+var waitForFlowsHV = func(nbAddr string) error {
 	start := time.Now()
 	cmd := sudoCommand("ovn-nbctl",
+		"--db="+nbAddr,
 		"--no-leader-only",
 		"--timeout=30",
 		"--wait=hv",
@@ -424,6 +433,8 @@ func launchService(cfg *Config) error {
 	defer liveClient.Close()
 	slog.Info("Connected to OVN NB DB", "endpoint", cfg.OVNNBAddr)
 
+	flowsBarrier := newFlowsBarrier(cfg.OVNNBAddr)
+
 	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
 	slog.Info("External bridge mode", "mode", bridgeMode, "wan_bridge", wanBridge)
 	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, wanBridge); err != nil {
@@ -484,7 +495,7 @@ func launchService(cfg *Config) error {
 
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
 	natOpts := []policy.Option{
-		policy.WithFlowsBarrier(waitForFlowsHV),
+		policy.WithFlowsBarrier(flowsBarrier),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 		policy.WithNeighPrimer(neighPrimer(wanBridge)),
 	}
@@ -605,7 +616,7 @@ func launchService(cfg *Config) error {
 		Allocator:     gwAllocator,
 		Chassis:       chassisNames,
 		NATMode:       natMode,
-		FlowsBarrier:  waitForFlowsHV,
+		FlowsBarrier:  flowsBarrier,
 		RoutedIngress: routedIngress,
 		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
 			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), lrpName, nexthopIP)
@@ -627,7 +638,7 @@ func launchService(cfg *Config) error {
 		// starts, and no lease event will ever fire to correct them.
 		reconcileGatewayLeases(ctx, dhcpMgr, igwMgr)
 	}
-	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
+	eipMgr, err := external.NewEIPManager(natMgr, flowsBarrier)
 	if err != nil {
 		return fmt.Errorf("construct EIP manager: %w", err)
 	}

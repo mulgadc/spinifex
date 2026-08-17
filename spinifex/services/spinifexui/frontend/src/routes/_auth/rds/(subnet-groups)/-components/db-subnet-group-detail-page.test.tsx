@@ -17,9 +17,21 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
-    Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
+    Link: ({
+      children,
+      to,
+      params,
+    }: {
+      children: React.ReactNode
+      to?: string
+      params?: Record<string, string>
+    }) => {
+      let href = to ?? ""
+      for (const [key, value] of Object.entries(params ?? {})) {
+        href = href.replace(`$${key}`, value)
+      }
+      return <a href={href}>{children}</a>
+    },
   }
 })
 
@@ -65,6 +77,23 @@ describe("DBSubnetGroupDetailPage", () => {
     expect(screen.getByText("subnet-a2")).toBeInTheDocument()
     expect(screen.getAllByText("ap-southeast-2a")).toHaveLength(2)
     expect(screen.getByText("vpc-1")).toBeInTheDocument()
+  })
+
+  // The group owns membership; the subnet's own CIDR and addressing live on
+  // the EC2 page, so each row links there rather than dead-ending here.
+  it("links each subnet to its EC2 subnet page", () => {
+    renderWithClient(
+      <DBSubnetGroupDetailPage dbSubnetGroupName="orders-subnets" />,
+      seed(GROUP),
+    )
+    expect(screen.getByRole("link", { name: "subnet-a1" })).toHaveAttribute(
+      "href",
+      "/ec2/describe-subnets/subnet-a1",
+    )
+    expect(screen.getByRole("link", { name: "subnet-a2" })).toHaveAttribute(
+      "href",
+      "/ec2/describe-subnets/subnet-a2",
+    )
   })
 
   // ModifyDBSubnetGroup is not implemented, so the absence of an edit path

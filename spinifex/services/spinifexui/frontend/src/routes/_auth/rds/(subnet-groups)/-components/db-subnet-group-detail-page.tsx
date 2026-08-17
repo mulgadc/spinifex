@@ -1,5 +1,5 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
 
@@ -116,7 +116,13 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
                           key={subnet.SubnetIdentifier}
                         >
                           <td className="px-4 py-2 font-mono text-xs">
-                            {subnet.SubnetIdentifier}
+                            <Link
+                              className="text-primary hover:underline"
+                              params={{ id: subnet.SubnetIdentifier ?? "" }}
+                              to="/ec2/describe-subnets/$id"
+                            >
+                              {subnet.SubnetIdentifier}
+                            </Link>
                           </td>
                           <td className="px-4 py-2">
                             {subnet.SubnetAvailabilityZone?.Name ?? "—"}
@@ -134,7 +140,9 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
               )}
 
               <p className="text-xs text-muted-foreground">
-                Subnet membership is fixed at create — ModifyDBSubnetGroup is
+                This group records which subnets RDS may place an endpoint in;
+                each subnet&apos;s own CIDR, addresses and routing live on its
+                EC2 page. Membership is fixed at create — ModifyDBSubnetGroup is
                 not implemented. Changing it means creating a new group, which a
                 DB instance can only adopt by being recreated.
               </p>

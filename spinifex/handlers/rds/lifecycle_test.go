@@ -310,6 +310,7 @@ func (h *lifecycleHarness) events(t *testing.T) []Event {
 // The engine is asked to stop cleanly first, so the reboot is a restart of a
 // checkpointed cluster rather than a crash it has to replay.
 func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.FormatAuthorized = true
@@ -335,6 +336,7 @@ func TestRebootDBInstance_StopsTheEngineThenTheVM(t *testing.T) {
 // The static parameters are already in the engine's config, so the restart
 // is what applies them and the record stops advertising them.
 func TestRebootDBInstance_ClearsThePendingRebootParameters(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.PendingRebootParameters = []string{"shared_buffers"}
@@ -351,6 +353,7 @@ func TestRebootDBInstance_ClearsThePendingRebootParameters(t *testing.T) {
 // There is no standby to fail over to, so silently ignoring the flag would
 // report a failover that never happened.
 func TestRebootDBInstance_RejectsForceFailover(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -367,6 +370,7 @@ func TestRebootDBInstance_RejectsForceFailover(t *testing.T) {
 // Refusing to stop the VM over it would leave a customer unable to stop an
 // instance whose agent is wedged, so it is recorded and the stop continues.
 func TestStopDBInstance_RecordsAFailedGracefulStopAndContinues(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, true)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -391,6 +395,7 @@ func TestStopDBInstance_RecordsAFailedGracefulStopAndContinues(t *testing.T) {
 // way one that never held the VM does. Writing stopped on that alone would
 // report a VM still serving on the customer ENI as stopped.
 func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.stopNotOnNode = true
 	h.vmState.state = instanceStateRunning
@@ -408,6 +413,7 @@ func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing
 // The same unanswered command is the normal shape of a VM that is genuinely
 // down, and that stop has to converge rather than fail.
 func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.stopNotOnNode = true
 	h.vmState.state = "stopped"
@@ -424,6 +430,7 @@ func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
 // drain and detach the data volume, so the first reading of the fleet has the VM
 // stopping. That is not down: the stop waits it out rather than returning on it.
 func TestStopDBInstance_WaitsForTheFleetToReportTheVMDown(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.vmState.detachReads = 1
 	seedInstance(t, h.svc, availableRecord())
@@ -439,6 +446,7 @@ func TestStopDBInstance_WaitsForTheFleetToReportTheVMDown(t *testing.T) {
 // The wait is bounded, and a VM the node accepted the stop for but never took
 // down has to end as a failure rather than as a stop that never returns.
 func TestStopDBInstance_FailsWhenTheVMNeverStops(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.vm = nil
 	seedInstance(t, h.svc, availableRecord())
@@ -456,6 +464,7 @@ func TestStopDBInstance_FailsWhenTheVMNeverStops(t *testing.T) {
 // The reconciler resumes a stop with no caller watching, so it needs the same
 // confirmation before it calls an unanswered command a completed stop.
 func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.stopNotOnNode = true
 	h.vmState.state = instanceStateRunning
@@ -474,6 +483,7 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 // The data volume, the customer ENI and the DNS record are all retained,
 // so a start comes back on the same datadir at the same address.
 func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seed := availableRecord()
 	seed.FormatAuthorized = true
@@ -495,6 +505,7 @@ func TestStopDBInstance_RetainsTheEndpointAndTheVolume(t *testing.T) {
 // A pre-stop snapshot is a later phase's. Accepting it here would report a
 // snapshot the customer would then not find.
 func TestStopDBInstance_RejectsASnapshotIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -508,6 +519,7 @@ func TestStopDBInstance_RejectsASnapshotIdentifier(t *testing.T) {
 }
 
 func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusStopped
@@ -528,6 +540,7 @@ func TestStartDBInstance_StartsTheVMAndReportsStarting(t *testing.T) {
 // A node restart drops the VM from memory, so the start relaunches it from the
 // persisted stopped-instance record rather than failing.
 func TestStartDBInstance_FallsBackWhenNoNodeHoldsTheVM(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.notOnNode = true
 	rec := availableRecord()
@@ -584,6 +597,7 @@ func TestLifecycleOps_RejectAnIllegalStartingState(t *testing.T) {
 // A failed transition must not be left looking like one still in progress: the
 // customer would wait on a reboot that is never coming.
 func TestRebootDBInstance_MarksFailedWhenTheVMCommandFails(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.cmdr.err = errors.New("no node answered")
 	seedInstance(t, h.svc, availableRecord())
@@ -641,6 +655,7 @@ func TestReconciler_CompletesARestartOnAHeartbeatFromTheRestartedEngine(t *testi
 // is at most a persist floor behind the engine. Judging it by the raw stale
 // window left a database that came back cleanly rebooting until it timed out.
 func TestReconciler_CompletesARestartOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	// Older than the stale window, younger than the window plus the floor, and
 	// still after the transition it proves finished.
@@ -656,6 +671,7 @@ func TestReconciler_CompletesARestartOnAPersistedHeartbeatInsideTheFloor(t *test
 // transition began would otherwise report the reboot as finished the instant it
 // started.
 func TestReconciler_IgnoresAHeartbeatPredatingTheRestart(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	now := time.Now().UTC()
 	seedInstance(t, h.svc, restartingRecord(StatusRebooting, now, now.Add(-time.Minute)))
@@ -668,6 +684,7 @@ func TestReconciler_IgnoresAHeartbeatPredatingTheRestart(t *testing.T) {
 // A restart that never comes back has to end somewhere: the customer sees a
 // broken instance either way, and failed is the state they can act on.
 func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	now := time.Now().UTC()
 	started := now.Add(-2 * transitionTimeout)
@@ -684,6 +701,7 @@ func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {
 // customer a write-ahead log will bring back an Aria or MyISAM table would be a
 // false assurance about exactly the data most at risk.
 func TestUncleanStopMessage_IsEngineAware(t *testing.T) {
+	t.Parallel()
 	postgres := uncleanStopMessage(t.Context(), "postgres", "stopping the instance")
 	assert.Contains(t, postgres, "could not be shut down cleanly before stopping the instance")
 	assert.Contains(t, postgres, "write-ahead log")

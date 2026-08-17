@@ -41,6 +41,7 @@ func describeEvents(t *testing.T, svc *Service, input *rds.DescribeEventsInput) 
 }
 
 func TestDescribeEvents_ReturnsARecordedEventWithItsSourceARN(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	svc.RecordEvent(context.Background(), testAccountID, EventSourceTypeDBInstance, testDBID,
 		"DB instance stopped.", EventCategoryAvailability)
@@ -57,6 +58,7 @@ func TestDescribeEvents_ReturnsARecordedEventWithItsSourceARN(t *testing.T) {
 // AWS's default window is one hour, so an event outside it is not returned even
 // though it is still inside the retention window.
 func TestDescribeEvents_ScopesToTheRequestedWindow(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	now := time.Now().UTC()
 	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now.Add(-10*time.Minute), "recent")
@@ -69,6 +71,7 @@ func TestDescribeEvents_ScopesToTheRequestedWindow(t *testing.T) {
 }
 
 func TestDescribeEvents_FiltersByCategory(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	now := time.Now().UTC()
 	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now.Add(-time.Minute), "backed up", EventCategoryBackup)
@@ -83,6 +86,7 @@ func TestDescribeEvents_FiltersByCategory(t *testing.T) {
 // An unfiltered read is account-wide, so a resource's history is reachable even
 // after the resource itself is gone.
 func TestDescribeEvents_ReadsAcrossResourcesAndScopesToOneWhenAsked(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	now := time.Now().UTC()
 	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now, "instance event")
@@ -131,6 +135,7 @@ func TestDescribeEvents_RejectsMalformedRequests(t *testing.T) {
 // The ring is bounded, so a resource's whole history stays one KV value however
 // long it lives.
 func TestAppendEvent_BoundsTheRing(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	for range eventRingSize + 10 {
 		require.NoError(t, svc.appendEvent(context.Background(), testAccountID,
@@ -149,6 +154,7 @@ func TestAppendEvent_BoundsTheRing(t *testing.T) {
 // AWS's 14-day retention: anything older is dropped on the next append and
 // never returned by a read.
 func TestAppendEvent_DropsEventsPastTheRetentionWindow(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID,
 		time.Now().UTC().Add(-EventRetention-time.Hour), "ancient")
@@ -163,6 +169,7 @@ func TestAppendEvent_DropsEventsPastTheRetentionWindow(t *testing.T) {
 // An event narrates work that already happened, so a failed append must not
 // turn a successful operation into a failed one.
 func TestRecordEvent_DoesNotPropagateAFailure(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	assert.NotPanics(t, func() {
 		svc.RecordEvent(context.Background(), testAccountID, EventSourceTypeDBInstance, testDBID, "stopped")

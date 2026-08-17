@@ -27,6 +27,7 @@ func rdsInstanceProfileARN(accountID string) string {
 // A Postgres RCE on a DB VM inherits this role, so the grant must be the four
 // internal actions and nothing wildcarded that could reach the customer surface.
 func TestInstanceRolePolicy_GrantsOnlyTheInternalActions(t *testing.T) {
+	t.Parallel()
 	var doc handlers_iam.PolicyDocument
 	require.NoError(t, json.Unmarshal([]byte(instanceRoleInlinePolicy), &doc))
 	require.Len(t, doc.Statement, 1)
@@ -52,6 +53,7 @@ func TestInstanceRolePolicy_GrantsOnlyTheInternalActions(t *testing.T) {
 // under the VM's own account, so a role in the customer account would be
 // invisible to the agent and it would get no credentials at all.
 func TestEnsureInstanceProfile_CreatesInSystemAccount(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	arn, err := ensureInstanceProfile(func() handlers_iam.SystemInstanceRoleEnsurer { return f }, utils.GlobalAccountID)
 	require.NoError(t, err)
@@ -66,6 +68,7 @@ func TestEnsureInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 // Every launch calls this, so a second call must converge on the existing role
 // rather than create a second one, and must re-assert the same grant.
 func TestEnsureInstanceProfile_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	provider := func() handlers_iam.SystemInstanceRoleEnsurer { return f }
 
@@ -102,6 +105,7 @@ func TestEnsureInstanceProfile_RejectsUnavailableIAM(t *testing.T) {
 }
 
 func TestEnsureInstanceProfile_PreservesEnsureFailure(t *testing.T) {
+	t.Parallel()
 	ensureErr := errors.New("IAM storage unavailable")
 	f := iammock.New()
 	f.PutRolePolicyErr = ensureErr
@@ -116,6 +120,7 @@ func TestEnsureInstanceProfile_PreservesEnsureFailure(t *testing.T) {
 }
 
 func TestEnsureInstanceProfile_RejectsEmptyARN(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	f.EmptyInstanceProfileARN = true
 

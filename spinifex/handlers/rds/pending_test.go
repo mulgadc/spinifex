@@ -24,6 +24,7 @@ func modifyingRecord(pending *PendingModifiedValues) DBInstanceRecord {
 }
 
 func TestApplyPendingModifications_StopsBeforeDestructiveWorkWhenCancelled(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
@@ -40,6 +41,7 @@ func TestApplyPendingModifications_StopsBeforeDestructiveWorkWhenCancelled(t *te
 // A grow with no class change alongside it keeps the VM: it goes down, the
 // volume grows, and the same VM comes back up on the same datadir.
 func TestApplyPendingModifications_GrowsStorageOnTheSameVM(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
@@ -63,6 +65,7 @@ func TestApplyPendingModifications_GrowsStorageOnTheSameVM(t *testing.T) {
 // A class change is a VM replace, and a grow asked for alongside it rides
 // the same outage rather than opening a second one.
 func TestApplyPendingModifications_ClassChangeReplacesTheVMAndCarriesTheGrow(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{
 		DBInstanceClass:  "db.m5.large",
@@ -91,6 +94,7 @@ func TestApplyPendingModifications_ClassChangeReplacesTheVMAndCarriesTheGrow(t *
 // still the one running, so the restart that follows is what adopts the
 // statically-scoped ones.
 func TestApplyPendingModifications_AppliesTheParametersBeforeTheOutage(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("shared_buffers")
 	rec := modifyingRecord(&PendingModifiedValues{
@@ -120,6 +124,7 @@ func TestApplyPendingModifications_AppliesTheParametersBeforeTheOutage(t *testin
 // stay pending until the customer reboots — the one path that still reports
 // pending-reboot.
 func TestApplyPendingModifications_KeepsThePendingRebootParametersWithoutAnOutage(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("shared_buffers")
 	rec := modifyingRecord(&PendingModifiedValues{
@@ -140,6 +145,7 @@ func TestApplyPendingModifications_KeepsThePendingRebootParametersWithoutAnOutag
 // the customer would reboot a healthy database to clear it, and Terraform would
 // see it in every configuration read.
 func TestApplyPendingModifications_ClassChangeClearsThePendingRebootParameters(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("shared_buffers")
 	rec := modifyingRecord(&PendingModifiedValues{
@@ -163,6 +169,7 @@ func TestApplyPendingModifications_ClassChangeClearsThePendingRebootParameters(t
 // customer asked for one change, and delivering half of it silently is the
 // failure mode this closes.
 func TestApplyPendingModifications_KeepsThePendingValuesWhenTheChangeFails(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
 	pending := &PendingModifiedValues{
@@ -188,6 +195,7 @@ func TestApplyPendingModifications_KeepsThePendingValuesWhenTheChangeFails(t *te
 // Nothing outstanding is not an error: a record whose values have already
 // landed is drained again by any resumed pass.
 func TestApplyPendingModifications_IsANoOpWithNothingOutstanding(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(nil)
 	seedInstance(t, h.svc, rec)
@@ -200,6 +208,7 @@ func TestApplyPendingModifications_IsANoOpWithNothingOutstanding(t *testing.T) {
 // The last step of a grow: the control plane has already grown the volume, and
 // this is what turns it into capacity the database can use.
 func TestFinishFilesystemGrow_ExtendsTheGuestAndClearsThePending(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{FilesystemGrowPending: true, RequestedAt: time.Now().UTC()})
 	rec.AllocatedStorage = 50
@@ -222,6 +231,7 @@ func TestFinishFilesystemGrow_ExtendsTheGuestAndClearsThePending(t *testing.T) {
 // volume is bigger and the database cannot use it, which is exactly the state
 // the reconciler has to keep retrying.
 func TestFinishFilesystemGrow_KeepsTheStepWhenTheGuestFails(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	rec := modifyingRecord(&PendingModifiedValues{FilesystemGrowPending: true, RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
@@ -236,6 +246,7 @@ func TestFinishFilesystemGrow_KeepsTheStepWhenTheGuestFails(t *testing.T) {
 // A leader that died mid-modify leaves the change recorded and nothing else, so
 // the next pass re-runs it rather than waiting on a VM that was never touched.
 func TestReconciler_ResumesAnInterruptedModify(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
@@ -253,6 +264,7 @@ func TestReconciler_ResumesAnInterruptedModify(t *testing.T) {
 // The in-guest grow can only run once the agent is back, so the reconciler is
 // what issues it — a customer's modify finishes without them watching.
 func TestReconciler_FinishesTheFilesystemGrowOnceTheAgentIsBack(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{FilesystemGrowPending: true, RequestedAt: time.Now().UTC()})
 	beat := time.Now().UTC()
@@ -275,6 +287,7 @@ func TestReconciler_FinishesTheFilesystemGrowOnceTheAgentIsBack(t *testing.T) {
 // A modify whose VM never comes back cannot sit in modifying forever: the
 // instance is failed with the reason, which is a state a retry is legal from.
 func TestReconciler_FailsAModifyThatOverrunsItsBudget(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(nil)
 	started := time.Now().UTC().Add(-2 * transitionTimeout)
@@ -292,6 +305,7 @@ func TestReconciler_FailsAModifyThatOverrunsItsBudget(t *testing.T) {
 // A modify that cannot be applied at all is failed rather than retried
 // forever, and the request stays recorded so the retry has something to run.
 func TestReconciler_FailsAModifyItCannotApplyWithinTheBudget(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
@@ -311,6 +325,7 @@ func TestReconciler_FailsAModifyItCannotApplyWithinTheBudget(t *testing.T) {
 // Inside the budget a failed attempt is retried on the next pass rather than
 // failing the instance on the first transient error.
 func TestReconciler_RetriesAFailedModifyInsideTheBudget(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is briefly unavailable")
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
@@ -328,6 +343,7 @@ func TestReconciler_RetriesAFailedModifyInsideTheBudget(t *testing.T) {
 // rather than carry the old set forward — a shared_buffers computed for the old
 // class is wrong at the new one in whichever direction the class moved.
 func TestApplyPendingModifications_ReResolvesTheParametersForTheNewClass(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("shared_buffers")
 	rec := modifyingRecord(&PendingModifiedValues{
@@ -359,6 +375,7 @@ func TestApplyPendingModifications_ReResolvesTheParametersForTheNewClass(t *test
 // A re-resolve rather than a merge: a parameter the old group set and the new
 // one does not reverts to its catalog default instead of lingering.
 func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("")
 
@@ -396,6 +413,7 @@ func TestApplyPendingModifications_ParameterGroupChangeRevertsTheOldGroupsValues
 // without it outranking the outstanding request the instance would report
 // applying on every pass while the engine runs the set it already had.
 func TestApplyPendingModifications_AFailedParameterApplyIsRecordedOnTheInstance(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	rec := modifyingRecord(&PendingModifiedValues{
 		DBParameterGroupName: testDefaultGroup,

@@ -48,6 +48,7 @@ func requireNoTLSToEnforce(t *testing.T, err error, parameter, group string) {
 // The three states loadCA distinguishes, because the gate reads the middle one
 // as a refusal and must not read the last one as one.
 func TestTLSAvailable_ReportsWhetherTheDeploymentCanServeTLS(t *testing.T) {
+	t.Parallel()
 	configured := NewService(nil, testRegion).WithDeps(Deps{LoadCA: newTestCA(t)})
 	available, err := configured.tlsAvailable()
 	require.NoError(t, err)
@@ -101,6 +102,7 @@ func TestCreateDBInstance_EnforcesTLSWithNoParameterGroupOfItsOwn(t *testing.T) 
 // Enforcement the deployment cannot serve would launch an instance no client can
 // reach, so the binding is refused where the customer can see it.
 func TestCreateDBInstance_RefusesEnforcementWithNoClusterCA(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	withoutClusterCA(t, h.svc)
 
@@ -145,6 +147,7 @@ func TestCreateDBInstance_AcceptsEnforcementTurnedOffWithNoClusterCA(t *testing.
 }
 
 func TestModifyDBInstance_RefusesEnforcementWithNoClusterCA(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -163,6 +166,7 @@ func TestModifyDBInstance_RefusesEnforcementWithNoClusterCA(t *testing.T) {
 // The deferred half of a modify re-resolves at apply time, so the gate holds
 // there too rather than only at the request that recorded it.
 func TestApplyPendingModifications_RefusesEnforcementWithNoClusterCA(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("")
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
@@ -182,6 +186,7 @@ func TestApplyPendingModifications_RefusesEnforcementWithNoClusterCA(t *testing.
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_RefusesEnforcementWithNoClusterCA(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	withoutClusterCA(t, h.svc)

@@ -130,6 +130,7 @@ func createLargeMemoryParameterGroup(t *testing.T, h *modifyHarness) {
 // None of these interrupts service, so AWS applies them as soon as possible and
 // so does this — ApplyImmediately is not what gates them.
 func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -175,6 +176,7 @@ func TestModifyDBInstance_AppliesTheNonDisruptiveSettingsAtOnce(t *testing.T) {
 // Only the fact of the rotation is recorded. A password that reached KV
 // would be readable by anything that can read the bucket, forever.
 func TestModifyDBInstance_NeverPersistsTheRotatedPassword(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.Bootstrap.MasterUserPassword = ""
@@ -193,6 +195,7 @@ func TestModifyDBInstance_NeverPersistsTheRotatedPassword(t *testing.T) {
 // reported as applied but never reached the engine locks the customer out of
 // their own database with no signal.
 func TestModifyDBInstance_FailsWhenThePasswordCannotBeApplied(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -212,6 +215,7 @@ func TestModifyDBInstance_FailsWhenThePasswordCannotBeApplied(t *testing.T) {
 // Changing a database's ingress is a live ENI re-association: no replace, no
 // new address, so the endpoint clients resolve does not move.
 func TestModifyDBInstance_ReassociatesTheSecurityGroupsOnTheEndpointENI(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -231,6 +235,7 @@ func TestModifyDBInstance_ReassociatesTheSecurityGroupsOnTheEndpointENI(t *testi
 // An ENI cannot carry a group from another VPC, so the launch-time rule holds
 // at modify too — and rejecting it here keeps the failure ahead of every write.
 func TestModifyDBInstance_RejectsASecurityGroupFromAnotherVPC(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -247,6 +252,7 @@ func TestModifyDBInstance_RejectsASecurityGroupFromAnotherVPC(t *testing.T) {
 // Re-sending the groups already attached is what Terraform does on every apply.
 // It is not a change, so it must not reach the ENI at all.
 func TestModifyDBInstance_IgnoresTheSecurityGroupsAlreadyAttached(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -262,6 +268,7 @@ func TestModifyDBInstance_IgnoresTheSecurityGroupsAlreadyAttached(t *testing.T) 
 // instance moves anywhere — a rejected request cannot cost a running database
 // its availability.
 func TestModifyDBInstance_RejectsAStorageShrinkBeforeAnythingMoves(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.AllocatedStorage = 100
@@ -286,6 +293,7 @@ func TestModifyDBInstance_RejectsAStorageShrinkBeforeAnythingMoves(t *testing.T)
 // current one accompanies unrelated changes constantly. Failing it would fail
 // every one of them; it contributes nothing to the resulting configuration instead.
 func TestModifyDBInstance_TreatsTheCurrentStorageSizeAsNoChange(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -309,6 +317,7 @@ func TestModifyDBInstance_TreatsTheCurrentStorageSizeAsNoChange(t *testing.T) {
 // A request that changes nothing at all is answered with the instance as it
 // stands rather than an outage or an error.
 func TestModifyDBInstance_IsANoOpWhenNothingDiffers(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -326,6 +335,7 @@ func TestModifyDBInstance_IsANoOpWhenNothingDiffers(t *testing.T) {
 // The db.* classes are a facade over the platform's instance types, so a
 // class with nothing behind it is rejected with the set that has.
 func TestModifyDBInstance_RejectsAnUnmappedInstanceClass(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -342,6 +352,7 @@ func TestModifyDBInstance_RejectsAnUnmappedInstanceClass(t *testing.T) {
 // Until real groups are materialised the implicit default is the only name
 // that resolves, so any other one names a group that does not exist.
 func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -355,6 +366,7 @@ func TestModifyDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 }
 
 func TestModifyDBInstance_RejectsAnIncompatibleParameterGroupBeforeMutation(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	createLargeMemoryParameterGroup(t, h)
 	seedInstance(t, h.svc, modifiableRecord())
@@ -376,6 +388,7 @@ func TestModifyDBInstance_RejectsAnIncompatibleParameterGroupBeforeMutation(t *t
 }
 
 func TestModifyDBInstance_ValidatesClassChangeAgainstCurrentGroup(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	createLargeMemoryParameterGroup(t, h)
 	rec := modifiableRecord()
@@ -398,6 +411,7 @@ func TestModifyDBInstance_ValidatesClassChangeAgainstCurrentGroup(t *testing.T) 
 }
 
 func TestModifyDBInstance_ValidatesSimultaneousGroupAndClassAgainstTargets(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	createLargeMemoryParameterGroup(t, h)
 	seedInstance(t, h.svc, modifiableRecord())
@@ -417,6 +431,7 @@ func TestModifyDBInstance_ValidatesSimultaneousGroupAndClassAgainstTargets(t *te
 // These fields are stored rather than acted on, but a value outside AWS's
 // range would fail in a maintenance window nobody is watching.
 func TestModifyDBInstance_RejectsAnOutOfRangeBackupRetention(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -472,6 +487,7 @@ func TestModifyDBInstance_RejectsTheUnimplementedParameters(t *testing.T) {
 // gp3 is the only type offered, so naming it is not a change and must not be
 // caught by the rejection that guards the types that are not offered.
 func TestModifyDBInstance_AcceptsTheStorageTypeItAlreadyHas(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -487,6 +503,7 @@ func TestModifyDBInstance_AcceptsTheStorageTypeItAlreadyHas(t *testing.T) {
 // A disruptive change without ApplyImmediately is recorded and left for the
 // maintenance window: the database keeps serving until then.
 func TestModifyDBInstance_DefersADisruptiveChangeToTheMaintenanceWindow(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -523,6 +540,7 @@ func TestModifyDBInstance_DefersADisruptiveChangeToTheMaintenanceWindow(t *testi
 // A disruptive change needs a live engine to stop cleanly and a live agent to
 // apply parameters, so it is legal only from a state that has both.
 func TestModifyDBInstance_RejectsADisruptiveChangeWhileNotAvailable(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.Status = StatusStopped
@@ -542,6 +560,7 @@ func TestModifyDBInstance_RejectsADisruptiveChangeWhileNotAvailable(t *testing.T
 // A failed instance is exactly the one a customer retries a change on, so the
 // same change is accepted from there.
 func TestModifyDBInstance_AcceptsARetryFromFailed(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.Status = StatusFailed
@@ -561,6 +580,7 @@ func TestModifyDBInstance_AcceptsARetryFromFailed(t *testing.T) {
 // the volume grows, the VM comes back, and the instance stays in modifying with
 // the in-guest filesystem grow still outstanding.
 func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seed := modifiableRecord()
 	seed.FormatAuthorized = true
@@ -594,6 +614,7 @@ func TestModifyDBInstance_AppliesAStorageGrowImmediately(t *testing.T) {
 // and the request still recorded, so the reconciler or the customer can retry
 // it rather than having to reconstruct what was asked for.
 func TestModifyDBInstance_FailsTheInstanceAndKeepsThePendingValues(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 	h.storage.modifyErr = errors.New("the volume store rejected the resize")
@@ -618,6 +639,7 @@ func TestModifyDBInstance_FailsTheInstanceAndKeepsThePendingValues(t *testing.T)
 }
 
 func TestModifyDBInstance_RequiresAnIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 
 	_, err := h.svc.ModifyDBInstance(t.Context(), &rds.ModifyDBInstanceInput{}, testAccountID)
@@ -629,6 +651,7 @@ func TestModifyDBInstance_RequiresAnIdentifier(t *testing.T) {
 }
 
 func TestModifyDBInstance_RejectsAnUnknownInstance(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 
 	_, err := h.svc.ModifyDBInstance(t.Context(), modifyInput(), testAccountID)

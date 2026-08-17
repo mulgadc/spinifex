@@ -15,6 +15,7 @@ import (
 // InvalidParameterValue and every create without an explicit subnet group was
 // refused before it reached the launch path.
 func TestDefaultVPCID_SendsFilterNamesTheEC2SurfaceAccepts(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -31,6 +32,7 @@ func TestDefaultVPCID_SendsFilterNamesTheEC2SurfaceAccepts(t *testing.T) {
 // An explicit subnet group carries its own VPC, so the default lookup — and the
 // filter that goes with it — must not be issued at all.
 func TestResolvePlacement_SkipsTheDefaultLookupForAnExplicitSubnetGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 	require.NoError(t, err)

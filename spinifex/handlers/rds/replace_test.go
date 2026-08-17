@@ -30,6 +30,7 @@ func seedReplaceable(t *testing.T, h *modifyHarness, rec DBInstanceRecord) DBIns
 }
 
 func TestReplaceInstanceVM_StopsBeforeDestructiveWorkWhenCancelled(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 	ctx, cancel := context.WithCancelCause(t.Context())
@@ -46,6 +47,7 @@ func TestReplaceInstanceVM_StopsBeforeDestructiveWorkWhenCancelled(t *testing.T)
 // both. Minting either would move the address clients resolve or hand the
 // customer an empty database.
 func TestReplaceInstanceVM_ReusesTheEndpointENIAndDataVolume(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -74,6 +76,7 @@ func TestReplaceInstanceVM_ReusesTheEndpointENIAndDataVolume(t *testing.T) {
 // The engine is checkpointed and the old VM is gone before the new one comes
 // up, or two VMs hold the same datadir.
 func TestReplaceInstanceVM_IAMFailureLeavesTheCurrentVMServing(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 	iamErr := errors.New("IAM store unavailable")
@@ -95,6 +98,7 @@ func TestReplaceInstanceVM_IAMFailureLeavesTheCurrentVMServing(t *testing.T) {
 }
 
 func TestReplaceInstanceVM_StopsTheEngineAndTerminatesTheOldVMFirst(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -118,6 +122,7 @@ func TestReplaceInstanceVM_StopsTheEngineAndTerminatesTheOldVMFirst(t *testing.T
 // While the old index entry exists the superseded agent's IMDS credentials
 // still resolve to this DB instance, so it goes before the new one lands.
 func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -138,6 +143,7 @@ func TestReplaceInstanceVM_RewritesTheInstanceIndex(t *testing.T) {
 // The record names the new VM and forgets the old one's health, while every
 // field the endpoint is built from is left exactly as it was.
 func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seed := modifiableRecord()
 	seed.FormatAuthorized = true
@@ -173,6 +179,7 @@ func TestReplaceInstanceVM_RecordsTheNewVMAndKeepsTheEndpoint(t *testing.T) {
 // A grow riding a class change takes the only window in which nothing holds the
 // volume: after the old VM is gone and before the new one exists.
 func TestReplaceInstanceVM_GrowsTheVolumeWhileNoVMHoldsIt(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -195,6 +202,7 @@ func TestReplaceInstanceVM_GrowsTheVolumeWhileNoVMHoldsIt(t *testing.T) {
 // An unmapped class has no instance type behind it, so the replace is refused
 // before the VM it would land on is torn down.
 func TestReplaceInstanceVM_RefusesAnUnmappedRecordedClass(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seed := modifiableRecord()
 	seed.DBInstanceClass = "db.r5.24xlarge"
@@ -230,6 +238,7 @@ func TestReplaceInstanceVM_RefusesWithoutThePersistedIdentity(t *testing.T) {
 // a replacement: a new ENI would come up on a different address than the one
 // DNS and the serving certificate name.
 func TestReplaceInstanceVM_RefusesToMintAReplacementEndpoint(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 	h.launch.enis.describeMissing = true
@@ -285,6 +294,7 @@ func TestReplaceInstanceVM_LeavesTheRecordRecoverableOnEveryFailure(t *testing.T
 // A failed launch tears down what it created rather than leaving the DB
 // instance's own ENI and volume attached to a VM nobody will ever record.
 func TestReplaceInstanceVM_UnwindsAFailedLaunchWithoutTouchingTheEndpoint(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 	h.launch.launcher.err = errors.New("no capacity on any node")
@@ -298,6 +308,7 @@ func TestReplaceInstanceVM_UnwindsAFailedLaunchWithoutTouchingTheEndpoint(t *tes
 // Auto-recovery replaces onto the sizing the record already carries, so an
 // empty class in the request is not a class change.
 func TestReplaceInstanceVM_KeepsTheRecordedSizingWhenNoneIsRequested(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -312,6 +323,7 @@ func TestReplaceInstanceVM_KeepsTheRecordedSizingWhenNoneIsRequested(t *testing.
 // The customer's own event ring is where a replace becomes attributable to the
 // change or the failure that caused it.
 func TestReplaceInstanceVM_RecordsWhyTheVMWasReplaced(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 
@@ -327,6 +339,7 @@ func TestReplaceInstanceVM_RecordsWhyTheVMWasReplaced(t *testing.T) {
 // initialize: the datadir is already there, and a second initdb would be
 // destructive. The user data is what carries the identity it fetches with.
 func TestReplaceInstanceVM_LaunchesWithTheInstancesOwnIdentity(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := seedReplaceable(t, h, modifiableRecord())
 

@@ -37,6 +37,7 @@ func restoreInput() *rds.RestoreDBInstanceFromDBSnapshotInput {
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	snapshot := h.seedSnapshot(t)
 
@@ -75,6 +76,7 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	iamErr := errors.New("IAM store unavailable")
@@ -93,6 +95,7 @@ func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(
 // Source-instance configuration comes from the snapshot when the restore
 // request does not override it; platform-owned settings use current defaults.
 func TestRestoreDBInstanceFromDBSnapshot_FallsBackToTheSnapshotsConfiguration(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -111,6 +114,7 @@ func TestRestoreDBInstanceFromDBSnapshot_FallsBackToTheSnapshotsConfiguration(t 
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_DefaultsRetentionAndTakesAnAutomatedBackup(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	now := time.Now().UTC()
 	h.svc.deps.Backup = BackupPolicy{
@@ -154,6 +158,7 @@ func TestRestoreDBInstanceFromDBSnapshot_DefaultsRetentionAndTakesAnAutomatedBac
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_HonoursTheRequestedOverrides(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -180,6 +185,7 @@ func TestRestoreDBInstanceFromDBSnapshot_HonoursTheRequestedOverrides(t *testing
 // CreateVolume refuses a size below the snapshot's, and a shrink has nowhere to
 // put the data the snapshot already holds.
 func TestRestoreDBInstanceFromDBSnapshot_RejectsStorageBelowTheSnapshots(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -196,6 +202,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsStorageBelowTheSnapshots(t *test
 // The volume holds its source snapshot undeletable, so a restore that never
 // produced an instance must not leave one behind.
 func TestRestoreDBInstanceFromDBSnapshot_UnwindsTheVolumeAndTheRecordWhenTheLaunchFails(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	h.launch.launcher.err = errors.New("no node had capacity")
@@ -212,6 +219,7 @@ func TestRestoreDBInstanceFromDBSnapshot_UnwindsTheVolumeAndTheRecordWhenTheLaun
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_IndexFailureWithdrawsTheRecordedLaunch(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	// This invalid KV key makes the instance-index write fail after recordLaunch
@@ -228,6 +236,7 @@ func TestRestoreDBInstanceFromDBSnapshot_IndexFailureWithdrawsTheRecordedLaunch(
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_RecordLaunchDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	var replacement DBInstanceRecord
@@ -242,6 +251,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RecordLaunchDoesNotOverwriteAConcurrent
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_RollbackDoesNotDeleteAConcurrentReplacement(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	h.launch.launcher.instanceID = "invalid instance id"
@@ -259,6 +269,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RollbackDoesNotDeleteAConcurrentReplace
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -272,6 +283,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_RejectsASnapshotThatDoesNotExist(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 
 	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), restoreInput(), testAccountID)
@@ -281,6 +293,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsASnapshotThatDoesNotExist(t *tes
 
 // A snapshot still being taken has no data to restore from.
 func TestRestoreDBInstanceFromDBSnapshot_RejectsASnapshotStillBeingTaken(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -332,6 +345,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsUnimplementedParameters(t *testi
 // The datadir is written in one engine's on-disk format and no other can read
 // it, so a request naming a different engine is refused rather than honoured.
 func TestRestoreDBInstanceFromDBSnapshot_RejectsAnEngineChange(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -346,6 +360,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsAnEngineChange(t *testing.T) {
 // Read from the volume rather than echoed from the snapshot: a cluster whose
 // storage key has gone would otherwise report encryption it is not giving.
 func TestRestoreDBInstanceFromDBSnapshot_RefusesAnUnencryptedVolumeForAnEncryptedSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	h.launch.volumes.encrypted = false

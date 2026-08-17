@@ -10,6 +10,7 @@ import (
 )
 
 func TestLookupEngine(t *testing.T) {
+	t.Parallel()
 	_, err := LookupEngine("PostgreSQL")
 	require.Error(t, err, "the AWS engine identifier is 'postgres', not the product name")
 
@@ -28,6 +29,7 @@ func TestLookupEngine(t *testing.T) {
 // A version other than the pinned one would be served by an image that is
 // not the one asked for, so it is rejected rather than quietly substituted.
 func TestEngineValidateVersion(t *testing.T) {
+	t.Parallel()
 	engine, err := LookupEngine("postgres")
 	require.NoError(t, err)
 
@@ -109,6 +111,7 @@ func TestEngineValidateDBName(t *testing.T) {
 }
 
 func TestValidateMasterUserPassword(t *testing.T) {
+	t.Parallel()
 	assert.NoError(t, ValidateMasterUserPassword("Sup3rSecret!"))
 	assert.NoError(t, ValidateMasterUserPassword(strings.Repeat("x", maxMasterPasswordLen)))
 

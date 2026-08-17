@@ -10,6 +10,7 @@ import (
 )
 
 func TestInstanceTypeForClass_KnownClasses(t *testing.T) {
+	t.Parallel()
 	tests := map[string]string{
 		"db.t3.micro":  "t3.micro",
 		"db.t3.small":  "t3.small",
@@ -26,6 +27,7 @@ func TestInstanceTypeForClass_KnownClasses(t *testing.T) {
 }
 
 func TestInstanceTypeForClass_UnmappedClassRejected(t *testing.T) {
+	t.Parallel()
 	// Real AWS classes the platform does not offer, the bare EC2 type, and a
 	// class-shaped string that is not one — all must be rejected rather than
 	// guessed at by stripping the db. prefix.
@@ -43,6 +45,7 @@ func TestInstanceTypeForClass_UnmappedClassRejected(t *testing.T) {
 // name an instance type that table actually defines. A typo here would surface
 // as a launch failure after the data volume and ENI already exist.
 func TestDBInstanceClasses_ResolveInSizingTable(t *testing.T) {
+	t.Parallel()
 	for class, instanceType := range dbInstanceClasses {
 		vcpus, ok := instancetypes.DefaultVCPUs(instanceType)
 		assert.True(t, ok, "class %q maps to unknown instance type %q", class, instanceType)
@@ -51,6 +54,7 @@ func TestDBInstanceClasses_ResolveInSizingTable(t *testing.T) {
 }
 
 func TestSupportedInstanceClasses_SortedAndComplete(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, []string{
 		"db.m5.large", "db.m5.xlarge",
 		"db.t3.large", "db.t3.medium", "db.t3.micro", "db.t3.small",
@@ -62,6 +66,7 @@ func TestSupportedInstanceClasses_SortedAndComplete(t *testing.T) {
 // memory, so reading the head of the sorted list would advertise a shared_buffers
 // no small instance ever runs.
 func TestSmallestInstanceClass_IsTheLeastMemory(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "db.t3.micro", SmallestInstanceClass())
 
 	least, err := classMemoryMiB(SmallestInstanceClass())

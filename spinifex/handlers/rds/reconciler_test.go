@@ -89,6 +89,7 @@ func (h *reconcileHarness) statusOf(t *testing.T, id string) (Status, string) {
 }
 
 func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	rec := healthyRecord()
 	rec.FormatAuthorized = true
@@ -119,6 +120,7 @@ func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T)
 // engine reported before the platform finished bringing the VM up, or the beat
 // is stale — either way the instance is not ready.
 func TestReconciler_HoldsCreatingWhenTheVMIsNotRunning(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	h.state.state = "pending"
 	seedInstance(t, h.svc, healthyRecord())
@@ -169,6 +171,7 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 // floor; judging that beat by the raw stale window failed a live database at the
 // transition timeout.
 func TestReconciler_CompletesACreateOnAPersistedHeartbeatInsideTheFloor(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	rec := healthyRecord()
 	// Older than the stale window, younger than the window plus the floor: what a
@@ -186,6 +189,7 @@ func TestReconciler_CompletesACreateOnAPersistedHeartbeatInsideTheFloor(t *testi
 // A create that never comes up has to end somewhere: the customer sees a broken
 // instance either way, and failed is the state they can act on.
 func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.BootstrapTimeout = time.Minute })
 	rec := healthyRecord()
 	rec.Agent = AgentState{
@@ -206,6 +210,7 @@ func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 // Inside the window a slow bootstrap is still a bootstrap: a false failed is
 // worse than a slow one.
 func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.BootstrapTimeout = time.Hour })
 	rec := healthyRecord()
 	rec.Agent = AgentState{}
@@ -222,6 +227,7 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 // owner. available and failed are the classifier's, and covered in
 // recovery_test.go.
 func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	rec := healthyRecord()
 	rec.Status = StatusStopped
@@ -238,6 +244,7 @@ func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
 // A VM-state lookup that fails is not evidence the instance is unhealthy, so the
 // pass reports the error rather than silently holding — or worse, failing — it.
 func TestReconciler_SurfacesAVMStateLookupFailure(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	h.state.err = errors.New("no node answered the describe")
 	seedInstance(t, h.svc, healthyRecord())
@@ -253,6 +260,7 @@ func TestReconciler_SurfacesAVMStateLookupFailure(t *testing.T) {
 // Without a VM-state resolver the heartbeat alone decides, so a node with EC2
 // unwired still makes progress rather than stalling every create.
 func TestReconciler_FallsBackToTheHeartbeatWhenVMStateIsUnwired(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.InstanceState = nil })
 	seedInstance(t, h.svc, healthyRecord())
 
@@ -266,6 +274,7 @@ func TestReconciler_FallsBackToTheHeartbeatWhenVMStateIsUnwired(t *testing.T) {
 // claimant must not also believe it is leader, or two nodes would transition
 // the same records.
 func TestReconciler_ElectsASingleLeader(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	other := NewReconciler(h.svc, "node-b")
 
@@ -283,6 +292,7 @@ func TestReconciler_ElectsASingleLeader(t *testing.T) {
 
 // A node that never won the lease must not delete the holder's key on shutdown.
 func TestReconciler_RelinquishOnlyReleasesItsOwnLease(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	other := NewReconciler(h.svc, "node-b")
 

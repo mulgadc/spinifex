@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -117,10 +118,16 @@ func TestRequestAuditRecordsUnauthenticatedRejection(t *testing.T) {
 // parses: the credential scope date must match X-Amz-Date or the request is
 // rejected as malformed before the access key is ever looked at.
 func signedRequest(remoteAddr string) *http.Request {
+	return signedRequestForKey(remoteAddr, "AKIAINVALIDKEY000000")
+}
+
+// signedRequestForKey is signedRequest with the presented key id chosen by the
+// caller, so a test can send distinct attempts rather than one repeated.
+func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 	now := time.Now().UTC()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = remoteAddr
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/"+
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKeyID+"/"+
 		now.Format("20060102")+"/"+testRegion+"/ec2/aws4_request, "+
 		"SignedHeaders=host;x-amz-date, Signature="+
 		"0000000000000000000000000000000000000000000000000000000000000000")
@@ -147,16 +154,17 @@ func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
 func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
 	handler, audit := auditRouter(t, map[string]*handlers_iam.AccessKey{})
 
-	send := func() int {
+	// Distinct key ids: one key id repeated is one fault and never locks out.
+	send := func(accessKeyID string) int {
 		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, signedRequest("10.15.8.13:54321"))
+		handler.ServeHTTP(w, signedRequestForKey("10.15.8.13:54321", accessKeyID))
 		return w.Code
 	}
 
-	for range maxFailures {
-		send()
+	for i := range maxFailures {
+		send(fmt.Sprintf("AKIAGUESS%011d", i))
 	}
-	assert.Equal(t, http.StatusServiceUnavailable, send())
+	assert.Equal(t, http.StatusServiceUnavailable, send("AKIAINVALIDKEY000000"))
 
 	require.NotNil(t, audit())
 	assert.Equal(t, "10.15.8.13", audit().clientIP)

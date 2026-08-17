@@ -60,7 +60,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 						"requestTime", signingTime(r),
 						"serverTime", time.Now().UTC().Format("20060102T150405Z"),
 						"maxSkew", sigv4.MaxClockSkew)
-					gw.RateLimiter.RecordFailure(clientIP)
+					// Anonymous: the request was rejected before its key id was parsed,
+					// so there is no client identity for the lockout to protect.
+					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)
 					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				default:
 					// Malformed Authorization, bad credential scope, unsupported
@@ -68,7 +70,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					// error names which, and is the only record of it.
 					slog.Warn("Auth failure: malformed signature envelope",
 						"sourceIP", clientIP, "err", err)
-					gw.RateLimiter.RecordFailure(clientIP)
+					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)
 					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
 				}
 				return
@@ -116,7 +118,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				secret, principal, lookupCode = gw.resolveSessionAKID(r, sig.Credential.AccessKeyID, clientIP)
 			default:
 				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP)
-				gw.RateLimiter.RecordFailure(clientIP)
+				gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("unknown-prefix", sig.Credential.AccessKeyID))
 				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId)
 				return
 			}
@@ -137,7 +139,10 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					"action", mismatchAction(r, sig.Credential.Service),
 					"canonicalRequest", redactedCanonicalRequest(sig),
 					"err", err)
-				gw.RateLimiter.RecordFailure(clientIP)
+				// Fingerprinted by the signature as well as the key id: each guess at a
+				// secret produces a different one, while a client retrying an identical
+				// bad request produces the same one.
+				gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("signature", sig.Credential.AccessKeyID, sig.Signature))
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
 			}
@@ -268,7 +273,7 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 	if err != nil {
 		if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
 			slog.Warn("Auth failure: access key not found", "accessKeyID", accessKeyID, "sourceIP", clientIP)
-			gw.RateLimiter.RecordFailure(clientIP)
+			gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("akid-not-found", accessKeyID))
 			return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 		}
 		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
@@ -276,7 +281,7 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 	}
 	if ak.Status != handlers_iam.AccessKeyStatusActive {
 		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", clientIP)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("akid-inactive", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
@@ -284,7 +289,7 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 		// Undecryptable secret (e.g. master key rotated): treat as auth failure, not
 		// server fault, so the client re-authenticates instead of retrying a dead request.
 		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("akid-secret", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	return secret, principalContext{
@@ -309,13 +314,13 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 	}
 	if cred == nil {
 		slog.Warn("Auth failure: session credential not found", "accessKeyID", accessKeyID, "sourceIP", clientIP)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-not-found", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	if time.Now().UTC().After(cred.ExpiresAt) {
 		slog.Warn("Auth failure: session credential expired",
 			"accessKeyID", accessKeyID, "sourceIP", clientIP, "expiresAt", cred.ExpiresAt)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-expired", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorExpiredToken
 	}
 
@@ -323,13 +328,13 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 	if tokenHeader == "" {
 		slog.Warn("Auth failure: session AKID presented without X-Amz-Security-Token",
 			"accessKeyID", accessKeyID, "sourceIP", clientIP)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-no-token", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	if !gw.STSService.VerifySessionToken(cred, tokenHeader) {
 		slog.Warn("Auth failure: session token HMAC mismatch",
 			"accessKeyID", accessKeyID, "sourceIP", clientIP)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-token-mismatch", accessKeyID, tokenDigest(tokenHeader)))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 
@@ -337,7 +342,7 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 	if err != nil {
 		// Unverifiable secret: same auth-failure reasoning as resolveLongLivedAKID.
 		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
-		gw.RateLimiter.RecordFailure(clientIP)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-secret", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	if cred.PrincipalType == principalTypeUser {

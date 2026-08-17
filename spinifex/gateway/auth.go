@@ -74,6 +74,11 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
+			// The key a request presented, recorded before it is known to be valid:
+			// a rejected caller has to be identifiable, and this is the last point
+			// every rejection below still shares.
+			auditFrom(r.Context()).setAccessKeyID(sig.Credential.AccessKeyID)
+
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope.
 			if !supportedServices[sig.Credential.Service] {
@@ -154,6 +159,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
 			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
 			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
+			auditFrom(ctx).setIdentity(sig.Credential.AccessKeyID, principal.accountID,
+				sig.Credential.Region, sig.Credential.Service, principal.principalType)
 			if principal.assumedRoleARN != "" {
 				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
 			}
@@ -354,8 +361,11 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 }
 
 // writeSigV4Error writes an EC2-compatible XML error response for auth failures.
+// Every auth rejection funnels through here, a rate-limit lockout included, so
+// this is the one place that has to record the verdict onto the request.
 func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode string) {
 	requestID := uuid.NewString()
+	auditFrom(r.Context()).setAuthError(errorCode)
 
 	errorMsg, exists := awserrors.ErrorLookup[errorCode]
 	if !exists {

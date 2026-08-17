@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,14 +26,82 @@ const terminatedVisibilityWindow = 15 * time.Minute
 // this reaper finishes them rather than abandoning them.
 type TerminatedTeardownReaper struct {
 	m *Manager
+
+	mu      sync.Mutex
+	backoff map[string]*depBackoff
 }
+
+// depBackoff spaces out re-drives of a dependent that keeps failing.
+//
+// A dependent can fail for a reason no number of retries will fix — a volume
+// whose metadata document cannot be reassembled, say. Re-driving it on every
+// sweep costs a full object-store read each time, and one such record was
+// enough to hold an object-store request slot open continuously and slow every
+// other listing on the cluster behind it. The retry still happens, and the
+// dependent still stays Failed; it just stops being free.
+type depBackoff struct {
+	failures int
+	next     time.Time
+}
+
+// teardownRetryBase and teardownRetryMax bound the backoff. The first failure
+// is retried on the next sweep, and the interval doubles from there.
+const (
+	teardownRetryBase = 30 * time.Second
+	teardownRetryMax  = 30 * time.Minute
+)
 
 var _ Reaper = (*TerminatedTeardownReaper)(nil)
 
 // NewTerminatedTeardownReaper builds the reaper bound to this Manager's cleaner
 // and state store.
 func (m *Manager) NewTerminatedTeardownReaper() *TerminatedTeardownReaper {
-	return &TerminatedTeardownReaper{m: m}
+	return &TerminatedTeardownReaper{m: m, backoff: make(map[string]*depBackoff)}
+}
+
+// dueForRetry reports whether a dependent may be re-driven on this sweep. It is
+// in-memory and node-local: a restart simply retries everything once more.
+func (r *TerminatedTeardownReaper) dueForRetry(instanceID, dep string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b := r.backoff[instanceID+"/"+dep]
+	return b == nil || !time.Now().Before(b.next)
+}
+
+// recordRetry advances or clears a dependent's backoff from its result.
+func (r *TerminatedTeardownReaper) recordRetry(instanceID, dep string, state TeardownState) {
+	key := instanceID + "/" + dep
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state == TeardownDone {
+		delete(r.backoff, key)
+		return
+	}
+	b := r.backoff[key]
+	if b == nil {
+		b = &depBackoff{}
+		r.backoff[key] = b
+	}
+	b.failures++
+	wait := teardownRetryBase << min(b.failures-1, 16)
+	if wait > teardownRetryMax || wait <= 0 {
+		wait = teardownRetryMax
+	}
+	b.next = time.Now().Add(wait)
+	slog.Warn("vm/gc: teardown dependent failed, backing off",
+		"instanceId", instanceID, "dependent", dep, "failures", b.failures, "retry_in", wait)
+}
+
+// forgetInstance drops an instance's backoff once its record is gone, so the
+// map cannot grow without bound across the life of the process.
+func (r *TerminatedTeardownReaper) forgetInstance(instanceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.backoff {
+		if strings.HasPrefix(key, instanceID+"/") {
+			delete(r.backoff, key)
+		}
+	}
 }
 
 func (r *TerminatedTeardownReaper) Class() string      { return "instance-teardown" }
@@ -108,30 +178,34 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 	}
 
 	results := make(map[string]TeardownState)
+	retry := func(dep string, run func() error) {
+		if !outstanding(v, dep) || !r.dueForRetry(v.ID, dep) {
+			return
+		}
+		state := resultState(run())
+		results[dep] = state
+		r.recordRetry(v.ID, dep, state)
+	}
 
-	if outstanding(v, TeardownVolumes) {
-		results[TeardownVolumes] = resultState(c.DeleteVolumes(v))
-	}
-	if outstanding(v, TeardownGPU) {
-		results[TeardownGPU] = resultState(c.ReleaseGPU(v))
-	}
-	if outstanding(v, TeardownPlacement) {
-		results[TeardownPlacement] = resultState(c.RemoveFromPlacementGroup(v))
-	}
+	retry(TeardownVolumes, func() error { return c.DeleteVolumes(v) })
+	retry(TeardownGPU, func() error { return c.ReleaseGPU(v) })
+	retry(TeardownPlacement, func() error { return c.RemoveFromPlacementGroup(v) })
 
 	// NAT: re-publishes vpc.delete-nat + frees the IPAM slot. The cluster
 	// reconciler heals the dataplane NAT rule.
-	if outstanding(v, TeardownNAT) {
-		results[TeardownNAT] = resultState(c.ReleasePublicIP(v))
-	}
+	retry(TeardownNAT, func() error { return c.ReleasePublicIP(v) })
 
 	// ENI delete + OVN: deleting the ENI KV record turns its LSP into an orphan
 	// the cluster reconcile prune reaps, so a successful ENI delete completes
-	// both eni and ovn.
-	if outstanding(v, TeardownENI) || outstanding(v, TeardownOVN) {
+	// both eni and ovn. Both share the ENI's backoff because one call decides
+	// them, and it is gated on whichever of the two is due.
+	if (outstanding(v, TeardownENI) || outstanding(v, TeardownOVN)) &&
+		(r.dueForRetry(v.ID, TeardownENI) || r.dueForRetry(v.ID, TeardownOVN)) {
 		eniErr := c.DetachAndDeleteENI(v)
 		results[TeardownENI] = resultState(eniErr)
 		results[TeardownOVN] = resultState(eniErr)
+		r.recordRetry(v.ID, TeardownENI, results[TeardownENI])
+		r.recordRetry(v.ID, TeardownOVN, results[TeardownOVN])
 	}
 
 	return results
@@ -143,6 +217,7 @@ func (r *TerminatedTeardownReaper) purge(v *VM) bool {
 			"instanceId", v.ID, "err", err)
 		return false
 	}
+	r.forgetInstance(v.ID)
 	slog.Info("vm/gc: purged terminated record, teardown complete", "instanceId", v.ID)
 	return true
 }

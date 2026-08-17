@@ -23,7 +23,7 @@ import (
 
 // The wait for a stopping VM, shrunk so a stop that never lands is bounded in
 // milliseconds rather than in the minute a real one is given.
-const testVMStopTimeout = 400 * time.Millisecond
+const testVMStopTimeout = 40 * time.Millisecond
 
 // fakeInstanceCommander records the power commands the lifecycle ops issue, and
 // can refuse them the way a node that no longer holds the VM does.

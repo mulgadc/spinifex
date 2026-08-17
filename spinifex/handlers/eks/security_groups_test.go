@@ -328,7 +328,7 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 // cluster SG pins the customer VPC.
 func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
-	sgDeleteWaitBudget, sgDeleteWaitInterval = 200*time.Millisecond, time.Millisecond
+	sgDeleteWaitBudget, sgDeleteWaitInterval = 20*time.Millisecond, time.Millisecond
 	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
 
 	t.Run("transient then succeeds", func(t *testing.T) {

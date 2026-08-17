@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -233,8 +232,6 @@ func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
 
 	client := createS3Client(fixture, validAccessKey, validSecretKey)
 
-	time.Sleep(1 * time.Second)
-
 	// Upload test file
 	key := "test1.txt"
 	expectedContent := "hello-world-test-1-" + publicBucket
@@ -258,8 +255,6 @@ func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
 	if !assert.NotNil(t, result, "Result should not be nil") {
 		return
 	}
-
-	time.Sleep(1 * time.Second)
 
 	defer result.Body.Close()
 	downloadedContent, err := io.ReadAll(result.Body)

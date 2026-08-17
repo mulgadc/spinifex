@@ -219,7 +219,7 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 	_, err = acctKV.Put(t.Context(), AdminKubeconfigKey("alpha"), []byte("enc-kc"))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
@@ -256,7 +256,7 @@ func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
 	_, err = acctKV.Put(t.Context(), OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
@@ -281,7 +281,7 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
@@ -337,7 +337,7 @@ func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
 
 	freshenClusterCreatedAt(t, acctKV)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 
@@ -416,7 +416,7 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	stub.setResponse(http.StatusServiceUnavailable, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = r.Run(ctx)
 

@@ -384,8 +384,10 @@ func TestServiceStartWithoutNATS(t *testing.T) {
 		t.Skip("Skipping integration test")
 	}
 
+	// Port 1 is never listening, so the dial is refused immediately rather than
+	// racing a NATS server that may be running on the default port.
 	cfg := &Config{
-		NatsHost: "nats://localhost:4222",
+		NatsHost: "nats://127.0.0.1:1",
 		BaseDir:  "/tmp/viperblock-test",
 	}
 
@@ -404,7 +406,7 @@ func TestServiceStartWithoutNATS(t *testing.T) {
 	case err := <-errChan:
 		// Expected to fail without NATS server
 		assert.Error(t, err)
-	case <-time.After(2 * time.Second):
+	case <-time.After(200 * time.Millisecond):
 		// Timeout is also acceptable
 		t.Log("Start() timed out as expected without NATS server")
 	}

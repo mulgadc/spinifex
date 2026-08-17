@@ -560,10 +560,12 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 			// Answering SUCCESS here told the caller the address was freed when
 			// nothing went on the wire, so the upstream lease sat stranded and
-			// silent. Callers log-and-continue on a release error, so failing
-			// loudly surfaces the strand without wedging teardown.
+			// silent. The code marks it terminal so a teardown caller stops and
+			// records the strand instead of re-driving a release that can never
+			// converge.
 			slog.Warn("dhcp manager: release for untracked IP; nothing sent upstream", "pool", req.PoolName, "ip", req.IP)
-			respondReleaseErr(msg, fmt.Sprintf("no tracked lease for ip %s in pool %q; upstream lease may be stranded", req.IP, req.PoolName))
+			respondReleaseErrCode(msg, ReleaseCodeLeaseNotTracked,
+				fmt.Sprintf("no tracked lease for ip %s in pool %q; upstream lease may be stranded", req.IP, req.PoolName))
 			return
 		default:
 			respondReleaseErr(msg, fmt.Sprintf("lookup release ip: %v", err))
@@ -800,7 +802,13 @@ func respondAcquireErr(msg *nats.Msg, errMsg string) {
 }
 
 func respondReleaseErr(msg *nats.Msg, errMsg string) {
-	body, err := json.Marshal(releaseWireReply{Error: errMsg})
+	respondReleaseErrCode(msg, "", errMsg)
+}
+
+// respondReleaseErrCode answers with a machine-readable code alongside the
+// message. code may be empty for failures the caller cannot act on specifically.
+func respondReleaseErrCode(msg *nats.Msg, code, errMsg string) {
+	body, err := json.Marshal(releaseWireReply{Error: errMsg, Code: code})
 	if err != nil {
 		slog.Warn("dhcp manager: encode release error reply failed", "err", err)
 		return

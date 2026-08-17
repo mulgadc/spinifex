@@ -144,6 +144,7 @@ secret_key = "READONLY"
 }
 
 func TestZoneS3ConfigRejectsTOMLInsecure(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

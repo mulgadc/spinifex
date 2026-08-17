@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -60,12 +61,25 @@ func (e *ecrResolver) client() (*http.Client, error) {
 	return c, nil
 }
 
-// isECRRef reports whether ref targets an ECR registry, i.e. its registry host
-// is "<acct>.dkr.ecr.<region>.<domain>". Only ECR pulls need a minted token;
-// public registries (docker.io and friends) pull anonymously, so refs without
-// an ECR host must not drag in IMDS host credentials.
-func isECRRef(ref string) bool {
+// gatewayRegistryHost returns the host[:port] of the co-located ECR registry
+// from the gateway URL; empty/unparseable yields "" (matches no ref). The
+// registry shares the gateway listener, so its port is the gateway port.
+func gatewayRegistryHost(gatewayURL string) string {
+	u, err := url.Parse(gatewayURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// isECRRef reports whether ref targets an ECR registry: an "<acct>.dkr.ecr."
+// host, or one equal to gatewayHost (the agent's own co-located registry
+// advertised as a bare host/IP). Other refs pull anonymously, no token.
+func isECRRef(ref, gatewayHost string) bool {
 	host, _, _ := strings.Cut(ref, "/")
+	if gatewayHost != "" && host == gatewayHost {
+		return true
+	}
 	if !strings.Contains(host, ".") && !strings.Contains(host, ":") {
 		return false // no registry host -> docker.io default
 	}
@@ -75,7 +89,7 @@ func isECRRef(ref string) bool {
 // Authorize returns the ECR token's user/password and proxy endpoint for ref.
 // Non-ECR refs resolve to anonymous pull (empty credentials).
 func (e *ecrResolver) Authorize(ctx context.Context, ref string) (user, pass, endpoint string, err error) {
-	if !isECRRef(ref) {
+	if !isECRRef(ref, gatewayRegistryHost(e.gatewayURL)) {
 		return "", "", "", nil
 	}
 	c, err := e.creds.Retrieve(ctx)

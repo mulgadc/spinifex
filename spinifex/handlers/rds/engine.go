@@ -18,6 +18,12 @@ type Engine struct {
 	// served by an image that is not the one asked for.
 	MajorVersion string
 	DefaultPort  int64
+	// How the engine names itself in a catalog listing, which is not its API
+	// identifier: a console renders this rather than "postgres".
+	description string
+	// The AWS licence model the engine is offered under, which is a property of
+	// the engine's own licence rather than of this platform.
+	licenseModel string
 	// Identifiers the engine reserves for itself, which a master role may not
 	// take. Matched case-insensitively.
 	reservedUsernames []string
@@ -97,6 +103,17 @@ func indexEnginesByFamily() map[string]Engine {
 // the AMI carries the major, and a minor is chosen by the image build.
 func (e Engine) EngineVersion() string {
 	return e.MajorVersion
+}
+
+// The engine's own name for itself, as a describe reports it.
+func (e Engine) Description() string {
+	return e.description
+}
+
+// The AWS licence model name, which an orderable option carries and which a
+// client may filter on.
+func (e Engine) LicenseModel() string {
+	return e.licenseModel
 }
 
 // The parameter-group name AWS clients expect when none is named. The group is

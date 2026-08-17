@@ -906,7 +906,7 @@ Everything below applies to both engines unless it names one. `Engine` is fixed 
 **`mysql` is not an accepted engine and is not an alias for `mariadb`.** MariaDB is offered under its own AWS engine name, exactly as AWS RDS offers it. Naming `mysql` fails with `InvalidParameterValue`; a client — including Terraform's `aws_db_instance` — must set `engine = "mariadb"`. Aliasing would report an engine and a version the instance is not running, and the discrepancy would propagate into `DescribeDBInstances`, parameter-group families and snapshot metadata.
 
 - **Engine version:** pinned per engine, and an `EngineVersion` naming anything but the pin is rejected. A minor version such as `18.4` or `11.8.8` is rejected as well: the AMI does not promise any particular minor, so accepting one would be a promise the platform cannot keep. There is no in-place upgrade.
-- **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create.
+- **Instance classes:** `db.t3.{micro,small,medium,large}` and `db.m5.{large,xlarge}` — a naming facade over the platform's EC2 sizing table. Any other class is rejected at create. **`db.X` is the EC2 instance type `X`**, so a client reads a class's vCPU count and memory from `ec2:describe-instance-types` for the identically named type; an orderable option carries neither, because AWS's own shape has no field for them. `describe-orderable-db-instance-options` reports only the classes the cluster's nodes can actually run, which on a Graviton-only cluster is none of the six — a class that would fail at launch is not offered.
 - **Storage:** gp3 only, 20–65536 GiB, always encrypted with the cluster key. Grow-only, and a grow is **stop/start with downtime** — the volume cannot be resized while attached.
 - **`DBName`:** optional; an omitted name creates no initial database. When supplied it must begin with a letter and hold only letters, digits and underscores, within the per-engine limit above. The rule is narrower than either engine's own, because the guest interpolates the name into a `CREATE DATABASE`.
 - **TLS v1.3:** **required by default on both engines** — `rds.force_ssl` on `postgres18` and `require_secure_transport` on `mariadb11.8`, both boolean, modifiable and dynamic, both defaulting to `1`. Setting either to `0` in a parameter group restores plaintext without a reboot. Defaulting on is a **deliberate divergence** for MariaDB, which AWS leaves off.
@@ -988,6 +988,20 @@ A group takes effect on an instance when `modify-db-instance --db-parameter-grou
 |---------|-------------------|---------------|--------|
 | `describe-events` | `--source-type` (db-instance, db-snapshot), `--source-identifier`, `--event-categories`, `--duration`, `--start-time`, `--end-time`, `--max-records` | `--marker` | **DONE** — 100-event ring per resource, 14-day retention, one-hour default window |
 
+### RDS — Engine Versions & Orderable Options
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-db-engine-versions` | `--engine`, `--engine-version`, `--db-parameter-group-family`, `--filters` (`engine`, `engine-version`, `db-parameter-group-family`, `status`) | `--default-only`, `--include-all`, `--list-supported-character-sets`, `--list-supported-timezones` (accepted, provably no-ops), `--max-records` (accepted, no effect), `--marker` (rejected) | **DONE** — one row per engine |
+| `describe-orderable-db-instance-options` | `--engine` (required), `--engine-version`, `--db-instance-class`, `--license-model`, `--vpc`, `--filters` (`engine`, `engine-version`, `db-instance-class`, `license-model`, `vpc`) | `--max-records` (accepted, no effect), `--marker`, `--availability-zone-group` (both rejected) | **DONE** — the engines crossed with the classes the cluster's nodes can run |
+
+Both are read from the tables the create path validates against, so an engine pin bump or a class-map change moves these answers with it. Neither paginates — at most 2 engine versions and 12 orderable options — so no `Marker` is ever returned, and one supplied is rejected rather than answered as page one, where the other RDS describes parse and ignore it.
+
+- **`AvailabilityZones` and `AvailableProcessorFeatures` are always empty**, and are gaps only in appearance: `--availability-zone` is rejected on create and `--processor-features` is ignored, so naming either here would advertise a knob that does nothing.
+- **Only the classes the cluster's nodes can run are offered.** A cluster that answers nothing is `ServerInternal`, never the full class list; one that answers and runs none of them is an empty list. Free capacity is deliberately not consulted — exhausted capacity is a create-time failure, and filtering on it would make a Terraform data source return a different answer on every plan.
+
+Two further deliberate divergences: the four `describe-db-engine-versions` booleans are accepted as **provable identities** rather than the "parsed, not applied" the other describes document, because one version per engine and two empty lists leave them nothing to change; and `--filters` on `describe-orderable-db-instance-options` is **applied** where AWS documents it unsupported. Both actions reject an unrecognised filter name, and a non-boolean `vpc` value, with `InvalidParameterValue` rather than ignoring it — stricter than AWS rather than looser.
+
 ### RDS — Rejected Parameters
 
 Policy: a parameter whose omission would create a false safety, security or availability guarantee is rejected with `InvalidParameterValue` rather than silently dropped. Parameters that are merely inert — `AutoMinorVersionUpgrade`, `CopyTagsToSnapshot`, `DeleteAutomatedBackups`, Performance Insights and Enhanced Monitoring fields — are accepted as no-ops.
@@ -1001,6 +1015,7 @@ Policy: a parameter whose omission would create a false safety, security or avai
 | `Iops`, `StorageThroughput`, `StorageType` ≠ `gp3` | Provisioned performance classes are not implemented |
 | `KmsKeyId`, `TdeCredentialArn` | Storage is encrypted with the cluster key, not a customer-managed one |
 | `AvailabilityZone` | The platform exposes a single zone |
+| `AvailabilityZoneGroup` (orderable options) | It selects a zone or local-zone group, and naming a zone is already refused |
 | `DBSecurityGroups` | EC2-Classic security groups — use `VpcSecurityGroupIds` |
 | `DBClusterIdentifier`, `DBClusterSnapshotIdentifier` | Clustered engines are not offered |
 | `EnableCloudwatchLogsExports` | Log export is not implemented |
@@ -1030,7 +1045,6 @@ Recognised actions below return `OperationNotSupported`, so a client sees "not o
 | Read replicas | `create-db-instance-read-replica`, `promote-read-replica` | Medium | **NOT STARTED** |
 | Aurora / DB clusters | `create-db-cluster`, `modify-db-cluster`, `delete-db-cluster`, `describe-db-clusters`, `failover-db-cluster` | Low | **NOT STARTED** |
 | Option groups | `create-option-group`, `modify-option-group`, `delete-option-group`, `describe-option-groups` | Low | **NOT STARTED** |
-| Engine-version / orderable-option data sources | `describe-db-engine-versions`, `describe-orderable-db-instance-options` | Low | **NOT STARTED** (`InvalidAction`) — not required by `aws_db_instance`; pin the class and version literally in Terraform |
 | Multi-AZ standby, online (no-downtime) storage grow, storage autoscaling, IAM database auth, Performance Insights, Enhanced Monitoring, log exports, per-tenant private DNS zones, enforced TLS, cross-engine snapshot restore, in-place migration between the two engines | — | — | **NOT STARTED** |
 
 IAM: `AmazonRDSFullAccess` and `AmazonRDSReadOnlyAccess` are available as managed policies. They grant `rds:` verb prefixes rather than `rds:*`, because `rds:*` would also appear to grant the internal agent actions the gateway reserves for a DB VM's own role.

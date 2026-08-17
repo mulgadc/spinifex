@@ -17,6 +17,8 @@ var enginePostgres = Engine{
 	Name:         "postgres",
 	MajorVersion: "18",
 	DefaultPort:  5432,
+	description:  "PostgreSQL",
+	licenseModel: "postgresql-license",
 	// rdsadmin is the management role AWS reserves; postgres is the cluster
 	// superuser initdb creates, which the master must not collide with;
 	// rds_superuser is the group the bootstrap grants the master through.

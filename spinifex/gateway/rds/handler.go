@@ -29,12 +29,21 @@ type Caller struct {
 	SessionName string
 }
 
-type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error)
+// Cluster facts a handler needs that the request cannot carry. It holds the
+// ingredient rather than a ready-made probe, so the next action needing a
+// fan-out gets it without another parameter.
+type Env struct {
+	// How many nodes a fan-out waits for before it stops waiting. Without it a
+	// gather burns its full timeout on every call instead of early-exiting.
+	ExpectedNodes int
+}
+
+type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error)
 
 // Allocates the input struct, parses the query params into it, calls handler and
 // marshals the output into the IAM-style <ActionResponse><ActionResult> envelope.
-func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, error)) Handler {
-	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
+func typedEnv[In any](handler func(context.Context, *In, *nats.Conn, Caller, Env) (any, error)) Handler {
+	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 		input := new(In)
 		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
 			// An over-long indexed list is a client-side malformation, not an
@@ -44,7 +53,7 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 			}
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		output, err := handler(ctx, input, nc, caller)
+		output, err := handler(ctx, input, nc, caller, env)
 		if err != nil {
 			return nil, err
 		}
@@ -55,6 +64,14 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 		}
 		return xmlOutput, nil
 	}
+}
+
+// The same adapter for the majority of actions, which address one account's own
+// state and need nothing from the cluster beyond the NATS connection.
+func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, error)) Handler {
+	return typedEnv(func(ctx context.Context, input *In, nc *nats.Conn, caller Caller, _ Env) (any, error) {
+		return handler(ctx, input, nc, caller)
+	})
 }
 
 // One entry per action: what serves it, whether it is agent-only, and which
@@ -118,6 +135,11 @@ var actions = map[string]actionDef{
 	// Events. The ring is per-account and a filter names no single resource.
 	"DescribeEvents": {handler: typed(DescribeEvents)},
 
+	// Catalogs. Neither reads per-account state, so both evaluate against "*";
+	// the orderable one reads cluster capability, which is not tenant data either.
+	"DescribeDBEngineVersions":           {handler: typed(DescribeDBEngineVersions)},
+	"DescribeOrderableDBInstanceOptions": {handler: typedEnv(DescribeOrderableDBInstanceOptions)},
+
 	// Internal agent actions, callable only by the in-guest agent's system role.
 	// They share the namespace because the agent reaches the control plane over
 	// SigV4-on-awsgw like every other in-guest agent.
@@ -154,7 +176,7 @@ func HasAction(action string) bool {
 // Callers are expected to have authorized the action already; the unknown-action
 // check here is a backstop, not the enforcement point. The internal actions
 // re-run their own gate, so skipping AuthorizeCaller still cannot reach one.
-func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller) ([]byte, error) {
+func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 	def, ok := actions[action]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
@@ -163,7 +185,7 @@ func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.
 		slog.DebugContext(ctx, "RDS: action not available", "action", action)
 		return nil, errors.New(awserrors.ErrorOperationNotSupported)
 	}
-	return def.handler(ctx, action, q, nc, caller)
+	return def.handler(ctx, action, q, nc, caller, env)
 }
 
 // ActionNames returns every action the gateway recognises, in stable order.

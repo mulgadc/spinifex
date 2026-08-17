@@ -12,7 +12,7 @@ Implemented means a modelled operation is registered to a real handler. Stub and
 | ecs | 2014-11-13 | 56 | 39 | 31 | 5 | 0 | 20 | 3 |
 | elasticloadbalancingv2 | 2015-12-01 | 46 | 37 | 33 | 0 | 0 | 13 | 4 |
 | iam | 2010-05-08 | 159 | 75 | 75 | 0 | 0 | 84 | 0 |
-| rds | 2014-10-31 | 162 | 41 | 24 | 0 | 12 | 126 | 5 |
+| rds | 2014-10-31 | 162 | 43 | 26 | 0 | 12 | 124 | 5 |
 | s3 | 2006-03-01 | 99 | — | — | — | — | — | — |
 | sts | 2011-06-15 | 8 | 4 | 4 | 0 | 0 | 4 | 0 |
 
@@ -462,20 +462,22 @@ None.
 
 ## rds
 
-Implements **24 of 162** modelled operations (14.8%).
+Implements **26 of 162** modelled operations (16.0%).
 
-<details><summary>Implemented (24)</summary>
+<details><summary>Implemented (26)</summary>
 
 `AddTagsToResource`, `CreateDBInstance`, `CreateDBParameterGroup`, `CreateDBSnapshot`, `CreateDBSubnetGroup`, `DeleteDBInstance`, `DeleteDBParameterGroup`, `DeleteDBSnapshot`
 
-`DeleteDBSubnetGroup`, `DescribeDBInstanceAutomatedBackups`, `DescribeDBInstances`, `DescribeDBParameterGroups`, `DescribeDBParameters`, `DescribeDBSnapshots`, `DescribeDBSubnetGroups`, `DescribeEvents`
+`DeleteDBSubnetGroup`, `DescribeDBEngineVersions`, `DescribeDBInstanceAutomatedBackups`, `DescribeDBInstances`, `DescribeDBParameterGroups`, `DescribeDBParameters`, `DescribeDBSnapshots`, `DescribeDBSubnetGroups`
 
-`ListTagsForResource`, `ModifyDBInstance`, `ModifyDBParameterGroup`, `RebootDBInstance`, `RemoveTagsFromResource`, `RestoreDBInstanceFromDBSnapshot`, `StartDBInstance`, `StopDBInstance`
+`DescribeEvents`, `DescribeOrderableDBInstanceOptions`, `ListTagsForResource`, `ModifyDBInstance`, `ModifyDBParameterGroup`, `RebootDBInstance`, `RemoveTagsFromResource`, `RestoreDBInstanceFromDBSnapshot`
+
+`StartDBInstance`, `StopDBInstance`
 
 
 </details>
 
-<details><summary>Missing from dispatch (126)</summary>
+<details><summary>Missing from dispatch (124)</summary>
 
 `AddRoleToDBCluster`, `AddRoleToDBInstance`, `AddSourceIdentifierToSubscription`, `ApplyPendingMaintenanceAction`, `AuthorizeDBSecurityGroupIngress`, `BacktrackDBCluster`, `CancelExportTask`, `CopyDBClusterParameterGroup`
 
@@ -489,25 +491,25 @@ Implements **24 of 162** modelled operations (14.8%).
 
 `DeregisterDBProxyTargets`, `DescribeAccountAttributes`, `DescribeBlueGreenDeployments`, `DescribeCertificates`, `DescribeDBClusterAutomatedBackups`, `DescribeDBClusterBacktracks`, `DescribeDBClusterEndpoints`, `DescribeDBClusterParameterGroups`
 
-`DescribeDBClusterParameters`, `DescribeDBClusterSnapshotAttributes`, `DescribeDBClusterSnapshots`, `DescribeDBEngineVersions`, `DescribeDBLogFiles`, `DescribeDBProxies`, `DescribeDBProxyEndpoints`, `DescribeDBProxyTargetGroups`
+`DescribeDBClusterParameters`, `DescribeDBClusterSnapshotAttributes`, `DescribeDBClusterSnapshots`, `DescribeDBLogFiles`, `DescribeDBProxies`, `DescribeDBProxyEndpoints`, `DescribeDBProxyTargetGroups`, `DescribeDBProxyTargets`
 
-`DescribeDBProxyTargets`, `DescribeDBRecommendations`, `DescribeDBSecurityGroups`, `DescribeDBShardGroups`, `DescribeDBSnapshotAttributes`, `DescribeDBSnapshotTenantDatabases`, `DescribeEngineDefaultClusterParameters`, `DescribeEngineDefaultParameters`
+`DescribeDBRecommendations`, `DescribeDBSecurityGroups`, `DescribeDBShardGroups`, `DescribeDBSnapshotAttributes`, `DescribeDBSnapshotTenantDatabases`, `DescribeEngineDefaultClusterParameters`, `DescribeEngineDefaultParameters`, `DescribeEventCategories`
 
-`DescribeEventCategories`, `DescribeEventSubscriptions`, `DescribeExportTasks`, `DescribeGlobalClusters`, `DescribeIntegrations`, `DescribeOptionGroupOptions`, `DescribeOrderableDBInstanceOptions`, `DescribePendingMaintenanceActions`
+`DescribeEventSubscriptions`, `DescribeExportTasks`, `DescribeGlobalClusters`, `DescribeIntegrations`, `DescribeOptionGroupOptions`, `DescribePendingMaintenanceActions`, `DescribeReservedDBInstances`, `DescribeReservedDBInstancesOfferings`
 
-`DescribeReservedDBInstances`, `DescribeReservedDBInstancesOfferings`, `DescribeSourceRegions`, `DescribeTenantDatabases`, `DescribeValidDBInstanceModifications`, `DisableHttpEndpoint`, `DownloadDBLogFilePortion`, `EnableHttpEndpoint`
+`DescribeSourceRegions`, `DescribeTenantDatabases`, `DescribeValidDBInstanceModifications`, `DisableHttpEndpoint`, `DownloadDBLogFilePortion`, `EnableHttpEndpoint`, `FailoverGlobalCluster`, `ModifyActivityStream`
 
-`FailoverGlobalCluster`, `ModifyActivityStream`, `ModifyCertificates`, `ModifyCurrentDBClusterCapacity`, `ModifyCustomDBEngineVersion`, `ModifyDBClusterEndpoint`, `ModifyDBClusterParameterGroup`, `ModifyDBClusterSnapshotAttribute`
+`ModifyCertificates`, `ModifyCurrentDBClusterCapacity`, `ModifyCustomDBEngineVersion`, `ModifyDBClusterEndpoint`, `ModifyDBClusterParameterGroup`, `ModifyDBClusterSnapshotAttribute`, `ModifyDBProxy`, `ModifyDBProxyEndpoint`
 
-`ModifyDBProxy`, `ModifyDBProxyEndpoint`, `ModifyDBProxyTargetGroup`, `ModifyDBRecommendation`, `ModifyDBShardGroup`, `ModifyDBSnapshot`, `ModifyDBSnapshotAttribute`, `ModifyDBSubnetGroup`
+`ModifyDBProxyTargetGroup`, `ModifyDBRecommendation`, `ModifyDBShardGroup`, `ModifyDBSnapshot`, `ModifyDBSnapshotAttribute`, `ModifyDBSubnetGroup`, `ModifyEventSubscription`, `ModifyGlobalCluster`
 
-`ModifyEventSubscription`, `ModifyGlobalCluster`, `ModifyIntegration`, `ModifyTenantDatabase`, `PromoteReadReplicaDBCluster`, `PurchaseReservedDBInstancesOffering`, `RebootDBCluster`, `RebootDBShardGroup`
+`ModifyIntegration`, `ModifyTenantDatabase`, `PromoteReadReplicaDBCluster`, `PurchaseReservedDBInstancesOffering`, `RebootDBCluster`, `RebootDBShardGroup`, `RegisterDBProxyTargets`, `RemoveFromGlobalCluster`
 
-`RegisterDBProxyTargets`, `RemoveFromGlobalCluster`, `RemoveRoleFromDBCluster`, `RemoveRoleFromDBInstance`, `RemoveSourceIdentifierFromSubscription`, `ResetDBClusterParameterGroup`, `ResetDBParameterGroup`, `RestoreDBClusterFromS3`
+`RemoveRoleFromDBCluster`, `RemoveRoleFromDBInstance`, `RemoveSourceIdentifierFromSubscription`, `ResetDBClusterParameterGroup`, `ResetDBParameterGroup`, `RestoreDBClusterFromS3`, `RestoreDBClusterFromSnapshot`, `RestoreDBClusterToPointInTime`
 
-`RestoreDBClusterFromSnapshot`, `RestoreDBClusterToPointInTime`, `RestoreDBInstanceFromS3`, `RevokeDBSecurityGroupIngress`, `StartActivityStream`, `StartDBCluster`, `StartDBInstanceAutomatedBackupsReplication`, `StartExportTask`
+`RestoreDBInstanceFromS3`, `RevokeDBSecurityGroupIngress`, `StartActivityStream`, `StartDBCluster`, `StartDBInstanceAutomatedBackupsReplication`, `StartExportTask`, `StopActivityStream`, `StopDBCluster`
 
-`StopActivityStream`, `StopDBCluster`, `StopDBInstanceAutomatedBackupsReplication`, `SwitchoverBlueGreenDeployment`, `SwitchoverGlobalCluster`, `SwitchoverReadReplica`
+`StopDBInstanceAutomatedBackupsReplication`, `SwitchoverBlueGreenDeployment`, `SwitchoverGlobalCluster`, `SwitchoverReadReplica`
 
 
 </details>

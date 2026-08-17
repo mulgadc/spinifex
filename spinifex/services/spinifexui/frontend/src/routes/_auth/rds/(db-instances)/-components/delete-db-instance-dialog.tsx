@@ -15,30 +15,13 @@ import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useDeleteDBInstance } from "@/mutations/rds"
-import { dbInstanceIdentifierField } from "@/types/rds"
-
-// The snapshot identifier shares the DB instance identifier's 63-character
-// limit, so the instance name is trimmed to leave room for the suffix.
-const MAX_SNAPSHOT_IDENTIFIER_LEN = 63
-
-function pad(value: number): string {
-  return String(value).padStart(2, "0")
-}
-
-function timestampSuffix(now: Date): string {
-  return `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(
-    now.getUTCDate(),
-  )}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`
-}
+import { dbInstanceIdentifierField, suggestedIdentifier } from "@/types/rds"
 
 export function defaultFinalSnapshotIdentifier(
   dbInstanceIdentifier: string,
   now: Date = new Date(),
 ): string {
-  const suffix = `-final-${timestampSuffix(now)}`
-  const room = MAX_SNAPSHOT_IDENTIFIER_LEN - suffix.length
-  const stem = dbInstanceIdentifier.slice(0, room).replace(/-+$/, "")
-  return `${stem}${suffix}`
+  return suggestedIdentifier(dbInstanceIdentifier, "final", now)
 }
 
 interface DeleteDBInstanceDialogProps {

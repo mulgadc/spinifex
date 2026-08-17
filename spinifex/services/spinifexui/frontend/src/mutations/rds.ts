@@ -3,14 +3,17 @@ import {
   AddTagsToResourceCommand,
   CreateDBInstanceCommand,
   CreateDBParameterGroupCommand,
+  CreateDBSnapshotCommand,
   CreateDBSubnetGroupCommand,
   DeleteDBInstanceCommand,
   DeleteDBParameterGroupCommand,
+  DeleteDBSnapshotCommand,
   DeleteDBSubnetGroupCommand,
   ModifyDBInstanceCommand,
   ModifyDBParameterGroupCommand,
   RebootDBInstanceCommand,
   RemoveTagsFromResourceCommand,
+  RestoreDBInstanceFromDBSnapshotCommand,
   StartDBInstanceCommand,
   StopDBInstanceCommand,
 } from "@aws-sdk/client-rds"
@@ -20,12 +23,15 @@ import { getRdsClient } from "@/lib/awsClient"
 import type {
   CreateDBInstanceFormData,
   CreateDBParameterGroupFormData,
+  CreateDBSnapshotFormData,
   CreateDBSubnetGroupFormData,
   ModifyDBInstanceFormData,
   ParameterUpdate,
+  RestoreDBInstanceFormData,
 } from "@/types/rds"
 
 const DB_INSTANCES_KEY = ["rds", "dbInstances"]
+const DB_SNAPSHOTS_KEY = ["rds", "dbSnapshots"]
 const SUBNET_GROUPS_KEY = ["rds", "subnetGroups"]
 const PARAMETER_GROUPS_KEY = ["rds", "parameterGroups"]
 
@@ -166,6 +172,78 @@ export function useRebootDBInstance() {
     mutationFn: async (dbInstanceIdentifier: string) => {
       const command = new RebootDBInstanceCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+    },
+  })
+}
+
+export interface CreateDBSnapshotParams extends CreateDBSnapshotFormData {
+  dbInstanceIdentifier: string
+}
+
+export function useCreateDBSnapshot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateDBSnapshotParams) => {
+      const command = new CreateDBSnapshotCommand({
+        DBSnapshotIdentifier: params.dbSnapshotIdentifier,
+        DBInstanceIdentifier: params.dbInstanceIdentifier,
+        Tags: toTags(params.tags),
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: DB_SNAPSHOTS_KEY })
+      // The instance passes through backing-up for the length of the snapshot,
+      // so its own views are stale the moment this returns.
+      void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+    },
+  })
+}
+
+export function useDeleteDBSnapshot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (dbSnapshotIdentifier: string) => {
+      const command = new DeleteDBSnapshotCommand({
+        DBSnapshotIdentifier: dbSnapshotIdentifier,
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: DB_SNAPSHOTS_KEY })
+    },
+  })
+}
+
+export interface RestoreDBInstanceParams extends RestoreDBInstanceFormData {
+  dbSnapshotIdentifier: string
+}
+
+// The engine, master credentials and initial database are the snapshot's and
+// are never sent: the restore starts on its datadir, which already holds them.
+export function useRestoreDBInstanceFromDBSnapshot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: RestoreDBInstanceParams) => {
+      const command = new RestoreDBInstanceFromDBSnapshotCommand({
+        DBInstanceIdentifier: params.dbInstanceIdentifier,
+        DBSnapshotIdentifier: params.dbSnapshotIdentifier,
+        DBInstanceClass: params.dbInstanceClass,
+        AllocatedStorage: params.allocatedStorage,
+        Port: params.port === "" ? undefined : Number(params.port),
+        DBSubnetGroupName: optional(params.dbSubnetGroupName),
+        VpcSecurityGroupIds:
+          params.vpcSecurityGroupIds.length > 0
+            ? params.vpcSecurityGroupIds
+            : undefined,
+        DBParameterGroupName: optional(params.dbParameterGroupName),
+        DeletionProtection: params.deletionProtection,
+        Tags: toTags(params.tags),
       })
       return await getRdsClient().send(command)
     },

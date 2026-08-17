@@ -356,6 +356,106 @@ export const modifyDBInstanceSchema = z
 
 export type ModifyDBInstanceFormData = z.infer<typeof modifyDBInstanceSchema>
 
+// Mirrors validateDBSnapshotName in handlers/rds/snapshot.go. The character set
+// is deliberately the DB instance identifier's rather than AWS's laxer one, so
+// every name a snapshot can be created under is one a final snapshot accepts.
+const MAX_SNAPSHOT_IDENTIFIER_LEN = 255
+
+// The namespace the control plane mints automated backups under. A name the
+// caller creates may never enter it, and DeleteDBSnapshot refuses one that has.
+const AUTOMATED_SNAPSHOT_PREFIX = "rds:"
+
+const snapshotNameField = z
+  .string()
+  .min(1, "Snapshot identifier is required")
+  .max(
+    MAX_SNAPSHOT_IDENTIFIER_LEN,
+    `Snapshot identifier must be at most ${MAX_SNAPSHOT_IDENTIFIER_LEN} characters`,
+  )
+  .regex(/^[a-z]/, "Snapshot identifier must begin with a lowercase letter")
+  .regex(
+    /^[a-z0-9-]*$/,
+    "Snapshot identifier may contain only lowercase letters, digits and hyphens",
+  )
+  .refine(
+    (v) => !v.endsWith("-"),
+    "Snapshot identifier may not end with a hyphen",
+  )
+  .refine(
+    (v) => !v.includes("--"),
+    "Snapshot identifier may not contain consecutive hyphens",
+  )
+
+// The namespace check runs ahead of the name rules, which would otherwise
+// reject "rds:nightly" as a complaint about colons rather than about the
+// namespace automated backups own.
+export const dbSnapshotIdentifierField = z
+  .string()
+  .refine(
+    (v) => !v.toLowerCase().startsWith(AUTOMATED_SNAPSHOT_PREFIX),
+    `Snapshot identifier may not begin with "${AUTOMATED_SNAPSHOT_PREFIX}", which automated backups use`,
+  )
+  .pipe(snapshotNameField)
+
+export const createDBSnapshotSchema = z.object({
+  dbSnapshotIdentifier: dbSnapshotIdentifierField,
+  tags: z.array(rdsTagSchema),
+})
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0")
+}
+
+function timestampSuffix(now: Date): string {
+  return `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(
+    now.getUTCDate(),
+  )}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`
+}
+
+// A suggested name for a snapshot or a restored instance: the instance it came
+// from, what it is for, and a UTC timestamp. Trimmed to the DB instance
+// identifier's length, which is the shorter of the two limits.
+export function suggestedIdentifier(
+  dbInstanceIdentifier: string,
+  purpose: string,
+  now: Date = new Date(),
+): string {
+  const suffix = `-${purpose}-${timestampSuffix(now)}`
+  const room = MAX_IDENTIFIER_LEN - suffix.length
+  const stem = dbInstanceIdentifier.slice(0, room).replace(/-+$/, "")
+  return `${stem}${suffix}`
+}
+
+export type CreateDBSnapshotFormData = z.infer<typeof createDBSnapshotSchema>
+
+// Only what resolveRestoreRequest in handlers/rds/restore.go actually reads.
+// The engine, master credentials and initial database come from the snapshot's
+// datadir, and the retention and windows use the defaults in force at restore.
+export const restoreDBInstanceSchema = z
+  .object({
+    snapshotAllocatedStorage: z.number(),
+    dbInstanceIdentifier: dbInstanceIdentifierField,
+    dbInstanceClass: z.string().min(1, "Instance class is required"),
+    allocatedStorage: allocatedStorageField,
+    port: portField,
+    dbSubnetGroupName: z.string(),
+    vpcSecurityGroupIds: z.array(z.string()),
+    dbParameterGroupName: z.string(),
+    deletionProtection: z.boolean(),
+    tags: z.array(rdsTagSchema),
+  })
+  .superRefine((data, ctx) => {
+    if (data.allocatedStorage < data.snapshotAllocatedStorage) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allocatedStorage"],
+        message: `Storage may not be below the ${data.snapshotAllocatedStorage} GiB the snapshot holds`,
+      })
+    }
+  })
+
+export type RestoreDBInstanceFormData = z.infer<typeof restoreDBInstanceSchema>
+
 // Mirrors validateDBGroupName and validateDBGroupDescription in
 // handlers/rds/subnetgroup.go, which both group kinds share. The name is a KV
 // key rather than a DNS label, so it is looser than a DB instance identifier.
@@ -490,4 +590,31 @@ export function canReboot(status: string | undefined): boolean {
 
 export function canDelete(status: string | undefined): boolean {
   return status !== undefined && status !== "deleting" && status !== "deleted"
+}
+
+// backing-up is reachable from both settled states and returns to whichever it
+// came from, so a stopped instance can be snapshotted as well as a running one.
+export function canSnapshot(status: string | undefined): boolean {
+  return status === "available" || status === "stopped"
+}
+
+// The only two statuses a DB snapshot has, from handlers/rds/records.go.
+export const SNAPSHOT_STATUS_CREATING = "creating"
+
+export const SNAPSHOT_TYPE_MANUAL = "manual"
+export const SNAPSHOT_TYPE_AUTOMATED = "automated"
+
+// Both actions read the snapshot's data, which does not exist until it is
+// available: the backend refuses either against one still being taken.
+export function canRestoreSnapshot(status: string | undefined): boolean {
+  return status === "available"
+}
+
+// An automated backup lives in the reserved rds: namespace, which
+// DeleteDBSnapshot rejects outright — retention is what removes it.
+export function canDeleteSnapshot(
+  status: string | undefined,
+  snapshotType: string | undefined,
+): boolean {
+  return status === "available" && snapshotType !== SNAPSHOT_TYPE_AUTOMATED
 }

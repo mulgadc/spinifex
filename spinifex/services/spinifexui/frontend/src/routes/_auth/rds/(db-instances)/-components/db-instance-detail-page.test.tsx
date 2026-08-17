@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { fireEvent, screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -76,6 +76,8 @@ interface SeedOptions {
   instances?: unknown[]
   events?: unknown[]
   tags?: unknown[]
+  snapshots?: unknown[]
+  automatedBackups?: unknown[]
 }
 
 function seed(options: SeedOptions = {}): QueryClient {
@@ -83,8 +85,14 @@ function seed(options: SeedOptions = {}): QueryClient {
   qc.setQueryData(["rds", "dbInstances", "orders-db"], {
     DBInstances: options.instances ?? [INSTANCE],
   })
-  qc.setQueryData(["rds", "events", "orders-db"], {
+  qc.setQueryData(["rds", "events", "db-instance", "orders-db"], {
     Events: options.events ?? [],
+  })
+  qc.setQueryData(["rds", "dbSnapshots", "instance", "orders-db"], {
+    DBSnapshots: options.snapshots ?? [],
+  })
+  qc.setQueryData(["rds", "automatedBackups", "orders-db"], {
+    DBInstanceAutomatedBackups: options.automatedBackups ?? [],
   })
   qc.setQueryData(["rds", "tags", ARN], { TagList: options.tags ?? [] })
   qc.setQueryData(["rds", "tags", ""], { TagList: [] })
@@ -94,6 +102,28 @@ function seed(options: SeedOptions = {}): QueryClient {
     OrderableDBInstanceOptions: [{ DBInstanceClass: "db.t3.micro" }],
   })
   return qc
+}
+
+const SNAPSHOT = {
+  DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+  DBInstanceIdentifier: "orders-db",
+  SnapshotType: "manual",
+  Status: "available",
+  SnapshotCreateTime: new Date("2026-08-17T14:32:00Z"),
+}
+
+const AUTOMATED_SNAPSHOT = {
+  ...SNAPSHOT,
+  DBSnapshotIdentifier: "rds:orders-db-2026-08-17-03-00",
+  SnapshotType: "automated",
+}
+
+function rowFor(identifier: string): HTMLElement {
+  const row = screen.getByText(identifier).closest("tr")
+  if (!row) {
+    throw new Error(`no row for ${identifier}`)
+  }
+  return row
 }
 
 function openTab(name: string) {
@@ -265,6 +295,79 @@ describe("DBInstanceDetailPage", () => {
     openTab("Tags")
     expect(screen.getByDisplayValue("env")).toBeInTheDocument()
     expect(screen.getByDisplayValue("prod")).toBeInTheDocument()
+  })
+
+  it("shows the empty state when the instance has no snapshots", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed(),
+    )
+    openTab("Backups")
+    expect(
+      screen.getByText("No snapshots of this instance."),
+    ).toBeInTheDocument()
+  })
+
+  it("lists the instance's snapshots on the backups tab", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed({ snapshots: [SNAPSHOT] }),
+    )
+    openTab("Backups")
+    const row = rowFor("orders-db-snapshot-20260817-1432")
+    expect(within(row).getByRole("button", { name: "Restore" })).toBeEnabled()
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeEnabled()
+  })
+
+  // DeleteDBSnapshot refuses the rds: namespace outright, so retention is the
+  // only thing that removes an automated backup.
+  it("offers no delete for an automated backup", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed({ snapshots: [AUTOMATED_SNAPSHOT] }),
+    )
+    openTab("Backups")
+    const row = rowFor("rds:orders-db-2026-08-17-03-00")
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeDisabled()
+  })
+
+  it("reads the automated backup's own status rather than inferring one", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed({ automatedBackups: [{ Status: "active" }] }),
+    )
+    openTab("Backups")
+    expect(screen.getByText("active")).toBeInTheDocument()
+  })
+
+  it("says automated backups are off when the backend reports none", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed(),
+    )
+    openTab("Backups")
+    expect(
+      screen.getByText("None — automated backups are off"),
+    ).toBeInTheDocument()
+  })
+
+  it("opens the snapshot dialog for this instance from the heading", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
+    expect(screen.getByText("Take DB snapshot")).toBeInTheDocument()
+  })
+
+  // backing-up is reachable only from a settled instance, so the action is
+  // held back rather than offered and then refused.
+  it("holds the snapshot action back while the instance is transitioning", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed({ instances: [{ ...INSTANCE, DBInstanceStatus: "modifying" }] }),
+    )
+    expect(screen.getByRole("button", { name: "Take snapshot" })).toBeDisabled()
   })
 
   it("renders no control for a parameter the backend only stores", () => {

@@ -2,8 +2,10 @@ import { createFileRoute } from "@tanstack/react-router"
 
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
+  rdsAutomatedBackupsQueryOptions,
   rdsDBInstanceQueryOptions,
   rdsEventsQueryOptions,
+  rdsInstanceDBSnapshotsQueryOptions,
   rdsParameterGroupsQueryOptions,
   rdsTagsQueryOptions,
 } from "@/queries/rds"
@@ -20,6 +22,10 @@ export const Route = createFileRoute(
     const [instance] = await Promise.all([
       context.queryClient.ensureQueryData(rdsDBInstanceQueryOptions(id)),
       context.queryClient.ensureQueryData(rdsEventsQueryOptions(id)),
+      context.queryClient.ensureQueryData(
+        rdsInstanceDBSnapshotsQueryOptions(id),
+      ),
+      context.queryClient.ensureQueryData(rdsAutomatedBackupsQueryOptions(id)),
       context.queryClient.ensureQueryData(rdsParameterGroupsQueryOptions),
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
     ])

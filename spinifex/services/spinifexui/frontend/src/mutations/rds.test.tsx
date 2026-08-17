@@ -9,18 +9,24 @@ vi.mock("@/lib/awsClient", () => ({
   getRdsClient: () => ({ send: mockSend }),
 }))
 
-import type { CreateDBInstanceFormData } from "@/types/rds"
+import type {
+  CreateDBInstanceFormData,
+  RestoreDBInstanceFormData,
+} from "@/types/rds"
 
 import {
   useCreateDBInstance,
   useCreateDBParameterGroup,
+  useCreateDBSnapshot,
   useCreateDBSubnetGroup,
   useDeleteDBInstance,
   useDeleteDBParameterGroup,
+  useDeleteDBSnapshot,
   useDeleteDBSubnetGroup,
   useModifyDBInstance,
   useModifyDBParameterGroup,
   useRebootDBInstance,
+  useRestoreDBInstanceFromDBSnapshot,
   useStartDBInstance,
   useStopDBInstance,
   useUpdateRdsTags,
@@ -338,6 +344,128 @@ describe("useModifyDBParameterGroup", () => {
         ApplyMethod: "immediate",
       },
     ])
+  })
+})
+
+describe("useCreateDBSnapshot", () => {
+  it("sends the snapshot name, the instance and its tags", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateDBSnapshot(), { wrapper })
+
+    result.current.mutate({
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      dbInstanceIdentifier: "orders-db",
+      tags: [{ key: "env", value: "prod" }],
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      DBInstanceIdentifier: "orders-db",
+      Tags: [{ Key: "env", Value: "prod" }],
+    })
+  })
+})
+
+describe("useDeleteDBSnapshot", () => {
+  it("sends the snapshot identifier", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteDBSnapshot(), { wrapper })
+
+    result.current.mutate("orders-db-snapshot-20260817-1432")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+    })
+  })
+})
+
+describe("useRestoreDBInstanceFromDBSnapshot", () => {
+  const RESTORE_FORM: RestoreDBInstanceFormData = {
+    snapshotAllocatedStorage: 20,
+    dbInstanceIdentifier: "orders-db-restored",
+    dbInstanceClass: "db.t3.small",
+    allocatedStorage: 40,
+    port: "",
+    dbSubnetGroupName: "",
+    vpcSecurityGroupIds: [],
+    dbParameterGroupName: "",
+    deletionProtection: false,
+    tags: [],
+  }
+
+  it("sends the snapshot, the new identifier and the overrides", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      ...RESTORE_FORM,
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      port: "5555",
+      dbSubnetGroupName: "db-subnets",
+      vpcSecurityGroupIds: ["sg-1"],
+      dbParameterGroupName: "orders-pg",
+      deletionProtection: true,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBInstanceIdentifier: "orders-db-restored",
+      DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      DBInstanceClass: "db.t3.small",
+      AllocatedStorage: 40,
+      Port: 5555,
+      DBSubnetGroupName: "db-subnets",
+      VpcSecurityGroupIds: ["sg-1"],
+      DBParameterGroupName: "orders-pg",
+      DeletionProtection: true,
+      Tags: undefined,
+    })
+  })
+
+  // Every one of these is either refused by the backend or read from the
+  // snapshot's datadir, so sending one would fail the restore or lie about it.
+  it("never sends the engine, the credentials or the database name", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      ...RESTORE_FORM,
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.Engine).toBeUndefined()
+    expect(input.EngineVersion).toBeUndefined()
+    expect(input.MasterUsername).toBeUndefined()
+    expect(input.MasterUserPassword).toBeUndefined()
+    expect(input.DBName).toBeUndefined()
+    expect(input.BackupRetentionPeriod).toBeUndefined()
+    expect(input.MultiAZ).toBeUndefined()
+    expect(input.PubliclyAccessible).toBeUndefined()
+  })
+
+  // An empty port means "keep the snapshot's", which is a field left off the
+  // request rather than a zero.
+  it("omits a blank port", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      ...RESTORE_FORM,
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.Port).toBeUndefined()
   })
 })
 

@@ -1,8 +1,10 @@
 import {
   DescribeDBEngineVersionsCommand,
+  DescribeDBInstanceAutomatedBackupsCommand,
   DescribeDBInstancesCommand,
   DescribeDBParameterGroupsCommand,
   DescribeDBParametersCommand,
+  DescribeDBSnapshotsCommand,
   DescribeDBSubnetGroupsCommand,
   DescribeEventsCommand,
   DescribeOrderableDBInstanceOptionsCommand,
@@ -11,7 +13,7 @@ import {
 import { queryOptions } from "@tanstack/react-query"
 
 import { getRdsClient } from "@/lib/awsClient"
-import { isTransitionalStatus } from "@/types/rds"
+import { isTransitionalStatus, SNAPSHOT_STATUS_CREATING } from "@/types/rds"
 
 // Creates take minutes and half the RDS statuses are transitional, so a list
 // that never refetches reads as broken. Polling stops once everything settles.
@@ -26,6 +28,20 @@ const EVENT_WINDOW_MINUTES = 14 * 24 * 60
 const CATALOG_STALE_TIME_MS = 60 * 60 * 1000
 
 const DB_INSTANCE_SOURCE_TYPE = "db-instance"
+const DB_SNAPSHOT_SOURCE_TYPE = "db-snapshot"
+
+// The two source types DescribeEvents keeps a ring for.
+export type RdsEventSourceType =
+  | typeof DB_INSTANCE_SOURCE_TYPE
+  | typeof DB_SNAPSHOT_SOURCE_TYPE
+
+// A snapshot is either being taken or finished, so the poll asks only whether
+// anything is still being taken.
+function anySnapshotCreating(snapshots: { Status?: string }[]): boolean {
+  return snapshots.some(
+    (snapshot) => snapshot.Status === SNAPSHOT_STATUS_CREATING,
+  )
+}
 
 export const rdsDBInstancesQueryOptions = queryOptions({
   queryKey: ["rds", "dbInstances"],
@@ -110,14 +126,79 @@ export const rdsParametersQueryOptions = (dbParameterGroupName: string) =>
     },
   })
 
-export const rdsEventsQueryOptions = (sourceIdentifier: string) =>
+export const rdsEventsQueryOptions = (
+  sourceIdentifier: string,
+  sourceType: RdsEventSourceType = DB_INSTANCE_SOURCE_TYPE,
+) =>
   queryOptions({
-    queryKey: ["rds", "events", sourceIdentifier],
+    queryKey: ["rds", "events", sourceType, sourceIdentifier],
     queryFn: async () => {
       const command = new DescribeEventsCommand({
         SourceIdentifier: sourceIdentifier,
-        SourceType: DB_INSTANCE_SOURCE_TYPE,
+        SourceType: sourceType,
         Duration: EVENT_WINDOW_MINUTES,
+      })
+      return await getRdsClient().send(command)
+    },
+  })
+
+export const rdsSnapshotEventsQueryOptions = (sourceIdentifier: string) =>
+  rdsEventsQueryOptions(sourceIdentifier, DB_SNAPSHOT_SOURCE_TYPE)
+
+export const rdsDBSnapshotsQueryOptions = queryOptions({
+  queryKey: ["rds", "dbSnapshots"],
+  queryFn: async () => {
+    const command = new DescribeDBSnapshotsCommand({})
+    return await getRdsClient().send(command)
+  },
+  refetchInterval: (query) =>
+    anySnapshotCreating(query.state.data?.DBSnapshots ?? [])
+      ? TRANSITIONAL_POLL_MS
+      : false,
+})
+
+export const rdsDBSnapshotQueryOptions = (dbSnapshotIdentifier: string) =>
+  queryOptions({
+    queryKey: ["rds", "dbSnapshots", dbSnapshotIdentifier],
+    queryFn: async () => {
+      const command = new DescribeDBSnapshotsCommand({
+        DBSnapshotIdentifier: dbSnapshotIdentifier,
+      })
+      return await getRdsClient().send(command)
+    },
+    refetchInterval: (query) =>
+      anySnapshotCreating(query.state.data?.DBSnapshots ?? [])
+        ? TRANSITIONAL_POLL_MS
+        : false,
+  })
+
+// The instance's own snapshots, manual and automated alike. Keyed under the
+// list so a create or a delete invalidates both with one prefix.
+export const rdsInstanceDBSnapshotsQueryOptions = (
+  dbInstanceIdentifier: string,
+) =>
+  queryOptions({
+    queryKey: ["rds", "dbSnapshots", "instance", dbInstanceIdentifier],
+    queryFn: async () => {
+      const command = new DescribeDBSnapshotsCommand({
+        DBInstanceIdentifier: dbInstanceIdentifier,
+      })
+      return await getRdsClient().send(command)
+    },
+    refetchInterval: (query) =>
+      anySnapshotCreating(query.state.data?.DBSnapshots ?? [])
+        ? TRANSITIONAL_POLL_MS
+        : false,
+  })
+
+// One entry per instance with automated backups on, and none at all once
+// retention is zero — which is the answer the Backups tab renders.
+export const rdsAutomatedBackupsQueryOptions = (dbInstanceIdentifier: string) =>
+  queryOptions({
+    queryKey: ["rds", "automatedBackups", dbInstanceIdentifier],
+    queryFn: async () => {
+      const command = new DescribeDBInstanceAutomatedBackupsCommand({
+        DBInstanceIdentifier: dbInstanceIdentifier,
       })
       return await getRdsClient().send(command)
     },

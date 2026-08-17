@@ -19,12 +19,21 @@ interface StoredInstance {
   deletionProtection: boolean
   backupRetentionPeriod: number
   describesLeftAsCreating: number
+  restoredFrom?: string
   pending: { instanceClass?: string; allocatedStorage?: number }
 }
 
 interface StoredSnapshot {
   identifier: string
   sourceIdentifier: string
+  engine: string
+  engineVersion: string
+  allocatedStorage: number
+  masterUsername: string
+  port: number
+  status: string
+  snapshotType: string
+  describesLeftAsCreating: number
 }
 
 interface Command {
@@ -67,6 +76,22 @@ function project(instance: StoredInstance) {
   }
 }
 
+function projectSnapshot(snapshot: StoredSnapshot) {
+  return {
+    DBSnapshotIdentifier: snapshot.identifier,
+    DBSnapshotArn: `arn:aws:rds:ap-southeast-2:000000000000:snapshot:${snapshot.identifier}`,
+    DBInstanceIdentifier: snapshot.sourceIdentifier,
+    SnapshotType: snapshot.snapshotType,
+    Status: snapshot.status,
+    Engine: snapshot.engine,
+    EngineVersion: snapshot.engineVersion,
+    AllocatedStorage: snapshot.allocatedStorage,
+    MasterUsername: snapshot.masterUsername,
+    Port: snapshot.port,
+    Encrypted: true,
+  }
+}
+
 const { sdk } = vi.hoisted(() => {
   // The parameters CreateDBInstance rejects outright. The mock refuses them the
   // way the backend does, so a form that starts sending one fails the flow.
@@ -95,6 +120,19 @@ const { sdk } = vi.hoisted(() => {
     "OptionGroupName",
   ]
 
+  // Everything the restore reads from the snapshot's datadir instead, which
+  // the backend refuses rather than silently ignores.
+  const REJECTED_ON_RESTORE = [
+    "Engine",
+    "EngineVersion",
+    "MasterUsername",
+    "MasterUserPassword",
+    "DBName",
+    "BackupRetentionPeriod",
+    "MultiAZ",
+    "PubliclyAccessible",
+  ]
+
   // Two describes report `creating` before the instance settles, so the poll
   // path is exercised rather than the instance appearing available at once.
   const DESCRIBES_WHILE_CREATING = 2
@@ -111,6 +149,33 @@ const { sdk } = vi.hoisted(() => {
       throw new Error(`DBInstanceNotFound: ${identifier}`)
     }
     return instance
+  }
+
+  function findSnapshot(identifier: string): StoredSnapshot {
+    const snapshot = state.snapshots.find((s) => s.identifier === identifier)
+    if (!snapshot) {
+      throw new Error(`DBSnapshotNotFound: ${identifier}`)
+    }
+    return snapshot
+  }
+
+  function snapshotOf(
+    instance: StoredInstance,
+    identifier: string,
+    snapshotType: string,
+  ): StoredSnapshot {
+    return {
+      identifier,
+      sourceIdentifier: instance.identifier,
+      engine: instance.engine,
+      engineVersion: instance.engineVersion ?? "18",
+      allocatedStorage: instance.allocatedStorage,
+      masterUsername: instance.masterUsername,
+      port: instance.port,
+      status: "creating",
+      snapshotType,
+      describesLeftAsCreating: DESCRIBES_WHILE_CREATING,
+    }
   }
 
   const handlers = new Map<string, (input: unknown) => unknown>([
@@ -230,16 +295,137 @@ const { sdk } = vi.hoisted(() => {
               "InvalidParameterCombination: FinalDBSnapshotIdentifier required",
             )
           }
-          state.snapshots.push({
-            identifier: i.FinalDBSnapshotIdentifier,
-            sourceIdentifier: instance.identifier,
-          })
+          state.snapshots.push(
+            snapshotOf(instance, i.FinalDBSnapshotIdentifier, "manual"),
+          )
         }
         instance.status = "deleting"
         state.instances = state.instances.filter(
           (s) => s.identifier !== instance.identifier,
         )
         return { DBInstance: project(instance) }
+      },
+    ],
+    [
+      "CreateDBSnapshotCommand",
+      (input) => {
+        const i = input as {
+          DBSnapshotIdentifier: string
+          DBInstanceIdentifier: string
+        }
+        if (i.DBSnapshotIdentifier.startsWith("rds:")) {
+          throw new Error("InvalidParameterValue: rds: is reserved")
+        }
+        const instance = find(i.DBInstanceIdentifier)
+        if (instance.status !== "available" && instance.status !== "stopped") {
+          throw new Error(
+            `InvalidDBInstanceState: ${instance.identifier} is ${instance.status}`,
+          )
+        }
+        const snapshot = snapshotOf(instance, i.DBSnapshotIdentifier, "manual")
+        state.snapshots.push(snapshot)
+        return { DBSnapshot: projectSnapshot(snapshot) }
+      },
+    ],
+    [
+      "DescribeDBSnapshotsCommand",
+      (input) => {
+        const i = input as {
+          DBSnapshotIdentifier?: string
+          DBInstanceIdentifier?: string
+        }
+        let matching = state.snapshots
+        if (i.DBSnapshotIdentifier) {
+          matching = [findSnapshot(i.DBSnapshotIdentifier)]
+        } else if (i.DBInstanceIdentifier) {
+          matching = matching.filter(
+            (s) => s.sourceIdentifier === i.DBInstanceIdentifier,
+          )
+        }
+        const projected = matching.map(projectSnapshot)
+        // Advance after projecting, so the first describe still reads `creating`.
+        for (const snapshot of matching) {
+          if (snapshot.status !== "creating") {
+            continue
+          }
+          snapshot.describesLeftAsCreating -= 1
+          if (snapshot.describesLeftAsCreating <= 0) {
+            snapshot.status = "available"
+          }
+        }
+        return { DBSnapshots: projected }
+      },
+    ],
+    [
+      "DeleteDBSnapshotCommand",
+      (input) => {
+        const i = input as { DBSnapshotIdentifier: string }
+        if (i.DBSnapshotIdentifier.startsWith("rds:")) {
+          throw new Error("InvalidParameterValue: rds: is reserved")
+        }
+        const snapshot = findSnapshot(i.DBSnapshotIdentifier)
+        if (snapshot.status !== "available") {
+          throw new Error(
+            `InvalidDBSnapshotState: ${snapshot.identifier} is ${snapshot.status}`,
+          )
+        }
+        const reader = state.instances.find(
+          (s) => s.restoredFrom === snapshot.identifier,
+        )
+        if (reader) {
+          throw new Error(
+            `InvalidDBSnapshotState: ${snapshot.identifier} is in use by ${reader.identifier}`,
+          )
+        }
+        state.snapshots = state.snapshots.filter(
+          (s) => s.identifier !== snapshot.identifier,
+        )
+        return { DBSnapshot: projectSnapshot(snapshot) }
+      },
+    ],
+    [
+      "RestoreDBInstanceFromDBSnapshotCommand",
+      (input) => {
+        reject(input, REJECTED_ON_RESTORE, "RestoreDBInstanceFromDBSnapshot")
+        const i = input as {
+          DBInstanceIdentifier: string
+          DBSnapshotIdentifier: string
+          DBInstanceClass: string
+          AllocatedStorage?: number
+          Port?: number
+          DeletionProtection?: boolean
+        }
+        const snapshot = findSnapshot(i.DBSnapshotIdentifier)
+        if (snapshot.status !== "available") {
+          throw new Error(
+            `InvalidDBSnapshotState: ${snapshot.identifier} is ${snapshot.status}`,
+          )
+        }
+        if (
+          state.instances.some((s) => s.identifier === i.DBInstanceIdentifier)
+        ) {
+          throw new Error(`DBInstanceAlreadyExists: ${i.DBInstanceIdentifier}`)
+        }
+        const storage = i.AllocatedStorage ?? snapshot.allocatedStorage
+        if (storage < snapshot.allocatedStorage) {
+          throw new Error("InvalidParameterValue: storage cannot be shrunk")
+        }
+        state.instances.push({
+          identifier: i.DBInstanceIdentifier,
+          engine: snapshot.engine,
+          engineVersion: snapshot.engineVersion,
+          instanceClass: i.DBInstanceClass,
+          allocatedStorage: storage,
+          masterUsername: snapshot.masterUsername,
+          port: i.Port ?? snapshot.port,
+          status: "creating",
+          deletionProtection: i.DeletionProtection ?? false,
+          backupRetentionPeriod: 7,
+          describesLeftAsCreating: DESCRIBES_WHILE_CREATING,
+          restoredFrom: snapshot.identifier,
+          pending: {},
+        })
+        return { DBInstance: project(find(i.DBInstanceIdentifier)) }
       },
     ],
   ])
@@ -274,12 +460,18 @@ vi.mock("@/lib/awsClient", () => ({
 
 import {
   useCreateDBInstance,
+  useCreateDBSnapshot,
   useDeleteDBInstance,
+  useDeleteDBSnapshot,
   useModifyDBInstance,
+  useRestoreDBInstanceFromDBSnapshot,
 } from "@/mutations/rds"
 import {
   rdsDBInstanceQueryOptions,
   rdsDBInstancesQueryOptions,
+  rdsDBSnapshotQueryOptions,
+  rdsDBSnapshotsQueryOptions,
+  rdsInstanceDBSnapshotsQueryOptions,
 } from "@/queries/rds"
 import type { CreateDBInstanceFormData } from "@/types/rds"
 
@@ -318,6 +510,9 @@ function Harness() {
     create: useCreateDBInstance(),
     modify: useModifyDBInstance(),
     remove: useDeleteDBInstance(),
+    snapshot: useCreateDBSnapshot(),
+    restore: useRestoreDBInstanceFromDBSnapshot(),
+    removeSnapshot: useDeleteDBSnapshot(),
   }
 }
 
@@ -388,12 +583,11 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
       finalSnapshotIdentifier: "orders-db-final-20260817-1432",
     })
 
-    expect(sdk.snapshots()).toStrictEqual([
-      {
-        identifier: "orders-db-final-20260817-1432",
-        sourceIdentifier: "orders-db",
-      },
-    ])
+    expect(sdk.snapshots()).toHaveLength(1)
+    expect(sdk.snapshots()[0]).toMatchObject({
+      identifier: "orders-db-final-20260817-1432",
+      sourceIdentifier: "orders-db",
+    })
     const remaining = await qc.fetchQuery(rdsDBInstancesQueryOptions)
     expect(remaining.DBInstances).toHaveLength(0)
   })
@@ -464,5 +658,171 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
     })
 
     expect(sdk.snapshots()).toHaveLength(0)
+  })
+})
+
+const RESTORE_FORM = {
+  snapshotAllocatedStorage: 20,
+  dbInstanceIdentifier: "orders-db-restored",
+  dbInstanceClass: "db.t3.small",
+  allocatedStorage: 40,
+  port: "",
+  dbSubnetGroupName: "",
+  vpcSecurityGroupIds: [],
+  dbParameterGroupName: "",
+  deletionProtection: false,
+  tags: [],
+}
+
+// The poll the conditional refetchInterval drives, run by hand until the
+// snapshot settles.
+async function settledSnapshot(qc: QueryClient, identifier: string) {
+  await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
+  await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
+  return await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
+}
+
+describe("RDS snapshot flow (mocked SDK)", () => {
+  beforeEach(() => {
+    sdk.reset()
+  })
+
+  async function settledInstance(qc: QueryClient) {
+    const { result } = renderHarness(qc)
+    await result.current.create.mutateAsync(CREATE_FORM)
+    await statusOf(qc)
+    await statusOf(qc)
+    return result
+  }
+
+  it("snapshots → polls to available → restores → deletes the snapshot", async () => {
+    const qc = createQueryClient()
+    const result = await settledInstance(qc)
+
+    await result.current.snapshot.mutateAsync({
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      dbInstanceIdentifier: "orders-db",
+      tags: [],
+    })
+
+    const listed = await qc.fetchQuery(rdsDBSnapshotsQueryOptions)
+    expect(listed.DBSnapshots?.[0]?.Status).toBe("creating")
+    expect(listed.DBSnapshots?.[0]?.Engine).toBe("postgres")
+
+    const settled = await settledSnapshot(
+      qc,
+      "orders-db-snapshot-20260817-1432",
+    )
+    expect(settled.DBSnapshots?.[0]?.Status).toBe("available")
+    expect(settled.DBSnapshots?.[0]?.AllocatedStorage).toBe(20)
+
+    await result.current.restore.mutateAsync({
+      ...RESTORE_FORM,
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+    })
+
+    const restored = await qc.fetchQuery(
+      rdsDBInstanceQueryOptions("orders-db-restored"),
+    )
+    // The engine, the master user and the port come from the snapshot; only
+    // the class and the grown storage came from the form.
+    expect(restored.DBInstances?.[0]?.Engine).toBe("postgres")
+    expect(restored.DBInstances?.[0]?.MasterUsername).toBe("dbadmin")
+    expect(restored.DBInstances?.[0]?.Endpoint?.Port).toBe(5432)
+    expect(restored.DBInstances?.[0]?.DBInstanceClass).toBe("db.t3.small")
+    expect(restored.DBInstances?.[0]?.AllocatedStorage).toBe(40)
+
+    // The restored instance still reads through the snapshot, so the delete is
+    // refused until it is gone.
+    await expect(
+      result.current.removeSnapshot.mutateAsync(
+        "orders-db-snapshot-20260817-1432",
+      ),
+    ).rejects.toThrow(/in use by orders-db-restored/)
+
+    await result.current.remove.mutateAsync({
+      dbInstanceIdentifier: "orders-db-restored",
+      skipFinalSnapshot: true,
+      finalSnapshotIdentifier: "",
+    })
+    await result.current.removeSnapshot.mutateAsync(
+      "orders-db-snapshot-20260817-1432",
+    )
+    expect(sdk.snapshots()).toHaveLength(0)
+  })
+
+  it("lists an instance's own snapshots", async () => {
+    const qc = createQueryClient()
+    const result = await settledInstance(qc)
+
+    await result.current.snapshot.mutateAsync({
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      dbInstanceIdentifier: "orders-db",
+      tags: [],
+    })
+
+    const mine = await qc.fetchQuery(
+      rdsInstanceDBSnapshotsQueryOptions("orders-db"),
+    )
+    expect(mine.DBSnapshots).toHaveLength(1)
+    const others = await qc.fetchQuery(
+      rdsInstanceDBSnapshotsQueryOptions("billing-db"),
+    )
+    expect(others.DBSnapshots).toHaveLength(0)
+  })
+
+  it("refuses a snapshot of an instance still being created", async () => {
+    const qc = createQueryClient()
+    const { result } = renderHarness(qc)
+    await result.current.create.mutateAsync(CREATE_FORM)
+
+    await expect(
+      result.current.snapshot.mutateAsync({
+        dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+        dbInstanceIdentifier: "orders-db",
+        tags: [],
+      }),
+    ).rejects.toThrow(/is creating/)
+  })
+
+  it("refuses a restore that would shrink the volume", async () => {
+    const qc = createQueryClient()
+    const result = await settledInstance(qc)
+
+    await result.current.snapshot.mutateAsync({
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      dbInstanceIdentifier: "orders-db",
+      tags: [],
+    })
+    await settledSnapshot(qc, "orders-db-snapshot-20260817-1432")
+
+    await expect(
+      result.current.restore.mutateAsync({
+        ...RESTORE_FORM,
+        allocatedStorage: 10,
+        dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      }),
+    ).rejects.toThrow(/storage cannot be shrunk/)
+  })
+
+  // The restore reads the engine and the credentials from the datadir, so
+  // sending either is a request the backend refuses outright.
+  it("never sends what the restore reads from the snapshot", async () => {
+    const qc = createQueryClient()
+    const result = await settledInstance(qc)
+
+    await result.current.snapshot.mutateAsync({
+      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      dbInstanceIdentifier: "orders-db",
+      tags: [],
+    })
+    await settledSnapshot(qc, "orders-db-snapshot-20260817-1432")
+
+    await expect(
+      result.current.restore.mutateAsync({
+        ...RESTORE_FORM,
+        dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
+      }),
+    ).resolves.toBeDefined()
   })
 })

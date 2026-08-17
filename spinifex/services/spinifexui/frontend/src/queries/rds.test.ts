@@ -7,14 +7,19 @@ vi.mock("@/lib/awsClient", () => ({
 }))
 
 import {
+  rdsAutomatedBackupsQueryOptions,
   rdsDBInstanceQueryOptions,
   rdsDBInstancesQueryOptions,
+  rdsDBSnapshotQueryOptions,
+  rdsDBSnapshotsQueryOptions,
   rdsEngineVersionsQueryOptions,
   rdsEventsQueryOptions,
+  rdsInstanceDBSnapshotsQueryOptions,
   rdsOrderableOptionsQueryOptions,
   rdsParameterGroupQueryOptions,
   rdsParameterGroupsQueryOptions,
   rdsParametersQueryOptions,
+  rdsSnapshotEventsQueryOptions,
   rdsSubnetGroupQueryOptions,
   rdsSubnetGroupsQueryOptions,
   rdsTagsQueryOptions,
@@ -72,12 +77,51 @@ describe("rds query keys", () => {
     ])
   })
 
-  it("rdsEventsQueryOptions includes the source identifier", () => {
+  it("rdsEventsQueryOptions includes the source type and identifier", () => {
     expect(rdsEventsQueryOptions("orders-db").queryKey).toStrictEqual([
       "rds",
       "events",
+      "db-instance",
       "orders-db",
     ])
+  })
+
+  // The two rings are separate on the backend, so the keys have to be too: a
+  // snapshot and the instance it came from can share an identifier.
+  it("rdsSnapshotEventsQueryOptions keys off the snapshot source type", () => {
+    expect(rdsSnapshotEventsQueryOptions("orders-db").queryKey).toStrictEqual([
+      "rds",
+      "events",
+      "db-snapshot",
+      "orders-db",
+    ])
+  })
+
+  it("rdsDBSnapshotsQueryOptions has correct key", () => {
+    expect(rdsDBSnapshotsQueryOptions.queryKey).toStrictEqual([
+      "rds",
+      "dbSnapshots",
+    ])
+  })
+
+  it("rdsDBSnapshotQueryOptions includes the snapshot identifier", () => {
+    expect(rdsDBSnapshotQueryOptions("orders-snap").queryKey).toStrictEqual([
+      "rds",
+      "dbSnapshots",
+      "orders-snap",
+    ])
+  })
+
+  it("rdsInstanceDBSnapshotsQueryOptions nests under the list key", () => {
+    expect(
+      rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey,
+    ).toStrictEqual(["rds", "dbSnapshots", "instance", "orders-db"])
+  })
+
+  it("rdsAutomatedBackupsQueryOptions includes the instance identifier", () => {
+    expect(rdsAutomatedBackupsQueryOptions("orders-db").queryKey).toStrictEqual(
+      ["rds", "automatedBackups", "orders-db"],
+    )
   })
 
   it("rdsTagsQueryOptions includes the resource name", () => {
@@ -176,6 +220,40 @@ describe("rds queries send the right command", () => {
     })
   })
 
+  it("snapshot events ask the db-snapshot ring", async () => {
+    mockSend.mockResolvedValueOnce({ Events: [] })
+    await callQueryFn(rdsSnapshotEventsQueryOptions("orders-snap").queryFn)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      SourceIdentifier: "orders-snap",
+      SourceType: "db-snapshot",
+      Duration: 14 * 24 * 60,
+    })
+  })
+
+  it("the snapshot describes filter by snapshot and by instance", async () => {
+    mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
+    await callQueryFn(rdsDBSnapshotsQueryOptions.queryFn)
+    mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
+    await callQueryFn(rdsDBSnapshotQueryOptions("orders-snap").queryFn)
+    mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
+    await callQueryFn(rdsInstanceDBSnapshotsQueryOptions("orders-db").queryFn)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+    expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
+      DBSnapshotIdentifier: "orders-snap",
+    })
+    expect(mockSend.mock.calls[2]?.[0].input).toStrictEqual({
+      DBInstanceIdentifier: "orders-db",
+    })
+  })
+
+  it("automated backups filter by instance", async () => {
+    mockSend.mockResolvedValueOnce({ DBInstanceAutomatedBackups: [] })
+    await callQueryFn(rdsAutomatedBackupsQueryOptions("orders-db").queryFn)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBInstanceIdentifier: "orders-db",
+    })
+  })
+
   // The Source filter the backend accepts is deliberately unused: the whole
   // set is one round trip and the split is a client-side filter.
   it("parameters are fetched unfiltered by source", async () => {
@@ -241,5 +319,28 @@ describe("rds poll cadence", () => {
         state: { data: { DBInstances: [{ DBInstanceStatus: "available" }] } },
       }),
     ).toBeFalsy()
+  })
+
+  it("polls the snapshot list while one is still being taken", () => {
+    const refetch = refetchIntervalOf(rdsDBSnapshotsQueryOptions)
+    expect(
+      refetch({ state: { data: { DBSnapshots: [{ Status: "creating" }] } } }),
+    ).toBe(5000)
+  })
+
+  it("stops polling the snapshot list once every snapshot is available", () => {
+    const refetch = refetchIntervalOf(rdsDBSnapshotsQueryOptions)
+    expect(
+      refetch({ state: { data: { DBSnapshots: [{ Status: "available" }] } } }),
+    ).toBeFalsy()
+  })
+
+  it("polls an instance's snapshots while one is still being taken", () => {
+    const refetch = refetchIntervalOf(
+      rdsInstanceDBSnapshotsQueryOptions("orders-db"),
+    )
+    expect(
+      refetch({ state: { data: { DBSnapshots: [{ Status: "creating" }] } } }),
+    ).toBe(5000)
   })
 })

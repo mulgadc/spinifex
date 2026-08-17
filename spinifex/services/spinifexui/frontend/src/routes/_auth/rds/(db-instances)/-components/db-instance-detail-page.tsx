@@ -1,7 +1,7 @@
 import type { DBInstance, Event } from "@aws-sdk/client-rds"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
-import { Pencil, Trash2 } from "lucide-react"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { Camera, Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
@@ -24,12 +24,24 @@ import {
   useUpdateRdsTags,
 } from "@/mutations/rds"
 import {
+  rdsAutomatedBackupsQueryOptions,
   rdsDBInstanceQueryOptions,
   rdsEventsQueryOptions,
+  rdsInstanceDBSnapshotsQueryOptions,
   rdsTagsQueryOptions,
 } from "@/queries/rds"
-import { canDelete, canReboot, canStart, canStop } from "@/types/rds"
+import {
+  canDelete,
+  canDeleteSnapshot,
+  canReboot,
+  canRestoreSnapshot,
+  canSnapshot,
+  canStart,
+  canStop,
+} from "@/types/rds"
 
+import { CreateDBSnapshotDialog } from "../../(snapshots)/-components/create-db-snapshot-dialog"
+import { DeleteDBSnapshotDialog } from "../../(snapshots)/-components/delete-db-snapshot-dialog"
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
 import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
 
@@ -110,6 +122,12 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const { data: eventsData } = useSuspenseQuery(
     rdsEventsQueryOptions(dbInstanceIdentifier),
   )
+  const { data: snapshotsData } = useSuspenseQuery(
+    rdsInstanceDBSnapshotsQueryOptions(dbInstanceIdentifier),
+  )
+  const { data: automatedBackupsData } = useSuspenseQuery(
+    rdsAutomatedBackupsQueryOptions(dbInstanceIdentifier),
+  )
 
   const updateTags = useUpdateRdsTags()
   const startInstance = useStartDBInstance()
@@ -117,6 +135,10 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const rebootInstance = useRebootDBInstance()
   const [showDelete, setShowDelete] = useState(false)
   const [showModify, setShowModify] = useState(false)
+  const [showSnapshot, setShowSnapshot] = useState(false)
+  const [deleteSnapshotTarget, setDeleteSnapshotTarget] = useState<
+    string | null
+  >(null)
   const [activeTab, setActiveTab] = useState("connectivity")
 
   if (!instance?.DBInstanceIdentifier) {
@@ -144,6 +166,16 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
     events,
     (event) => hasCategory(event, "backup") && hasCategory(event, "creation"),
   )
+  // A quiesce that could not be taken or released is recorded as a backup
+  // notification. It is the only signal that a snapshot is crash consistent,
+  // since the record's flag is never projected onto the snapshot.
+  const lastBackupWarning = latestEvent(
+    events,
+    (event) =>
+      hasCategory(event, "backup") && hasCategory(event, "notification"),
+  )
+  const snapshots = snapshotsData.DBSnapshots ?? []
+  const automatedBackup = automatedBackupsData.DBInstanceAutomatedBackups?.[0]
   const pending = instance.PendingModifiedValues
   const hasPending =
     pending?.AllocatedStorage !== undefined ||
@@ -187,6 +219,15 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                 variant="outline"
               >
                 Reboot
+              </Button>
+              <Button
+                disabled={!canSnapshot(status)}
+                onClick={() => setShowSnapshot(true)}
+                size="sm"
+                variant="outline"
+              >
+                <Camera className="size-4" />
+                Take snapshot
               </Button>
               <Button
                 onClick={() => setShowModify(true)}
@@ -363,6 +404,19 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                 </div>
               )}
 
+              {lastBackupWarning && (
+                <div
+                  className="rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-4 text-sm"
+                  role="alert"
+                >
+                  <p className="font-medium">A backup raised a warning</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {lastBackupWarning.Message} (
+                    {formatTime(lastBackupWarning.Date)})
+                  </p>
+                </div>
+              )}
+
               <DetailCard>
                 <DetailCard.Header>Automated backups</DetailCard.Header>
                 <DetailCard.Content>
@@ -372,6 +426,13 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                       instance.BackupRetentionPeriod === 0
                         ? "Disabled"
                         : `${instance.BackupRetentionPeriod} days`
+                    }
+                  />
+                  <DetailRow
+                    label="Status"
+                    value={
+                      automatedBackup?.Status ??
+                      "None — automated backups are off"
                     }
                   />
                   <DetailRow
@@ -389,9 +450,100 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                 </DetailCard.Content>
               </DetailCard>
 
+              <div className="space-y-2">
+                <h3 className="text-sm font-medium">Snapshots</h3>
+                {snapshots.length > 0 ? (
+                  <div className="overflow-x-auto rounded-lg border bg-card">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-muted-foreground">
+                          <th className="px-4 py-2 font-medium">Identifier</th>
+                          <th className="px-4 py-2 font-medium">Type</th>
+                          <th className="px-4 py-2 font-medium">Status</th>
+                          <th className="px-4 py-2 font-medium">Created</th>
+                          <th className="px-4 py-2 font-medium">
+                            <span className="sr-only">Actions</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {snapshots.map((snapshot) => {
+                          const snapshotId = snapshot.DBSnapshotIdentifier
+                          if (!snapshotId) {
+                            return null
+                          }
+                          return (
+                            <tr
+                              className="border-b last:border-0"
+                              key={snapshotId}
+                            >
+                              <td className="px-4 py-2 font-medium">
+                                <Link
+                                  className="text-primary hover:underline"
+                                  params={{ id: snapshotId }}
+                                  to="/rds/describe-db-snapshots/$id"
+                                >
+                                  {snapshotId}
+                                </Link>
+                              </td>
+                              <td className="px-4 py-2">
+                                {snapshot.SnapshotType}
+                              </td>
+                              <td className="px-4 py-2">
+                                <StateBadge state={snapshot.Status} />
+                              </td>
+                              <td className="px-4 py-2 font-mono text-xs">
+                                {formatTime(snapshot.SnapshotCreateTime)}
+                              </td>
+                              <td className="space-x-2 px-4 py-2 text-right">
+                                <Button
+                                  disabled={
+                                    !canRestoreSnapshot(snapshot.Status)
+                                  }
+                                  onClick={async () =>
+                                    await navigate({
+                                      to: "/rds/restore-db-instance-from-db-snapshot/$id",
+                                      params: { id: snapshotId },
+                                    })
+                                  }
+                                  size="sm"
+                                  variant="outline"
+                                >
+                                  Restore
+                                </Button>
+                                <Button
+                                  disabled={
+                                    !canDeleteSnapshot(
+                                      snapshot.Status,
+                                      snapshot.SnapshotType,
+                                    )
+                                  }
+                                  onClick={() =>
+                                    setDeleteSnapshotTarget(snapshotId)
+                                  }
+                                  size="sm"
+                                  variant="destructive"
+                                >
+                                  Delete
+                                </Button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">
+                    No snapshots of this instance.
+                  </p>
+                )}
+              </div>
+
               <p className="text-xs text-muted-foreground">
-                Backups are daily snapshots taken in the backup window. There is
-                no point-in-time restore.
+                Automated backups are daily snapshots taken in the backup
+                window, deleted by retention rather than by hand. There is no
+                point-in-time restore.
               </p>
             </div>
           </TabsPanel>
@@ -462,6 +614,20 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
         onOpenChange={setShowModify}
         open={showModify}
       />
+
+      <CreateDBSnapshotDialog
+        dbInstanceIdentifier={dbInstanceIdentifier}
+        onOpenChange={setShowSnapshot}
+        open={showSnapshot}
+      />
+
+      {deleteSnapshotTarget && (
+        <DeleteDBSnapshotDialog
+          dbSnapshotIdentifier={deleteSnapshotTarget}
+          onOpenChange={(open) => !open && setDeleteSnapshotTarget(null)}
+          open={true}
+        />
+      )}
 
       <DeleteDBInstanceDialog
         dbInstanceIdentifier={dbInstanceIdentifier}

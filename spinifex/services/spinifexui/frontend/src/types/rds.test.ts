@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest"
 import {
   type CreateDBInstanceFormData,
   canDelete,
+  canDeleteSnapshot,
   canReboot,
+  canRestoreSnapshot,
+  canSnapshot,
   canStart,
   canStop,
   applyMethodsFor,
@@ -12,10 +15,13 @@ import {
   createDBSubnetGroupSchema,
   dailyWindowLength,
   dbInstanceIdentifierField,
+  dbSnapshotIdentifierField,
   isDefaultParameterGroupName,
   isTransitionalStatus,
   masterPasswordField,
   modifyDBInstanceSchema,
+  restoreDBInstanceSchema,
+  suggestedIdentifier,
   weeklyWindowLength,
 } from "./rds"
 
@@ -430,5 +436,137 @@ describe("applyMethodsFor", () => {
       "immediate",
       "pending-reboot",
     ])
+  })
+})
+
+// Mirrors validateDBSnapshotIdentifier and validateDBSnapshotName in
+// handlers/rds/snapshot.go.
+describe("dbSnapshotIdentifierField", () => {
+  it.each(["orders-db-snapshot-20260817-1432", "nightly", "a1"])(
+    "accepts %s",
+    (name) => {
+      expect(dbSnapshotIdentifierField.safeParse(name).success).toBeTruthy()
+    },
+  )
+
+  it.each([
+    ["", "empty"],
+    ["1nightly", "opening on a digit"],
+    ["Nightly", "uppercase"],
+    ["nightly-", "a trailing hyphen"],
+    ["nightly--copy", "consecutive hyphens"],
+    ["nightly_copy", "an underscore"],
+  ])("rejects %s (%s)", (name) => {
+    expect(dbSnapshotIdentifierField.safeParse(name).success).toBeFalsy()
+  })
+
+  it("rejects the rds: namespace by name rather than by punctuation", () => {
+    const result = dbSnapshotIdentifierField.safeParse("rds:nightly")
+    expect(result.success).toBeFalsy()
+    expect(result.error?.issues[0]?.message).toContain("automated backups")
+  })
+})
+
+describe("restoreDBInstanceSchema", () => {
+  const VALID_RESTORE = {
+    snapshotAllocatedStorage: 20,
+    dbInstanceIdentifier: "orders-db-restored",
+    dbInstanceClass: "db.t3.micro",
+    allocatedStorage: 20,
+    port: "",
+    dbSubnetGroupName: "",
+    vpcSecurityGroupIds: [],
+    dbParameterGroupName: "",
+    deletionProtection: false,
+    tags: [],
+  }
+
+  it("accepts a restore onto the snapshot's own size", () => {
+    expect(
+      restoreDBInstanceSchema.safeParse(VALID_RESTORE).success,
+    ).toBeTruthy()
+  })
+
+  it("accepts a restore that grows the volume", () => {
+    const result = restoreDBInstanceSchema.safeParse({
+      ...VALID_RESTORE,
+      allocatedStorage: 40,
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  // CreateVolume refuses a size below the snapshot's, and a shrink has nowhere
+  // to put the data the snapshot already holds.
+  it("refuses to restore below the snapshot's size", () => {
+    const result = restoreDBInstanceSchema.safeParse({
+      ...VALID_RESTORE,
+      snapshotAllocatedStorage: 40,
+      allocatedStorage: 20,
+    })
+    expect(result.success).toBeFalsy()
+    expect(result.error?.issues[0]?.message).toContain("40 GiB")
+  })
+
+  it("applies the DB instance identifier rules to the new instance", () => {
+    const result = restoreDBInstanceSchema.safeParse({
+      ...VALID_RESTORE,
+      dbInstanceIdentifier: "Orders_Restored",
+    })
+    expect(result.success).toBeFalsy()
+  })
+
+  it("rejects a port outside the accepted range", () => {
+    const result = restoreDBInstanceSchema.safeParse({
+      ...VALID_RESTORE,
+      port: "80",
+    })
+    expect(result.success).toBeFalsy()
+  })
+})
+
+describe("snapshot action gating", () => {
+  it.each(["available", "stopped"])(
+    "allows a snapshot of a %s instance",
+    (status) => {
+      expect(canSnapshot(status)).toBeTruthy()
+    },
+  )
+
+  it.each(["creating", "backing-up", "modifying", "deleting", undefined])(
+    "refuses a snapshot of a %s instance",
+    (status) => {
+      expect(canSnapshot(status)).toBeFalsy()
+    },
+  )
+
+  it("restores only from an available snapshot", () => {
+    expect(canRestoreSnapshot("available")).toBeTruthy()
+    expect(canRestoreSnapshot("creating")).toBeFalsy()
+  })
+
+  // DeleteDBSnapshot rejects the rds: namespace outright, so an automated
+  // backup is never offered a delete however settled it is.
+  it("never deletes an automated backup", () => {
+    expect(canDeleteSnapshot("available", "manual")).toBeTruthy()
+    expect(canDeleteSnapshot("available", "automated")).toBeFalsy()
+    expect(canDeleteSnapshot("creating", "manual")).toBeFalsy()
+    expect(canDeleteSnapshot("available", undefined)).toBeTruthy()
+  })
+})
+
+describe("suggestedIdentifier", () => {
+  const AT = new Date("2026-08-17T14:32:00Z")
+
+  it("names the snapshot after the instance and the time", () => {
+    expect(suggestedIdentifier("orders-db", "snapshot", AT)).toBe(
+      "orders-db-snapshot-20260817-1432",
+    )
+  })
+
+  it("trims a long instance name and leaves no trailing hyphen", () => {
+    const long = `${"a".repeat(60)}-b`
+    const result = suggestedIdentifier(long, "restored", AT)
+    expect(result.length).toBeLessThanOrEqual(63)
+    expect(dbInstanceIdentifierField.safeParse(result).success).toBeTruthy()
   })
 })

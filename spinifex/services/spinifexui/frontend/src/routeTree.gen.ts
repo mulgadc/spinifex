@@ -99,6 +99,9 @@ import { Route as AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport } from '
 import { Route as AuthRdsdbInstancesDescribeDbInstancesIdRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/$id'
 import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/index'
 import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
+import { Route as AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/index'
+import { Route as AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/$id'
+import { Route as AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport } from './routes/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
 import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/index'
 import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
 import { Route as AuthS3LsBucketIndexRouteImport } from './routes/_auth/s3/ls/$bucket/index'
@@ -634,6 +637,24 @@ const AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute =
     path: '/rds/describe-db-parameter-groups/$name',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthRdssnapshotsDescribeDbSnapshotsIndexRoute =
+  AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport.update({
+    id: '/rds/(snapshots)/describe-db-snapshots/',
+    path: '/rds/describe-db-snapshots/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRdssnapshotsDescribeDbSnapshotsIdRoute =
+  AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport.update({
+    id: '/rds/(snapshots)/describe-db-snapshots/$id',
+    path: '/rds/describe-db-snapshots/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute =
+  AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport.update({
+    id: '/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id',
+    path: '/rds/restore-db-instance-from-db-snapshot/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute =
   AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport.update({
     id: '/rds/(subnet-groups)/describe-db-subnet-groups/',
@@ -733,6 +754,8 @@ export interface FileRoutesByFullPath {
   '/iam/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
   '/rds/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/rds/describe-db-parameter-groups/$name': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute
+  '/rds/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
+  '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/ec2/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -761,6 +784,7 @@ export interface FileRoutesByFullPath {
   '/iam/list-users/': typeof AuthIamusersListUsersIndexRoute
   '/rds/describe-db-instances/': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/rds/describe-db-parameter-groups/': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
+  '/rds/describe-db-snapshots/': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/rds/describe-db-subnet-groups/': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
   '/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
@@ -829,6 +853,8 @@ export interface FileRoutesByTo {
   '/iam/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
   '/rds/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/rds/describe-db-parameter-groups/$name': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute
+  '/rds/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
+  '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/ec2/describe-addresses': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -857,6 +883,7 @@ export interface FileRoutesByTo {
   '/iam/list-users': typeof AuthIamusersListUsersIndexRoute
   '/rds/describe-db-instances': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/rds/describe-db-parameter-groups': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
+  '/rds/describe-db-snapshots': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/rds/describe-db-subnet-groups': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketIndexRoute
   '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
@@ -928,6 +955,8 @@ export interface FileRoutesById {
   '/_auth/iam/(users)/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
   '/_auth/rds/(db-instances)/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute
+  '/_auth/rds/(snapshots)/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
+  '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/_auth/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/_auth/ec2/(elastic-ips)/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -956,6 +985,7 @@ export interface FileRoutesById {
   '/_auth/iam/(users)/list-users/': typeof AuthIamusersListUsersIndexRoute
   '/_auth/rds/(db-instances)/describe-db-instances/': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
+  '/_auth/rds/(snapshots)/describe-db-snapshots/': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
   '/_auth/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
@@ -1027,6 +1057,8 @@ export interface FileRouteTypes {
     | '/iam/list-users/$userName'
     | '/rds/describe-db-instances/$id'
     | '/rds/describe-db-parameter-groups/$name'
+    | '/rds/describe-db-snapshots/$id'
+    | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
     | '/s3/ls/$bucket/$'
     | '/ec2/describe-addresses/'
@@ -1055,6 +1087,7 @@ export interface FileRouteTypes {
     | '/iam/list-users/'
     | '/rds/describe-db-instances/'
     | '/rds/describe-db-parameter-groups/'
+    | '/rds/describe-db-snapshots/'
     | '/rds/describe-db-subnet-groups/'
     | '/s3/ls/$bucket/'
     | '/ecs/list-clusters/$clusterName/services/$serviceName'
@@ -1123,6 +1156,8 @@ export interface FileRouteTypes {
     | '/iam/list-users/$userName'
     | '/rds/describe-db-instances/$id'
     | '/rds/describe-db-parameter-groups/$name'
+    | '/rds/describe-db-snapshots/$id'
+    | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
     | '/s3/ls/$bucket/$'
     | '/ec2/describe-addresses'
@@ -1151,6 +1186,7 @@ export interface FileRouteTypes {
     | '/iam/list-users'
     | '/rds/describe-db-instances'
     | '/rds/describe-db-parameter-groups'
+    | '/rds/describe-db-snapshots'
     | '/rds/describe-db-subnet-groups'
     | '/s3/ls/$bucket'
     | '/ecs/list-clusters/$clusterName/services/$serviceName'
@@ -1221,6 +1257,8 @@ export interface FileRouteTypes {
     | '/_auth/iam/(users)/list-users/$userName'
     | '/_auth/rds/(db-instances)/describe-db-instances/$id'
     | '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
+    | '/_auth/rds/(snapshots)/describe-db-snapshots/$id'
+    | '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
     | '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
     | '/_auth/s3/ls/$bucket/$'
     | '/_auth/ec2/(elastic-ips)/describe-addresses/'
@@ -1249,6 +1287,7 @@ export interface FileRouteTypes {
     | '/_auth/iam/(users)/list-users/'
     | '/_auth/rds/(db-instances)/describe-db-instances/'
     | '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/'
+    | '/_auth/rds/(snapshots)/describe-db-snapshots/'
     | '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/'
     | '/_auth/s3/ls/$bucket/'
     | '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
@@ -1892,6 +1931,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/rds/(snapshots)/describe-db-snapshots/': {
+      id: '/_auth/rds/(snapshots)/describe-db-snapshots/'
+      path: '/rds/describe-db-snapshots'
+      fullPath: '/rds/describe-db-snapshots/'
+      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(snapshots)/describe-db-snapshots/$id': {
+      id: '/_auth/rds/(snapshots)/describe-db-snapshots/$id'
+      path: '/rds/describe-db-snapshots/$id'
+      fullPath: '/rds/describe-db-snapshots/$id'
+      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': {
+      id: '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
+      path: '/rds/restore-db-instance-from-db-snapshot/$id'
+      fullPath: '/rds/restore-db-instance-from-db-snapshot/$id'
+      preLoaderRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/': {
       id: '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/'
       path: '/rds/describe-db-subnet-groups'
@@ -2013,6 +2073,8 @@ interface AuthRouteRouteChildren {
   AuthIamusersListUsersUserNameRoute: typeof AuthIamusersListUsersUserNameRoute
   AuthRdsdbInstancesDescribeDbInstancesIdRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute
+  AuthRdssnapshotsDescribeDbSnapshotsIdRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
+  AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   AuthEc2elasticIpsDescribeAddressesIndexRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   AuthEc2imagesDescribeImagesIndexRoute: typeof AuthEc2imagesDescribeImagesIndexRoute
@@ -2040,6 +2102,7 @@ interface AuthRouteRouteChildren {
   AuthIamusersListUsersIndexRoute: typeof AuthIamusersListUsersIndexRoute
   AuthRdsdbInstancesDescribeDbInstancesIndexRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
+  AuthRdssnapshotsDescribeDbSnapshotsIndexRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   AuthEcsclustersListClustersClusterNameTasksTaskIdRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
@@ -2139,6 +2202,10 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdsdbInstancesDescribeDbInstancesIdRoute,
   AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute:
     AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute,
+  AuthRdssnapshotsDescribeDbSnapshotsIdRoute:
+    AuthRdssnapshotsDescribeDbSnapshotsIdRoute,
+  AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute:
+    AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute,
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute:
     AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute,
   AuthEc2elasticIpsDescribeAddressesIndexRoute:
@@ -2184,6 +2251,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdsdbInstancesDescribeDbInstancesIndexRoute,
   AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute:
     AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute,
+  AuthRdssnapshotsDescribeDbSnapshotsIndexRoute:
+    AuthRdssnapshotsDescribeDbSnapshotsIndexRoute,
   AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute:
     AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute,
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute:

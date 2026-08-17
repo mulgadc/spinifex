@@ -24,6 +24,15 @@ export function RdsSectionNav() {
         activeProps={ACTIVE}
         className={BASE}
         inactiveProps={INACTIVE}
+        to="/rds/describe-db-snapshots"
+      >
+        Snapshots
+      </Link>
+      <Link
+        activeOptions={{ exact: false }}
+        activeProps={ACTIVE}
+        className={BASE}
+        inactiveProps={INACTIVE}
         to="/rds/describe-db-subnet-groups"
       >
         Subnet groups

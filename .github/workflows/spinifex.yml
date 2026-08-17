@@ -80,7 +80,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -90,7 +90,7 @@ jobs:
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
       - name: Cache Go build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -126,7 +126,7 @@ jobs:
         run: make -C spinifex test-cover GOTESTFLAGS=-count=1
 
       - name: Run Action Tests
-        run: make -C spinifex test-actions
+        run: make -C spinifex test-actions GOTESTFLAGS=-count=1
 
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
@@ -195,7 +195,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -205,7 +205,7 @@ jobs:
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
       - name: Cache Go build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -275,7 +275,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -285,7 +285,7 @@ jobs:
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
       - name: Cache Go build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -355,7 +355,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -365,7 +365,7 @@ jobs:
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
       - name: Cache Go build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}

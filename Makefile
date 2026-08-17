@@ -243,7 +243,7 @@ test-race:
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
 test-actions:
 	@echo -e "\n....Running action tests...."
-	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
+	LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 60s ./.github/actions/...
 
 # Shell suites + shellcheck for scripts/images/ and images/mkosi.profiles/
 # helpers baked into system images. Kept out of `preflight` (a dedicated CI

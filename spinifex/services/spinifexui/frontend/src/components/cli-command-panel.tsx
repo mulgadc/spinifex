@@ -30,6 +30,12 @@ const partStyles: Record<CommandPartType, string> = {
   variable: "text-tactical-green font-semibold",
 }
 
+// Stands in for a value the form has not been given yet, so the panel shows the
+// shape of the command rather than one missing a flag's argument.
+export function cliPlaceholder(value: string, name: string): string {
+  return value.length > 0 ? value : `<${name}>`
+}
+
 export function partsToText(commands: CliCommand[]): string {
   return commands
     .map((cmd) => cmd.parts.map((p) => p.value).join(""))

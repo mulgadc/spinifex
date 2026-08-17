@@ -1,4 +1,3 @@
-import type { SecurityGroup } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import {
   useQuery,
@@ -13,6 +12,7 @@ import { Controller, useForm, useWatch } from "react-hook-form"
 import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
+  cliPlaceholder,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { DetailCard } from "@/components/detail-card"
@@ -37,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
+import { securityGroupLabel } from "@/lib/utils"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -55,6 +56,8 @@ import {
   restoreDBInstanceSchema,
   suggestedIdentifier,
 } from "@/types/rds"
+
+import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
 
 interface Props {
   dbSnapshotIdentifier: string
@@ -80,10 +83,6 @@ const INHERITED_FIELDS: { label: string; note: string }[] = [
     note: "The restored instance takes the platform defaults; change them with a modify afterwards.",
   },
 ]
-
-function securityGroupLabel(group: SecurityGroup): string {
-  return `${group.GroupId} (${group.GroupName})`
-}
 
 export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const navigate = useNavigate()
@@ -112,9 +111,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const engine = snapshot?.Engine ?? ""
   const snapshotStorage = snapshot?.AllocatedStorage ?? 0
 
-  const { data: orderableData } = useQuery(
-    rdsOrderableOptionsQueryOptions(engine),
-  )
+  const orderableQuery = useQuery(rdsOrderableOptionsQueryOptions(engine))
 
   const {
     control,
@@ -220,12 +217,21 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     )
   }
 
-  const orderableOptions = orderableData?.OrderableDBInstanceOptions ?? []
+  const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
   const instanceClasses = [
     ...new Set(
       orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
     ),
   ]
+  const classNotice = pickerNotice(
+    orderableQuery,
+    instanceClasses.length === 0,
+    {
+      loading: "Loading the instance classes…",
+      failed: "Could not read the instance classes",
+      empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
+    },
+  )
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
   const engineFamilies = new Set(
@@ -304,11 +310,8 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             <FieldTitle>
               <label htmlFor="restore-class">DB instance class</label>
             </FieldTitle>
-            {instanceClasses.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No instance class this cluster&apos;s nodes can run is available
-                for {engine}.
-              </p>
+            {classNotice ? (
+              <PickerNoticeText notice={classNotice} />
             ) : (
               <Controller
                 control={control}
@@ -578,10 +581,6 @@ type CliValues = Omit<
   "snapshotAllocatedStorage" | "tags"
 >
 
-function placeholder(value: string, name: string): string {
-  return value.length > 0 ? value : `<${name}>`
-}
-
 function buildRestoreCommands(
   dbSnapshotIdentifier: string,
   values: CliValues,
@@ -597,12 +596,12 @@ function buildRestoreCommands(
     { type: "flag", value: " --db-instance-identifier" },
     {
       type: "value",
-      value: ` ${placeholder(values.dbInstanceIdentifier, "DBInstanceIdentifier")}`,
+      value: ` ${cliPlaceholder(values.dbInstanceIdentifier, "DBInstanceIdentifier")}`,
     },
     { type: "flag", value: " --db-instance-class" },
     {
       type: "value",
-      value: ` ${placeholder(values.dbInstanceClass, "DBInstanceClass")}`,
+      value: ` ${cliPlaceholder(values.dbInstanceClass, "DBInstanceClass")}`,
     },
     { type: "flag", value: " --allocated-storage" },
     { type: "value", value: ` ${values.allocatedStorage}` },

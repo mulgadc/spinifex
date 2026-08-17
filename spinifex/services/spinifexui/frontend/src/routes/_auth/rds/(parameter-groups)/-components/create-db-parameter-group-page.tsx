@@ -7,6 +7,7 @@ import { Controller, useForm, useWatch } from "react-hook-form"
 import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
+  cliPlaceholder,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -229,12 +230,6 @@ export function CreateDBParameterGroupPage() {
   )
 }
 
-// An empty field reads as the parameter's name in angle brackets, so the
-// command stays copyable and obviously incomplete rather than malformed.
-function placeholder(value: string, name: string): string {
-  return value.length > 0 ? value : `<${name}>`
-}
-
 interface ParameterGroupCliValues {
   dbParameterGroupName: string
   dbParameterGroupFamily: string
@@ -255,17 +250,17 @@ function buildCreateParameterGroupCommands(
         { type: "flag", value: " --db-parameter-group-name" },
         {
           type: "value",
-          value: ` ${placeholder(values.dbParameterGroupName, "DBParameterGroupName")}`,
+          value: ` ${cliPlaceholder(values.dbParameterGroupName, "DBParameterGroupName")}`,
         },
         { type: "flag", value: " --db-parameter-group-family" },
         {
           type: "value",
-          value: ` ${placeholder(values.dbParameterGroupFamily, "DBParameterGroupFamily")}`,
+          value: ` ${cliPlaceholder(values.dbParameterGroupFamily, "DBParameterGroupFamily")}`,
         },
         { type: "flag", value: " --description" },
         {
           type: "value",
-          value: ` "${placeholder(values.description, "Description")}"`,
+          value: ` "${cliPlaceholder(values.description, "Description")}"`,
         },
       ],
     },

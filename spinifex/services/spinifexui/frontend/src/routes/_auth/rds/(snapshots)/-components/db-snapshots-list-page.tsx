@@ -5,6 +5,7 @@ import { useState } from "react"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { formatDateTime } from "@/lib/utils"
 import { rdsDBSnapshotsQueryOptions } from "@/queries/rds"
 import {
   canDeleteSnapshot,
@@ -22,10 +23,6 @@ const TYPE_FILTERS = [
   { value: SNAPSHOT_TYPE_MANUAL, label: "Manual" },
   { value: SNAPSHOT_TYPE_AUTOMATED, label: "Automated" },
 ] as const
-
-function formatTime(value: Date | undefined): string {
-  return value?.toISOString() ?? "—"
-}
 
 export function DBSnapshotsListPage() {
   const navigate = useNavigate()
@@ -125,7 +122,7 @@ export function DBSnapshotsListPage() {
                       <StateBadge state={snapshot.Status} />
                     </td>
                     <td className="px-4 py-2 font-mono text-xs">
-                      {formatTime(snapshot.SnapshotCreateTime)}
+                      {formatDateTime(snapshot.SnapshotCreateTime)}
                     </td>
                     <td className="space-x-2 px-4 py-2 text-right">
                       <Button

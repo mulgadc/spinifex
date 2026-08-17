@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query"
 import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+import { formatDateTime } from "@/lib/utils"
 import {
   createTestQueryClient,
   renderWithClient,
@@ -89,7 +90,6 @@ function seed(options: SeedOptions = {}): QueryClient {
     Events: options.events ?? [],
   })
   qc.setQueryData(["rds", "tags", ARN], { TagList: options.tags ?? [] })
-  qc.setQueryData(["rds", "tags", ""], { TagList: [] })
   return qc
 }
 
@@ -182,7 +182,9 @@ describe("DBSnapshotDetailPage", () => {
     )
     openTab("Events")
     expect(screen.getByText(/crash consistent/)).toBeInTheDocument()
-    expect(screen.getByText("2026-08-17T14:32:10.000Z")).toBeInTheDocument()
+    expect(
+      screen.getByText(formatDateTime(new Date("2026-08-17T14:32:10Z"))),
+    ).toBeInTheDocument()
   })
 
   it("renders the tags the describe returned", () => {

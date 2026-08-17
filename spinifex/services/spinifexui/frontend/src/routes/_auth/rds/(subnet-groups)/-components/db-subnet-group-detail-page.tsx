@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -28,7 +28,9 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
   const group = data.DBSubnetGroups?.[0]
   const arn = group?.DBSubnetGroupArn ?? ""
 
-  const { data: tagsData } = useSuspenseQuery(rdsTagsQueryOptions(arn))
+  // Not suspense: the ARN is empty for a resource that has none, and an empty
+  // one is a request the tags API refuses.
+  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
   const updateTags = useUpdateRdsTags()
   const [showDelete, setShowDelete] = useState(false)
   const [activeTab, setActiveTab] = useState("subnets")

@@ -35,6 +35,8 @@ import {
   suggestedIdentifier,
 } from "@/types/rds"
 
+import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+
 interface CreateDBSnapshotDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -53,7 +55,7 @@ export function CreateDBSnapshotDialog({
   const createSnapshot = useCreateDBSnapshot()
   // Only the picker needs the list, so a dialog opened from an instance does
   // not fetch it at all.
-  const { data: instancesData } = useQuery({
+  const instancesQuery = useQuery({
     ...rdsDBInstancesQueryOptions,
     enabled: dbInstanceIdentifier === undefined,
   })
@@ -63,9 +65,15 @@ export function CreateDBSnapshotDialog({
 
   // A snapshot is refused from anything but a settled instance, so an instance
   // mid-transition is not offered rather than offered and then refused.
-  const instances = (instancesData?.DBInstances ?? []).filter((instance) =>
-    canSnapshot(instance.DBInstanceStatus),
+  const instances = (instancesQuery.data?.DBInstances ?? []).filter(
+    (instance) => canSnapshot(instance.DBInstanceStatus),
   )
+  const instanceNotice = pickerNotice(instancesQuery, instances.length === 0, {
+    loading: "Loading the DB instances…",
+    failed: "Could not read the DB instances",
+    empty:
+      "No DB instance is available or stopped, which is what a snapshot is taken from.",
+  })
 
   const {
     control,
@@ -145,11 +153,8 @@ export function CreateDBSnapshotDialog({
               <FieldTitle>
                 <label htmlFor="snapshot-instance">DB instance</label>
               </FieldTitle>
-              {instances.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No DB instance is available or stopped, which is what a
-                  snapshot is taken from.
-                </p>
+              {instanceNotice ? (
+                <PickerNoticeText notice={instanceNotice} />
               ) : (
                 <Select
                   onValueChange={handleInstanceChange}

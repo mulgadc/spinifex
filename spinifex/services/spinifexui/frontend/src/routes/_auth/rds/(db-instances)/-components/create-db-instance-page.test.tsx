@@ -128,7 +128,16 @@ describe("CreateDBInstancePage system image gating", () => {
   it("defaults to an engine that can actually boot", () => {
     renderWithClient(<CreateDBInstancePage />, seed([image("mariadb")]))
     expect(screen.getByLabelText("Engine")).toHaveTextContent("mariadb")
-    expect(screen.queryByText(/image not found/)).toBeNull()
+    expect(screen.queryByLabelText("DB instance identifier")).not.toBeNull()
+  })
+
+  it("carries the import command for the engine that has no image", () => {
+    renderWithClient(<CreateDBInstancePage />, seed([image("postgres")]))
+    expect(screen.getByText("mariadb image not found")).toBeInTheDocument()
+    expect(
+      screen.getByText(/spx admin images import.*mariadb/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText("postgres image not found")).toBeNull()
   })
 
   it("replaces the form when no engine image is imported", () => {

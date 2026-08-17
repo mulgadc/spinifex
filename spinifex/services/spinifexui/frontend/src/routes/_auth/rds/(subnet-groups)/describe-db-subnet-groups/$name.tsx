@@ -15,7 +15,9 @@ export const Route = createFileRoute(
       rdsSubnetGroupQueryOptions(name),
     )
     const arn = group.DBSubnetGroups?.[0]?.DBSubnetGroupArn ?? ""
-    await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    if (arn !== "") {
+      await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    }
   },
   head: ({ params }) => ({
     meta: [

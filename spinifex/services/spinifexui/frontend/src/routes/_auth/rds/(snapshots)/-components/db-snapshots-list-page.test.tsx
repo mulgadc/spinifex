@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+import { formatDateTime } from "@/lib/utils"
 import {
   createTestQueryClient,
   renderWithClient,
@@ -100,7 +101,9 @@ describe("DBSnapshotsListPage", () => {
     )
     expect(screen.getByText("postgres 18")).toBeInTheDocument()
     expect(screen.getByText("20 GiB")).toBeInTheDocument()
-    expect(screen.getByText("2026-08-17T14:32:00.000Z")).toBeInTheDocument()
+    expect(
+      screen.getByText(formatDateTime(new Date("2026-08-17T14:32:00Z"))),
+    ).toBeInTheDocument()
   })
 
   it("explains the fallback when no snapshot exists", () => {

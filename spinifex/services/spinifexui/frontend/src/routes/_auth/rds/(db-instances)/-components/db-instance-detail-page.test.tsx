@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query"
 import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+import { formatDateTime } from "@/lib/utils"
 import {
   createTestQueryClient,
   renderWithClient,
@@ -68,9 +69,24 @@ const BACKUP_CREATED_EVENT = {
   Date: new Date("2026-08-15T03:02:00Z"),
   SourceIdentifier: "orders-db",
   SourceType: "db-instance",
-  EventCategories: ["backup", "creation"],
-  Message: "DB snapshot created.",
+  EventCategories: ["backup", "configuration-change"],
+  Message: "The backup window moved.",
 }
+
+const AUTOMATED_SNAPSHOTS = [
+  {
+    DBSnapshotIdentifier: "rds:orders-db-2026-08-14-03-02",
+    SnapshotType: "automated",
+    Status: "available",
+    SnapshotCreateTime: new Date("2026-08-14T03:02:00Z"),
+  },
+  {
+    DBSnapshotIdentifier: "rds:orders-db-2026-08-15-03-02",
+    SnapshotType: "automated",
+    Status: "available",
+    SnapshotCreateTime: new Date("2026-08-15T03:02:00Z"),
+  },
+]
 
 interface SeedOptions {
   instances?: unknown[]
@@ -95,7 +111,6 @@ function seed(options: SeedOptions = {}): QueryClient {
     DBInstanceAutomatedBackups: options.automatedBackups ?? [],
   })
   qc.setQueryData(["rds", "tags", ARN], { TagList: options.tags ?? [] })
-  qc.setQueryData(["rds", "tags", ""], { TagList: [] })
   qc.setQueryData(["rds", "parameterGroups"], { DBParameterGroups: [] })
   qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
   qc.setQueryData(["rds", "orderableOptions", "postgres"], {
@@ -222,15 +237,26 @@ describe("DBInstanceDetailPage", () => {
     expect(alert).toHaveTextContent("volume busy")
   })
 
-  it("dates the last backup from the creation event", () => {
+  it("dates the last backup from the newest automated snapshot", () => {
     renderWithClient(
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
-      seed({ events: [BACKUP_CREATED_EVENT] }),
+      seed({ snapshots: AUTOMATED_SNAPSHOTS }),
     )
     openTab("Backups")
     expect(screen.queryByRole("alert")).toBeNull()
-    expect(screen.getByText("2026-08-15T03:02:00.000Z")).toBeInTheDocument()
+    expect(screen.getByText("Last backup").parentElement).toHaveTextContent(
+      formatDateTime(new Date("2026-08-15T03:02:00Z")),
+    )
     expect(screen.getByText("7 days")).toBeInTheDocument()
+  })
+
+  it("leaves the last backup blank when only manual snapshots exist", () => {
+    renderWithClient(
+      <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
+      seed({ snapshots: [SNAPSHOT] }),
+    )
+    openTab("Backups")
+    expect(screen.getByText("Last backup").parentElement).toHaveTextContent("—")
   })
 
   it("reads a zero retention as backups being off", () => {
@@ -260,9 +286,9 @@ describe("DBInstanceDetailPage", () => {
     )
     openTab("Events")
     const times = screen
-      .getAllByText(/^2026-08-\d{2}T/)
+      .getAllByText(/^August \d+, 2026/)
       .map((cell) => cell.textContent)
-    expect(times[0]).toBe("2026-08-16T03:05:00.000Z")
+    expect(times[0]).toBe(formatDateTime(new Date("2026-08-16T03:05:00Z")))
   })
 
   it("enables only the lifecycle actions the status permits", () => {

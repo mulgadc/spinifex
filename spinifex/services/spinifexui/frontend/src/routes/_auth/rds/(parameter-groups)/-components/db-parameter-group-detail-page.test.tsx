@@ -55,7 +55,6 @@ function seed(name: string, group: unknown) {
   })
   qc.setQueryData(["rds", "parameters", name], { Parameters: PARAMETERS })
   qc.setQueryData(["rds", "tags", `arn:${name}`], { TagList: [] })
-  qc.setQueryData(["rds", "tags", ""], { TagList: [] })
   return qc
 }
 

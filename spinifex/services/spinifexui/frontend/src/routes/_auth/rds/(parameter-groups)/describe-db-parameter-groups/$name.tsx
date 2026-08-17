@@ -24,7 +24,9 @@ export const Route = createFileRoute(
     const arn = isDefaultParameterGroupName(name)
       ? ""
       : (group.DBParameterGroups?.[0]?.DBParameterGroupArn ?? "")
-    await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    if (arn !== "") {
+      await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    }
   },
   head: ({ params }) => ({
     meta: [

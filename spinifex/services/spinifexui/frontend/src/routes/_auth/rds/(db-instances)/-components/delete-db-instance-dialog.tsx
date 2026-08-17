@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useDeleteDBInstance } from "@/mutations/rds"
-import { dbInstanceIdentifierField, suggestedIdentifier } from "@/types/rds"
+import { dbSnapshotIdentifierField, suggestedIdentifier } from "@/types/rds"
 
 export function defaultFinalSnapshotIdentifier(
   dbInstanceIdentifier: string,
@@ -64,7 +64,7 @@ export function DeleteDBInstanceDialog({
 
   const snapshotNameError = skipFinalSnapshot
     ? undefined
-    : dbInstanceIdentifierField.safeParse(snapshotIdentifier).error?.issues[0]
+    : dbSnapshotIdentifierField.safeParse(snapshotIdentifier).error?.issues[0]
         ?.message
 
   const confirmationMissing =

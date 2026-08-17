@@ -1,5 +1,5 @@
 import type { DBInstance, Event } from "@aws-sdk/client-rds"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Camera, Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -17,6 +17,7 @@ import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
+import { formatDateTime } from "@/lib/utils"
 import {
   useRebootDBInstance,
   useStartDBInstance,
@@ -38,10 +39,12 @@ import {
   canSnapshot,
   canStart,
   canStop,
+  SNAPSHOT_TYPE_AUTOMATED,
 } from "@/types/rds"
 
 import { CreateDBSnapshotDialog } from "../../(snapshots)/-components/create-db-snapshot-dialog"
 import { DeleteDBSnapshotDialog } from "../../(snapshots)/-components/delete-db-snapshot-dialog"
+import { RdsEventsPanel } from "../../-components/rds-events-panel"
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
 import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
 
@@ -61,10 +64,6 @@ function latestEvent(
     .filter(predicate)
     .toSorted((a, b) => (a.Date?.getTime() ?? 0) - (b.Date?.getTime() ?? 0))
     .at(-1)
-}
-
-function formatTime(value: Date | undefined): string | undefined {
-  return value?.toISOString()
 }
 
 // The connection command for the engine, ready to paste. TLS is enforced on
@@ -118,7 +117,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const instance = instanceData.DBInstances?.[0]
   const arn = instance?.DBInstanceArn ?? ""
 
-  const { data: tagsData } = useSuspenseQuery(rdsTagsQueryOptions(arn))
+  // Not suspense: the ARN is empty until the describe lands, and an empty one
+  // is a request the tags API refuses.
+  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
   const { data: eventsData } = useSuspenseQuery(
     rdsEventsQueryOptions(dbInstanceIdentifier),
   )
@@ -162,10 +163,6 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
     events,
     (event) => hasCategory(event, "backup") && hasCategory(event, "failure"),
   )
-  const lastBackup = latestEvent(
-    events,
-    (event) => hasCategory(event, "backup") && hasCategory(event, "creation"),
-  )
   // A quiesce that could not be taken or released is recorded as a backup
   // notification. It is the only signal that a snapshot is crash consistent,
   // since the record's flag is never projected onto the snapshot.
@@ -175,6 +172,16 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
       hasCategory(event, "backup") && hasCategory(event, "notification"),
   )
   const snapshots = snapshotsData.DBSnapshots ?? []
+  // The success of an automated backup is only ever evented on the snapshot's
+  // own ring, so the newest automated snapshot is the instance-side answer.
+  const lastBackup = snapshots
+    .filter((s) => s.SnapshotType === SNAPSHOT_TYPE_AUTOMATED)
+    .toSorted(
+      (a, b) =>
+        (a.SnapshotCreateTime?.getTime() ?? 0) -
+        (b.SnapshotCreateTime?.getTime() ?? 0),
+    )
+    .at(-1)
   const automatedBackup = automatedBackupsData.DBInstanceAutomatedBackups?.[0]
   const pending = instance.PendingModifiedValues
   const hasPending =
@@ -362,7 +369,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                   />
                   <DetailRow
                     label="Created"
-                    value={formatTime(instance.InstanceCreateTime)}
+                    value={formatDateTime(instance.InstanceCreateTime)}
                   />
                 </DetailCard.Content>
               </DetailCard>
@@ -399,7 +406,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                   <p className="font-medium">An automated backup failed</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {lastBackupFailure.Message} (
-                    {formatTime(lastBackupFailure.Date)})
+                    {formatDateTime(lastBackupFailure.Date)})
                   </p>
                 </div>
               )}
@@ -412,7 +419,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                   <p className="font-medium">A backup raised a warning</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {lastBackupWarning.Message} (
-                    {formatTime(lastBackupWarning.Date)})
+                    {formatDateTime(lastBackupWarning.Date)})
                   </p>
                 </div>
               )}
@@ -445,7 +452,10 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                   />
                   <DetailRow
                     label="Last backup"
-                    value={formatTime(lastBackup?.Date)}
+                    value={
+                      lastBackup?.SnapshotCreateTime &&
+                      formatDateTime(lastBackup.SnapshotCreateTime)
+                    }
                   />
                 </DetailCard.Content>
               </DetailCard>
@@ -493,7 +503,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                                 <StateBadge state={snapshot.Status} />
                               </td>
                               <td className="px-4 py-2 font-mono text-xs">
-                                {formatTime(snapshot.SnapshotCreateTime)}
+                                {formatDateTime(snapshot.SnapshotCreateTime)}
                               </td>
                               <td className="space-x-2 px-4 py-2 text-right">
                                 <Button
@@ -567,59 +577,28 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
           </TabsPanel>
 
           <TabsPanel value="events">
-            {events.length > 0 ? (
-              <div className="overflow-x-auto rounded-lg border bg-card">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left text-muted-foreground">
-                      <th className="px-4 py-2 font-medium">Time</th>
-                      <th className="px-4 py-2 font-medium">Categories</th>
-                      <th className="px-4 py-2 font-medium">Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {events
-                      .toSorted(
-                        (a, b) =>
-                          (b.Date?.getTime() ?? 0) - (a.Date?.getTime() ?? 0),
-                      )
-                      .map((event) => (
-                        <tr
-                          className="border-b last:border-0"
-                          key={`${event.Date?.toISOString()}-${event.Message}`}
-                        >
-                          <td className="px-4 py-2 font-mono text-xs">
-                            {formatTime(event.Date)}
-                          </td>
-                          <td className="px-4 py-2 text-xs">
-                            {event.EventCategories?.join(", ")}
-                          </td>
-                          <td className="px-4 py-2">{event.Message}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="text-muted-foreground">
-                No events in the last 14 days.
-              </p>
-            )}
+            <RdsEventsPanel events={events} />
           </TabsPanel>
         </Tabs>
       </div>
 
-      <ModifyDBInstanceDialog
-        instance={instance}
-        onOpenChange={setShowModify}
-        open={showModify}
-      />
+      {/* Mounted per open so each form re-seeds from the current record; a
+          dialog left mounted keeps the values it captured the first time. */}
+      {showModify && (
+        <ModifyDBInstanceDialog
+          instance={instance}
+          onOpenChange={setShowModify}
+          open={true}
+        />
+      )}
 
-      <CreateDBSnapshotDialog
-        dbInstanceIdentifier={dbInstanceIdentifier}
-        onOpenChange={setShowSnapshot}
-        open={showSnapshot}
-      />
+      {showSnapshot && (
+        <CreateDBSnapshotDialog
+          dbInstanceIdentifier={dbInstanceIdentifier}
+          onOpenChange={setShowSnapshot}
+          open={true}
+        />
+      )}
 
       {deleteSnapshotTarget && (
         <DeleteDBSnapshotDialog

@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -39,7 +39,9 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
   const { data: parametersData } = useSuspenseQuery(
     rdsParametersQueryOptions(dbParameterGroupName),
   )
-  const { data: tagsData } = useSuspenseQuery(rdsTagsQueryOptions(arn))
+  // Not suspense: the ARN is empty for a resource that has none, and an empty
+  // one is a request the tags API refuses.
+  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
 
   const updateTags = useUpdateRdsTags()
   const [showDelete, setShowDelete] = useState(false)

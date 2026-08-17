@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -11,6 +11,7 @@ import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
+import { formatDateTime } from "@/lib/utils"
 import { useUpdateRdsTags } from "@/mutations/rds"
 import {
   rdsDBSnapshotQueryOptions,
@@ -23,14 +24,11 @@ import {
   SNAPSHOT_TYPE_AUTOMATED,
 } from "@/types/rds"
 
+import { RdsEventsPanel } from "../../-components/rds-events-panel"
 import { DeleteDBSnapshotDialog } from "./delete-db-snapshot-dialog"
 
 interface Props {
   dbSnapshotIdentifier: string
-}
-
-function formatTime(value: Date | undefined): string | undefined {
-  return value?.toISOString()
 }
 
 export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
@@ -41,7 +39,9 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
   const snapshot = snapshotData.DBSnapshots?.[0]
   const arn = snapshot?.DBSnapshotArn ?? ""
 
-  const { data: tagsData } = useSuspenseQuery(rdsTagsQueryOptions(arn))
+  // Not suspense: the ARN is empty until the describe lands, and an empty one
+  // is a request the tags API refuses.
+  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
   const { data: eventsData } = useSuspenseQuery(
     rdsSnapshotEventsQueryOptions(dbSnapshotIdentifier),
   )
@@ -128,7 +128,7 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
                   <DetailRow label="Status" value={status} />
                   <DetailRow
                     label="Created"
-                    value={formatTime(snapshot.SnapshotCreateTime)}
+                    value={formatDateTime(snapshot.SnapshotCreateTime)}
                   />
                   <DetailRow
                     label="Progress"
@@ -217,44 +217,7 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
           </TabsPanel>
 
           <TabsPanel value="events">
-            {events.length > 0 ? (
-              <div className="overflow-x-auto rounded-lg border bg-card">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left text-muted-foreground">
-                      <th className="px-4 py-2 font-medium">Time</th>
-                      <th className="px-4 py-2 font-medium">Categories</th>
-                      <th className="px-4 py-2 font-medium">Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {events
-                      .toSorted(
-                        (a, b) =>
-                          (b.Date?.getTime() ?? 0) - (a.Date?.getTime() ?? 0),
-                      )
-                      .map((event) => (
-                        <tr
-                          className="border-b last:border-0"
-                          key={`${event.Date?.toISOString()}-${event.Message}`}
-                        >
-                          <td className="px-4 py-2 font-mono text-xs">
-                            {formatTime(event.Date)}
-                          </td>
-                          <td className="px-4 py-2 text-xs">
-                            {event.EventCategories?.join(", ")}
-                          </td>
-                          <td className="px-4 py-2">{event.Message}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="text-muted-foreground">
-                No events in the last 14 days.
-              </p>
-            )}
+            <RdsEventsPanel events={events} />
           </TabsPanel>
         </Tabs>
       </div>

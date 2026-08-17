@@ -1,6 +1,6 @@
 import type { DBInstance } from "@aws-sdk/client-rds"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import {
@@ -25,9 +25,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { securityGroupLabel } from "@/lib/utils"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
+  rdsEngineVersionsQueryOptions,
   rdsOrderableOptionsQueryOptions,
   rdsParameterGroupsQueryOptions,
 } from "@/queries/rds"
@@ -36,6 +38,8 @@ import {
   MAX_BACKUP_RETENTION_DAYS,
   modifyDBInstanceSchema,
 } from "@/types/rds"
+
+import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
 
 // ModifyDBInstance refuses these outright, and they are the ones users reach
 // for first, so they are shown read-only rather than left unexplained.
@@ -70,13 +74,10 @@ export function ModifyDBInstanceDialog({
   instance,
 }: ModifyDBInstanceDialogProps) {
   const modifyInstance = useModifyDBInstance()
-  const { data: parameterGroupsData } = useSuspenseQuery(
-    rdsParameterGroupsQueryOptions,
-  )
-  const { data: securityGroupsData } = useSuspenseQuery(
-    ec2SecurityGroupsQueryOptions,
-  )
-  const { data: orderableData } = useQuery(
+  const parameterGroupsQuery = useQuery(rdsParameterGroupsQueryOptions)
+  const securityGroupsQuery = useQuery(ec2SecurityGroupsQueryOptions)
+  const engineVersionsQuery = useQuery(rdsEngineVersionsQueryOptions)
+  const orderableQuery = useQuery(
     rdsOrderableOptionsQueryOptions(instance.Engine ?? ""),
   )
 
@@ -118,18 +119,58 @@ export function ModifyDBInstanceDialog({
 
   const instanceClasses = [
     ...new Set(
-      (orderableData?.OrderableDBInstanceOptions ?? [])
+      (orderableQuery.data?.OrderableDBInstanceOptions ?? [])
         .map((o) => o.DBInstanceClass ?? "")
         .filter(Boolean),
     ),
   ]
-  const parameterGroups = (parameterGroupsData.DBParameterGroups ?? []).filter(
-    (g) => g.DBParameterGroupFamily !== undefined,
+  // Only a group of the instance's own engine family can be attached, so one
+  // for the other engine is filtered out rather than offered and then refused.
+  const engineFamilies = new Set(
+    (engineVersionsQuery.data?.DBEngineVersions ?? [])
+      .filter((v) => v.Engine === instance.Engine)
+      .map((v) => v.DBParameterGroupFamily),
   )
-  const securityGroups = securityGroupsData.SecurityGroups ?? []
+  const parameterGroups = (
+    parameterGroupsQuery.data?.DBParameterGroups ?? []
+  ).filter((g) => engineFamilies.has(g.DBParameterGroupFamily))
+  // The instance's ENI is already placed, so a group from another VPC cannot be
+  // attached to it.
+  const instanceVpc = instance.DBSubnetGroup?.VpcId
+  const securityGroups = (
+    securityGroupsQuery.data?.SecurityGroups ?? []
+  ).filter((g) => instanceVpc === undefined || g.VpcId === instanceVpc)
 
   const classChanged = selectedClass !== instance.DBInstanceClass
   const storageChanged = selectedStorage !== currentStorage
+
+  const classNotice = pickerNotice(
+    orderableQuery,
+    instanceClasses.length === 0,
+    {
+      loading: "Loading the instance classes…",
+      failed: "Could not read the instance classes",
+      empty: `No instance class this cluster's nodes can run is available for ${instance.Engine}.`,
+    },
+  )
+  const parameterGroupNotice = pickerNotice(
+    parameterGroupsQuery,
+    parameterGroups.length === 0,
+    {
+      loading: "Loading the parameter groups…",
+      failed: "Could not read the parameter groups",
+      empty: "No parameter group of this instance's engine family exists.",
+    },
+  )
+  const securityGroupNotice = pickerNotice(
+    securityGroupsQuery,
+    securityGroups.length === 0,
+    {
+      loading: "Loading the security groups…",
+      failed: "Could not read the security groups",
+      empty: "No security group in this instance's VPC is available.",
+    },
+  )
 
   const toggleSecurityGroup = (groupId: string) => {
     const next = selectedGroups.includes(groupId)
@@ -162,24 +203,28 @@ export function ModifyDBInstanceDialog({
             <FieldTitle>
               <label htmlFor="modify-class">DB instance class</label>
             </FieldTitle>
-            <Controller
-              control={control}
-              name="dbInstanceClass"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger className="w-full" id="modify-class">
-                    <SelectValue placeholder="Select an instance class" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {instanceClasses.map((instanceClass) => (
-                      <SelectItem key={instanceClass} value={instanceClass}>
-                        {instanceClass}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
+            {classNotice ? (
+              <PickerNoticeText notice={classNotice} />
+            ) : (
+              <Controller
+                control={control}
+                name="dbInstanceClass"
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <SelectTrigger className="w-full" id="modify-class">
+                      <SelectValue placeholder="Select an instance class" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {instanceClasses.map((instanceClass) => (
+                        <SelectItem key={instanceClass} value={instanceClass}>
+                          {instanceClass}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
             {classChanged && (
               <p className="text-xs text-tactical-amber">
                 Changing the class replaces the VM. The database is unavailable
@@ -216,50 +261,61 @@ export function ModifyDBInstanceDialog({
             <FieldTitle>
               <label htmlFor="modify-parameter-group">DB parameter group</label>
             </FieldTitle>
-            <Controller
-              control={control}
-              name="dbParameterGroupName"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger className="w-full" id="modify-parameter-group">
-                    <SelectValue placeholder="Engine default group" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {parameterGroups.map((group) => (
-                      <SelectItem
-                        key={group.DBParameterGroupName}
-                        value={group.DBParameterGroupName ?? ""}
-                      >
-                        {group.DBParameterGroupName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
+            {parameterGroupNotice ? (
+              <PickerNoticeText notice={parameterGroupNotice} />
+            ) : (
+              <Controller
+                control={control}
+                name="dbParameterGroupName"
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <SelectTrigger
+                      className="w-full"
+                      id="modify-parameter-group"
+                    >
+                      <SelectValue placeholder="Engine default group" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {parameterGroups.map((group) => (
+                        <SelectItem
+                          key={group.DBParameterGroupName}
+                          value={group.DBParameterGroupName ?? ""}
+                        >
+                          {group.DBParameterGroupName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
             <FieldError errors={[errors.dbParameterGroupName]} />
           </Field>
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
-            <div className="space-y-1">
-              {securityGroups.map((group) => (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  key={group.GroupId}
-                >
-                  <input
-                    aria-label={`Security group ${group.GroupId}`}
-                    checked={selectedGroups.includes(group.GroupId ?? "")}
-                    onChange={() => toggleSecurityGroup(group.GroupId ?? "")}
-                    type="checkbox"
-                  />
-                  <span className="font-mono">
-                    {group.GroupId} ({group.GroupName})
-                  </span>
-                </label>
-              ))}
-            </div>
+            {securityGroupNotice ? (
+              <PickerNoticeText notice={securityGroupNotice} />
+            ) : (
+              <div className="space-y-1">
+                {securityGroups.map((group) => (
+                  <label
+                    className="flex items-center gap-2 text-xs"
+                    key={group.GroupId}
+                  >
+                    <input
+                      aria-label={`Security group ${group.GroupId}`}
+                      checked={selectedGroups.includes(group.GroupId ?? "")}
+                      onChange={() => toggleSecurityGroup(group.GroupId ?? "")}
+                      type="checkbox"
+                    />
+                    <span className="font-mono">
+                      {securityGroupLabel(group)}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
           </Field>
 
           <Field>

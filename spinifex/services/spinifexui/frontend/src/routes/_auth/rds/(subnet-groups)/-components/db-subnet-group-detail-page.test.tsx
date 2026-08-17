@@ -63,7 +63,6 @@ function seed(group: unknown) {
     DBSubnetGroups: group ? [group] : [],
   })
   qc.setQueryData(["rds", "tags", "arn:orders-subnets"], { TagList: [] })
-  qc.setQueryData(["rds", "tags", ""], { TagList: [] })
   return qc
 }
 

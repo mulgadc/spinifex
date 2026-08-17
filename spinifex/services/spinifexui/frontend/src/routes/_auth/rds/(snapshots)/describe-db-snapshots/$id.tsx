@@ -20,7 +20,9 @@ export const Route = createFileRoute(
       context.queryClient.ensureQueryData(rdsSnapshotEventsQueryOptions(id)),
     ])
     const arn = snapshot.DBSnapshots?.[0]?.DBSnapshotArn ?? ""
-    await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    if (arn !== "") {
+      await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    }
   },
   head: ({ params }) => ({
     meta: [

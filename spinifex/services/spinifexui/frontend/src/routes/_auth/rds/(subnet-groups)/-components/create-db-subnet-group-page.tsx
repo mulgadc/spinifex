@@ -8,6 +8,7 @@ import { useForm, useWatch } from "react-hook-form"
 import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
+  cliPlaceholder,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -21,6 +22,7 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { getNameTag } from "@/lib/utils"
 import { useCreateDBSubnetGroup } from "@/mutations/rds"
 import { ec2SubnetsQueryOptions, ec2VpcsQueryOptions } from "@/queries/ec2"
 import {
@@ -29,12 +31,8 @@ import {
   MAX_SUBNETS_PER_GROUP,
 } from "@/types/rds"
 
-function nameTag(tags: { Key?: string; Value?: string }[] | undefined): string {
-  return tags?.find((t) => t.Key === "Name")?.Value ?? ""
-}
-
 function subnetLabel(subnet: Subnet): string {
-  const name = nameTag(subnet.Tags)
+  const name = getNameTag(subnet.Tags)
   const parts = [subnet.CidrBlock, subnet.AvailabilityZone, name].filter(
     Boolean,
   )
@@ -147,7 +145,7 @@ export function CreateDBSubnetGroupPage() {
           ) : (
             <div className="space-y-4">
               {vpcIds.map((vpcId) => {
-                const vpcName = nameTag(
+                const vpcName = getNameTag(
                   vpcs.find((v) => v.VpcId === vpcId)?.Tags,
                 )
                 const unreachable =
@@ -260,12 +258,6 @@ export function CreateDBSubnetGroupPage() {
   )
 }
 
-// An empty field reads as the parameter's name in angle brackets, so the
-// command stays copyable and obviously incomplete rather than malformed.
-function placeholder(value: string, name: string): string {
-  return value.length > 0 ? value : `<${name}>`
-}
-
 interface SubnetGroupCliValues {
   dbSubnetGroupName: string
   dbSubnetGroupDescription: string
@@ -286,12 +278,12 @@ function buildCreateSubnetGroupCommands(
         { type: "flag", value: " --db-subnet-group-name" },
         {
           type: "value",
-          value: ` ${placeholder(values.dbSubnetGroupName, "DBSubnetGroupName")}`,
+          value: ` ${cliPlaceholder(values.dbSubnetGroupName, "DBSubnetGroupName")}`,
         },
         { type: "flag", value: " --db-subnet-group-description" },
         {
           type: "value",
-          value: ` "${placeholder(
+          value: ` "${cliPlaceholder(
             values.dbSubnetGroupDescription,
             "DBSubnetGroupDescription",
           )}"`,

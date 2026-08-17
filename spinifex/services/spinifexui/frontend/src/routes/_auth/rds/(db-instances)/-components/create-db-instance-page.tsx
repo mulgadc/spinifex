@@ -1,4 +1,3 @@
-import type { SecurityGroup } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import {
   useQueryClient,
@@ -13,6 +12,7 @@ import { Controller, useForm, useWatch } from "react-hook-form"
 import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
+  cliPlaceholder,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -35,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
+import { securityGroupLabel } from "@/lib/utils"
 import { useCreateDBInstance } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -52,6 +53,12 @@ import {
   MAX_BACKUP_RETENTION_DAYS,
   MIN_ALLOCATED_STORAGE_GIB,
 } from "@/types/rds"
+
+import {
+  type PickerNotice,
+  PickerNoticeText,
+  pickerNotice,
+} from "../../-components/picker-notice"
 
 // The retention the backend applies when a create names none.
 const DEFAULT_BACKUP_RETENTION_DAYS = 7
@@ -76,10 +83,6 @@ const UNAVAILABLE_OPTIONS = [
     note: "Not available on Spinifex — allocated storage grows only when you ask it to.",
   },
 ] as const
-
-function securityGroupLabel(group: SecurityGroup): string {
-  return `${group.GroupId} (${group.GroupName})`
-}
 
 export function CreateDBInstancePage() {
   const navigate = useNavigate()
@@ -157,14 +160,14 @@ export function CreateDBInstancePage() {
   const selectedSubnetGroup = values.dbSubnetGroupName ?? ""
   const selectedSecurityGroups = values.vpcSecurityGroupIds ?? []
 
-  const { data: orderableData } = useQuery(
+  const orderableQuery = useQuery(
     rdsOrderableOptionsQueryOptions(selectedEngine),
   )
 
   const versionsForEngine = engineVersions.filter(
     (v) => v.Engine === selectedEngine,
   )
-  const orderableOptions = orderableData?.OrderableDBInstanceOptions ?? []
+  const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
   const instanceClasses = [
     ...new Set(
       orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
@@ -232,8 +235,22 @@ export function CreateDBInstancePage() {
     )
   }
 
-  const selectedEngineBootable =
-    selectedEngine !== "" && engineHasImage(selectedEngine)
+  // Driven by which engines lack an image rather than by the selection: the
+  // picker refuses to select one that lacks it, so a callout waiting on the
+  // selection is a callout that never appears.
+  const enginesMissingImage = engines.filter((e) => !engineHasImage(e))
+
+  const classNotice: PickerNotice | undefined =
+    selectedEngine === ""
+      ? {
+          tone: "muted",
+          text: "Select an engine to see the instance classes this cluster can run.",
+        }
+      : pickerNotice(orderableQuery, instanceClasses.length === 0, {
+          loading: "Loading the instance classes…",
+          failed: "Could not read the instance classes",
+          empty: `No instance class this cluster's nodes can run is available for ${selectedEngine}.`,
+        })
 
   return (
     <>
@@ -300,15 +317,16 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.engine]} />
         </Field>
 
-        {selectedEngine !== "" && !selectedEngineBootable && (
+        {enginesMissingImage.map((engine) => (
           <SystemImageRequired
-            description={`No ${selectedEngine} image is imported on this cluster, so a ${selectedEngine} database cannot launch. Other engines are unaffected.`}
-            importCommand={rdsImportCommand(selectedEngine)}
+            description={`No ${engine} image is imported on this cluster, so a ${engine} database cannot launch. The other engines are unaffected.`}
+            importCommand={rdsImportCommand(engine)}
             isRechecking={isRechecking}
+            key={engine}
             onRecheck={handleRecheck}
-            title={`${selectedEngine} image not found`}
+            title={`${engine} image not found`}
           />
-        )}
+        ))}
 
         <Field>
           <FieldTitle>
@@ -347,12 +365,8 @@ export function CreateDBInstancePage() {
           <FieldTitle>
             <label htmlFor="db-instance-class">DB instance class</label>
           </FieldTitle>
-          {instanceClasses.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {selectedEngine === ""
-                ? "Select an engine to see the instance classes this cluster can run."
-                : "No instance class this cluster's nodes can run is available for this engine."}
-            </p>
+          {classNotice ? (
+            <PickerNoticeText notice={classNotice} />
           ) : (
             <Controller
               control={control}
@@ -750,36 +764,30 @@ type CliValues = Omit<
   "masterUserPassword" | "confirmPassword" | "tags"
 >
 
-// An empty field reads as the parameter's name in angle brackets, so the
-// command stays copyable and obviously incomplete rather than malformed.
-function placeholder(value: string, name: string): string {
-  return value.length > 0 ? value : `<${name}>`
-}
-
 function buildCreateDBInstanceCommands(values: CliValues): CliCommand[] {
   const parts: CliCommand["parts"] = [
     { type: "bin", value: "AWS_PROFILE=spinifex aws rds create-db-instance" },
     { type: "flag", value: " --db-instance-identifier" },
     {
       type: "value",
-      value: ` ${placeholder(
+      value: ` ${cliPlaceholder(
         values.dbInstanceIdentifier,
         "DBInstanceIdentifier",
       )}`,
     },
     { type: "flag", value: " --engine" },
-    { type: "value", value: ` ${placeholder(values.engine, "Engine")}` },
+    { type: "value", value: ` ${cliPlaceholder(values.engine, "Engine")}` },
     { type: "flag", value: " --db-instance-class" },
     {
       type: "value",
-      value: ` ${placeholder(values.dbInstanceClass, "DBInstanceClass")}`,
+      value: ` ${cliPlaceholder(values.dbInstanceClass, "DBInstanceClass")}`,
     },
     { type: "flag", value: " --allocated-storage" },
     { type: "value", value: ` ${values.allocatedStorage}` },
     { type: "flag", value: " --master-username" },
     {
       type: "value",
-      value: ` ${placeholder(values.masterUsername, "MasterUsername")}`,
+      value: ` ${cliPlaceholder(values.masterUsername, "MasterUsername")}`,
     },
     { type: "flag", value: " --master-user-password" },
     { type: "variable", value: " $DB_PASSWORD" },

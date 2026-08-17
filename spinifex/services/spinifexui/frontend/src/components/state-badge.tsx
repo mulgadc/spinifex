@@ -1,6 +1,14 @@
 import { cn } from "@/lib/utils"
 
-const SUCCESS_STATES = new Set(["running", "available", "completed", "Active"])
+// "Complete" is the only status an RDS subnet group ever reports, and it is
+// capitalised where every other settled state is not.
+const SUCCESS_STATES = new Set([
+  "running",
+  "available",
+  "completed",
+  "Complete",
+  "Active",
+])
 // "stopped" stays an error state because EC2 reads it that way. RDS treats a
 // stopped instance as a normal resting state, so its badge is redder than the
 // state warrants; splitting the map by service is its own change.

@@ -204,6 +204,9 @@ export const rdsAutomatedBackupsQueryOptions = (dbInstanceIdentifier: string) =>
     },
   })
 
+// Tags are resolved by parsing the ARN, so an empty one is a request the
+// backend refuses. The guard binds under useQuery only — ensureQueryData and
+// useSuspenseQuery both ignore it, so a loader has to skip the call itself.
 export const rdsTagsQueryOptions = (resourceName: string) =>
   queryOptions({
     queryKey: ["rds", "tags", resourceName],

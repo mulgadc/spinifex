@@ -33,6 +33,12 @@ const INSTANCE = {
 
 function seed(): QueryClient {
   const qc = createTestQueryClient()
+  qc.setQueryData(["rds", "engineVersions"], {
+    DBEngineVersions: [
+      { Engine: "postgres", DBParameterGroupFamily: "postgres18" },
+      { Engine: "mariadb", DBParameterGroupFamily: "mariadb11.8" },
+    ],
+  })
   qc.setQueryData(["rds", "parameterGroups"], {
     DBParameterGroups: [
       {

@@ -49,6 +49,15 @@ type clusterConfig struct {
 	Region string `json:"region"`
 }
 
+// namedRoute labels a route's request metrics with a fixed action, so
+// rpc_method carries the endpoint rather than the bare HTTP verb.
+func namedRoute(action string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otelsetup.SetRequestAction(r.Context(), action)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // clusterConfigHandler serves the facts the SPA needs before it can sign
 // anything. no-store keeps a caching proxy in front of several clusters from
 // serving one the other's region.
@@ -200,6 +209,9 @@ func (svc *Service) launchService() error {
 		file, err := contentFS.Open(path)
 		if err == nil {
 			_ = file.Close()
+			// Asset filenames are content-hashed, so the action names the branch
+			// rather than the path — one series per build otherwise.
+			otelsetup.SetRequestAction(r.Context(), "ui.static")
 			// Use no-cache to force revalidation; http.FileServer sets ETags
 			// so browsers will get 304 Not Modified when files haven't changed
 			w.Header().Set("Cache-Control", "no-cache")
@@ -208,6 +220,7 @@ func (svc *Service) launchService() error {
 		}
 
 		// File doesn't exist, serve index.html for SPA routing
+		otelsetup.SetRequestAction(r.Context(), "ui.spa")
 		w.Header().Set("Cache-Control", "no-cache")
 		indexContent, err := fs.ReadFile(contentFS, "index.html")
 		if err != nil {
@@ -223,11 +236,12 @@ func (svc *Service) launchService() error {
 	mux := http.NewServeMux()
 
 	// Reverse proxy routes — must be registered before the SPA catch-all.
-	mux.Handle("/proxy/awsgw/", newReverseProxy("localhost:9999", "/proxy/awsgw", proxyTransport))
-	mux.Handle("/proxy/s3/", newReverseProxy("localhost:8443", "/proxy/s3", proxyTransport))
+	mux.Handle("/proxy/awsgw/", namedRoute("ui.proxy.awsgw", newReverseProxy("localhost:9999", "/proxy/awsgw", proxyTransport)))
+	mux.Handle("/proxy/s3/", namedRoute("ui.proxy.s3", newReverseProxy("localhost:8443", "/proxy/s3", proxyTransport)))
 
 	// CA certificate download.
 	mux.HandleFunc("/api/ca.pem", func(w http.ResponseWriter, r *http.Request) {
+		otelsetup.SetRequestAction(r.Context(), "ui.api.ca-cert")
 		if _, err := os.Stat(caCertPath); err != nil {
 			if os.IsNotExist(err) {
 				slog.Warn("CA certificate requested but not found", "path", caCertPath)
@@ -243,7 +257,7 @@ func (svc *Service) launchService() error {
 		http.ServeFile(w, r, caCertPath)
 	})
 
-	mux.HandleFunc("/api/config", clusterConfigHandler(svc.Config.Region))
+	mux.Handle("/api/config", namedRoute("ui.api.config", clusterConfigHandler(svc.Config.Region)))
 
 	// SPA catch-all.
 	mux.Handle("/", spaHandler)

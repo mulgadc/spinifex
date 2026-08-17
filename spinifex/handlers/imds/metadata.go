@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 const (
@@ -44,9 +45,12 @@ const (
 )
 
 // rejectForwarded enforces the IMDS SSRF defence: requests with X-Forwarded-For are 403'd.
+// It names its own rejections for request metrics because it answers before
+// nameAction runs, so an SSRF probe is countable rather than an unnamed 403.
 func rejectForwarded(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(hdrForwardedFor) != "" {
+			otelsetup.SetRequestAction(r.Context(), actionRejectedForwarded)
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}

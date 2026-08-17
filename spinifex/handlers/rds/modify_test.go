@@ -70,6 +70,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		InstanceState:      h.vmState,
 		VMStopTimeout:      testVMStopTimeout,
 		ServingCertKeyBits: testServingCertKeyBits,
+		ApplyParamsTimeout: testApplyParamsTimeout,
 	})
 	h.rec = NewReconciler(h.svc, "node-a")
 	return h

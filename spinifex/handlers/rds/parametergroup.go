@@ -217,7 +217,7 @@ func (s *Service) propagateParameterGroup(ctx context.Context, kv jetstream.KeyV
 		if !found || rec.DBParameterGroupName != name {
 			continue
 		}
-		if err := s.applyParameterGroup(ctx, kv, accountID, &rec, name, rec.DBInstanceClass); err != nil {
+		if err := s.applyParameterGroup(ctx, kv, accountID, &rec, name, rec.DBInstanceClass, false); err != nil {
 			failures = append(failures, err)
 		}
 	}

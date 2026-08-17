@@ -519,6 +519,9 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("load TLS cert: %w", err)
 	}
 
+	// WriteTimeout is deliberately absent: it is a total deadline rather than an
+	// idle one, so any value below the RDS command channel's 20s long poll kills
+	// every poll mid-flight and strands agents on a channel no command reaches.
 	server := &http.Server{
 		Addr:              nodeConfig.AWSGW.Host,
 		Handler:           handler,

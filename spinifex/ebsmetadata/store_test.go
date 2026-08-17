@@ -398,3 +398,51 @@ func (s *slowGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s
 }
 
 func (s *slowGetStore) peak() int64 { return s.highest.Load() }
+
+// hangingGetStore never answers for one key, standing in for a document whose
+// read runs its full retry budget before failing.
+type hangingGetStore struct {
+	objectstore.ObjectStore
+
+	hangKey string
+}
+
+func (s *hangingGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if in.Key != nil && *in.Key == s.hangKey {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.ObjectStore.GetObject(ctx, in)
+}
+
+// TestListVolumes_BoundsOneSlowDocument covers the shape that made a single bad
+// volume document a cluster-wide problem: the read did not fail quickly, so its
+// latency was added to every listing that walked the prefix.
+func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
+	previous := listFetchTimeout
+	listFetchTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { listFetchTimeout = previous })
+
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-slow", CapacityGiB: 1}))
+	key, err := VolumeKey("vol-slow")
+	require.NoError(t, err)
+
+	hanging := NewStore(&hangingGetStore{ObjectStore: objects, hangKey: key}, "control-plane")
+
+	start := time.Now()
+	volumes, err := hanging.ListVolumes(ctx)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "one slow document must not fail the whole listing")
+	require.Len(t, volumes, 1)
+	assert.Equal(t, "vol-good", volumes[0].VolumeID)
+	assert.Less(t, elapsed, time.Second, "the listing must not wait on the slow document indefinitely")
+
+	_, err = hanging.ListVolumesStrict(ctx)
+	require.Error(t, err, "the strict listing must still report the document it could not read")
+}

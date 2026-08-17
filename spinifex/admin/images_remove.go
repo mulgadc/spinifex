@@ -147,7 +147,7 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 		if snapID == SnapPrefix(imageID) {
 			continue
 		}
-		cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, bucket, snapID)
+		cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, bucket, snapID)
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
 				continue

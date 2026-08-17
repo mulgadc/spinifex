@@ -1100,7 +1100,7 @@ func TestRegisterWeightsSnapshot_WritesEC2ReadableMetadata(t *testing.T) {
 	require.NoError(t, registerWeightsSnapshot(store, bucket,
 		"snap-vol-abc", "vol-abc", 12*bytesPerGiB, "ap-southeast-2a", true))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, bucket, "snap-vol-abc")
+	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, bucket, "snap-vol-abc")
 	require.NoError(t, err)
 	assert.Equal(t, "snap-vol-abc", cfg.SnapshotID)
 	assert.Equal(t, "vol-abc", cfg.VolumeID)
@@ -1117,7 +1117,7 @@ func TestRegisterWeightsSnapshot_UnencryptedVolume(t *testing.T) {
 	require.NoError(t, registerWeightsSnapshot(store, "predastore",
 		"snap-vol-plain", "vol-plain", bytesPerGiB, "ap-southeast-2a", false))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, "predastore", "snap-vol-plain")
+	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, "predastore", "snap-vol-plain")
 	require.NoError(t, err)
 	assert.False(t, cfg.Encrypted)
 }

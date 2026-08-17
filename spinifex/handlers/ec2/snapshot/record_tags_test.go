@@ -1,6 +1,7 @@
 package handlers_ec2_snapshot
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -21,7 +22,7 @@ func TestSnapshotRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	cfg, err := svc.getSnapshotConfig(snapID)
+	cfg, err := svc.getSnapshotConfig(context.Background(), snapID)
 	require.NoError(t, err)
 	assert.Equal(t, "yes", cfg.Tags["keep"])
 	assert.Equal(t, "v", cfg.Tags["drop"])
@@ -35,7 +36,7 @@ func TestSnapshotRecordTagsMirror(t *testing.T) {
 		},
 	}, testAccountID))
 
-	cfg, err = svc.getSnapshotConfig(snapID)
+	cfg, err = svc.getSnapshotConfig(context.Background(), snapID)
 	require.NoError(t, err)
 	assert.Equal(t, "yes", cfg.Tags["keep"])
 	_, ok := cfg.Tags["drop"]
@@ -52,7 +53,7 @@ func TestSnapshotRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
 		Tags:      []*ec2.Tag{{Key: aws.String("evil"), Value: aws.String("1")}},
 	}, "999999999999"))
 
-	cfg, err := svc.getSnapshotConfig(snapID)
+	cfg, err := svc.getSnapshotConfig(context.Background(), snapID)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"orig": "1"}, cfg.Tags)
 }

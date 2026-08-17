@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -120,6 +121,14 @@ const (
 // than with the answer's size.
 const listFetchConcurrency = 16
 
+// listFetchTimeout bounds how long one document may hold up a listing. A
+// document whose shards no longer reassemble does not fail quickly — the read
+// runs its full retry budget first — so without a bound a single bad document
+// adds its whole latency to every listing that walks the prefix. It sits well
+// under the request timeouts callers work to, and comfortably above a healthy
+// read of a metadata document.
+var listFetchTimeout = 10 * time.Second
+
 // listDocuments reads and decodes every document under prefix.
 //
 // skipCorrupt tolerates a document that cannot be fetched as well as one that
@@ -170,7 +179,9 @@ func listDocuments[T any](
 			defer func() { <-slots }()
 
 			results[idx].key = key
-			data, err := s.get(ctx, key)
+			fetchCtx, cancel := context.WithTimeout(ctx, listFetchTimeout)
+			defer cancel()
+			data, err := s.get(fetchCtx, key)
 			if err != nil {
 				results[idx].fetchErr = err
 				return

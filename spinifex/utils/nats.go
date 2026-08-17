@@ -262,7 +262,7 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 		return nil, ErrClusterUnavailable
 	}
 
-	ctx, span := startProducerSpan(ctx, subject)
+	ctx, span := startProducerSpan(ctx, subject, accountID)
 	defer func() { endSpanWithError(span, err) }()
 
 	jsonData, err := json.Marshal(input)
@@ -388,7 +388,7 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 		return nil, sum, ErrClusterUnavailable
 	}
 
-	ctx, span := startProducerSpan(ctx, subject)
+	ctx, span := startProducerSpan(ctx, subject, opts.AccountID)
 	defer func() { endSpanWithError(span, err) }()
 
 	inbox := nats.NewInbox()

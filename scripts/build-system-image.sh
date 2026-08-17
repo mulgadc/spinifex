@@ -398,7 +398,7 @@ else
     echo "    --file $OUTPUT_RAW \\"
     NAME_HINT=""
     if [[ -n "${AMI_NAME:-}" ]]; then
-        NAME_HINT=" \\\n    --ami-name ${AMI_NAME}"
+        NAME_HINT=" \\\\\n    --ami-name ${AMI_NAME}"
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"

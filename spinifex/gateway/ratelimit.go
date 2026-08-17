@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,18 +13,31 @@ import (
 
 const (
 	failureWindow     = 60 * time.Second // sliding window for auth-failure counting
-	maxFailures       = 10               // failures within window before lockout
+	maxFailures       = 10               // distinct attempts within window before lockout
 	initialLockout    = 30 * time.Second // first lockout duration
 	backoffMultiplier = 2                // lockout duration multiplier on repeat
 	maxLockout        = 5 * time.Minute  // cap on escalating lockout
 	gcInterval        = 60 * time.Second // stale-entry eviction interval
 )
 
+// anonymousAttempt is the fingerprint for a failure that named no credential —
+// a request rejected before its key id was parsed. There is no client identity
+// to shield from the lockout, so every occurrence counts.
+const anonymousAttempt = ""
+
+// attempt is one distinct failed authentication attempt inside the window.
+// Repeating the same attempt refreshes at instead of adding another entry, so
+// the count measures how many things were tried rather than how many times.
+type attempt struct {
+	fingerprint string
+	at          time.Time
+}
+
 // ipRecord tracks auth failure state for a single client IP.
 type ipRecord struct {
-	failures    []time.Time // recent failure timestamps (within window)
-	lockedUntil time.Time   // zero = not locked
-	lockouts    int         // lockout count for backoff calculation
+	failures    []attempt // distinct recent failed attempts (within window)
+	lockedUntil time.Time // zero = not locked
+	lockouts    int       // lockout count for backoff calculation
 }
 
 // AuthRateLimiter tracks per-IP authentication failure rates and enforces
@@ -75,8 +91,13 @@ func (rl *AuthRateLimiter) CheckIP(ip string) string {
 }
 
 // RecordFailure records an auth failure for the IP, locking it out with
-// escalating backoff when the threshold is reached.
-func (rl *AuthRateLimiter) RecordFailure(ip string) {
+// escalating backoff once maxFailures distinct attempts fall inside the window.
+// fingerprint identifies the attempt — the key id, the signature it presented,
+// whatever the caller had to get right. Repeating one hopeless request is one
+// fault however many times it is sent, and must not lock the address out: the
+// lockout answers "retry later" to everything from that address, which a client
+// whose credential is permanently dead can never act on.
+func (rl *AuthRateLimiter) RecordFailure(ip, fingerprint string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -89,7 +110,7 @@ func (rl *AuthRateLimiter) RecordFailure(ip string) {
 	}
 
 	rec.failures = pruneOldFailures(rec.failures, now)
-	rec.failures = append(rec.failures, now)
+	rec.failures = recordAttempt(rec.failures, fingerprint, now)
 
 	if len(rec.failures) >= maxFailures && (rec.lockedUntil.IsZero() || now.After(rec.lockedUntil)) {
 		lockout := initialLockout
@@ -106,10 +127,25 @@ func (rl *AuthRateLimiter) RecordFailure(ip string) {
 
 		slog.Warn("Rate limit: IP locked out",
 			"ip", ip,
-			"failures", maxFailures,
+			"distinct_attempts", maxFailures,
 			"lockout_duration", lockout,
 		)
 	}
+}
+
+// failureFingerprint identifies a failed attempt: the reason plus whatever the
+// caller had to get right for it. Two failures sharing one are the same fault
+// repeated, so only the first of them counts toward a lockout.
+func failureFingerprint(reason string, parts ...string) string {
+	return reason + "\x00" + strings.Join(parts, "\x00")
+}
+
+// tokenDigest reduces a presented session token to a fingerprint component.
+// Each distinct token is a distinct guess and must count, but a bearer token has
+// no business being held in rate-limiter state.
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
 }
 
 // RecordSuccess clears all failure state for the IP.
@@ -164,15 +200,32 @@ func (rl *AuthRateLimiter) cleanup() {
 	}
 }
 
-// pruneOldFailures returns failures within the sliding window.
-func pruneOldFailures(failures []time.Time, now time.Time) []time.Time {
+// pruneOldFailures returns attempts within the sliding window.
+func pruneOldFailures(failures []attempt, now time.Time) []attempt {
 	cutoff := now.Add(-failureWindow)
 	n := 0
-	for _, t := range failures {
-		if t.After(cutoff) {
-			failures[n] = t
+	for _, a := range failures {
+		if a.at.After(cutoff) {
+			failures[n] = a
 			n++
 		}
 	}
 	return failures[:n]
+}
+
+// recordAttempt refreshes a fingerprint already in the window, or appends it.
+// An empty fingerprint always appends: it means the failure named no credential
+// to protect, so repetition is all there is to count. The slice is scanned
+// rather than mapped — it holds at most maxFailures entries, because reaching
+// that clears it.
+func recordAttempt(failures []attempt, fingerprint string, now time.Time) []attempt {
+	if fingerprint != anonymousAttempt {
+		for i := range failures {
+			if failures[i].fingerprint == fingerprint {
+				failures[i].at = now
+				return failures
+			}
+		}
+	}
+	return append(failures, attempt{fingerprint: fingerprint, at: now})
 }

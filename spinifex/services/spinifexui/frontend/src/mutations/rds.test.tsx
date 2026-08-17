@@ -13,8 +13,13 @@ import type { CreateDBInstanceFormData } from "@/types/rds"
 
 import {
   useCreateDBInstance,
+  useCreateDBParameterGroup,
+  useCreateDBSubnetGroup,
   useDeleteDBInstance,
+  useDeleteDBParameterGroup,
+  useDeleteDBSubnetGroup,
   useModifyDBInstance,
+  useModifyDBParameterGroup,
   useRebootDBInstance,
   useStartDBInstance,
   useStopDBInstance,
@@ -233,5 +238,133 @@ describe("useUpdateRdsTags", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(mockSend).not.toHaveBeenCalled()
+  })
+})
+
+describe("useCreateDBSubnetGroup", () => {
+  it("sends the name, description and subnets", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateDBSubnetGroup(), { wrapper })
+
+    result.current.mutate({
+      dbSubnetGroupName: "orders-subnets",
+      dbSubnetGroupDescription: "Private subnets",
+      subnetIds: ["subnet-1", "subnet-2"],
+      tags: [{ key: "env", value: "prod" }],
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.DBSubnetGroupName).toBe("orders-subnets")
+    expect(input.DBSubnetGroupDescription).toBe("Private subnets")
+    expect(input.SubnetIds).toStrictEqual(["subnet-1", "subnet-2"])
+    expect(input.Tags).toStrictEqual([{ Key: "env", Value: "prod" }])
+  })
+
+  it("omits an empty tag set rather than sending a blank list", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateDBSubnetGroup(), { wrapper })
+
+    result.current.mutate({
+      dbSubnetGroupName: "orders-subnets",
+      dbSubnetGroupDescription: "Private subnets",
+      subnetIds: ["subnet-1"],
+      tags: [],
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.Tags).toBeUndefined()
+  })
+})
+
+describe("useCreateDBParameterGroup", () => {
+  it("sends the name, family and description", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateDBParameterGroup(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      dbParameterGroupName: "orders-pg",
+      dbParameterGroupFamily: "postgres18",
+      description: "Tuned settings",
+      tags: [],
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.DBParameterGroupName).toBe("orders-pg")
+    expect(input.DBParameterGroupFamily).toBe("postgres18")
+    expect(input.Description).toBe("Tuned settings")
+  })
+})
+
+describe("useModifyDBParameterGroup", () => {
+  it("sends every edit in one request", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useModifyDBParameterGroup(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      dbParameterGroupName: "orders-pg",
+      parameters: [
+        {
+          name: "max_connections",
+          value: "200",
+          applyMethod: "pending-reboot",
+        },
+        {
+          name: "log_min_duration_statement",
+          value: "500",
+          applyMethod: "immediate",
+        },
+      ],
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledOnce()
+    const input = mockSend.mock.calls[0]?.[0].input
+    expect(input.DBParameterGroupName).toBe("orders-pg")
+    expect(input.Parameters).toStrictEqual([
+      {
+        ParameterName: "max_connections",
+        ParameterValue: "200",
+        ApplyMethod: "pending-reboot",
+      },
+      {
+        ParameterName: "log_min_duration_statement",
+        ParameterValue: "500",
+        ApplyMethod: "immediate",
+      },
+    ])
+  })
+})
+
+describe("rds group delete mutations", () => {
+  it("deleting a subnet group sends its name", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteDBSubnetGroup(), { wrapper })
+
+    result.current.mutate("orders-subnets")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBSubnetGroupName: "orders-subnets",
+    })
+  })
+
+  it("deleting a parameter group sends its name", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteDBParameterGroup(), {
+      wrapper,
+    })
+
+    result.current.mutate("orders-pg")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBParameterGroupName: "orders-pg",
+    })
   })
 })

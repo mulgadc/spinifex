@@ -115,9 +115,9 @@ describe("ModifyDBInstanceDialog", () => {
 
   it("refuses a shrink rather than sending one", () => {
     render()
-    const storage = screen.getByLabelText(
+    const storage = screen.getByLabelText<HTMLInputElement>(
       "Allocated storage (GiB)",
-    ) as HTMLInputElement
+    )
     fireEvent.change(storage, { target: { value: "20" } })
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
 

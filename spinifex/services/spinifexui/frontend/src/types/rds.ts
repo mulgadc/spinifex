@@ -1,3 +1,4 @@
+import type { ApplyMethod } from "@aws-sdk/client-rds"
 import { z } from "zod"
 
 // Mirrors handlers/rds/validate.go and handlers/rds/engine.go so the form
@@ -354,6 +355,106 @@ export const modifyDBInstanceSchema = z
   })
 
 export type ModifyDBInstanceFormData = z.infer<typeof modifyDBInstanceSchema>
+
+// Mirrors validateDBGroupName and validateDBGroupDescription in
+// handlers/rds/subnetgroup.go, which both group kinds share. The name is a KV
+// key rather than a DNS label, so it is looser than a DB instance identifier.
+const MAX_GROUP_NAME_LEN = 255
+const MAX_GROUP_DESCRIPTION_LEN = 255
+
+export const MAX_SUBNETS_PER_GROUP = 20
+export const MAX_PARAMETERS_PER_MODIFY = 20
+
+// The prefix the service reserves for the parameter groups it owns.
+const DEFAULT_PARAMETER_GROUP_PREFIX = "default."
+
+export function isDefaultParameterGroupName(name: string | undefined): boolean {
+  return (name ?? "").toLowerCase().startsWith(DEFAULT_PARAMETER_GROUP_PREFIX)
+}
+
+function groupNameField(label: string) {
+  return z
+    .string()
+    .min(1, `${label} is required`)
+    .max(MAX_GROUP_NAME_LEN, `${label} must be at most 255 characters`)
+    .regex(/^[a-zA-Z]/, `${label} must begin with a letter`)
+    .regex(
+      /^[a-zA-Z0-9-]*$/,
+      `${label} may contain only letters, digits and hyphens`,
+    )
+    .refine(
+      (v) => v.toLowerCase() !== "default",
+      `${label} may not be "default", which the service reserves`,
+    )
+}
+
+function groupDescriptionField(label: string) {
+  return z
+    .string()
+    .min(1, `${label} is required`)
+    .max(MAX_GROUP_DESCRIPTION_LEN, `${label} must be at most 255 characters`)
+}
+
+export const createDBSubnetGroupSchema = z.object({
+  dbSubnetGroupName: groupNameField("Name"),
+  dbSubnetGroupDescription: groupDescriptionField("Description"),
+  subnetIds: z
+    .array(z.string())
+    .min(1, "Select at least one subnet")
+    .max(
+      MAX_SUBNETS_PER_GROUP,
+      `A DB subnet group may hold at most ${MAX_SUBNETS_PER_GROUP} subnets`,
+    ),
+  tags: z.array(rdsTagSchema),
+})
+
+export type CreateDBSubnetGroupFormData = z.infer<
+  typeof createDBSubnetGroupSchema
+>
+
+// The reserved-prefix check runs ahead of the shared name rules: without it a
+// "default.postgres18" reads as a complaint about full stops rather than about
+// the name being reserved.
+export const createDBParameterGroupSchema = z.object({
+  dbParameterGroupName: z
+    .string()
+    .refine(
+      (v) => !isDefaultParameterGroupName(v),
+      `Name may not begin with "${DEFAULT_PARAMETER_GROUP_PREFIX}", which the service reserves`,
+    )
+    .pipe(groupNameField("Name")),
+  dbParameterGroupFamily: z.string().min(1, "Family is required"),
+  description: groupDescriptionField("Description"),
+  tags: z.array(rdsTagSchema),
+})
+
+export type CreateDBParameterGroupFormData = z.infer<
+  typeof createDBParameterGroupSchema
+>
+
+// handlers/rds/paramcatalog.go. A static parameter is adopted by a restart; a
+// dynamic one by a reload.
+export const APPLY_TYPE_STATIC = "static"
+export const APPLY_METHOD_IMMEDIATE = "immediate" satisfies ApplyMethod
+export const APPLY_METHOD_PENDING_REBOOT =
+  "pending-reboot" satisfies ApplyMethod
+
+export const PARAMETER_SOURCE_USER = "user"
+
+// resolveApplyMethod rejects "immediate" on a static parameter rather than
+// downgrading it, so the editor pins the method instead of offering the choice.
+export function applyMethodsFor(applyType: string | undefined): ApplyMethod[] {
+  return applyType === APPLY_TYPE_STATIC
+    ? [APPLY_METHOD_PENDING_REBOOT]
+    : [APPLY_METHOD_IMMEDIATE, APPLY_METHOD_PENDING_REBOOT]
+}
+
+// One edited row on its way to ModifyDBParameterGroup.
+export interface ParameterUpdate {
+  name: string
+  value: string
+  applyMethod: ApplyMethod
+}
 
 // Statuses handlers/rds/status.go treats as in-flight. The list and detail
 // queries poll while any instance is in one and stop once none is.

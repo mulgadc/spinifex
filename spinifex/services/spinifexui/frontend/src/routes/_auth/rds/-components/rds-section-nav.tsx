@@ -6,8 +6,7 @@ const INACTIVE = {
   className: "border-transparent text-muted-foreground hover:text-foreground",
 }
 
-// Mirrors the AWS RDS console's top-level sections. Subnet groups and parameter
-// groups join this nav when their pages land.
+// Mirrors the AWS RDS console's top-level sections.
 export function RdsSectionNav() {
   return (
     <nav className="mb-6 flex gap-1 border-b">
@@ -19,6 +18,24 @@ export function RdsSectionNav() {
         to="/rds/describe-db-instances"
       >
         Databases
+      </Link>
+      <Link
+        activeOptions={{ exact: false }}
+        activeProps={ACTIVE}
+        className={BASE}
+        inactiveProps={INACTIVE}
+        to="/rds/describe-db-subnet-groups"
+      >
+        Subnet groups
+      </Link>
+      <Link
+        activeOptions={{ exact: false }}
+        activeProps={ACTIVE}
+        className={BASE}
+        inactiveProps={INACTIVE}
+        to="/rds/describe-db-parameter-groups"
+      >
+        Parameter groups
       </Link>
     </nav>
   )

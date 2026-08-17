@@ -12,7 +12,10 @@ import {
   rdsEngineVersionsQueryOptions,
   rdsEventsQueryOptions,
   rdsOrderableOptionsQueryOptions,
+  rdsParameterGroupQueryOptions,
   rdsParameterGroupsQueryOptions,
+  rdsParametersQueryOptions,
+  rdsSubnetGroupQueryOptions,
   rdsSubnetGroupsQueryOptions,
   rdsTagsQueryOptions,
 } from "./rds"
@@ -44,6 +47,28 @@ describe("rds query keys", () => {
     expect(rdsParameterGroupsQueryOptions.queryKey).toStrictEqual([
       "rds",
       "parameterGroups",
+    ])
+  })
+
+  it("rdsSubnetGroupQueryOptions includes the group name", () => {
+    expect(rdsSubnetGroupQueryOptions("orders-subnets").queryKey).toStrictEqual(
+      ["rds", "subnetGroups", "orders-subnets"],
+    )
+  })
+
+  it("rdsParameterGroupQueryOptions includes the group name", () => {
+    expect(rdsParameterGroupQueryOptions("orders-pg").queryKey).toStrictEqual([
+      "rds",
+      "parameterGroups",
+      "orders-pg",
+    ])
+  })
+
+  it("rdsParametersQueryOptions includes the group name", () => {
+    expect(rdsParametersQueryOptions("orders-pg").queryKey).toStrictEqual([
+      "rds",
+      "parameters",
+      "orders-pg",
     ])
   })
 
@@ -136,6 +161,29 @@ describe("rds queries send the right command", () => {
     await callQueryFn(rdsParameterGroupsQueryOptions.queryFn)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
     expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({})
+  })
+
+  it("the single group describes filter by name", async () => {
+    mockSend.mockResolvedValueOnce({ DBSubnetGroups: [] })
+    await callQueryFn(rdsSubnetGroupQueryOptions("orders-subnets").queryFn)
+    mockSend.mockResolvedValueOnce({ DBParameterGroups: [] })
+    await callQueryFn(rdsParameterGroupQueryOptions("orders-pg").queryFn)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBSubnetGroupName: "orders-subnets",
+    })
+    expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
+      DBParameterGroupName: "orders-pg",
+    })
+  })
+
+  // The Source filter the backend accepts is deliberately unused: the whole
+  // set is one round trip and the split is a client-side filter.
+  it("parameters are fetched unfiltered by source", async () => {
+    mockSend.mockResolvedValueOnce({ Parameters: [] })
+    await callQueryFn(rdsParametersQueryOptions("orders-pg").queryFn)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      DBParameterGroupName: "orders-pg",
+    })
   })
 })
 

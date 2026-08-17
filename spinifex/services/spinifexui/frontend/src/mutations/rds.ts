@@ -2,8 +2,13 @@ import {
   type Tag,
   AddTagsToResourceCommand,
   CreateDBInstanceCommand,
+  CreateDBParameterGroupCommand,
+  CreateDBSubnetGroupCommand,
   DeleteDBInstanceCommand,
+  DeleteDBParameterGroupCommand,
+  DeleteDBSubnetGroupCommand,
   ModifyDBInstanceCommand,
+  ModifyDBParameterGroupCommand,
   RebootDBInstanceCommand,
   RemoveTagsFromResourceCommand,
   StartDBInstanceCommand,
@@ -14,10 +19,15 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { getRdsClient } from "@/lib/awsClient"
 import type {
   CreateDBInstanceFormData,
+  CreateDBParameterGroupFormData,
+  CreateDBSubnetGroupFormData,
   ModifyDBInstanceFormData,
+  ParameterUpdate,
 } from "@/types/rds"
 
 const DB_INSTANCES_KEY = ["rds", "dbInstances"]
+const SUBNET_GROUPS_KEY = ["rds", "subnetGroups"]
+const PARAMETER_GROUPS_KEY = ["rds", "parameterGroups"]
 
 // An optional string field is sent only when it carries something: the backend
 // rejects several parameters on sight, and an empty string is still a value.
@@ -161,6 +171,105 @@ export function useRebootDBInstance() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+    },
+  })
+}
+
+export function useCreateDBSubnetGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateDBSubnetGroupFormData) => {
+      const command = new CreateDBSubnetGroupCommand({
+        DBSubnetGroupName: params.dbSubnetGroupName,
+        DBSubnetGroupDescription: params.dbSubnetGroupDescription,
+        SubnetIds: params.subnetIds,
+        Tags: toTags(params.tags),
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SUBNET_GROUPS_KEY })
+    },
+  })
+}
+
+export function useDeleteDBSubnetGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (dbSubnetGroupName: string) => {
+      const command = new DeleteDBSubnetGroupCommand({
+        DBSubnetGroupName: dbSubnetGroupName,
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SUBNET_GROUPS_KEY })
+    },
+  })
+}
+
+export function useCreateDBParameterGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateDBParameterGroupFormData) => {
+      const command = new CreateDBParameterGroupCommand({
+        DBParameterGroupName: params.dbParameterGroupName,
+        DBParameterGroupFamily: params.dbParameterGroupFamily,
+        Description: params.description,
+        Tags: toTags(params.tags),
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PARAMETER_GROUPS_KEY })
+    },
+  })
+}
+
+export interface ModifyDBParameterGroupParams {
+  dbParameterGroupName: string
+  parameters: ParameterUpdate[]
+}
+
+// One call, never several: each ModifyDBParameterGroup is atomic on its own, so
+// a save split across requests could fail partway and leave the group holding
+// half the edit with nothing in the API saying so. The form enforces the cap.
+export function useModifyDBParameterGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: ModifyDBParameterGroupParams) => {
+      const command = new ModifyDBParameterGroupCommand({
+        DBParameterGroupName: params.dbParameterGroupName,
+        Parameters: params.parameters.map((p) => ({
+          ParameterName: p.name,
+          ParameterValue: p.value,
+          ApplyMethod: p.applyMethod,
+        })),
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["rds", "parameters", params.dbParameterGroupName],
+      })
+      // A modify propagates to every attached instance, moving its
+      // ParameterApplyStatus, so the instance views are stale too.
+      void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+    },
+  })
+}
+
+export function useDeleteDBParameterGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (dbParameterGroupName: string) => {
+      const command = new DeleteDBParameterGroupCommand({
+        DBParameterGroupName: dbParameterGroupName,
+      })
+      return await getRdsClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PARAMETER_GROUPS_KEY })
     },
   })
 }

@@ -1,1 +1,1 @@
-import{At as e,dt as t}from"./cluster-config.js";import{Xt as n}from"./awsClient.js";var r=e(n,`AWSIdentityManagementV20100508`,`IAMClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};
+import{At as e,dt as t}from"./cluster-config.js";import{nn as n}from"./awsClient.js";var r=e(n,`AWSIdentityManagementV20100508`,`IAMClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

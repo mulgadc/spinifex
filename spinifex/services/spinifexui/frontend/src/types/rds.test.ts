@@ -6,9 +6,13 @@ import {
   canReboot,
   canStart,
   canStop,
+  applyMethodsFor,
   createDBInstanceSchema,
+  createDBParameterGroupSchema,
+  createDBSubnetGroupSchema,
   dailyWindowLength,
   dbInstanceIdentifierField,
+  isDefaultParameterGroupName,
   isTransitionalStatus,
   masterPasswordField,
   modifyDBInstanceSchema,
@@ -304,5 +308,127 @@ describe("status helpers", () => {
     expect(canDelete("stopped")).toBeTruthy()
     expect(canDelete("deleting")).toBeFalsy()
     expect(canDelete("deleted")).toBeFalsy()
+  })
+})
+
+const VALID_SUBNET_GROUP = {
+  dbSubnetGroupName: "orders-subnets",
+  dbSubnetGroupDescription: "Private subnets for the orders database",
+  subnetIds: ["subnet-1", "subnet-2"],
+  tags: [],
+}
+
+const VALID_PARAMETER_GROUP = {
+  dbParameterGroupName: "orders-postgres18",
+  dbParameterGroupFamily: "postgres18",
+  description: "Tuned settings",
+  tags: [],
+}
+
+// Mirrors validateDBGroupName, which both group kinds share.
+describe("group name rules", () => {
+  it("accepts a well-formed subnet group", () => {
+    expect(
+      createDBSubnetGroupSchema.safeParse(VALID_SUBNET_GROUP).success,
+    ).toBeTruthy()
+  })
+
+  it.each([
+    ["", "empty"],
+    ["1orders", "opening on a digit"],
+    ["-orders", "opening on a hyphen"],
+    ["orders.subnets", "holding a full stop"],
+    ["orders_subnets", "holding an underscore"],
+    ["default", "the reserved name"],
+    ["DEFAULT", "the reserved name in another case"],
+    ["a".repeat(256), "longer than 255 characters"],
+  ])("rejects %s (%s)", (name) => {
+    expect(
+      createDBSubnetGroupSchema.safeParse({
+        ...VALID_SUBNET_GROUP,
+        dbSubnetGroupName: name,
+      }).success,
+    ).toBeFalsy()
+  })
+
+  it("requires a description, as the backend does", () => {
+    expect(
+      createDBSubnetGroupSchema.safeParse({
+        ...VALID_SUBNET_GROUP,
+        dbSubnetGroupDescription: "",
+      }).success,
+    ).toBeFalsy()
+  })
+
+  it("requires at least one subnet and at most twenty", () => {
+    expect(
+      createDBSubnetGroupSchema.safeParse({
+        ...VALID_SUBNET_GROUP,
+        subnetIds: [],
+      }).success,
+    ).toBeFalsy()
+    expect(
+      createDBSubnetGroupSchema.safeParse({
+        ...VALID_SUBNET_GROUP,
+        subnetIds: Array.from({ length: 21 }, (_, i) => `subnet-${i}`),
+      }).success,
+    ).toBeFalsy()
+  })
+})
+
+describe("parameter group schema", () => {
+  it("accepts a well-formed group", () => {
+    expect(
+      createDBParameterGroupSchema.safeParse(VALID_PARAMETER_GROUP).success,
+    ).toBeTruthy()
+  })
+
+  it("names the reservation when the default prefix is used", () => {
+    const result = createDBParameterGroupSchema.safeParse({
+      ...VALID_PARAMETER_GROUP,
+      dbParameterGroupName: "default.postgres18",
+    })
+    expect(result.success).toBeFalsy()
+    expect(result.error?.issues[0]?.message).toContain("reserves")
+  })
+
+  it("requires a family", () => {
+    expect(
+      createDBParameterGroupSchema.safeParse({
+        ...VALID_PARAMETER_GROUP,
+        dbParameterGroupFamily: "",
+      }).success,
+    ).toBeFalsy()
+  })
+})
+
+describe("isDefaultParameterGroupName", () => {
+  it.each(["default.postgres18", "default.mariadb11.8", "DEFAULT.postgres18"])(
+    "treats %s as a default group",
+    (name) => {
+      expect(isDefaultParameterGroupName(name)).toBeTruthy()
+    },
+  )
+
+  it.each(["orders-pg", "defaults-pg", "default", undefined])(
+    "treats %s as a customer group",
+    (name) => {
+      expect(isDefaultParameterGroupName(name)).toBeFalsy()
+    },
+  )
+})
+
+// resolveApplyMethod rejects "immediate" on a static parameter rather than
+// downgrading it, so the editor must not offer the choice.
+describe("applyMethodsFor", () => {
+  it("pins a static parameter to pending-reboot", () => {
+    expect(applyMethodsFor("static")).toStrictEqual(["pending-reboot"])
+  })
+
+  it("offers both methods on a dynamic parameter", () => {
+    expect(applyMethodsFor("dynamic")).toStrictEqual([
+      "immediate",
+      "pending-reboot",
+    ])
   })
 })

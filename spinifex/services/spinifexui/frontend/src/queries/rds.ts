@@ -2,6 +2,7 @@ import {
   DescribeDBEngineVersionsCommand,
   DescribeDBInstancesCommand,
   DescribeDBParameterGroupsCommand,
+  DescribeDBParametersCommand,
   DescribeDBSubnetGroupsCommand,
   DescribeEventsCommand,
   DescribeOrderableDBInstanceOptionsCommand,
@@ -66,6 +67,17 @@ export const rdsSubnetGroupsQueryOptions = queryOptions({
   },
 })
 
+export const rdsSubnetGroupQueryOptions = (dbSubnetGroupName: string) =>
+  queryOptions({
+    queryKey: ["rds", "subnetGroups", dbSubnetGroupName],
+    queryFn: async () => {
+      const command = new DescribeDBSubnetGroupsCommand({
+        DBSubnetGroupName: dbSubnetGroupName,
+      })
+      return await getRdsClient().send(command)
+    },
+  })
+
 export const rdsParameterGroupsQueryOptions = queryOptions({
   queryKey: ["rds", "parameterGroups"],
   queryFn: async () => {
@@ -73,6 +85,30 @@ export const rdsParameterGroupsQueryOptions = queryOptions({
     return await getRdsClient().send(command)
   },
 })
+
+export const rdsParameterGroupQueryOptions = (dbParameterGroupName: string) =>
+  queryOptions({
+    queryKey: ["rds", "parameterGroups", dbParameterGroupName],
+    queryFn: async () => {
+      const command = new DescribeDBParameterGroupsCommand({
+        DBParameterGroupName: dbParameterGroupName,
+      })
+      return await getRdsClient().send(command)
+    },
+  })
+
+// Unfiltered: the whole set is one round trip, and every row already carries
+// the Source field the user-versus-engine-default filter reads.
+export const rdsParametersQueryOptions = (dbParameterGroupName: string) =>
+  queryOptions({
+    queryKey: ["rds", "parameters", dbParameterGroupName],
+    queryFn: async () => {
+      const command = new DescribeDBParametersCommand({
+        DBParameterGroupName: dbParameterGroupName,
+      })
+      return await getRdsClient().send(command)
+    },
+  })
 
 export const rdsEventsQueryOptions = (sourceIdentifier: string) =>
   queryOptions({

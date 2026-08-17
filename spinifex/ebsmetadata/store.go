@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -113,12 +115,29 @@ const (
 	amiPrefix    = "spinifex/ebsmetadata/v1/amis/"
 )
 
+// listFetchConcurrency bounds the object fetches a single listing may have in
+// flight. A listing costs one round trip per document, so fetching them one at
+// a time makes the call scale with the number of documents in the bucket rather
+// than with the answer's size.
+const listFetchConcurrency = 16
+
+// listFetchTimeout bounds how long one document may hold up a listing. A
+// document whose shards no longer reassemble does not fail quickly — the read
+// runs its full retry budget first — so without a bound a single bad document
+// adds its whole latency to every listing that walks the prefix. It sits well
+// under the request timeouts callers work to, and comfortably above a healthy
+// read of a metadata document.
+var listFetchTimeout = 10 * time.Second
+
 // listDocuments reads and decodes every document under prefix.
 //
 // skipCorrupt tolerates a document that cannot be fetched as well as one that
 // cannot be decoded: an object whose shards no longer join is exactly as
 // unusable as one whose bytes will not parse, and either kind read wholesale
 // as a failure turns a single bad document into a cluster-wide outage.
+//
+// Fetches run concurrently but results are assembled in key order, so a strict
+// listing fails on the same document it would have failed on serially.
 func listDocuments[T any](
 	ctx context.Context,
 	s *Store,
@@ -133,28 +152,63 @@ func listDocuments[T any](
 		return nil, err
 	}
 
-	documents := make([]T, 0, len(result.Contents))
-	for _, object := range result.Contents {
+	// fetchErr and decodeErr are kept apart because they are tolerated on
+	// different terms: any fetch failure may be skipped, but only a decode
+	// failure that is ErrCorruptDocument may be.
+	type fetched struct {
+		key       string
+		document  T
+		fetchErr  error
+		decodeErr error
+		empty     bool
+	}
+
+	results := make([]fetched, len(result.Contents))
+	slots := make(chan struct{}, listFetchConcurrency)
+	var wg sync.WaitGroup
+
+	for i, object := range result.Contents {
 		if object.Key == nil {
+			results[i].empty = true
 			continue
 		}
-		data, err := s.get(ctx, *object.Key)
-		if err != nil {
-			if skipCorrupt {
-				slog.WarnContext(ctx, "skipping unreadable "+kind+" document", "key", *object.Key, "err", err)
-				continue
+		wg.Add(1)
+		slots <- struct{}{}
+		go func(idx int, key string) {
+			defer wg.Done()
+			defer func() { <-slots }()
+
+			results[idx].key = key
+			fetchCtx, cancel := context.WithTimeout(ctx, listFetchTimeout)
+			defer cancel()
+			data, err := s.get(fetchCtx, key)
+			if err != nil {
+				results[idx].fetchErr = err
+				return
 			}
-			return nil, err
-		}
-		document, err := unmarshal(data)
-		if err != nil {
-			if skipCorrupt && errors.Is(err, ErrCorruptDocument) {
-				slog.WarnContext(ctx, "skipping undecodable "+kind+" document", "key", *object.Key, "err", err)
-				continue
+			results[idx].document, results[idx].decodeErr = unmarshal(data)
+		}(i, *object.Key)
+	}
+	wg.Wait()
+
+	documents := make([]T, 0, len(results))
+	for _, r := range results {
+		switch {
+		case r.empty:
+			continue
+		case r.fetchErr != nil:
+			if !skipCorrupt {
+				return nil, r.fetchErr
 			}
-			return nil, err
+			slog.WarnContext(ctx, "skipping unreadable "+kind+" document", "key", r.key, "err", r.fetchErr)
+		case r.decodeErr != nil:
+			if !skipCorrupt || !errors.Is(r.decodeErr, ErrCorruptDocument) {
+				return nil, r.decodeErr
+			}
+			slog.WarnContext(ctx, "skipping undecodable "+kind+" document", "key", r.key, "err", r.decodeErr)
+		default:
+			documents = append(documents, r.document)
 		}
-		documents = append(documents, document)
 	}
 	return documents, nil
 }

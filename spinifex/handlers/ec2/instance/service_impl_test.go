@@ -2536,7 +2536,7 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
 		}},
-		keyValidator: &fakeKeyValidator{err: errors.New("no key")},
+		keyValidator: &fakeKeyValidator{err: errors.New(awserrors.ErrorInvalidKeyPairNotFound)},
 	}
 	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
@@ -2547,6 +2547,28 @@ func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+}
+
+// A store that cannot be read says nothing about whether the key is there, and
+// answering NotFound sends the caller after a key that exists.
+func TestPrepareRunInstances_KeyPairUnreadableIsNotNotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		keyValidator: &fakeKeyValidator{err: errors.New("dial tcp: connection refused")},
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		KeyName:      aws.String("real-key"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {

@@ -448,9 +448,25 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 
 // ValidateKeyPairExists checks if a key pair with the given name exists.
 // Returns nil if the key pair exists, or an error with ErrorInvalidKeyPairNotFound if not.
+// The stored material is addressed by name, so this reads it directly rather
+// than listing the account's keys and scanning for a match. A listing is served
+// from one replica's view and can lag a write that has already been
+// acknowledged, which reports a key created moments earlier as absent.
 func (s *KeyServiceImpl) ValidateKeyPairExists(ctx context.Context, accountID, keyName string) error {
-	_, err := s.findKeyPairIdFromKeyName(ctx, accountID, keyName)
-	return err
+	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
+	if _, err := s.store.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(keyPath),
+	}); err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+		}
+		// Not "absent": saying so would send the caller off to fix a key that is
+		// there, and a launch would keep failing until the read recovered.
+		slog.ErrorContext(ctx, "Failed to read key pair for validation", "keyName", keyName, "err", err)
+		return fmt.Errorf("validate key pair %s: %w", keyPath, err)
+	}
+	return nil
 }
 
 // GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a single

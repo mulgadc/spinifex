@@ -45,6 +45,11 @@ type mockIAMService struct {
 
 	accessKeys map[string]*handlers_iam.AccessKey
 	masterKey  []byte
+
+	// accounts overrides the status the auth gate reads. An empty map means
+	// every account is ACTIVE, which is what most tests here are asserting
+	// around rather than asserting about.
+	accounts map[string]*handlers_iam.Account
 }
 
 func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
@@ -57,6 +62,13 @@ func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.Acce
 
 func (m *mockIAMService) DecryptSecret(ciphertext string) (string, error) {
 	return handlers_iam.DecryptSecret(ciphertext, m.masterKey)
+}
+
+func (m *mockIAMService) GetAccount(accountID string) (*handlers_iam.Account, error) {
+	if account, ok := m.accounts[accountID]; ok {
+		return account, nil
+	}
+	return &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}, nil
 }
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.

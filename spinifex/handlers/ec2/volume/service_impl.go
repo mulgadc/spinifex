@@ -1023,6 +1023,44 @@ func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID,
 	return s.UpdateVolumeState(volumeID, "available", "", "")
 }
 
+// ForceDetachVolume clears a volume's attachment in the control plane without
+// touching the guest, and is answered by any node rather than the one hosting
+// the instance.
+//
+// The ordinary DetachVolume routes to ec2.cmd.{instanceID} for the QMP unplug,
+// so a volume attached to an instance whose host stopped answering can never be
+// detached and therefore never deleted. This exists for that deadlock and for
+// nothing else: it leaves a live guest holding a device the control plane no
+// longer believes in, which is only safe once that guest is being destroyed.
+func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, accountID string) (*ec2.VolumeAttachment, error) {
+	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	volumeID := *input.VolumeId
+
+	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.TenantID != accountID {
+		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+
+	previous := meta.AttachedInstance
+	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		slog.ErrorContext(ctx, "ForceDetachVolume: failed to clear attachment", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.WarnContext(ctx, "ForceDetachVolume: attachment cleared in the control plane only",
+		"volumeId", volumeID, "previousInstance", previous, "accountId", accountID)
+
+	return &ec2.VolumeAttachment{
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(previous),
+		State:      aws.String("detached"),
+	}, nil
+}
+
 // DeleteVolume deletes an EBS volume: validates state, asks the EBS provider to
 // destroy the backing data, then removes the control-plane metadata document.
 func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error) {

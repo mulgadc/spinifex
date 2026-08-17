@@ -774,8 +774,8 @@ func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvi
 // stage time -- and treats a missing object as gone. Any other read failure
 // is a real error, not a signal to guess the snapshot's existence.
 func newWeightsSnapshotChecker(store objectstore.ObjectStore, bucket string) weightsSnapshotChecker {
-	return func(_ context.Context, snapshotID string) (bool, error) {
-		if _, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, bucket, snapshotID); err != nil {
+	return func(ctx context.Context, snapshotID string) (bool, error) {
+		if _, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, store, bucket, snapshotID); err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
 				return false, nil
 			}

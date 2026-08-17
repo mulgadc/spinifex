@@ -29,6 +29,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()
 	}
+	if gw.accountStatus == nil {
+		gw.accountStatus = newAccountStatusCache()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientIP := utils.ClientIP(r.RemoteAddr)
@@ -144,6 +147,13 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				// bad request produces the same one.
 				gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("signature", sig.Credential.AccessKeyID, sig.Signature))
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				return
+			}
+
+			// Only after the signature holds: an unauthenticated prober must not
+			// be able to use this to tell a suspended account from a live one.
+			if errCode := gw.checkAccountActive(principal.accountID, clientIP); errCode != "" {
+				gw.writeSigV4Error(w, r, errCode)
 				return
 			}
 

@@ -549,7 +549,7 @@ func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID str
 		return "", errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, meta.SnapshotID)
+	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, meta.SnapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) && meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias) {
 			slog.WarnContext(ctx, "GetAMISourceVolumeID: system AMI has no snapshot metadata document, falling back to imageID as volume ID",
@@ -736,7 +736,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if srcMeta.SnapshotID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
-	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, srcMeta.SnapshotID)
+	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, srcMeta.SnapshotID)
 	if err != nil {
 		// Bundled system AMIs have no standalone snap-xxx/metadata.json; synthesize
 		// a minimal snap view using VolumeID = sourceImageID so CopyImage succeeds.
@@ -939,7 +939,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 	}
 	snapshotID := *rootBDM.Ebs.SnapshotId
 
-	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, snapshotID)
+	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, snapshotID)
 	if err != nil {
 		// Corrupt snapshot is surfaced as NotFound, same as CopyImage.
 		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {

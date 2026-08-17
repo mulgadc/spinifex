@@ -119,7 +119,7 @@ func (r *Rotator) Run(ctx context.Context) {
 // rotateOnce runs one rotation/prune cycle and refreshes the issuer/verifier.
 // Errors are logged and skipped so a transient KV fault never crashes the loop.
 func (r *Rotator) rotateOnce(ctx context.Context, now time.Time) {
-	_, _, metas, err := reloadKeys(ctx, r.kv, r.masterKey)
+	_, _, metas, _, err := reloadKeys(ctx, r.kv, r.masterKey)
 	if err != nil {
 		slog.Warn("ECR signing-key rotation: load keys failed", "err", err)
 		return
@@ -147,7 +147,7 @@ func (r *Rotator) rotateOnce(ctx context.Context, now time.Time) {
 
 // refresh reloads the canonical key set and installs it on the issuer/verifier.
 func (r *Rotator) refresh(ctx context.Context) {
-	active, verify, _, err := reloadKeys(ctx, r.kv, r.masterKey)
+	active, verify, _, _, err := reloadKeys(ctx, r.kv, r.masterKey)
 	if err != nil {
 		slog.Warn("ECR signing-key rotation: refresh failed", "err", err)
 		return

@@ -109,7 +109,7 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 	_, err = verifier.Verify(newTok)
 	require.NoError(t, err, "token from the rotated key must verify")
 
-	_, _, metas, err := reloadKeys(t.Context(), kv, testMasterKey)
+	_, _, metas, _, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 	assert.Len(t, metas, 2, "previous key retained alongside the new active key")
 }
@@ -138,7 +138,7 @@ func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 	}
 	r.rotateOnce(t.Context(), time.Now().UTC())
 
-	active, _, metas, err := reloadKeys(t.Context(), kv, testMasterKey)
+	active, _, metas, _, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 	require.Len(t, metas, 1, "the older key should be pruned")
 	assert.Equal(t, second.Kid, active.Kid, "newest key remains active")
@@ -191,7 +191,7 @@ func TestIssuerVerifier_ConcurrentSwap(t *testing.T) {
 	require.NoError(t, err)
 	k2, err := generateSigningKey(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
-	_, v2, _, err := reloadKeys(t.Context(), kv, testMasterKey)
+	_, v2, _, _, err := reloadKeys(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
 
 	issuer := NewIssuer(k1, testAudience)

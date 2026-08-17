@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -25,7 +26,15 @@ const (
 	// gateway enforces for assumed-role principals, plus ECR read so it can pull
 	// task images via the instance role when a task carries no execution role.
 	ecsInstanceRolePolicyDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ecs:*","Resource":"*"},{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"*"}]}`
+
+	// ecsAttachRetries bounds the wait for a just-created policy to become
+	// visible to the attach, and ecsAttachRetryBase scales the linear backoff.
+	ecsAttachRetries   = 5
+	ecsAttachRetryBase = 100 * time.Millisecond
 )
+
+// ecsAttachRetrySleep is the test seam for the attach backoff.
+var ecsAttachRetrySleep = time.Sleep
 
 // ensureECSInstanceProfile find-or-creates the ecsInstanceRole, its ecs:* policy
 // attachment, and the matching instance profile, returning the profile ARN.
@@ -88,14 +97,23 @@ func (s *Service) ensureECSRolePolicy(accountID string) error {
 		return fmt.Errorf("create policy %q: %w", ecsInstanceRolePolicyName, err)
 	}
 
-	_, err = s.deps.IAM.AttachRolePolicy(accountID, &iam.AttachRolePolicyInput{
-		RoleName:  aws.String(ecsInstanceRoleName),
-		PolicyArn: aws.String(policyARN),
-	})
-	if err != nil && err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
-		return fmt.Errorf("attach policy %q to role %q: %w", policyARN, ecsInstanceRoleName, err)
+	// The attach checks the policy exists, and the policy buckets are
+	// replicated, so a read that lands on a replica which has not caught up
+	// answers NoSuchEntity for the write a microsecond above. Retry that one
+	// code rather than fail a provision over a write known to have landed.
+	for attempt := 0; ; attempt++ {
+		_, err = s.deps.IAM.AttachRolePolicy(accountID, &iam.AttachRolePolicyInput{
+			RoleName:  aws.String(ecsInstanceRoleName),
+			PolicyArn: aws.String(policyARN),
+		})
+		if err == nil || err.Error() == awserrors.ErrorIAMEntityAlreadyExists {
+			return nil
+		}
+		if err.Error() != awserrors.ErrorIAMNoSuchEntity || attempt == ecsAttachRetries {
+			return fmt.Errorf("attach policy %q to role %q: %w", policyARN, ecsInstanceRoleName, err)
+		}
+		ecsAttachRetrySleep(time.Duration(attempt+1) * ecsAttachRetryBase)
 	}
-	return nil
 }
 
 // ensureECSInstanceProfileBinding guarantees the ecsInstanceRole instance

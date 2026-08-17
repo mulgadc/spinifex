@@ -43,6 +43,18 @@ region = "us-east-1"
 az = "us-east-1a"
 `
 
+// regionlessClusterToml is a valid cluster whose node carries no region, the
+// one thing the console needs to sign requests.
+const regionlessClusterToml = `
+version = "1.0"
+epoch = 1
+node = "node1"
+
+[nodes.node1]
+node = "node1"
+az = "us-east-1a"
+`
+
 // writeMalformedToml writes a syntactically invalid TOML file so
 // config.LoadConfig fails at viper.ReadInConfig rather than at validation.
 func writeMalformedToml(t *testing.T) string {
@@ -254,6 +266,9 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			wantErr: "start awsgw service",
 		},
 		{
+			// The config is pinned so the node resolves a region. Without it the
+			// command reads whatever config the host happens to have and fails at
+			// the region check instead, which is not what this case is about.
 			name: "spinifex-ui start (start failure via missing tls cert)",
 			cmd:  spinifexUIStartCmd,
 			setup: func(t *testing.T) {
@@ -263,6 +278,16 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 				viper.Set("spinifex-ui-tls-cert", filepath.Join(t.TempDir(), "missing.pem"))
 			},
 			wantErr: "start spinifex-ui service",
+		},
+		{
+			name: "spinifex-ui start (node has no region)",
+			cmd:  spinifexUIStartCmd,
+			setup: func(t *testing.T) {
+				resetGlobalViper(t)
+				viper.Set("config", writeSpinifexToml(t, regionlessClusterToml))
+				viper.Set("spinifex-ui-base-dir", t.TempDir())
+			},
+			wantErr: "has no region configured",
 		},
 		{name: "vpcd start (missing config)", cmd: vpcdStartCmd},
 		{

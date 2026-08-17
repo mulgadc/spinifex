@@ -14,8 +14,10 @@ import (
 // default-gateway MAC (the host shares the physical uplink), read from the kernel
 // neigh table and primed with one ping when absent. Idempotent: an existing
 // binding for the same lrpName+ip is replaced. Best-effort: a missing MAC logs
-// and returns nil, leaving dynamic ARP as the fallback.
-func SeedNexthopMAC(ctx context.Context, runner Runner, lrpName, nexthopIP string) error {
+// and returns nil, leaving dynamic ARP as the fallback. nbAddr selects the NB DB
+// to write to (empty uses the local default socket); a compute node runs no
+// database, so a write without it would never reach the cluster.
+func SeedNexthopMAC(ctx context.Context, runner Runner, nbAddr, lrpName, nexthopIP string) error {
 	if lrpName == "" || nexthopIP == "" {
 		return nil
 	}
@@ -40,9 +42,14 @@ func SeedNexthopMAC(ctx context.Context, runner Runner, lrpName, nexthopIP strin
 		return nil
 	}
 
+	var db []string
+	if nbAddr != "" {
+		db = []string{"--db=" + nbAddr, "--no-leader-only"}
+	}
+
 	// Idempotent: drop any stale binding (best-effort) before adding.
-	_, _ = runner.Run(ctx, "ovn-nbctl", "--if-exists", "static-mac-binding-del", lrpName, nexthopIP)
-	if _, err := runner.Run(ctx, "ovn-nbctl", "static-mac-binding-add", lrpName, nexthopIP, mac); err != nil {
+	_, _ = runner.Run(ctx, "ovn-nbctl", append(append([]string{}, db...), "--if-exists", "static-mac-binding-del", lrpName, nexthopIP)...)
+	if _, err := runner.Run(ctx, "ovn-nbctl", append(append([]string{}, db...), "static-mac-binding-add", lrpName, nexthopIP, mac)...); err != nil {
 		return fmt.Errorf("ovn-nbctl static-mac-binding-add %s %s %s: %w", lrpName, nexthopIP, mac, err)
 	}
 

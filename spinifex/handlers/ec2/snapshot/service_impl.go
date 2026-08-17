@@ -146,10 +146,12 @@ var ErrCorruptSnapshotMetadata = errors.New("corrupt snapshot metadata")
 
 // ReadSnapshotConfig reads {snapshotID}/metadata.json. Object-store errors are
 // returned unchanged; callers map NoSuchKey to their preferred AWS error.
-// Decode failures wrap ErrCorruptSnapshotMetadata.
-func ReadSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID string) (*SnapshotConfig, error) {
+// Decode failures wrap ErrCorruptSnapshotMetadata. ctx carries the caller's
+// deadline: a describe that has already given up must not keep the object
+// store busy on its behalf.
+func ReadSnapshotConfig(ctx context.Context, store objectstore.ObjectStore, bucket, snapshotID string) (*SnapshotConfig, error) {
 	key := GetSnapshotKey(snapshotID)
-	result, err := store.GetObject(context.Background(), &s3.GetObjectInput{
+	result, err := store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -181,8 +183,8 @@ func WriteSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID strin
 }
 
 // getSnapshotConfig translates NoSuchKey to InvalidSnapshot.NotFound.
-func (s *SnapshotServiceImpl) getSnapshotConfig(snapshotID string) (*SnapshotConfig, error) {
-	cfg, err := ReadSnapshotConfig(s.store, s.config.Predastore.Bucket, snapshotID)
+func (s *SnapshotServiceImpl) getSnapshotConfig(ctx context.Context, snapshotID string) (*SnapshotConfig, error) {
+	cfg, err := ReadSnapshotConfig(ctx, s.store, s.config.Predastore.Bucket, snapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
@@ -522,7 +524,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		snapshotIDFilterValues = parsedFilters["snapshot-id"]
 	}
 
-	var snapshots []*ec2.Snapshot
+	var wanted []string
 	for _, prefix := range listResult.CommonPrefixes {
 		if prefix.Prefix == nil {
 			continue
@@ -542,11 +544,27 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 			}
 		}
 
-		cfg, err := s.getSnapshotConfig(snapshotID)
-		if err != nil {
-			slog.WarnContext(ctx, "DescribeSnapshots failed to get config", "snapshotId", snapshotID, "err", err)
+		wanted = append(wanted, snapshotID)
+	}
+
+	configs, readErrs := s.readSnapshotConfigs(ctx, wanted)
+
+	// Every read fails once the caller's deadline passes, and reporting that as
+	// an empty list would read as "this account has no snapshots".
+	if err := ctx.Err(); err != nil {
+		slog.WarnContext(ctx, "DescribeSnapshots gave up reading metadata",
+			"requested", len(wanted), "read", len(configs), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var snapshots []*ec2.Snapshot
+	for _, snapshotID := range wanted {
+		cfg, ok := configs[snapshotID]
+		if !ok {
+			slog.WarnContext(ctx, "DescribeSnapshots failed to get config",
+				"snapshotId", snapshotID, "err", readErrs[snapshotID])
 			if strict {
-				return nil, fmt.Errorf("describe snapshot %s metadata: %w", snapshotID, err)
+				return nil, fmt.Errorf("describe snapshot %s metadata: %w", snapshotID, readErrs[snapshotID])
 			}
 			continue
 		}
@@ -584,6 +602,46 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	return &ec2.DescribeSnapshotsOutput{
 		Snapshots: snapshots,
 	}, nil
+}
+
+// describeSnapshotFanout bounds how many metadata reads a single describe has
+// in flight. A describe used to read every snapshot's metadata.json one after
+// the other, so its latency was the sum of them all and a single slow object
+// made the whole listing miss its caller's deadline. The bound keeps a large
+// account from turning one describe into a burst against the object store.
+const describeSnapshotFanout = 16
+
+// readSnapshotConfigs fetches metadata for each snapshot concurrently. It
+// returns what it could read plus the error for each one it could not, so the
+// caller decides whether an unreadable snapshot is fatal or simply skipped.
+func (s *SnapshotServiceImpl) readSnapshotConfigs(
+	ctx context.Context, ids []string,
+) (map[string]*SnapshotConfig, map[string]error) {
+	configs := make(map[string]*SnapshotConfig, len(ids))
+	readErrs := make(map[string]error)
+	if len(ids) == 0 {
+		return configs, readErrs
+	}
+
+	var mu sync.Mutex
+	sem := make(chan struct{}, describeSnapshotFanout)
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			cfg, err := s.getSnapshotConfig(ctx, id)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				readErrs[id] = err
+				return
+			}
+			configs[id] = cfg
+		})
+	}
+	wg.Wait()
+	return configs, readErrs
 }
 
 // snapshotMatchesFilters checks whether a SnapshotConfig satisfies all parsed filters.
@@ -645,7 +703,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 
 	slog.InfoContext(ctx, "DeleteSnapshot request", "snapshotId", snapshotID, "accountID", accountID)
 
-	cfg, err := s.getSnapshotConfig(snapshotID)
+	cfg, err := s.getSnapshotConfig(ctx, snapshotID)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteSnapshot snapshot not found", "snapshotId", snapshotID, "err", err)
 		return nil, err
@@ -721,7 +779,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 
 	slog.InfoContext(ctx, "CopySnapshot request", "sourceSnapshotId", sourceSnapshotID, "accountID", accountID)
 
-	sourceCfg, err := s.getSnapshotConfig(sourceSnapshotID)
+	sourceCfg, err := s.getSnapshotConfig(ctx, sourceSnapshotID)
 	if err != nil {
 		slog.ErrorContext(ctx, "CopySnapshot source snapshot not found", "snapshotId", sourceSnapshotID, "err", err)
 		return nil, err
@@ -960,7 +1018,7 @@ func (s *SnapshotServiceImpl) mirrorSnapshotTags(resources []*string, accountID 
 		if res == nil || !strings.HasPrefix(*res, "snap-") {
 			continue
 		}
-		cfg, err := ReadSnapshotConfig(s.store, s.config.Predastore.Bucket, *res)
+		cfg, err := ReadSnapshotConfig(context.Background(), s.store, s.config.Predastore.Bucket, *res)
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
 				continue

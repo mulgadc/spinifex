@@ -123,7 +123,7 @@ jobs:
         env:
           SPINIFEX_REQUIRE_CONFORMANCE_TOOLS: "1"
           VIPERBLOCK_NBDKIT_PLUGIN: ${{ github.workspace }}/viperblock/lib/nbdkit-viperblock-plugin.so
-        run: make -C spinifex test-cover
+        run: make -C spinifex test-cover GOTESTFLAGS=-count=1
 
       - name: Run Action Tests
         run: make -C spinifex test-actions
@@ -295,7 +295,7 @@ jobs:
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Run Tests with Race Detector
-        run: make -C spinifex test-race
+        run: make -C spinifex test-race GOTESTFLAGS=-count=1
 
   lint_and_security:
     name: Lint and Security

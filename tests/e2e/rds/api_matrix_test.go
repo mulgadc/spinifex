@@ -257,12 +257,13 @@ func TestAPIMatrix(t *testing.T) {
 			assert.NotContains(t, classes, unmappedDBClass)
 		})
 
+		// Raw, because the SDK marks Engine required and rejects an absent one
+		// client-side as InvalidParameter: the gateway's answer is only observable
+		// on a request the SDK never gets to validate.
 		t.Run("OrderableOptionsRequireAnEngine", func(t *testing.T) {
-			harness.ExpectError(t, "MissingParameter", func() error {
-				_, err := f.AWS.RDS.DescribeOrderableDBInstanceOptions(
-					&rds.DescribeOrderableDBInstanceOptionsInput{})
-				return err
-			})
+			status, body, code := harness.PostRDSAction(t, f.Env, f.AWS, "DescribeOrderableDBInstanceOptions", nil)
+			assert.Equal(t, 400, status, "body: %s", body)
+			assert.Equal(t, "MissingParameter", code, "body: %s", body)
 		})
 
 		// These two exist only to be filtered, so an unrecognised filter name is

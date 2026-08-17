@@ -572,6 +572,25 @@ EOF
             echo "  OVN SB DB listening on tcp:127.0.0.1:6642"
         fi
     fi
+else
+    # A compute node must not run a database. The ovn-central package starts a
+    # standalone one on install, and nothing here used to stop it, so every
+    # node past the quorum kept an unclustered NB/SB that no chassis reports
+    # into. It serves nothing, but it answers on the local socket, which is
+    # enough for any ovn-nbctl without an explicit --db to confirm against the
+    # wrong database — a `--wait=hv` there can never be acknowledged and burns
+    # its whole timeout instead.
+    if systemctl is-enabled ovn-central >/dev/null 2>&1 ||
+        systemctl is-active ovn-central >/dev/null 2>&1; then
+        sudo systemctl stop ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
+        sudo systemctl disable ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
+        echo "  ovn-central: stopped and disabled (compute node runs no database)"
+    fi
+    for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
+        [ -f "$db" ] || continue
+        sudo mv "$db" "$db.standalone-disabled"
+        echo "  moved aside $db (left by the package's standalone ovn-central)"
+    done
 fi
 
 # --- Step 3: Create and configure br-int ---

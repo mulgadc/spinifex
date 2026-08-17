@@ -1,3 +1,7 @@
+// Drives ensureECSRolePolicy directly and swaps the unexported retry sleep, so
+// it needs the package's own scope.
+//
+//test:in-package
 package handlers_ecs
 
 import (

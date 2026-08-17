@@ -173,6 +173,11 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 
 		if err != nil {
 			slog.Error("Failed to request EBS mount", "err", err)
+			// A missing responder means viperblockd has not finished starting;
+			// during recovery that is transient, so let the caller retry.
+			if errors.Is(err, nats.ErrNoResponders) {
+				return rollback(fmt.Errorf("ebs mount had no responder: %w", vm.ErrMountRetryable))
+			}
 			return rollback(err)
 		}
 

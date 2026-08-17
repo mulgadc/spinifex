@@ -5,7 +5,6 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
@@ -21,7 +20,6 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
 import { SystemImageRequired } from "@/components/system-image-required"
-import { Button } from "@/components/ui/button"
 import {
   Field,
   FieldDescription,
@@ -58,6 +56,7 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface Props {
   dbSnapshotIdentifier: string
@@ -116,7 +115,6 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const {
     control,
     formState: { errors, isSubmitting },
-    getValues,
     handleSubmit,
     register,
     setValue,
@@ -493,48 +491,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             />
           </Field>
 
-          <Field>
-            <FieldTitle>Tags</FieldTitle>
-            <div className="space-y-2">
-              {(values.tags ?? []).map((_, index) => (
-                // oxlint-disable-next-line react/no-array-index-key -- form array with no stable id
-                <div className="flex items-center gap-2" key={index}>
-                  <Input placeholder="Key" {...register(`tags.${index}.key`)} />
-                  <Input
-                    placeholder="Value"
-                    {...register(`tags.${index}.value`)}
-                  />
-                  <Button
-                    onClick={() =>
-                      setValue(
-                        "tags",
-                        getValues("tags").filter((__, i) => i !== index),
-                      )
-                    }
-                    size="icon"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              ))}
-              <Button
-                onClick={() =>
-                  setValue("tags", [
-                    ...getValues("tags"),
-                    { key: "", value: "" },
-                  ])
-                }
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <Plus className="size-3.5" />
-                Add tag
-              </Button>
-            </div>
-          </Field>
+          <TagsFieldArray control={control} name="tags" />
 
           <div className="space-y-2 rounded-md border border-border p-4">
             <h3 className="text-xs font-medium">Inherited from the snapshot</h3>

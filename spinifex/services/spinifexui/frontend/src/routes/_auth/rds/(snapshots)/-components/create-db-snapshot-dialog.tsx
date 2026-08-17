@@ -1,8 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery } from "@tanstack/react-query"
-import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { useForm, useWatch } from "react-hook-form"
+import { useForm } from "react-hook-form"
 
 import {
   AlertDialog,
@@ -36,6 +35,7 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface CreateDBSnapshotDialogProps {
   open: boolean
@@ -78,7 +78,6 @@ export function CreateDBSnapshotDialog({
   const {
     control,
     formState: { errors, isSubmitting },
-    getValues,
     handleSubmit,
     register,
     reset,
@@ -92,9 +91,6 @@ export function CreateDBSnapshotDialog({
       tags: [],
     },
   })
-
-  const values = useWatch({ control })
-  const tags = values.tags ?? []
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
@@ -195,48 +191,7 @@ export function CreateDBSnapshotDialog({
             <FieldError errors={[errors.dbSnapshotIdentifier]} />
           </Field>
 
-          <Field>
-            <FieldTitle>Tags</FieldTitle>
-            <div className="space-y-2">
-              {tags.map((_, index) => (
-                // oxlint-disable-next-line react/no-array-index-key -- form array with no stable id
-                <div className="flex items-center gap-2" key={index}>
-                  <Input placeholder="Key" {...register(`tags.${index}.key`)} />
-                  <Input
-                    placeholder="Value"
-                    {...register(`tags.${index}.value`)}
-                  />
-                  <Button
-                    onClick={() =>
-                      setValue(
-                        "tags",
-                        getValues("tags").filter((__, i) => i !== index),
-                      )
-                    }
-                    size="icon"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              ))}
-              <Button
-                onClick={() =>
-                  setValue("tags", [
-                    ...getValues("tags"),
-                    { key: "", value: "" },
-                  ])
-                }
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <Plus className="size-3.5" />
-                Add tag
-              </Button>
-            </div>
-          </Field>
+          <TagsFieldArray control={control} name="tags" />
 
           <p className="text-xs text-muted-foreground">
             A snapshot the engine could not be quiesced for is still taken and

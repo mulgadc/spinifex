@@ -2,7 +2,6 @@ import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Plus, Trash2 } from "lucide-react"
 import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
@@ -14,7 +13,6 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
-import { Button } from "@/components/ui/button"
 import {
   Field,
   FieldDescription,
@@ -30,6 +28,8 @@ import {
   createDBSubnetGroupSchema,
   MAX_SUBNETS_PER_GROUP,
 } from "@/types/rds"
+
+import { TagsFieldArray } from "../../-components/tags-field-array"
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
@@ -48,7 +48,6 @@ export function CreateDBSubnetGroupPage() {
   const {
     control,
     formState: { errors, isSubmitting },
-    getValues,
     handleSubmit,
     register,
     setValue,
@@ -196,45 +195,7 @@ export function CreateDBSubnetGroupPage() {
           <FieldError errors={[errors.subnetIds]} />
         </Field>
 
-        <Field>
-          <FieldTitle>Tags</FieldTitle>
-          <div className="space-y-2">
-            {(values.tags ?? []).map((_, index) => (
-              // oxlint-disable-next-line react/no-array-index-key -- form array with no stable id
-              <div className="flex items-center gap-2" key={index}>
-                <Input placeholder="Key" {...register(`tags.${index}.key`)} />
-                <Input
-                  placeholder="Value"
-                  {...register(`tags.${index}.value`)}
-                />
-                <Button
-                  onClick={() =>
-                    setValue(
-                      "tags",
-                      getValues("tags").filter((__, i) => i !== index),
-                    )
-                  }
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </div>
-            ))}
-            <Button
-              onClick={() =>
-                setValue("tags", [...getValues("tags"), { key: "", value: "" }])
-              }
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Plus className="size-3.5" />
-              Add tag
-            </Button>
-          </div>
-        </Field>
+        <TagsFieldArray control={control} name="tags" />
 
         <CliCommandPanel
           commands={buildCreateSubnetGroupCommands({

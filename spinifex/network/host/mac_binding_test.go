@@ -40,7 +40,7 @@ func TestSeedNexthopMAC_ResolvedOnFirstRead(t *testing.T) {
 			"ip neigh show 192.168.1.1 dev br-wan": []byte("192.168.1.1 dev br-wan lladdr 04:f4:1c:fd:56:27 REACHABLE"),
 		},
 	}
-	if err := SeedNexthopMAC(context.Background(), r, "gw-vpc-1", "192.168.1.1"); err != nil {
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "192.168.1.1"); err != nil {
 		t.Fatalf("SeedNexthopMAC: %v", err)
 	}
 	if calls := r.callArgs("ping"); len(calls) != 0 {
@@ -64,6 +64,34 @@ func TestSeedNexthopMAC_ResolvedOnFirstRead(t *testing.T) {
 	}
 }
 
+// A compute node runs no local database, so the binding has to be addressed to
+// the configured NB cluster or the write lands nowhere the fabric reads.
+func TestSeedNexthopMAC_WritesToTheConfiguredNBAddress(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 192.168.1.1":             []byte("192.168.1.1 dev br-wan src 192.168.1.50"),
+			"ip neigh show 192.168.1.1 dev br-wan": []byte("192.168.1.1 dev br-wan lladdr 04:f4:1c:fd:56:27 REACHABLE"),
+		},
+	}
+	nb := "tcp:10.2.0.2:6641,tcp:10.2.0.3:6641,tcp:10.2.0.4:6641"
+	if err := SeedNexthopMAC(context.Background(), r, nb, "gw-vpc-1", "192.168.1.1"); err != nil {
+		t.Fatalf("SeedNexthopMAC: %v", err)
+	}
+
+	wantDel := "ovn-nbctl --db=" + nb + " --no-leader-only --if-exists static-mac-binding-del gw-vpc-1 192.168.1.1"
+	delCalls := r.callArgs("ovn-nbctl --db=")
+	if len(delCalls) != 2 {
+		t.Fatalf("expected both nbctl calls to carry --db, got %d: %v", len(delCalls), r.calls)
+	}
+	if got := strings.Join(delCalls[0], " "); got != wantDel {
+		t.Fatalf("del argv mismatch\n got: %s\nwant: %s", got, wantDel)
+	}
+	wantAdd := "ovn-nbctl --db=" + nb + " --no-leader-only static-mac-binding-add gw-vpc-1 192.168.1.1 04:f4:1c:fd:56:27"
+	if got := strings.Join(delCalls[1], " "); got != wantAdd {
+		t.Fatalf("add argv mismatch\n got: %s\nwant: %s", got, wantAdd)
+	}
+}
+
 func TestSeedNexthopMAC_ResolvedAfterPing(t *testing.T) {
 	neighKey := "ip neigh show 192.168.1.1 dev br-wan"
 	r := &scriptedRunner{
@@ -79,7 +107,7 @@ func TestSeedNexthopMAC_ResolvedAfterPing(t *testing.T) {
 		firstOut:       []byte(""),
 		secondOut:      []byte("192.168.1.1 dev br-wan lladdr 04:f4:1c:fd:56:27 REACHABLE"),
 	}
-	if err := SeedNexthopMAC(context.Background(), wrapper, "gw-vpc-1", "192.168.1.1"); err != nil {
+	if err := SeedNexthopMAC(context.Background(), wrapper, "", "gw-vpc-1", "192.168.1.1"); err != nil {
 		t.Fatalf("SeedNexthopMAC: %v", err)
 	}
 	if wrapper.neighCalls != 2 {
@@ -132,7 +160,7 @@ func TestSeedNexthopMAC_UnresolvedEvenAfterPing(t *testing.T) {
 			"ip neigh show 192.168.1.1 dev br-wan": []byte("192.168.1.1 dev br-wan INCOMPLETE"),
 		},
 	}
-	if err := SeedNexthopMAC(context.Background(), r, "gw-vpc-1", "192.168.1.1"); err != nil {
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "192.168.1.1"); err != nil {
 		t.Fatalf("SeedNexthopMAC must return nil (best-effort) on unresolved MAC, got: %v", err)
 	}
 	if calls := r.callArgs("ping"); len(calls) != 1 {
@@ -145,10 +173,10 @@ func TestSeedNexthopMAC_UnresolvedEvenAfterPing(t *testing.T) {
 
 func TestSeedNexthopMAC_EmptyArgsNoop(t *testing.T) {
 	r := &scriptedRunner{}
-	if err := SeedNexthopMAC(context.Background(), r, "", "192.168.1.1"); err != nil {
+	if err := SeedNexthopMAC(context.Background(), r, "", "", "192.168.1.1"); err != nil {
 		t.Fatalf("expected nil for empty lrpName, got %v", err)
 	}
-	if err := SeedNexthopMAC(context.Background(), r, "gw-vpc-1", ""); err != nil {
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", ""); err != nil {
 		t.Fatalf("expected nil for empty nexthopIP, got %v", err)
 	}
 	if len(r.calls) != 0 {
@@ -162,7 +190,7 @@ func TestSeedNexthopMAC_RouteGetFailurePropagates(t *testing.T) {
 			"ip route get 192.168.1.1": errors.New("network unreachable"),
 		},
 	}
-	err := SeedNexthopMAC(context.Background(), r, "gw-vpc-1", "192.168.1.1")
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "192.168.1.1")
 	if err == nil {
 		t.Fatal("expected error when route resolution fails")
 	}
@@ -178,7 +206,7 @@ func TestSeedNexthopMAC_AddFailurePropagates(t *testing.T) {
 			"ovn-nbctl static-mac-binding-add gw-vpc-1 192.168.1.1 04:f4:1c:fd:56:27": errors.New("exit 1"),
 		},
 	}
-	err := SeedNexthopMAC(context.Background(), r, "gw-vpc-1", "192.168.1.1")
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "192.168.1.1")
 	if err == nil {
 		t.Fatal("expected error when static-mac-binding-add fails")
 	}

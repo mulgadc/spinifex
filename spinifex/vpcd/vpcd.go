@@ -619,7 +619,7 @@ func launchService(cfg *Config) error {
 		FlowsBarrier:  flowsBarrier,
 		RoutedIngress: routedIngress,
 		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
-			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), lrpName, nexthopIP)
+			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), cfg.OVNNBAddr, lrpName, nexthopIP)
 		},
 	})
 	if err != nil {

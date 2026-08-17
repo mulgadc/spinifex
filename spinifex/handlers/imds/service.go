@@ -65,6 +65,7 @@ type IMDSServiceImpl struct {
 	v1Allow        *v1AllowCache
 	creds          *credCache
 	iam            profileLookup
+	roleMiss       *roleMissLogger
 	pubKeys        publicKeyLookup
 	tapResp        *tapResponderManager
 	listTaps       listTapsFunc
@@ -142,6 +143,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		v1Allow:        newV1AllowCache(),
 		creds:          newCredCache(sts),
 		iam:            iamSvc,
+		roleMiss:       newRoleMissLogger(time.Now),
 		pubKeys:        pubKeys,
 		listTaps:       listTaps,
 		now:            time.Now,
@@ -232,6 +234,7 @@ func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
 			s.tokens.sweep(now)
 			s.creds.sweep(now)
 			s.v1Allow.sweep(now)
+			s.roleMiss.sweep(now)
 		}
 	}
 }

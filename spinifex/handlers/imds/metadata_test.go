@@ -135,6 +135,7 @@ func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*I
 		v1Allow:    newV1AllowCache(),
 		creds:      newCredCache(assumer),
 		iam:        fIAM,
+		roleMiss:   newRoleMissLogger(func() time.Time { return now }),
 		pubKeys:    &fakePublicKeys{},
 		now:        func() time.Time { return now },
 		baseDomain: "spx3.net",

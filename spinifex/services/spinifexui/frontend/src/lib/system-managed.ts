@@ -36,3 +36,31 @@ export function isEcsSystemImage(image: Image): boolean {
     ) ?? false
   )
 }
+
+// Tag value identifying an RDS engine image, applied by
+// `spx admin images import --name spinifex-rds-<engine>`.
+export const RDS_SYSTEM_IMAGE_TAG_VALUE = "rds"
+
+// Tag key carrying which engine an RDS image serves. RDS has one image per
+// engine and they are imported independently, so the engine tag is what tells
+// postgres and mariadb apart — the image name is never parsed.
+export const RDS_ENGINE_TAG_KEY = "engine"
+
+export function isRdsSystemImage(image: Image, engine: string): boolean {
+  const tags = image.Tags ?? []
+  const managedByRds = tags.some(
+    (tag) =>
+      tag.Key === SYSTEM_MANAGED_TAG_KEY &&
+      tag.Value === RDS_SYSTEM_IMAGE_TAG_VALUE,
+  )
+  if (!managedByRds) {
+    return false
+  }
+  return tags.some(
+    (tag) => tag.Key === RDS_ENGINE_TAG_KEY && tag.Value === engine,
+  )
+}
+
+export function rdsImportCommand(engine: string): string {
+  return `spx admin images import --name spinifex-rds-${engine}`
+}

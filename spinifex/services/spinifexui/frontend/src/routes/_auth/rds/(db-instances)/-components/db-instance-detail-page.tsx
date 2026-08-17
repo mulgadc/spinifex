@@ -1,0 +1,481 @@
+import type { DBInstance, Event } from "@aws-sdk/client-rds"
+import { useSuspenseQuery } from "@tanstack/react-query"
+import { useNavigate } from "@tanstack/react-router"
+import { Pencil, Trash2 } from "lucide-react"
+import { useState } from "react"
+
+import { BackLink } from "@/components/back-link"
+import {
+  CliCommandPanel,
+  type CliCommand,
+} from "@/components/cli-command-panel"
+import { DetailCard } from "@/components/detail-card"
+import { DetailRow } from "@/components/detail-row"
+import { TagsEditor } from "@/components/elbv2/tags-editor"
+import { ErrorBanner } from "@/components/error-banner"
+import { PageHeading } from "@/components/page-heading"
+import { StateBadge } from "@/components/state-badge"
+import { Button } from "@/components/ui/button"
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
+import {
+  useRebootDBInstance,
+  useStartDBInstance,
+  useStopDBInstance,
+  useUpdateRdsTags,
+} from "@/mutations/rds"
+import {
+  rdsDBInstanceQueryOptions,
+  rdsEventsQueryOptions,
+  rdsTagsQueryOptions,
+} from "@/queries/rds"
+import { canDelete, canReboot, canStart, canStop } from "@/types/rds"
+
+import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
+import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
+
+interface Props {
+  dbInstanceIdentifier: string
+}
+
+function hasCategory(event: Event, category: string): boolean {
+  return event.EventCategories?.includes(category) ?? false
+}
+
+function latestEvent(
+  events: Event[],
+  predicate: (event: Event) => boolean,
+): Event | undefined {
+  return events
+    .filter(predicate)
+    .toSorted((a, b) => (a.Date?.getTime() ?? 0) - (b.Date?.getTime() ?? 0))
+    .at(-1)
+}
+
+function formatTime(value: Date | undefined): string | undefined {
+  return value?.toISOString()
+}
+
+// The connection command for the engine, ready to paste. TLS is enforced on
+// the serving side, so both forms ask for it rather than falling back silently.
+function buildConnectCommand(instance: DBInstance): CliCommand[] {
+  const address = instance.Endpoint?.Address
+  if (!address) {
+    return []
+  }
+  const port = instance.Endpoint?.Port ?? instance.DbInstancePort
+  const user = instance.MasterUsername ?? "<MasterUsername>"
+  const database = instance.DBName ?? user
+
+  if (instance.Engine === "postgres") {
+    return [
+      {
+        label: "Connect",
+        parts: [
+          { type: "bin", value: "psql" },
+          {
+            type: "value",
+            value: ` "host=${address} port=${port} dbname=${database} user=${user} sslmode=require"`,
+          },
+        ],
+      },
+    ]
+  }
+  return [
+    {
+      label: "Connect",
+      parts: [
+        { type: "bin", value: "mariadb" },
+        { type: "flag", value: " --host" },
+        { type: "value", value: `=${address}` },
+        { type: "flag", value: " --port" },
+        { type: "value", value: `=${port}` },
+        { type: "flag", value: " --user" },
+        { type: "value", value: `=${user}` },
+        { type: "flag", value: " --ssl" },
+        { type: "value", value: ` ${database}` },
+      ],
+    },
+  ]
+}
+
+export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
+  const navigate = useNavigate()
+  const { data: instanceData } = useSuspenseQuery(
+    rdsDBInstanceQueryOptions(dbInstanceIdentifier),
+  )
+  const instance = instanceData.DBInstances?.[0]
+  const arn = instance?.DBInstanceArn ?? ""
+
+  const { data: tagsData } = useSuspenseQuery(rdsTagsQueryOptions(arn))
+  const { data: eventsData } = useSuspenseQuery(
+    rdsEventsQueryOptions(dbInstanceIdentifier),
+  )
+
+  const updateTags = useUpdateRdsTags()
+  const startInstance = useStartDBInstance()
+  const stopInstance = useStopDBInstance()
+  const rebootInstance = useRebootDBInstance()
+  const [showDelete, setShowDelete] = useState(false)
+  const [showModify, setShowModify] = useState(false)
+  const [activeTab, setActiveTab] = useState("connectivity")
+
+  if (!instance?.DBInstanceIdentifier) {
+    return (
+      <>
+        <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
+        <p className="text-muted-foreground">DB instance not found.</p>
+      </>
+    )
+  }
+
+  const status = instance.DBInstanceStatus
+  const events = eventsData.Events ?? []
+  const tags = tagsData?.TagList ?? []
+  const lifecycleError =
+    startInstance.error ?? stopInstance.error ?? rebootInstance.error
+
+  // The record's backup failure counters are internal and never projected onto
+  // a DB instance, so the API-visible signal is the failure event itself.
+  const lastBackupFailure = latestEvent(
+    events,
+    (event) => hasCategory(event, "backup") && hasCategory(event, "failure"),
+  )
+  const lastBackup = latestEvent(
+    events,
+    (event) => hasCategory(event, "backup") && hasCategory(event, "creation"),
+  )
+  const pending = instance.PendingModifiedValues
+  const hasPending =
+    pending?.AllocatedStorage !== undefined ||
+    pending?.DBInstanceClass !== undefined
+
+  return (
+    <>
+      <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
+
+      {lifecycleError && (
+        <ErrorBanner
+          error={lifecycleError}
+          msg="Failed to change the DB instance state."
+        />
+      )}
+
+      <div className="space-y-6">
+        <PageHeading
+          actions={
+            <div className="flex gap-2">
+              <Button
+                disabled={!canStart(status) || startInstance.isPending}
+                onClick={() => startInstance.mutate(dbInstanceIdentifier)}
+                size="sm"
+                variant="outline"
+              >
+                Start
+              </Button>
+              <Button
+                disabled={!canStop(status) || stopInstance.isPending}
+                onClick={() => stopInstance.mutate(dbInstanceIdentifier)}
+                size="sm"
+                variant="outline"
+              >
+                Stop
+              </Button>
+              <Button
+                disabled={!canReboot(status) || rebootInstance.isPending}
+                onClick={() => rebootInstance.mutate(dbInstanceIdentifier)}
+                size="sm"
+                variant="outline"
+              >
+                Reboot
+              </Button>
+              <Button
+                onClick={() => setShowModify(true)}
+                size="sm"
+                variant="outline"
+              >
+                <Pencil className="size-4" />
+                Modify
+              </Button>
+              <Button
+                disabled={!canDelete(status)}
+                onClick={() => setShowDelete(true)}
+                size="sm"
+                variant="destructive"
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            </div>
+          }
+          subtitle="DB Instance"
+          title={dbInstanceIdentifier}
+        />
+
+        <div className="flex items-center gap-2">
+          <StateBadge state={status} />
+          {instance.StatusInfos?.map((info) => (
+            <span
+              className="text-xs text-tactical-amber"
+              key={`${info.StatusType}-${info.Status}`}
+            >
+              {info.StatusType}: {info.Message ?? info.Status}
+            </span>
+          ))}
+        </div>
+
+        <Tabs onValueChange={setActiveTab} value={activeTab}>
+          <TabsList>
+            <TabsTab value="connectivity">Connectivity</TabsTab>
+            <TabsTab value="configuration">Configuration</TabsTab>
+            <TabsTab value="backups">Backups</TabsTab>
+            <TabsTab value="tags">Tags</TabsTab>
+            <TabsTab value="events">Events</TabsTab>
+          </TabsList>
+
+          <TabsPanel value="connectivity">
+            <div className="space-y-4">
+              <DetailCard>
+                <DetailCard.Header>Endpoint</DetailCard.Header>
+                <DetailCard.Content>
+                  <DetailRow
+                    label="Address"
+                    value={instance.Endpoint?.Address}
+                  />
+                  <DetailRow
+                    label="Port"
+                    value={(
+                      instance.Endpoint?.Port ?? instance.DbInstancePort
+                    )?.toString()}
+                  />
+                  <DetailRow
+                    label="VPC"
+                    value={instance.DBSubnetGroup?.VpcId}
+                  />
+                  <DetailRow
+                    label="DB subnet group"
+                    value={instance.DBSubnetGroup?.DBSubnetGroupName}
+                  />
+                  <DetailRow
+                    label="Security groups"
+                    value={instance.VpcSecurityGroups?.map(
+                      (g) => g.VpcSecurityGroupId,
+                    ).join(", ")}
+                  />
+                  <DetailRow
+                    label="Publicly accessible"
+                    value="No — private VPC address"
+                  />
+                </DetailCard.Content>
+              </DetailCard>
+
+              <CliCommandPanel commands={buildConnectCommand(instance)} />
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="configuration">
+            <div className="space-y-4">
+              <DetailCard>
+                <DetailCard.Header>Configuration</DetailCard.Header>
+                <DetailCard.Content>
+                  <DetailRow label="Engine" value={instance.Engine} />
+                  <DetailRow label="Version" value={instance.EngineVersion} />
+                  <DetailRow
+                    label="Instance class"
+                    value={instance.DBInstanceClass}
+                  />
+                  <DetailRow
+                    label="Allocated storage"
+                    value={
+                      instance.AllocatedStorage
+                        ? `${instance.AllocatedStorage} GiB`
+                        : undefined
+                    }
+                  />
+                  <DetailRow
+                    label="Storage type"
+                    value={instance.StorageType}
+                  />
+                  <DetailRow
+                    label="Encryption"
+                    value={
+                      instance.StorageEncrypted
+                        ? "Encrypted — always on"
+                        : "Not encrypted"
+                    }
+                  />
+                  <DetailRow
+                    label="Parameter group"
+                    value={instance.DBParameterGroups?.map(
+                      (g) =>
+                        `${g.DBParameterGroupName} (${g.ParameterApplyStatus})`,
+                    ).join(", ")}
+                  />
+                  <DetailRow
+                    label="Master username"
+                    value={instance.MasterUsername}
+                  />
+                  <DetailRow label="Initial database" value={instance.DBName} />
+                  <DetailRow
+                    label="Deletion protection"
+                    value={instance.DeletionProtection ? "On" : "Off"}
+                  />
+                  <DetailRow
+                    label="Created"
+                    value={formatTime(instance.InstanceCreateTime)}
+                  />
+                </DetailCard.Content>
+              </DetailCard>
+
+              {hasPending && (
+                <DetailCard>
+                  <DetailCard.Header>Pending changes</DetailCard.Header>
+                  <DetailCard.Content>
+                    <DetailRow
+                      label="Instance class"
+                      value={pending?.DBInstanceClass}
+                    />
+                    <DetailRow
+                      label="Allocated storage"
+                      value={
+                        pending?.AllocatedStorage
+                          ? `${pending.AllocatedStorage} GiB`
+                          : undefined
+                      }
+                    />
+                  </DetailCard.Content>
+                </DetailCard>
+              )}
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="backups">
+            <div className="space-y-4">
+              {lastBackupFailure && (
+                <div
+                  className="rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-4 text-sm"
+                  role="alert"
+                >
+                  <p className="font-medium">An automated backup failed</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {lastBackupFailure.Message} (
+                    {formatTime(lastBackupFailure.Date)})
+                  </p>
+                </div>
+              )}
+
+              <DetailCard>
+                <DetailCard.Header>Automated backups</DetailCard.Header>
+                <DetailCard.Content>
+                  <DetailRow
+                    label="Retention"
+                    value={
+                      instance.BackupRetentionPeriod === 0
+                        ? "Disabled"
+                        : `${instance.BackupRetentionPeriod} days`
+                    }
+                  />
+                  <DetailRow
+                    label="Preferred backup window"
+                    value={instance.PreferredBackupWindow}
+                  />
+                  <DetailRow
+                    label="Preferred maintenance window"
+                    value={instance.PreferredMaintenanceWindow}
+                  />
+                  <DetailRow
+                    label="Last backup"
+                    value={formatTime(lastBackup?.Date)}
+                  />
+                </DetailCard.Content>
+              </DetailCard>
+
+              <p className="text-xs text-muted-foreground">
+                Backups are daily snapshots taken in the backup window. There is
+                no point-in-time restore.
+              </p>
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="tags">
+            <TagsEditor
+              error={updateTags.error}
+              isPending={updateTags.isPending}
+              isSuccess={updateTags.isSuccess}
+              onSubmit={(next) =>
+                updateTags.mutate({
+                  resourceName: arn,
+                  tags: next,
+                  initialKeys: tags
+                    .map((t) => t.Key ?? "")
+                    .filter((k) => k.length > 0),
+                })
+              }
+              tags={tags}
+            />
+          </TabsPanel>
+
+          <TabsPanel value="events">
+            {events.length > 0 ? (
+              <div className="overflow-x-auto rounded-lg border bg-card">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="px-4 py-2 font-medium">Time</th>
+                      <th className="px-4 py-2 font-medium">Categories</th>
+                      <th className="px-4 py-2 font-medium">Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events
+                      .toSorted(
+                        (a, b) =>
+                          (b.Date?.getTime() ?? 0) - (a.Date?.getTime() ?? 0),
+                      )
+                      .map((event) => (
+                        <tr
+                          className="border-b last:border-0"
+                          key={`${event.Date?.toISOString()}-${event.Message}`}
+                        >
+                          <td className="px-4 py-2 font-mono text-xs">
+                            {formatTime(event.Date)}
+                          </td>
+                          <td className="px-4 py-2 text-xs">
+                            {event.EventCategories?.join(", ")}
+                          </td>
+                          <td className="px-4 py-2">{event.Message}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-muted-foreground">
+                No events in the last 14 days.
+              </p>
+            )}
+          </TabsPanel>
+        </Tabs>
+      </div>
+
+      <ModifyDBInstanceDialog
+        instance={instance}
+        onOpenChange={setShowModify}
+        open={showModify}
+      />
+
+      <DeleteDBInstanceDialog
+        dbInstanceIdentifier={dbInstanceIdentifier}
+        deletionProtection={instance.DeletionProtection ?? false}
+        onDeleted={async () =>
+          await navigate({ to: "/rds/describe-db-instances" })
+        }
+        onModify={() => {
+          setShowDelete(false)
+          setShowModify(true)
+        }}
+        onOpenChange={setShowDelete}
+        open={showDelete}
+      />
+    </>
+  )
+}

@@ -40,6 +40,7 @@ import { Route as AuthIaminstanceProfilesCreateInstanceProfileRouteImport } from
 import { Route as AuthIampoliciesCreatePolicyRouteImport } from './routes/_auth/iam/(policies)/create-policy'
 import { Route as AuthIamrolesCreateRoleRouteImport } from './routes/_auth/iam/(roles)/create-role'
 import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(users)/create-user'
+import { Route as AuthRdsdbInstancesCreateDbInstanceRouteImport } from './routes/_auth/rds/(db-instances)/create-db-instance'
 import { Route as AuthS3bucketsCreateBucketRouteImport } from './routes/_auth/s3/(buckets)/create-bucket'
 import { Route as AuthS3LsIndexRouteImport } from './routes/_auth/s3/ls/index'
 import { Route as AuthS3LsBucketRouteRouteImport } from './routes/_auth/s3/ls/$bucket/route'
@@ -92,6 +93,8 @@ import { Route as AuthIamrolesListRolesIndexRouteImport } from './routes/_auth/i
 import { Route as AuthIamrolesListRolesRoleNameRouteImport } from './routes/_auth/iam/(roles)/list-roles/$roleName'
 import { Route as AuthIamusersListUsersIndexRouteImport } from './routes/_auth/iam/(users)/list-users/index'
 import { Route as AuthIamusersListUsersUserNameRouteImport } from './routes/_auth/iam/(users)/list-users/$userName'
+import { Route as AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/index'
+import { Route as AuthRdsdbInstancesDescribeDbInstancesIdRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/$id'
 import { Route as AuthS3LsBucketIndexRouteImport } from './routes/_auth/s3/ls/$bucket/index'
 import { Route as AuthS3LsBucketSplatRouteImport } from './routes/_auth/s3/ls/$bucket/$'
 import { Route as AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
@@ -271,6 +274,12 @@ const AuthIamusersCreateUserRoute = AuthIamusersCreateUserRouteImport.update({
   path: '/iam/create-user',
   getParentRoute: () => AuthRouteRoute,
 } as any)
+const AuthRdsdbInstancesCreateDbInstanceRoute =
+  AuthRdsdbInstancesCreateDbInstanceRouteImport.update({
+    id: '/rds/(db-instances)/create-db-instance',
+    path: '/rds/create-db-instance',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthS3bucketsCreateBucketRoute =
   AuthS3bucketsCreateBucketRouteImport.update({
     id: '/s3/(buckets)/create-bucket',
@@ -583,6 +592,18 @@ const AuthIamusersListUsersUserNameRoute =
     path: '/iam/list-users/$userName',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthRdsdbInstancesDescribeDbInstancesIndexRoute =
+  AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport.update({
+    id: '/rds/(db-instances)/describe-db-instances/',
+    path: '/rds/describe-db-instances/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRdsdbInstancesDescribeDbInstancesIdRoute =
+  AuthRdsdbInstancesDescribeDbInstancesIdRouteImport.update({
+    id: '/rds/(db-instances)/describe-db-instances/$id',
+    path: '/rds/describe-db-instances/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthS3LsBucketIndexRoute = AuthS3LsBucketIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -638,6 +659,7 @@ export interface FileRoutesByFullPath {
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
   '/iam/create-user': typeof AuthIamusersCreateUserRoute
+  '/rds/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/s3/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/s3/ls/': typeof AuthS3LsIndexRoute
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
@@ -665,6 +687,7 @@ export interface FileRoutesByFullPath {
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
   '/iam/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
+  '/rds/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/ec2/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/ec2/describe-images/': typeof AuthEc2imagesDescribeImagesIndexRoute
@@ -690,6 +713,7 @@ export interface FileRoutesByFullPath {
   '/iam/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles/': typeof AuthIamrolesListRolesIndexRoute
   '/iam/list-users/': typeof AuthIamusersListUsersIndexRoute
+  '/rds/describe-db-instances/': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   '/ecs/list-clusters/$clusterName/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
@@ -725,6 +749,7 @@ export interface FileRoutesByTo {
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
   '/iam/create-user': typeof AuthIamusersCreateUserRoute
+  '/rds/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/s3/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/s3/ls': typeof AuthS3LsIndexRoute
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
@@ -752,6 +777,7 @@ export interface FileRoutesByTo {
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
   '/iam/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
+  '/rds/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/ec2/describe-addresses': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/ec2/describe-images': typeof AuthEc2imagesDescribeImagesIndexRoute
@@ -777,6 +803,7 @@ export interface FileRoutesByTo {
   '/iam/list-policies': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles': typeof AuthIamrolesListRolesIndexRoute
   '/iam/list-users': typeof AuthIamusersListUsersIndexRoute
+  '/rds/describe-db-instances': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketIndexRoute
   '/ecs/list-clusters/$clusterName/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   '/ecs/list-clusters/$clusterName/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
@@ -815,6 +842,7 @@ export interface FileRoutesById {
   '/_auth/iam/(policies)/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/_auth/iam/(roles)/create-role': typeof AuthIamrolesCreateRoleRoute
   '/_auth/iam/(users)/create-user': typeof AuthIamusersCreateUserRoute
+  '/_auth/rds/(db-instances)/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/_auth/s3/(buckets)/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/_auth/s3/ls/': typeof AuthS3LsIndexRoute
   '/_auth/ec2/(elastic-ips)/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
@@ -842,6 +870,7 @@ export interface FileRoutesById {
   '/_auth/iam/(policies)/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/_auth/iam/(roles)/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
   '/_auth/iam/(users)/list-users/$userName': typeof AuthIamusersListUsersUserNameRoute
+  '/_auth/rds/(db-instances)/describe-db-instances/$id': typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   '/_auth/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/_auth/ec2/(elastic-ips)/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/_auth/ec2/(images)/describe-images/': typeof AuthEc2imagesDescribeImagesIndexRoute
@@ -867,6 +896,7 @@ export interface FileRoutesById {
   '/_auth/iam/(policies)/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/_auth/iam/(roles)/list-roles/': typeof AuthIamrolesListRolesIndexRoute
   '/_auth/iam/(users)/list-users/': typeof AuthIamusersListUsersIndexRoute
+  '/_auth/rds/(db-instances)/describe-db-instances/': typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   '/_auth/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName': typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId': typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
@@ -905,6 +935,7 @@ export interface FileRouteTypes {
     | '/iam/create-policy'
     | '/iam/create-role'
     | '/iam/create-user'
+    | '/rds/create-db-instance'
     | '/s3/create-bucket'
     | '/s3/ls/'
     | '/ec2/describe-addresses/$id'
@@ -932,6 +963,7 @@ export interface FileRouteTypes {
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
     | '/iam/list-users/$userName'
+    | '/rds/describe-db-instances/$id'
     | '/s3/ls/$bucket/$'
     | '/ec2/describe-addresses/'
     | '/ec2/describe-images/'
@@ -957,6 +989,7 @@ export interface FileRouteTypes {
     | '/iam/list-policies/'
     | '/iam/list-roles/'
     | '/iam/list-users/'
+    | '/rds/describe-db-instances/'
     | '/s3/ls/$bucket/'
     | '/ecs/list-clusters/$clusterName/services/$serviceName'
     | '/ecs/list-clusters/$clusterName/tasks/$taskId'
@@ -992,6 +1025,7 @@ export interface FileRouteTypes {
     | '/iam/create-policy'
     | '/iam/create-role'
     | '/iam/create-user'
+    | '/rds/create-db-instance'
     | '/s3/create-bucket'
     | '/s3/ls'
     | '/ec2/describe-addresses/$id'
@@ -1019,6 +1053,7 @@ export interface FileRouteTypes {
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
     | '/iam/list-users/$userName'
+    | '/rds/describe-db-instances/$id'
     | '/s3/ls/$bucket/$'
     | '/ec2/describe-addresses'
     | '/ec2/describe-images'
@@ -1044,6 +1079,7 @@ export interface FileRouteTypes {
     | '/iam/list-policies'
     | '/iam/list-roles'
     | '/iam/list-users'
+    | '/rds/describe-db-instances'
     | '/s3/ls/$bucket'
     | '/ecs/list-clusters/$clusterName/services/$serviceName'
     | '/ecs/list-clusters/$clusterName/tasks/$taskId'
@@ -1081,6 +1117,7 @@ export interface FileRouteTypes {
     | '/_auth/iam/(policies)/create-policy'
     | '/_auth/iam/(roles)/create-role'
     | '/_auth/iam/(users)/create-user'
+    | '/_auth/rds/(db-instances)/create-db-instance'
     | '/_auth/s3/(buckets)/create-bucket'
     | '/_auth/s3/ls/'
     | '/_auth/ec2/(elastic-ips)/describe-addresses/$id'
@@ -1108,6 +1145,7 @@ export interface FileRouteTypes {
     | '/_auth/iam/(policies)/list-policies/$policyArn'
     | '/_auth/iam/(roles)/list-roles/$roleName'
     | '/_auth/iam/(users)/list-users/$userName'
+    | '/_auth/rds/(db-instances)/describe-db-instances/$id'
     | '/_auth/s3/ls/$bucket/$'
     | '/_auth/ec2/(elastic-ips)/describe-addresses/'
     | '/_auth/ec2/(images)/describe-images/'
@@ -1133,6 +1171,7 @@ export interface FileRouteTypes {
     | '/_auth/iam/(policies)/list-policies/'
     | '/_auth/iam/(roles)/list-roles/'
     | '/_auth/iam/(users)/list-users/'
+    | '/_auth/rds/(db-instances)/describe-db-instances/'
     | '/_auth/s3/ls/$bucket/'
     | '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
     | '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
@@ -1360,6 +1399,13 @@ declare module '@tanstack/react-router' {
       path: '/iam/create-user'
       fullPath: '/iam/create-user'
       preLoaderRoute: typeof AuthIamusersCreateUserRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(db-instances)/create-db-instance': {
+      id: '/_auth/rds/(db-instances)/create-db-instance'
+      path: '/rds/create-db-instance'
+      fullPath: '/rds/create-db-instance'
+      preLoaderRoute: typeof AuthRdsdbInstancesCreateDbInstanceRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/s3/(buckets)/create-bucket': {
@@ -1726,6 +1772,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthIamusersListUsersUserNameRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/rds/(db-instances)/describe-db-instances/': {
+      id: '/_auth/rds/(db-instances)/describe-db-instances/'
+      path: '/rds/describe-db-instances'
+      fullPath: '/rds/describe-db-instances/'
+      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(db-instances)/describe-db-instances/$id': {
+      id: '/_auth/rds/(db-instances)/describe-db-instances/$id'
+      path: '/rds/describe-db-instances/$id'
+      fullPath: '/rds/describe-db-instances/$id'
+      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/s3/ls/$bucket/': {
       id: '/_auth/s3/ls/$bucket/'
       path: '/'
@@ -1801,6 +1861,7 @@ interface AuthRouteRouteChildren {
   AuthIampoliciesCreatePolicyRoute: typeof AuthIampoliciesCreatePolicyRoute
   AuthIamrolesCreateRoleRoute: typeof AuthIamrolesCreateRoleRoute
   AuthIamusersCreateUserRoute: typeof AuthIamusersCreateUserRoute
+  AuthRdsdbInstancesCreateDbInstanceRoute: typeof AuthRdsdbInstancesCreateDbInstanceRoute
   AuthS3bucketsCreateBucketRoute: typeof AuthS3bucketsCreateBucketRoute
   AuthS3LsIndexRoute: typeof AuthS3LsIndexRoute
   AuthEc2elasticIpsDescribeAddressesIdRoute: typeof AuthEc2elasticIpsDescribeAddressesIdRoute
@@ -1828,6 +1889,7 @@ interface AuthRouteRouteChildren {
   AuthIampoliciesListPoliciesPolicyArnRoute: typeof AuthIampoliciesListPoliciesPolicyArnRoute
   AuthIamrolesListRolesRoleNameRoute: typeof AuthIamrolesListRolesRoleNameRoute
   AuthIamusersListUsersUserNameRoute: typeof AuthIamusersListUsersUserNameRoute
+  AuthRdsdbInstancesDescribeDbInstancesIdRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIdRoute
   AuthEc2elasticIpsDescribeAddressesIndexRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   AuthEc2imagesDescribeImagesIndexRoute: typeof AuthEc2imagesDescribeImagesIndexRoute
   AuthEc2instancesDescribeInstancesIndexRoute: typeof AuthEc2instancesDescribeInstancesIndexRoute
@@ -1852,6 +1914,7 @@ interface AuthRouteRouteChildren {
   AuthIampoliciesListPoliciesIndexRoute: typeof AuthIampoliciesListPoliciesIndexRoute
   AuthIamrolesListRolesIndexRoute: typeof AuthIamrolesListRolesIndexRoute
   AuthIamusersListUsersIndexRoute: typeof AuthIamusersListUsersIndexRoute
+  AuthRdsdbInstancesDescribeDbInstancesIndexRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIndexRoute
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   AuthEcsclustersListClustersClusterNameTasksTaskIdRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
@@ -1897,6 +1960,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthIampoliciesCreatePolicyRoute: AuthIampoliciesCreatePolicyRoute,
   AuthIamrolesCreateRoleRoute: AuthIamrolesCreateRoleRoute,
   AuthIamusersCreateUserRoute: AuthIamusersCreateUserRoute,
+  AuthRdsdbInstancesCreateDbInstanceRoute:
+    AuthRdsdbInstancesCreateDbInstanceRoute,
   AuthS3bucketsCreateBucketRoute: AuthS3bucketsCreateBucketRoute,
   AuthS3LsIndexRoute: AuthS3LsIndexRoute,
   AuthEc2elasticIpsDescribeAddressesIdRoute:
@@ -1940,6 +2005,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthIampoliciesListPoliciesPolicyArnRoute,
   AuthIamrolesListRolesRoleNameRoute: AuthIamrolesListRolesRoleNameRoute,
   AuthIamusersListUsersUserNameRoute: AuthIamusersListUsersUserNameRoute,
+  AuthRdsdbInstancesDescribeDbInstancesIdRoute:
+    AuthRdsdbInstancesDescribeDbInstancesIdRoute,
   AuthEc2elasticIpsDescribeAddressesIndexRoute:
     AuthEc2elasticIpsDescribeAddressesIndexRoute,
   AuthEc2imagesDescribeImagesIndexRoute: AuthEc2imagesDescribeImagesIndexRoute,
@@ -1979,6 +2046,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthIampoliciesListPoliciesIndexRoute: AuthIampoliciesListPoliciesIndexRoute,
   AuthIamrolesListRolesIndexRoute: AuthIamrolesListRolesIndexRoute,
   AuthIamusersListUsersIndexRoute: AuthIamusersListUsersIndexRoute,
+  AuthRdsdbInstancesDescribeDbInstancesIndexRoute:
+    AuthRdsdbInstancesDescribeDbInstancesIndexRoute,
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute:
     AuthEcsclustersListClustersClusterNameServicesServiceNameRoute,
   AuthEcsclustersListClustersClusterNameTasksTaskIdRoute:

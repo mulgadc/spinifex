@@ -1,9 +1,15 @@
-import type { Tag } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { Plus, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+
+// Structural rather than one SDK's Tag: ELBv2 and RDS declare the same shape in
+// their own packages, and the editor works against either.
+interface Tag {
+  Key?: string
+  Value?: string
+}
 
 interface TagRow {
   // Stable id so React keys survive key/value edits and row removal.

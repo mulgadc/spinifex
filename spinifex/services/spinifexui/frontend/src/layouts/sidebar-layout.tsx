@@ -7,6 +7,7 @@ import {
   Camera,
   Container,
   Crosshair,
+  Database,
   FileStack,
   Globe,
   HardDrive,
@@ -386,6 +387,23 @@ export function SidebarLayout() {
                 >
                   <Container className="size-4" />
                   <span>ECS</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Databases</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/rds/describe-db-instances">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/rds/")}
+                  tooltip="RDS databases"
+                >
+                  <Database className="size-4" />
+                  <span>RDS</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

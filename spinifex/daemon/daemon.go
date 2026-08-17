@@ -115,9 +115,9 @@ type ResourceManager struct {
 	subsMu        sync.Mutex
 	natsConn      *nats.Conn
 	instanceSubs  map[string]*nats.Subscription
-	handler       nats.MsgHandler
-	systemHandler nats.MsgHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
-	nodeID        string          // node identifier for node-specific topic subscriptions
+	handler       natsHandler
+	systemHandler natsHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
+	nodeID        string      // node identifier for node-specific topic subscriptions
 }
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW
@@ -756,14 +756,48 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	return d, nil
 }
 
-// natsMetricsHandler wraps a NATS handler to record request count and
-// duration under the given action. Handler outcome is not observable at
-// this chokepoint, so the outcome attribute is omitted.
-func natsMetricsHandler(action string, h nats.MsgHandler) nats.MsgHandler {
+// Outcomes recorded on daemon request metrics. A handler that answered with an
+// error payload is outcomeError; anything else is outcomeSuccess.
+// A broadcast handler that declines because the request names another node is
+// outcomeSkipped: it neither served nor failed, and folding it into either one
+// hides a node that answered nothing.
+const (
+	outcomeSuccess = "success"
+	outcomeError   = "error"
+	outcomeSkipped = "skipped"
+
+	// outcomeDeferred tells natsMetricsHandler the handler records its own
+	// point. Handlers that answer from a goroutine must use it: timing the
+	// wrapper would measure the dispatch and call every launch an instant
+	// success.
+	outcomeDeferred = ""
+)
+
+// outcomeFor maps the reply-succeeded flag the utils serve helpers return onto
+// a metric outcome.
+func outcomeFor(replied bool) string {
+	if replied {
+		return outcomeSuccess
+	}
+	return outcomeError
+}
+
+// natsHandler is a NATS handler that reports how it answered. The type exists
+// so the outcome is observable at the metrics chokepoint: a plain MsgHandler
+// writes its own reply and returns nothing, which is why daemon request points
+// carried no outcome at all.
+type natsHandler func(*nats.Msg) string
+
+// natsMetricsHandler wraps a NATS handler to record request count, duration
+// and outcome under the given action.
+func natsMetricsHandler(action string, h natsHandler) nats.MsgHandler {
 	return func(msg *nats.Msg) {
 		start := time.Now()
-		h(msg)
-		otelsetup.RecordRequest(context.Background(), action, "", time.Since(start))
+		outcome := h(msg)
+		if outcome == outcomeDeferred {
+			return
+		}
+		otelsetup.RecordRequest(context.Background(), action, outcome, time.Since(start))
 	}
 }
 
@@ -791,7 +825,7 @@ func clusterCAKeyPath(caCertPath string) string {
 // natsSub defines a single NATS subscription entry for the table-driven setup.
 type natsSub struct {
 	topic      string
-	handler    nats.MsgHandler
+	handler    natsHandler
 	queueGroup string // empty = plain Subscribe (fan-out)
 }
 
@@ -2824,7 +2858,7 @@ func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migPr
 	rm.updateInstanceSubscriptions()
 }
 
-func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, systemHandler nats.MsgHandler, nodeID string) {
+func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler natsHandler, systemHandler natsHandler, nodeID string) {
 	rm.natsConn = nc
 	rm.handler = handler
 	rm.systemHandler = systemHandler
@@ -2862,10 +2896,10 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 		}
 
 		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
-		handler = natsMetricsHandler(queueTopic, handler)
+		measured := natsMetricsHandler(queueTopic, handler)
 		_, subscribed := rm.instanceSubs[queueTopic]
 		if canFit && !subscribed {
-			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, handler)
+			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
 			if err != nil {
 				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
 				continue
@@ -2886,7 +2920,7 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			// "no responders". Capacity is enforced at launch time by allocate().
 			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
 			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
-				sub, err := rm.natsConn.Subscribe(nodeTopic, handler)
+				sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
 				if err != nil {
 					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
 					continue

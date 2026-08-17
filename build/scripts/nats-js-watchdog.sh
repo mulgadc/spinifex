@@ -58,6 +58,9 @@ RESTART_ESCALATE_AT="${RESTART_ESCALATE_AT:-3}"
 STATE_DIR="${STATE_DIR:-/run/spinifex}"
 COOLDOWN_STAMP="$STATE_DIR/nats-js-watchdog.last-restart"
 RESTART_COUNT_FILE="$STATE_DIR/nats-js-watchdog.restart-count"
+# Marks that the escalation message has already been printed for the current
+# latch, so a node that stays broken says so once instead of once per tick.
+ESCALATED_STAMP="$STATE_DIR/nats-js-watchdog.escalated"
 
 # Monotonic clock source, so a wall-clock step during boot (NTP correcting an
 # unset RTC) cannot manufacture a false age or cooldown. Overridable so tests
@@ -101,10 +104,10 @@ fi
 
 restart_count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null) || restart_count=""
 case "$restart_count" in ''|*[!0-9]*) restart_count=0 ;; esac
-if [ "$restart_count" -ge "$RESTART_ESCALATE_AT" ]; then
-    echo "nats-js-watchdog: already restarted $SERVICE $restart_count time(s) without recovery; giving up rather than looping (clear $RESTART_COUNT_FILE to re-arm)" >&2
-    exit 0
-fi
+
+# The escalation count is read here but acted on only after the probes, below.
+# Checking it up front would return before the one line that clears it, so a
+# latched watchdog could never observe recovery and never re-arm itself.
 
 # curl is the probe transport; if it is unavailable, do nothing rather than
 # false-restart a healthy server.
@@ -145,7 +148,9 @@ while [ "$i" -le "$SAMPLES" ]; do
             wrc=$?
         fi
         if [ "$wrc" -eq 0 ]; then
-            rm -f "$RESTART_COUNT_FILE"
+            # Recovery: drop the history so a later failure gets the full
+            # restart budget again, and re-arm the escalation message.
+            rm -f "$RESTART_COUNT_FILE" "$ESCALATED_STAMP"
             exit 0
         fi
         if [ "$wrc" -eq 2 ]; then
@@ -161,6 +166,18 @@ while [ "$i" -le "$SAMPLES" ]; do
     fi
     i=$((i + 1))
 done
+
+# The failure is real and current, so the restart history now means what it
+# says. Above the threshold another restart will not help, so stop acting —
+# but keep probing on later runs, because that is what notices a recovery.
+if [ "$restart_count" -ge "$RESTART_ESCALATE_AT" ]; then
+    if [ ! -f "$ESCALATED_STAMP" ]; then
+        mkdir -p "$STATE_DIR"
+        : > "$ESCALATED_STAMP"
+        echo "nats-js-watchdog: already restarted $SERVICE $restart_count time(s) without recovery; giving up rather than looping (clear $RESTART_COUNT_FILE to re-arm)" >&2
+    fi
+    exit 0
+fi
 
 echo "nats-js-watchdog: $failure on $SAMPLES consecutive probes; restarting $SERVICE" >&2
 mkdir -p "$STATE_DIR"

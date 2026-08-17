@@ -25,7 +25,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { securityGroupLabel } from "@/lib/utils"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
@@ -40,6 +39,7 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 
 // ModifyDBInstance refuses these outright, and they are the ones users reach
 // for first, so they are shown read-only rather than left unexplained.
@@ -172,12 +172,8 @@ export function ModifyDBInstanceDialog({
     },
   )
 
-  const toggleSecurityGroup = (groupId: string) => {
-    const next = selectedGroups.includes(groupId)
-      ? selectedGroups.filter((id) => id !== groupId)
-      : [...selectedGroups, groupId]
+  const setSecurityGroups = (next: string[]) =>
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
-  }
 
   const onSubmit = async (data: ModifyDBInstanceFormData) => {
     await modifyInstance.mutateAsync({
@@ -297,24 +293,12 @@ export function ModifyDBInstanceDialog({
             {securityGroupNotice ? (
               <PickerNoticeText notice={securityGroupNotice} />
             ) : (
-              <div className="space-y-1">
-                {securityGroups.map((group) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={group.GroupId}
-                  >
-                    <input
-                      aria-label={`Security group ${group.GroupId}`}
-                      checked={selectedGroups.includes(group.GroupId ?? "")}
-                      onChange={() => toggleSecurityGroup(group.GroupId ?? "")}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">
-                      {securityGroupLabel(group)}
-                    </span>
-                  </label>
-                ))}
-              </div>
+              <SecurityGroupCheckboxes
+                emptyText="No security group in this instance's VPC is available."
+                groups={securityGroups}
+                onChange={setSecurityGroups}
+                selected={selectedGroups}
+              />
             )}
           </Field>
 

@@ -35,7 +35,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
-import { securityGroupLabel } from "@/lib/utils"
 import { useCreateDBInstance } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -59,6 +58,7 @@ import {
   PickerNoticeText,
   pickerNotice,
 } from "../../-components/picker-notice"
+import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 import { TagsFieldArray } from "../../-components/tags-field-array"
 
 // The retention the backend applies when a create names none.
@@ -204,12 +204,8 @@ export function CreateDBInstancePage() {
     setValue("dbParameterGroupName", "")
   }
 
-  const toggleSecurityGroup = (groupId: string) => {
-    const next = selectedSecurityGroups.includes(groupId)
-      ? selectedSecurityGroups.filter((id) => id !== groupId)
-      : [...selectedSecurityGroups, groupId]
+  const setSecurityGroups = (next: string[]) =>
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
-  }
 
   const onSubmit = async (data: CreateDBInstanceFormData) => {
     await createInstance.mutateAsync(data)
@@ -534,31 +530,12 @@ export function CreateDBInstancePage() {
 
         <Field>
           <FieldTitle>VPC security groups</FieldTitle>
-          {securityGroups.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No security groups available
-              {subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {securityGroups.map((group) => (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  key={group.GroupId}
-                >
-                  <input
-                    aria-label={`Security group ${securityGroupLabel(group)}`}
-                    checked={selectedSecurityGroups.includes(
-                      group.GroupId ?? "",
-                    )}
-                    onChange={() => toggleSecurityGroup(group.GroupId ?? "")}
-                    type="checkbox"
-                  />
-                  <span className="font-mono">{securityGroupLabel(group)}</span>
-                </label>
-              ))}
-            </div>
-          )}
+          <SecurityGroupCheckboxes
+            emptyText={`No security groups available${subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.`}
+            groups={securityGroups}
+            onChange={setSecurityGroups}
+            selected={selectedSecurityGroups}
+          />
           <FieldError errors={[errors.vpcSecurityGroupIds]} />
         </Field>
 

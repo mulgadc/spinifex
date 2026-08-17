@@ -37,7 +37,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
-import { securityGroupLabel } from "@/lib/utils"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -58,6 +57,7 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface Props {
@@ -154,12 +154,8 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     }
   }
 
-  const toggleSecurityGroup = (groupId: string) => {
-    const next = selectedSecurityGroups.includes(groupId)
-      ? selectedSecurityGroups.filter((id) => id !== groupId)
-      : [...selectedSecurityGroups, groupId]
+  const setSecurityGroups = (next: string[]) =>
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
-  }
 
   const onSubmit = async (data: RestoreDBInstanceFormData) => {
     try {
@@ -408,33 +404,12 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
-            {securityGroups.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No security groups available
-                {subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.
-              </p>
-            ) : (
-              <div className="space-y-1">
-                {securityGroups.map((group) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={group.GroupId}
-                  >
-                    <input
-                      aria-label={`Security group ${securityGroupLabel(group)}`}
-                      checked={selectedSecurityGroups.includes(
-                        group.GroupId ?? "",
-                      )}
-                      onChange={() => toggleSecurityGroup(group.GroupId ?? "")}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">
-                      {securityGroupLabel(group)}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
+            <SecurityGroupCheckboxes
+              emptyText={`No security groups available${subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.`}
+              groups={securityGroups}
+              onChange={setSecurityGroups}
+              selected={selectedSecurityGroups}
+            />
             <FieldDescription>
               Leave every box clear to inherit the groups the snapshot recorded.
             </FieldDescription>

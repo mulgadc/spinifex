@@ -82,8 +82,8 @@ describe("ModifyDBInstanceDialog", () => {
     expect(screen.getByLabelText("Preferred backup window")).toHaveValue(
       "03:00-03:30",
     )
-    expect(screen.getByLabelText("Security group sg-1")).toBeChecked()
-    expect(screen.getByLabelText("Security group sg-2")).not.toBeChecked()
+    expect(screen.getByLabelText("Security group sg-1 (default)")).toBeChecked()
+    expect(screen.getByLabelText("Security group sg-2 (db)")).not.toBeChecked()
   })
 
   it("floors the storage field at the current size", () => {

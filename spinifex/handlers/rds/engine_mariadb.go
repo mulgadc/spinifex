@@ -16,6 +16,8 @@ var engineMariaDB = Engine{
 	Name:         "mariadb",
 	MajorVersion: "11.8",
 	DefaultPort:  3306,
+	description:  "MariaDB Community Edition",
+	licenseModel: "general-public-license",
 	// root is the superuser mariadb-install-db creates and rds-init keeps,
 	// mariadb.sys owns the sys schema views, mysql is created under unix_socket
 	// auth, rdsadmin is AWS's management role, PUBLIC the server refuses outright.

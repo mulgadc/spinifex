@@ -54,6 +54,10 @@ type EBSMountResponse struct {
 	URI     string `json:"URI"`
 	Mounted bool   `json:"Mounted"`
 	Error   string `json:"Error"`
+	// Retryable marks a mount failure caused by a backing store that is not
+	// yet ready (e.g. a transient state-load gap), as opposed to a
+	// permanent failure the caller should not retry.
+	Retryable bool `json:"Retryable"`
 }
 
 type EBSUnMountResponse struct {

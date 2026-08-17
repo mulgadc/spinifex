@@ -183,7 +183,10 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 		}
 
 		if ebsMountResponse.Error != "" {
-			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error)
+			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error, "retryable", ebsMountResponse.Retryable)
+			if ebsMountResponse.Retryable {
+				return rollback(fmt.Errorf("failed to mount volume: %s: %w", ebsMountResponse.Error, vm.ErrMountRetryable))
+			}
 			return rollback(fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error))
 		}
 

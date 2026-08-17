@@ -1322,6 +1322,14 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 	return vb, nbdCacheSize, nil
 }
 
+// mountErrRetryable reports whether a mount failure was caused by the
+// backing store not yet being ready (a transient state-load gap) rather
+// than a permanent condition. Only these two sentinels qualify for the
+// recovery-relaunch retry in vm.Manager.
+func mountErrRetryable(err error) bool {
+	return errors.Is(err, viperblock.ErrStateNotFound) || errors.Is(err, viperblock.ErrStateBackendUnavailable)
+}
+
 // mountVolume is launchService's ebs.mount body, extracted so the legacy
 // ebs.mount handler and the ebs.provider.v1.*.mount handler share one nbdkit
 // mount path instead of risking two divergent implementations of it. It
@@ -1359,6 +1367,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	vb, nbdCacheSize, lease, err := cfg.buildVB(ctx, volumeName)
 	if err != nil {
 		ebsResponse.Error = err.Error()
+		ebsResponse.Retryable = mountErrRetryable(err)
 		return ebsResponse, err
 	}
 

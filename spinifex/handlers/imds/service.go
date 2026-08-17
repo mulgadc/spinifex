@@ -176,7 +176,7 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux.HandleFunc(pathToken, s.handleToken)
 	mux.HandleFunc(pathSpinifexCACert, s.handleCACert)
 	mux.HandleFunc("/", s.handleMetadata)
-	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(mux)))
+	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(nameAction(mux))))
 }
 
 // Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks

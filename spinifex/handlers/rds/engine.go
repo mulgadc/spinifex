@@ -82,11 +82,6 @@ func indexEnginesByFamily() map[string]Engine {
 		if engine.uncleanStopNote == "" {
 			panic("rds: engine " + engine.Name + " registers no unclean-stop note")
 		}
-		// Both are reported verbatim by the engine-version and orderable catalogs,
-		// where an empty one reads as a platform that does not know its own licence.
-		if engine.description == "" || engine.licenseModel == "" {
-			panic("rds: engine " + engine.Name + " registers no description or licence model")
-		}
 		// A name no catalog entry answers to would leave the guest deriving
 		// enforcement from a key nothing ever writes, which reads as not enforcing.
 		if name := engine.tlsEnforcementParameter; name != "" {

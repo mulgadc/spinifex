@@ -19,6 +19,22 @@ func runsEverything(string) bool { return true }
 
 func runsNothing(string) bool { return false }
 
+// Both are reported verbatim by the two catalogs, and the licence model is
+// filterable, so an engine registering neither would answer a --license-model
+// filter with an empty row set rather than with its own licence.
+func TestEngines_RegisterADescriptionAndALicenceModel(t *testing.T) {
+	t.Parallel()
+	for _, name := range SupportedEngines() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			engine, err := LookupEngine(name)
+			require.NoError(t, err)
+			assert.NotEmpty(t, engine.Description())
+			assert.NotEmpty(t, engine.LicenseModel())
+		})
+	}
+}
+
 // The catalog is a read of engine.go, so a pin bump has to fail here rather than
 // in a client that hardcoded the old one.
 func TestEngineVersions_ReportWhatTheEngineTableSays(t *testing.T) {

@@ -2,6 +2,7 @@ package vm
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -858,6 +859,133 @@ func TestRelaunchAll(t *testing.T) {
 				"must be skipped by the status guard; otherwise a concurrent terminate races with relaunch")
 		assert.Len(t, mounter.mounted, total-1,
 			"every eligible instance must reach Mount: only the flipped one is skipped")
+	})
+
+	t.Run("ErrMountRetryable is retried until Run succeeds", func(t *testing.T) {
+		m, _, _, _ := relaunchTestManager(t)
+
+		origBase, origCap := relaunchBackoffBase, relaunchBackoffCap
+		relaunchBackoffBase, relaunchBackoffCap = time.Millisecond, 4*time.Millisecond
+		t.Cleanup(func() { relaunchBackoffBase, relaunchBackoffCap = origBase, origCap })
+
+		origRun := runForRelaunch
+		t.Cleanup(func() { runForRelaunch = origRun })
+
+		const wantAttempts = 3
+		var calls atomic.Int64
+		runForRelaunch = func(_ *Manager, _ context.Context, _ *VM) error {
+			if calls.Add(1) < wantAttempts {
+				return fmt.Errorf("state not yet loaded: %w", ErrMountRetryable)
+			}
+			return nil
+		}
+
+		instance := &VM{ID: "i-retry-ok", Status: StatePending, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+		m.Insert(instance)
+
+		m.relaunchAll([]*VM{instance})
+
+		assert.EqualValues(t, wantAttempts, calls.Load(),
+			"Run must be called once per attempt until it stops returning ErrMountRetryable")
+		status := m.Status(instance)
+		assert.NotEqual(t, StateError, status,
+			"a retry that eventually succeeds must never drive the instance into StateError")
+		assert.Equal(t, StatePending, status,
+			"the stub bypasses the real launch/TransitionState, so status stays whatever Run's caller left it at "+
+				"(Pending here) rather than advancing to Running — the point under test is that it is NOT StateError")
+	})
+
+	t.Run("permanent Run error marks recovery_failed after exactly one attempt", func(t *testing.T) {
+		m, mounter, _, rt := relaunchTestManager(t)
+
+		instance := &VM{ID: "i-permanent-fail", Status: StatePending, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+		m.Insert(instance)
+		errored := rt.waitFor(instance.ID, StateError)
+
+		var calls atomic.Int64
+		mounter.behavior[instance.ID] = func(*VM) error {
+			calls.Add(1)
+			return errors.New("permanent mount failure, not a backing-store readiness issue")
+		}
+
+		m.relaunchAll([]*VM{instance})
+
+		select {
+		case <-errored:
+		case <-time.After(markFailedDeadline):
+			t.Fatalf("MarkRecoveryFailed did not record StateError transition within %s", markFailedDeadline)
+		}
+
+		assert.EqualValues(t, 1, calls.Load(),
+			"a permanent (non-ErrMountRetryable) error must fail fast with no retry")
+		assert.Equal(t, StateError, m.Status(instance))
+		require.NotNil(t, instance.Instance.StateReason)
+		assert.Equal(t, "recovery_launch_failed", *instance.Instance.StateReason.Message)
+	})
+
+	t.Run("exhausted retries against a still-unready backing store marks recovery_mount_state_unavailable", func(t *testing.T) {
+		m, _, _, _ := relaunchTestManager(t)
+
+		origBase, origCap := relaunchBackoffBase, relaunchBackoffCap
+		relaunchBackoffBase, relaunchBackoffCap = time.Millisecond, 4*time.Millisecond
+		t.Cleanup(func() { relaunchBackoffBase, relaunchBackoffCap = origBase, origCap })
+
+		origRun := runForRelaunch
+		t.Cleanup(func() { runForRelaunch = origRun })
+
+		var calls atomic.Int64
+		runForRelaunch = func(_ *Manager, _ context.Context, _ *VM) error {
+			calls.Add(1)
+			return fmt.Errorf("state still not loaded: %w", ErrMountRetryable)
+		}
+
+		instance := &VM{ID: "i-retry-exhausted", Status: StatePending, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+		m.Insert(instance)
+
+		m.relaunchAll([]*VM{instance})
+
+		assert.EqualValues(t, relaunchMaxAttempts, calls.Load(),
+			"the retry loop must stop at the bounded attempt count, never spin forever")
+		assert.Equal(t, StateError, m.Status(instance))
+		require.NotNil(t, instance.Instance.StateReason)
+		assert.Equal(t, "recovery_mount_state_unavailable", *instance.Instance.StateReason.Message)
+	})
+
+	t.Run("shutdown signal aborts the retry loop without marking terminal", func(t *testing.T) {
+		mounter := &recoveryMounter{behavior: map[string]func(*VM) error{}}
+		cleaner := &recordingInstanceCleaner{}
+		rt := &recordedTransitions{}
+		m := NewManager()
+		rt.bind(m)
+
+		var shuttingDown atomic.Bool
+		m.SetDeps(Deps{
+			NodeID:          "test-node",
+			StateStore:      newFakeStateStore(),
+			VolumeMounter:   mounter,
+			InstanceCleaner: cleaner,
+			TransitionState: rt.apply,
+			ShutdownSignal:  shuttingDown.Load,
+		})
+
+		origRun := runForRelaunch
+		t.Cleanup(func() { runForRelaunch = origRun })
+		var calls atomic.Int64
+		runForRelaunch = func(_ *Manager, _ context.Context, _ *VM) error {
+			calls.Add(1)
+			shuttingDown.Store(true)
+			return fmt.Errorf("state not yet loaded: %w", ErrMountRetryable)
+		}
+
+		instance := &VM{ID: "i-shutdown-abort", Status: StatePending, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+		m.Insert(instance)
+
+		m.relaunchAll([]*VM{instance})
+
+		assert.EqualValues(t, 1, calls.Load(),
+			"the loop must check the shutdown signal before its next attempt and stop, not keep retrying")
+		assert.NotEqual(t, StateError, m.Status(instance),
+			"an abort for shutdown must never mark the instance recovery-failed")
 	})
 }
 

@@ -121,7 +121,7 @@ func TestEC2ReapersAreOrderedByDependency(t *testing.T) {
 	assert.Equal(t, []string{
 		"instance",
 		"snapshot", "image", "volume",
-		"address", "internet-gateway", "route-table", "subnet", "security-group", "vpc",
+		"address", "network-interface", "internet-gateway", "route-table", "subnet", "security-group", "vpc",
 		"key-pair", "placement-group", "launch-template",
 	}, kinds)
 
@@ -569,3 +569,106 @@ type stringError string
 func (e stringError) Error() string { return string(e) }
 
 func assertError(message string) error { return stringError(message) }
+
+// An interface still attached cannot be deleted, and an interface that will not
+// delete holds its subnet, which holds the VPC, which leaves the account in
+// TERMINATING for good.
+//
+// The detach is dispatched to the owning instance as a command, not as its own
+// EC2 call, so ec2.cmd.<instance> is what proves it was driven.
+func TestNetworkInterfaceReaperDetachesBeforeDeleting(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.reply("ec2.DescribeNetworkInterfaces", ec2.DescribeNetworkInterfacesOutput{
+		NetworkInterfaces: []*ec2.NetworkInterface{{
+			NetworkInterfaceId: aws.String("eni-1"),
+			SubnetId:           aws.String("subnet-1"),
+			Attachment: &ec2.NetworkInterfaceAttachment{
+				AttachmentId: aws.String("eni-attach-1"),
+				InstanceId:   aws.String("i-1"),
+			},
+		}},
+	})
+
+	reaper := &networkInterfaceReaper{nc: cluster.nc}
+	found, err := reaper.List(testCtx(t), "000000000042")
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	assert.Equal(t, "subnet-1", found[0].Detail)
+
+	require.NoError(t, reaper.Delete(testCtx(t), "000000000042", found[0], false))
+	assert.Contains(t, cluster.called(), "ec2.cmd.i-1", "the detach was never dispatched")
+	assert.Contains(t, cluster.called(), "ec2.DeleteNetworkInterface")
+}
+
+// An interface whose instance is already gone is the wedged case: the detach
+// cannot resolve an owner and answers NotFound, which must not stop the delete
+// — the interface is exactly what has to go.
+func TestNetworkInterfaceReaperDeletesWhenTheOwnerIsGone(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.reply("ec2.DescribeNetworkInterfaces", ec2.DescribeNetworkInterfacesOutput{
+		NetworkInterfaces: []*ec2.NetworkInterface{{
+			NetworkInterfaceId: aws.String("eni-1"),
+			SubnetId:           aws.String("subnet-1"),
+			Attachment:         &ec2.NetworkInterfaceAttachment{AttachmentId: aws.String("eni-attach-1")},
+		}},
+	})
+
+	reaper := &networkInterfaceReaper{nc: cluster.nc}
+	err := reaper.Delete(testCtx(t), "000000000042",
+		Resource{Kind: "network-interface", ID: "eni-1"}, false)
+
+	require.NoError(t, err)
+	assert.Contains(t, cluster.called(), "ec2.DeleteNetworkInterface")
+}
+
+// The interface left behind by a half-finished launch is the case this reaper
+// exists for, and it is unattached: there is nothing to detach, so the detach
+// is skipped rather than made and forgiven.
+func TestNetworkInterfaceReaperDeletesAnUnattachedInterface(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.reply("ec2.DescribeNetworkInterfaces", ec2.DescribeNetworkInterfacesOutput{
+		NetworkInterfaces: []*ec2.NetworkInterface{{
+			NetworkInterfaceId: aws.String("eni-1"), SubnetId: aws.String("subnet-1"),
+		}},
+	})
+
+	reaper := &networkInterfaceReaper{nc: cluster.nc}
+	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "network-interface", ID: "eni-1"}, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"ec2.DescribeNetworkInterfaces", "ec2.DeleteNetworkInterface",
+	}, cluster.called())
+}
+
+// An interface already gone by the time its stage runs is a success: teardown
+// re-runs after a crash and would otherwise never finish.
+func TestNetworkInterfaceReaperTreatsAMissingInterfaceAsDeleted(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.fail("ec2.DescribeNetworkInterfaces", "InvalidNetworkInterfaceID.NotFound")
+	cluster.fail("ec2.DeleteNetworkInterface", "InvalidNetworkInterfaceID.NotFound")
+
+	reaper := &networkInterfaceReaper{nc: cluster.nc}
+	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "network-interface", ID: "eni-1"}, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"ec2.DescribeNetworkInterfaces", "ec2.DeleteNetworkInterface",
+	}, cluster.called())
+}
+
+// Interfaces are reaped before subnets. The reverse order cannot work: the
+// subnet delete is refused while an interface is still in it.
+func TestEC2ReapersRemoveInterfacesBeforeSubnets(t *testing.T) {
+	var eni, subnet = -1, -1
+	for i, reaper := range EC2Reapers(nil, 1) {
+		switch reaper.Kind() {
+		case "network-interface":
+			eni = i
+		case "subnet":
+			subnet = i
+		}
+	}
+	require.NotEqual(t, -1, eni, "there is no network-interface reaper")
+	require.Less(t, eni, subnet, "interfaces must be reaped before the subnets holding them")
+}

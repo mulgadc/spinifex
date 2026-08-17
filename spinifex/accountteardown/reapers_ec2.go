@@ -43,6 +43,12 @@ func EC2Reapers(nc *nats.Conn, expectedNodes int) []Reaper {
 		// Reverse of creation order. The VPC cannot go until everything
 		// inside it has, and the gateway enforces that.
 		&addressReaper{nc: nc},
+
+		// After addresses so a released EIP is already off the interface, and
+		// before subnets because an interface still in a subnet refuses to let
+		// that subnet go — which wedged the whole account, not just the ENI.
+		&networkInterfaceReaper{nc: nc},
+
 		&igwReaper{nc: nc},
 		&routeTableReaper{nc: nc},
 		&subnetReaper{nc: nc},
@@ -271,6 +277,82 @@ func (r *addressReaper) associationID(ctx context.Context, accountID, allocation
 			continue
 		}
 		return aws.StringValue(address.AssociationId), nil
+	}
+	return "", nil
+}
+
+// networkInterfaceReaper removes the interfaces nothing else will. A running
+// instance takes its own interfaces with it, so anything still listed by the
+// time the network stage runs was either created by hand or left behind by a
+// launch that failed after the interface was made.
+//
+// Either way it holds a subnet, and a subnet that will not delete stops the VPC
+// and leaves the account in TERMINATING for good.
+type networkInterfaceReaper struct{ nc *nats.Conn }
+
+func (r *networkInterfaceReaper) Kind() string { return "network-interface" }
+func (r *networkInterfaceReaper) Stage() Stage { return StageNetwork }
+
+func (r *networkInterfaceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
+	out, err := gateway_ec2_vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{}, r.nc, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	var found []Resource
+	for _, eni := range out.NetworkInterfaces {
+		if eni == nil || eni.NetworkInterfaceId == nil {
+			continue
+		}
+		resource := Resource{Kind: r.Kind(), ID: *eni.NetworkInterfaceId}
+		if eni.SubnetId != nil {
+			resource.Detail = *eni.SubnetId
+		}
+		found = append(found, resource)
+	}
+	return found, nil
+}
+
+// Delete detaches first when the interface is attached, because an in-use
+// interface cannot be deleted. The attachment is read fresh rather than carried
+// from the listing, so a delete driven from an id an operator supplied behaves
+// the same as one driven from a listing.
+func (r *networkInterfaceReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
+	attachmentID, err := r.attachmentID(ctx, accountID, resource.ID)
+	if err != nil && !isAlreadyGone(err) {
+		return err
+	}
+	if attachmentID != "" {
+		if _, err := gateway_ec2_vpc.DetachNetworkInterface(ctx, &ec2.DetachNetworkInterfaceInput{
+			AttachmentId: aws.String(attachmentID),
+			Force:        aws.Bool(force),
+		}, r.nc, accountID); err != nil && !isAlreadyGone(err) {
+			return err
+		}
+	}
+	_, err = gateway_ec2_vpc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(resource.ID),
+	}, r.nc, accountID)
+	return ignoreAlreadyGone(err)
+}
+
+// attachmentID reports the interface's current attachment, or empty when it is
+// unattached. Unattached is the ordinary case here and is not an error.
+func (r *networkInterfaceReaper) attachmentID(ctx context.Context, accountID, interfaceID string) (string, error) {
+	out, err := gateway_ec2_vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(interfaceID)},
+	}, r.nc, accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, eni := range out.NetworkInterfaces {
+		if eni == nil || eni.NetworkInterfaceId == nil || *eni.NetworkInterfaceId != interfaceID {
+			continue
+		}
+		if eni.Attachment == nil {
+			return "", nil
+		}
+		return aws.StringValue(eni.Attachment.AttachmentId), nil
 	}
 	return "", nil
 }

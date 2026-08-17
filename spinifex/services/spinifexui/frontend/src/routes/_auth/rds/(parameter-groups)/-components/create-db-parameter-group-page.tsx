@@ -7,6 +7,7 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
+  commandFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -207,21 +208,21 @@ function buildCreateParameterGroupCommands(
           type: "bin",
           value: "AWS_PROFILE=spinifex aws rds create-db-parameter-group",
         },
-        { type: "flag", value: " --db-parameter-group-name" },
-        {
-          type: "value",
-          value: ` ${cliPlaceholder(values.dbParameterGroupName, "DBParameterGroupName")}`,
-        },
-        { type: "flag", value: " --db-parameter-group-family" },
-        {
-          type: "value",
-          value: ` ${cliPlaceholder(values.dbParameterGroupFamily, "DBParameterGroupFamily")}`,
-        },
-        { type: "flag", value: " --description" },
-        {
-          type: "value",
-          value: ` "${cliPlaceholder(values.description, "Description")}"`,
-        },
+        ...commandFlag(
+          "--db-parameter-group-name",
+          cliPlaceholder(values.dbParameterGroupName, "DBParameterGroupName"),
+        ),
+        ...commandFlag(
+          "--db-parameter-group-family",
+          cliPlaceholder(
+            values.dbParameterGroupFamily,
+            "DBParameterGroupFamily",
+          ),
+        ),
+        ...commandFlag(
+          "--description",
+          `"${cliPlaceholder(values.description, "Description")}"`,
+        ),
       ],
     },
   ]

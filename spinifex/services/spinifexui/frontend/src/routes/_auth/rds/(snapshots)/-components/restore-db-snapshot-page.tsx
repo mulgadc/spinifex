@@ -12,6 +12,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
+  commandFlag,
+  optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { DetailCard } from "@/components/detail-card"
@@ -548,49 +550,25 @@ function buildRestoreCommands(
       value:
         "AWS_PROFILE=spinifex aws rds restore-db-instance-from-db-snapshot",
     },
-    { type: "flag", value: " --db-snapshot-identifier" },
-    { type: "value", value: ` ${dbSnapshotIdentifier}` },
-    { type: "flag", value: " --db-instance-identifier" },
-    {
-      type: "value",
-      value: ` ${cliPlaceholder(values.dbInstanceIdentifier, "DBInstanceIdentifier")}`,
-    },
-    { type: "flag", value: " --db-instance-class" },
-    {
-      type: "value",
-      value: ` ${cliPlaceholder(values.dbInstanceClass, "DBInstanceClass")}`,
-    },
-    { type: "flag", value: " --allocated-storage" },
-    { type: "value", value: ` ${values.allocatedStorage}` },
+    ...commandFlag("--db-snapshot-identifier", dbSnapshotIdentifier),
+    ...commandFlag(
+      "--db-instance-identifier",
+      cliPlaceholder(values.dbInstanceIdentifier, "DBInstanceIdentifier"),
+    ),
+    ...commandFlag(
+      "--db-instance-class",
+      cliPlaceholder(values.dbInstanceClass, "DBInstanceClass"),
+    ),
+    ...commandFlag("--allocated-storage", values.allocatedStorage),
+    ...optionalFlag("--port", values.port),
+    ...optionalFlag("--db-subnet-group-name", values.dbSubnetGroupName),
+    ...optionalFlag(
+      "--vpc-security-group-ids",
+      values.vpcSecurityGroupIds.join(" "),
+    ),
+    ...optionalFlag("--db-parameter-group-name", values.dbParameterGroupName),
+    ...optionalFlag("--deletion-protection", values.deletionProtection),
   ]
-
-  if (values.port) {
-    parts.push(
-      { type: "flag", value: " --port" },
-      { type: "value", value: ` ${values.port}` },
-    )
-  }
-  if (values.dbSubnetGroupName) {
-    parts.push(
-      { type: "flag", value: " --db-subnet-group-name" },
-      { type: "value", value: ` ${values.dbSubnetGroupName}` },
-    )
-  }
-  if (values.vpcSecurityGroupIds.length > 0) {
-    parts.push(
-      { type: "flag", value: " --vpc-security-group-ids" },
-      { type: "value", value: ` ${values.vpcSecurityGroupIds.join(" ")}` },
-    )
-  }
-  if (values.dbParameterGroupName) {
-    parts.push(
-      { type: "flag", value: " --db-parameter-group-name" },
-      { type: "value", value: ` ${values.dbParameterGroupName}` },
-    )
-  }
-  if (values.deletionProtection) {
-    parts.push({ type: "flag", value: " --deletion-protection" })
-  }
 
   return [{ label: "Restore DB Instance", parts }]
 }

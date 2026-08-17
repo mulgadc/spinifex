@@ -22,7 +22,8 @@ describe("ErrorBanner", () => {
   })
 
   it("falls back to the name when a custom error carries no message", () => {
-    const error = new TypeError("")
+    const error = new TypeError("placeholder")
+    error.message = ""
     render(<ErrorBanner error={error} />)
     expect(screen.getByText("TypeError")).toBeInTheDocument()
   })

@@ -8,6 +8,7 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
+  commandFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -236,28 +237,21 @@ function buildCreateSubnetGroupCommands(
           type: "bin",
           value: "AWS_PROFILE=spinifex aws rds create-db-subnet-group",
         },
-        { type: "flag", value: " --db-subnet-group-name" },
-        {
-          type: "value",
-          value: ` ${cliPlaceholder(values.dbSubnetGroupName, "DBSubnetGroupName")}`,
-        },
-        { type: "flag", value: " --db-subnet-group-description" },
-        {
-          type: "value",
-          value: ` "${cliPlaceholder(
+        ...commandFlag(
+          "--db-subnet-group-name",
+          cliPlaceholder(values.dbSubnetGroupName, "DBSubnetGroupName"),
+        ),
+        ...commandFlag(
+          "--db-subnet-group-description",
+          `"${cliPlaceholder(
             values.dbSubnetGroupDescription,
             "DBSubnetGroupDescription",
           )}"`,
-        },
-        { type: "flag", value: " --subnet-ids" },
-        {
-          type: "value",
-          value: ` ${
-            values.subnetIds.length > 0
-              ? values.subnetIds.join(" ")
-              : "<SubnetIds>"
-          }`,
-        },
+        ),
+        ...commandFlag(
+          "--subnet-ids",
+          cliPlaceholder(values.subnetIds.join(" "), "SubnetIds"),
+        ),
       ],
     },
   ]

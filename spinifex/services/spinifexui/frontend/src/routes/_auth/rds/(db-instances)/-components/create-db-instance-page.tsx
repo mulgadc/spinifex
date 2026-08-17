@@ -12,6 +12,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
+  commandFlag,
+  optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -727,87 +729,39 @@ type CliValues = Omit<
 function buildCreateDBInstanceCommands(values: CliValues): CliCommand[] {
   const parts: CliCommand["parts"] = [
     { type: "bin", value: "AWS_PROFILE=spinifex aws rds create-db-instance" },
-    { type: "flag", value: " --db-instance-identifier" },
-    {
-      type: "value",
-      value: ` ${cliPlaceholder(
-        values.dbInstanceIdentifier,
-        "DBInstanceIdentifier",
-      )}`,
-    },
-    { type: "flag", value: " --engine" },
-    { type: "value", value: ` ${cliPlaceholder(values.engine, "Engine")}` },
-    { type: "flag", value: " --db-instance-class" },
-    {
-      type: "value",
-      value: ` ${cliPlaceholder(values.dbInstanceClass, "DBInstanceClass")}`,
-    },
-    { type: "flag", value: " --allocated-storage" },
-    { type: "value", value: ` ${values.allocatedStorage}` },
-    { type: "flag", value: " --master-username" },
-    {
-      type: "value",
-      value: ` ${cliPlaceholder(values.masterUsername, "MasterUsername")}`,
-    },
+    ...commandFlag(
+      "--db-instance-identifier",
+      cliPlaceholder(values.dbInstanceIdentifier, "DBInstanceIdentifier"),
+    ),
+    ...commandFlag("--engine", cliPlaceholder(values.engine, "Engine")),
+    ...commandFlag(
+      "--db-instance-class",
+      cliPlaceholder(values.dbInstanceClass, "DBInstanceClass"),
+    ),
+    ...commandFlag("--allocated-storage", values.allocatedStorage),
+    ...commandFlag(
+      "--master-username",
+      cliPlaceholder(values.masterUsername, "MasterUsername"),
+    ),
     { type: "flag", value: " --master-user-password" },
     { type: "variable", value: " $DB_PASSWORD" },
+    ...optionalFlag("--engine-version", values.engineVersion),
+    ...optionalFlag("--db-name", values.dbName),
+    ...optionalFlag("--port", values.port),
+    ...optionalFlag("--db-subnet-group-name", values.dbSubnetGroupName),
+    ...optionalFlag(
+      "--vpc-security-group-ids",
+      values.vpcSecurityGroupIds.join(" "),
+    ),
+    ...optionalFlag("--db-parameter-group-name", values.dbParameterGroupName),
+    ...optionalFlag("--deletion-protection", values.deletionProtection),
+    ...commandFlag("--backup-retention-period", values.backupRetentionPeriod),
+    ...optionalFlag("--preferred-backup-window", values.preferredBackupWindow),
+    ...optionalFlag(
+      "--preferred-maintenance-window",
+      values.preferredMaintenanceWindow,
+    ),
   ]
-
-  if (values.engineVersion) {
-    parts.push(
-      { type: "flag", value: " --engine-version" },
-      { type: "value", value: ` ${values.engineVersion}` },
-    )
-  }
-  if (values.dbName) {
-    parts.push(
-      { type: "flag", value: " --db-name" },
-      { type: "value", value: ` ${values.dbName}` },
-    )
-  }
-  if (values.port) {
-    parts.push(
-      { type: "flag", value: " --port" },
-      { type: "value", value: ` ${values.port}` },
-    )
-  }
-  if (values.dbSubnetGroupName) {
-    parts.push(
-      { type: "flag", value: " --db-subnet-group-name" },
-      { type: "value", value: ` ${values.dbSubnetGroupName}` },
-    )
-  }
-  if (values.vpcSecurityGroupIds.length > 0) {
-    parts.push(
-      { type: "flag", value: " --vpc-security-group-ids" },
-      { type: "value", value: ` ${values.vpcSecurityGroupIds.join(" ")}` },
-    )
-  }
-  if (values.dbParameterGroupName) {
-    parts.push(
-      { type: "flag", value: " --db-parameter-group-name" },
-      { type: "value", value: ` ${values.dbParameterGroupName}` },
-    )
-  }
-  if (values.deletionProtection) {
-    parts.push({ type: "flag", value: " --deletion-protection" })
-  }
-  parts.push(
-    { type: "flag", value: " --backup-retention-period" },
-    { type: "value", value: ` ${values.backupRetentionPeriod}` },
-  )
-  if (values.preferredBackupWindow) {
-    parts.push(
-      { type: "flag", value: " --preferred-backup-window" },
-      { type: "value", value: ` ${values.preferredBackupWindow}` },
-    )
-  }
-  if (values.preferredMaintenanceWindow) {
-    parts.push(
-      { type: "flag", value: " --preferred-maintenance-window" },
-      { type: "value", value: ` ${values.preferredMaintenanceWindow}` },
-    )
-  }
 
   return [{ label: "Create DB Instance", parts }]
 }

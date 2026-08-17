@@ -12,6 +12,7 @@ const (
 )
 
 func TestARNBuilders(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "arn:aws:rds:ap-southeast-2:123456789012:db:orders-db",
 		DBInstanceARN(testRegion, testAccountID, "orders-db"))
 	assert.Equal(t, "arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-2026-07-24",

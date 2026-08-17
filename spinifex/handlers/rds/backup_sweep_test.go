@@ -78,6 +78,7 @@ func retainingRecord(days int64) DBInstanceRecord {
 // while KV is unhealthy, and cluster-wide scope is leader-gated by the framework
 // rather than by anything here.
 func TestBackupRetentionReaper_IsAClusterWideReaper(t *testing.T) {
+	t.Parallel()
 	reaper := NewService(nil, testRegion).NewBackupRetentionReaper()
 	assert.Equal(t, "rds-backup-retention", reaper.Class())
 	assert.Equal(t, vm.ScopeClusterWide, reaper.Scope())
@@ -88,6 +89,7 @@ func TestBackupRetentionReaper_IsAClusterWideReaper(t *testing.T) {
 }
 
 func TestSweep_RemovesOnlyTheBackupsPastRetention(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(7))
 
@@ -113,6 +115,7 @@ func TestSweep_RemovesOnlyTheBackupsPastRetention(t *testing.T) {
 // If backup creation has been failing for a week, strict retention would delete
 // the whole backup set at the moment a backup matters most.
 func TestSweep_NeverDeletesTheNewestBackupWhileBackupsAreOn(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(1))
 
@@ -132,6 +135,7 @@ func TestSweep_NeverDeletesTheNewestBackupWhileBackupsAreOn(t *testing.T) {
 // A snapshot still being cut is not something the customer could restore from, so
 // keeping it instead of the newest available one would leave them with nothing.
 func TestSweep_KeepsTheNewestAvailableRatherThanTheNewest(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(1))
 
@@ -147,6 +151,7 @@ func TestSweep_KeepsTheNewestAvailableRatherThanTheNewest(t *testing.T) {
 // The point of turning automated backups off is to make the data volume
 // GC-eligible again, so the last one goes too.
 func TestSweep_RemovesEverythingWhenBackupsAreOff(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(0))
 
@@ -163,6 +168,7 @@ func TestSweep_RemovesEverythingWhenBackupsAreOff(t *testing.T) {
 // restore an instance that no longer exists, and the alternative is a data volume
 // pinned for good.
 func TestSweep_RemovesEverythingWhenTheInstanceIsGone(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 
 	newest := h.seedBackup(t, time.Hour)
@@ -177,6 +183,7 @@ func TestSweep_RemovesEverythingWhenTheInstanceIsGone(t *testing.T) {
 // and the branch it would select deletes a live instance's whole backup set. The
 // bucket listing is the corroboration that stops it.
 func TestSweep_LeavesTheBackupSetWhenTheRecordCannotBeRead(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(7))
 	newest := h.seedBackup(t, time.Hour)
@@ -214,6 +221,7 @@ func (m missingKey) Get(ctx context.Context, key string) (jetstream.KeyValueEntr
 // skip rather than a failure: the next pass retries, and the index entry stays so
 // the backup is not lost from it.
 func TestSweep_SkipsABackupStillInUse(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(0))
 	inUse := h.seedBackup(t, 2*oneDay)
@@ -235,6 +243,7 @@ func TestSweep_SkipsABackupStillInUse(t *testing.T) {
 // A pass that under-collects is corrected by the next one two minutes later; a
 // pass that walks an unbounded number of snapshots is not.
 func TestSweep_IsBoundedPerPassAndResumes(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.svc = h.svc.WithDeps(Deps{
 		LoadCA:    newTestCA(t),
@@ -261,6 +270,7 @@ func TestSweep_IsBoundedPerPassAndResumes(t *testing.T) {
 // cleared so the index stops naming it, and nothing is counted as reaped because
 // no data went with it.
 func TestSweep_DropsAnIndexEntryWhoseSnapshotIsGone(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(7))
 
@@ -281,6 +291,7 @@ func TestSweep_DropsAnIndexEntryWhoseSnapshotIsGone(t *testing.T) {
 // Every tenant's retention is enforced on the same pass, so one account's backlog
 // cannot leave another's unenforced.
 func TestSweep_CoversEveryAccount(t *testing.T) {
+	t.Parallel()
 	const otherAccount = "210987654321"
 	h := newSnapshotHarness(t, false)
 
@@ -301,6 +312,7 @@ func TestSweep_CoversEveryAccount(t *testing.T) {
 // A truncated listing must never read as "no accounts": that would leave every
 // tenant's retention unenforced while looking like a clean pass.
 func TestSweep_FailsWhenTheAccountBucketsCannotBeEnumerated(t *testing.T) {
+	t.Parallel()
 	_, err := NewService(nil, testRegion).NewBackupRetentionReaper().Sweep(t.Context())
 	require.Error(t, err)
 }
@@ -308,6 +320,7 @@ func TestSweep_FailsWhenTheAccountBucketsCannotBeEnumerated(t *testing.T) {
 // The backstop for a crash between the last DeleteDBSnapshot and the inline
 // volume delete that follows it: nothing else references the volume by then.
 func TestSweep_ReclaimsAnOrphanedRetainedVolume(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -331,6 +344,7 @@ func TestSweep_ReclaimsAnOrphanedRetainedVolume(t *testing.T) {
 // written with: a snapshot taken since would read as "nothing holds it", and one
 // deleted since would pin the volume for good.
 func TestSweep_ReChecksTheHoldersRatherThanTrustingTheRecord(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -356,6 +370,7 @@ func TestSweep_ReChecksTheHoldersRatherThanTrustingTheRecord(t *testing.T) {
 // "nobody". It is recorded and re-checked rather than failing the pass, so a
 // disagreement between the two indexes never wedges the sweep.
 func TestSweep_RetainsAVolumeTheVolumeStoreRefusesToRelease(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -378,6 +393,7 @@ func TestSweep_RetainsAVolumeTheVolumeStoreRefusesToRelease(t *testing.T) {
 // Turning automated backups off sweeps the set that exists rather than leaving it
 // to expire against a retention that is now zero.
 func TestModifyDBInstance_SweepsTheAutomatedBackupsWhenRetentionGoesToZero(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, retainingRecord(7))
 	swept := h.seedBackup(t, time.Hour)
@@ -396,6 +412,7 @@ func TestModifyDBInstance_SweepsTheAutomatedBackupsWhenRetentionGoesToZero(t *te
 // An automated backup outliving its instance would pin the instance's data
 // volume for good, so teardown sweeps the set before releasing the volume.
 func TestDeleteDBInstance_SweepsTheAutomatedBackups(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 	swept := seedAutomatedBackup(t, h.svc, h.snaps, testAccountID, testDBID, oneDay, SnapshotStatusAvailable)

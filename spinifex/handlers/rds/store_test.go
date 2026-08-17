@@ -10,10 +10,12 @@ import (
 )
 
 func TestAccountBucketName(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "rds-account-123456789012", AccountBucketName(testAccountID))
 }
 
 func TestKeyPaths(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "db-instances/orders-db", DBInstanceKey("orders-db"))
 	assert.Equal(t, "db-snapshots/orders-db-final", DBSnapshotKey("orders-db-final"))
 	assert.Equal(t, "db-subnet-groups/prod-db-subnets", DBSubnetGroupKey("prod-db-subnets"))
@@ -29,6 +31,7 @@ func TestKeyPaths(t *testing.T) {
 // Each key must sit under its own prefix, so an enumeration of one resource type
 // can never pick up another's records.
 func TestKeyPathsSitUnderTheirPrefix(t *testing.T) {
+	t.Parallel()
 	assert.True(t, strings.HasPrefix(DBInstanceKey("x"), DBInstancesPrefix()))
 	assert.True(t, strings.HasPrefix(DBSnapshotKey("x"), DBSnapshotsPrefix()))
 	assert.True(t, strings.HasPrefix(DBSubnetGroupKey("x"), DBSubnetGroupsPrefix()))
@@ -44,11 +47,13 @@ func TestKeyPathsSitUnderTheirPrefix(t *testing.T) {
 }
 
 func TestNewStore_NilConn(t *testing.T) {
+	t.Parallel()
 	_, err := NewStore(nil)
 	require.Error(t, err)
 }
 
 func TestNewStore_Valid(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	s, err := NewStore(nc)
 	require.NoError(t, err)
@@ -56,6 +61,7 @@ func TestNewStore_Valid(t *testing.T) {
 }
 
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -72,6 +78,7 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 }
 
 func TestGetOrCreateSystemBucket_Idempotent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 

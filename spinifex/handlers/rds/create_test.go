@@ -225,6 +225,7 @@ func validCreateInput() *rds.CreateDBInstanceInput {
 }
 
 func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	out, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -290,6 +291,7 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 }
 
 func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	iamErr := errors.New("IAM store unavailable")
 	h.iam.PutRolePolicyErr = iamErr
@@ -305,6 +307,7 @@ func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
 }
 
 func TestCreateDBInstance_PublishesEndpointRecord(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -326,6 +329,7 @@ func TestCreateDBInstance_PublishesEndpointRecord(t *testing.T) {
 // Without northstar there is no name to resolve, so the endpoint has to be the
 // ENI IP itself rather than an empty host the client would dial.
 func TestCreateDBInstance_EndpointFallsBackToENIIPWithoutBaseDomain(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	out, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -346,6 +350,7 @@ func TestCreateDBInstance_EndpointFallsBackToENIIPWithoutBaseDomain(t *testing.T
 }
 
 func TestCreateDBInstance_DuplicateIdentifierIsRejected(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -365,6 +370,7 @@ func TestCreateDBInstance_DuplicateIdentifierIsRejected(t *testing.T) {
 // written must withdraw it — otherwise the name is permanently unusable while
 // naming an instance that was never provisioned.
 func TestCreateDBInstance_LaunchFailureWithdrawsTheReservation(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.launch.launcher.err = errors.New("no host has capacity")
 
@@ -382,6 +388,7 @@ func TestCreateDBInstance_LaunchFailureWithdrawsTheReservation(t *testing.T) {
 // built. The deferred record delete removes the only thing naming the VM, its
 // two ENIs and the data volume, so anything left behind is unreclaimable.
 func TestCreateDBInstance_FailureAfterLaunchUnwindsEveryResource(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	// Dropping the reserved record while the launch is in flight fails the
@@ -403,6 +410,7 @@ func TestCreateDBInstance_FailureAfterLaunchUnwindsEveryResource(t *testing.T) {
 }
 
 func TestCreateDBInstance_IndexFailureWithdrawsTheRecordedLaunch(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	// This invalid KV key makes the instance-index write fail after recordLaunch
 	// has advanced the reservation revision.
@@ -418,6 +426,7 @@ func TestCreateDBInstance_IndexFailureWithdrawsTheRecordedLaunch(t *testing.T) {
 }
 
 func TestCreateDBInstance_RecordLaunchDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	var replacement DBInstanceRecord
 	h.launch.launcher.onLaunch = func() {
@@ -431,6 +440,7 @@ func TestCreateDBInstance_RecordLaunchDoesNotOverwriteAConcurrentReplacement(t *
 }
 
 func TestCreateDBInstance_RollbackDoesNotDeleteAConcurrentReplacement(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.launch.launcher.instanceID = "invalid instance id"
 	var replacement DBInstanceRecord
@@ -447,6 +457,7 @@ func TestCreateDBInstance_RollbackDoesNotDeleteAConcurrentReplacement(t *testing
 }
 
 func TestCreateDBInstance_RollbackFollowsSameOwnerUpdates(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.launch.launcher.instanceID = "invalid instance id"
 	h.launch.launcher.onTerminate = func() {
@@ -470,6 +481,7 @@ func TestCreateDBInstance_RollbackFollowsSameOwnerUpdates(t *testing.T) {
 // The request may not be answered with an instance whose storage is
 // not actually encrypted, so an unencrypted volume fails the whole create.
 func TestCreateDBInstance_UnencryptedDataVolumeFailsTheCreate(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.launch.volumes.encrypted = false
 
@@ -480,6 +492,7 @@ func TestCreateDBInstance_UnencryptedDataVolumeFailsTheCreate(t *testing.T) {
 }
 
 func TestCreateDBInstance_SecurityGroupsMustBeInThePlacementVPC(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	input := validCreateInput()
@@ -500,6 +513,7 @@ func TestCreateDBInstance_SecurityGroupsMustBeInThePlacementVPC(t *testing.T) {
 }
 
 func TestCreateDBInstance_RequiresADefaultVPCWithASubnet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.network.vpcs = nil
 
@@ -560,6 +574,7 @@ func TestValidateCreateRequest_RejectsUnimplementedParameters(t *testing.T) {
 // DeletionProtection is honoured, so it has to be accepted
 // at create and carried onto the record DeleteDBInstance checks.
 func TestValidateCreateRequest_AcceptsDeletionProtection(t *testing.T) {
+	t.Parallel()
 	input := validCreateInput()
 	input.DeletionProtection = aws.Bool(true)
 
@@ -613,6 +628,7 @@ func TestValidateCreateRequest_RejectsMalformedRequests(t *testing.T) {
 }
 
 func TestValidateCreateRequest_AcceptsTheImplicitDefaultParameterGroup(t *testing.T) {
+	t.Parallel()
 	input := validCreateInput()
 	input.DBParameterGroupName = aws.String("default.postgres18")
 	input.Port = aws.Int64(6543)
@@ -628,6 +644,7 @@ func TestValidateCreateRequest_AcceptsTheImplicitDefaultParameterGroup(t *testin
 // The inert parameters are accepted as no-ops rather than rejected: omitting
 // them creates no false guarantee, so a Terraform config carrying them works.
 func TestValidateCreateRequest_AcceptsInertParameters(t *testing.T) {
+	t.Parallel()
 	input := validCreateInput()
 	input.AutoMinorVersionUpgrade = aws.Bool(true)
 	input.CopyTagsToSnapshot = aws.Bool(true)

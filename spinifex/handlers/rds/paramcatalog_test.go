@@ -73,6 +73,7 @@ func TestParameterCatalog_EntriesAreWellFormed(t *testing.T) {
 // The size-derived defaults have to actually move with the class, or the
 // formulas are decoration and one end of the supported range is mis-tuned.
 func TestParameterCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) {
+	t.Parallel()
 	smallest, err := classMemoryMiB("db.t3.micro")
 	require.NoError(t, err)
 	largest, err := classMemoryMiB("db.m5.xlarge")
@@ -95,6 +96,7 @@ func TestParameterCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) 
 // shared_buffers is a quarter of class memory on real RDS, and it is the setting
 // whose being wrong at the small end stops the engine from starting.
 func TestParameterCatalog_SharedBuffersIsAQuarterOfClassMemory(t *testing.T) {
+	t.Parallel()
 	memoryMiB, err := classMemoryMiB("db.m5.large")
 	require.NoError(t, err)
 
@@ -169,6 +171,7 @@ func TestValidateParameterValue_AcceptsPostgresStringValues(t *testing.T) {
 }
 
 func TestValidateParameterValue_AcceptsEveryPostgresSpellingOfABoolean(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"on", "OFF", "true", "False", "yes", "no", "1", "0"} {
 		_, err := enginePostgres.validateParameterValue("autovacuum", value)
 		assert.NoError(t, err, "autovacuum rejected %q, which the engine accepts", value)
@@ -327,6 +330,7 @@ func TestParameterCatalog_EachEngineExposesItsTLSEnforcementParameter(t *testing
 // A group's overrides are laid over the whole catalog, not merged into a subset:
 // every parameter is present, and one the group does not set carries its default.
 func TestResolveEffectiveParameters_OverlaysOverridesOnDefaults(t *testing.T) {
+	t.Parallel()
 	resolved, err := enginePostgres.ResolveEffectiveParameters("db.t3.medium", map[string]string{"work_mem": "16384"})
 	require.NoError(t, err)
 	require.Len(t, resolved, len(enginePostgres.CatalogParameterNames()))
@@ -346,6 +350,7 @@ func TestResolveEffectiveParameters_OverlaysOverridesOnDefaults(t *testing.T) {
 // Sorted output is what lets a re-resolve that changed nothing produce a
 // byte-identical include, so an apply does not restart an engine for no reason.
 func TestResolveEffectiveParameters_IsSortedAndCarriesNoFormula(t *testing.T) {
+	t.Parallel()
 	resolved, err := enginePostgres.ResolveEffectiveParameters("db.m5.xlarge", nil)
 	require.NoError(t, err)
 
@@ -361,6 +366,7 @@ func TestResolveEffectiveParameters_IsSortedAndCarriesNoFormula(t *testing.T) {
 // A stored value the catalog would now reject must not keep being handed to the
 // engine, so the resolve re-validates rather than trusting what was written.
 func TestResolveEffectiveParameters_RevalidatesStoredOverrides(t *testing.T) {
+	t.Parallel()
 	_, err := enginePostgres.ResolveEffectiveParameters("db.t3.medium", map[string]string{"max_connections": "999999"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "max_connections")
@@ -427,6 +433,7 @@ func TestResolveEffectiveParameters_RejectsFatalCombinations(t *testing.T) {
 }
 
 func TestResolveEffectiveParameters_AcceptsMinimalWALWithoutReplication(t *testing.T) {
+	t.Parallel()
 	_, err := enginePostgres.ResolveEffectiveParameters("db.t3.micro", map[string]string{
 		"wal_level": "minimal", "max_wal_senders": "0", "max_replication_slots": "0",
 	})
@@ -434,6 +441,7 @@ func TestResolveEffectiveParameters_AcceptsMinimalWALWithoutReplication(t *testi
 }
 
 func TestParameterCatalog_Postgres18ApplyTypesAndBuiltCompressionMethods(t *testing.T) {
+	t.Parallel()
 	autovacuumWorkers, _ := enginePostgres.LookupParameter("autovacuum_max_workers")
 	assert.Equal(t, ApplyTypeDynamic, autovacuumWorkers.ApplyType)
 
@@ -442,6 +450,7 @@ func TestParameterCatalog_Postgres18ApplyTypesAndBuiltCompressionMethods(t *test
 }
 
 func TestResolveEffectiveParameters_RejectsAnUnknownClass(t *testing.T) {
+	t.Parallel()
 	_, err := enginePostgres.ResolveEffectiveParameters("db.x99.mega", nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
@@ -451,6 +460,7 @@ func TestResolveEffectiveParameters_RejectsAnUnknownClass(t *testing.T) {
 // AllowedValues is what tells a customer what an integer means, so a unitful
 // parameter has to report its unit rather than a bare pair of numbers.
 func TestParameterSpec_AllowedValuesDescribesTheConstraint(t *testing.T) {
+	t.Parallel()
 	shared, _ := enginePostgres.LookupParameter("shared_buffers")
 	assert.Equal(t, "16-4194304 (8kB)", shared.AllowedValues())
 

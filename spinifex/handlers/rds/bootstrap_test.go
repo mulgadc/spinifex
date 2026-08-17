@@ -55,6 +55,7 @@ func storedPayload(t *testing.T, svc *Service, id string) (*BootstrapPayloadEnve
 }
 
 func TestBootstrapPayload_RoundTripsAndCarriesNoCleartext(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	seedPending(t, svc, rec)
@@ -76,6 +77,7 @@ func TestBootstrapPayload_RoundTripsAndCarriesNoCleartext(t *testing.T) {
 // The same password staged twice must not produce the same bytes, or a KV reader
 // could tell two instances share a password without decrypting either.
 func TestBootstrapPayload_CiphertextIsNotDeterministic(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	seedInstance(t, svc, rec)
@@ -95,6 +97,7 @@ func TestBootstrapPayload_CiphertextIsNotDeterministic(t *testing.T) {
 }
 
 func TestBootstrapPayload_TamperedCiphertextIsRejected(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	seedPending(t, svc, rec)
@@ -118,6 +121,7 @@ func TestBootstrapPayload_TamperedCiphertextIsRejected(t *testing.T) {
 // A payload written under another master key must say so rather than surfacing a
 // raw GCM authentication failure, which reads as tampering.
 func TestBootstrapPayload_WrongMasterKeyIsReportedLegibly(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	seedPending(t, svc, rec)
@@ -176,6 +180,7 @@ func TestBootstrapPayload_ClaimsBindItToOneInstanceGeneration(t *testing.T) {
 // The whole point of the split: a fetch serves the password without writing
 // anything, so a lost reply is recovered by asking again.
 func TestGetDBBootstrapConfig_ReplaysUntilAcknowledged(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	payloadID := seedPending(t, svc, rec)
@@ -295,6 +300,7 @@ func TestAcknowledgeDBBootstrap_Resolution(t *testing.T) {
 // The operation that destroys key material must not depend on being able to read
 // it, or a master.key change would strand a bootstrapped instance forever.
 func TestAcknowledgeDBBootstrap_NeverDecrypts(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	payloadID := seedPending(t, svc, defaultRecord())
 
@@ -314,6 +320,7 @@ func TestAcknowledgeDBBootstrap_NeverDecrypts(t *testing.T) {
 // The volume ID is an echo of what the fetch handed the guest rather than
 // independent proof, but a mismatch is a platform bug worth denying on.
 func TestAcknowledgeDBBootstrap_RejectsAForeignDataVolume(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	payloadID := seedPending(t, svc, defaultRecord())
 
@@ -334,6 +341,7 @@ func TestAcknowledgeDBBootstrap_RejectsAForeignDataVolume(t *testing.T) {
 // A beta record whose password was already spent keeps attaching: it is serving
 // real data and holds no secret at rest to fix.
 func TestGetDBBootstrapConfig_LegacyConsumedRecordAttaches(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.Bootstrap = BootstrapState{Consumed: true, ResolvedParameters: rec.Bootstrap.ResolvedParameters}
@@ -353,6 +361,7 @@ func TestGetDBBootstrapConfig_LegacyConsumedRecordAttaches(t *testing.T) {
 // datadir to save. The password is removed on sight rather than left waiting for
 // an operator who may never act.
 func TestGetDBBootstrapConfig_LegacyPlaintextIsScrubbedIdempotently(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.Bootstrap.MasterUserPassword = "beta-plaintext-pw"
@@ -375,6 +384,7 @@ func TestGetDBBootstrapConfig_LegacyPlaintextIsScrubbedIdempotently(t *testing.T
 // registers and beats and the operator sees a running-but-broken instance
 // instead of a VM retrying into silence.
 func TestGetDBBootstrapConfig_UnreadablePayloadAttachesAndReportsWhy(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedPending(t, svc, defaultRecord())
 
@@ -391,6 +401,7 @@ func TestGetDBBootstrapConfig_UnreadablePayloadAttachesAndReportsWhy(t *testing.
 }
 
 func TestCreateDBInstance_StagesThePasswordEncrypted(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
 	require.NoError(t, err)
@@ -419,6 +430,7 @@ func TestCreateDBInstance_StagesThePasswordEncrypted(t *testing.T) {
 }
 
 func TestCreateDBInstance_WithoutAMasterKeyStagesNothing(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.svc = h.svc.WithDeps(Deps{
 		LoadCA:  newTestCA(t),
@@ -443,6 +455,7 @@ func TestCreateDBInstance_WithoutAMasterKeyStagesNothing(t *testing.T) {
 // is staged for it and an acknowledgement against it is denied rather than read
 // as a benign duplicate.
 func TestRestoredRecord_IsBornWithoutAStagedBootstrap(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.Bootstrap.State = BootstrapStateNone
@@ -459,6 +472,7 @@ func TestRestoredRecord_IsBornWithoutAStagedBootstrap(t *testing.T) {
 }
 
 func TestDeleteDBInstance_RemovesTheStagedPayload(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	seedPending(t, h.svc, rec)
@@ -477,6 +491,7 @@ func TestDeleteDBInstance_RemovesTheStagedPayload(t *testing.T) {
 // The replacement would lose the format grant only the initial create can hold,
 // so it could never come up whatever the password did.
 func TestModifyDBInstance_RejectsADisruptiveChangeWhileTheBootstrapIsStaged(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.Status = StatusFailed
@@ -544,6 +559,7 @@ func TestReplaceInstanceVM_DiscardsAStagedBootstrap(t *testing.T) {
 // unusable: the create that follows owns the reservation, so the orphan it finds
 // is its own to overwrite.
 func TestCreateDBInstance_StagesOverAnOrphanedPayload(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	orphaned := seedPending(t, svc, rec)
@@ -560,6 +576,7 @@ func TestCreateDBInstance_StagesOverAnOrphanedPayload(t *testing.T) {
 // the record's FailureReason: the status machine clears that on every
 // transition, which is exactly what a timed-out create does next.
 func TestMarkBootstrapUnrecoverable_ReasonSurvivesAStatusTransition(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 	rec.Status = StatusCreating
@@ -581,6 +598,7 @@ func TestMarkBootstrapUnrecoverable_ReasonSurvivesAStatusTransition(t *testing.T
 // Both reasons reach the customer, and an instance still holding staged
 // credentials while it serves is visible without a second call.
 func TestProjectDBInstance_ReportsTheBootstrapState(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	rec := defaultRecord()
 	rec.Status = StatusAvailable

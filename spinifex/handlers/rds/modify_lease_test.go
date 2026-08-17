@@ -24,6 +24,7 @@ func heldLease(remaining time.Duration) *ModifyLease {
 // the sweep runs a second grow — and for a class change, a second
 // replaceInstanceVM against the same data volume and endpoint ENI.
 func TestModifyDBInstance_HoldsTheLeaseSoAReconcilePassCannotReEnterTheChange(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 
@@ -50,6 +51,7 @@ func TestModifyDBInstance_HoldsTheLeaseSoAReconcilePassCannotReEnterTheChange(t 
 // A pass that cannot take the lease leaves the instance alone entirely: the
 // holder is working on it, and the record already says what it is becoming.
 func TestReconciler_LeavesAModifyItsHolderIsStillInside(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	rec.ModifyLease = heldLease(modifyLeaseTTL)
@@ -68,6 +70,7 @@ func TestReconciler_LeavesAModifyItsHolderIsStillInside(t *testing.T) {
 // the change over — which is what makes a leader that died mid-modify
 // recoverable rather than terminal.
 func TestReconciler_ResumesAModifyWhoseHolderIsGone(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	rec.ModifyLease = heldLease(-time.Second)
@@ -107,6 +110,7 @@ func TestApplyPendingModifications_ReleasesTheLeaseWhateverTheOutcome(t *testing
 // modifying forever, since a pass that cannot take the lease does nothing. Past
 // the budget it is failed anyway, which is the state a retry is legal from.
 func TestReconciler_FailsAModifyWhoseHolderOverrunsTheBudget(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	rec.ModifyLease = heldLease(modifyLeaseTTL)
@@ -125,6 +129,7 @@ func TestReconciler_FailsAModifyWhoseHolderOverrunsTheBudget(t *testing.T) {
 // A long-running apply has to keep its lease current, remain exclusive, and
 // stop as soon as another holder takes ownership.
 func TestWithModifyLease_RenewsAndCancelsTheApplyWhenTakenOver(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.svc.deps.ModifyLeaseTTL = 500 * time.Millisecond
 	h.svc.deps.ModifyLeaseRefresh = 20 * time.Millisecond
@@ -173,6 +178,7 @@ func TestWithModifyLease_RenewsAndCancelsTheApplyWhenTakenOver(t *testing.T) {
 }
 
 func TestModifyDBInstance_LeaseTakeoverLeavesTheTransitionRetryable(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.svc.deps.ModifyLeaseTTL = 500 * time.Millisecond
 	h.svc.deps.ModifyLeaseRefresh = 10 * time.Millisecond
@@ -199,6 +205,7 @@ func TestModifyDBInstance_LeaseTakeoverLeavesTheTransitionRetryable(t *testing.T
 }
 
 func TestWithModifyLease_CancelsWhenRenewalsFailUntilExpiry(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.svc.deps.ModifyLeaseTTL = 100 * time.Millisecond
 	h.svc.deps.ModifyLeaseRefresh = 10 * time.Millisecond
@@ -230,6 +237,7 @@ func TestWithModifyLease_CancelsWhenRenewalsFailUntilExpiry(t *testing.T) {
 // Re-taking a lease we already hold has to be allowed, or a caller that claims
 // twice deadlocks against itself.
 func TestClaimModifyLease_RefusesAnotherHolderButNotItsOwn(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	seedInstance(t, h.svc, modifiableRecord())
 	kv := h.kv(t)

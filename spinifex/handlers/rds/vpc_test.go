@@ -12,12 +12,14 @@ import (
 )
 
 func TestSystemVPCNameIsPerRegion(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "rds-system-ap-southeast-2", SystemVPCName("ap-southeast-2"))
 	assert.NotEqual(t, SystemVPCName("us-east-1"), SystemVPCName("ap-southeast-2"),
 		"one system VPC per region, so two regions must not resolve to the same VPC")
 }
 
 func TestSystemVPCSpecDefaults(t *testing.T) {
+	t.Parallel()
 	spec := SystemVPCSpec(nil, "ap-southeast-2")
 
 	assert.Equal(t, handlers_systemvpc.Spec{
@@ -39,6 +41,7 @@ func TestSystemVPCSpecDefaults(t *testing.T) {
 }
 
 func TestSystemVPCSpecHonoursOperatorOverrides(t *testing.T) {
+	t.Parallel()
 	spec := SystemVPCSpec(&config.RDSConfig{
 		SystemVPCSupernet:       "172.16.0.0/14",
 		SystemVPCPrivateSubnets: 3,
@@ -50,6 +53,7 @@ func TestSystemVPCSpecHonoursOperatorOverrides(t *testing.T) {
 }
 
 func TestSystemVPCTagsAreRDSOwn(t *testing.T) {
+	t.Parallel()
 	spec := SystemVPCSpec(nil, "ap-southeast-2")
 
 	// The tag keys are the whole isolation mechanism: EKS's teardown and its
@@ -62,6 +66,7 @@ func TestSystemVPCTagsAreRDSOwn(t *testing.T) {
 }
 
 func TestSystemVPCSupernetIsUsableAndDisjointFromEKS(t *testing.T) {
+	t.Parallel()
 	supernet, err := netip.ParsePrefix(config.RDSDefaultSystemVPCSupernet)
 	require.NoError(t, err)
 	assert.Equal(t, supernet.Masked(), supernet, "a supernet with host bits set is rejected by the builder")

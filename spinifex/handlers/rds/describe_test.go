@@ -23,6 +23,7 @@ func seedCreated(t *testing.T, h *createHarness, id string) DBInstanceRecord {
 }
 
 func TestDescribeDBInstances_ListsEveryInstanceSorted(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	for _, id := range []string{"zulu-db", "alpha-db", "mike-db"} {
 		seedCreated(t, h, id)
@@ -40,6 +41,7 @@ func TestDescribeDBInstances_ListsEveryInstanceSorted(t *testing.T) {
 }
 
 func TestDescribeDBInstances_EmptyAccountIsAnEmptyList(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	out, err := h.svc.DescribeDBInstances(t.Context(), nil, testAccountID)
@@ -50,6 +52,7 @@ func TestDescribeDBInstances_EmptyAccountIsAnEmptyList(t *testing.T) {
 // A client polling a create must be able to tell "not ready" from "gone", so a
 // named instance that does not exist is an error rather than an empty list.
 func TestDescribeDBInstances_NamedMissingInstanceIsAnError(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -61,6 +64,7 @@ func TestDescribeDBInstances_NamedMissingInstanceIsAnError(t *testing.T) {
 }
 
 func TestDescribeDBInstances_NamedInstanceProjectsTheRecord(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	rec := seedCreated(t, h, testDBInstanceID)
 
@@ -94,6 +98,7 @@ func TestDescribeDBInstances_NamedInstanceProjectsTheRecord(t *testing.T) {
 // identifier, so an instance created without one is unmanageable by the tool
 // this service is driven with — its post-create read finds nothing.
 func TestDescribeDBInstances_ReportsAStableResourceID(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	rec := seedCreated(t, h, testDBInstanceID)
 	require.Regexp(t, `^db-[0-9a-f]{17}$`, rec.DbiResourceID)
@@ -137,6 +142,7 @@ func TestDescribeDBInstances_FiltersOnResourceIDAndIdentifier(t *testing.T) {
 // false would leave every default configuration with a diff that no modify can
 // clear.
 func TestDescribeDBInstances_EchoesAutoMinorVersionUpgrade(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	unset := seedCreated(t, h, testDBInstanceID)
@@ -157,6 +163,7 @@ func TestDescribeDBInstances_EchoesAutoMinorVersionUpgrade(t *testing.T) {
 }
 
 func TestDescribeDBInstances_EchoesAcceptedInertSettings(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	input := validCreateInput()
 	input.CopyTagsToSnapshot = aws.Bool(true)
@@ -182,6 +189,7 @@ func TestDescribeDBInstances_EchoesAcceptedInertSettings(t *testing.T) {
 }
 
 func TestDescribeDBInstances_EchoesOmittedInertSettingsAsDisabled(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -198,6 +206,7 @@ func TestDescribeDBInstances_EchoesOmittedInertSettingsAsDisabled(t *testing.T) 
 // A filter nobody implemented is refused rather than dropped: dropping it
 // returns exactly the rows the caller asked to exclude.
 func TestDescribeDBInstances_RejectsAnUnrecognizedFilter(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -211,6 +220,7 @@ func TestDescribeDBInstances_RejectsAnUnrecognizedFilter(t *testing.T) {
 // A named instance and a filter that excludes it disagree; reporting the
 // instance anyway would answer a question the caller did not ask.
 func TestDescribeDBInstances_NamedInstanceMustSatisfyTheFilters(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -227,6 +237,7 @@ func TestDescribeDBInstances_NamedInstanceMustSatisfyTheFilters(t *testing.T) {
 // Instances live in per-account buckets, so one account's describe must not see
 // another's — the identifier is only unique within an account.
 func TestDescribeDBInstances_IsScopedToTheCallingAccount(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -238,6 +249,7 @@ func TestDescribeDBInstances_IsScopedToTheCallingAccount(t *testing.T) {
 // A DB instance with no endpoint yet has no Endpoint at all: an Endpoint with an
 // empty address would have a client dial an empty host.
 func TestProjectDBInstance_OmitsAnUnsettledEndpoint(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	instance := h.svc.projectDBInstance(&DBInstanceRecord{
@@ -253,6 +265,7 @@ func TestProjectDBInstance_OmitsAnUnsettledEndpoint(t *testing.T) {
 }
 
 func TestDesiredDNSChanges_CoversEveryTenantOrClaimsNoAuthority(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	rec := seedCreated(t, h, testDBInstanceID)
 
@@ -267,6 +280,7 @@ func TestDesiredDNSChanges_CoversEveryTenantOrClaimsNoAuthority(t *testing.T) {
 // Without a base domain there are no managed RDS records, and claiming authority
 // would let the reconcile prune records this node cannot even name.
 func TestDesiredDNSChanges_ClaimsNoAuthorityWithoutABaseDomain(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -279,6 +293,7 @@ func TestDesiredDNSChanges_ClaimsNoAuthorityWithoutABaseDomain(t *testing.T) {
 // anything still holding an ENI IP keeps its name resolvable, including a failed
 // instance an operator is still investigating.
 func TestDesiredDNSChanges_SkipsDeletedButKeepsFailed(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	seedCreated(t, h, "gone-db")
 	failed := seedCreated(t, h, "failed-db")
@@ -301,6 +316,7 @@ func TestDesiredDNSChanges_SkipsDeletedButKeepsFailed(t *testing.T) {
 // A deferred change is what the customer polls for, and the Terraform provider
 // reads PendingModifiedValues to decide whether an apply has landed.
 func TestProjectDBInstance_ReportsTheDeferredChange(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	instance := h.svc.projectDBInstance(&DBInstanceRecord{
@@ -326,6 +342,7 @@ func TestProjectDBInstance_ReportsTheDeferredChange(t *testing.T) {
 // so reporting it as still pending would show Terraform drift on a change that
 // has landed.
 func TestProjectDBInstance_OmitsAPendingFilesystemGrow(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	instance := h.svc.projectDBInstance(&DBInstanceRecord{
@@ -340,6 +357,7 @@ func TestProjectDBInstance_OmitsAPendingFilesystemGrow(t *testing.T) {
 // AWS reports a parameter group's state on the membership rather than in
 // PendingModifiedValues, and the Terraform provider reads it there.
 func TestProjectDBInstance_ReportsTheParameterGroupApplyStatus(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	rec := &DBInstanceRecord{
 		DBInstanceIdentifier: testDBInstanceID,

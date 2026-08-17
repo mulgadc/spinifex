@@ -117,6 +117,7 @@ func TestParseDailyWindow_RejectsWhatAWSRejects(t *testing.T) {
 }
 
 func TestParseDailyWindow_AcceptsAWindowThatWrapsMidnight(t *testing.T) {
+	t.Parallel()
 	window, err := parseDailyWindow("PreferredBackupWindow", "23:45-00:15")
 	require.NoError(t, err)
 	assert.Equal(t, windowSlot, window.length())
@@ -155,6 +156,7 @@ func TestParseWeeklyWindow_RejectsWhatAWSRejects(t *testing.T) {
 }
 
 func TestParseWeeklyWindow_AcceptsAWindowThatWrapsTheWeek(t *testing.T) {
+	t.Parallel()
 	window, err := parseWeeklyWindow("PreferredMaintenanceWindow", "sat:23:45-sun:00:15")
 	require.NoError(t, err)
 	assert.Equal(t, windowSlot, window.length())
@@ -171,6 +173,7 @@ func TestParseWeeklyWindow_AcceptsAWindowThatWrapsTheWeek(t *testing.T) {
 // AWS refuses the pair rather than the individual window, because the two would
 // collide the week the maintenance window's day comes round.
 func TestValidateWindows_RejectsAnOverlappingPair(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 
 	_, _, err := svc.validateWindows(testDBID, "03:00-04:00", "mon:03:30-mon:04:30")
@@ -187,6 +190,7 @@ func TestValidateWindows_RejectsAnOverlappingPair(t *testing.T) {
 // Canonical text, not the customer's: a describe has to read back the string a
 // later modify compares against, or every modify would look like a change.
 func TestValidateWindows_ReturnsTheCanonicalText(t *testing.T) {
+	t.Parallel()
 	backup, maintenance, err := NewService(nil, testRegion).
 		validateWindows(testDBID, "03:00-04:00", "SUN:05:00-sun:06:00")
 	require.NoError(t, err)
@@ -198,6 +202,7 @@ func TestValidateWindows_ReturnsTheCanonicalText(t *testing.T) {
 // window that moved whenever the record was rewritten would back up at an hour
 // the customer never saw.
 func TestValidateWindows_AssignsStableNonOverlappingWindows(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	block := svc.backupWindowBlock()
 	maintenanceBlock := svc.maintenanceWindowBlock()
@@ -237,6 +242,7 @@ func TestValidateWindows_AssignsStableNonOverlappingWindows(t *testing.T) {
 // second one on top of it would fail the same identifier deterministically,
 // forever.
 func TestValidateWindows_AssignsAroundACustomerNamedWindow(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	// Inside the other window's block, which is where a collision is possible at
 	// all: an hour of the maintenance block covers two of its assignable slots.
@@ -270,6 +276,7 @@ func TestValidateWindows_AssignsAroundACustomerNamedWindow(t *testing.T) {
 // A pair the customer named in full is still refused — the assignment moving out
 // of the way is for windows the platform chose, not for the ones it was given.
 func TestValidateWindows_StillRejectsAPairTheCustomerNamed(t *testing.T) {
+	t.Parallel()
 	_, _, err := NewService(nil, testRegion).
 		validateWindows(testDBID, "13:00-14:00", "wed:13:30-wed:14:30")
 	require.Error(t, err)
@@ -280,6 +287,7 @@ func TestValidateWindows_StillRejectsAPairTheCustomerNamed(t *testing.T) {
 // stored the other one derived it. Anything else would schedule the two passes
 // over each other on exactly the records that name one window.
 func TestResolvedWindows_AssignAroundTheStoredWindow(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 
 	for i := range 200 {
@@ -307,6 +315,7 @@ func assertWindowsDoNotOverlap(t *testing.T, id, backup, maintenance string) {
 // An operator's typo cannot be allowed to fail every create on the node, so the
 // built-in block is used and the fault is logged instead.
 func TestWindowBlock_FallsBackToTheBuiltInBlock(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion).WithDeps(Deps{Backup: BackupPolicy{
 		BackupWindowBlock:      "not-a-window",
 		MaintenanceWindowBlock: "19:00",
@@ -322,6 +331,7 @@ func TestWindowBlock_FallsBackToTheBuiltInBlock(t *testing.T) {
 }
 
 func TestValidateRetentionPeriod_BoundsTheRetention(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	require.NoError(t, svc.validateRetentionPeriod(0))
 	require.NoError(t, svc.validateRetentionPeriod(defaultBackupRetentionCapDays))
@@ -345,6 +355,7 @@ func TestValidateRetentionPeriod_BoundsTheRetention(t *testing.T) {
 // window across leader churn and daemon restarts, and what stops a missed window
 // from being backfilled.
 func TestBackupDue_FiresOncePerWindowAndNeverBackfills(t *testing.T) {
+	t.Parallel()
 	window, err := parseDailyWindow("PreferredBackupWindow", "03:00-03:30")
 	require.NoError(t, err)
 	svc := NewService(nil, testRegion)
@@ -382,6 +393,7 @@ func TestBackupDue_FiresOncePerWindowAndNeverBackfills(t *testing.T) {
 // the backoff is what keeps a broken backup from re-quiescing the engine on every
 // two-minute pass.
 func TestBackupDue_PacesRetriesInsideTheWindow(t *testing.T) {
+	t.Parallel()
 	window, err := parseDailyWindow("PreferredBackupWindow", "03:00-03:30")
 	require.NoError(t, err)
 	svc := NewService(nil, testRegion)
@@ -409,6 +421,7 @@ func TestBackupDue_PacesRetriesInsideTheWindow(t *testing.T) {
 }
 
 func TestRunBackupWindow_TakesIndexesAndStampsTheBackup(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, backupReadyRecord())
 
@@ -451,6 +464,7 @@ func TestRunBackupWindow_TakesIndexesAndStampsTheBackup(t *testing.T) {
 // The window fires once however many passes run inside it, which is what a
 // two-minute reconciler and a leader handover both look like from here.
 func TestRunBackupWindow_FiresOncePerWindow(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, backupReadyRecord())
 
@@ -463,6 +477,7 @@ func TestRunBackupWindow_FiresOncePerWindow(t *testing.T) {
 }
 
 func TestRunBackupWindow_DoesNotFireOutsideTheWindow(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.PreferredBackupWindow = closedBackupWindow(time.Now().UTC())
@@ -474,6 +489,7 @@ func TestRunBackupWindow_DoesNotFireOutsideTheWindow(t *testing.T) {
 }
 
 func TestRunBackupWindow_DoesNotFireWithBackupsDisabled(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.BackupRetentionPeriod = 0
@@ -488,6 +504,7 @@ func TestRunBackupWindow_DoesNotFireWithBackupsDisabled(t *testing.T) {
 // the next window rather than this one. The skip is evented, because a customer
 // looking for last night's backup has to be able to see why there is none.
 func TestRunBackupWindow_SkipsAnInstanceItCannotBackUp(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.Status = StatusRebooting
@@ -514,6 +531,7 @@ func TestRunBackupWindow_SkipsAnInstanceItCannotBackUp(t *testing.T) {
 // A failed backup is a backup fault, never an instance fault. The
 // database stays available and the failure is counted so it is visible.
 func TestRunBackupWindow_CountsAFailureAndLeavesTheInstanceAvailable(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, backupReadyRecord())
 	h.snaps.createErr = assert.AnError
@@ -534,6 +552,7 @@ func TestRunBackupWindow_CountsAFailureAndLeavesTheInstanceAvailable(t *testing.
 // A stored window this plane cannot parse is corruption rather than a schedule:
 // firing on a guessed window would back up at an hour nobody asked for.
 func TestRunBackupWindow_IgnoresAMalformedStoredWindow(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.PreferredBackupWindow = "0300-0400"
@@ -549,6 +568,7 @@ func TestRunBackupWindow_IgnoresAMalformedStoredWindow(t *testing.T) {
 // still carries none after it: reporting one back would show as drift in the next
 // configuration read for a request that never set it.
 func TestModifyDBInstance_DoesNotPersistTheWindowItWasNotGiven(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := retainingRecord(7)
 	rec.PreferredMaintenanceWindow = ""
@@ -569,6 +589,7 @@ func TestModifyDBInstance_DoesNotPersistTheWindowItWasNotGiven(t *testing.T) {
 // A record written before window fields existed carries no window at all, and still has to be
 // backed up — on the window a describe reports for it.
 func TestResolvedBackupWindow_DerivesAWindowForARecordWithoutOne(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	rec := &DBInstanceRecord{DBInstanceIdentifier: testDBID}
 
@@ -591,6 +612,7 @@ func TestResolvedBackupWindow_DerivesAWindowForARecordWithoutOne(t *testing.T) {
 // rather than never. Only the transition happens here; the apply itself is the
 // reconciler's single drain through applyPendingModifications.
 func TestRunMaintenanceWindow_OpensADeferredModify(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.FormatAuthorized = true
@@ -647,6 +669,7 @@ func TestRunMaintenanceWindow_StandsDownWhenThereIsNothingToApply(t *testing.T) 
 }
 
 func TestRunMaintenanceWindow_OpensOncePerWindow(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.PreferredMaintenanceWindow = openMaintenanceWindow(time.Now().UTC())
@@ -664,6 +687,7 @@ func TestRunMaintenanceWindow_OpensOncePerWindow(t *testing.T) {
 }
 
 func TestAutomatedSnapshotIdentifier_TakesAWSsOwnName(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 7, 30, 3, 25, 45, 0, time.UTC)
 	assert.Equal(t, "rds:orders-db-2026-07-30-03-25", AutomatedSnapshotIdentifier(testDBID, at))
 	// Minute-precise, so a retry inside the same window never collides with the
@@ -678,6 +702,7 @@ func TestAutomatedSnapshotIdentifier_TakesAWSsOwnName(t *testing.T) {
 // Automated backups own the rds: namespace, as in AWS, so a customer snapshot can
 // never collide with one the scheduler mints.
 func TestCreateDBSnapshot_RejectsTheAutomatedNamespace(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 
@@ -692,6 +717,7 @@ func TestCreateDBSnapshot_RejectsTheAutomatedNamespace(t *testing.T) {
 }
 
 func TestDescribeDBInstanceAutomatedBackups_ReportsTheBackupSet(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, backupReadyRecord())
 
@@ -723,6 +749,7 @@ func TestDescribeDBInstanceAutomatedBackups_ReportsTheBackupSet(t *testing.T) {
 }
 
 func TestDescribeDBInstanceAutomatedBackups_SkipsAnInstanceWithBackupsOff(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	rec.BackupRetentionPeriod = 0
@@ -735,6 +762,7 @@ func TestDescribeDBInstanceAutomatedBackups_SkipsAnInstanceWithBackupsOff(t *tes
 }
 
 func TestDescribeDBInstanceAutomatedBackups_RejectsAnUnknownInstance(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 
 	_, err := h.svc.DescribeDBInstanceAutomatedBackups(t.Context(),
@@ -768,6 +796,7 @@ func TestDescribeDBInstanceAutomatedBackups_RejectsUnimplementedFilters(t *testi
 // The window pass has to be part of the leader's own account loop: a backup
 // nothing calls is a backup that is never taken.
 func TestReconciler_RunsTheBackupWindowOnItsAccountPass(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	now := time.Now().UTC()
@@ -784,6 +813,7 @@ func TestReconciler_RunsTheBackupWindowOnItsAccountPass(t *testing.T) {
 // The GC framework's cluster-wide gate is the reconciler's own lease. Without it
 // the retention sweep would delete customer data from every node at once.
 func TestReconciler_ClusterLeaseFollowsLeadership(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 
 	release, ok := h.rec.AcquireClusterLease()
@@ -804,6 +834,7 @@ func TestReconciler_ClusterLeaseFollowsLeadership(t *testing.T) {
 // Automated backups are on by default at the full cap: a shorter default would
 // pay the whole storage cost of retaining a snapshot for a fraction of the cover.
 func TestValidateCreateRequest_DefaultsTheBackupSettings(t *testing.T) {
+	t.Parallel()
 	svc := newCreateValidator()
 	req, err := svc.validateCreateRequest(validCreateInput())
 	require.NoError(t, err)
@@ -816,6 +847,7 @@ func TestValidateCreateRequest_DefaultsTheBackupSettings(t *testing.T) {
 }
 
 func TestValidateCreateRequest_AcceptsTheBackupSettings(t *testing.T) {
+	t.Parallel()
 	input := validCreateInput()
 	input.BackupRetentionPeriod = aws.Int64(3)
 	input.PreferredBackupWindow = aws.String("03:00-04:00")
@@ -866,6 +898,7 @@ func TestValidateCreateRequest_RejectsBadBackupSettings(t *testing.T) {
 // The window is persisted at create rather than derived on every read, so it
 // survives a change to the configured block the way AWS's assigned window does.
 func TestCreateDBInstance_PersistsTheBackupSettings(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -884,6 +917,7 @@ func TestCreateDBInstance_PersistsTheBackupSettings(t *testing.T) {
 // Retention 0 is an answer, not an absence: a client that sees no
 // BackupRetentionPeriod cannot tell "backups are off" from "not reported".
 func TestDescribeDBInstances_ReportsTheBackupSettingsIncludingZero(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	rec := seedCreated(t, h, testDBInstanceID)
 
@@ -910,6 +944,7 @@ func TestDescribeDBInstances_ReportsTheBackupSettingsIncludingZero(t *testing.T)
 // Restoring from last night's backup is the whole point of keeping it, so the
 // namespace refused wherever a name is minted has to be accepted as a reference.
 func TestRestoreDBInstanceFromDBSnapshot_RestoresFromAnAutomatedBackup(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := backupReadyRecord()
 	// Everything a restore reproduces from the snapshot alone.
@@ -943,6 +978,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RestoresFromAnAutomatedBackup(t *testin
 // Only the retention sweep removes an automated backup, as in AWS: a customer
 // delete-db-snapshot against one is refused rather than silently accepted.
 func TestDeleteDBSnapshot_RefusesAnAutomatedBackup(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	seedInstance(t, h.svc, backupReadyRecord())
 	require.True(t, h.runBackupPass(t))

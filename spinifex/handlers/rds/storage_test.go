@@ -100,6 +100,7 @@ func TestValidateStorageGrow(t *testing.T) {
 // The volume store is grow-only, so a resumed grow that re-issued the modify
 // would be rejected as a shrink. It reads the volume first instead.
 func TestGrowDataVolume_SkipsAVolumeAlreadyAtTheTarget(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.sizes[testDataVolume] = 50
 
@@ -110,6 +111,7 @@ func TestGrowDataVolume_SkipsAVolumeAlreadyAtTheTarget(t *testing.T) {
 // A volume the store cannot describe must not read as zero: zero is smaller
 // than every target, so the grow would go ahead against a volume that is gone.
 func TestGrowDataVolume_FailsWhenTheVolumeIsGone(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.missing = true
 
@@ -120,6 +122,7 @@ func TestGrowDataVolume_FailsWhenTheVolumeIsGone(t *testing.T) {
 }
 
 func TestGrowDataVolume_FailsWithoutAVolume(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 
 	require.Error(t, h.svc.growDataVolume(t.Context(), "", 50))
@@ -128,6 +131,7 @@ func TestGrowDataVolume_FailsWithoutAVolume(t *testing.T) {
 // ModifyVolume refuses a volume a running VM holds, so the order is the
 // whole mechanism — engine down, VM down, grow, VM back.
 func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
 
@@ -151,6 +155,7 @@ func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
 // store refuses a resize until it has. The grow holds off until the fleet
 // reports the VM down rather than resizing on the accepted command.
 func TestGrowInstanceStorage_WaitsForTheDetachBeforeGrowing(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.vmState.detachReads = 1
 	rec := modifiableRecord()
@@ -168,6 +173,7 @@ func TestGrowInstanceStorage_WaitsForTheDetachBeforeGrowing(t *testing.T) {
 // A wedged agent must not block a grow: the engine stop is a courtesy, and the
 // VM stop that follows is what actually releases the volume.
 func TestGrowInstanceStorage_ProceedsWhenTheEngineWillNotStop(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	rec := modifiableRecord()
 
@@ -178,6 +184,7 @@ func TestGrowInstanceStorage_ProceedsWhenTheEngineWillNotStop(t *testing.T) {
 // A rejected grow must not turn a failed modification into an outage. The VM
 // restarts on its unchanged volume before the original error is returned.
 func TestGrowInstanceStorage_RestartsTheVMWhenTheGrowFails(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
 	rec := modifiableRecord()
@@ -191,6 +198,7 @@ func TestGrowInstanceStorage_RestartsTheVMWhenTheGrowFails(t *testing.T) {
 // Both failures matter when the grow and its recovery fail: the first explains
 // the unchanged storage and the second explains the continuing outage.
 func TestGrowInstanceStorage_ReportsTheGrowAndRestartFailures(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
 	h.storage.onModify = func() { h.cmdr.err = errors.New("the node did not answer") }
@@ -207,6 +215,7 @@ func TestGrowInstanceStorage_ReportsTheGrowAndRestartFailures(t *testing.T) {
 // Recovery belongs to the new lease holder after a takeover. The stale holder
 // must not restart the VM while its replacement may be retrying the grow.
 func TestGrowInstanceStorage_DoesNotRestartAfterLosingTheModifyLease(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	ctx, cancel := context.WithCancelCause(t.Context())
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
@@ -223,6 +232,7 @@ func TestGrowInstanceStorage_DoesNotRestartAfterLosingTheModifyLease(t *testing.
 // happen must not be followed by a resize that would be rejected — or worse,
 // accepted against a volume a live guest is writing to.
 func TestGrowInstanceStorage_FailsWhenTheVMWillNotStop(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.cmdr.err = errors.New("the node did not answer")
 	rec := modifiableRecord()

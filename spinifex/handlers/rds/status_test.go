@@ -7,6 +7,7 @@ import (
 )
 
 func TestStatus_Valid(t *testing.T) {
+	t.Parallel()
 	for _, s := range []Status{
 		StatusCreating, StatusAvailable, StatusModifying, StatusBackingUp,
 		StatusRebooting, StatusStopping, StatusStarting, StatusStopped,
@@ -22,6 +23,7 @@ func TestStatus_Valid(t *testing.T) {
 }
 
 func TestCanTransition_Lifecycle(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		from, to Status
 		want     bool
@@ -81,6 +83,7 @@ func TestCanTransition_Lifecycle(t *testing.T) {
 // Every state the machine can reach must itself be a state the machine knows,
 // or the reconciler could write a status it then refuses to read back.
 func TestTransitions_TargetsAreValidStates(t *testing.T) {
+	t.Parallel()
 	for from, targets := range transitions {
 		assert.True(t, from.Valid(), "source status %q should be valid", from)
 		for _, to := range targets {

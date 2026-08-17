@@ -1,5 +1,9 @@
 package gateway_rds
 
+//test:in-package — shares newStubbedNATS, testCaller and testEnv with
+// handler_test.go, which is in-package for the same reason: the stubbed NATS
+// scaffolding every dispatch test needs is not reachable from outside.
+
 import (
 	"bytes"
 	"encoding/xml"
@@ -145,6 +149,19 @@ func TestDescribeOrderableDBInstanceOptions_AppliesTypedParametersAndFilters(t *
 		{"vpc filter false", map[string]string{
 			"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": "false",
 		}, []string{}},
+		// The typed parameter takes every spelling ParseBool does, so the filter
+		// has to agree with it: "1" narrowing to nothing would be indistinguishable
+		// from a cluster that runs none of the classes.
+		{"vpc numeric parameter", map[string]string{"Vpc": "1"}, all},
+		{"vpc numeric filter", map[string]string{
+			"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": "1",
+		}, all},
+		{"vpc numeric filter false", map[string]string{
+			"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": "0",
+		}, []string{}},
+		{"vpc shouted filter", map[string]string{
+			"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": "TRUE",
+		}, all},
 		{"unpinned version", map[string]string{"EngineVersion": "17"}, []string{}},
 		{"unknown class", map[string]string{"DBInstanceClass": "db.r5.24xlarge"}, []string{}},
 	}
@@ -183,6 +200,21 @@ func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 			assert.Contains(t, err.Error(), tc.filter)
+		})
+	}
+}
+
+// A value the typed parameter would have refused outright is refused here too,
+// rather than narrowing the catalog to nothing and reporting that as the answer.
+func TestDescribeOrderableDBInstanceOptions_RejectANonBooleanVpcFilter(t *testing.T) {
+	for _, value := range []string{"yes", "", "2"} {
+		t.Run(value, func(t *testing.T) {
+			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", map[string]string{
+				"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres",
+				"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": value,
+			}, newStubbedNATS(t), testCaller, testEnv)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
 		})
 	}
 }

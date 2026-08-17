@@ -119,7 +119,11 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 		case filterNameLicenseModel:
 			filter.LicenseModel.AddFilter(values)
 		case filterNameVpc:
-			filter.Vpc.AddFilter(values)
+			parsed, perr := boolFilterValues(name, values)
+			if perr != nil {
+				return nil, perr
+			}
+			filter.Vpc.AddFilter(parsed)
 		default:
 			return nil, unknownFilterName(name, orderableFilterNames)
 		}
@@ -190,6 +194,22 @@ func filterEntry(entry *rds.Filter) (string, []string, error) {
 			"filter %q must carry at least one value", name)
 	}
 	return name, aws.StringValueSlice(entry.Values), nil
+}
+
+// A bool-shaped filter is parsed rather than compared as text, so it accepts
+// every spelling the typed parameter does. Matching only "true" and "false"
+// would answer "1" with an empty catalog the caller cannot tell from a real one.
+func boolFilterValues(name string, values []string) ([]string, error) {
+	parsed := make([]string, 0, len(values))
+	for _, value := range values {
+		b, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"filter %q takes a boolean, not %q", name, value)
+		}
+		parsed = append(parsed, strconv.FormatBool(b))
+	}
+	return parsed, nil
 }
 
 // Rejected rather than ignored: these two actions exist only to be filtered, so

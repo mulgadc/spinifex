@@ -1,5 +1,9 @@
 package handlers_rds
 
+//test:in-package — asserts the catalog against the unexported rejectUnimplemented
+// and against storageTypeGP3 and the allocated-storage bounds, which are package
+// constants deliberately, so the option cannot claim what create refuses.
+
 import (
 	"strings"
 	"testing"

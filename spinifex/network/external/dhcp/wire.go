@@ -113,8 +113,12 @@ type releaseWireRequest struct {
 	IP       string `json:"ip,omitempty"`
 }
 
+// Code is machine-readable and lets callers branch on a condition without
+// matching the human-readable Error text. A responder that predates Code omits
+// it, which degrades to a plain error rather than misreporting one.
 type releaseWireReply struct {
 	Error string `json:"error,omitempty"`
+	Code  string `json:"code,omitempty"`
 }
 
 // drainWireReply reports how many leases the responding vpcd released. The

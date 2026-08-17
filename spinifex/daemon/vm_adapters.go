@@ -12,7 +12,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -754,6 +756,18 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
 
 	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
+		// An untracked lease is terminal: the local pool slot is already free and
+		// no retry can make a deleted lease reappear. Returning the error leaves
+		// this dependent permanently not-done, so the teardown reaper re-drives it
+		// every sweep and its KV write keeps refreshing the record's TTL. Record
+		// the strand and report success so teardown completes.
+		if errors.Is(err, dhcp.ErrLeaseNotTracked) {
+			otelsetup.RecordResourceLeak(context.Background(), "public_ip")
+			slog.Error("Public IP lease stranded; address will not be reclaimed automatically",
+				"ip", instance.PublicIP, "pool", instance.PublicIPPool,
+				"instanceId", instance.ID, "err", err)
+			return nil
+		}
 		slog.Warn("Failed to release public IP on termination",
 			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
 		return err

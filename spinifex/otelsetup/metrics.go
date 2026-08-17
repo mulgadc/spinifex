@@ -14,10 +14,18 @@ import (
 // stay low-cardinality: resolved action names only, never resource IDs.
 const actionAttrKey = "rpc.method"
 
+// leakKindAttrKey names the class of resource that could not be reclaimed.
+// Values must stay low-cardinality: resource classes only, never addresses or
+// IDs — those belong in the accompanying log line.
+const leakKindAttrKey = "resource.kind"
+
 var (
 	instrumentsOnce sync.Once
 	requestCounter  metric.Int64Counter
 	requestDuration metric.Float64Histogram
+
+	leakOnce    sync.Once
+	leakCounter metric.Int64Counter
 )
 
 // requestInstruments lazily creates the shared request instruments. The
@@ -57,6 +65,25 @@ func RecordRequest(ctx context.Context, action, outcome string, elapsed time.Dur
 	}
 	if duration != nil {
 		duration.Record(ctx, elapsed.Seconds(), opt)
+	}
+}
+
+// RecordResourceLeak counts one resource that teardown could not reclaim and
+// will not retry. kind is a resource class such as "public_ip"; the identity of
+// the specific resource goes in the caller's log line, not here.
+func RecordResourceLeak(ctx context.Context, kind string) {
+	leakOnce.Do(func() {
+		var err error
+		leakCounter, err = otel.Meter(httpTracerName).Int64Counter("mulga.resource.leaked",
+			metric.WithDescription("Count of resources teardown abandoned without reclaiming."),
+			metric.WithUnit("{resource}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+	})
+	if leakCounter != nil {
+		leakCounter.Add(ctx, 1, metric.WithAttributeSet(
+			attribute.NewSet(attribute.String(leakKindAttrKey, kind))))
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 // The password is handed straight to the agent and never persisted, so the
 // command is the only place it exists between the request and the engine.
 func TestSetMasterPassword_CarriesTheCredentialsToTheAgent(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 
 	require.NoError(t, h.svc.setMasterPassword(t.Context(), testAccountID, testDBID, "postgres", "n3w-pw"))
@@ -27,6 +28,7 @@ func TestSetMasterPassword_CarriesTheCredentialsToTheAgent(t *testing.T) {
 // A rotation that could not be applied has to fail loudly: reporting success
 // would leave the customer with a password the engine does not accept.
 func TestSetMasterPassword_FailsWhenTheAgentRejectsIt(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, true)
 
 	err := h.svc.setMasterPassword(t.Context(), testAccountID, testDBID, "postgres", "n3w-pw")
@@ -37,6 +39,7 @@ func TestSetMasterPassword_FailsWhenTheAgentRejectsIt(t *testing.T) {
 // The settings the engine accepted but will not honour until it restarts
 // come back as the reply message, which is what a later reboot then clears.
 func TestApplyParameters_ReportsWhatIsPendingARestart(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.agent.replyWith("shared_buffers, max_connections")
 
@@ -53,6 +56,7 @@ func TestApplyParameters_ReportsWhatIsPendingARestart(t *testing.T) {
 
 // An agent that reports nothing pending has applied everything live.
 func TestApplyParameters_ReportsNothingPendingOnAnEmptyReply(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 
 	pending, err := h.svc.applyParameters(t.Context(), testAccountID, testDBID,
@@ -64,6 +68,7 @@ func TestApplyParameters_ReportsNothingPendingOnAnEmptyReply(t *testing.T) {
 // The reply is matched on the command ID, so a stale answer to an earlier
 // issuer cannot be mistaken for the outcome of this command.
 func TestIssueCommand_CorrelatesTheReplyByCommandID(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 
 	reply, err := h.svc.issueCommand(t.Context(), testAccountID, testDBID,

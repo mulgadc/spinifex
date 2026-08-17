@@ -112,13 +112,7 @@ psql -c 'SELECT note FROM hello;'
 
 Give the client a minute after apply: `postgresql-client` is installed by cloud-init on first boot.
 
-TLS is offered but not enforced. `psql "sslmode=require"` encrypts the connection. For `sslmode=verify-full`, copy the cluster CA to the client — both the endpoint name and the endpoint IP are in the certificate's SAN set, so either address verifies:
-
-```bash
-scp -i rds-quickstart-client.pem /etc/spinifex/ca.pem ubuntu@<client_public_ip>:~/ca.pem
-psql "sslmode=verify-full sslrootcert=/home/ubuntu/ca.pem" \
-  -c 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();'
-```
+**TLS is required**, and the commands above already satisfy it: libpq negotiates TLS whenever the server offers it, so nothing here needs setting. Only a client that explicitly disables it — `psql "sslmode=disable"` — is refused. To validate the certificate as well, fetch the cluster CA in the guest with `curl -fsS http://169.254.169.254/spinifex/ca.pem -o ~/ca.pem` and add `sslmode=verify-full sslrootcert=~/ca.pem`; both the endpoint name and its IP are in the certificate's SAN set, so either address verifies.
 
 ### 4. Variables
 

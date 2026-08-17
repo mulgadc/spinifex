@@ -55,8 +55,9 @@ type ParameterSpec struct {
 	DataType    string
 	ApplyType   string
 	Description string
-	// False for the handful of settings the platform owns — changing them would
-	// break the endpoint, the agent's socket access or the serving certificate.
+	// False for a setting AWS exposes but this platform pins, so the refusal names
+	// it and reads as policy. One AWS owns too is absent from the catalog instead,
+	// which reads as the engine not offering it.
 	IsModifiable bool
 
 	Default string
@@ -71,8 +72,7 @@ type ParameterSpec struct {
 	// unbounded below and above.
 	Min, Max float64
 	// The permitted values of an enum parameter, lowest-to-highest where the
-	// engine gives them an order. On a boolean it narrows the spellings the
-	// engine parses, which are not the same set for every engine.
+	// engine gives them an order.
 	Enum []string
 	// The engine's own unit suffix, reported in AllowedValues so a customer can
 	// see what an integer means. Empty for unitless settings.
@@ -130,6 +130,13 @@ func (e Engine) OptionFileName(name string) string {
 	return spec.optionFileName
 }
 
+// The parameter that requires TLS of a client connection, under AWS's own name
+// for it. Exported for the in-guest agent, which derives enforcement from the
+// installed set and has no business knowing which engine it is running.
+func (e Engine) TLSEnforcementParameter() string {
+	return e.tlsEnforcementParameter
+}
+
 // Sorted, so a describe returns the same order on every call and Terraform does
 // not read a reshuffle as drift.
 func (e Engine) CatalogParameterNames() []string {
@@ -158,22 +165,33 @@ func (s ParameterSpec) AllowedValues() string {
 	case ParamTypeEnum:
 		return strings.Join(s.Enum, ",")
 	case ParamTypeBoolean:
-		return strings.Join(s.booleanSpellings(), ",")
+		return strings.Join(booleanSpellings, ",")
 	default:
 		return ""
 	}
 }
 
-// The spellings the engine parses for a boolean. PostgreSQL takes all of these;
-// MariaDB refuses yes and no, so its specs narrow the set rather than let the
-// API accept a value mysqld will not parse.
-var defaultBooleanSpellings = []string{"on", "off", "true", "false", "yes", "no", "1", "0"}
+// The spellings the API accepts for a boolean, on every engine. MariaDB's own
+// parser refuses yes and no, which costs nothing here: canonicalBoolean turns
+// all eight into 1 or 0 before a value reaches either guest.
+var booleanSpellings = []string{"on", "off", "true", "false", "yes", "no", "1", "0"}
 
-func (s ParameterSpec) booleanSpellings() []string {
-	if len(s.Enum) > 0 {
-		return s.Enum
+// The one spelling a boolean reaches the guest as. Both engines parse 1 and 0,
+// neither parses all eight the API accepts, and a guest deriving behaviour from
+// a value has one literal to compare rather than a vocabulary.
+//
+// The set is closed: an override reaches this only after it was validated
+// against the spellings above, so anything else is a catalog default that would
+// not have passed the same check.
+func canonicalBoolean(name, value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "yes", "1":
+		return "1", nil
+	case "off", "false", "no", "0":
+		return "0", nil
 	}
-	return defaultBooleanSpellings
+	return "", awserrors.Errorf(awserrors.ErrorServerInternal,
+		"the catalog default %q of parameter %s is not a boolean", value, name)
 }
 
 // Integral bounds print without a decimal point, so an integer parameter's range
@@ -229,53 +247,61 @@ func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error
 		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"parameter %s is not modifiable", spec.Name)
 	}
-	if err := rejectFormulaValue(spec.Name, value); err != nil {
+	if err := spec.validateValue(value); err != nil {
 		return ParameterSpec{}, err
+	}
+	return spec, nil
+}
+
+// The type, range and engine-specific checks for one value, without the
+// modifiability gate. A pinned entry's own default goes through these too: it is
+// still a literal the engine has to parse.
+func (s ParameterSpec) validateValue(value string) error {
+	if err := rejectFormulaValue(s.Name, value); err != nil {
+		return err
 	}
 
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"parameter %s was given an empty value", spec.Name)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"parameter %s was given an empty value", s.Name)
 	}
-	switch spec.DataType {
+	switch s.DataType {
 	case ParamTypeInteger:
 		n, err := strconv.ParseInt(trimmed, 10, 64)
 		if err != nil {
-			return ParameterSpec{}, typeError(spec, value, "an integer")
+			return typeError(s, value, "an integer")
 		}
-		if float64(n) < spec.Min || float64(n) > spec.Max {
-			return ParameterSpec{}, rangeError(spec, value)
+		if float64(n) < s.Min || float64(n) > s.Max {
+			return rangeError(s, value)
 		}
 	case ParamTypeReal:
 		f, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
-			return ParameterSpec{}, typeError(spec, value, "a number")
+			return typeError(s, value, "a number")
 		}
-		if f < spec.Min || f > spec.Max {
-			return ParameterSpec{}, rangeError(spec, value)
+		if f < s.Min || f > s.Max {
+			return rangeError(s, value)
 		}
 	case ParamTypeBoolean:
-		if !slices.Contains(spec.booleanSpellings(), strings.ToLower(trimmed)) {
-			return ParameterSpec{}, typeError(spec, value,
-				"a boolean ("+strings.Join(spec.booleanSpellings(), ", ")+")")
+		if !slices.Contains(booleanSpellings, strings.ToLower(trimmed)) {
+			return typeError(s, value,
+				"a boolean ("+strings.Join(booleanSpellings, ", ")+")")
 		}
 	case ParamTypeEnum:
-		if !slices.Contains(spec.Enum, strings.ToLower(trimmed)) {
-			return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"parameter %s does not accept %q; allowed values are %s", spec.Name, value, strings.Join(spec.Enum, ", "))
+		if !slices.Contains(s.Enum, strings.ToLower(trimmed)) {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"parameter %s does not accept %q; allowed values are %s", s.Name, value, strings.Join(s.Enum, ", "))
 		}
 	case ParamTypeString:
-		if err := validateStringParameter(spec, trimmed); err != nil {
-			return ParameterSpec{}, err
+		if err := validateStringParameter(s, trimmed); err != nil {
+			return err
 		}
 	}
-	if spec.Validate != nil {
-		if err := spec.Validate(trimmed); err != nil {
-			return ParameterSpec{}, err
-		}
+	if s.Validate != nil {
+		return s.Validate(trimmed)
 	}
-	return spec, nil
+	return nil
 }
 
 const maxStringParameterBytes = 1024
@@ -311,7 +337,7 @@ func rangeError(spec ParameterSpec, value string) error {
 // The full parameter set an instance runs with: every catalog default evaluated
 // at the instance's class, overlaid with the group's stored overrides. The
 // result is literals only, sorted by name so a re-resolve that changed nothing
-// produces a byte-identical include.
+// produces a byte-identical include, and every boolean canonicalised.
 //
 // Overrides are re-validated rather than trusted: a catalog whose bounds
 // tightened must not keep handing the engine a value it would now reject.
@@ -337,6 +363,13 @@ func (e Engine) ResolveEffectiveParameters(instanceClass string, overrides map[s
 				return nil, err
 			}
 			value = override
+		}
+		if spec.DataType == ParamTypeBoolean {
+			canonical, err := canonicalBoolean(name, value)
+			if err != nil {
+				return nil, err
+			}
+			value = canonical
 		}
 		resolved = append(resolved, Parameter{Name: name, Value: value})
 	}

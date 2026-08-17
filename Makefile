@@ -6,6 +6,11 @@ SHELL := /bin/bash
 # surface each other's issues. Scope it per worktree.
 export GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
 
+# GOFIPS140 is a global build-config change: it alters every package's action ID,
+# stdlib included, so a target that omits it shares no build-cache entry with one
+# that sets it. Exported once here rather than per-recipe so the two can't drift.
+export GOFIPS140 := v1.0.0
+
 # Detect architecture for cross-platform support
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -63,19 +68,19 @@ LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSI
 
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"
-	GOFIPS140=v1.0.0 go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
+	go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
 
 build-installer:
 	@echo -e "\n....Building spinifex-installer"
-	GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/spinifex-installer cmd/installer/main.go
+	go build -ldflags "-s -w" -o ./bin/spinifex-installer cmd/installer/main.go
 
 build-lb-agent:
 	@echo -e "\n....Building lb-agent (static)"
-	CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
+	CGO_ENABLED=0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
 
 build-ecs-agent: ## Build the ecs-agent (ships in the ECS-AMI guest; not in host `build`)
 	@echo -e "\n....Building ecs-agent (static)"
-	CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -ldflags "-s -w -X main.version=$(VERSION)" -o ./bin/ecs-agent ./cmd/ecs-agent
+	CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(VERSION)" -o ./bin/ecs-agent ./cmd/ecs-agent
 
 build-loadgen: ## Build spx-loadgen (drives the stress harness's measured load; not shipped to nodes)
 	@echo -e "\n....Building spx-loadgen"
@@ -219,25 +224,30 @@ manifest-lint-update:
 # Run unit tests
 test:
 	@echo -e "\n....Running tests for $(GO_PROJECT_NAME)...."
-	GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/...
+	LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/...
+
+# Empty locally, where reusing a cached result between runs is the point.
+# CI passes -count=1 so a green run means the suite executed against that commit
+# rather than replaying results the persisted build cache carried over.
+GOTESTFLAGS ?=
 
 # Run unit tests with coverage profile
 COVERPROFILE ?= coverage.out
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)GOFIPS140=v1.0.0 LOG_IGNORE=1 go test -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
 test-actions:
 	@echo -e "\n....Running action tests...."
-	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
+	LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 60s ./.github/actions/...
 
 # Shell suites + shellcheck for scripts/images/ and images/mkosi.profiles/
 # helpers baked into system images. Kept out of `preflight` (a dedicated CI

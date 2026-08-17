@@ -132,6 +132,7 @@ func TestHostsZone_NeverQueriesBareTLD(t *testing.T) {
 // treated as "not hosted" for that candidate only, so a real parent zone one
 // level up is still found.
 func TestHostsZone_S3ErrorAtOneLevelContinuesToParent(t *testing.T) {
+	t.Parallel()
 	objects := map[string]string{
 		"example.com.toml": minimalZoneTOML("example.com"),
 	}
@@ -146,6 +147,7 @@ func TestHostsZone_S3ErrorAtOneLevelContinuesToParent(t *testing.T) {
 // error — a certificate request must not hard-fail because a zone lookup was
 // unavailable.
 func TestHostsZone_S3ErrorEverywhereReturnsFalse(t *testing.T) {
+	t.Parallel()
 	errorKeys := map[string]bool{"lab.example.com.toml": true, "example.com.toml": true}
 	cfg, _ := hostsZoneTestConfig(t, map[string]string{}, errorKeys)
 

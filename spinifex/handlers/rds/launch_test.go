@@ -417,6 +417,7 @@ func TestNATSVolumeAttacher_MapsNoResponderByInstanceState(t *testing.T) {
 }
 
 func TestNATSVolumeAttacher_StoppedLookupFailureIsInternal(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	attacher := NewNATSVolumeAttacher(nc)
@@ -426,6 +427,7 @@ func TestNATSVolumeAttacher_StoppedLookupFailureIsInternal(t *testing.T) {
 }
 
 func TestNATSVolumeAttacher_RejectsAnEmptyAttachment(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	_, err := nc.Subscribe("ec2.cmd."+testInstance, func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{}`))
@@ -511,6 +513,7 @@ func tagOf(specs []*ec2.TagSpecification, key string) string {
 // --- Tests ---
 
 func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 
 	out, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
@@ -564,6 +567,7 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 }
 
 func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 
 	out, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
@@ -591,6 +595,7 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 }
 
 func TestLaunchDBInstanceVMReportsExistingVolumeIntentAndSerial(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	in := testLaunchInput()
 	in.ExistingDataVolume = "vol-existing-01"
@@ -652,6 +657,7 @@ func TestLaunchDBInstanceVMRollsBackEverythingItCreated(t *testing.T) {
 }
 
 func TestLaunchDBInstanceVMTerminatesTheVMBeforeReleasingWhatIsAttachedToIt(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.attacher.err = errors.New("no free hot-plug port")
 
@@ -665,6 +671,7 @@ func TestLaunchDBInstanceVMTerminatesTheVMBeforeReleasingWhatIsAttachedToIt(t *t
 }
 
 func TestLaunchDBInstanceVMRollsBackAfterTheCallersContextIsDone(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -705,6 +712,7 @@ func TestLaunchDBInstanceVMRejectsIncompleteInput(t *testing.T) {
 }
 
 func TestResolveEngineAMIMatchesOnManifestTags(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 
 	amiID, err := resolveEngineAMI(t.Context(), h.images, "postgres", "18")
@@ -726,6 +734,7 @@ func TestResolveEngineAMIMatchesOnManifestTags(t *testing.T) {
 }
 
 func TestResolveEngineAMIOmitsTheVersionFilterWhenUnset(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 
 	_, err := resolveEngineAMI(t.Context(), h.images, "postgres", "")
@@ -737,6 +746,7 @@ func TestResolveEngineAMIOmitsTheVersionFilterWhenUnset(t *testing.T) {
 }
 
 func TestResolveEngineAMIPicksTheNewestBuild(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.images.images = []*ec2.Image{
 		{ImageId: aws.String("ami-old"), CreationDate: aws.String("2025-06-01T00:00:00Z")},
@@ -750,6 +760,7 @@ func TestResolveEngineAMIPicksTheNewestBuild(t *testing.T) {
 }
 
 func TestResolveEngineAMISkipsMalformedCatalogEntries(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.images.images = []*ec2.Image{
 		nil,
@@ -764,6 +775,7 @@ func TestResolveEngineAMISkipsMalformedCatalogEntries(t *testing.T) {
 }
 
 func TestResolveEngineAMIExcludesGPUTaggedBuilds(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.images.images = []*ec2.Image{
 		{ImageId: aws.String(testEngineAMI), CreationDate: aws.String("2026-01-02T00:00:00Z")},
@@ -781,6 +793,7 @@ func TestResolveEngineAMIExcludesGPUTaggedBuilds(t *testing.T) {
 }
 
 func TestResolveEngineAMIFailsWhenOnlyGPUBuildsMatch(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.images.images = []*ec2.Image{{
 		ImageId:      aws.String("ami-rds-postgres-18-gpu"),
@@ -794,6 +807,7 @@ func TestResolveEngineAMIFailsWhenOnlyGPUBuildsMatch(t *testing.T) {
 }
 
 func TestLaunchDBInstanceVMFailsWithoutAnEngineAMI(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	h.images.images = nil
 

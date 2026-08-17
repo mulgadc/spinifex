@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 const (
@@ -44,9 +45,12 @@ const (
 )
 
 // rejectForwarded enforces the IMDS SSRF defence: requests with X-Forwarded-For are 403'd.
+// It names its own rejections for request metrics because it answers before
+// nameAction runs, so an SSRF probe is countable rather than an unnamed 403.
 func rejectForwarded(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(hdrForwardedFor) != "" {
+			otelsetup.SetRequestAction(r.Context(), actionRejectedForwarded)
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -233,7 +237,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		// A backend error counts as "no profile" so the iam/ subtree stays
 		// self-consistent — 404 here rather than advertised with 404ing leaves,
 		// which fails cloud-init's metadata crawl.
-		if profile, err := s.profileFor(ctx, eni); err != nil || profile == nil {
+		if profile, _, err := s.profileFor(ctx, eni); err != nil || profile == nil {
 			w.WriteHeader(http.StatusNotFound) // no profile → no iam/ subtree, as on real EC2
 			return
 		}
@@ -369,12 +373,13 @@ func (s *IMDSServiceImpl) serveUserData(ctx context.Context, w http.ResponseWrit
 
 // serveIAMInfo writes the instance profile ARN and ID, or 404 if none is attached.
 func (s *IMDSServiceImpl) serveIAMInfo(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
-	profile, err := s.profileFor(ctx, eni)
+	profile, miss, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if profile == nil {
+		s.roleMiss.warn(ctx, eni, miss)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -387,12 +392,15 @@ func (s *IMDSServiceImpl) serveIAMInfo(ctx context.Context, w http.ResponseWrite
 // serveSecurityCredentialsList writes the role name(s) under the profile.
 // No profile/role returns an empty 200; a backend failure returns 500.
 func (s *IMDSServiceImpl) serveSecurityCredentialsList(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
-	profile, err := s.profileFor(ctx, eni)
+	profile, miss, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if profile == nil || profile.RoleName == "" {
+		// The empty body is what an SDK reads as "no IMDS role"; it then keeps
+		// signing with credentials it can never refresh. Say why here or nowhere.
+		s.roleMiss.warn(ctx, eni, miss)
 		writeText(w, "")
 		return
 	}
@@ -402,12 +410,15 @@ func (s *IMDSServiceImpl) serveSecurityCredentialsList(ctx context.Context, w ht
 // serveRoleCredentials mints or returns cached credentials for the named role.
 // A name mismatch is 404; a backend failure resolving the profile is 500.
 func (s *IMDSServiceImpl) serveRoleCredentials(ctx context.Context, w http.ResponseWriter, eni *eniFacts, roleParam string) {
-	profile, err := s.profileFor(ctx, eni)
+	profile, miss, err := s.profileFor(ctx, eni)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if profile == nil || profile.RoleName == "" || roleParam != profile.RoleName {
+		// A name mismatch is the guest's own doing and carries roleMissNone, which
+		// warn ignores; only an unresolvable role is worth a line.
+		s.roleMiss.warn(ctx, eni, miss)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -608,29 +619,37 @@ func (s *IMDSServiceImpl) instanceFor(ctx context.Context, w http.ResponseWriter
 	return inst
 }
 
-// profileFor resolves the IAM instance profile for an ENI.
-// Returns (nil, nil) when absent, (nil, err) on backend failure — never collapses errors to absent.
-func (s *IMDSServiceImpl) profileFor(ctx context.Context, eni *eniFacts) (*resolvedProfile, error) {
+// profileFor resolves the IAM instance profile for an ENI. Returns (nil, why,
+// nil) when absent and (nil, _, err) on backend failure — never collapses errors
+// to absent. The reason exists because every absent case answers 200-empty or
+// 404, which a guest cannot distinguish from having no role at all.
+func (s *IMDSServiceImpl) profileFor(ctx context.Context, eni *eniFacts) (*resolvedProfile, roleMiss, error) {
 	inst, err := s.resolver.resolveInstance(ctx, eni)
 	if err != nil {
 		slog.ErrorContext(ctx, "IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
-		return nil, err
+		return nil, roleMissNone, err
 	}
-	if inst == nil || inst.iamInstanceProfileArn == "" {
-		return nil, nil
+	if inst == nil {
+		return nil, roleMissInstanceUnresolved, nil
+	}
+	if inst.iamInstanceProfileArn == "" {
+		return nil, roleMissNoProfile, nil
 	}
 	profile, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn)
 	if err != nil {
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
-			return nil, nil // profile deleted; treat as no role
+			return nil, roleMissProfileDeleted, nil // profile deleted; treat as no role
 		}
 		slog.ErrorContext(ctx, "IMDS: resolve instance profile failed", "account_id", eni.iamAccountID(), "arn", inst.iamInstanceProfileArn, "err", err)
-		return nil, err
+		return nil, roleMissNone, err
 	}
 	if profile == nil {
-		return nil, nil
+		return nil, roleMissProfileDeleted, nil
 	}
-	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, nil
+	if profile.RoleName == "" {
+		return nil, roleMissNoProfile, nil
+	}
+	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, roleMissNone, nil
 }
 
 // resolvedProfile is the slice of an IAM instance profile served by the metadata surface.

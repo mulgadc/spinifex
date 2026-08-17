@@ -125,6 +125,7 @@ func readRecord(t *testing.T, svc *Service) (DBInstanceRecord, string) {
 }
 
 func TestGetDBBootstrapConfig_ServesTheFullBootMaterial(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.DataVolumeID = "vol-data-01"
@@ -195,6 +196,7 @@ func TestGetDBBootstrapConfig_FormatGrantRequiresExactCurrentIdentity(t *testing
 }
 
 func TestGetDBBootstrapConfig_MintsFreshCertEachFetch(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	ctx := context.Background()
@@ -221,6 +223,7 @@ func TestGetDBBootstrapConfig_MintsFreshCertEachFetch(t *testing.T) {
 // The SAN set is what makes sslmode=verify-full work. The IP is the required
 // one, because the endpoint is a bare IP wherever DNS is not configured.
 func TestGetDBBootstrapConfig_CertSANsCoverIPAndHostname(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	seedInstance(t, svc, rec)
@@ -237,6 +240,7 @@ func TestGetDBBootstrapConfig_CertSANsCoverIPAndHostname(t *testing.T) {
 }
 
 func TestGetDBBootstrapConfig_NoDNSNameStillMintsIPOnlyCert(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.DNSName = ""
@@ -251,9 +255,11 @@ func TestGetDBBootstrapConfig_NoDNSNameStillMintsIPOnlyCert(t *testing.T) {
 	require.Len(t, cert.IPAddresses, 1)
 }
 
-// TLS is offered, not enforced, so a deployment with no cluster CA must still
-// boot a database rather than failing the fetch.
+// A deployment with no cluster CA cannot enforce TLS, and a set that requires it
+// is refused at binding rather than here — so the fetch must still serve a
+// config and boot a database.
 func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion).WithDeps(Deps{MasterKey: testMasterKey})
 	seedPending(t, svc, defaultRecord())
@@ -266,6 +272,7 @@ func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 }
 
 func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.ENIPrivateIP = ""
@@ -280,6 +287,7 @@ func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
 }
 
 func TestGetDBBootstrapConfig_PartialCAConfigurationFailsClosed(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion).WithDeps(Deps{
 		CACertPath: "/etc/spinifex/ca.pem",
@@ -299,6 +307,7 @@ func TestGetDBBootstrapConfig_PartialCAConfigurationFailsClosed(t *testing.T) {
 // ever read. The staged password is untouched, which is what makes the agent's
 // retry succeed once the CA is readable again.
 func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	loadErr := errors.New("read CA key /etc/spinifex/ca.key: permission denied")
 	broken := true
@@ -332,6 +341,7 @@ func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T
 // the whole problem. A replay has no race to lose: every caller bound to the
 // generation is served the same password and none of them writes.
 func TestGetDBBootstrapConfig_ConcurrentFetchesAllReplayTheSamePassword(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	payloadID := seedPending(t, svc, defaultRecord())
 	_, beforeRaw := readRecord(t, svc)
@@ -366,6 +376,7 @@ func TestGetDBBootstrapConfig_ConcurrentFetchesAllReplayTheSamePassword(t *testi
 }
 
 func TestGetDBBootstrapConfig_UnknownInstance(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	_, err := svc.GetDBBootstrapConfig(context.Background(),
 		&GetDBBootstrapConfigInput{DBInstanceIdentifier: "ghost", InstanceID: testInstance}, testAccountID)
@@ -384,6 +395,7 @@ func parseCertPEM(t *testing.T, pemStr string) *x509.Certificate {
 }
 
 func TestRegisterDBInstance_IdempotentAndRefreshesLastSeen(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	ctx := context.Background()
@@ -415,6 +427,7 @@ func TestRegisterDBInstance_IdempotentAndRefreshesLastSeen(t *testing.T) {
 // A replace mints a new instance ID, which is a new registration rather than a
 // continuation of the old VM's.
 func TestRegisterDBInstance_NewVMResetsRegisteredAt(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	ctx := context.Background()
@@ -433,6 +446,7 @@ func TestRegisterDBInstance_NewVMResetsRegisteredAt(t *testing.T) {
 }
 
 func TestRegisterDBInstance_UnknownInstance(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	_, err := svc.RegisterDBInstance(context.Background(),
 		&RegisterDBInstanceInput{DBInstanceIdentifier: "ghost", InstanceID: testInstance}, testAccountID)
@@ -443,6 +457,7 @@ func TestRegisterDBInstance_UnknownInstance(t *testing.T) {
 // Liveness is the hottest path in the service, so an unchanged beat must stay in
 // memory and only reach KV on the slower floor.
 func TestSubmitDBStateChange_PersistsOnChangeAndOnFloor(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	ctx := context.Background()
@@ -478,6 +493,7 @@ func TestSubmitDBStateChange_PersistsOnChangeAndOnFloor(t *testing.T) {
 }
 
 func TestSubmitDBStateChange_RecordsParameterRollback(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
 	rec.DBParameterGroupName = "customer-params"
@@ -512,6 +528,7 @@ func TestSubmitDBStateChange_RecordsParameterRollback(t *testing.T) {
 // In-memory liveness is fresher than the record between persists, which is what
 // lets the reconciler judge staleness without reading KV every tick.
 func TestSubmitDBStateChange_LastSeenTracksUnpersistedBeats(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	ctx := context.Background()
@@ -540,6 +557,7 @@ func TestSubmitDBStateChange_LastSeenTracksUnpersistedBeats(t *testing.T) {
 }
 
 func TestSubmitDBStateChange_RejectsUnknownHealth(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	seedInstance(t, svc, defaultRecord())
 	_, err := svc.SubmitDBStateChange(context.Background(), &SubmitDBStateChangeInput{
@@ -550,6 +568,7 @@ func TestSubmitDBStateChange_RejectsUnknownHealth(t *testing.T) {
 }
 
 func TestInstanceIndex_RoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := newTestService(t)
 	ctx := context.Background()
 

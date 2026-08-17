@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -85,6 +86,27 @@ const (
 	// Deliberately not a .conf name: include_dir globs *.conf, so the rollback
 	// copy must not be read as a second set of settings.
 	postgresLastGoodFile = "10-rds-parameters.last-good"
+)
+
+// The pg_hba rule that implements TLS enforcement, and the directory the
+// generated pg_hba includes it from. Its content is a constant, so the copy
+// rds-init writes in shell and the one written here have no template to drift
+// apart on: enforcement is the presence of the file and nothing more.
+const (
+	postgresHBADir           = "hba.d"
+	postgresForceSSLRuleFile = "20-rds-force-ssl.conf"
+	// An explicit reject rather than an omitted permit: both refuse the
+	// connection, and only this one puts the reason in the server log and in the
+	// client's error.
+	postgresForceSSLRules = `# Managed by the platform: the rule that requires TLS of client connections.
+# Written by rds-init at boot and by rds-agent on a parameter apply.
+hostnossl all all 0.0.0.0/0 reject
+hostnossl all all ::/0 reject
+`
+	// What the read-back must count once the file is in place. Asserting the shape
+	// rather than only the absence of parse errors is what catches the failure
+	// that will actually happen: the derivation above writing the wrong thing.
+	postgresForceSSLRuleCount = 2
 )
 
 func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
@@ -170,12 +192,12 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 	// The check runs against the file in place, because the engine parses the
 	// datadir's own include_dir. The window that leaves is closed by the rollback
 	// below and the last-known-good restore the agent runs at boot.
-	restore, err := e.params.install(params)
+	restoreParameters, err := e.params.install(params)
 	if err != nil {
 		return nil, err
 	}
 	if err := e.checkConfig(ctx); err != nil {
-		return nil, errors.Join(fmt.Errorf("the engine rejected the parameter set: %w", err), restore())
+		return nil, errors.Join(fmt.Errorf("the engine rejected the parameter set: %w", err), restoreParameters())
 	}
 
 	state, _ := e.probe.state(ctx)
@@ -183,23 +205,60 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_
 	case engineAbsent:
 		return e.restartOnRepairSetLocked(ctx)
 	case engineRecovering:
-		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restore())
+		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restoreParameters())
 	}
 
-	if _, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n"); err != nil {
+	// After the engine's own parser has passed the set and before the reload that
+	// adopts both files at once.
+	enforce, restoreEnforcement, err := e.syncTLSEnforcement(ctx, state)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("apply the TLS enforcement of the parameter set: %w", err), restoreParameters())
+	}
+	// The two files carry one apply from here: a rejected set withdrawn without
+	// its enforcement rule would leave the instance serving the old parameters
+	// under the new set's TLS posture.
+	restore := func() error { return errors.Join(restoreEnforcement(), restoreParameters()) }
+
+	if err := e.reload(ctx); err != nil {
 		// The engine may have gone down after the first probe. In that case start
 		// it on the new, parser-checked repair set rather than restoring the set
 		// that already left it unable to serve.
 		if state, _ := e.probe.state(ctx); state == engineAbsent {
 			return e.restartOnRepairSetLocked(ctx)
 		}
-		return nil, errors.Join(fmt.Errorf("reload the engine configuration: %w", err), restore())
+		return nil, errors.Join(err, restore())
+	}
+	if err := e.verifyTLSEnforcement(ctx, enforce); err != nil {
+		// The reload already happened, so putting the files back is not enough: a
+		// pg_hba that parsed but says the wrong thing has been adopted, and only a
+		// second reload takes the engine off it.
+		return nil, errors.Join(err, restore(), e.reload(ctx))
 	}
 	return e.pendingRestartParameters(ctx)
 }
 
+// Re-derived before the restart: the engine reads pg_hba when it starts, so a
+// repair set started under the previous set's enforcement would serve one TLS
+// posture while the API reported the other.
 func (e *postgresEngine) restartOnRepairSetLocked(ctx context.Context) ([]string, error) {
+	if _, _, err := e.syncTLSEnforcement(ctx, engineAbsent); err != nil {
+		return nil, fmt.Errorf("apply the TLS enforcement of the repair set: %w", err)
+	}
 	return awaitRepairedEngine(ctx, e.probe, e.Restart, e.pendingRestartParameters, e.repairTimeout, e.repairPoll)
+}
+
+// The function's own answer is the reload, not psql's exit status: it returns f
+// when it could not signal the postmaster, and the read-back that follows parses
+// pg_hba from disk, so an unsignalled reload would otherwise verify clean.
+func (e *postgresEngine) reload(ctx context.Context) error {
+	out, err := e.psqlRun(ctx, "SELECT pg_reload_conf();\n")
+	if err != nil {
+		return fmt.Errorf("reload the engine configuration: %w", err)
+	}
+	if result := strings.TrimSpace(out); result != "t" {
+		return fmt.Errorf("reload the engine configuration: pg_reload_conf() returned %q", result)
+	}
+	return nil
 }
 
 // The postmaster's own answer: a static setting it has stored but not adopted is
@@ -236,7 +295,155 @@ func (e *postgresEngine) recordServingParametersLocked(ctx context.Context) erro
 func (e *postgresEngine) RestoreLastKnownGoodParameters(ctx context.Context) (bool, error) {
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
-	return restoreLastGood(ctx, e.params, e.probe)
+	restored, err := restoreLastGood(ctx, e.params, e.probe)
+	if err != nil || !restored {
+		return restored, err
+	}
+	// A service restart does not re-run rds-init, so a restore that stopped at the
+	// parameter file would bring the last known good set up under the enforcement
+	// of the set that was just rejected. restoreLastGood only replaces the file of
+	// an engine that is down.
+	if _, _, err := e.syncTLSEnforcement(ctx, engineAbsent); err != nil {
+		return true, fmt.Errorf("apply the TLS enforcement of the restored parameter set: %w", err)
+	}
+	return true, nil
+}
+
+// Turns the installed enforcement value into the pg_hba fact that implements it.
+// PostgreSQL has no server setting for this, so the parameter file on its own
+// would report the change applied and enforce nothing.
+//
+// The serving-TLS guard runs only against an engine that is up. The restore and
+// repair paths reach this with the engine down, where the rule is read by the
+// start that follows rather than by a reload.
+func (e *postgresEngine) syncTLSEnforcement(ctx context.Context, state engineState) (enforce bool, restore func() error, err error) {
+	enforce, err = installedTLSEnforcement(e.meta.TLSEnforcementParameter(), e.params.installedPath())
+	if err != nil {
+		return false, nil, err
+	}
+	if enforce && state == engineServing {
+		if err := e.requireServingTLS(ctx); err != nil {
+			return false, nil, err
+		}
+	}
+	restore, err = e.writeTLSEnforcement(enforce)
+	if err != nil {
+		return false, nil, err
+	}
+	return enforce, restore, nil
+}
+
+// Writes or removes the enforcement rule, returning a func putting back whatever
+// was there. Removing matters as much as writing: a restored data volume carries
+// hba.d with it, so a stale rule would keep enforcing under a parameter group
+// that turns enforcement off.
+func (e *postgresEngine) writeTLSEnforcement(enforce bool) (func() error, error) {
+	path := e.forceSSLRulePath()
+	previous, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read the TLS enforcement rule at %s: %w", path, readErr)
+	}
+	existed := readErr == nil
+	restore := func() error {
+		if !existed {
+			return e.removeTLSEnforcement()
+		}
+		return e.params.write(path, previous)
+	}
+
+	if !enforce {
+		if err := e.removeTLSEnforcement(); err != nil {
+			return nil, err
+		}
+		return restore, nil
+	}
+	// rds-init lays the directory down on every boot, so this covers an agent that
+	// reached an apply before one ran rather than the ordinary case.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create %s: %w", dir, err)
+	}
+	if err := e.params.chownToEngine(dir); err != nil {
+		return nil, err
+	}
+	if err := e.params.write(path, []byte(postgresForceSSLRules)); err != nil {
+		return nil, err
+	}
+	return restore, nil
+}
+
+func (e *postgresEngine) removeTLSEnforcement() error {
+	path := e.forceSSLRulePath()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("withdraw the TLS enforcement rule at %s: %w", path, err)
+	}
+	return nil
+}
+
+func (e *postgresEngine) forceSSLRulePath() string {
+	return filepath.Join(e.pgData, postgresHBADir, postgresForceSSLRuleFile)
+}
+
+// Refuses to require TLS of clients from an engine that is not serving it, which
+// would reject every connection while the parameter path reported success.
+func (e *postgresEngine) requireServingTLS(ctx context.Context) error {
+	out, err := e.psqlRun(ctx, "SHOW ssl;\n")
+	if err != nil {
+		return fmt.Errorf("read whether the engine is serving TLS: %w", err)
+	}
+	if serving := strings.TrimSpace(out); serving != "on" {
+		return fmt.Errorf("the engine is serving without TLS (ssl = %q), so requiring it of clients would reject every connection", serving)
+	}
+	return nil
+}
+
+// PostgreSQL discards a pg_hba it cannot parse on reload and keeps the rules it
+// is already serving, which presents as an apply that succeeded and enforces
+// nothing. So the file is read back.
+//
+// pg_hba_file_rules re-parses from disk, so this proves the file would be
+// adopted rather than that the postmaster has adopted it. The inference holds
+// because a reloaded pg_hba is discarded only on a parse error.
+const postgresHBAReadBack = `SELECT count(*) FILTER (WHERE type = 'hostnossl' AND auth_method = 'reject'),
+       count(*) FILTER (WHERE error IS NOT NULL) FROM pg_hba_file_rules;
+`
+
+func (e *postgresEngine) verifyTLSEnforcement(ctx context.Context, enforce bool) error {
+	out, err := e.psqlRun(ctx, postgresHBAReadBack)
+	if err != nil {
+		return fmt.Errorf("read back the client authentication rules: %w", err)
+	}
+	rules, unparsable, err := parseHBAReadBack(out)
+	if err != nil {
+		return err
+	}
+	if unparsable > 0 {
+		return fmt.Errorf("the client authentication file carries %d rules the engine could not parse, so it would keep the rules it is already serving", unparsable)
+	}
+	want := 0
+	if enforce {
+		want = postgresForceSSLRuleCount
+	}
+	if rules != want {
+		return fmt.Errorf("the client authentication file carries %d TLS enforcement rules, want %d", rules, want)
+	}
+	return nil
+}
+
+func parseHBAReadBack(out string) (rules, unparsable int, err error) {
+	answer := strings.TrimSpace(out)
+	malformed := fmt.Errorf("the client authentication read-back returned %q, want two counts", answer)
+	counts := strings.Split(answer, "|")
+	if len(counts) != 2 {
+		return 0, 0, malformed
+	}
+	parsed := make([]int, len(counts))
+	for i, count := range counts {
+		if parsed[i], err = strconv.Atoi(strings.TrimSpace(count)); err != nil {
+			return 0, 0, malformed
+		}
+	}
+	return parsed[0], parsed[1], nil
 }
 
 // The engine's own parser, run offline against the datadir. Reading one setting

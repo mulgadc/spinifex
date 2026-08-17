@@ -51,7 +51,7 @@ func TestHandleEC2CreateImage_StoppedInstance_NonOwnerDeclines(t *testing.T) {
 	// createTestDaemon fixes the cluster config's own node at "node-1".
 	seedStoppedInstance(t, daemon, "i-stopped-nonowner", "node-2")
 
-	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", asMsgHandler(daemon.handleEC2CreateImage))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -77,7 +77,7 @@ func TestHandleEC2CreateImage_StoppedInstance_OwnerProceeds(t *testing.T) {
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 	seedStoppedInstance(t, daemon, "i-stopped-owner", daemon.node)
 
-	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", asMsgHandler(daemon.handleEC2CreateImage))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -118,7 +118,7 @@ func TestHandleEC2CreateImage_RunningInstance_LastNodeIgnored(t *testing.T) {
 		},
 	})
 
-	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", asMsgHandler(daemon.handleEC2CreateImage))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -144,7 +144,7 @@ func TestHandleEC2CreateImage_StoppedInstance_EmptyLastNodeElectsSelf(t *testing
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 	seedStoppedInstance(t, daemon, "i-stopped-legacy", "") // no LastNode, as an older build would leave it
 
-	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", asMsgHandler(daemon.handleEC2CreateImage))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 

@@ -62,15 +62,15 @@ type ShutdownProgress struct {
 
 // handleShutdownGate stops the API gateway and UI, then sets shuttingDown flag
 // so the daemon rejects new work. Phase: GATE.
-func (d *Daemon) handleShutdownGate(msg *nats.Msg) {
+func (d *Daemon) handleShutdownGate(msg *nats.Msg) string {
 	var req ShutdownRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownGate: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "gate", Error: err.Error()})
-		return
+		return outcomeError
 	}
 	if d.forAnotherNode(req) {
-		return
+		return outcomeSkipped
 	}
 
 	slog.Info("Shutdown GATE phase starting", "node", d.node, "force", req.Force)
@@ -114,19 +114,20 @@ func (d *Daemon) handleShutdownGate(msg *nats.Msg) {
 	}
 	d.respondShutdownACK(msg, ack)
 	slog.Info("Shutdown GATE phase complete", "node", d.node, "stopped", stopped)
+	return outcomeSuccess
 }
 
 // handleShutdownDrain gracefully stops all running VMs, writes shutdown marker
 // and persists state. Phase: DRAIN.
-func (d *Daemon) handleShutdownDrain(msg *nats.Msg) {
+func (d *Daemon) handleShutdownDrain(msg *nats.Msg) string {
 	var req ShutdownRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownDrain: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "drain", Error: err.Error()})
-		return
+		return outcomeError
 	}
 	if d.forAnotherNode(req) {
-		return
+		return outcomeSkipped
 	}
 
 	slog.Info("Shutdown DRAIN phase starting", "node", d.node)
@@ -148,7 +149,7 @@ func (d *Daemon) handleShutdownDrain(msg *nats.Msg) {
 				Error: err.Error(),
 			}
 			d.respondShutdownACK(msg, ack)
-			return
+			return outcomeError
 		}
 	}
 
@@ -171,18 +172,19 @@ func (d *Daemon) handleShutdownDrain(msg *nats.Msg) {
 	}
 	d.respondShutdownACK(msg, ack)
 	slog.Info("Shutdown DRAIN phase complete", "node", d.node, "vms_stopped", total)
+	return outcomeSuccess
 }
 
 // handleShutdownStorage stops viperblock and cleans up orphan nbdkit processes. Phase: STORAGE.
-func (d *Daemon) handleShutdownStorage(msg *nats.Msg) {
+func (d *Daemon) handleShutdownStorage(msg *nats.Msg) string {
 	var req ShutdownRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownStorage: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "storage", Error: err.Error()})
-		return
+		return outcomeError
 	}
 	if d.forAnotherNode(req) {
-		return
+		return outcomeSkipped
 	}
 
 	slog.Info("Shutdown STORAGE phase starting", "node", d.node)
@@ -206,18 +208,19 @@ func (d *Daemon) handleShutdownStorage(msg *nats.Msg) {
 	}
 	d.respondShutdownACK(msg, ack)
 	slog.Info("Shutdown STORAGE phase complete", "node", d.node, "stopped", stopped)
+	return outcomeSuccess
 }
 
 // handleShutdownPersist stops predastore. Phase: PERSIST.
-func (d *Daemon) handleShutdownPersist(msg *nats.Msg) {
+func (d *Daemon) handleShutdownPersist(msg *nats.Msg) string {
 	var req ShutdownRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownPersist: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "persist", Error: err.Error()})
-		return
+		return outcomeError
 	}
 	if d.forAnotherNode(req) {
-		return
+		return outcomeSkipped
 	}
 
 	slog.Info("Shutdown PERSIST phase starting", "node", d.node)
@@ -239,19 +242,20 @@ func (d *Daemon) handleShutdownPersist(msg *nats.Msg) {
 	}
 	d.respondShutdownACK(msg, ack)
 	slog.Info("Shutdown PERSIST phase complete", "node", d.node, "stopped", stopped)
+	return outcomeSuccess
 }
 
 // handleShutdownInfra stops NATS and exits the daemon. Phase: INFRA.
 // No ACK is sent because NATS is going down — this is fire-and-forget from the coordinator.
-func (d *Daemon) handleShutdownInfra(msg *nats.Msg) {
+func (d *Daemon) handleShutdownInfra(msg *nats.Msg) string {
 	var req ShutdownRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		slog.Error("handleShutdownInfra: failed to unmarshal request", "error", err)
 		d.respondShutdownACK(msg, ShutdownACK{Node: d.node, Phase: "infra", Error: err.Error()})
-		return
+		return outcomeError
 	}
 	if d.forAnotherNode(req) {
-		return
+		return outcomeSkipped
 	}
 
 	slog.Info("Shutdown INFRA phase starting", "node", d.node)
@@ -289,6 +293,7 @@ func (d *Daemon) handleShutdownInfra(msg *nats.Msg) {
 	slog.Info("Shutdown INFRA phase complete, exiting", "node", d.node)
 
 	os.Exit(0)
+	return outcomeSuccess
 }
 
 // nbdkitPidGlob matches the pidfiles viperblockd hands nbdkit, one per volume.

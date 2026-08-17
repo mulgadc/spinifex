@@ -14,7 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
+func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) string {
 	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
 			admin.DialTarget(d.config.Predastore.Host),
@@ -24,7 +24,7 @@ func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) {
 		)
 		return admin.PromoteSystemImage(store, d.config.Predastore.Bucket, *input)
 	}
-	handleNATSRequest(promoteImage)(msg)
+	return handleNATSRequest(promoteImage)(msg)
 }
 
 // stoppedInstanceOwnerElector is implemented by state stores that can
@@ -36,7 +36,7 @@ type stoppedInstanceOwnerElector interface {
 
 // handleEC2CreateImage is a stateful handler that extracts instance context
 // (root volume ID, source AMI, running state) before delegating to the image service.
-func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
+func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 	slog.Debug("Received message", "subject", msg.Subject)
 
 	input := &ec2.CreateImageInput{}
@@ -44,14 +44,14 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
-		return
+		return outcomeError
 	}
 
 	accountID := utils.AccountIDFromMsg(msg)
 
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		respondWithError(msg, awserrors.ErrorMissingParameter)
-		return
+		return outcomeError
 	}
 
 	instanceID := *input.InstanceId
@@ -93,7 +93,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 		if stopped == nil {
 			slog.Warn("CreateImage: instance not found", "instanceId", instanceID)
 			respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-			return
+			return outcomeError
 		}
 
 		// The KV is cluster-shared, so every node's lookup above succeeds;
@@ -108,7 +108,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 			if !canElect {
 				slog.Error("CreateImage: state store cannot elect owner for legacy stopped instance", "instanceId", instanceID)
 				respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-				return
+				return outcomeError
 			}
 			elected, uerr := elector.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
 				if v.LastNode == "" {
@@ -118,7 +118,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 			if uerr != nil || elected == nil || elected.LastNode == "" {
 				slog.Warn("CreateImage: failed to elect owner for legacy stopped instance", "instanceId", instanceID, "err", uerr)
 				respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-				return
+				return outcomeError
 			}
 			stopped.LastNode = elected.LastNode
 		}
@@ -126,7 +126,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 			slog.Info("CreateImage: declining, instance owned by another node",
 				"instanceId", instanceID, "lastNode", stopped.LastNode)
 			respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-			return
+			return outcomeError
 		}
 
 		instance = stopped
@@ -146,19 +146,19 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 
 	// Verify the caller owns this instance
 	if !checkInstanceOwnership(msg, instanceID, instance.AccountID) {
-		return
+		return outcomeError
 	}
 
 	if status != vm.StateRunning && status != vm.StateStopped {
 		slog.Warn("CreateImage: instance not in valid state", "instanceId", instanceID, "status", status)
 		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
+		return outcomeError
 	}
 
 	if rootVolumeID == "" {
 		slog.Error("CreateImage: no root volume found", "instanceId", instanceID)
 		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
+		return outcomeError
 	}
 
 	params := handlers_ec2_image.CreateImageParams{
@@ -172,9 +172,10 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 	if err != nil {
 		slog.Error("CreateImage: service failed", "instanceId", instanceID, "err", err)
 		respondWithServiceError(msg, err)
-		return
+		return outcomeError
 	}
 
 	respondWithJSON(msg, output)
 	slog.Info("CreateImage completed", "instanceId", instanceID, "imageId", *output.ImageId)
+	return outcomeSuccess
 }

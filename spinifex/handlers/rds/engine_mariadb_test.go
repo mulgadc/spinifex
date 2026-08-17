@@ -18,6 +18,7 @@ import (
 // they did, a create would have resolved an AMI nothing builds and left a volume
 // and an ENI behind for an instance that could never become available.
 func TestMariaDB_IsOffered(t *testing.T) {
+	t.Parallel()
 	engine, err := LookupEngine("  MariaDB ")
 	require.NoError(t, err, "the engine name is matched case-insensitively and trimmed")
 	assert.Equal(t, engineMariaDB.Name, engine.Name)
@@ -40,6 +41,7 @@ func TestMariaDB_IsOffered(t *testing.T) {
 // the MariaDB AMI carrying MariaDB's own port, family and guest configuration,
 // not PostgreSQL's defaults with a different name on them.
 func TestCreateDBInstance_LaunchesMariaDB(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	input := validCreateInput()
 	input.Engine = aws.String("mariadb")
@@ -75,6 +77,7 @@ func TestCreateDBInstance_LaunchesMariaDB(t *testing.T) {
 }
 
 func TestMariaDB_Identity(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "mariadb", engineMariaDB.Name)
 	assert.Equal(t, int64(3306), engineMariaDB.DefaultPort)
 	// The version series the API pins to, not an integer major: PostgreSQL's
@@ -125,6 +128,7 @@ func TestMariaDB_ValidateMasterUsername(t *testing.T) {
 // The guest re-checks the name it is handed rather than trusting the control
 // plane, and it reaches the reserved half on its own.
 func TestMariaDB_ValidateUsernameNotReserved(t *testing.T) {
+	t.Parallel()
 	for _, username := range []string{"mysql.session", "MySQL.infoschema", "mariadb.sys", "mariadb.anything"} {
 		err := engineMariaDB.ValidateUsernameNotReserved(username)
 		require.Error(t, err, "username %q", username)
@@ -137,6 +141,7 @@ func TestMariaDB_ValidateUsernameNotReserved(t *testing.T) {
 // MariaDB maps a database onto a directory name and rds-init interpolates the
 // name into CREATE DATABASE from the shell, so this rule is the actual barrier.
 func TestMariaDB_ValidateDBName(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"", "orders", "Orders_2", strings.Repeat("d", 64)} {
 		assert.NoError(t, engineMariaDB.ValidateDBName(name), "name %q", name)
 	}
@@ -154,6 +159,7 @@ func TestMariaDB_ValidateDBName(t *testing.T) {
 // The two catalogs are separate tables, not one table with an engine column, so
 // neither engine can be handed a setting the other's server would not parse.
 func TestMariaDBCatalog_IsSeparateFromPostgres(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"innodb_buffer_pool_size", "sql_mode", "key_buffer_size"} {
 		_, ok := enginePostgres.LookupParameter(name)
 		assert.False(t, ok, "PostgreSQL must not expose %s", name)
@@ -173,9 +179,10 @@ func TestMariaDBCatalog_IsSeparateFromPostgres(t *testing.T) {
 // customer's to set: the endpoint, the agent's socket access, the serving
 // certificate and the snapshot recovery guarantee all depend on them.
 func TestMariaDBCatalog_OmitsPlatformOwnedSettings(t *testing.T) {
+	t.Parallel()
 	owned := []string{
 		"port", "datadir", "socket", "bind_address",
-		"ssl_ca", "ssl_cert", "ssl_key", "require_secure_transport",
+		"ssl_ca", "ssl_cert", "ssl_key",
 		"secure_file_priv", "skip_symbolic_links", "log_bin",
 		"default_storage_engine",
 		"innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances",
@@ -189,6 +196,7 @@ func TestMariaDBCatalog_OmitsPlatformOwnedSettings(t *testing.T) {
 // The size-derived defaults have to move with the class, or the formulas are
 // decoration and one end of the supported range is mis-tuned.
 func TestMariaDBCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) {
+	t.Parallel()
 	smallest, err := classMemoryMiB("db.t3.micro")
 	require.NoError(t, err)
 	largest, err := classMemoryMiB("db.m5.xlarge")
@@ -212,6 +220,7 @@ func TestMariaDBCatalog_SizeDerivedDefaultsScaleWithClassMemory(t *testing.T) {
 // Three quarters of class memory is RDS's own default for this engine family,
 // and it is the setting whose being wrong stops the server from starting.
 func TestMariaDBCatalog_BufferPoolIsThreeQuartersOfClassMemory(t *testing.T) {
+	t.Parallel()
 	memoryMiB, err := classMemoryMiB("db.m5.large")
 	require.NoError(t, err)
 
@@ -226,6 +235,7 @@ func TestMariaDBCatalog_BufferPoolIsThreeQuartersOfClassMemory(t *testing.T) {
 
 // max_connections = {DBInstanceClassMemory/12582880}, which is RDS's own formula.
 func TestMariaDBCatalog_MaxConnectionsFollowsTheRDSFormula(t *testing.T) {
+	t.Parallel()
 	memoryMiB, err := classMemoryMiB("db.m5.xlarge")
 	require.NoError(t, err)
 	assert.Equal(t, strconv.FormatInt(memoryMiB*mibToBytes/12582880, 10), mariadbMaxConnectionsFor(memoryMiB))
@@ -299,21 +309,24 @@ func TestMariaDBCatalog_AcceptsEngineSpelledValues(t *testing.T) {
 
 // MariaDB refuses yes and no for a boolean system variable where PostgreSQL
 // accepts them, so a value the API takes must be one mysqld will parse.
-func TestMariaDBCatalog_TakesOnlyTheEnginesBooleanSpellings(t *testing.T) {
-	for _, value := range []string{"on", "OFF", "true", "False", "1", "0"} {
-		_, err := engineMariaDB.validateParameterValue("slow_query_log", value)
-		assert.NoError(t, err, "slow_query_log rejected %q, which the engine accepts", value)
-	}
-	for _, value := range []string{"yes", "no"} {
-		_, err := engineMariaDB.validateParameterValue("slow_query_log", value)
-		require.Error(t, err, "slow_query_log accepted %q, which the engine refuses", value)
-		assert.Contains(t, err.Error(), "takes a boolean")
-	}
+// mariadbd's own parser refuses yes and no, but no value reaches it unresolved:
+// the resolver canonicalises every boolean to 1 or 0 first. So the API takes all
+// eight spellings here as it does on PostgreSQL, and the engine still only ever
+// sees the two it parses.
+func TestMariaDBCatalog_TakesEveryBooleanSpelling(t *testing.T) {
+	for _, param := range []string{"slow_query_log", "require_secure_transport"} {
+		t.Run(param, func(t *testing.T) {
+			for _, value := range []string{"on", "OFF", "true", "False", "yes", "No", "1", "0"} {
+				_, err := engineMariaDB.validateParameterValue(param, value)
+				assert.NoError(t, err, "%s rejected %q, which the API accepts", param, value)
+			}
 
-	spec, ok := engineMariaDB.LookupParameter("slow_query_log")
-	require.True(t, ok)
-	assert.Equal(t, "on,off,true,false,1,0", spec.AllowedValues(),
-		"a customer has to be able to read which spellings this engine takes")
+			spec, ok := engineMariaDB.LookupParameter(param)
+			require.True(t, ok)
+			assert.Equal(t, "on,off,true,false,yes,no,1,0", spec.AllowedValues(),
+				"a customer has to be able to read which spellings are accepted")
+		})
+	}
 }
 
 func TestMariaDBCatalog_RejectsFatalCombinations(t *testing.T) {
@@ -374,6 +387,7 @@ func TestMariaDBCatalog_BoundsSizeDerivedOverridesToTheClass(t *testing.T) {
 // installed file. Getting one wrong is a permanent pending-reboot or a change
 // the customer is told took effect and did not.
 func TestMariaDBCatalog_ApplyTypesMatchTheEngine(t *testing.T) {
+	t.Parallel()
 	static := []string{
 		"innodb_buffer_pool_size", "innodb_log_file_size", "innodb_flush_method",
 		"innodb_read_io_threads", "innodb_write_io_threads", "innodb_purge_threads",
@@ -398,6 +412,7 @@ func TestMariaDBCatalog_ApplyTypesMatchTheEngine(t *testing.T) {
 }
 
 func TestMariaDBCatalog_ResolvesEveryParameterAsALiteral(t *testing.T) {
+	t.Parallel()
 	resolved, err := engineMariaDB.ResolveEffectiveParameters("db.m5.large", map[string]string{"max_connections": "300"})
 	require.NoError(t, err)
 	require.Len(t, resolved, len(engineMariaDB.CatalogParameterNames()))
@@ -423,6 +438,7 @@ func TestMariaDBCatalog_ResolvesEveryParameterAsALiteral(t *testing.T) {
 // time_zone startup option, so an option file naming it aborts the server before
 // it opens the datadir.
 func TestMariaDBCatalog_TimeZoneUsesItsStartupSpellingInTheOptionFile(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "default_time_zone", engineMariaDB.OptionFileName("time_zone"))
 
 	// The customer-facing name is what the API reports and what a live SET GLOBAL
@@ -434,6 +450,7 @@ func TestMariaDBCatalog_TimeZoneUsesItsStartupSpellingInTheOptionFile(t *testing
 }
 
 func TestMariaDBCatalog_EveryOtherParameterKeepsItsName(t *testing.T) {
+	t.Parallel()
 	for _, name := range engineMariaDB.CatalogParameterNames() {
 		if name == "time_zone" {
 			continue
@@ -446,6 +463,7 @@ func TestMariaDBCatalog_EveryOtherParameterKeepsItsName(t *testing.T) {
 // PostgreSQL sets every one of its settings under the name the customer knows,
 // so a mapping there would be a bug rather than a fix.
 func TestPostgresCatalog_NoParameterIsRenamedForTheOptionFile(t *testing.T) {
+	t.Parallel()
 	for _, name := range enginePostgres.CatalogParameterNames() {
 		assert.Equal(t, name, enginePostgres.OptionFileName(name))
 	}
@@ -454,5 +472,6 @@ func TestPostgresCatalog_NoParameterIsRenamedForTheOptionFile(t *testing.T) {
 // A name the catalog does not carry is the customer's own, and the option file
 // takes it unchanged rather than silently dropping it.
 func TestMariaDBCatalog_OptionFileNamePassesAnUnknownNameThrough(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "not_a_parameter", engineMariaDB.OptionFileName("not_a_parameter"))
 }

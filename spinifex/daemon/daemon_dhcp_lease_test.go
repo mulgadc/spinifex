@@ -160,7 +160,7 @@ func TestLeaseOwnerStatusGatewayWithoutVPCIDIsUnknown(t *testing.T) {
 func ownerCheckRoundTrip(t *testing.T, d *Daemon, payload []byte) dhcp.OwnerCheckReply {
 	t.Helper()
 	subject := "test.dhcp.owner-check." + t.Name()
-	sub, err := d.natsConn.Subscribe(subject, d.handleDHCPOwnerCheck)
+	sub, err := d.natsConn.Subscribe(subject, asMsgHandler(d.handleDHCPOwnerCheck))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
@@ -250,7 +250,7 @@ func TestRebindLeaseRecordErrors(t *testing.T) {
 func leaseChangedRoundTrip(t *testing.T, d *Daemon, payload []byte) dhcp.LeaseChangedReply {
 	t.Helper()
 	subject := "test.dhcp.lease-changed." + t.Name()
-	sub, err := d.natsConn.Subscribe(subject, d.handleDHCPLeaseChanged)
+	sub, err := d.natsConn.Subscribe(subject, asMsgHandler(d.handleDHCPLeaseChanged))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 

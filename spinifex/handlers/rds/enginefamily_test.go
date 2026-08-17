@@ -28,6 +28,8 @@ var engineUnderTest = Engine{
 	Name:                     testEngineName,
 	MajorVersion:             "1",
 	DefaultPort:              3306,
+	description:              "Test Engine",
+	licenseModel:             "test-license",
 	reservedUsernames:        []string{"root"},
 	reservedUsernamePrefixes: []string{"testdb_"},
 	maxUsernameLen:           80,

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -141,6 +142,21 @@ func (r *recordingRunner) run(_ context.Context, c command) (string, error) {
 
 func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	t.Helper()
+	cfg := testEngineConfig(t)
+	return newPostgresEngine(cfg, withPostgresReadBacks(cfg.EngineDataDir, run), nil, newPostgresProbe(cfg, staticProbe(0)))
+}
+
+// The same engine with the read-backs left to the runner, for the cases that are
+// about what the engine does with each answer rather than about the rest of an
+// apply.
+func newScriptedTestEngine(t *testing.T, run commandRunner) *postgresEngine {
+	t.Helper()
+	cfg := testEngineConfig(t)
+	return newPostgresEngine(cfg, run, nil, newPostgresProbe(cfg, staticProbe(0)))
+}
+
+func testEngineConfig(t *testing.T) config {
+	t.Helper()
 	cfg := testLoadConfig(t, enginePostgres)
 	cfg.EngineDataDir = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cfg.EngineDataDir, "conf.d"), 0o700); err != nil {
@@ -153,7 +169,35 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 		t.Fatalf("resolve the current user: %v", err)
 	}
 	cfg.EngineUser = current.Username
-	return newPostgresEngine(cfg, run, nil, newPostgresProbe(cfg, staticProbe(0)))
+	return cfg
+}
+
+// Answers the read-backs every apply runs against a live postmaster, from the
+// datadir the case is working in: an engine serving TLS, a reload the postmaster
+// took, and a pg_hba carrying whatever the agent last wrote. The call still
+// reaches the runner, so a case counting commands sees them; one that is about
+// the read-backs themselves builds its own engine.
+func withPostgresReadBacks(dataDir string, run commandRunner) commandRunner {
+	rule := filepath.Join(dataDir, postgresHBADir, postgresForceSSLRuleFile)
+	return func(ctx context.Context, c command) (string, error) {
+		out, err := run(ctx, c)
+		if err != nil {
+			return out, err
+		}
+		switch {
+		case strings.Contains(c.Stdin, "SHOW ssl"):
+			return "on\n", nil
+		case strings.Contains(c.Stdin, "pg_reload_conf"):
+			return "t\n", nil
+		case strings.Contains(c.Stdin, "pg_hba_file_rules"):
+			rules := 0
+			if _, statErr := os.Stat(rule); statErr == nil {
+				rules = postgresForceSSLRuleCount
+			}
+			return fmt.Sprintf("%d|0\n", rules), nil
+		}
+		return out, err
+	}
 }
 
 // The password reaches psql through the environment and is re-quoted there,
@@ -288,19 +332,27 @@ func TestPostgresEngine_ApplyParametersInstallsAndReloads(t *testing.T) {
 	if !strings.Contains(string(installed), "shared_buffers = '256MB'") {
 		t.Errorf("installed parameters = %q, want the resolved value", installed)
 	}
-	if len(runner.calls) != 3 {
-		t.Fatalf("ran %d commands, want a config check, a reload and a pending-restart read", len(runner.calls))
+	if len(runner.calls) != 5 {
+		t.Fatalf("ran %d commands, want a config check, the TLS guard, a reload, the rule read-back and a pending-restart read", len(runner.calls))
 	}
-	// The check runs before the reload, so a value the engine would refuse never
-	// reaches a running cluster.
+	// The check and the TLS guard both run before the reload, so neither a value
+	// the engine would refuse nor a rule rejecting every client reaches a running
+	// cluster. The read-back of the rules comes after, since the reload is what
+	// puts them in force.
 	if !slices.Contains(runner.calls[0].Args, "-C") {
 		t.Errorf("first command = %v, want the offline config check", runner.calls[0].Args)
 	}
-	if !strings.Contains(runner.calls[1].Stdin, "pg_reload_conf") {
-		t.Errorf("second statement = %q, want the reload", runner.calls[1].Stdin)
+	if !strings.Contains(runner.calls[1].Stdin, "SHOW ssl") {
+		t.Errorf("second statement = %q, want the serving-TLS guard", runner.calls[1].Stdin)
 	}
-	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {
-		t.Errorf("third statement = %q, want the pending-restart read", runner.calls[2].Stdin)
+	if !strings.Contains(runner.calls[2].Stdin, "pg_reload_conf") {
+		t.Errorf("third statement = %q, want the reload", runner.calls[2].Stdin)
+	}
+	if !strings.Contains(runner.calls[3].Stdin, "pg_hba_file_rules") {
+		t.Errorf("fourth statement = %q, want the client authentication read-back", runner.calls[3].Stdin)
+	}
+	if !strings.Contains(runner.calls[4].Stdin, "pending_restart") {
+		t.Errorf("fifth statement = %q, want the pending-restart read", runner.calls[4].Stdin)
 	}
 	if len(pending) != 2 || pending[0] != "shared_buffers" || pending[1] != "max_connections" {
 		t.Errorf("pending = %v, want both settings the engine reported", pending)
@@ -316,6 +368,21 @@ func TestPostgresEngine_ApplyParametersSurfacesAFailedReload(t *testing.T) {
 	if _, err := engine.ApplyParameters(context.Background(),
 		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a failing reload")
+	}
+}
+
+// pg_reload_conf() returns f when it could not signal the postmaster, and psql
+// exits 0 all the same. Every read-back after it parses files from disk, so an
+// apply that trusted the exit status would verify clean against a server still
+// serving the old rules.
+func TestPostgresEngine_ApplyParametersSurfacesAnUnsignalledReload(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount, reload: "f"}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(context.Background(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}})
+	if err == nil || !strings.Contains(err.Error(), `pg_reload_conf() returned "f"`) {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the answer the postmaster gave", err)
 	}
 }
 
@@ -378,6 +445,224 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	}
 	if !strings.Contains(string(installed), "work_mem = '8192'") {
 		t.Errorf("installed parameters = %q, want the repair set retained", installed)
+	}
+}
+
+// Answers the two read-backs an apply runs from fields the case sets, so what
+// the engine does with each answer is what is under test.
+type tlsReadBackRunner struct {
+	recordingRunner
+
+	ssl        string
+	ruleRows   int
+	brokenRows int
+	// What pg_reload_conf() answered. Empty is the postmaster having taken the
+	// signal, which is every case but the one about it not having.
+	reload string
+}
+
+func (r *tlsReadBackRunner) run(ctx context.Context, c command) (string, error) {
+	switch {
+	case strings.Contains(c.Stdin, "SHOW ssl"):
+		r.calls = append(r.calls, c)
+		return r.ssl + "\n", nil
+	case strings.Contains(c.Stdin, "pg_reload_conf"):
+		r.calls = append(r.calls, c)
+		if r.reload == "" {
+			return "t\n", nil
+		}
+		return r.reload + "\n", nil
+	case strings.Contains(c.Stdin, "pg_hba_file_rules"):
+		r.calls = append(r.calls, c)
+		return fmt.Sprintf("%d|%d\n", r.ruleRows, r.brokenRows), nil
+	}
+	return r.recordingRunner.run(ctx, c)
+}
+
+func forceSSLParameter(value string) []handlers_rds.Parameter {
+	return []handlers_rds.Parameter{
+		{Name: "work_mem", Value: "4096"},
+		{Name: postgresEngineMeta.TLSEnforcementParameter(), Value: value},
+	}
+}
+
+// PostgreSQL has no server setting for this, so the value in the parameter file
+// is inert: the rule the generated pg_hba includes is the whole of it.
+func TestPostgresEngine_ApplyParametersWritesTheEnforcementRule(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	rule, err := os.ReadFile(engine.forceSSLRulePath())
+	if err != nil {
+		t.Fatalf("read the enforcement rule: %v", err)
+	}
+	if string(rule) != postgresForceSSLRules {
+		t.Errorf("enforcement rule = %q, want the constant rds-init also writes", rule)
+	}
+}
+
+// A snapshot carries hba.d with it, so restoring one taken while enforcing into
+// a group that turns enforcement off has to take the rule with it.
+func TestPostgresEngine_ApplyParametersRemovesAStaleEnforcementRule(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on"}
+	engine := newScriptedTestEngine(t, runner.run)
+	if err := os.MkdirAll(filepath.Dir(engine.forceSSLRulePath()), 0o700); err != nil {
+		t.Fatalf("create hba.d: %v", err)
+	}
+	if err := os.WriteFile(engine.forceSSLRulePath(), []byte(postgresForceSSLRules), 0o600); err != nil {
+		t.Fatalf("write the rule the restored volume carried: %v", err)
+	}
+
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if _, err := os.Stat(engine.forceSSLRulePath()); !os.IsNotExist(err) {
+		t.Errorf("the stale enforcement rule is still in place (stat err = %v)", err)
+	}
+}
+
+// The ordinary state of an instance whose resolved set predates the parameter,
+// and the whole of the migration: it begins requiring TLS with no control-plane
+// work at all.
+func TestPostgresEngine_ApplyParametersEnforcesOnAnAbsentKey(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(t.Context(),
+		[]handlers_rds.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
+		t.Fatalf("ApplyParameters: %v", err)
+	}
+	if _, err := os.Stat(engine.forceSSLRulePath()); err != nil {
+		t.Errorf("a set predating the parameter did not enforce (stat err = %v)", err)
+	}
+}
+
+// The resolver canonicalises every boolean, so a value that is neither means the
+// file was written by something other than the platform. Reading an unparsable
+// security setting as off is the one choice not open here.
+func TestPostgresEngine_ApplyParametersRefusesAnUnparsableEnforcementValue(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on"}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter("yes"))
+	if err == nil || !strings.Contains(err.Error(), "neither 1 nor 0") {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the unreadable value", err)
+	}
+	if _, statErr := os.Stat(engine.params.installedPath()); !os.IsNotExist(statErr) {
+		t.Errorf("the refused set is still installed (stat err = %v)", statErr)
+	}
+}
+
+// Without this, a live enable against an engine started with no certificate
+// would reject every subsequent connection and report the parameter applied.
+func TestPostgresEngine_ApplyParametersRefusesToEnforceWithoutTLS(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "off"}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1"))
+	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
+		t.Fatalf("ApplyParameters error = %v, want a refusal naming the engine's own TLS state", err)
+	}
+	if _, statErr := os.Stat(engine.forceSSLRulePath()); !os.IsNotExist(statErr) {
+		t.Errorf("the enforcement rule was written anyway (stat err = %v)", statErr)
+	}
+}
+
+// PostgreSQL discards a pg_hba it cannot parse and keeps the rules it is already
+// serving, which presents as an apply that succeeded and enforces nothing. The
+// shape is asserted as well as the errors, because our own derivation writing
+// the wrong thing is the failure that will actually happen.
+func TestPostgresEngine_ApplyParametersFailsAnUnverifiableEnforcement(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		ruleRows   int
+		brokenRows int
+		want       string
+	}{
+		{name: "rule missing", value: "1", ruleRows: 0, want: "carries 0 TLS enforcement rules, want 2"},
+		{name: "rule present when it should not be", value: "0", ruleRows: 2, want: "carries 2 TLS enforcement rules, want 0"},
+		{name: "a rule the engine could not parse", value: "1", ruleRows: 2, brokenRows: 1, want: "could not parse"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &tlsReadBackRunner{ssl: "on", ruleRows: tc.ruleRows, brokenRows: tc.brokenRows}
+			engine := newScriptedTestEngine(t, runner.run)
+
+			_, err := engine.ApplyParameters(t.Context(), forceSSLParameter(tc.value))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ApplyParameters error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A rejected set has to take its enforcement with it. Withdrawing one without
+// the other would leave the instance serving the previous parameters under the
+// rejected set's TLS posture.
+func TestPostgresEngine_ApplyParametersWithdrawsBothFilesTogether(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
+	engine := newScriptedTestEngine(t, runner.run)
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+		t.Fatalf("first ApplyParameters: %v", err)
+	}
+
+	// Turning enforcement off, verified against a pg_hba that still carries the
+	// rule — so the apply fails after both files have already been replaced.
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err == nil {
+		t.Fatal("ApplyParameters succeeded against an unverifiable enforcement")
+	}
+	installed, err := os.ReadFile(engine.params.installedPath())
+	if err != nil {
+		t.Fatalf("read the installed parameters: %v", err)
+	}
+	if !strings.Contains(string(installed), "rds.force_ssl = '1'") {
+		t.Errorf("installed parameters = %q, want the previous accepted set restored", installed)
+	}
+	if _, err := os.Stat(engine.forceSSLRulePath()); err != nil {
+		t.Errorf("the enforcement of the previous set was not restored with it (stat err = %v)", err)
+	}
+	// The reload already adopted the rejected files, so putting them back is not
+	// enough on its own.
+	if !strings.Contains(runner.calls[len(runner.calls)-1].Stdin, "pg_reload_conf") {
+		t.Errorf("last statement = %q, want a reload taking the engine off the withdrawn set", runner.calls[len(runner.calls)-1].Stdin)
+	}
+}
+
+// A service restart does not re-run rds-init, so a restore stopping at the
+// parameter file would bring the last known good set up under the enforcement of
+// the set that was just rejected.
+func TestPostgresEngine_RestoreLastKnownGoodReDerivesEnforcement(t *testing.T) {
+	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
+	engine := newScriptedTestEngine(t, runner.run)
+
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+		t.Fatalf("ApplyParameters(enforcing): %v", err)
+	}
+	if err := engine.RecordServingParameters(t.Context()); err != nil {
+		t.Fatalf("RecordServingParameters: %v", err)
+	}
+	runner.ruleRows = 0
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err != nil {
+		t.Fatalf("ApplyParameters(not enforcing): %v", err)
+	}
+	if _, err := os.Stat(engine.forceSSLRulePath()); !os.IsNotExist(err) {
+		t.Fatalf("the enforcement rule survived the set that turned it off (stat err = %v)", err)
+	}
+
+	engine.probe = stubProbe(t, 2, nil)
+	restored, err := engine.RestoreLastKnownGoodParameters(t.Context())
+	if err != nil {
+		t.Fatalf("RestoreLastKnownGoodParameters: %v", err)
+	}
+	if !restored {
+		t.Fatal("did not restore a set that differs from the last known good")
+	}
+	if _, err := os.Stat(engine.forceSSLRulePath()); err != nil {
+		t.Errorf("the restored set's enforcement was not re-derived (stat err = %v)", err)
 	}
 }
 

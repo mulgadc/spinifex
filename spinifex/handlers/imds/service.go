@@ -65,6 +65,7 @@ type IMDSServiceImpl struct {
 	v1Allow        *v1AllowCache
 	creds          *credCache
 	iam            profileLookup
+	roleMiss       *roleMissLogger
 	pubKeys        publicKeyLookup
 	tapResp        *tapResponderManager
 	listTaps       listTapsFunc
@@ -142,6 +143,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		v1Allow:        newV1AllowCache(),
 		creds:          newCredCache(sts),
 		iam:            iamSvc,
+		roleMiss:       newRoleMissLogger(time.Now),
 		pubKeys:        pubKeys,
 		listTaps:       listTaps,
 		now:            time.Now,
@@ -176,7 +178,7 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux.HandleFunc(pathToken, s.handleToken)
 	mux.HandleFunc(pathSpinifexCACert, s.handleCACert)
 	mux.HandleFunc("/", s.handleMetadata)
-	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(mux)))
+	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(nameAction(mux))))
 }
 
 // Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks
@@ -232,6 +234,7 @@ func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
 			s.tokens.sweep(now)
 			s.creds.sweep(now)
 			s.v1Allow.sweep(now)
+			s.roleMiss.sweep(now)
 		}
 	}
 }

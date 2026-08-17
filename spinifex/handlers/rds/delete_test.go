@@ -51,6 +51,7 @@ func skipFinalSnapshot() *rds.DeleteDBInstanceInput {
 // The whole teardown: the VM, the data volume, both NICs, the reverse index and
 // the record itself.
 func TestDeleteDBInstance_TearsDownEverythingItOwns(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 	require.NoError(t, h.svc.PutInstanceIndex(t.Context(), testInstance, InstanceIndexEntry{
@@ -106,6 +107,7 @@ func TestDeleteDBInstance_RequiresAnExplicitSnapshotChoice(t *testing.T) {
 // The flag exists to stop exactly this call, so honouring it has to happen
 // before anything is torn down.
 func TestDeleteDBInstance_HonoursDeletionProtection(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.DeletionProtection = true
@@ -123,6 +125,7 @@ func TestDeleteDBInstance_HonoursDeletionProtection(t *testing.T) {
 // The snapshot is taken once the VM is gone, so it reads a sealed data
 // volume rather than one a live engine is still writing to.
 func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -152,6 +155,7 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 }
 
 func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -173,6 +177,7 @@ func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) 
 // creating. A retry adopts that exact account-scoped snapshot instead of
 // cutting another one and permanently pinning the source volume twice.
 func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusDeleting
@@ -211,6 +216,7 @@ func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 // be deleted while the final snapshot survives. It is retained and recorded
 // with the snapshots holding it.
 func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -231,6 +237,7 @@ func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T)
 // re-created under the same name must not have a stale snapshot of a previous
 // data volume accepted as its own — the volume would then be deleted unbacked.
 func TestDeleteDBInstance_RejectsAFinalSnapshotIdentifierAlreadyTaken(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
 
@@ -296,6 +303,7 @@ func TestDeleteDBInstance_RejectsARetryThatChangesTheSnapshotChoice(t *testing.T
 // reference the EC2 enumeration missed. Retaining converges; erroring would
 // wedge the delete on every retry until the bound marked it failed.
 func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.volumes.deleteErr = errors.New(awserrors.ErrorVolumeInUse)
 	seedInstance(t, h.svc, availableRecord())
@@ -316,6 +324,7 @@ func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *te
 // A teardown that died partway through is replayed, so every step has to treat
 // a resource that is already gone as work it has done.
 func TestDeleteDBInstance_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	// The shape a delete leaves behind when its caller died mid-teardown.
@@ -342,6 +351,7 @@ func TestDeleteDBInstance_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
 // The reconciler owns a teardown whose caller never came back, so an
 // interrupted delete finishes without an operator.
 func TestReconciler_ResumesAnInterruptedDelete(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusDeleting
@@ -357,6 +367,7 @@ func TestReconciler_ResumesAnInterruptedDelete(t *testing.T) {
 // A stop whose caller died leaves the VM possibly still running, so the stop is
 // re-issued rather than assumed.
 func TestReconciler_ResumesAnInterruptedStop(t *testing.T) {
+	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusStopping

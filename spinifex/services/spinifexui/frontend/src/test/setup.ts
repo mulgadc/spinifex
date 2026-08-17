@@ -11,10 +11,11 @@ afterEach(() => {
 // Components sign requests with the region the server reports, which the app
 // normally loads before rendering. Seed it through the real code path so every
 // component test has one without stubbing fetch itself.
-vi.stubGlobal("fetch", async () =>
-  Promise.resolve({
+vi.stubGlobal(
+  "fetch",
+  vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => Promise.resolve({ region: "ap-southeast-2" }),
+    json: vi.fn().mockResolvedValue({ region: "ap-southeast-2" }),
   }),
 )
 await loadClusterConfig()

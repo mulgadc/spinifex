@@ -176,6 +176,17 @@ func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	return admin.LoadCAKeyPair(s.deps.CACertPath, s.deps.CAKeyPath)
 }
 
+// Whether this deployment can serve TLS at all, which is whether it holds a
+// cluster CA to mint a serving certificate from. A formed deployment always
+// does, so this is an assertion rather than an operational switch.
+func (s *Service) tlsAvailable() (bool, error) {
+	caCert, caKey, err := s.loadCA()
+	if err != nil {
+		return false, err
+	}
+	return caCert != nil && caKey != nil, nil
+}
+
 // Returns (false, nil) when the key is absent.
 func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
 	entry, err := kv.Get(ctx, key)

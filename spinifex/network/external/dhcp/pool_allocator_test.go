@@ -8,6 +8,8 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -108,8 +110,10 @@ func TestDHCPPoolAllocatorRejectsPoolMismatch(t *testing.T) {
 }
 
 // An untracked IP must not report success. Answering SUCCESS with nothing sent
-// upstream is what let stranded leases accumulate unnoticed; every caller of
-// Release logs and continues, so surfacing the error costs no teardown progress.
+// upstream is what let stranded leases accumulate unnoticed. It surfaces as
+// ErrLeaseNotTracked so a teardown caller can tell this terminal condition from
+// a transient failure and stop, rather than re-driving a release that can never
+// converge.
 func TestDHCPPoolAllocatorReleaseUnknownIPErrors(t *testing.T) {
 	fake := dhcp.NewFake()
 	pool := external.ExternalPoolConfig{Name: "wan", Source: external.SourceDHCP, BindBridge: "br-wan"}
@@ -118,6 +122,27 @@ func TestDHCPPoolAllocatorReleaseUnknownIPErrors(t *testing.T) {
 	addr := netip.MustParseAddr("198.51.100.99")
 	err := allocator.Release(context.Background(), "wan", addr, "")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, dhcp.ErrLeaseNotTracked)
 	assert.Contains(t, err.Error(), "no tracked lease for ip 198.51.100.99")
 	assert.Equal(t, 0, fake.ReleaseCount())
+}
+
+// The counterpart that keeps the fix honest: a release failing for any other
+// reason must NOT carry ErrLeaseNotTracked, or callers would treat a transient
+// failure as terminal and abandon a lease that was still reclaimable. Driven
+// through a stub responder because the manager tolerates an upstream release
+// failure and still answers success.
+func TestDHCPPoolAllocatorReleaseUncodedErrorIsNotTerminal(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	sub, err := nc.Subscribe(dhcp.TopicRelease, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"error":"upstream unreachable"}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	client := dhcp.NewNATSClient(nc, 3*time.Second)
+	err = client.RequestReleaseByIP(context.Background(), "wan", "198.51.100.99")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, dhcp.ErrLeaseNotTracked)
+	assert.Contains(t, err.Error(), "upstream unreachable")
 }

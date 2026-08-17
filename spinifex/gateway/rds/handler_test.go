@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"maps"
 	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -59,6 +61,9 @@ var v1Actions = []string{
 
 	"DescribeEvents",
 
+	"DescribeDBEngineVersions",
+	"DescribeOrderableDBInstanceOptions",
+
 	"RegisterDBInstance",
 	"SubmitDBStateChange",
 	"PollDBCommands",
@@ -100,7 +105,7 @@ func TestHasAction_UnknownAction(t *testing.T) {
 }
 
 func TestDispatch_UnknownAction(t *testing.T) {
-	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testCaller)
+	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testCaller, testEnv)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -118,7 +123,7 @@ func TestDispatch_MalformedScalarIsInvalidParameterValue(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), tc.action, tc.query, nil, testCaller)
+			_, err := Dispatch(t.Context(), tc.action, tc.query, nil, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 		})
@@ -131,7 +136,7 @@ func TestDispatch_OversizedListIsMalformedQueryString(t *testing.T) {
 		query["Tags.Tag."+strconv.Itoa(i)+".Key"] = "key"
 	}
 
-	_, err := Dispatch(t.Context(), "CreateDBInstance", query, nil, testCaller)
+	_, err := Dispatch(t.Context(), "CreateDBInstance", query, nil, testCaller, testEnv)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
 }
@@ -149,7 +154,24 @@ var liveActions = []string{
 	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
 	"RestoreDBInstanceFromDBSnapshot",
 	"DescribeDBInstanceAutomatedBackups",
+	"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions",
 }
+
+// The parameters an action refuses to run without, so a table-driven dispatch
+// reaches the handler rather than its own required-parameter check.
+var requiredParams = map[string]map[string]string{
+	"DescribeOrderableDBInstanceOptions": {"Engine": "postgres"},
+}
+
+func dispatchQuery(action string) map[string]string {
+	q := map[string]string{"Action": action}
+	maps.Copy(q, requiredParams[action])
+	return q
+}
+
+// One node, so the orderable action's capability probe early-exits on the first
+// frame instead of paying the gather's full three-second timeout.
+var testEnv = Env{ExpectedNodes: 1}
 
 // What is under test in this file is the action table and the XML envelope, not
 // the orchestration behind the subject, so the responder returns a fixed output.
@@ -188,7 +210,21 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstanceAutomatedBackups,
 		&rds.DescribeDBInstanceAutomatedBackupsOutput{})
+	// The orderable catalog's capability probe. Unstubbed it would get no
+	// ErrNoResponders — Gather publishes and reads an inbox rather than
+	// requesting — so every dispatch over the table would pay its full timeout.
+	respondWith(t, nc, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesOutput{
+		InstanceTypes: instanceTypeInfo("t3.micro", "t3.small", "t3.medium", "t3.large", "m5.large", "m5.xlarge"),
+	})
 	return nc
+}
+
+func instanceTypeInfo(names ...string) []*ec2.InstanceTypeInfo {
+	out := make([]*ec2.InstanceTypeInfo, 0, len(names))
+	for _, name := range names {
+		out = append(out, &ec2.InstanceTypeInfo{InstanceType: aws.String(name)})
+	}
+	return out
 }
 
 func respondWith(t *testing.T, nc *nats.Conn, subject string, output any) {
@@ -211,7 +247,7 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for action := range actions {
 		t.Run(action, func(t *testing.T) {
-			body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nc, testCaller)
+			body, err := Dispatch(t.Context(), action, dispatchQuery(action), nc, testCaller, testEnv)
 			if err == nil {
 				assert.NotEmpty(t, body, "a successful action must return an XML body")
 				return
@@ -230,7 +266,7 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, action := range liveActions {
-		body, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nc, testCaller)
+		body, err := Dispatch(t.Context(), action, dispatchQuery(action), nc, testCaller, testEnv)
 		require.NoError(t, err, "action %q", action)
 		assert.Contains(t, string(body), "<"+action+"Result", "action %q", action)
 	}
@@ -238,7 +274,7 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 
 func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 	for _, action := range outOfScopeActions {
-		_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller)
+		_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller, testEnv)
 		require.Error(t, err, "action %q", action)
 		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(), "action %q", action)
 	}
@@ -246,7 +282,7 @@ func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 
 func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 	body, err := Dispatch(t.Context(), "DescribeDBInstances",
-		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, newStubbedNATS(t), testCaller)
+		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 
 	// The IAM-style envelope the aws-sdk-go query unmarshaler expects, carrying
@@ -263,7 +299,7 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	body, err := Dispatch(t.Context(), "ListTagsForResource", map[string]string{
 		"Action":       "ListTagsForResource",
 		"ResourceName": handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
-	}, newStubbedNATS(t), testCaller)
+	}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 
 	// Decoded the way a real client decodes it, rather than compared byte-wise:
@@ -301,7 +337,7 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 		"ResourceName":   arn,
 		"Tags.Tag.1.Key": "env", "Tags.Tag.1.Value": "prod",
 		"Tags.Tag.2.Key": "team", "Tags.Tag.2.Value": "platform",
-	}, nc, testCaller)
+	}, nc, testCaller, testEnv)
 	require.NoError(t, err)
 
 	got := <-requests
@@ -337,7 +373,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 		"ResourceName":     handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
 		"TagKeys.member.1": "env",
 		"TagKeys.member.2": "team",
-	}, nc, testCaller)
+	}, nc, testCaller, testEnv)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"env", "team"}, aws.StringValueSlice((<-requests).TagKeys))
@@ -350,7 +386,7 @@ func TestDispatch_DescribeDBInstancesWithFilters(t *testing.T) {
 		"Action":               "DescribeDBInstances",
 		"DBInstanceIdentifier": "orders-db",
 		"MaxRecords":           "20",
-	}, newStubbedNATS(t), testCaller)
+	}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "<DescribeDBInstancesResult")
 }

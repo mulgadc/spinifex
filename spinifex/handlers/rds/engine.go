@@ -18,6 +18,12 @@ type Engine struct {
 	// served by an image that is not the one asked for.
 	MajorVersion string
 	DefaultPort  int64
+	// How the engine names itself in a catalog listing, which is not its API
+	// identifier: a console renders this rather than "postgres".
+	description string
+	// The AWS licence model the engine is offered under, which is a property of
+	// the engine's own licence rather than of this platform.
+	licenseModel string
 	// Identifiers the engine reserves for itself, which a master role may not
 	// take. Matched case-insensitively.
 	reservedUsernames []string
@@ -36,6 +42,10 @@ type Engine struct {
 	// Cross-parameter checks a resolved set must satisfy, which are the
 	// combinations the engine itself would refuse to start under.
 	validateCombinations func([]Parameter) error
+	// The engine's own name for the setting that requires TLS of a client
+	// connection, which is AWS's name for it. Named here so the control plane and
+	// the guest agree on the key without either spelling out an engine.
+	tlsEnforcementParameter string
 
 	// What a snapshot taken without a quiesce actually recovers on restore, which
 	// is the engine's own guarantee and not a shared one.
@@ -72,6 +82,14 @@ func indexEnginesByFamily() map[string]Engine {
 		if engine.uncleanStopNote == "" {
 			panic("rds: engine " + engine.Name + " registers no unclean-stop note")
 		}
+		// A name no catalog entry answers to would leave the guest deriving
+		// enforcement from a key nothing ever writes, which reads as not enforcing.
+		if name := engine.tlsEnforcementParameter; name != "" {
+			spec, ok := engine.catalog[name]
+			if !ok || spec.DataType != ParamTypeBoolean {
+				panic("rds: engine " + engine.Name + " names " + name + ", which is not a boolean parameter it exposes")
+			}
+		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {
 			panic("rds: parameter group family " + family + " is claimed by two engines")
@@ -85,6 +103,17 @@ func indexEnginesByFamily() map[string]Engine {
 // the AMI carries the major, and a minor is chosen by the image build.
 func (e Engine) EngineVersion() string {
 	return e.MajorVersion
+}
+
+// The engine's own name for itself, as a describe reports it.
+func (e Engine) Description() string {
+	return e.description
+}
+
+// The AWS licence model name, which an orderable option carries and which a
+// client may filter on.
+func (e Engine) LicenseModel() string {
+	return e.licenseModel
 }
 
 // The parameter-group name AWS clients expect when none is named. The group is

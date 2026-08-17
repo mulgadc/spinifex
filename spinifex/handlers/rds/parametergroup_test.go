@@ -67,6 +67,7 @@ func describedParameters(t *testing.T, h *createHarness, group string) map[strin
 }
 
 func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	out, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
@@ -91,6 +92,7 @@ func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
 // An omitted family can only mean the one family this platform offers, so it
 // takes the pin rather than failing a Terraform config that leaves it out.
 func TestCreateDBParameterGroup_DefaultsTheFamilyAndRejectsAnother(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	input := parameterGroupInput(testParameterGroup)
@@ -110,6 +112,7 @@ func TestCreateDBParameterGroup_DefaultsTheFamilyAndRejectsAnother(t *testing.T)
 // A customer group under the reserved prefix would be indistinguishable from the
 // implicit one, and would then be modifiable through a name that must not be.
 func TestCreateDBParameterGroup_RejectsTheReservedPrefix(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput("default.postgres18"), testAccountID)
@@ -120,6 +123,7 @@ func TestCreateDBParameterGroup_RejectsTheReservedPrefix(t *testing.T) {
 }
 
 func TestCreateDBParameterGroup_RejectsADuplicateName(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -133,6 +137,7 @@ func TestCreateDBParameterGroup_RejectsADuplicateName(t *testing.T) {
 // The default group is what CreateDBInstance resolves when a request names none,
 // so it has to be listable and readable without anyone having created it.
 func TestDescribeDBParameterGroups_ReportsTheImplicitDefault(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	named, err := h.svc.DescribeDBParameterGroups(t.Context(),
@@ -160,6 +165,7 @@ func parameterGroupNames(out *rds.DescribeDBParameterGroupsOutput) []string {
 // Synthesised rather than stored, so it must appear exactly once alongside the
 // customer's own groups rather than twice or not at all.
 func TestDescribeDBParameterGroups_ListsCustomerGroupsBesideTheDefault(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput("zeta"), testAccountID)
 	require.NoError(t, err)
@@ -172,6 +178,7 @@ func TestDescribeDBParameterGroups_ListsCustomerGroupsBesideTheDefault(t *testin
 }
 
 func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.DescribeDBParameterGroups(t.Context(),
@@ -190,6 +197,7 @@ func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {
 }
 
 func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -213,6 +221,7 @@ func TestModifyDBParameterGroup_StoresValidatedOverrides(t *testing.T) {
 }
 
 func TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstance(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -254,6 +263,7 @@ func TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstan
 // leaves the group holding a value the engine never adopted. That has to reach
 // the instance's apply status rather than being reported as in-sync.
 func TestModifyDBParameterGroup_RecordsAFailedApplyOnTheInstance(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -278,6 +288,7 @@ func TestModifyDBParameterGroup_RecordsAFailedApplyOnTheInstance(t *testing.T) {
 // A later apply the engine accepts is what clears it, so the instance does not
 // keep reporting a failure it has recovered from.
 func TestModifyDBParameterGroup_ASuccessfulApplyClearsTheRecordedFailure(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -302,6 +313,7 @@ func TestModifyDBParameterGroup_ASuccessfulApplyClearsTheRecordedFailure(t *test
 // Propagation marks the instances that refused the set, not the group: an
 // instance that took the same values stays in-sync.
 func TestModifyDBParameterGroup_MarksOnlyTheInstancesWhoseApplyFailed(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -332,6 +344,7 @@ func TestModifyDBParameterGroup_MarksOnlyTheInstancesWhoseApplyFailed(t *testing
 }
 
 func TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("max_connections")
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
@@ -354,6 +367,7 @@ func TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot(t *testing.
 }
 
 func TestModifyDBParameterGroup_DoesNotPropagateToAPendingAttachment(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -370,6 +384,7 @@ func TestModifyDBParameterGroup_DoesNotPropagateToAPendingAttachment(t *testing.
 }
 
 func TestModifyDBParameterGroup_ReturnsAPropagationFailure(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarnessWithAgent(t, true)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -395,6 +410,7 @@ func TestModifyDBParameterGroup_ReturnsAPropagationFailure(t *testing.T) {
 // A batch with one bad value must leave the group exactly as it was: a
 // half-applied modify would be a configuration nobody asked for.
 func TestModifyDBParameterGroup_WritesNothingWhenOneValueIsBad(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -449,6 +465,7 @@ func TestModifyDBParameterGroup_RejectsBadRequests(t *testing.T) {
 // AWS's own rule, and the one that keeps the default group a stable reference:
 // an instance that names it must get the catalog's values, not a tenant's edits.
 func TestModifyDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.ModifyDBParameterGroup(t.Context(),
@@ -460,6 +477,7 @@ func TestModifyDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
 }
 
 func TestModifyDBParameterGroup_RejectsAnUnknownGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.ModifyDBParameterGroup(t.Context(),
@@ -472,6 +490,7 @@ func TestModifyDBParameterGroup_RejectsAnUnknownGroup(t *testing.T) {
 // A computed default reaches the customer as the literal it evaluated to,
 // never as the formula that produced it.
 func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	params := describedParameters(t, h, testDefaultPG)
@@ -490,7 +509,54 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 	assert.NotEmpty(t, aws.StringValue(shared.AllowedValues))
 }
 
+// The canonical spelling the guest is handed is not what the API reports back:
+// a Terraform plan comparing what it wrote against what it reads would otherwise
+// show drift on every boolean, forever.
+func TestDescribeDBParameters_ReportsTheCustomersBooleanSpelling(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(),
+		modifyParameters(testParameterGroup, parameter("autovacuum", "off", "")), testAccountID)
+	require.NoError(t, err)
+
+	params := describedParameters(t, h, testParameterGroup)
+	require.NotNil(t, params["autovacuum"])
+	assert.Equal(t, "off", aws.StringValue(params["autovacuum"].ParameterValue))
+	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["autovacuum"].Source))
+
+	resolved, err := enginePostgres.ResolveEffectiveParameters("db.t3.micro", map[string]string{"autovacuum": "off"})
+	require.NoError(t, err)
+	assert.Equal(t, "0", resolvedParameter(t, resolved, "autovacuum"),
+		"the guest should be handed the canonical spelling rather than the customer's")
+}
+
+// Reported so a security-conscious plan can read the floor, refused so it cannot
+// lower it. The refusal is the ordinary not-modifiable one, which names the
+// parameter rather than claiming the engine has no such setting.
+func TestDBParameterGroup_ReportsThePinnedTLSFloorAndRefusesToChangeIt(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
+	require.NoError(t, err)
+
+	floor := describedParameters(t, h, testParameterGroup)["ssl_min_protocol_version"]
+	require.NotNil(t, floor)
+	assert.Equal(t, "TLSv1.3", aws.StringValue(floor.ParameterValue))
+	assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(floor.Source))
+	assert.False(t, aws.BoolValue(floor.IsModifiable))
+
+	_, err = h.svc.ModifyDBParameterGroup(t.Context(),
+		modifyParameters(testParameterGroup, parameter("ssl_min_protocol_version", "TLSv1.2", "")), testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+	assert.Contains(t, err.Error(), "parameter ssl_min_protocol_version is not modifiable")
+}
+
 func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -509,6 +575,7 @@ func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T)
 }
 
 func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -533,6 +600,7 @@ func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {
 }
 
 func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -559,6 +627,7 @@ func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
 }
 
 func TestDeleteDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.DeleteDBParameterGroup(t.Context(),
@@ -601,6 +670,7 @@ func TestDeleteDBParameterGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T)
 // The group is the thing bootstrap consumes, so a create has to resolve it into
 // the literals the agent installs rather than leaving the set empty.
 func TestCreateDBInstance_ResolvesTheNamedGroupIntoTheBootstrapSet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -632,6 +702,7 @@ func TestCreateDBInstance_ResolvesTheNamedGroupIntoTheBootstrapSet(t *testing.T)
 // An unnamed group takes the implicit default, which resolves to the catalog
 // alone rather than to nothing.
 func TestCreateDBInstance_ResolvesTheDefaultGroupWhenNoneIsNamed(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
@@ -643,6 +714,7 @@ func TestCreateDBInstance_ResolvesTheDefaultGroupWhenNoneIsNamed(t *testing.T) {
 }
 
 func TestCreateDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	input := validCreateInput()
@@ -657,6 +729,7 @@ func TestCreateDBInstance_RejectsAnUnknownParameterGroup(t *testing.T) {
 // Both groups are taggable through the one ARN-addressed mutate path, so the
 // registry entries are what make an ARN a resource rather than a rejection.
 func TestTagActions_ReachBothGroupTypes(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 	require.NoError(t, err)

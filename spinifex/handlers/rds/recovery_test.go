@@ -91,6 +91,7 @@ func (h *reconcileHarness) recordOf(t *testing.T, id string) DBInstanceRecord {
 // An instance that has been dark for a week must not keep reporting available:
 // the failure mode is silent for exactly as long as nobody tries to connect.
 func TestReconciler_MarksADarkInstanceFailed(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
@@ -108,6 +109,7 @@ func TestReconciler_MarksADarkInstanceFailed(t *testing.T) {
 // customer's monitoring can alert on is the whole point of detecting failure
 // when nothing repairs it.
 func TestReconciler_RecordsAnEventForADarkInstance(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
@@ -128,6 +130,7 @@ func TestReconciler_RecordsAnEventForADarkInstance(t *testing.T) {
 // fleet-wide fan-out, so issuing one per instance per pass would put the whole
 // fleet's liveness on the bus every 15 seconds.
 func TestReconciler_LeavesAHealthyInstanceUntouchedWithoutAVMLookup(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	seedInstance(t, h.svc, servingRecord())
 
@@ -181,6 +184,7 @@ func TestReconciler_HoldsAvailableOnHalfTheEvidence(t *testing.T) {
 // live database can be reported down, which is what a transient fleet describe
 // during a node restart cannot get past.
 func TestReconciler_StartsTheClockBeforeFailingWithinTheGrace(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Hour })
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
@@ -196,6 +200,7 @@ func TestReconciler_StartsTheClockBeforeFailingWithinTheGrace(t *testing.T) {
 // The clock a previous leader stamped is what the grace is measured against, so
 // a leader change does not restart the window and defer detection indefinitely.
 func TestReconciler_FailsOnAClockStampedByAnEarlierLeader(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Minute })
 	h.state.state = "stopped"
 	rec := darkRecord()
@@ -218,6 +223,7 @@ func TestReconciler_FailsOnAClockStampedByAnEarlierLeader(t *testing.T) {
 // matters more without a recovery ladder than with one, since nothing else is
 // watching.
 func TestReconciler_TheClockResetsOnlyOnAHealthyHeartbeat(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Hour })
 	rec := darkRecord()
 	stamped := time.Now().UTC().Add(-30 * time.Minute)
@@ -250,6 +256,7 @@ func TestReconciler_TheClockResetsOnlyOnAHealthyHeartbeat(t *testing.T) {
 // allows failed → available, so an instance the AMI or EC2 brought back reports
 // itself recovered without an operator touching it.
 func TestReconciler_ClearsFailedOnARecoveredHeartbeat(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t)
 	rec := servingRecord()
 	rec.Status = StatusFailed
@@ -278,6 +285,7 @@ func TestReconciler_ClearsFailedOnARecoveredHeartbeat(t *testing.T) {
 // Nothing retries a failed instance in v1.0, so a still-dark one is left where
 // it is rather than having its reason and clock rewritten every pass.
 func TestReconciler_LeavesAStillDarkFailedInstanceAlone(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.state = "stopped"
 	rec := darkRecord()
@@ -298,6 +306,7 @@ func TestReconciler_LeavesAStillDarkFailedInstanceAlone(t *testing.T) {
 // floor. Judging a persisted beat by the raw stale window would report a steady
 // fleet as dark for most of every persist cycle.
 func TestReconciler_AllowsThePersistFloorOnAPersistedHeartbeat(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.state = "stopped"
 	rec := servingRecord()
@@ -318,6 +327,7 @@ func TestReconciler_AllowsThePersistFloorOnAPersistedHeartbeat(t *testing.T) {
 // itself earns no slack, and a leader that took the last beat before the VM went
 // dark must call it failed on the stale window rather than on window plus floor.
 func TestReconciler_UsesTheTightBoundOnABeatThisNodeHandled(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.state = instanceStateStopped
 	rec := servingRecord()
@@ -339,6 +349,7 @@ func TestReconciler_UsesTheTightBoundOnABeatThisNodeHandled(t *testing.T) {
 // gathered at all, so nothing is ever reported failed. Detection goes missing
 // rather than being declared on the heartbeat alone.
 func TestReconciler_NeverFailsAnInstanceWhenVMStateIsUnwired(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) {
 		d.InstanceState = nil
 		d.FailureGrace = time.Nanosecond
@@ -355,6 +366,7 @@ func TestReconciler_NeverFailsAnInstanceWhenVMStateIsUnwired(t *testing.T) {
 // A VM lookup that fails is not evidence the instance is down, so the pass
 // reports the error rather than starting a failure clock on a guess.
 func TestReconciler_SurfacesAVMLookupFailureWithoutFailingTheInstance(t *testing.T) {
+	t.Parallel()
 	h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 	h.state.err = errors.New("no node answered the describe")
 	seedInstance(t, h.svc, darkRecord())
@@ -371,6 +383,7 @@ func TestReconciler_SurfacesAVMLookupFailureWithoutFailingTheInstance(t *testing
 // A failed instance has to be able to explain itself to the customer, not just
 // to the log.
 func TestProjectDBInstance_ReportsTheFailureReason(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion)
 	rec := defaultRecord()
 	rec.Status = StatusFailed

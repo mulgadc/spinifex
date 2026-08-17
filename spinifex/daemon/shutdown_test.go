@@ -18,6 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// noReplyWait bounds a request that is expected to go unanswered. The handler
+// drops a misaddressed message synchronously, so over loopback this only has to
+// outlast a round trip, not the production reply budget.
+const noReplyWait = 100 * time.Millisecond
+
 // TestClusterShutdownStateKVRoundTrip verifies cluster shutdown state can be stored and retrieved from KV.
 func TestClusterShutdownStateKVRoundTrip(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -239,7 +244,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -269,7 +274,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		configurePidDir(t, daemon)
 
 		subject := "spinifex.cluster.shutdown.gate.malformed"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -295,7 +300,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate.partial"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -329,7 +334,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate.targeted-elsewhere"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -337,7 +342,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 		payload, err := json.Marshal(ShutdownRequest{Phase: "gate", Target: "some-other-node"})
 		require.NoError(t, err)
 
-		_, err = daemon.natsConn.Request(subject, payload, 2*time.Second)
+		_, err = daemon.natsConn.Request(subject, payload, noReplyWait)
 		require.Error(t, err, "a request for another node must not be answered")
 
 		assert.False(t, daemon.shuttingDown.Load(), "another node's drain must not gate this daemon")
@@ -351,7 +356,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 		configurePidDir(t, daemon)
 
 		subject := "spinifex.cluster.shutdown.gate.targeted-here"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -378,10 +383,10 @@ func TestShutdownRequestTarget(t *testing.T) {
 		configurePidDir(t, daemon)
 
 		for phase, handler := range map[string]nats.MsgHandler{
-			"drain":   daemon.handleShutdownDrain,
-			"storage": daemon.handleShutdownStorage,
-			"persist": daemon.handleShutdownPersist,
-			"infra":   daemon.handleShutdownInfra,
+			"drain":   asMsgHandler(daemon.handleShutdownDrain),
+			"storage": asMsgHandler(daemon.handleShutdownStorage),
+			"persist": asMsgHandler(daemon.handleShutdownPersist),
+			"infra":   asMsgHandler(daemon.handleShutdownInfra),
 		} {
 			t.Run(phase, func(t *testing.T) {
 				subject := "spinifex.cluster.shutdown." + phase + ".elsewhere"
@@ -393,7 +398,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 				payload, err := json.Marshal(ShutdownRequest{Phase: phase, Target: "some-other-node"})
 				require.NoError(t, err)
 
-				_, err = daemon.natsConn.Request(subject, payload, 2*time.Second)
+				_, err = daemon.natsConn.Request(subject, payload, noReplyWait)
 				require.Error(t, err, "%s answered a request addressed to another node", phase)
 			})
 		}
@@ -405,7 +410,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 		configurePidDir(t, daemon)
 
 		subject := "spinifex.cluster.shutdown.gate.untargeted"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -542,7 +547,7 @@ func TestHandleShutdownDrain(t *testing.T) {
 		daemon.vmMgr.Insert(&vm.VM{ID: "i-drain-001"})
 
 		subject := "spinifex.cluster.shutdown.drain.happy"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -573,7 +578,7 @@ func TestHandleShutdownDrain(t *testing.T) {
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
 		subject := "spinifex.cluster.shutdown.drain.empty"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -600,7 +605,7 @@ func TestHandleShutdownDrain(t *testing.T) {
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
 		subject := "spinifex.cluster.shutdown.drain.malformed"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())
@@ -633,7 +638,7 @@ func TestHandleShutdownDrain(t *testing.T) {
 		defer progressSub.Unsubscribe()
 
 		subject := "spinifex.cluster.shutdown.drain.multi"
-		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
 		require.NoError(t, err)
 		defer sub.Unsubscribe()
 		require.NoError(t, daemon.natsConn.Flush())

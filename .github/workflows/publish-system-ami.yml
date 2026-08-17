@@ -17,10 +17,11 @@ name: Publish System AMIs
 #   spx admin images import --name spinifex-rds-postgres
 #   spx admin images import --name spinifex-rds-mariadb
 #
-# Manual-only: publishing overwrites the mirror artifact, so it is a deliberate
-# action, not something every push should trigger. The `variant` input scopes
-# which images build — the Ubuntu GPU legs are 16G and much slower (NVIDIA
-# driver download + DKMS build), so publishing only the CPU AMIs stays cheap.
+# Publishing overwrites the mirror artifact, so it is a deliberate action, not
+# something every push should trigger: it runs manually, or from release.yml
+# once a tag has passed its gates. The `variant` input scopes which images
+# build — the Ubuntu GPU legs are 16G and much slower (NVIDIA driver download +
+# DKMS build), so publishing only the CPU AMIs stays cheap.
 
 on:
   workflow_dispatch:
@@ -34,6 +35,16 @@ on:
           - cpu
           - gpu
           - rds
+      dry_run:
+        description: "Build + convert only; skip the R2 upload"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      variant:
+        description: "Which images to build (all|cpu|gpu|rds)"
+        type: string
+        default: all
       dry_run:
         description: "Build + convert only; skip the R2 upload"
         type: boolean

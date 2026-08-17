@@ -309,6 +309,42 @@ func teardownGroups(t *testing.T, f *Fixture, subnetGroup, paramGroup string) {
 	}
 }
 
+// An empty parameter group of the PostgreSQL family and its teardown. Empty
+// because what each test then stores into it is the assertion. Registered before
+// whatever instance attaches it, so LIFO deletes the instance first: a group
+// delete issued while an instance still holds it is refused.
+func createParameterGroup(t *testing.T, f *Fixture, name string) {
+	t.Helper()
+	_, err := f.AWS.RDS.CreateDBParameterGroup(&rds.CreateDBParameterGroupInput{
+		DBParameterGroupName:   aws.String(name),
+		DBParameterGroupFamily: aws.String(dbParameterGroupFamily),
+		Description:            aws.String("rds e2e parameter group"),
+	})
+	require.NoError(t, err, "create-db-parameter-group %s", name)
+	t.Cleanup(func() {
+		if _, err := f.AWS.RDS.DeleteDBParameterGroup(&rds.DeleteDBParameterGroupInput{
+			DBParameterGroupName: aws.String(name),
+		}); err != nil && !harness.ErrorCodeIs(err, "DBParameterGroupNotFound") {
+			t.Logf("cleanup: delete-db-parameter-group %s: %v", name, err)
+		}
+	})
+}
+
+// One parameter into a group, whichever engine's family it belongs to: the call
+// is engine-neutral and only the names are not.
+func setGroupParameter(t *testing.T, f *Fixture, group, name, value, applyMethod string) {
+	t.Helper()
+	_, err := f.AWS.RDS.ModifyDBParameterGroup(&rds.ModifyDBParameterGroupInput{
+		DBParameterGroupName: aws.String(group),
+		Parameters: []*rds.Parameter{{
+			ParameterName:  aws.String(name),
+			ParameterValue: aws.String(value),
+			ApplyMethod:    aws.String(applyMethod),
+		}},
+	})
+	require.NoError(t, err, "modify-db-parameter-group %s: %s=%s", group, name, value)
+}
+
 // The catalog is larger than one page, so a describe that stopped at the first
 // response would miss whatever sorts late.
 func describeAllParameters(t *testing.T, f *Fixture, group string) map[string]*rds.Parameter {

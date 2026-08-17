@@ -49,10 +49,16 @@ func (g *paramGuard) Run(ctx context.Context) {
 		return
 	}
 
+	// A restore that replaced the file and then failed has still moved the
+	// instance onto the last accepted set, so the restart and the report below
+	// are what it needs; returning here would leave it down and unaccounted for.
 	restored, err := g.engine.RestoreLastKnownGoodParameters(ctx)
 	if err != nil {
-		slog.Error("rds-agent: could not restore the last known good parameters", "err", err)
-		return
+		slog.Error("rds-agent: restoring the last known good parameters failed",
+			"err", err, "parametersReplaced", restored)
+		if !restored {
+			return
+		}
 	}
 	if !restored {
 		slog.Warn("rds-agent: engine is down but no different last accepted parameter set is available; not rolling back")

@@ -105,11 +105,11 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	require.NoError(t, err)
 	// Tight Ready-gating knobs so nodegroup launches resolve in tests without the
 	// production 10m timeout; tests drive meta.NodeCount to simulate the reconciler.
-	svc.nodegroupReadyTimeout = 1 * time.Second
+	svc.nodegroupReadyTimeout = 50 * time.Millisecond
 	svc.nodegroupReadyPoll = 2 * time.Millisecond
 	// Tight worker-launch-retry knobs so a launch-failure retry test resolves
 	// quickly instead of against the production 5m/10s budget.
-	svc.workerLaunchRetryTimeout = 100 * time.Millisecond
+	svc.workerLaunchRetryTimeout = 30 * time.Millisecond
 	svc.workerLaunchRetryBackoff = 20 * time.Millisecond
 	// Tight boot-scan re-scan backoff so the eventually-consistent JetStream
 	// enumeration settles fast in tests instead of the production 100ms.
@@ -163,7 +163,7 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 // SG failure as the sole cause.
 func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
-	sgDeleteWaitBudget, sgDeleteWaitInterval = 50*time.Millisecond, time.Millisecond
+	sgDeleteWaitBudget, sgDeleteWaitInterval = 10*time.Millisecond, time.Millisecond
 	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
 
 	f := newDeleteClusterFixture(t, "alpha")

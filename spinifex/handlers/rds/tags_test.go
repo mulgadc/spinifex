@@ -38,6 +38,7 @@ func listTags(t *testing.T, h *createHarness, id string) map[string]string {
 }
 
 func TestCreateDBInstance_TagsRoundTripThroughBothReadPaths(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	input := validCreateInput()
 	input.Tags = awsTags("env", "prod", "team", "platform")
@@ -61,6 +62,7 @@ func TestCreateDBInstance_TagsRoundTripThroughBothReadPaths(t *testing.T) {
 // The same rules apply at create as at AddTagsToResource, and they run before
 // the identifier is reserved so a rejected create leaves nothing behind.
 func TestCreateDBInstance_InvalidTagsLeaveNoRecord(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	input := validCreateInput()
 	input.Tags = awsTags("aws:cloudformation:stack-name", "mine")
@@ -73,6 +75,7 @@ func TestCreateDBInstance_InvalidTagsLeaveNoRecord(t *testing.T) {
 }
 
 func TestListTagsForResource_UntaggedInstanceIsAnEmptyList(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -82,6 +85,7 @@ func TestListTagsForResource_UntaggedInstanceIsAnEmptyList(t *testing.T) {
 // AddTagsToResource is a merge, and a repeated key overwrites rather than
 // duplicates, so a re-run of the same apply converges.
 func TestAddTagsToResource_MergesAndOverwrites(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
@@ -102,6 +106,7 @@ func TestAddTagsToResource_MergesAndOverwrites(t *testing.T) {
 // A key repeated inside one request keeps its last value rather than failing,
 // which is what AWS does.
 func TestAddTagsToResource_DuplicateKeyInOneRequestKeepsTheLastValue(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -115,6 +120,7 @@ func TestAddTagsToResource_DuplicateKeyInOneRequestKeepsTheLastValue(t *testing.
 }
 
 func TestRemoveTagsFromResource_RemovesNamedKeysAndIgnoresAbsentOnes(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
@@ -171,6 +177,7 @@ func TestTagActions_RejectInvalidTags(t *testing.T) {
 // The limit is a per-resource one, so two individually legal requests that
 // together exceed it are rejected on the second.
 func TestAddTagsToResource_LimitAppliesToTheMergedResult(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
@@ -200,6 +207,7 @@ func TestAddTagsToResource_LimitAppliesToTheMergedResult(t *testing.T) {
 // A well-formed ARN naming nothing is the resource's own fault, not an ARN
 // error: the two failures carry different messages on purpose.
 func TestTagActions_MissingResourceIsTheResourcesOwnFault(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	arn := aws.String(DBInstanceARN(testRegion, testAccountID, "no-such-db"))
 
@@ -223,6 +231,7 @@ func TestTagActions_MissingResourceIsTheResourcesOwnFault(t *testing.T) {
 // Answering with an empty list would be indistinguishable from an untagged
 // snapshot and would let an apply appear to tag something that does not exist.
 func TestTagActions_MissingSnapshotIsRejected(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
@@ -233,6 +242,7 @@ func TestTagActions_MissingSnapshotIsRejected(t *testing.T) {
 }
 
 func TestListTagsForResource_AcceptsAnAutomatedSnapshotARN(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	id := AutomatedSnapshotIdentifier(testDBInstanceID, time.Date(2026, 7, 24, 3, 4, 0, 0, time.UTC))
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
@@ -251,6 +261,7 @@ func TestListTagsForResource_AcceptsAnAutomatedSnapshotARN(t *testing.T) {
 }
 
 func TestTagActions_ForeignAccountARNIsRejected(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
@@ -264,6 +275,7 @@ func TestTagActions_ForeignAccountARNIsRejected(t *testing.T) {
 // Every tag write is a read-modify-write of the same record, so without CAS the
 // last writer would silently discard the others' keys.
 func TestTagWrites_ConcurrentAddsAndRemovesDoNotLoseEachOther(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))

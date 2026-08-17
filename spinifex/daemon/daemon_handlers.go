@@ -83,8 +83,8 @@ func respondWithJSON(msg *nats.Msg, data any) {
 // marshal → respond pattern. Per message the handler opens a consumer span joining the
 // producer's trace, extracts the account ID from the NATS message header, and passes
 // both to the service function.
-func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string) (*O, error)) nats.MsgHandler {
-	return func(msg *nats.Msg) {
+func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string) (*O, error)) natsHandler {
+	return func(msg *nats.Msg) string {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 
@@ -98,7 +98,7 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 			if err := msg.Respond(errResp); err != nil {
 				slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 			}
-			return
+			return outcomeError
 		}
 		output, err := serviceFn(ctx, input, accountID)
 		if err != nil {
@@ -108,9 +108,10 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 			slog.ErrorContext(ctx, "handleNATSRequest: service call failed", "subject", msg.Subject, "err", err)
 			utils.MarkSpanError(span, err)
 			respondWithServiceError(msg, err)
-			return
+			return outcomeError
 		}
 		respondWithJSON(msg, output)
+		return outcomeSuccess
 	}
 }
 
@@ -118,8 +119,8 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 // also need the caller's IAM principal ARN (X-Principal-ARN header) — e.g. EKS
 // CreateCluster, which mints the bootstrap-creator-admin AccessEntry for the
 // caller.
-func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context, *I, string, string) (*O, error)) nats.MsgHandler {
-	return func(msg *nats.Msg) {
+func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context, *I, string, string) (*O, error)) natsHandler {
+	return func(msg *nats.Msg) string {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 
@@ -131,15 +132,16 @@ func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context
 			if err := msg.Respond(errResp); err != nil {
 				slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 			}
-			return
+			return outcomeError
 		}
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			utils.MarkSpanError(span, err)
 			respondWithServiceError(msg, err)
-			return
+			return outcomeError
 		}
 		respondWithJSON(msg, output)
+		return outcomeSuccess
 	}
 }
 
@@ -242,7 +244,7 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 // --- Admin / node management handlers ---
 
 // handleHealthCheck processes NATS health check requests.
-func (d *Daemon) handleHealthCheck(msg *nats.Msg) {
+func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 	configHash, err := d.computeConfigHash()
 	if err != nil {
 		slog.Error("Failed to compute config hash for health check", "error", err)
@@ -264,17 +266,19 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) {
 
 	respondWithJSON(msg, response)
 	slog.Debug("Health check responded", "node", d.node, "epoch", d.clusterConfig.Epoch)
+	return outcomeSuccess
 }
 
 // handleNodeDiscover responds to node discovery requests with this node's ID
 // Used by the gateway to dynamically discover active spinifex nodes in the cluster.
-func (d *Daemon) handleNodeDiscover(msg *nats.Msg) {
+func (d *Daemon) handleNodeDiscover(msg *nats.Msg) string {
 	response := types.NodeDiscoverResponse{
 		Node: d.node,
 	}
 
 	respondWithJSON(msg, response)
 	slog.Debug("Node discovery responded", "node", d.node)
+	return outcomeSuccess
 }
 
 // daemonIP extracts the IP portion from the daemon host (host:port format).
@@ -293,7 +297,7 @@ func (d *Daemon) daemonIP() string {
 
 // handleNodeStatus responds with this node's status and resource stats.
 // Used by the CLI: spx get nodes, spx top nodes.
-func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
+func (d *Daemon) handleNodeStatus(msg *nats.Msg) string {
 	totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps := d.resourceMgr.GetResourceStats()
 
 	vmCount := 0
@@ -355,6 +359,7 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 	wg.Wait()
 
 	respondWithJSON(msg, resp)
+	return outcomeSuccess
 }
 
 const (
@@ -509,7 +514,7 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 
 // handleNodeVMs responds with the list of VMs running on this node.
 // Used by the CLI: spx get vms.
-func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
+func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 	poolByMdev, poolByPCI := buildPoolLookup(d.gpuManager)
 
 	vms := make([]types.VMInfo, 0, d.vmMgr.Count())
@@ -542,6 +547,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
 	}
 
 	respondWithJSON(msg, resp)
+	return outcomeSuccess
 }
 
 // vmHealthLabel derives the display health for spx get vms. Only running VMs

@@ -25,6 +25,7 @@ func subnetGroupInput(name string, subnetIDs ...string) *rds.CreateDBSubnetGroup
 // Terraform module against a platform that exposes one zone, and rejecting it
 // buys no safety.
 func TestCreateDBSubnetGroup_AcceptsASingleSubnet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	out, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
@@ -47,6 +48,7 @@ func TestCreateDBSubnetGroup_AcceptsASingleSubnet(t *testing.T) {
 // Stored verbatim: the group keeps every subnet the customer supplied, so the
 // placement logic can change later without a record migration.
 func TestCreateDBSubnetGroup_StoresEverySubnetSupplied(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
@@ -65,6 +67,7 @@ func TestCreateDBSubnetGroup_StoresEverySubnetSupplied(t *testing.T) {
 }
 
 func TestCreateDBSubnetGroup_RejectsAMissingSubnet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
@@ -78,6 +81,7 @@ func TestCreateDBSubnetGroup_RejectsAMissingSubnet(t *testing.T) {
 // The check that actually matters: a group spanning two VPCs cannot host an
 // instance at all, because the endpoint ENI lives in exactly one of them.
 func TestCreateDBSubnetGroup_RejectsACrossVPCSet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	h.network.subnets = append(h.network.subnets, &ec2.Subnet{
 		SubnetId:         aws.String("subnet-other"),
@@ -96,6 +100,7 @@ func TestCreateDBSubnetGroup_RejectsACrossVPCSet(t *testing.T) {
 // The describe is issued as the caller, so another account's subnet does not
 // come back at all — it is reported as invalid rather than leaked or accepted.
 func TestCreateDBSubnetGroup_RejectsACrossAccountSubnet(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(),
@@ -143,6 +148,7 @@ func TestCreateDBSubnetGroup_RejectsMalformedRequests(t *testing.T) {
 // The name is the reservation, so a repeat is a conflict rather than a silent
 // overwrite of the first group's subnets.
 func TestCreateDBSubnetGroup_RejectsADuplicateName(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
@@ -154,6 +160,7 @@ func TestCreateDBSubnetGroup_RejectsADuplicateName(t *testing.T) {
 }
 
 func TestDescribeDBSubnetGroups_ListsAndNames(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput("zeta", "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
@@ -176,6 +183,7 @@ func TestDescribeDBSubnetGroups_ListsAndNames(t *testing.T) {
 // A client polling a create would read an empty list as "gone" rather than
 // "not there", so a named group that does not exist is an error.
 func TestDescribeDBSubnetGroups_RejectsAnUnknownName(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.DescribeDBSubnetGroups(t.Context(),
@@ -186,6 +194,7 @@ func TestDescribeDBSubnetGroups_RejectsAnUnknownName(t *testing.T) {
 }
 
 func TestDeleteDBSubnetGroup_RemovesAnUnusedGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
@@ -233,6 +242,7 @@ func TestDeleteDBSubnetGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T) {
 // The group is what decides where the endpoint lands, so a create naming one has
 // to place the ENI in its subnet rather than in the account's default VPC.
 func TestCreateDBInstance_PlacesTheEndpointFromTheNamedSubnetGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), testAccountID)
 	require.NoError(t, err)
@@ -253,6 +263,7 @@ func TestCreateDBInstance_PlacesTheEndpointFromTheNamedSubnetGroup(t *testing.T)
 // was placed from is only useful to a client if it survives the projection, and
 // the Terraform provider reads db_subnet_group_name from exactly here.
 func TestDescribeDBInstances_ReportsTheSubnetGroupTheInstanceWasPlacedFrom(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), testAccountID)
 	require.NoError(t, err)
@@ -281,6 +292,7 @@ func TestDescribeDBInstances_ReportsTheSubnetGroupTheInstanceWasPlacedFrom(t *te
 // Placing the endpoint somewhere else would put it in a subnet nobody chose, so
 // a group that does not exist fails the create rather than falling back.
 func TestCreateDBInstance_RejectsAnUnknownSubnetGroup(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	input := validCreateInput()

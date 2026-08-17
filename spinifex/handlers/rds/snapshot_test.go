@@ -130,6 +130,7 @@ func snapshotInput() *rds.CreateDBSnapshotInput {
 }
 
 func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 
@@ -194,6 +195,7 @@ func TestCreateDBSnapshot_ReturnsTheInstanceToWhereItWasFound(t *testing.T) {
 // A stopped instance's datadir was sealed by the graceful stop, which is the
 // checkpoint a quiesce would be forcing — so there is no engine to hold.
 func TestCreateDBSnapshot_DoesNotQuiesceAStoppedInstance(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusStopped
@@ -210,6 +212,7 @@ func TestCreateDBSnapshot_DoesNotQuiesceAStoppedInstance(t *testing.T) {
 // A snapshot that could not be quiesced is still a restorable backup, so it
 // is taken and reported honestly rather than refused.
 func TestCreateDBSnapshot_FallsBackToCrashConsistentWhenTheQuiesceFails(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, true)
 	h.seedSnapshotSource(t)
 
@@ -232,6 +235,7 @@ func TestCreateDBSnapshot_FallsBackToCrashConsistentWhenTheQuiesceFails(t *testi
 // customer a write-ahead log will bring back an Aria or MyISAM table would be a
 // false assurance about exactly the data most at risk.
 func TestCrashConsistentSnapshotMessage_IsEngineAware(t *testing.T) {
+	t.Parallel()
 	postgres := crashConsistentSnapshotMessage(t.Context(), "postgres")
 	assert.Contains(t, postgres, "crash consistent")
 	assert.Contains(t, postgres, "write-ahead log")
@@ -251,6 +255,7 @@ func TestCrashConsistentSnapshotMessage_IsEngineAware(t *testing.T) {
 // The record only ever described a snapshot that now does not exist, so it goes
 // with it rather than holding the identifier for a reconciler to puzzle over.
 func TestCreateDBSnapshot_WithdrawsTheRecordWhenTheSnapshotFails(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	h.snaps.createErr = awserrors.Errorf(awserrors.ErrorInternalError, "the volume store refused the snapshot")
@@ -264,6 +269,7 @@ func TestCreateDBSnapshot_WithdrawsTheRecordWhenTheSnapshotFails(t *testing.T) {
 }
 
 func TestCreateDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -279,6 +285,7 @@ func TestCreateDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
 // One snapshot per instance at a time: the CAS into backing-up is the guard, so
 // an instance already there is refused rather than entering the same window.
 func TestCreateDBSnapshot_RefusesAnInstanceAlreadyBackingUp(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := availableRecord()
 	rec.Status = StatusBackingUp
@@ -296,6 +303,7 @@ func TestCreateDBSnapshot_RefusesAnInstanceAlreadyBackingUp(t *testing.T) {
 }
 
 func TestCreateDBSnapshot_RejectsAnUnusableIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 
@@ -311,6 +319,7 @@ func TestCreateDBSnapshot_RejectsAnUnusableIdentifier(t *testing.T) {
 }
 
 func TestDescribeDBSnapshots_FiltersByInstanceAndType(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -348,6 +357,7 @@ func TestDescribeDBSnapshots_FiltersByInstanceAndType(t *testing.T) {
 
 // A client polling a create would otherwise read "gone" for "not ready".
 func TestDescribeDBSnapshots_NamedSnapshotThatDoesNotExistIsAnError(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 
 	_, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
@@ -377,6 +387,7 @@ func TestDescribeDBSnapshots_RejectsUnhonouredScoping(t *testing.T) {
 }
 
 func TestDeleteDBSnapshot_RemovesTheSnapshotAndItsRecord(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -402,6 +413,7 @@ func TestDeleteDBSnapshot_RemovesTheSnapshotAndItsRecord(t *testing.T) {
 // A COW snapshot references its source volume's chunks, so a deleted instance's
 // volume is retained until the last snapshot holding it goes.
 func TestDeleteDBSnapshot_ReleasesARetainedVolumeWhenItWasTheLastHolder(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -433,6 +445,7 @@ func TestDeleteDBSnapshot_ReleasesARetainedVolumeWhenItWasTheLastHolder(t *testi
 // record was written with: another snapshot taken since would otherwise read as
 // "nothing holds it".
 func TestDeleteDBSnapshot_KeepsARetainedVolumeAnotherSnapshotStillHolds(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -467,6 +480,7 @@ func TestDeleteDBSnapshot_KeepsARetainedVolumeAnotherSnapshotStillHolds(t *testi
 // The raw EC2 code says nothing a customer can act on, so the fault names the
 // restored instance they have to remove first.
 func TestDeleteDBSnapshot_NamesTheRestoredInstanceStillReadingFromIt(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
@@ -492,6 +506,7 @@ func TestDeleteDBSnapshot_NamesTheRestoredInstanceStillReadingFromIt(t *testing.
 // A snapshot still being taken has no data to remove and an in-flight writer
 // that would recreate the record.
 func TestDeleteDBSnapshot_RefusesASnapshotStillBeingTaken(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -513,6 +528,7 @@ func TestDeleteDBSnapshot_RefusesASnapshotStillBeingTaken(t *testing.T) {
 // A snapshot still being taken has no PercentProgress, because reporting full
 // progress would have a client restore from something that does not exist.
 func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := DBSnapshotRecord{
 		DBSnapshotIdentifier: testSnapshotID,
@@ -528,6 +544,7 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 // The EC2 snapshot is tagged with the DB snapshot identifier before the record
 // is flipped, so its presence is what says the data exists.
 func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := NewReconciler(h.svc, "node-a")
 
@@ -560,6 +577,7 @@ func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 // A record left in creating would hold its name forever while naming nothing a
 // customer can restore.
 func TestReconciler_DoesNotAdoptAnotherAccountsSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	reconciler := NewReconciler(h.svc, "node-a")
 
@@ -593,6 +611,7 @@ func TestReconciler_DoesNotAdoptAnotherAccountsSnapshot(t *testing.T) {
 }
 
 func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.snaps.describeErr = errors.New("snapshot metadata temporarily unavailable")
 	reconciler := NewReconciler(h.svc, "node-a")
@@ -617,6 +636,7 @@ func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T)
 }
 
 func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	reconciler := NewReconciler(h.svc, "node-a")
 
@@ -649,6 +669,7 @@ func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
 }
 
 func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	reconciler := NewReconciler(h.svc, "node-a")
 
@@ -683,6 +704,7 @@ func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
 // A completed authoritative lookup is the only evidence that no EC2 snapshot
 // was cut. Once it succeeds with no match, the stale name can be released.
 func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := NewReconciler(h.svc, "node-a")
 
@@ -707,6 +729,7 @@ func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
 // Inside the window the record still belongs to a live worker, so touching it
 // would race the write that is about to land.
 func TestReconciler_LeavesAFreshCreatingSnapshotAlone(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	rec := NewReconciler(h.svc, "node-a")
 
@@ -758,6 +781,7 @@ func TestReconciler_ReturnsAnInstanceStuckInBackingUp(t *testing.T) {
 // Inside the bound the snapshot is still running, and cutting it short would
 // leave the engine quiesced with nobody to release it.
 func TestReconciler_LeavesAnInFlightSnapshotAlone(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	reconciler := NewReconciler(h.svc, "node-a")
 
@@ -782,6 +806,7 @@ func TestReconciler_LeavesAnInFlightSnapshotAlone(t *testing.T) {
 // The Terraform provider reads tags from the describe as well as from
 // ListTagsForResource, so the two have to agree.
 func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
 
@@ -811,6 +836,7 @@ func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
 // The record has to survive a round trip through KV, because that is the only
 // copy a restore reads once the instance it came from is gone.
 func TestDBSnapshotRecord_SurvivesARoundTrip(t *testing.T) {
+	t.Parallel()
 	updated := time.Now().UTC().Truncate(time.Second)
 	rec := DBSnapshotRecord{
 		DBSnapshotIdentifier:    testSnapshotID,

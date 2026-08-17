@@ -158,7 +158,7 @@ func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.launchtags", "spinifex-workers", daemon.handleEC2RunInstances)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.launchtags", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 

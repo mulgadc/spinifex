@@ -67,11 +67,34 @@ jobs:
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
+      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
+      # the last go.sum change and never refreshed it. Both caches are managed
+      # below instead.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
+          cache: false
+
+      # Module contents follow the five go.sum files, so a content key is exact.
+      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
+      # dependencies out of the key and re-downloading on every run.
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
+          restore-keys: gomod-
+
+      # Build artifacts follow source, so the key rolls per run and falls back to
+      # this job's newest entry. Keyed per job because -race, -covermode=atomic
+      # and plain builds produce disjoint entries and would evict each other.
+      - name: Cache Go build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          restore-keys: gobuild-${{ github.job }}-
 
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
@@ -100,10 +123,10 @@ jobs:
         env:
           SPINIFEX_REQUIRE_CONFORMANCE_TOOLS: "1"
           VIPERBLOCK_NBDKIT_PLUGIN: ${{ github.workspace }}/viperblock/lib/nbdkit-viperblock-plugin.so
-        run: make -C spinifex test-cover
+        run: make -C spinifex test-cover GOTESTFLAGS=-count=1
 
       - name: Run Action Tests
-        run: make -C spinifex test-actions
+        run: make -C spinifex test-actions GOTESTFLAGS=-count=1
 
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
@@ -159,11 +182,34 @@ jobs:
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
+      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
+      # the last go.sum change and never refreshed it. Both caches are managed
+      # below instead.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
+          cache: false
+
+      # Module contents follow the five go.sum files, so a content key is exact.
+      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
+      # dependencies out of the key and re-downloading on every run.
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
+          restore-keys: gomod-
+
+      # Build artifacts follow source, so the key rolls per run and falls back to
+      # this job's newest entry. Keyed per job because -race, -covermode=atomic
+      # and plain builds produce disjoint entries and would evict each other.
+      - name: Cache Go build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          restore-keys: gobuild-${{ github.job }}-
 
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
@@ -216,17 +262,40 @@ jobs:
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
+      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
+      # the last go.sum change and never refreshed it. Both caches are managed
+      # below instead.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
+          cache: false
+
+      # Module contents follow the five go.sum files, so a content key is exact.
+      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
+      # dependencies out of the key and re-downloading on every run.
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
+          restore-keys: gomod-
+
+      # Build artifacts follow source, so the key rolls per run and falls back to
+      # this job's newest entry. Keyed per job because -race, -covermode=atomic
+      # and plain builds produce disjoint entries and would evict each other.
+      - name: Cache Go build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          restore-keys: gobuild-${{ github.job }}-
 
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Run Tests with Race Detector
-        run: make -C spinifex test-race
+        run: make -C spinifex test-race GOTESTFLAGS=-count=1
 
   lint_and_security:
     name: Lint and Security
@@ -273,11 +342,34 @@ jobs:
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
+      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
+      # the last go.sum change and never refreshed it. Both caches are managed
+      # below instead.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
+          cache: false
+
+      # Module contents follow the five go.sum files, so a content key is exact.
+      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
+      # dependencies out of the key and re-downloading on every run.
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
+          restore-keys: gomod-
+
+      # Build artifacts follow source, so the key rolls per run and falls back to
+      # this job's newest entry. Keyed per job because -race, -covermode=atomic
+      # and plain builds produce disjoint entries and would evict each other.
+      - name: Cache Go build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          restore-keys: gobuild-${{ github.job }}-
 
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle

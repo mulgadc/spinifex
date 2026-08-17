@@ -65,7 +65,7 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 
 	cfg := &Config{
 		NatsHost:       natsURL,
-		S3Host:         "https://s3.mock.local",
+		S3Host:         "http://127.0.0.1:1",
 		Bucket:         "test-bucket",
 		Region:         "us-east-1",
 		AccessKey:      "test-access-key",

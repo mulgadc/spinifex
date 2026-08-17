@@ -231,6 +231,17 @@ jobs:
             echo "Release ${TAG} promoted to latest"
           fi
 
+  # Refresh the system AMIs on the R2 mirror only once the release is out of
+  # draft. Shares the ci-single runner with `iso`, so it queues behind it.
+  system-images:
+    needs: promote
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish-system-ami.yml
+    with:
+      variant: all
+    secrets: inherit
+
   # Annotate the (still-draft) release if either gate failed.
   mark-failed:
     needs: [ verify, baremetal ]

@@ -15,14 +15,14 @@ import (
 // handleEC2CreateCapacityReservation is the node-targeted Create handler: resolve
 // the per-instance carve-out from the local catalog, generate the id, and commit
 // under the fit re-check. A lost race returns InsufficientInstanceCapacity.
-func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
+func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(ec2.CreateCapacityReservationInput)
 	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
-		return
+		return outcomeError
 	}
 
 	// GPU capacity reservations are out of scope; an unknown type is equally
@@ -31,7 +31,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 	it := d.resourceMgr.instanceTypes[instanceType]
 	if it == nil || instancetypes.IsGPUType(it) {
 		respondWithError(msg, awserrors.ErrorInvalidInstanceType)
-		return
+		return outcomeError
 	}
 
 	matchCriteria := aws.StringValue(input.InstanceMatchCriteria)
@@ -59,7 +59,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 
 	if err := d.resourceMgr.CreateReservation(rec); err != nil {
 		respondWithServiceError(msg, err)
-		return
+		return outcomeError
 	}
 
 	// Subscribe the per-reservation launch subject before responding: the SUB and
@@ -72,16 +72,17 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) {
 			"crId", rec.ID, "err", err)
 		d.resourceMgr.CancelReservation(rec.ID, accountID)
 		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
+		return outcomeError
 	}
 
 	respondWithJSON(msg, rec.toAWSCapacityReservation())
+	return outcomeSuccess
 }
 
 // handleEC2DescribeCapacityReservations is the fan-out Describe handler. Each
 // node returns its own in-memory reservations for the account (possibly empty);
 // the gateway aggregates and applies id/filter scoping.
-func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) {
+func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 
 	out := &ec2.DescribeCapacityReservationsOutput{}
@@ -89,19 +90,20 @@ func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) {
 		out.CapacityReservations = append(out.CapacityReservations, rec.toAWSCapacityReservation())
 	}
 	respondWithJSON(msg, out)
+	return outcomeSuccess
 }
 
 // handleEC2CancelCapacityReservation is the broadcast Cancel handler. Only the
 // node owning the reservation releases it; every node acks with Return set so
 // the gateway can tell "cancelled" from "no node owns this id".
-func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) {
+func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(ec2.CancelCapacityReservationInput)
 	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
-		return
+		return outcomeError
 	}
 
 	_, found := d.resourceMgr.CancelReservation(aws.StringValue(input.CapacityReservationId), accountID)
@@ -111,6 +113,7 @@ func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) {
 		d.unsubscribeReservationLaunch(aws.StringValue(input.CapacityReservationId))
 	}
 	respondWithJSON(msg, &ec2.CancelCapacityReservationOutput{Return: aws.Bool(found)})
+	return outcomeSuccess
 }
 
 // reservationLaunchSubject is the per-reservation subject the owning daemon
@@ -135,7 +138,10 @@ func (d *Daemon) subscribeReservationLaunch(crID string) error {
 	if _, exists := d.natsSubscriptions[crID]; exists {
 		return nil
 	}
-	sub, err := d.natsConn.Subscribe(reservationLaunchSubject(crID), d.handleEC2RunInstances)
+	// Measured under the subject root, not the per-reservation subject: the cr
+	// id is unbounded and would be a new metric series per reservation.
+	sub, err := d.natsConn.Subscribe(reservationLaunchSubject(crID),
+		natsMetricsHandler("ec2.RunInstances.cr", d.handleEC2RunInstances))
 	if err != nil {
 		return err
 	}

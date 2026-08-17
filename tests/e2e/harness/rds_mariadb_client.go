@@ -34,6 +34,12 @@ type MariaDBConn struct {
 	// VerifyServerCert checks the serving certificate against the host being
 	// connected to, which is the other half of what verify-full means.
 	VerifyServerCert bool
+	// Plaintext refuses TLS outright, which is the connection an instance with
+	// require_secure_transport on has to turn away. --skip-ssl rather than
+	// --ssl=0: the negated long form is what the client documents, and an 11.x
+	// client's deprecation notice for it lands on stderr rather than changing
+	// what the connection does.
+	Plaintext bool
 }
 
 // MariaDBConnFor builds a connection from an available DB instance's own
@@ -104,6 +110,9 @@ func mariadbCommand(conn MariaDBConn, sql string) string {
 	}
 	if conn.VerifyServerCert {
 		args = append(args, "--ssl-verify-server-cert")
+	}
+	if conn.Plaintext {
+		args = append(args, "--skip-ssl")
 	}
 	args = append(args, "--execute", ShellQuote(sql))
 	return env + " " + strings.Join(args, " ")

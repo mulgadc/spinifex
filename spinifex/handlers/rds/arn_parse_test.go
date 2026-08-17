@@ -74,6 +74,7 @@ func TestParseARN_RejectsMalformedAndForeignARNs(t *testing.T) {
 // The registry is what makes an unregistered kind a rejection rather than an
 // empty tag list, so every kind the parser accepts has to be accounted for.
 func TestTaggableResources_CoverEveryResourceThatExists(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []ResourceKind{ResourceKindDBInstance, ResourceKindDBSnapshot,
 		ResourceKindDBSubnetGroup, ResourceKindDBParameterGroup} {
 		_, ok := taggableResources[kind]

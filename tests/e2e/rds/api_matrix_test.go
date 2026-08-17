@@ -44,12 +44,9 @@ var outOfScopeRDSActions = []string{
 	"RestoreDBInstanceToPointInTime",
 }
 
-// The two catalog describes a Terraform module may reach for are unimplemented,
-// so today they are unknown actions rather than empty results. Pinned here so a
-// provider that needs one produces a clear failure instead of a silent success.
+// An action the gateway has never heard of, as distinct from one it recognises
+// and does not offer. Kept so the two stay distinguishable to a client.
 var unregisteredRDSActions = []string{
-	"DescribeDBEngineVersions",
-	"DescribeOrderableDBInstanceOptions",
 	"NotAnRDSAction",
 }
 
@@ -216,6 +213,83 @@ func TestAPIMatrix(t *testing.T) {
 				assert.Equal(t, "InvalidAction", code, "body: %s", body)
 			})
 		}
+	})
+
+	// The catalogs are read from the same tables the create path validates
+	// against, so these assertions are the only place a version pin or a class
+	// map can be checked against what the deployment will actually accept.
+	t.Run("CatalogDescribesAnswerFromTheLiveTables", func(t *testing.T) {
+		t.Run("EveryEngineVersionIsAvailable", func(t *testing.T) {
+			out, err := f.AWS.RDS.DescribeDBEngineVersions(&rds.DescribeDBEngineVersionsInput{})
+			require.NoError(t, err)
+			require.NotEmpty(t, out.DBEngineVersions)
+			for _, row := range out.DBEngineVersions {
+				assert.NotEmpty(t, aws.StringValue(row.EngineVersion))
+				assert.NotEmpty(t, aws.StringValue(row.DBParameterGroupFamily))
+				assert.Equal(t, "available", aws.StringValue(row.Status))
+			}
+		})
+
+		t.Run("EngineNarrowsToOneRow", func(t *testing.T) {
+			out, err := f.AWS.RDS.DescribeDBEngineVersions(&rds.DescribeDBEngineVersionsInput{
+				Engine: aws.String(dbEngine),
+			})
+			require.NoError(t, err)
+			require.Len(t, out.DBEngineVersions, 1)
+			assert.Equal(t, dbEngine, aws.StringValue(out.DBEngineVersions[0].Engine))
+		})
+
+		// The suite boots instances of dbClass, so a cluster that runs this suite
+		// runs that class: a catalog that omits it is under-reporting capability.
+		t.Run("TheClassThisSuiteLaunchesIsOrderable", func(t *testing.T) {
+			out, err := f.AWS.RDS.DescribeOrderableDBInstanceOptions(&rds.DescribeOrderableDBInstanceOptionsInput{
+				Engine: aws.String(dbEngine),
+			})
+			require.NoError(t, err)
+			classes := make([]string, 0, len(out.OrderableDBInstanceOptions))
+			for _, option := range out.OrderableDBInstanceOptions {
+				assert.Equal(t, dbEngine, aws.StringValue(option.Engine))
+				assert.Equal(t, "gp3", aws.StringValue(option.StorageType))
+				assert.True(t, aws.BoolValue(option.Vpc))
+				classes = append(classes, aws.StringValue(option.DBInstanceClass))
+			}
+			assert.Contains(t, classes, dbClass)
+			assert.NotContains(t, classes, unmappedDBClass)
+		})
+
+		// Raw, because the SDK marks Engine required and rejects an absent one
+		// client-side as InvalidParameter: the gateway's answer is only observable
+		// on a request the SDK never gets to validate.
+		t.Run("OrderableOptionsRequireAnEngine", func(t *testing.T) {
+			status, body, code := harness.PostRDSAction(t, f.Env, f.AWS, "DescribeOrderableDBInstanceOptions", nil)
+			assert.Equal(t, 400, status, "body: %s", body)
+			assert.Equal(t, "MissingParameter", code, "body: %s", body)
+		})
+
+		// These two exist only to be filtered, so an unrecognised filter name is
+		// refused rather than dropped: a dropped one returns rows the caller
+		// asked not to see and cannot detect.
+		t.Run("AnUnrecognisedFilterNameIsRefused", func(t *testing.T) {
+			harness.ExpectError(t, "InvalidParameterValue", func() error {
+				_, err := f.AWS.RDS.DescribeOrderableDBInstanceOptions(
+					&rds.DescribeOrderableDBInstanceOptionsInput{
+						Engine:  aws.String(dbEngine),
+						Filters: []*rds.Filter{{Name: aws.String("status"), Values: aws.StringSlice([]string{"available"})}},
+					})
+				return err
+			})
+		})
+
+		// Neither action ever issues a Marker, so one in a request can only have
+		// been fabricated and answering it as page one would be a silent lie.
+		t.Run("AMarkerIsRefused", func(t *testing.T) {
+			harness.ExpectError(t, "InvalidParameterValue", func() error {
+				_, err := f.AWS.RDS.DescribeDBEngineVersions(&rds.DescribeDBEngineVersionsInput{
+					Marker: aws.String("fabricated"),
+				})
+				return err
+			})
+		})
 	})
 
 	t.Run("ARejectedCreateLeavesNoRecord", func(t *testing.T) {

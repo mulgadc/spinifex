@@ -168,7 +168,9 @@ export function DBSnapshotsListPage() {
         them.
       </p>
 
-      <CreateDBSnapshotDialog onOpenChange={setShowCreate} open={showCreate} />
+      {showCreate && (
+        <CreateDBSnapshotDialog onOpenChange={setShowCreate} open={true} />
+      )}
 
       {deleteTarget && (
         <DeleteDBSnapshotDialog

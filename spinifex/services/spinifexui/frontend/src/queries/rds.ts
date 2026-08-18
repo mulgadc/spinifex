@@ -23,6 +23,11 @@ const TRANSITIONAL_POLL_MS = 5000
 // the whole ring has to be asked for explicitly.
 const EVENT_WINDOW_MINUTES = 14 * 24 * 60
 
+// Unconditional, unlike the status polls: a backup fails on its own schedule
+// rather than in response to anything the console did, and the failure warning
+// is derived from this ring alone.
+const EVENT_POLL_MS = 30_000
+
 // The engine and class catalogs change at most once a release, and both are
 // read on every create form render.
 const CATALOG_STALE_TIME_MS = 60 * 60 * 1000
@@ -140,6 +145,7 @@ export const rdsEventsQueryOptions = (
       })
       return await getRdsClient().send(command)
     },
+    refetchInterval: EVENT_POLL_MS,
   })
 
 export const rdsSnapshotEventsQueryOptions = (sourceIdentifier: string) =>

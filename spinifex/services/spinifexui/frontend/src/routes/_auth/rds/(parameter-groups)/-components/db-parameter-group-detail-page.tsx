@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -6,18 +6,16 @@ import { useState } from "react"
 import { BackLink } from "@/components/back-link"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
-import { useUpdateRdsTags } from "@/mutations/rds"
 import {
   rdsParameterGroupQueryOptions,
   rdsParametersQueryOptions,
-  rdsTagsQueryOptions,
 } from "@/queries/rds"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
+import { RdsTagsTab } from "../../-components/rds-tags-tab"
 import { DeleteDBParameterGroupDialog } from "./delete-db-parameter-group-dialog"
 import { ParametersEditor } from "./parameters-editor"
 
@@ -39,13 +37,8 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
   const { data: parametersData } = useSuspenseQuery(
     rdsParametersQueryOptions(dbParameterGroupName),
   )
-  // Not suspense: the ARN is empty for a resource that has none, and an empty
-  // one is a request the tags API refuses.
-  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
 
-  const updateTags = useUpdateRdsTags()
   const [showDelete, setShowDelete] = useState(false)
-  const [activeTab, setActiveTab] = useState("parameters")
 
   if (!group?.DBParameterGroupName) {
     return (
@@ -59,7 +52,6 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
   }
 
   const parameters = parametersData.Parameters ?? []
-  const tags = tagsData?.TagList ?? []
   const overrideCount = parameters.filter((p) => p.Source === "user").length
 
   return (
@@ -99,7 +91,7 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
           </div>
         )}
 
-        <Tabs onValueChange={setActiveTab} value={activeTab}>
+        <Tabs defaultValue="parameters">
           <TabsList>
             <TabsTab value="parameters">Parameters</TabsTab>
             <TabsTab value="details">Details</TabsTab>
@@ -142,21 +134,7 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
 
           {!isDefault && (
             <TabsPanel value="tags">
-              <TagsEditor
-                error={updateTags.error}
-                isPending={updateTags.isPending}
-                isSuccess={updateTags.isSuccess}
-                onSubmit={(next) =>
-                  updateTags.mutate({
-                    resourceName: arn,
-                    tags: next,
-                    initialKeys: tags
-                      .map((t) => t.Key ?? "")
-                      .filter((k) => k.length > 0),
-                  })
-                }
-                tags={tags}
-              />
+              <RdsTagsTab arn={arn} />
             </TabsPanel>
           )}
         </Tabs>

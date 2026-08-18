@@ -56,9 +56,13 @@ import {
 
 import {
   type PickerNotice,
-  PickerNoticeText,
   pickerNotice,
 } from "../../-components/picker-notice"
+import {
+  DeletionProtectionField,
+  parameterGroupsForEngine,
+  RdsSelectField,
+} from "../../-components/rds-form-fields"
 import {
   SecurityGroupCheckboxes,
   securityGroupIdsForVpc,
@@ -191,14 +195,10 @@ export function CreateDBInstancePage() {
   const storageBounds = orderableOptions[0]
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
-  const parameterGroups = parameterGroupsData.DBParameterGroups ?? []
-  // Only the family the selected engine belongs to can be attached, so a group
-  // for the other engine is filtered out rather than offered and then refused.
-  const engineFamilies = new Set(
-    versionsForEngine.map((v) => v.DBParameterGroupFamily),
-  )
-  const parameterGroupsForEngine = parameterGroups.filter((g) =>
-    engineFamilies.has(g.DBParameterGroupFamily),
+  const groupsForEngine = parameterGroupsForEngine(
+    parameterGroupsData.DBParameterGroups ?? [],
+    engineVersions,
+    selectedEngine,
   )
 
   const subnetGroupVpc = subnetGroups.find(
@@ -393,38 +393,15 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.engineVersion]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-instance-class">DB instance class</label>
-          </FieldTitle>
-          {classNotice ? (
-            <PickerNoticeText notice={classNotice} />
-          ) : (
-            <Controller
-              control={control}
-              name="dbInstanceClass"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger
-                    aria-invalid={!!errors.dbInstanceClass}
-                    className="w-full"
-                    id="db-instance-class"
-                  >
-                    <SelectValue placeholder="Select an instance class" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {instanceClasses.map((instanceClass) => (
-                      <SelectItem key={instanceClass} value={instanceClass}>
-                        {instanceClass}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          )}
-          <FieldError errors={[errors.dbInstanceClass]} />
-        </Field>
+        <RdsSelectField
+          control={control}
+          id="db-instance-class"
+          label="DB instance class"
+          name="dbInstanceClass"
+          notice={classNotice}
+          options={instanceClasses.map((c) => ({ value: c, label: c }))}
+          placeholder="Select an instance class"
+        />
 
         <Field>
           <FieldTitle>
@@ -532,40 +509,19 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.port]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-subnet-group">DB subnet group</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="dbSubnetGroupName"
-            render={({ field }) => (
-              <Select
-                onValueChange={handleSubnetGroupChange}
-                value={field.value}
-              >
-                <SelectTrigger className="w-full" id="db-subnet-group">
-                  <SelectValue placeholder="Default VPC subnet" />
-                </SelectTrigger>
-                <SelectContent>
-                  {subnetGroups.map((group) => (
-                    <SelectItem
-                      key={group.DBSubnetGroupName}
-                      value={group.DBSubnetGroupName ?? ""}
-                    >
-                      {group.DBSubnetGroupName} ({group.VpcId})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldDescription>
-            Leave unset to place the endpoint in the account&apos;s default VPC
-            subnet. The subnet group cannot be changed after create.
-          </FieldDescription>
-          <FieldError errors={[errors.dbSubnetGroupName]} />
-        </Field>
+        <RdsSelectField
+          control={control}
+          description="Leave unset to place the endpoint in the account's default VPC subnet. The subnet group cannot be changed after create."
+          id="db-subnet-group"
+          label="DB subnet group"
+          name="dbSubnetGroupName"
+          onValueChange={handleSubnetGroupChange}
+          options={subnetGroups.map((g) => ({
+            value: g.DBSubnetGroupName ?? "",
+            label: `${g.DBSubnetGroupName} (${g.VpcId})`,
+          }))}
+          placeholder="Default VPC subnet"
+        />
 
         <Field>
           <FieldTitle>VPC security groups</FieldTitle>
@@ -582,33 +538,17 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.vpcSecurityGroupIds]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-parameter-group">DB parameter group</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="dbParameterGroupName"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value}>
-                <SelectTrigger className="w-full" id="db-parameter-group">
-                  <SelectValue placeholder="Engine default group" />
-                </SelectTrigger>
-                <SelectContent>
-                  {parameterGroupsForEngine.map((group) => (
-                    <SelectItem
-                      key={group.DBParameterGroupName}
-                      value={group.DBParameterGroupName ?? ""}
-                    >
-                      {group.DBParameterGroupName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.dbParameterGroupName]} />
-        </Field>
+        <RdsSelectField
+          control={control}
+          id="db-parameter-group"
+          label="DB parameter group"
+          name="dbParameterGroupName"
+          options={groupsForEngine.map((g) => ({
+            value: g.DBParameterGroupName ?? "",
+            label: g.DBParameterGroupName ?? "",
+          }))}
+          placeholder="Engine default group"
+        />
 
         <Field>
           <FieldTitle>
@@ -663,25 +603,7 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.preferredMaintenanceWindow]} />
         </Field>
 
-        <Field>
-          <FieldTitle>Deletion protection</FieldTitle>
-          <Controller
-            control={control}
-            name="deletionProtection"
-            render={({ field }) => (
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  aria-label="Enable deletion protection"
-                  checked={field.value}
-                  onChange={(e) => field.onChange(e.target.checked)}
-                  type="checkbox"
-                />
-                <span>Refuse DeleteDBInstance while this is on</span>
-              </label>
-            )}
-          />
-          <FieldError errors={[errors.deletionProtection]} />
-        </Field>
+        <DeletionProtectionField control={control} name="deletionProtection" />
 
         <TagsFieldArray control={control} name="tags" />
 

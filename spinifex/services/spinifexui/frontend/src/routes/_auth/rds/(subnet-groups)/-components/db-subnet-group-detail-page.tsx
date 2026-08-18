@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -6,14 +6,13 @@ import { useState } from "react"
 import { BackLink } from "@/components/back-link"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
-import { useUpdateRdsTags } from "@/mutations/rds"
-import { rdsSubnetGroupQueryOptions, rdsTagsQueryOptions } from "@/queries/rds"
+import { rdsSubnetGroupQueryOptions } from "@/queries/rds"
 
+import { RdsTagsTab } from "../../-components/rds-tags-tab"
 import { DeleteDBSubnetGroupDialog } from "./delete-db-subnet-group-dialog"
 
 interface Props {
@@ -28,12 +27,7 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
   const group = data.DBSubnetGroups?.[0]
   const arn = group?.DBSubnetGroupArn ?? ""
 
-  // Not suspense: the ARN is empty for a resource that has none, and an empty
-  // one is a request the tags API refuses.
-  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
-  const updateTags = useUpdateRdsTags()
   const [showDelete, setShowDelete] = useState(false)
-  const [activeTab, setActiveTab] = useState("subnets")
 
   if (!group?.DBSubnetGroupName) {
     return (
@@ -47,7 +41,6 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
   }
 
   const subnets = group.Subnets ?? []
-  const tags = tagsData?.TagList ?? []
 
   return (
     <>
@@ -75,7 +68,7 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
           <StateBadge state={group.SubnetGroupStatus} />
         </div>
 
-        <Tabs onValueChange={setActiveTab} value={activeTab}>
+        <Tabs defaultValue="subnets">
           <TabsList>
             <TabsTab value="subnets">Subnets</TabsTab>
             <TabsTab value="tags">Tags</TabsTab>
@@ -152,21 +145,7 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
           </TabsPanel>
 
           <TabsPanel value="tags">
-            <TagsEditor
-              error={updateTags.error}
-              isPending={updateTags.isPending}
-              isSuccess={updateTags.isSuccess}
-              onSubmit={(next) =>
-                updateTags.mutate({
-                  resourceName: arn,
-                  tags: next,
-                  initialKeys: tags
-                    .map((t) => t.Key ?? "")
-                    .filter((k) => k.length > 0),
-                })
-              }
-              tags={tags}
-            />
+            <RdsTagsTab arn={arn} />
           </TabsPanel>
         </Tabs>
       </div>

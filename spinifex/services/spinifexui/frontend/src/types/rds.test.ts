@@ -18,6 +18,7 @@ import {
   dbSnapshotIdentifierField,
   isDefaultParameterGroupName,
   isTransitionalStatus,
+  MAX_TAGS_PER_RESOURCE,
   masterPasswordField,
   modifyDBInstanceSchema,
   restoreDBInstanceSchema,
@@ -51,6 +52,32 @@ function createWith(
 ): ReturnType<typeof createDBInstanceSchema.safeParse> {
   return createDBInstanceSchema.safeParse({ ...VALID_CREATE, ...overrides })
 }
+
+describe("tags", () => {
+  it.each(["aws:cost-centre", "AWS:CostCentre", "Aws:owner"])(
+    "refuses the reserved prefix in %s, as validateTagKey does",
+    (key) => {
+      const result = createWith({ tags: [{ key, value: "x" }] })
+      expect(result.success).toBeFalsy()
+    },
+  )
+
+  it("accepts a key that merely contains aws: further in", () => {
+    const result = createWith({ tags: [{ key: "team-aws:owner", value: "x" }] })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("accepts the maximum number of tags and refuses one more", () => {
+    const atCap = Array.from({ length: MAX_TAGS_PER_RESOURCE }, (_, i) => ({
+      key: `k${i}`,
+      value: "v",
+    }))
+    expect(createWith({ tags: atCap }).success).toBeTruthy()
+    expect(
+      createWith({ tags: [...atCap, { key: "extra", value: "v" }] }).success,
+    ).toBeFalsy()
+  })
+})
 
 describe("dbInstanceIdentifierField", () => {
   it("accepts a lowercase DNS-label identifier", () => {

@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -29,13 +29,6 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
@@ -56,7 +49,12 @@ import {
   suggestedIdentifier,
 } from "@/types/rds"
 
-import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import { pickerNotice } from "../../-components/picker-notice"
+import {
+  DeletionProtectionField,
+  parameterGroupsForEngine,
+  RdsSelectField,
+} from "../../-components/rds-form-fields"
 import {
   SecurityGroupCheckboxes,
   defaultSecurityGroupIdForVpc,
@@ -279,13 +277,10 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   )
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
-  const engineFamilies = new Set(
-    (engineVersionsData.DBEngineVersions ?? [])
-      .filter((v) => v.Engine === engine)
-      .map((v) => v.DBParameterGroupFamily),
-  )
-  const parameterGroups = (parameterGroupsData.DBParameterGroups ?? []).filter(
-    (g) => engineFamilies.has(g.DBParameterGroupFamily),
+  const parameterGroups = parameterGroupsForEngine(
+    parameterGroupsData.DBParameterGroups ?? [],
+    engineVersionsData.DBEngineVersions ?? [],
+    engine,
   )
 
   const subnetGroupVpc = subnetGroups.find(
@@ -350,38 +345,15 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             <FieldError errors={[errors.dbInstanceIdentifier]} />
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-class">DB instance class</label>
-            </FieldTitle>
-            {classNotice ? (
-              <PickerNoticeText notice={classNotice} />
-            ) : (
-              <Controller
-                control={control}
-                name="dbInstanceClass"
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger
-                      aria-invalid={!!errors.dbInstanceClass}
-                      className="w-full"
-                      id="restore-class"
-                    >
-                      <SelectValue placeholder="Select an instance class" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {instanceClasses.map((instanceClass) => (
-                        <SelectItem key={instanceClass} value={instanceClass}>
-                          {instanceClass}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-            <FieldError errors={[errors.dbInstanceClass]} />
-          </Field>
+          <RdsSelectField
+            control={control}
+            id="restore-class"
+            label="DB instance class"
+            name="dbInstanceClass"
+            notice={classNotice}
+            options={instanceClasses.map((c) => ({ value: c, label: c }))}
+            placeholder="Select an instance class"
+          />
 
           <Field>
             <FieldTitle>
@@ -418,40 +390,19 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             <FieldError errors={[errors.port]} />
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-subnet-group">DB subnet group</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="dbSubnetGroupName"
-              render={({ field }) => (
-                <Select
-                  onValueChange={handleSubnetGroupChange}
-                  value={field.value}
-                >
-                  <SelectTrigger className="w-full" id="restore-subnet-group">
-                    <SelectValue placeholder="The snapshot's subnet group" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {subnetGroups.map((group) => (
-                      <SelectItem
-                        key={group.DBSubnetGroupName}
-                        value={group.DBSubnetGroupName ?? ""}
-                      >
-                        {group.DBSubnetGroupName} ({group.VpcId})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <FieldDescription>
-              Leave unset to place the restored endpoint in the group the
-              snapshot recorded.
-            </FieldDescription>
-            <FieldError errors={[errors.dbSubnetGroupName]} />
-          </Field>
+          <RdsSelectField
+            control={control}
+            description="Leave unset to place the restored endpoint in the group the snapshot recorded."
+            id="restore-subnet-group"
+            label="DB subnet group"
+            name="dbSubnetGroupName"
+            onValueChange={handleSubnetGroupChange}
+            options={subnetGroups.map((g) => ({
+              value: g.DBSubnetGroupName ?? "",
+              label: `${g.DBSubnetGroupName} (${g.VpcId})`,
+            }))}
+            placeholder="The snapshot's subnet group"
+          />
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
@@ -471,57 +422,22 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             <FieldError errors={[errors.vpcSecurityGroupIds]} />
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-parameter-group">
-                DB parameter group
-              </label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="dbParameterGroupName"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger
-                    className="w-full"
-                    id="restore-parameter-group"
-                  >
-                    <SelectValue placeholder="The snapshot's parameter group" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {parameterGroups.map((group) => (
-                      <SelectItem
-                        key={group.DBParameterGroupName}
-                        value={group.DBParameterGroupName ?? ""}
-                      >
-                        {group.DBParameterGroupName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <FieldError errors={[errors.dbParameterGroupName]} />
-          </Field>
+          <RdsSelectField
+            control={control}
+            id="restore-parameter-group"
+            label="DB parameter group"
+            name="dbParameterGroupName"
+            options={parameterGroups.map((g) => ({
+              value: g.DBParameterGroupName ?? "",
+              label: g.DBParameterGroupName ?? "",
+            }))}
+            placeholder="The snapshot's parameter group"
+          />
 
-          <Field>
-            <FieldTitle>Deletion protection</FieldTitle>
-            <Controller
-              control={control}
-              name="deletionProtection"
-              render={({ field }) => (
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    aria-label="Enable deletion protection"
-                    checked={field.value}
-                    onChange={(e) => field.onChange(e.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>Refuse DeleteDBInstance while this is on</span>
-                </label>
-              )}
-            />
-          </Field>
+          <DeletionProtectionField
+            control={control}
+            name="deletionProtection"
+          />
 
           <TagsFieldArray control={control} name="tags" />
 

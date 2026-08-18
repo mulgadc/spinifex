@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -6,17 +6,14 @@ import { useState } from "react"
 import { BackLink } from "@/components/back-link"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { formatDateTime } from "@/lib/utils"
-import { useUpdateRdsTags } from "@/mutations/rds"
 import {
   rdsDBSnapshotQueryOptions,
   rdsSnapshotEventsQueryOptions,
-  rdsTagsQueryOptions,
 } from "@/queries/rds"
 import {
   canDeleteSnapshot,
@@ -25,6 +22,7 @@ import {
 } from "@/types/rds"
 
 import { RdsEventsPanel } from "../../-components/rds-events-panel"
+import { RdsTagsTab } from "../../-components/rds-tags-tab"
 import { DeleteDBSnapshotDialog } from "./delete-db-snapshot-dialog"
 
 interface Props {
@@ -41,14 +39,11 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
 
   // Not suspense: the ARN is empty until the describe lands, and an empty one
   // is a request the tags API refuses.
-  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
   const { data: eventsData } = useSuspenseQuery(
     rdsSnapshotEventsQueryOptions(dbSnapshotIdentifier),
   )
 
-  const updateTags = useUpdateRdsTags()
   const [showDelete, setShowDelete] = useState(false)
-  const [activeTab, setActiveTab] = useState("overview")
 
   if (!snapshot?.DBSnapshotIdentifier) {
     return (
@@ -64,7 +59,6 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
   const automated = snapshotType === SNAPSHOT_TYPE_AUTOMATED
   const sourceId = snapshot.DBInstanceIdentifier ?? ""
   const events = eventsData.Events ?? []
-  const tags = tagsData?.TagList ?? []
 
   return (
     <>
@@ -112,7 +106,7 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
           )}
         </div>
 
-        <Tabs onValueChange={setActiveTab} value={activeTab}>
+        <Tabs defaultValue="overview">
           <TabsList>
             <TabsTab value="overview">Overview</TabsTab>
             <TabsTab value="tags">Tags</TabsTab>
@@ -199,21 +193,7 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
           </TabsPanel>
 
           <TabsPanel value="tags">
-            <TagsEditor
-              error={updateTags.error}
-              isPending={updateTags.isPending}
-              isSuccess={updateTags.isSuccess}
-              onSubmit={(next) =>
-                updateTags.mutate({
-                  resourceName: arn,
-                  tags: next,
-                  initialKeys: tags
-                    .map((t) => t.Key ?? "")
-                    .filter((k) => k.length > 0),
-                })
-              }
-              tags={tags}
-            />
+            <RdsTagsTab arn={arn} />
           </TabsPanel>
 
           <TabsPanel value="events">

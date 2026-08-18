@@ -3,6 +3,8 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery } from "@tanstack/react-query"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
+import { ErrorBanner } from "@/components/error-banner"
+import { FormActions } from "@/components/form-actions"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -10,7 +12,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
 import {
   Field,
   FieldDescription,
@@ -18,13 +19,6 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
@@ -39,6 +33,11 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
+import {
+  DeletionProtectionField,
+  parameterGroupsForEngine,
+  RdsSelectField,
+} from "../../-components/rds-form-fields"
 import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 
 // ModifyDBInstance refuses these outright, and they are the ones users reach
@@ -124,16 +123,11 @@ export function ModifyDBInstanceDialog({
         .filter(Boolean),
     ),
   ]
-  // Only a group of the instance's own engine family can be attached, so one
-  // for the other engine is filtered out rather than offered and then refused.
-  const engineFamilies = new Set(
-    (engineVersionsQuery.data?.DBEngineVersions ?? [])
-      .filter((v) => v.Engine === instance.Engine)
-      .map((v) => v.DBParameterGroupFamily),
+  const parameterGroups = parameterGroupsForEngine(
+    parameterGroupsQuery.data?.DBParameterGroups ?? [],
+    engineVersionsQuery.data?.DBEngineVersions ?? [],
+    instance.Engine ?? "",
   )
-  const parameterGroups = (
-    parameterGroupsQuery.data?.DBParameterGroups ?? []
-  ).filter((g) => engineFamilies.has(g.DBParameterGroupFamily))
   // The instance's ENI is already placed, so a group from another VPC cannot be
   // attached to it.
   const instanceVpc = instance.DBSubnetGroup?.VpcId
@@ -195,40 +189,19 @@ export function ModifyDBInstanceDialog({
         </AlertDialogHeader>
 
         <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-class">DB instance class</label>
-            </FieldTitle>
-            {classNotice ? (
-              <PickerNoticeText notice={classNotice} />
-            ) : (
-              <Controller
-                control={control}
-                name="dbInstanceClass"
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger className="w-full" id="modify-class">
-                      <SelectValue placeholder="Select an instance class" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {instanceClasses.map((instanceClass) => (
-                        <SelectItem key={instanceClass} value={instanceClass}>
-                          {instanceClass}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-            {classChanged && (
-              <p className="text-xs text-tactical-amber">
-                Changing the class replaces the VM. The database is unavailable
-                while it does.
-              </p>
-            )}
-            <FieldError errors={[errors.dbInstanceClass]} />
-          </Field>
+          <RdsSelectField
+            control={control}
+            id="modify-class"
+            label="DB instance class"
+            name="dbInstanceClass"
+            notice={classNotice}
+            options={instanceClasses.map((c) => ({ value: c, label: c }))}
+            placeholder="Select an instance class"
+            warning={
+              classChanged &&
+              "Changing the class replaces the VM. The database is unavailable while it does."
+            }
+          />
 
           <Field>
             <FieldTitle>
@@ -253,40 +226,18 @@ export function ModifyDBInstanceDialog({
             <FieldError errors={[errors.allocatedStorage]} />
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-parameter-group">DB parameter group</label>
-            </FieldTitle>
-            {parameterGroupNotice ? (
-              <PickerNoticeText notice={parameterGroupNotice} />
-            ) : (
-              <Controller
-                control={control}
-                name="dbParameterGroupName"
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger
-                      className="w-full"
-                      id="modify-parameter-group"
-                    >
-                      <SelectValue placeholder="Engine default group" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {parameterGroups.map((group) => (
-                        <SelectItem
-                          key={group.DBParameterGroupName}
-                          value={group.DBParameterGroupName ?? ""}
-                        >
-                          {group.DBParameterGroupName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-            <FieldError errors={[errors.dbParameterGroupName]} />
-          </Field>
+          <RdsSelectField
+            control={control}
+            id="modify-parameter-group"
+            label="DB parameter group"
+            name="dbParameterGroupName"
+            notice={parameterGroupNotice}
+            options={parameterGroups.map((g) => ({
+              value: g.DBParameterGroupName ?? "",
+              label: g.DBParameterGroupName ?? "",
+            }))}
+            placeholder="Engine default group"
+          />
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
@@ -363,24 +314,10 @@ export function ModifyDBInstanceDialog({
             <FieldError errors={[errors.masterUserPassword]} />
           </Field>
 
-          <Field>
-            <FieldTitle>Deletion protection</FieldTitle>
-            <Controller
-              control={control}
-              name="deletionProtection"
-              render={({ field }) => (
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    aria-label="Enable deletion protection"
-                    checked={field.value}
-                    onChange={(e) => field.onChange(e.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>Refuse DeleteDBInstance while this is on</span>
-                </label>
-              )}
-            />
-          </Field>
+          <DeletionProtectionField
+            control={control}
+            name="deletionProtection"
+          />
 
           <Field>
             <FieldTitle>Apply immediately</FieldTitle>
@@ -414,25 +351,20 @@ export function ModifyDBInstanceDialog({
           </div>
 
           {modifyInstance.error && (
-            <p className="text-sm text-destructive">
-              {modifyInstance.error.message}
-            </p>
+            <ErrorBanner
+              error={modifyInstance.error}
+              msg="Failed to modify the DB instance"
+            />
           )}
 
-          <div className="flex justify-end gap-2">
-            <Button
-              onClick={() => onOpenChange(false)}
-              type="button"
-              variant="outline"
-            >
-              Cancel
-            </Button>
-            <Button
-              disabled={isSubmitting || modifyInstance.isPending}
-              type="submit"
-            >
-              {modifyInstance.isPending ? "Saving…" : "Save changes"}
-            </Button>
+          <div className="flex justify-end">
+            <FormActions
+              isPending={modifyInstance.isPending}
+              isSubmitting={isSubmitting}
+              onCancel={() => onOpenChange(false)}
+              pendingLabel="Saving…"
+              submitLabel="Save changes"
+            />
           </div>
         </form>
       </AlertDialogContent>

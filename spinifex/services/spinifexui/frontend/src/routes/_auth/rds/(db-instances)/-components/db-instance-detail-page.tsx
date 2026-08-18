@@ -1,5 +1,5 @@
 import type { DBInstance, Event } from "@aws-sdk/client-rds"
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Camera, Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
@@ -11,7 +11,6 @@ import {
 } from "@/components/cli-command-panel"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
@@ -22,14 +21,12 @@ import {
   useRebootDBInstance,
   useStartDBInstance,
   useStopDBInstance,
-  useUpdateRdsTags,
 } from "@/mutations/rds"
 import {
   rdsAutomatedBackupsQueryOptions,
   rdsDBInstanceQueryOptions,
   rdsEventsQueryOptions,
   rdsInstanceDBSnapshotsQueryOptions,
-  rdsTagsQueryOptions,
 } from "@/queries/rds"
 import {
   canDelete,
@@ -45,6 +42,7 @@ import {
 import { CreateDBSnapshotDialog } from "../../(snapshots)/-components/create-db-snapshot-dialog"
 import { DeleteDBSnapshotDialog } from "../../(snapshots)/-components/delete-db-snapshot-dialog"
 import { RdsEventsPanel } from "../../-components/rds-events-panel"
+import { RdsTagsTab } from "../../-components/rds-tags-tab"
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
 import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
 
@@ -119,7 +117,6 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
 
   // Not suspense: the ARN is empty until the describe lands, and an empty one
   // is a request the tags API refuses.
-  const { data: tagsData } = useQuery(rdsTagsQueryOptions(arn))
   const { data: eventsData } = useSuspenseQuery(
     rdsEventsQueryOptions(dbInstanceIdentifier),
   )
@@ -130,7 +127,6 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
     rdsAutomatedBackupsQueryOptions(dbInstanceIdentifier),
   )
 
-  const updateTags = useUpdateRdsTags()
   const startInstance = useStartDBInstance()
   const stopInstance = useStopDBInstance()
   const rebootInstance = useRebootDBInstance()
@@ -140,7 +136,6 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const [deleteSnapshotTarget, setDeleteSnapshotTarget] = useState<
     string | null
   >(null)
-  const [activeTab, setActiveTab] = useState("connectivity")
 
   if (!instance?.DBInstanceIdentifier) {
     return (
@@ -153,7 +148,6 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
 
   const status = instance.DBInstanceStatus
   const events = eventsData.Events ?? []
-  const tags = tagsData?.TagList ?? []
   const lifecycleError =
     startInstance.error ?? stopInstance.error ?? rebootInstance.error
 
@@ -271,7 +265,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
           ))}
         </div>
 
-        <Tabs onValueChange={setActiveTab} value={activeTab}>
+        <Tabs defaultValue="connectivity">
           <TabsList>
             <TabsTab value="connectivity">Connectivity</TabsTab>
             <TabsTab value="configuration">Configuration</TabsTab>
@@ -559,21 +553,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
           </TabsPanel>
 
           <TabsPanel value="tags">
-            <TagsEditor
-              error={updateTags.error}
-              isPending={updateTags.isPending}
-              isSuccess={updateTags.isSuccess}
-              onSubmit={(next) =>
-                updateTags.mutate({
-                  resourceName: arn,
-                  tags: next,
-                  initialKeys: tags
-                    .map((t) => t.Key ?? "")
-                    .filter((k) => k.length > 0),
-                })
-              }
-              tags={tags}
-            />
+            <RdsTagsTab arn={arn} />
           </TabsPanel>
 
           <TabsPanel value="events">

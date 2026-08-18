@@ -80,7 +80,6 @@ export function CreateDBSnapshotDialog({
     formState: { errors, isSubmitting },
     handleSubmit,
     register,
-    reset,
     setValue,
   } = useForm<CreateDBSnapshotFormData>({
     resolver: zodResolver(createDBSnapshotSchema),
@@ -91,14 +90,6 @@ export function CreateDBSnapshotDialog({
       tags: [],
     },
   })
-
-  function handleOpenChange(nextOpen: boolean) {
-    if (!nextOpen) {
-      createSnapshot.reset()
-      reset()
-    }
-    onOpenChange(nextOpen)
-  }
 
   // Choosing the instance names the snapshot after it, which is the name the
   // user would otherwise type by hand.
@@ -123,12 +114,12 @@ export function CreateDBSnapshotDialog({
       // Left open so the refusal below stays readable.
       return
     }
-    handleOpenChange(false)
+    onOpenChange(false)
     onCreated?.()
   }
 
   return (
-    <AlertDialog onOpenChange={handleOpenChange} open={open}>
+    <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
         <AlertDialogHeader>
           <AlertDialogTitle>Take DB snapshot</AlertDialogTitle>
@@ -195,7 +186,8 @@ export function CreateDBSnapshotDialog({
 
           <p className="text-xs text-muted-foreground">
             A snapshot the engine could not be quiesced for is still taken and
-            reported as crash consistent in the snapshot&apos;s events.
+            reported as crash consistent on the source instance&apos;s Backups
+            tab. The snapshot&apos;s own events never carry it.
           </p>
 
           {createSnapshot.error && (
@@ -206,7 +198,7 @@ export function CreateDBSnapshotDialog({
 
           <div className="flex justify-end gap-2">
             <Button
-              onClick={() => handleOpenChange(false)}
+              onClick={() => onOpenChange(false)}
               type="button"
               variant="outline"
             >

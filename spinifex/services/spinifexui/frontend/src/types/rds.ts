@@ -206,12 +206,32 @@ const preferredMaintenanceWindowField = z
     `Maintenance window must be at least ${MIN_WINDOW_MINUTES} minutes long`,
   )
 
+export const MAX_TAGS_PER_RESOURCE = 50
+
+// The aws: prefix is refused rather than dropped, matching validateTagKey: a
+// silently discarded tag would read back as absent on the next apply.
+const RESERVED_TAG_PREFIX = "aws:"
+
 export const rdsTagSchema = z.object({
-  key: z.string().min(1, "Tag key is required").max(128),
+  key: z
+    .string()
+    .min(1, "Tag key is required")
+    .max(128)
+    .refine(
+      (v) => !v.toLowerCase().startsWith(RESERVED_TAG_PREFIX),
+      `Tag keys may not start with the reserved ${RESERVED_TAG_PREFIX} prefix`,
+    ),
   value: z.string().max(256),
 })
 
 export type RdsTagFormData = z.infer<typeof rdsTagSchema>
+
+export const rdsTagsField = z
+  .array(rdsTagSchema)
+  .max(
+    MAX_TAGS_PER_RESOURCE,
+    `At most ${MAX_TAGS_PER_RESOURCE} tags may be supplied`,
+  )
 
 // The shared identifier rule for a master username and an initial database
 // name: letters, digits and underscores, opening on a letter. Narrower than
@@ -291,7 +311,7 @@ export const createDBInstanceSchema = z
     backupRetentionPeriod: backupRetentionField,
     preferredBackupWindow: preferredBackupWindowField,
     preferredMaintenanceWindow: preferredMaintenanceWindowField,
-    tags: z.array(rdsTagSchema),
+    tags: rdsTagsField,
   })
   .superRefine((data, ctx) => {
     checkMasterUsername(ctx, data.engine, data.masterUsername)
@@ -399,7 +419,7 @@ export const dbSnapshotIdentifierField = z
 
 export const createDBSnapshotSchema = z.object({
   dbSnapshotIdentifier: dbSnapshotIdentifierField,
-  tags: z.array(rdsTagSchema),
+  tags: rdsTagsField,
 })
 
 function pad(value: number): string {
@@ -442,7 +462,7 @@ export const restoreDBInstanceSchema = z
     vpcSecurityGroupIds: z.array(z.string()),
     dbParameterGroupName: z.string(),
     deletionProtection: z.boolean(),
-    tags: z.array(rdsTagSchema),
+    tags: rdsTagsField,
   })
   .superRefine((data, ctx) => {
     if (data.allocatedStorage < data.snapshotAllocatedStorage) {
@@ -505,7 +525,7 @@ export const createDBSubnetGroupSchema = z.object({
       MAX_SUBNETS_PER_GROUP,
       `A DB subnet group may hold at most ${MAX_SUBNETS_PER_GROUP} subnets`,
     ),
-  tags: z.array(rdsTagSchema),
+  tags: rdsTagsField,
 })
 
 export type CreateDBSubnetGroupFormData = z.infer<
@@ -525,7 +545,7 @@ export const createDBParameterGroupSchema = z.object({
     .pipe(groupNameField("Name")),
   dbParameterGroupFamily: z.string().min(1, "Family is required"),
   description: groupDescriptionField("Description"),
-  tags: z.array(rdsTagSchema),
+  tags: rdsTagsField,
 })
 
 export type CreateDBParameterGroupFormData = z.infer<

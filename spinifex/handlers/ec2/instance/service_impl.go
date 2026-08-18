@@ -497,6 +497,12 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if err := s.keyValidator.ValidateKeyPairExists(ctx, accountID, *input.KeyName); err != nil {
+			// Only a key the store answered for is absent. Reporting an unreadable
+			// store as a missing key sends the caller after a key that exists.
+			if err.Error() != awserrors.ErrorInvalidKeyPairNotFound {
+				slog.ErrorContext(ctx, "PrepareRunInstances: key pair unreadable", "keyName", *input.KeyName, "err", err)
+				return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
+			}
 			slog.ErrorContext(ctx, "PrepareRunInstances: key pair not found", "keyName", *input.KeyName, "err", err)
 			return nil, nil, nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 		}

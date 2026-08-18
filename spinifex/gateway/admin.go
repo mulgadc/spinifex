@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -19,7 +20,22 @@ import (
 // is rejected before any parsing, so adding a handler is a deliberate act
 // rather than a side effect of adding a function.
 var adminMethods = map[string]bool{
-	"CreateAccount": true,
+	"CreateAccount":           true,
+	"DeleteAccount":           true,
+	"DescribeAccountDeletion": true,
+	"ListAccounts":            true,
+}
+
+// AdminMethodNames returns the callable /admin/<Method> names in sorted order.
+// Tooling that mints a credential grants these by name, so the list has to come
+// from the router rather than from a copy that can drift out of step with it.
+func AdminMethodNames() []string {
+	names := make([]string, 0, len(adminMethods))
+	for name := range adminMethods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // adminPathPrefix is the private admin surface's URL prefix. It is matched
@@ -107,6 +123,12 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "CreateAccount":
 		output, err = gw.adminCreateAccount(ctx, body)
+	case "DeleteAccount":
+		output, err = gw.adminDeleteAccount(ctx, body)
+	case "DescribeAccountDeletion":
+		output, err = gw.adminDescribeAccountDeletion(ctx, body)
+	case "ListAccounts":
+		output, err = gw.adminListAccounts(ctx, body)
 	default:
 		// Unreachable: adminMethods gates the switch. Fail closed anyway so
 		// adding a name to the map without a case cannot silently return 200.

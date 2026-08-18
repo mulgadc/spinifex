@@ -127,6 +127,29 @@ func (x *AccountNameIndex) Release(ctx context.Context, name, clientToken string
 	return nil
 }
 
+// ReleaseDeleted removes a committed entry once its account has been torn
+// down, so the same email can sign up again.
+//
+// It is deliberately separate from Release, which must never unindex a live
+// account: this one removes the entry only when it names exactly the account
+// given, so a stale name cannot take another tenant's reservation with it.
+func (x *AccountNameIndex) ReleaseDeleted(ctx context.Context, name, accountID string) error {
+	existing, err := x.get(ctx, name)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existing.AccountID != accountID {
+		return fmt.Errorf("name %q is reserved by account %q, not %q", name, existing.AccountID, accountID)
+	}
+	if err := x.kv.Delete(ctx, nameKey(name)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return fmt.Errorf("release account name: %w", err)
+	}
+	return nil
+}
+
 // Lookup returns the account ID indexed against name. found is false for both
 // an absent entry and an uncommitted reservation, since neither names an
 // account that exists.

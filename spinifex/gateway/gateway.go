@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +23,7 @@ import (
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -93,10 +95,16 @@ type GatewayConfig struct {
 	// dialed directly for GetStorageStatus. Nil disables that verification,
 	// so admin storage status reports every meta node unreachable rather than
 	// dialing with no trust root.
-	RootCAs        *x509.CertPool
-	ExpectedNodes  int    // Number of expected spinifex nodes for multi-node operations
-	Region         string // Region this gateway is running in
-	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	RootCAs       *x509.CertPool
+	ExpectedNodes int    // Number of expected spinifex nodes for multi-node operations
+	Region        string // Region this gateway is running in
+	// The last discovered node count and when it was discovered, so the
+	// discovery fan-out runs once per activeNodesTTL rather than once per
+	// request that needs to know how many nodes to wait for.
+	activeNodesMu    sync.RWMutex
+	activeNodesCount int
+	activeNodesAt    time.Time
+	InternalSuffix   string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	// RegistryPort is the gateway's advertised port, appended to the ECR
 	// registry host so docker login/tag/push dial the right port. Empty or
 	// "443" renders a port-less host (standard HTTPS parity).
@@ -108,9 +116,17 @@ type GatewayConfig struct {
 	RegistryHost string
 	AZ           string // Availability zone this gateway is running in
 	IAMService   handlers_iam.IAMService
-	STSService   handlers_sts.STSService
-	RateLimiter  *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler    *ratelimit.Throttler // Per-account+action API request throttler
+	// BucketStore reaps a tenant's S3 buckets during account teardown. It
+	// signs with the config service credential, which predastore already
+	// trusts to reach any bucket, so this grants enumeration, not access.
+	// Nil makes DeleteAccount refuse rather than tear down around the data.
+	BucketStore accountteardown.BucketStore
+	STSService  handlers_sts.STSService
+	RateLimiter *AuthRateLimiter     // Per-IP auth failure rate limiter
+	Throttler   *ratelimit.Throttler // Per-account+action API request throttler
+	// accountStatus caches which accounts are ACTIVE, so enforcing account
+	// status does not add a KV read to every authenticated request.
+	accountStatus *accountStatusCache
 	// Quota enforces per-account service quotas. Built unconditionally; a disabled
 	// config yields a no-op Service whose Exempt always returns true. Nil only in
 	// unit tests of unrelated routes, where no handler reaches the quota checks.
@@ -242,6 +258,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
+	r.Use(requestAuditMiddleware)
 
 	if !gw.DisableLogging {
 		r.Use(slogRequestLogger)
@@ -781,14 +798,28 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 	return output
 }
 
+// How long a discovered node count is reused before it is gathered again.
+// Membership does not change per request, and re-deriving it on every call put
+// the discovery fan-out's whole timeout in front of every API call it fronts.
+const activeNodesTTL = 5 * time.Second
+
 // DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the
 // cluster by publishing a discovery request and counting unique responses. It
 // carries the request context so the discovery fan-out joins the caller's trace.
 // Returns the number of active nodes (minimum 1 if fallback is needed).
+//
+// The result is cached for activeNodesTTL. The gather itself stays unbounded:
+// it counts whoever answers, which may legitimately exceed the configured node
+// count during a grow, and bounding it by that count would stop early and drop
+// a live node's resources from every fan-out that follows.
 func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	if gw.NATSConn == nil {
 		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
+	}
+
+	if count, ok := gw.cachedActiveNodes(); ok {
+		return count
 	}
 
 	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
@@ -814,8 +845,28 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 		return gw.ExpectedNodes
 	}
 
+	gw.rememberActiveNodes(activeNodes)
 	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
 	return activeNodes
+}
+
+// cachedActiveNodes returns a count discovered within the TTL. Only a real
+// discovery is cached: a fallback is not evidence of anything and caching one
+// would make a momentary NATS problem outlive itself.
+func (gw *GatewayConfig) cachedActiveNodes() (int, bool) {
+	gw.activeNodesMu.RLock()
+	defer gw.activeNodesMu.RUnlock()
+	if gw.activeNodesCount == 0 || time.Since(gw.activeNodesAt) > activeNodesTTL {
+		return 0, false
+	}
+	return gw.activeNodesCount, true
+}
+
+func (gw *GatewayConfig) rememberActiveNodes(count int) {
+	gw.activeNodesMu.Lock()
+	defer gw.activeNodesMu.Unlock()
+	gw.activeNodesCount = count
+	gw.activeNodesAt = time.Now()
 }
 
 // recordResolvedAction renames the current span to service.action, tags it
@@ -837,6 +888,7 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 	span.SetName(name)
 	span.SetAttributes(attribute.String("aws.action", action))
 	otelsetup.SetRequestAction(ctx, name)
+	auditFrom(ctx).setAction(service, action)
 }
 
 // traceActionEnricher renames the server span to the resolved SigV4
@@ -862,12 +914,14 @@ func traceActionEnricher(next http.Handler) http.Handler {
 	})
 }
 
-// slogRequestLogger is a middleware that logs each request via slog.
+// slogRequestLogger is a middleware that logs each request via slog. The audit
+// record carries the caller and the auth verdict onto the same line, so a
+// failing request is answerable without joining it to a separate auth log.
 func slogRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(), "duration", time.Since(start))
+		logRequest(r, ww.Status(), time.Since(start))
 	})
 }

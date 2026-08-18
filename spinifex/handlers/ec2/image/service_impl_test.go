@@ -1677,7 +1677,7 @@ func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {
 
 	seedCopyableAMI(t, store, "ami-shareblocks", "shareblocks", testAccountID, "snap-orig", "vol-shared", 16)
 
-	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, testBucket, "snap-orig")
+	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, "snap-orig")
 	require.NoError(t, err)
 
 	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-shareblocks", "shared-copy"), testAccountID)
@@ -1687,7 +1687,7 @@ func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, "snap-orig", newMeta.SnapshotID)
 
-	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, testBucket, newMeta.SnapshotID)
+	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, newMeta.SnapshotID)
 	require.NoError(t, err)
 	// Compare against the source snapshot, not hard-coded literals — proves
 	// the new snap truly inherits the source's VolumeID rather than happening
@@ -1744,7 +1744,7 @@ func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 	// snap-ami-bundled01 viperblock reference.
 	require.NotEqual(t, "snap-ami-bundled01", newMeta.SnapshotID,
 		"copy must mint a new user-owned snap id, not borrow the source's")
-	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(store, testBucket, newMeta.SnapshotID)
+	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, newMeta.SnapshotID)
 	require.NoError(t, err)
 	assert.Equal(t, "ami-bundled01", newSnap.VolumeID,
 		"bundled fallback must point the new snap at the source AMI's prefix")

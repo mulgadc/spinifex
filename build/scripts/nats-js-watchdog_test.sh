@@ -100,14 +100,61 @@ invoke
 [ "${rc}" -eq 0 ] && pass "cooldown: exit 0" || fail "cooldown: expected exit 0 (rc=${rc}): $(cat "${STDERR}")"
 restarted && fail "cooldown: must not restart again inside the cooldown window" || pass "cooldown: no restart"
 
-# --- Case 3: escalation threshold reached -> no restart, loud log ---
+# --- Case 3: escalation threshold reached while still failing -> no restart,
+# loud log. The probe must fail: a healthy probe at the threshold is case 3b,
+# and it re-arms rather than giving up. ---
 reset_env escalated
+FAKE_SPX_EXIT=1
+export FAKE_SPX_EXIT
 echo 3 > "${STATE_DIR}/nats-js-watchdog.restart-count"
 invoke
 [ "${rc}" -eq 0 ] && pass "escalated: exit 0" || fail "escalated: expected exit 0 (rc=${rc}): $(cat "${STDERR}")"
 restarted && fail "escalated: must not restart past the escalation threshold" || pass "escalated: no restart"
 grep -q 'giving up rather than looping' "${STDERR}" \
     && pass "escalated: loud log emitted" || fail "escalated: escalation log missing: $(cat "${STDERR}")"
+
+# Second identical run: the node is still broken, so the decision stands, but
+# repeating the message every timer tick is what buried the real signal for 42
+# hours on node1.
+invoke
+grep -q 'giving up rather than looping' "${STDERR}" \
+    && fail "escalated: message repeated on every run instead of once per latch" \
+    || pass "escalated: message not repeated"
+
+# --- Case 3b: escalation threshold reached but JetStream has recovered ->
+# the watchdog must re-arm itself. This is the production bug: the escalation
+# check used to run before the probe, so the clear below was unreachable and
+# the node stayed disarmed until reboot. ---
+reset_env escalated_recovered
+echo 3 > "${STATE_DIR}/nats-js-watchdog.restart-count"
+: > "${STATE_DIR}/nats-js-watchdog.escalated"
+invoke
+[ "${rc}" -eq 0 ] && pass "escalated-recovered: exit 0" || fail "escalated-recovered: expected exit 0 (rc=${rc}): $(cat "${STDERR}")"
+restarted && fail "escalated-recovered: must not restart a recovered server" || pass "escalated-recovered: no restart"
+[ -f "${STATE_DIR}/nats-js-watchdog.restart-count" ] \
+    && fail "escalated-recovered: restart count must clear once JetStream is writable again" \
+    || pass "escalated-recovered: restart count cleared"
+[ -f "${STATE_DIR}/nats-js-watchdog.escalated" ] \
+    && fail "escalated-recovered: escalation marker must clear so a later failure is reported" \
+    || pass "escalated-recovered: escalation marker cleared"
+[ -s "${STDERR}" ] \
+    && fail "escalated-recovered: a recovered node must be silent: $(cat "${STDERR}")" \
+    || pass "escalated-recovered: silent"
+
+# --- Case 3c: re-armed watchdog acts again. One healthy run clears the latch,
+# and the next genuine failure must restart -- proving it is armed, not just
+# quiet. ---
+reset_env escalated_rearm
+echo 3 > "${STATE_DIR}/nats-js-watchdog.restart-count"
+invoke
+FAKE_SPX_EXIT=1
+export FAKE_SPX_EXIT
+invoke
+restarted && pass "rearm: restarts again after recovery cleared the latch" \
+    || fail "rearm: expected a restart once re-armed: $(cat "${STDERR}")"
+[ "$(cat "${STATE_DIR}/nats-js-watchdog.restart-count" 2>/dev/null)" = "1" ] \
+    && pass "rearm: restart count restarts from 1" \
+    || fail "rearm: expected count 1, got $(cat "${STATE_DIR}/nats-js-watchdog.restart-count" 2>/dev/null)"
 
 # --- Case 4: js-probe exits 2 (inconclusive) -> no restart ---
 reset_env inconclusive

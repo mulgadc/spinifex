@@ -4,8 +4,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,15 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
+
+// distinctFingerprint returns a fingerprint no other attempt shares, which is
+// the shape of credential guessing: the lockout counts distinct attempts, so a
+// test driving it to the threshold must vary them.
+func distinctFingerprint() string {
+	return failureFingerprint("test", strconv.Itoa(int(fingerprintSeq.Add(1))))
+}
+
+var fingerprintSeq atomic.Int64
 
 func TestCheckIP_AllowsUnknownIP(t *testing.T) {
 	rl := NewAuthRateLimiter()
@@ -32,7 +43,7 @@ func TestRecordFailure_BelowThreshold(t *testing.T) {
 
 	ip := "10.0.0.2"
 	for range maxFailures - 1 {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	if errCode := rl.CheckIP(ip); errCode != "" {
@@ -46,7 +57,7 @@ func TestRecordFailure_AtThreshold(t *testing.T) {
 
 	ip := "10.0.0.3"
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
@@ -60,7 +71,7 @@ func TestCheckIP_RejectsLockedIP(t *testing.T) {
 
 	ip := "10.0.0.4"
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
@@ -79,14 +90,14 @@ func TestRecordSuccess_ClearsState(t *testing.T) {
 	ip := "10.0.0.5"
 	// Accumulate failures but stay below threshold.
 	for range maxFailures - 1 {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.RecordSuccess(ip)
 
 	// After success, all state should be cleared — can accumulate failures again from 0.
 	for range maxFailures - 1 {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	if errCode := rl.CheckIP(ip); errCode != "" {
@@ -100,7 +111,7 @@ func TestRecordSuccess_ClearsLockout(t *testing.T) {
 
 	ip := "10.0.0.6"
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	if errCode := rl.CheckIP(ip); errCode == "" {
@@ -122,7 +133,7 @@ func TestEscalatingBackoff(t *testing.T) {
 
 	// First lockout: 30s
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.mu.Lock()
@@ -141,7 +152,7 @@ func TestEscalatingBackoff(t *testing.T) {
 	rl.mu.Unlock()
 
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.mu.Lock()
@@ -160,7 +171,7 @@ func TestEscalatingBackoff(t *testing.T) {
 	rl.mu.Unlock()
 
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.mu.Lock()
@@ -179,7 +190,7 @@ func TestEscalatingBackoff(t *testing.T) {
 	rl.mu.Unlock()
 
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.mu.Lock()
@@ -198,7 +209,7 @@ func TestEscalatingBackoff(t *testing.T) {
 	rl.mu.Unlock()
 
 	for range maxFailures {
-		rl.RecordFailure(ip)
+		rl.RecordFailure(ip, distinctFingerprint())
 	}
 
 	rl.mu.Lock()
@@ -221,13 +232,13 @@ func TestFailureWindowSliding(t *testing.T) {
 	rec := &ipRecord{}
 	oldTime := time.Now().Add(-failureWindow - time.Second)
 	for range maxFailures - 1 {
-		rec.failures = append(rec.failures, oldTime)
+		rec.failures = append(rec.failures, attempt{fingerprint: distinctFingerprint(), at: oldTime})
 	}
 	rl.records[ip] = rec
 	rl.mu.Unlock()
 
 	// Add one recent failure — total "recent" failures should be just 1.
-	rl.RecordFailure(ip)
+	rl.RecordFailure(ip, distinctFingerprint())
 
 	if errCode := rl.CheckIP(ip); errCode != "" {
 		t.Fatalf("expected IP to be allowed (old failures expired), got %q", errCode)
@@ -243,7 +254,7 @@ func TestCleanup_EvictsStaleEntries(t *testing.T) {
 	// Insert a stale entry: lockout expired and all failures old.
 	rl.mu.Lock()
 	rl.records[ip] = &ipRecord{
-		failures:    []time.Time{time.Now().Add(-failureWindow - time.Second)},
+		failures:    []attempt{{fingerprint: "stale", at: time.Now().Add(-failureWindow - time.Second)}},
 		lockedUntil: time.Now().Add(-time.Second),
 		lockouts:    1,
 	}
@@ -269,7 +280,7 @@ func TestCleanup_KeepsActiveEntries(t *testing.T) {
 	// Insert an entry that's still locked.
 	rl.mu.Lock()
 	rl.records[ip] = &ipRecord{
-		failures:    []time.Time{time.Now()},
+		failures:    []attempt{{fingerprint: "recent", at: time.Now()}},
 		lockedUntil: time.Now().Add(30 * time.Second),
 		lockouts:    1,
 	}
@@ -297,7 +308,7 @@ func TestConcurrentAccess(t *testing.T) {
 		for range 20 {
 			wg.Go(func() {
 				rl.CheckIP(ip)
-				rl.RecordFailure(ip)
+				rl.RecordFailure(ip, distinctFingerprint())
 				rl.RecordSuccess(ip)
 				rl.CheckIP(ip)
 			})

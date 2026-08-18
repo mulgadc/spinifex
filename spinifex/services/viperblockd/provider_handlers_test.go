@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -25,10 +27,33 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMountErrRetryable locks down the classifier relaunchAll's
+// recovery-retry relies on: only the two viperblock state-load sentinels
+// count as a transient, retryable mount failure.
+func TestMountErrRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"ErrStateNotFound", viperblock.ErrStateNotFound, true},
+		{"wrapped ErrStateNotFound", fmt.Errorf("state present but BlockSize=0: %w", viperblock.ErrStateNotFound), true},
+		{"ErrStateBackendUnavailable", viperblock.ErrStateBackendUnavailable, true},
+		{"wrapped ErrStateBackendUnavailable", fmt.Errorf("LoadState exhausted 5 retries: %w", viperblock.ErrStateBackendUnavailable), true},
+		{"plain error", errors.New("some other mount failure"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, mountErrRetryable(tt.err))
+		})
+	}
+}
 
 // versionedErrorResponse decodes the common shape every ebs.provider.v1.*
 // response carries: an embedded Versioned and an optional ProviderError.

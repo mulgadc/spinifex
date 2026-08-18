@@ -18,7 +18,7 @@ import (
 // so each test gets an isolated round trip.
 func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) types.NodeStatusResponse {
 	t.Helper()
-	sub, err := daemon.natsConn.Subscribe(subject, daemon.handleNodeStatus)
+	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleNodeStatus))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -33,7 +33,7 @@ func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) types.NodeSt
 // gpuVMsRequest subscribes and requests handleNodeVMs on a fresh subject.
 func gpuVMsRequest(t *testing.T, daemon *Daemon, subject string) types.NodeVMsResponse {
 	t.Helper()
-	sub, err := daemon.natsConn.Subscribe(subject, daemon.handleNodeVMs)
+	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleNodeVMs))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 

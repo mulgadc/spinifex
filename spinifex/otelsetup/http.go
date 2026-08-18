@@ -46,6 +46,21 @@ func (w *statusRecorder) Flush() {
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
+// outcomeForStatus classifies a response for the outcome dimension. 4xx is
+// client_error rather than error so a service's error rate stays server-fault
+// only, while client rejections (an IMDS 401, an unresolvable ENI's 404) stop
+// being counted as successes.
+func outcomeForStatus(status int) string {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return "error"
+	case status >= http.StatusBadRequest:
+		return "client_error"
+	default:
+		return "success"
+	}
+}
+
 // HTTPMiddleware opens a server span per request, honoring an inbound W3C
 // traceparent header, and records request count/duration metrics. Handlers
 // rename the span (and SetRequestAction) once they resolve a logical
@@ -59,11 +74,7 @@ func HTTPMiddleware(serverName string) func(http.Handler) http.Handler {
 				start := time.Now()
 				rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 				next.ServeHTTP(rec, r)
-				outcome := "success"
-				if rec.status >= http.StatusInternalServerError {
-					outcome = "error"
-				}
-				RecordRequest(r.Context(), r.Method+" /health", outcome, time.Since(start))
+				RecordRequest(r.Context(), r.Method+" /health", outcomeForStatus(rec.status), time.Since(start))
 				return
 			}
 			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
@@ -83,12 +94,10 @@ func HTTPMiddleware(serverName string) func(http.Handler) http.Handler {
 			next.ServeHTTP(rec, r.WithContext(ctx))
 
 			span.SetAttributes(semconv.HTTPResponseStatusCode(rec.status))
-			outcome := "success"
 			if rec.status >= http.StatusInternalServerError {
 				span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rec.status))
-				outcome = "error"
 			}
-			RecordRequest(ctx, action.name, outcome, time.Since(start))
+			RecordRequest(ctx, action.name, outcomeForStatus(rec.status), time.Since(start))
 		})
 	}
 }

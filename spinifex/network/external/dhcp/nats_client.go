@@ -128,6 +128,11 @@ func (c *NATSClient) requestRelease(ctx context.Context, req releaseWireRequest)
 	if err := json.Unmarshal(msg.Data, &reply); err != nil {
 		return fmt.Errorf("decode release reply: %w", err)
 	}
+	// Wrapped rather than replaced so callers can branch with errors.Is while
+	// the message keeps the pool and address the responder named.
+	if reply.Code == ReleaseCodeLeaseNotTracked {
+		return fmt.Errorf("%w: %s", ErrLeaseNotTracked, reply.Error)
+	}
 	if reply.Error != "" {
 		return errors.New(reply.Error)
 	}

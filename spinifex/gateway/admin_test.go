@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -28,7 +29,8 @@ func TestAdminPathMethod(t *testing.T) {
 		wantOK bool
 	}{
 		{"known method", "/admin/CreateAccount", "CreateAccount", true},
-		{"unknown method", "/admin/DeleteAccount", "", false},
+		{"deletion method", "/admin/DeleteAccount", "DeleteAccount", true},
+		{"unknown method", "/admin/PurgeEverything", "", false},
 		{"nested path", "/admin/CreateAccount/extra", "", false},
 		{"bare prefix", "/admin/", "", false},
 		{"not admin", "/", "", false},
@@ -183,7 +185,7 @@ func decodeAdminError(t *testing.T, rec *httptest.ResponseRecorder) adminErrorBo
 func TestAdminRequestUnknownMethod(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 
-	rec := adminRequest(gw, "DeleteAccount", `{}`)
+	rec := adminRequest(gw, "PurgeEverything", `{}`)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, awserrors.ErrorInvalidAction, decodeAdminError(t, rec).Error.Code)
@@ -241,9 +243,15 @@ func TestAdminRequestRejectsNonPost(t *testing.T) {
 // authorizedAdminRequest builds a request that clears every authorization gate,
 // so the guards behind them can be tested on their own.
 func authorizedAdminRequest(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", strings.NewReader(body))
+	return authorizedAdminRequestForMethod(gw, "CreateAccount", body)
+}
+
+// authorizedAdminRequestForMethod is the same for a named method, so a grant
+// that covers one method can be shown not to cover another.
+func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/admin/"+method, strings.NewReader(body))
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("method", "CreateAccount")
+	rctx.URLParams.Add("method", method)
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
@@ -264,4 +272,18 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 	rec := authorizedAdminRequest(gw, `{}`)
 
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, decodeAdminError(t, rec).Error.Code)
+}
+
+// The credential-minting CLI grants these by name. A method served but absent
+// from the list would be uncallable by every key an operator issues.
+func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
+	names := AdminMethodNames()
+
+	require.Len(t, names, len(adminMethods))
+	assert.True(t, sort.StringsAreSorted(names), "names must be sorted for stable help text")
+	for _, name := range names {
+		method, ok := adminPathMethod(adminPathPrefix + name)
+		assert.True(t, ok, "%s is granted but not routed", name)
+		assert.Equal(t, name, method)
+	}
 }

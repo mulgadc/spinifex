@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -282,4 +285,164 @@ func TestListAMIs_SkipsCorruptButStrictDoesNot(t *testing.T) {
 
 	_, err = store.ListAMIsStrict(ctx)
 	require.ErrorIs(t, err, ErrCorruptDocument)
+}
+
+// TestListVolumes_FetchesDocumentsConcurrently is the reason listDocuments has
+// a worker pool at all. A listing costs one object fetch per document, and
+// fetching them one at a time makes DescribeVolumes scale with the number of
+// volumes in the cluster rather than with the number the caller owns.
+func TestListVolumes_FetchesDocumentsConcurrently(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	const documents = 32
+	const delay = 20 * time.Millisecond
+	for i := range documents {
+		require.NoError(t, store.PutVolume(ctx, Volume{
+			VolumeID: fmt.Sprintf("vol-%02d", i), TenantID: "acct-1", CapacityGiB: 1,
+		}))
+	}
+
+	slow := &slowGetStore{ObjectStore: objects, delay: delay}
+	measured := NewStore(slow, "control-plane")
+
+	start := time.Now()
+	volumes, err := measured.ListVolumes(ctx)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, volumes, documents)
+
+	serial := documents * delay
+	assert.Less(t, elapsed, serial/2,
+		"fetching %d documents took %s; serially it would be %s", documents, elapsed, serial)
+	assert.Equal(t, int64(documents), slow.gets.Load(), "every document must still be fetched")
+	assert.LessOrEqual(t, slow.peak(), int64(listFetchConcurrency),
+		"the pool bound must hold: an unbounded fan-out over a large bucket is its own problem")
+}
+
+// TestListVolumes_ConcurrentFetchPreservesListingOrder pins the ordering the
+// concurrent fetch has to reproduce: whatever order the listing came back in.
+// Strict callers depend on it, because it decides which of several unusable
+// documents is the one whose error is returned.
+func TestListVolumes_ConcurrentFetchPreservesListingOrder(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	const documents = 24
+	want := make([]string, 0, documents)
+	keys := make([]string, 0, documents)
+	for i := range documents {
+		id := fmt.Sprintf("vol-%02d", i)
+		require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: id, TenantID: "acct-1", CapacityGiB: 1}))
+		key, err := VolumeKey(id)
+		require.NoError(t, err)
+		want = append(want, id)
+		keys = append(keys, key)
+	}
+
+	fixed := NewStore(&fixedOrderStore{ObjectStore: objects, keys: keys}, "control-plane")
+	for range 5 {
+		volumes, err := fixed.ListVolumes(ctx)
+		require.NoError(t, err)
+		got := make([]string, 0, len(volumes))
+		for _, v := range volumes {
+			got = append(got, v.VolumeID)
+		}
+		assert.Equal(t, want, got, "documents must follow the order the listing returned")
+	}
+}
+
+// fixedOrderStore lists a known set of keys in a known order, because the
+// in-memory store lists in map order and cannot pin an ordering guarantee.
+type fixedOrderStore struct {
+	objectstore.ObjectStore
+
+	keys []string
+}
+
+func (s *fixedOrderStore) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	contents := make([]*s3.Object, 0, len(s.keys))
+	for _, key := range s.keys {
+		contents = append(contents, &s3.Object{Key: aws.String(key)})
+	}
+	return &s3.ListObjectsV2Output{Contents: contents}, nil
+}
+
+// slowGetStore delays every fetch and records how many ran at once, so a test
+// can tell a concurrent listing from a serial one and check the pool bound.
+type slowGetStore struct {
+	objectstore.ObjectStore
+
+	delay    time.Duration
+	gets     atomic.Int64
+	inFlight atomic.Int64
+	highest  atomic.Int64
+}
+
+func (s *slowGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	s.gets.Add(1)
+	now := s.inFlight.Add(1)
+	for {
+		high := s.highest.Load()
+		if now <= high || s.highest.CompareAndSwap(high, now) {
+			break
+		}
+	}
+	defer s.inFlight.Add(-1)
+
+	time.Sleep(s.delay)
+	return s.ObjectStore.GetObject(ctx, in)
+}
+
+func (s *slowGetStore) peak() int64 { return s.highest.Load() }
+
+// hangingGetStore never answers for one key, standing in for a document whose
+// read runs its full retry budget before failing.
+type hangingGetStore struct {
+	objectstore.ObjectStore
+
+	hangKey string
+}
+
+func (s *hangingGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if in.Key != nil && *in.Key == s.hangKey {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.ObjectStore.GetObject(ctx, in)
+}
+
+// TestListVolumes_BoundsOneSlowDocument covers the shape that made a single bad
+// volume document a cluster-wide problem: the read did not fail quickly, so its
+// latency was added to every listing that walked the prefix.
+func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
+	previous := listFetchTimeout
+	listFetchTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { listFetchTimeout = previous })
+
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-slow", CapacityGiB: 1}))
+	key, err := VolumeKey("vol-slow")
+	require.NoError(t, err)
+
+	hanging := NewStore(&hangingGetStore{ObjectStore: objects, hangKey: key}, "control-plane")
+
+	start := time.Now()
+	volumes, err := hanging.ListVolumes(ctx)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "one slow document must not fail the whole listing")
+	require.Len(t, volumes, 1)
+	assert.Equal(t, "vol-good", volumes[0].VolumeID)
+	assert.Less(t, elapsed, time.Second, "the listing must not wait on the slow document indefinitely")
+
+	_, err = hanging.ListVolumesStrict(ctx)
+	require.Error(t, err, "the strict listing must still report the document it could not read")
 }

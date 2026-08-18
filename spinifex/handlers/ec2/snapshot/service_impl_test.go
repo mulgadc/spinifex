@@ -998,7 +998,7 @@ func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
 	snapshot, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-provider")}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
-	cfgStored, err := svc.getSnapshotConfig(aws.StringValue(snapshot.SnapshotId))
+	cfgStored, err := svc.getSnapshotConfig(context.Background(), aws.StringValue(snapshot.SnapshotId))
 	require.NoError(t, err)
 	assert.Equal(t, "memory://snapshot/"+aws.StringValue(snapshot.SnapshotId), cfgStored.ProviderHandle)
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: snapshot.SnapshotId}, testAccountID)
@@ -1152,7 +1152,7 @@ func TestCopySnapshot_Provider_CreatesBackendSnapshot(t *testing.T) {
 	require.True(t, ok, "the copy must exist in the provider, not only in the control plane")
 	assert.Equal(t, "vol-copysrc", got.SourceVolumeID)
 
-	stored, err := svc.getSnapshotConfig(newID)
+	stored, err := svc.getSnapshotConfig(context.Background(), newID)
 	require.NoError(t, err)
 	assert.Equal(t, "vol-copysrc", stored.VolumeID)
 	assert.Equal(t, "copied", stored.Description)
@@ -1194,7 +1194,7 @@ func TestCopySnapshot_Provider_InheritsSourceDescription(t *testing.T) {
 
 	out, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
 	require.NoError(t, err)
-	stored, err := svc.getSnapshotConfig(aws.StringValue(out.SnapshotId))
+	stored, err := svc.getSnapshotConfig(context.Background(), aws.StringValue(out.SnapshotId))
 	require.NoError(t, err)
 	assert.Equal(t, "original text", stored.Description)
 }

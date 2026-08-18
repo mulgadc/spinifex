@@ -2743,6 +2743,14 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 }
 
 func runAccountList(cmd *cobra.Command, args []string) {
+	if remote, _ := cmd.Flags().GetBool("remote"); remote {
+		if err := runAccountListRemote(cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	svc, _, _, cleanup, err := initIAMServiceFromConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2756,20 +2764,7 @@ func runAccountList(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if len(accounts) == 0 {
-		fmt.Println("No accounts found.")
-		return
-	}
-
-	fmt.Printf("%-14s %-20s %-10s %s\n", "ACCOUNT ID", "NAME", "STATUS", "CREATED")
-	fmt.Printf("%-14s %-20s %-10s %s\n", "----------", "----", "------", "-------")
-	for _, a := range accounts {
-		created := a.CreatedAt
-		if t, err := time.Parse(time.RFC3339, a.CreatedAt); err == nil {
-			created = t.Format("2006-01-02 15:04")
-		}
-		fmt.Printf("%-14s %-20s %-10s %s\n", a.AccountID, a.AccountName, a.Status, created)
-	}
+	printAccountTable(accountSummaries(accounts))
 }
 
 func runCertRenew(cmd *cobra.Command, _ []string) {

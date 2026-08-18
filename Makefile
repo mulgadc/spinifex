@@ -82,6 +82,10 @@ build-ecs-agent: ## Build the ecs-agent (ships in the ECS-AMI guest; not in host
 	@echo -e "\n....Building ecs-agent (static)"
 	CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(VERSION)" -o ./bin/ecs-agent ./cmd/ecs-agent
 
+build-loadgen: ## Build spx-loadgen (drives the stress harness's measured load; not shipped to nodes)
+	@echo -e "\n....Building spx-loadgen"
+	GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/spx-loadgen ./cmd/spx-loadgen
+
 build-system-image: ## Build a system image from manifest (use IMAGE=lb or IMAGE=eks-node)
 ifndef IMAGE
 	$(error IMAGE is required. Usage: make build-system-image IMAGE=lb)

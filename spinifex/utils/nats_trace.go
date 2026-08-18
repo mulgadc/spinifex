@@ -43,27 +43,46 @@ func ExtractTraceContext(ctx context.Context, msg *nats.Msg) context.Context {
 	return otel.GetTextMapPropagator().Extract(ctx, natsHeaderCarrier(msg.Header))
 }
 
+// AttrAccountID names the account a span was served for. It matches the key
+// the gateway sets on its own spans, so one field attributes a request from the
+// front door to whichever service ends up doing the work.
+const AttrAccountID = "aws.account_id"
+
+// accountAttrs returns the account attribute for accountID, or nothing. Work
+// with no caller — a sweep, a reconciler, a node-to-node probe — is left
+// unattributed rather than being credited to whoever happens to be admin.
+func accountAttrs(accountID string) []attribute.KeyValue {
+	if accountID == "" {
+		return nil
+	}
+	return []attribute.KeyValue{attribute.String(AttrAccountID, accountID)}
+}
+
 // StartConsumerSpan extracts the producer's trace context from msg and opens
 // a consumer span for the subject. Callers must End() the returned span and
 // should pass the context into handler logic so logs correlate.
 func StartConsumerSpan(msg *nats.Msg) (context.Context, trace.Span) {
 	ctx := ExtractTraceContext(context.Background(), msg)
+	attrs := append([]attribute.KeyValue{
+		attribute.String("messaging.system", "nats"),
+		attribute.String("messaging.destination.name", msg.Subject),
+	}, accountAttrs(AccountIDFromMsg(msg))...)
+
 	return otel.Tracer(natsTracerName).Start(ctx, "NATS "+msg.Subject,
 		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination.name", msg.Subject),
-		))
+		trace.WithAttributes(attrs...))
 }
 
 // startProducerSpan opens a client span for an outbound request on subject.
-func startProducerSpan(ctx context.Context, subject string) (context.Context, trace.Span) {
+func startProducerSpan(ctx context.Context, subject, accountID string) (context.Context, trace.Span) {
+	attrs := append([]attribute.KeyValue{
+		attribute.String("messaging.system", "nats"),
+		attribute.String("messaging.destination.name", subject),
+	}, accountAttrs(accountID)...)
+
 	return otel.Tracer(natsTracerName).Start(ctx, "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination.name", subject),
-		))
+		trace.WithAttributes(attrs...))
 }
 
 // endSpanWithError records err (if any) and ends the span.

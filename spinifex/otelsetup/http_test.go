@@ -148,8 +148,8 @@ func TestOutcomeForStatusSeparatesClientErrors(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := outcomeForStatus(tc.status); got != tc.want {
-			t.Errorf("outcomeForStatus(%d) = %q, want %q", tc.status, got, tc.want)
+		if got := OutcomeForStatus(tc.status); got != tc.want {
+			t.Errorf("OutcomeForStatus(%d) = %q, want %q", tc.status, got, tc.want)
 		}
 	}
 }

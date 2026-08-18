@@ -46,11 +46,12 @@ func (w *statusRecorder) Flush() {
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
-// outcomeForStatus classifies a response for the outcome dimension. 4xx is
+// OutcomeForStatus classifies a response for the outcome dimension. 4xx is
 // client_error rather than error so a service's error rate stays server-fault
 // only, while client rejections (an IMDS 401, an unresolvable ENI's 404) stop
-// being counted as successes.
-func outcomeForStatus(status int) string {
+// being counted as successes. Exported because the NATS path classifies against
+// the same statuses and the two must agree.
+func OutcomeForStatus(status int) string {
 	switch {
 	case status >= http.StatusInternalServerError:
 		return "error"
@@ -74,7 +75,7 @@ func HTTPMiddleware(serverName string) func(http.Handler) http.Handler {
 				start := time.Now()
 				rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 				next.ServeHTTP(rec, r)
-				RecordRequest(r.Context(), r.Method+" /health", outcomeForStatus(rec.status), time.Since(start))
+				RecordRequest(r.Context(), r.Method+" /health", OutcomeForStatus(rec.status), time.Since(start))
 				return
 			}
 			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
@@ -97,7 +98,7 @@ func HTTPMiddleware(serverName string) func(http.Handler) http.Handler {
 			if rec.status >= http.StatusInternalServerError {
 				span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rec.status))
 			}
-			RecordRequest(ctx, action.name, outcomeForStatus(rec.status), time.Since(start))
+			RecordRequest(ctx, action.name, OutcomeForStatus(rec.status), time.Since(start))
 		})
 	}
 }

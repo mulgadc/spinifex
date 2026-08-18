@@ -15,10 +15,9 @@ import (
 // SpotInstanceRequestId) onto a launched VM. Dispatched from handleEC2Events,
 // which already verified ownership; the SIR id is the only datum on the wire as
 // the lifecycle is always spot for this command.
-func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) {
+func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) string {
 	if command.SpotLineageData == nil {
-		respondWithError(msg, awserrors.ErrorMissingParameter)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
 	}
 
 	found, err := d.vmMgr.UpdateAndPersist(command.ID, func(v *vm.VM) bool {
@@ -27,15 +26,14 @@ func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, comman
 		return true
 	})
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	if !found {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {
 		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 	}
+	return outcomeSuccess
 }

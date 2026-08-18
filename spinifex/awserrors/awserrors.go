@@ -3,6 +3,7 @@ package awserrors
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -696,6 +697,16 @@ func ValidErrorCodeFromError(err error) string {
 		return code
 	}
 	return ErrorServerInternal
+}
+
+// HTTPStatusForError returns the HTTP status err's AWS code maps to, or 500
+// for an error carrying no recognised code. It lets a caller off the HTTP path
+// classify a failure the same way the gateway would have.
+func HTTPStatusForError(err error) int {
+	if status := ErrorLookup[ValidErrorCodeFromError(err)].HTTPCode; status != 0 {
+		return status
+	}
+	return http.StatusInternalServerError
 }
 
 // HasErrorCode reports whether s is exactly a registered AWS error code.

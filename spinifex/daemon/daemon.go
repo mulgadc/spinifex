@@ -766,6 +766,11 @@ const (
 	outcomeError   = "error"
 	outcomeSkipped = "skipped"
 
+	// outcomeClientError is a caller mistake — an unknown id, a bad parameter.
+	// Separate from outcomeError so a daemon error rate measures the daemon
+	// rather than the callers reaching it.
+	outcomeClientError = "client_error"
+
 	// outcomeDeferred tells natsMetricsHandler the handler records its own
 	// point. Handlers that answer from a goroutine must use it: timing the
 	// wrapper would measure the dispatch and call every launch an instant
@@ -780,6 +785,40 @@ func outcomeFor(replied bool) string {
 		return outcomeSuccess
 	}
 	return outcomeError
+}
+
+// outcomeForError classifies a handler failure by the status its AWS code maps
+// to, through the same function the HTTP middleware uses. Anything carrying no
+// recognised code lands on 500, so an unclassifiable failure counts against the
+// daemon rather than being written off as the caller's fault.
+func outcomeForError(err error) string {
+	return otelsetup.OutcomeForStatus(awserrors.HTTPStatusForError(err))
+}
+
+// outcomeForCode classifies by an AWS error code a handler has already chosen,
+// for the paths that answer with a code rather than an error value.
+func outcomeForCode(errCode string) string {
+	return outcomeForError(errors.New(errCode))
+}
+
+// ec2CmdAction names the metric action for a per-instance command. The subject
+// carries the instance id, so the action is built from the command: an instance
+// id in a metric dimension would make one series per instance.
+func ec2CmdAction(command string) string {
+	return "ec2.cmd." + command
+}
+
+// logHandlerError reports a handler failure at a level matching its
+// classification: ERROR means the daemon failed. A client error is the caller's
+// and is logged at WARN, which is what stops an expected fan-out miss writing an
+// ERROR line on every node that was never going to answer.
+func logHandlerError(ctx context.Context, msg string, subject string, err error) {
+	code := awserrors.ValidErrorCodeFromError(err)
+	if outcomeForError(err) == outcomeClientError {
+		slog.WarnContext(ctx, msg, "subject", subject, "code", code, "err", err)
+		return
+	}
+	slog.ErrorContext(ctx, msg, "subject", subject, "code", code, "err", err)
 }
 
 // natsHandler is a NATS handler that reports how it answered. The type exists

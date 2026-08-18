@@ -35,6 +35,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # record.
 _MAX_MESSAGE = 4000
 
+# go-junit-report emits this when a `=== RUN` line has no matching result line,
+# which means the log it was fed was truncated or filtered. It is a parse gap,
+# not a test outcome, so it is stored under its own status and left out of every
+# pass rate rather than counted as a failure.
+_NO_RESULT = "No test result found"
+
 
 def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
@@ -78,6 +84,8 @@ def _cases(path: str) -> list[dict]:
                     message = _strip_ansi(
                         ((node.get("message") or "") + "\n" + (node.text or "")).strip()
                     )
+                    if (node.get("message") or "").strip() == _NO_RESULT:
+                        status = "unknown"
                     break
             if status == "pass" and tc.find("skipped") is not None:
                 status = "skip"
@@ -186,7 +194,7 @@ def main() -> int:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     lines: list[str] = []
-    counts: dict[str, int] = {"pass": 0, "fail": 0, "error": 0, "skip": 0}
+    counts: dict[str, int] = {"pass": 0, "fail": 0, "error": 0, "skip": 0, "unknown": 0}
     for path in sorted(glob.glob(pattern)):
         suite = _suite_from_path(path)
         for case in _cases(path):
@@ -208,7 +216,7 @@ def main() -> int:
             f"junit-to-es: posted {sum(counts.values())} test docs "
             f"(cell {cell}) to {sink}/{index} — {counts['pass']} pass, "
             f"{counts['fail']} fail, {counts['error']} error, "
-            f"{counts['skip']} skip"
+            f"{counts['skip']} skip, {counts['unknown']} unknown"
         )
     return rc
 

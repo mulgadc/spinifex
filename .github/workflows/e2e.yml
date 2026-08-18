@@ -464,6 +464,16 @@ jobs:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "E2E results"
 
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # green test run red.
+      - name: Ship test results to Elasticsearch
+        if: always()
+        continue-on-error: true
+        uses: ./spinifex/.github/actions/junit-to-es
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          cell: single
+
       - name: Analyze e2e failures
         if: always()
         uses: ./spinifex/.github/actions/e2e-analyze
@@ -902,6 +912,16 @@ jobs:
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "Multi-Node E2E results"
+
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # green test run red.
+      - name: Ship test results to Elasticsearch
+        if: always()
+        continue-on-error: true
+        uses: ./spinifex/.github/actions/junit-to-es
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          cell: multi
 
       - name: Analyze e2e failures
         if: always()

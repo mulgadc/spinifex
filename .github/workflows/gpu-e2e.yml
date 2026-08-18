@@ -287,6 +287,16 @@ jobs:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "GPU E2E results"
 
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # green test run red.
+      - name: Ship test results to Elasticsearch
+        if: always() && steps.gate.outputs.paused != 'true'
+        continue-on-error: true
+        uses: ./.github/actions/junit-to-es
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          cell: gpu
+
       - name: Analyze e2e failures
         if: always() && steps.gate.outputs.paused != 'true'
         uses: ./.github/actions/e2e-analyze

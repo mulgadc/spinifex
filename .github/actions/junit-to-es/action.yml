@@ -1,0 +1,43 @@
+name: JUnit to Elasticsearch
+description: >-
+  Bulk-index one doc per JUnit test case into the mulga Elasticsearch sink,
+  so per-test pass rates outlive the 90-day artifact retention. Call it once
+  per job right after the JUnit XML is produced (with `if: always()`), next to
+  the junit-report action that renders the same files into the job summary.
+
+inputs:
+  junit-glob:
+    description: Shell glob matching the JUnit XML files to ship.
+    required: true
+  cell:
+    description: >-
+      Cell label stored as labels.ci_cell — the same value the job puts in
+      ci.cell for its OTel attributes (single, multi, gpu, ddil, 20, ...).
+      Without it, results from different topologies collapse into one bucket.
+    required: true
+  es-sink:
+    description: host:port of the Elasticsearch sink.
+    required: false
+    default: "192.168.1.13:9200"
+  index:
+    description: Target index.
+    required: false
+    default: mulga-ci-test-results
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        JUNIT_GLOB: ${{ inputs.junit-glob }}
+        JUNIT_CELL: ${{ inputs.cell }}
+        MULGA_ES_SINK: ${{ inputs.es-sink }}
+        ES_INDEX: ${{ inputs.index }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        WORKFLOW: ${{ github.workflow }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        SHA: ${{ github.sha }}
+        ARTIFACT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        python3 "${{ github.action_path }}/ship.py"

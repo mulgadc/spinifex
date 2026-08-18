@@ -143,6 +143,16 @@ jobs:
           [ -f "$LOG" ] || exit 0
           go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-baremetal.xml" || true
 
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # green test run red.
+      - name: Ship test results to Elasticsearch
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/junit-to-es
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          cell: "20"
+
       - name: Analyze e2e failures
         if: always()
         uses: ./.github/actions/e2e-analyze

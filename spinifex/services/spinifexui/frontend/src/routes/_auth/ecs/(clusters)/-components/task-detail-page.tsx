@@ -11,11 +11,7 @@ import { ecsTasksQueryOptions } from "@/queries/ecs"
 // shortArn renders the trailing resource segment of an ARN, falling back to the
 // whole string when there is no slash.
 function shortArn(arn: string | undefined): string {
-  if (!arn) {
-    return ""
-  }
-  const idx = arn.lastIndexOf("/")
-  return idx === -1 ? arn : arn.slice(idx + 1)
+  return arn?.split("/").at(-1) ?? ""
 }
 
 function attachmentDetail(

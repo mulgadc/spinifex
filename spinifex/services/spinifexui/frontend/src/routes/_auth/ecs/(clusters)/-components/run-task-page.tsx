@@ -29,8 +29,7 @@ import { runTaskSchema, type RunTaskFormData } from "@/types/ecs"
 
 // familyRevision turns a task definition ARN into its "family:revision" id.
 function familyRevision(arn: string): string {
-  const idx = arn.lastIndexOf("/")
-  return idx === -1 ? arn : arn.slice(idx + 1)
+  return arn.split("/").at(-1) ?? arn
 }
 
 export function RunTaskPage({ cluster }: { cluster: string }) {

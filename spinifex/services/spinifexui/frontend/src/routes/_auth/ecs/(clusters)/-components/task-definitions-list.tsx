@@ -11,8 +11,7 @@ import { ecsTaskDefinitionsQueryOptions } from "@/queries/ecs"
 // familyRevision extracts the "family:revision" identifier from a task
 // definition ARN; DeregisterTaskDefinition requires that explicit form.
 function familyRevision(arn: string): string {
-  const idx = arn.lastIndexOf("/")
-  return idx === -1 ? arn : arn.slice(idx + 1)
+  return arn.split("/").at(-1) ?? arn
 }
 
 // TaskDefinitionsList renders the account-scoped task definitions. clusterName,

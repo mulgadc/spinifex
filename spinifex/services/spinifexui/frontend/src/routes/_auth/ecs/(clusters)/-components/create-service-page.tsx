@@ -29,8 +29,7 @@ import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
 import { createServiceSchema, type CreateServiceFormData } from "@/types/ecs"
 
 function familyRevision(arn: string): string {
-  const idx = arn.lastIndexOf("/")
-  return idx === -1 ? arn : arn.slice(idx + 1)
+  return arn.split("/").at(-1) ?? arn
 }
 
 export function CreateServicePage({ cluster }: { cluster: string }) {

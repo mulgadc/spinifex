@@ -11,11 +11,7 @@ import { useStopTask } from "@/mutations/ecs"
 import { ecsTasksQueryOptions } from "@/queries/ecs"
 
 function taskId(arn: string | undefined): string {
-  if (!arn) {
-    return ""
-  }
-  const idx = arn.lastIndexOf("/")
-  return idx === -1 ? arn : arn.slice(idx + 1)
+  return arn?.split("/").at(-1) ?? ""
 }
 
 export function TasksTab({ clusterName }: { clusterName: string }) {

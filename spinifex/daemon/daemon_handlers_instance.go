@@ -31,12 +31,11 @@ var startStoppedForwardTimeout = 30 * time.Second
 // instance: central store first, then the record under the manager lock, so a
 // failed S3 write leaves both stores untouched, matching the stopped path.
 // Ownership is checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
 	if data == nil || (!remove && len(data.Tags) == 0) {
-		respondWithError(msg, awserrors.ErrorMissingParameter)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
 	}
 
 	var newTags []*ec2.Tag
@@ -49,16 +48,14 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 	})
 	if missingRecord {
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
 	}
 
 	accountID := utils.AccountIDFromMsg(msg)
 	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
 		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
 	}
 
 	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
@@ -69,17 +66,16 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		return true
 	})
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	if !found {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {
 		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 	}
+	return outcomeSuccess
 }
 
 // handleEC2RunInstances orchestrates the RunInstances flow across

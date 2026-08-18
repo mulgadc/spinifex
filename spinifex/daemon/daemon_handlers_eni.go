@@ -20,12 +20,11 @@ import (
 // handleAttachNetworkInterface updates KV first (crash-safe attaching state),
 // then runs the QMP hot-plug pipeline. On QMP failure the KV record rolls
 // back to available with the error persisted in LastAttachError.
-func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Attaching ENI to instance", "instanceId", command.ID)
 
 	if command.AttachENIData == nil || command.AttachENIData.NetworkInterfaceID == "" {
-		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	eniID := command.AttachENIData.NetworkInterfaceID
@@ -33,24 +32,20 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	accountID := utils.AccountIDFromMsg(msg)
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {
-		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	if record.Status == "in-use" && record.InstanceId != instance.ID {
-		respondWithError(msg, awserrors.ErrorInvalidNetworkInterfaceInUse)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
 	attachmentID, err := d.vpcService.AttachENI(accountID, eniID, instance.ID, deviceIndex)
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "attaching"
@@ -74,8 +69,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 			r.HotPlugSlot = 0
 			r.LastAttachError = hotPlugErr.Error()
 		})
-		respondWithError(msg, eniHotplugErrorCode(hotPlugErr))
-		return
+		return respondErrorOutcome(msg, eniHotplugErrorCode(hotPlugErr))
 	}
 
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -98,17 +92,17 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	respondWithJSON(msg, ec2.AttachNetworkInterfaceOutput{
 		AttachmentId: aws.String(attachmentID),
 	})
+	return outcomeSuccess
 }
 
 // handleDetachNetworkInterface marks the KV record as detaching first
 // (crash-safe), runs the QMP hot-unplug pipeline, then returns the
 // record to available on success.
-func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Detaching ENI from instance", "instanceId", command.ID)
 
 	if command.DetachENIData == nil || command.DetachENIData.AttachmentID == "" {
-		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	attachmentID := command.DetachENIData.AttachmentID
@@ -117,17 +111,14 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.FindENIByAttachment(accountID, attachmentID)
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	if record.InstanceId != instance.ID {
-		respondWithError(msg, awserrors.ErrorInvalidAttachmentIDNotFound)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidAttachmentIDNotFound)
 	}
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {
-		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	if err := d.vpcService.UpdateENI(accountID, record.NetworkInterfaceId, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -146,8 +137,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 		_ = d.vpcService.UpdateENI(accountID, record.NetworkInterfaceId, func(r *handlers_ec2_vpc.ENIRecord) {
 			r.DetachInFlight = false
 		})
-		respondWithError(msg, eniHotplugErrorCode(err))
-		return
+		return respondErrorOutcome(msg, eniHotplugErrorCode(err))
 	}
 
 	if err := d.vpcService.DetachENI(ctx, accountID, record.NetworkInterfaceId); err != nil {
@@ -169,6 +159,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 	})
 
 	respondWithJSON(msg, ec2.DetachNetworkInterfaceOutput{})
+	return outcomeSuccess
 }
 
 // eniHotplugErrorCode maps a vm.Manager hot-plug error to the AWS API

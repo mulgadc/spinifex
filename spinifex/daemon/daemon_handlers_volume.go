@@ -21,13 +21,12 @@ import (
 // QMP/state-machine pipeline to vm.Manager.AttachVolume. The manager owns
 // every QMP and persistence side-effect; the daemon only emits the AWS API
 // response.
-func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Attaching volume to instance", "instanceId", command.ID)
 
 	if command.AttachVolumeData == nil || command.AttachVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "AttachVolume: missing attach volume data")
-		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	volumeID := command.AttachVolumeData.VolumeID
@@ -38,15 +37,13 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	if status != vm.StateRunning {
 		slog.ErrorContext(ctx, "AttachVolume: instance not running",
 			"instanceId", command.ID, "status", status)
-		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	volMeta, err := d.volumeService.GetVolumeMetadata(volumeID)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to get volume metadata", "volumeId", volumeID, "err", err)
-		respondWithError(msg, awserrors.ErrorInvalidVolumeNotFound)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
 	callerAccountID := utils.AccountIDFromMsg(msg)
@@ -55,8 +52,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			"volumeId", volumeID,
 			"callerAccount", callerAccountID,
 			"ownerAccount", volMeta.TenantID)
-		respondWithError(msg, awserrors.ErrorInvalidVolumeNotFound)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
 	if volMeta.State != "available" {
@@ -69,8 +65,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 					"attachedDevice", volMeta.DeviceName)
 				// AWS returns VolumeInUse (not InvalidParameterValue) when a
 				// re-attach targets a device other than the one already in use.
-				respondWithError(msg, awserrors.ErrorVolumeInUse)
-				return
+				return respondErrorOutcome(msg, awserrors.ErrorVolumeInUse)
 			}
 
 			// Volume is already attached to this instance (e.g. a CSI
@@ -79,13 +74,12 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			slog.InfoContext(ctx, "AttachVolume: volume already attached to requesting instance, returning idempotent success",
 				"volumeId", volumeID, "instanceId", command.ID, "device", volMeta.DeviceName)
 			d.respondWithVolumeAttachment(msg, volumeID, command.ID, volMeta.DeviceName, "attached")
-			return
+			return outcomeSuccess
 		}
 
 		slog.ErrorContext(ctx, "AttachVolume: volume not available",
 			"volumeId", volumeID, "state", volMeta.State)
-		respondWithError(msg, awserrors.ErrorVolumeInUse)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorVolumeInUse)
 	}
 
 	if volMeta.AvailabilityZone != "" && d.config.AZ != "" &&
@@ -94,14 +88,12 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			"volumeId", volumeID,
 			"volumeAZ", volMeta.AvailabilityZone,
 			"instanceAZ", d.config.AZ)
-		respondWithError(msg, awserrors.ErrorInvalidVolumeZoneMismatch)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeZoneMismatch)
 	}
 
 	device, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
 	if err != nil {
-		respondWithError(msg, attachDetachErrorCode(err))
-		return
+		return respondErrorOutcome(msg, attachDetachErrorCode(err))
 	}
 
 	// AttachVolume returns the API-form device name (/dev/sd[f-p]), not
@@ -112,17 +104,17 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	// This diverges intentionally from BlockDeviceMappings, which retain
 	// the guest path for in-guest device discovery.
 	d.respondWithVolumeAttachment(msg, volumeID, command.ID, device, "attached")
+	return outcomeSuccess
 }
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to
 // vm.Manager.DetachVolume and emits the AWS API response.
-func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Detaching volume from instance", "instanceId", command.ID)
 
 	if command.DetachVolumeData == nil || command.DetachVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "DetachVolume: missing detach volume data")
-		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	deviceName, err := d.vmMgr.DetachVolume(
@@ -133,11 +125,11 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 		command.DetachVolumeData.Force,
 	)
 	if err != nil {
-		respondWithError(msg, attachDetachErrorCode(err))
-		return
+		return respondErrorOutcome(msg, attachDetachErrorCode(err))
 	}
 
 	d.respondWithVolumeAttachment(msg, command.DetachVolumeData.VolumeID, command.ID, deviceName, "detaching")
+	return outcomeSuccess
 }
 
 // handleDrainVolume flushes the volume's in-flight writes to S3 by dialing the
@@ -147,15 +139,14 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 //
 // Runs on its own goroutine (see handleEC2Events) so a long flush cannot hold
 // the instance's command subscription.
-func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	ctx, span := startOpSpan(ctx, "ec2.DrainVolume", command.ID)
 	var err error
 	defer func() { endOpSpan(span, err) }()
 
 	if command.DrainVolumeData == nil || command.DrainVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "DrainVolume: missing drain volume data", "instanceId", command.ID)
-		respondWithError(msg, awserrors.ErrorInvalidParameterValue)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	volumeID := command.DrainVolumeData.VolumeID
@@ -168,7 +159,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
 			"volumeId", volumeID, "instanceId", command.ID, "status", status)
 		respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
-		return
+		return outcomeSuccess
 	}
 
 	slog.InfoContext(ctx, "Draining volume before snapshot", "volumeId", volumeID, "instanceId", command.ID)
@@ -178,11 +169,11 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	// read a stale checkpoint.
 	if err = handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
 		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
+		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
 	}
 
 	respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	return outcomeSuccess
 }
 
 // attachDetachErrorCode maps a vm.Manager error returned by AttachVolume

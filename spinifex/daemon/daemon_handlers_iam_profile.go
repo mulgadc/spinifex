@@ -11,11 +11,11 @@ import (
 // handleAssociateIamInstanceProfile services the per-instance Associate path.
 // Gateway pre-validates the profile reference and iam:PassRole; ownership is
 // checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleAssociateIamInstanceProfile(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
+func (d *Daemon) handleAssociateIamInstanceProfile(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	result, err := d.instanceService.AssociateIamInstanceProfile(ctx, instance, command)
 	if err != nil {
-		respondWithServiceError(msg, err)
-		return
+		return respondServiceErrorOutcome(msg, err)
 	}
 	respondWithJSON(msg, result)
+	return outcomeSuccess
 }

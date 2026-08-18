@@ -105,8 +105,9 @@ func TestNATSMetricsHandlerSkipsDeferredOutcome(t *testing.T) {
 }
 
 // End to end over the real transport: the generic request constructor must
-// report error for a failing service call and success for a passing one, so a
-// failed NATS request is distinguishable in Kibana without reading logs.
+// report the failure's class for a failing service call and success for a
+// passing one, so a failed NATS request is distinguishable in Kibana without
+// reading logs, and a caller mistake does not read as a daemon fault.
 func TestHandleNATSRequestReportsOutcome(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -114,7 +115,9 @@ func TestHandleNATSRequestReportsOutcome(t *testing.T) {
 		svcErr  error
 		want    string
 	}{
-		{"service error", "test.outcome.err", errors.New(awserrors.ErrorVolumeInUse), outcomeError},
+		{"caller error", "test.outcome.err", errors.New(awserrors.ErrorVolumeInUse), outcomeClientError},
+		{"server fault", "test.outcome.fault", errors.New(awserrors.ErrorServerInternal), outcomeError},
+		{"unrecognised failure", "test.outcome.opaque", errors.New("disk fell over"), outcomeError},
 		{"service success", "test.outcome.ok", nil, outcomeSuccess},
 	}
 
@@ -147,8 +150,9 @@ func TestHandleNATSRequestReportsOutcome(t *testing.T) {
 	}
 }
 
-// A malformed payload never reaches the service, and that rejection is an
-// error outcome too — otherwise a client sending garbage looks like success.
+// A malformed payload never reaches the service. It is still not a success,
+// but it is the caller's mistake, so it records as a client error rather than
+// counting against the daemon.
 func TestHandleNATSRequestReportsOutcomeForBadPayload(t *testing.T) {
 	installOutcomeReader(t)
 	const subject = "test.outcome.malformed"
@@ -169,7 +173,7 @@ func TestHandleNATSRequestReportsOutcomeForBadPayload(t *testing.T) {
 	_, err = nc.Request(subject, []byte("{not json"), 5*time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{outcomeError}, requestOutcomesFor(t, subject))
+	assert.Equal(t, []string{outcomeClientError}, requestOutcomesFor(t, subject))
 }
 
 // asMsgHandler drops the outcome a handler reports, for tests that subscribe a

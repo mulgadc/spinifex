@@ -14,7 +14,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
-    useSearch: () => ({}),
     Link: ({ children, to }: { children: ReactNode; to?: string }) => (
       <a href={to}>{children}</a>
     ),
@@ -32,7 +31,7 @@ import {
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 
-import { CreateInstance } from "./run-instances"
+import { RunInstancesPage } from "./run-instances-page"
 
 const INSTANCE_TYPES = [
   { InstanceType: "t3.nano" },
@@ -97,7 +96,7 @@ function setup() {
     $metadata: {},
     LaunchTemplates: [],
   })
-  return renderWithClient(<CreateInstance />, queryClient)
+  return renderWithClient(<RunInstancesPage />, queryClient)
 }
 
 describe("run-instances instance type picker", () => {

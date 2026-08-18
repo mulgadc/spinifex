@@ -27,7 +27,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
   return {
     ...actual,
-    createFileRoute: () => (options: Record<string, unknown>) => options,
     useNavigate: () => vi.fn(),
     Link: ({ children, to }: { children: ReactNode; to?: string }) => (
       <a href={to}>{children}</a>
@@ -35,11 +34,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   }
 })
 
-import { CreateKeyPair } from "./create-key-pair"
+import { CreateKeyPairPage } from "./create-key-pair-page"
 
 function renderPage() {
   send.mockClear()
-  return renderWithClient(<CreateKeyPair />, createTestQueryClient())
+  return renderWithClient(<CreateKeyPairPage />, createTestQueryClient())
 }
 
 describe("create-key-pair route", () => {

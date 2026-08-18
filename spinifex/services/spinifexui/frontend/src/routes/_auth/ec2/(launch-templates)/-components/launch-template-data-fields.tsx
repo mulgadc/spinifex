@@ -231,6 +231,7 @@ export function LaunchTemplateDataFields({
           name="securityGroupIds"
           render={({ field }) => {
             const selected = field.value ?? []
+            const selectedSet = new Set(selected)
             const toggle = (sgId: string) => {
               field.onChange(
                 selected.includes(sgId)
@@ -254,7 +255,7 @@ export function LaunchTemplateDataFields({
                   >
                     <input
                       aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
-                      checked={selected.includes(sg.GroupId ?? "")}
+                      checked={selectedSet.has(sg.GroupId ?? "")}
                       onChange={() => toggle(sg.GroupId ?? "")}
                       type="checkbox"
                     />

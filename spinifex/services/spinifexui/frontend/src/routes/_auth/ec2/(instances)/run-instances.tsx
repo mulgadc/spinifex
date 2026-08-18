@@ -218,6 +218,7 @@ export function CreateInstance() {
   const sgMode = useWatch({ control, name: "securityGroupMode" })
   const ruleSource = useWatch({ control, name: "ruleSource" })
   const selectedSgIds = useWatch({ control, name: "securityGroupIds" }) ?? []
+  const selectedSgIdSet = new Set(selectedSgIds)
 
   // Launch template: when one is selected the instance is launched from it and
   // the direct-config fields below are hidden — the template supplies them.
@@ -702,7 +703,7 @@ export function CreateInstance() {
                         >
                           <input
                             aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
-                            checked={selectedSgIds.includes(sg.GroupId ?? "")}
+                            checked={selectedSgIdSet.has(sg.GroupId ?? "")}
                             onChange={() => toggleSg(sg.GroupId ?? "")}
                             type="checkbox"
                           />

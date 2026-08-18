@@ -332,6 +332,7 @@ function AddNodegroupDialog({
   })
 
   const selectedSubnets = useWatch({ control, name: "subnetIds" })
+  const selectedSubnetSet = new Set(selectedSubnets)
   const selectedInstanceType = useWatch({ control, name: "instanceTypes" })
   const selectedIsGpu = isGpuNodegroup(selectedInstanceType, instanceTypes)
 
@@ -419,7 +420,7 @@ function AddNodegroupDialog({
                   >
                     <input
                       aria-label={`Subnet ${subnet.SubnetId}`}
-                      checked={selectedSubnets.includes(subnet.SubnetId ?? "")}
+                      checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
                       onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
                       type="checkbox"
                     />

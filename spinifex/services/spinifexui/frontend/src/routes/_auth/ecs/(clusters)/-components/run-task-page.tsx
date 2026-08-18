@@ -69,6 +69,8 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
 
   const selectedSubnets = useWatch({ control, name: "subnets" })
   const selectedSgs = useWatch({ control, name: "securityGroups" })
+  const selectedSubnetSet = new Set(selectedSubnets)
+  const selectedSgSet = new Set(selectedSgs)
   const toggle = (name: "subnets" | "securityGroups", id: string) => {
     const current = getValues(name)
     setValue(
@@ -175,7 +177,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
                     key={s.SubnetId}
                   >
                     <input
-                      checked={selectedSubnets.includes(s.SubnetId ?? "")}
+                      checked={selectedSubnetSet.has(s.SubnetId ?? "")}
                       onChange={() => toggle("subnets", s.SubnetId ?? "")}
                       type="checkbox"
                     />
@@ -195,7 +197,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
                     key={sg.GroupId}
                   >
                     <input
-                      checked={selectedSgs.includes(sg.GroupId ?? "")}
+                      checked={selectedSgSet.has(sg.GroupId ?? "")}
                       onChange={() =>
                         toggle("securityGroups", sg.GroupId ?? "")
                       }

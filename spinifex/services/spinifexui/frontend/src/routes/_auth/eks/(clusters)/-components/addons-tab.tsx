@@ -55,9 +55,8 @@ function AddAddonDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const createAddon = useCreateAddon()
-  const available = catalog.filter(
-    (a) => !installed.includes(a.addonName ?? ""),
-  )
+  const installedSet = new Set(installed)
+  const available = catalog.filter((a) => !installedSet.has(a.addonName ?? ""))
 
   const {
     control,

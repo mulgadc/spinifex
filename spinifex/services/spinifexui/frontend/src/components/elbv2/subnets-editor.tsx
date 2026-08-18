@@ -51,6 +51,7 @@ export function SubnetsEditor({
   const dirty = !sameSet(selected, initial)
   // A load balancer must front at least one subnet.
   const isEmpty = selected.length === 0
+  const selectedIds = new Set(selected)
 
   return (
     <form
@@ -100,7 +101,7 @@ export function SubnetsEditor({
               >
                 <input
                   aria-label={`Subnet ${subnet.SubnetId}`}
-                  checked={selected.includes(subnet.SubnetId ?? "")}
+                  checked={selectedIds.has(subnet.SubnetId ?? "")}
                   onChange={() => toggle(subnet.SubnetId ?? "")}
                   type="checkbox"
                 />

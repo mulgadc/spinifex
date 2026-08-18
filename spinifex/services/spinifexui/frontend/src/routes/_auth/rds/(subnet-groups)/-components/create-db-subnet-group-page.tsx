@@ -63,6 +63,7 @@ export function CreateDBSubnetGroupPage() {
 
   const values = useWatch({ control })
   const selectedSubnets = values.subnetIds ?? []
+  const selectedSubnetSet = new Set(selectedSubnets)
 
   const subnets = subnetsData.Subnets ?? []
   const vpcs = vpcsData.Vpcs ?? []
@@ -167,7 +168,7 @@ export function CreateDBSubnetGroupPage() {
                           >
                             <input
                               aria-label={`Subnet ${subnetLabel(subnet)}`}
-                              checked={selectedSubnets.includes(
+                              checked={selectedSubnetSet.has(
                                 subnet.SubnetId ?? "",
                               )}
                               disabled={unreachable}

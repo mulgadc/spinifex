@@ -48,6 +48,8 @@ export function SecurityGroupCheckboxes({
     return <p className="text-xs text-muted-foreground">{emptyText}</p>
   }
 
+  const selectedIds = new Set(selected)
+
   const toggle = (groupId: string) =>
     onChange(
       selected.includes(groupId)
@@ -61,7 +63,7 @@ export function SecurityGroupCheckboxes({
         <label className="flex items-center gap-2 text-xs" key={group.GroupId}>
           <input
             aria-label={`Security group ${securityGroupLabel(group)}`}
-            checked={selected.includes(group.GroupId ?? "")}
+            checked={selectedIds.has(group.GroupId ?? "")}
             onChange={() => toggle(group.GroupId ?? "")}
             type="checkbox"
           />

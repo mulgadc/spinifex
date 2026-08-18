@@ -183,6 +183,8 @@ export function CreateLoadBalancerPage() {
   const selectedVpc = useWatch({ control, name: "vpcId" })
   const selectedSubnets = useWatch({ control, name: "subnetIds" })
   const selectedSgs = useWatch({ control, name: "securityGroupIds" })
+  const selectedSubnetSet = new Set(selectedSubnets)
+  const selectedSgSet = new Set(selectedSgs)
   const lbType = useWatch({ control, name: "type" })
   const listenerProtocol = useWatch({ control, name: "listener.protocol" })
   const tgMode = useWatch({ control, name: "listener.targetGroupMode" })
@@ -487,9 +489,7 @@ export function CreateLoadBalancerPage() {
                       >
                         <input
                           aria-label={`Subnet ${subnetLabel(subnet)}`}
-                          checked={selectedSubnets.includes(
-                            subnet.SubnetId ?? "",
-                          )}
+                          checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
                           onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
                           type="checkbox"
                         />
@@ -520,7 +520,7 @@ export function CreateLoadBalancerPage() {
                   >
                     <input
                       aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
-                      checked={selectedSgs.includes(sg.GroupId ?? "")}
+                      checked={selectedSgSet.has(sg.GroupId ?? "")}
                       onChange={() => toggleSg(sg.GroupId ?? "")}
                       type="checkbox"
                     />

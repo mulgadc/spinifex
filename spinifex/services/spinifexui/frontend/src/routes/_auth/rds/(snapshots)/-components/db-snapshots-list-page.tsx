@@ -14,7 +14,6 @@ import {
   SNAPSHOT_TYPE_MANUAL,
 } from "@/types/rds"
 
-import { RdsSectionNav } from "../../-components/rds-section-nav"
 import { CreateDBSnapshotDialog } from "./create-db-snapshot-dialog"
 import { DeleteDBSnapshotDialog } from "./delete-db-snapshot-dialog"
 
@@ -39,12 +38,10 @@ export function DBSnapshotsListPage() {
     <>
       <PageHeading
         actions={
-          <Button onClick={() => setShowCreate(true)}>Take snapshot</Button>
+          <Button onClick={() => setShowCreate(true)}>Take Snapshot</Button>
         }
         title="Snapshots"
       />
-
-      <RdsSectionNav />
 
       <div className="mb-4 flex items-center gap-2">
         {TYPE_FILTERS.map((filter) => (

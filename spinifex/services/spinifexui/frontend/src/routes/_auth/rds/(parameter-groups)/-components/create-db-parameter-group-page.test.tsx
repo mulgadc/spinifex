@@ -78,7 +78,7 @@ describe("CreateDBParameterGroupPage", () => {
       target: { value: "Tuned settings" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: "Create parameter group" }),
+      screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
     await waitFor(() => expect(mockSend).toHaveBeenCalled())
@@ -98,7 +98,7 @@ describe("CreateDBParameterGroupPage", () => {
       target: { value: "Tuned settings" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: "Create parameter group" }),
+      screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
     expect(
@@ -114,7 +114,7 @@ describe("CreateDBParameterGroupPage", () => {
       target: { value: "orders-pg" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: "Create parameter group" }),
+      screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
     expect(

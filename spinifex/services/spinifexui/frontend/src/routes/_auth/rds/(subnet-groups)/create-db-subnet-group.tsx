@@ -16,7 +16,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Create subnet group | RDS | Mulga",
+        title: "Create Subnet Group | RDS | Mulga",
       },
     ],
   }),

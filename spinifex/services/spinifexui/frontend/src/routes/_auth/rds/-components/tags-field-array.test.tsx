@@ -32,7 +32,7 @@ describe("TagsFieldArray", () => {
     const onSubmit = vi.fn()
     render(<TagsForm onSubmit={onSubmit} />)
 
-    await user.click(screen.getByRole("button", { name: "Add tag" }))
+    await user.click(screen.getByRole("button", { name: "Add Tag" }))
     await user.click(screen.getByRole("button", { name: "Submit" }))
 
     expect(screen.getByText("Tag key is required")).toBeInTheDocument()
@@ -48,7 +48,7 @@ describe("TagsFieldArray", () => {
     const onSubmit = vi.fn()
     render(<TagsForm onSubmit={onSubmit} />)
 
-    await user.click(screen.getByRole("button", { name: "Add tag" }))
+    await user.click(screen.getByRole("button", { name: "Add Tag" }))
     await user.type(screen.getByPlaceholderText("Key"), "environment")
     await user.type(screen.getByPlaceholderText("Value"), "production")
     await user.click(screen.getByRole("button", { name: "Submit" }))

@@ -270,7 +270,7 @@ describe("RestoreDBSnapshotPage form", () => {
 
     await user.clear(storage)
     await user.type(storage, "20")
-    await user.click(screen.getByRole("button", { name: "Restore snapshot" }))
+    await user.click(screen.getByRole("button", { name: "Restore Snapshot" }))
 
     expect(storage.validity.rangeUnderflow).toBeTruthy()
     expect(mockSend).not.toHaveBeenCalled()
@@ -280,7 +280,7 @@ describe("RestoreDBSnapshotPage form", () => {
     const user = userEvent.setup()
     render()
     await selectInstanceClass(user)
-    fireEvent.click(screen.getByRole("button", { name: "Restore snapshot" }))
+    fireEvent.click(screen.getByRole("button", { name: "Restore Snapshot" }))
 
     await waitFor(() => expect(mockSend).toHaveBeenCalled())
     const input = mockSend.mock.calls[0]?.[0].input
@@ -303,7 +303,7 @@ describe("RestoreDBSnapshotPage form", () => {
     const user = userEvent.setup()
     render()
     await selectInstanceClass(user)
-    fireEvent.click(screen.getByRole("button", { name: "Restore snapshot" }))
+    fireEvent.click(screen.getByRole("button", { name: "Restore Snapshot" }))
 
     expect(await screen.findByText(/already exists/)).toBeInTheDocument()
   })

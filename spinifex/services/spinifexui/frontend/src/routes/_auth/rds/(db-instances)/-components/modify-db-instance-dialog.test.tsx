@@ -125,7 +125,7 @@ describe("ModifyDBInstanceDialog", () => {
       "Allocated storage (GiB)",
     )
     fireEvent.change(storage, { target: { value: "20" } })
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
     expect(storage.checkValidity()).toBeFalsy()
     expect(mockSend).not.toHaveBeenCalled()
@@ -134,7 +134,7 @@ describe("ModifyDBInstanceDialog", () => {
   it("sends the identifier and ApplyImmediately on save", async () => {
     render()
     fireEvent.click(screen.getByLabelText("Apply immediately"))
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
     await waitFor(() => expect(mockSend).toHaveBeenCalled())
     const input = mockSend.mock.calls[0]?.[0].input

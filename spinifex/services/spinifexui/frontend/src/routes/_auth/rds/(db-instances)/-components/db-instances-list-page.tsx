@@ -15,7 +15,6 @@ import {
 import { rdsDBInstancesQueryOptions } from "@/queries/rds"
 import { canDelete, canReboot, canStart, canStop } from "@/types/rds"
 
-import { RdsSectionNav } from "../../-components/rds-section-nav"
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
 
 interface DeleteTarget {
@@ -48,13 +47,11 @@ export function DBInstancesListPage() {
               await navigate({ to: "/rds/create-db-instance" })
             }
           >
-            Create database
+            Create Database
           </Button>
         }
         title="Databases"
       />
-
-      <RdsSectionNav />
 
       {lifecycleError && (
         <ErrorBanner

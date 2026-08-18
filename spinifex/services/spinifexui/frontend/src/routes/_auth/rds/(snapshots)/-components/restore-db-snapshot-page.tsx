@@ -228,7 +228,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     return (
       <>
         <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore snapshot" />
+        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
         <p className="text-muted-foreground">
           {dbSnapshotIdentifier} is {snapshot.Status}. A snapshot can only be
           restored once it is available.
@@ -248,7 +248,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     return (
       <>
         <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore snapshot" />
+        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
         <SystemImageRequired
           description={`This snapshot holds ${engine} data and can only be restored onto a ${engine} instance, but no ${engine} image is imported on this cluster.`}
           importCommand={rdsImportCommand(engine)}
@@ -293,7 +293,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   return (
     <>
       <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-      <PageHeading subtitle={dbSnapshotIdentifier} title="Restore snapshot" />
+      <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
 
       {restoreInstance.error && (
         <ErrorBanner
@@ -304,7 +304,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
       <div className="max-w-4xl space-y-6">
         <DetailCard>
-          <DetailCard.Header>Restoring from</DetailCard.Header>
+          <DetailCard.Header>Restoring From</DetailCard.Header>
           <DetailCard.Content>
             <DetailRow label="Snapshot" value={dbSnapshotIdentifier} />
             <DetailRow
@@ -471,7 +471,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
               await navigate({ to: "/rds/describe-db-snapshots" })
             }
             pendingLabel="Restoring…"
-            submitLabel="Restore snapshot"
+            submitLabel="Restore Snapshot"
           />
         </form>
       </div>

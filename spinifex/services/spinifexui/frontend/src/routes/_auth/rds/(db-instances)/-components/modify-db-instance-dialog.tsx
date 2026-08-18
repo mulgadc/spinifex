@@ -363,7 +363,7 @@ export function ModifyDBInstanceDialog({
               isSubmitting={isSubmitting}
               onCancel={() => onOpenChange(false)}
               pendingLabel="Saving…"
-              submitLabel="Save changes"
+              submitLabel="Save Changes"
             />
           </div>
         </form>

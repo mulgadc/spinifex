@@ -89,7 +89,7 @@ export function DeleteDBInstanceDialog({
     <AlertDialog onOpenChange={handleOpenChange} open={open}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete DB instance</AlertDialogTitle>
+          <AlertDialogTitle>Delete DB Instance</AlertDialogTitle>
           <AlertDialogDescription>
             {deletionProtection
               ? `"${dbInstanceIdentifier}" has deletion protection enabled and cannot be deleted while it is on.`
@@ -104,7 +104,7 @@ export function DeleteDBInstanceDialog({
             </p>
             {onModify ? (
               <Button onClick={onModify} size="sm" variant="outline">
-                Modify instance
+                Modify Instance
               </Button>
             ) : (
               <Link

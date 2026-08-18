@@ -94,7 +94,7 @@ export function CreateDBSubnetGroupPage() {
       <BackLink to="/rds/describe-db-subnet-groups">
         Back to subnet groups
       </BackLink>
-      <PageHeading title="Create DB subnet group" />
+      <PageHeading title="Create DB Subnet Group" />
 
       {createGroup.error && (
         <ErrorBanner
@@ -213,7 +213,7 @@ export function CreateDBSubnetGroupPage() {
             await navigate({ to: "/rds/describe-db-subnet-groups" })
           }
           pendingLabel="Creating…"
-          submitLabel="Create subnet group"
+          submitLabel="Create Subnet Group"
         />
       </form>
     </>

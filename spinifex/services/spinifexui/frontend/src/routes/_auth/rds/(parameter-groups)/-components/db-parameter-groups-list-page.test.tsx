@@ -89,7 +89,7 @@ describe("DBParameterGroupsListPage", () => {
   it("navigates to the create page from the heading action", () => {
     renderWithClient(<DBParameterGroupsListPage />, seed([]))
     fireEvent.click(
-      screen.getByRole("button", { name: "Create parameter group" }),
+      screen.getByRole("button", { name: "Create Parameter Group" }),
     )
     expect(routerState.navigate).toHaveBeenCalledWith({
       to: "/rds/create-db-parameter-group",

@@ -212,7 +212,7 @@ export function ParametersEditor({
             onClick={() => void handleSave()}
             size="sm"
           >
-            {modifyGroup.isPending ? "Saving…" : "Save changes"}
+            {modifyGroup.isPending ? "Saving…" : "Save Changes"}
           </Button>
           <Button onClick={() => setEdits({})} size="sm" variant="outline">
             Discard

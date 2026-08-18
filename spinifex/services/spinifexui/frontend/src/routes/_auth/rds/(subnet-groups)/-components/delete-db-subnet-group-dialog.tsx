@@ -29,7 +29,7 @@ export function DeleteDBSubnetGroupDialog({
       onDeleted={onDeleted}
       onOpenChange={onOpenChange}
       open={open}
-      title="Delete DB subnet group"
+      title="Delete DB Subnet Group"
     />
   )
 }

@@ -30,7 +30,7 @@ export function DeleteDBSnapshotDialog({
       onDeleted={onDeleted}
       onOpenChange={onOpenChange}
       open={open}
-      title="Delete DB snapshot"
+      title="Delete DB Snapshot"
     />
   )
 }

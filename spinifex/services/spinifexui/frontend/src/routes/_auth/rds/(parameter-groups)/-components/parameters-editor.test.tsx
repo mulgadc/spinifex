@@ -141,7 +141,7 @@ describe("ParametersEditor", () => {
     fireEvent.change(valueInput("max_connections"), {
       target: { value: "200" },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
     await waitFor(() => expect(mockSend).toHaveBeenCalled())
     const input = mockSend.mock.calls[0]?.[0].input
@@ -161,14 +161,14 @@ describe("ParametersEditor", () => {
       target: { value: "200" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Discard" }))
-    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Save Changes" })).toBeNull()
     expect(mockSend).not.toHaveBeenCalled()
   })
 
   it("refuses to save a blank value", () => {
     render()
     fireEvent.change(valueInput("max_connections"), { target: { value: "" } })
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled()
     expect(screen.getByText(/cannot be left blank/)).toBeInTheDocument()
   })
 
@@ -186,7 +186,7 @@ describe("ParametersEditor", () => {
     }
 
     expect(screen.getByText("21 parameters edited")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled()
     expect(
       screen.getByText(/At most 20 parameters can be saved at once/),
     ).toBeInTheDocument()
@@ -200,7 +200,7 @@ describe("ParametersEditor", () => {
     fireEvent.change(valueInput("max_connections"), {
       target: { value: "200" },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
     expect(
       await screen.findByText(/parameter max_connections is static/),

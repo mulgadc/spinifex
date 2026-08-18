@@ -228,7 +228,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                 variant="outline"
               >
                 <Camera className="size-4" />
-                Take snapshot
+                Take Snapshot
               </Button>
               <Button
                 onClick={() => setShowModify(true)}
@@ -370,7 +370,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
 
               {hasPending && (
                 <DetailCard>
-                  <DetailCard.Header>Pending changes</DetailCard.Header>
+                  <DetailCard.Header>Pending Changes</DetailCard.Header>
                   <DetailCard.Content>
                     <DetailRow
                       label="Instance class"
@@ -419,7 +419,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               )}
 
               <DetailCard>
-                <DetailCard.Header>Automated backups</DetailCard.Header>
+                <DetailCard.Header>Automated Backups</DetailCard.Header>
                 <DetailCard.Content>
                   <DetailRow
                     label="Retention"

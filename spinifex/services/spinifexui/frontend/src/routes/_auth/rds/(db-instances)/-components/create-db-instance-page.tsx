@@ -249,7 +249,7 @@ export function CreateDBInstancePage() {
     return (
       <>
         <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-        <PageHeading title="Create database" />
+        <PageHeading title="Create Database" />
         <SystemImageRequired
           description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
           importCommand={rdsImportCommand(engines[0] ?? "")}
@@ -281,7 +281,7 @@ export function CreateDBInstancePage() {
   return (
     <>
       <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-      <PageHeading title="Create database" />
+      <PageHeading title="Create Database" />
 
       {createInstance.error && (
         <ErrorBanner
@@ -654,7 +654,7 @@ export function CreateDBInstancePage() {
             await navigate({ to: "/rds/describe-db-instances" })
           }
           pendingLabel="Creating…"
-          submitLabel="Create database"
+          submitLabel="Create Database"
         />
       </form>
     </>

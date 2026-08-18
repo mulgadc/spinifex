@@ -107,7 +107,7 @@ describe("DBInstancesListPage", () => {
 
   it("navigates to the create page from the heading action", async () => {
     renderWithClient(<DBInstancesListPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Create database" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create Database" }))
     expect(routerState.navigate).toHaveBeenCalledWith({
       to: "/rds/create-db-instance",
     })

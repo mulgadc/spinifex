@@ -29,7 +29,7 @@ export function DeleteDBParameterGroupDialog({
       onDeleted={onDeleted}
       onOpenChange={onOpenChange}
       open={open}
-      title="Delete DB parameter group"
+      title="Delete DB Parameter Group"
     />
   )
 }

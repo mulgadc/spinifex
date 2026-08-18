@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button"
 import { rdsParameterGroupsQueryOptions } from "@/queries/rds"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
-import { RdsSectionNav } from "../../-components/rds-section-nav"
 import { DeleteDBParameterGroupDialog } from "./delete-db-parameter-group-dialog"
 
 export function DBParameterGroupsListPage() {
@@ -26,13 +25,11 @@ export function DBParameterGroupsListPage() {
               await navigate({ to: "/rds/create-db-parameter-group" })
             }
           >
-            Create parameter group
+            Create Parameter Group
           </Button>
         }
-        title="DB parameter groups"
+        title="DB Parameter Groups"
       />
-
-      <RdsSectionNav />
 
       {groups.length > 0 ? (
         <div className="overflow-x-auto rounded-lg border bg-card">

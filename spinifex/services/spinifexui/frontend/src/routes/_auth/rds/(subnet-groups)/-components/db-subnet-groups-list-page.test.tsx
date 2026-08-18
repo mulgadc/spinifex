@@ -69,7 +69,7 @@ describe("DBSubnetGroupsListPage", () => {
 
   it("navigates to the create page from the heading action", () => {
     renderWithClient(<DBSubnetGroupsListPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Create subnet group" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
     expect(routerState.navigate).toHaveBeenCalledWith({
       to: "/rds/create-db-subnet-group",
     })

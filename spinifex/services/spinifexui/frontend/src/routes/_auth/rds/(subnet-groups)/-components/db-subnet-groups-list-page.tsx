@@ -7,7 +7,6 @@ import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { rdsSubnetGroupsQueryOptions } from "@/queries/rds"
 
-import { RdsSectionNav } from "../../-components/rds-section-nav"
 import { DeleteDBSubnetGroupDialog } from "./delete-db-subnet-group-dialog"
 
 export function DBSubnetGroupsListPage() {
@@ -26,13 +25,11 @@ export function DBSubnetGroupsListPage() {
               await navigate({ to: "/rds/create-db-subnet-group" })
             }
           >
-            Create subnet group
+            Create Subnet Group
           </Button>
         }
-        title="DB subnet groups"
+        title="DB Subnet Groups"
       />
-
-      <RdsSectionNav />
 
       {groups.length > 0 ? (
         <div className="overflow-x-auto rounded-lg border bg-card">

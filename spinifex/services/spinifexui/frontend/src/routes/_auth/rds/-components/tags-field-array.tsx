@@ -83,7 +83,7 @@ export function TagsFieldArray<T extends FieldValues>({
           variant="outline"
         >
           <Plus className="size-3.5" />
-          Add tag
+          Add Tag
         </Button>
       </div>
     </Field>

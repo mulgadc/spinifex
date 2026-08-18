@@ -154,8 +154,8 @@ describe("DBSnapshotsListPage", () => {
 
   it("opens the create dialog from the heading action", () => {
     renderWithClient(<DBSnapshotsListPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
-    expect(screen.getByText("Take DB snapshot")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Take Snapshot" }))
+    expect(screen.getByText("Take DB Snapshot")).toBeInTheDocument()
   })
 
   it("says why an automated backup cannot be removed by hand", () => {

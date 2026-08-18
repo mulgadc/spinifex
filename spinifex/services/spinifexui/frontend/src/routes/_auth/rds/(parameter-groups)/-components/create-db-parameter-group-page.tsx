@@ -86,7 +86,7 @@ export function CreateDBParameterGroupPage() {
       <BackLink to="/rds/describe-db-parameter-groups">
         Back to parameter groups
       </BackLink>
-      <PageHeading title="Create DB parameter group" />
+      <PageHeading title="Create DB Parameter Group" />
 
       {createGroup.error && (
         <ErrorBanner
@@ -184,7 +184,7 @@ export function CreateDBParameterGroupPage() {
             await navigate({ to: "/rds/describe-db-parameter-groups" })
           }
           pendingLabel="Creating…"
-          submitLabel="Create parameter group"
+          submitLabel="Create Parameter Group"
         />
       </form>
     </>

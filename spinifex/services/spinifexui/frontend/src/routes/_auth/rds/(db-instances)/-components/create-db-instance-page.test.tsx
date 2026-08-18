@@ -124,7 +124,7 @@ describe("CreateDBInstancePage system image gating", () => {
     expect(screen.getByLabelText("DB instance identifier")).toBeInTheDocument()
     expect(screen.queryByText(/image not found/)).toBeNull()
     expect(
-      screen.getByRole("button", { name: "Create database" }),
+      screen.getByRole("button", { name: "Create Database" }),
     ).toBeEnabled()
   })
 
@@ -132,7 +132,7 @@ describe("CreateDBInstancePage system image gating", () => {
     renderWithClient(<CreateDBInstancePage />, seed([image("postgres")]))
     expect(screen.getByLabelText("DB instance identifier")).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create database" }),
+      screen.getByRole("button", { name: "Create Database" }),
     ).toBeEnabled()
     expect(screen.queryByText(/RDS system image not found/)).toBeNull()
   })

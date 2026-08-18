@@ -29,7 +29,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Create database | RDS | Mulga",
+        title: "Create Database | RDS | Mulga",
       },
     ],
   }),

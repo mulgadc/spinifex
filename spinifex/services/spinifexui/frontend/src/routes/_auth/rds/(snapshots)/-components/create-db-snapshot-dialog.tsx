@@ -122,7 +122,7 @@ export function CreateDBSnapshotDialog({
     <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
         <AlertDialogHeader>
-          <AlertDialogTitle>Take DB snapshot</AlertDialogTitle>
+          <AlertDialogTitle>Take DB Snapshot</AlertDialogTitle>
           <AlertDialogDescription>
             The engine is held at a checkpoint while the snapshot is taken, so
             the instance reads as backing-up until it finishes.
@@ -212,7 +212,7 @@ export function CreateDBSnapshotDialog({
               }
               type="submit"
             >
-              {createSnapshot.isPending ? "Taking snapshot…" : "Take snapshot"}
+              {createSnapshot.isPending ? "Taking Snapshot…" : "Take Snapshot"}
             </Button>
           </div>
         </form>

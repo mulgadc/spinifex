@@ -201,7 +201,7 @@ describe("DBInstanceDetailPage", () => {
       seed(),
     )
     openTab("Configuration")
-    expect(screen.queryByText("Pending changes")).toBeNull()
+    expect(screen.queryByText("Pending Changes")).toBeNull()
   })
 
   it("renders PendingModifiedValues when the backend reports them", () => {
@@ -221,7 +221,7 @@ describe("DBInstanceDetailPage", () => {
       }),
     )
     openTab("Configuration")
-    expect(screen.getByText("Pending changes")).toBeInTheDocument()
+    expect(screen.getByText("Pending Changes")).toBeInTheDocument()
     expect(screen.getByText("db.t3.small")).toBeInTheDocument()
     expect(screen.getByText("40 GiB")).toBeInTheDocument()
   })
@@ -382,8 +382,8 @@ describe("DBInstanceDetailPage", () => {
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
       seed(),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
-    expect(screen.getByText("Take DB snapshot")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Take Snapshot" }))
+    expect(screen.getByText("Take DB Snapshot")).toBeInTheDocument()
   })
 
   // backing-up is reachable only from a settled instance, so the action is
@@ -393,7 +393,7 @@ describe("DBInstanceDetailPage", () => {
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
       seed({ instances: [{ ...INSTANCE, DBInstanceStatus: "modifying" }] }),
     )
-    expect(screen.getByRole("button", { name: "Take snapshot" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Take Snapshot" })).toBeDisabled()
   })
 
   it("renders no control for a parameter the backend only stores", () => {

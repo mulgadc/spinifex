@@ -113,7 +113,7 @@ describe("CreateDBSubnetGroupPage", () => {
     })
     fireEvent.click(subnetCheckbox("subnet-a1"))
     fireEvent.click(subnetCheckbox("subnet-a2"))
-    fireEvent.click(screen.getByRole("button", { name: "Create subnet group" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
     await waitFor(() => expect(mockSend).toHaveBeenCalled())
     const input = mockSend.mock.calls[0]?.[0].input
@@ -132,7 +132,7 @@ describe("CreateDBSubnetGroupPage", () => {
       target: { value: "Private subnets" },
     })
     fireEvent.click(subnetCheckbox("subnet-a1"))
-    fireEvent.click(screen.getByRole("button", { name: "Create subnet group" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
     expect(await screen.findByText(/the service reserves/)).toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()

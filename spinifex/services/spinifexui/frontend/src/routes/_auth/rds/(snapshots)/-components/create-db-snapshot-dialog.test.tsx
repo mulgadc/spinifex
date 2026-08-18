@@ -44,7 +44,7 @@ function snapshotIdentifierField(): HTMLInputElement {
 }
 
 function submit() {
-  fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
+  fireEvent.click(screen.getByRole("button", { name: "Take Snapshot" }))
 }
 
 describe("CreateDBSnapshotDialog opened from an instance", () => {
@@ -110,7 +110,7 @@ describe("CreateDBSnapshotDialog opened from the snapshots list", () => {
 
   it("holds the submit back until an instance is chosen", () => {
     render()
-    expect(screen.getByRole("button", { name: "Take snapshot" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Take Snapshot" })).toBeDisabled()
   })
 
   it("names the snapshot after the instance the user picks", async () => {
@@ -121,7 +121,7 @@ describe("CreateDBSnapshotDialog opened from the snapshots list", () => {
       screen.getByRole("option", { name: "billing-db (stopped)" }),
     )
     expect(snapshotIdentifierField().value).toMatch(/^billing-db-snapshot-/)
-    expect(screen.getByRole("button", { name: "Take snapshot" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Take Snapshot" })).toBeEnabled()
   })
 
   it("explains the empty picker rather than offering a dead form", () => {
@@ -129,6 +129,6 @@ describe("CreateDBSnapshotDialog opened from the snapshots list", () => {
     expect(
       screen.getByText(/No DB instance is available or stopped/),
     ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Take snapshot" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Take Snapshot" })).toBeDisabled()
   })
 })

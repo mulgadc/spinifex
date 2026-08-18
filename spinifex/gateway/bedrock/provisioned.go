@@ -146,6 +146,52 @@ func getProvisionedRecordRevision(ctx context.Context, kv jetstream.KeyValue, ke
 	return rec, entry.Revision(), true, nil
 }
 
+// committedModelUnits sums ModelUnits across every commitment servingAccountID
+// holds for modelID. Every such commitment pins the same daemon endpoint
+// (EnsurePinned is keyed on (accountID, modelID) alone), so their capacity
+// stacks onto one shared serving VM rather than being read independently.
+// An empty servingAccountID (the shared ON_DEMAND path, which has no
+// commitment to read) returns 0 without touching the store.
+func committedModelUnits(ctx context.Context, store *ProvisionedStore, servingAccountID, modelID string) (int64, error) {
+	if servingAccountID == "" {
+		return 0, nil
+	}
+	kv, err := store.bucket(ctx)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("kv keys for provisioned models: %w", err)
+	}
+
+	prefix := servingAccountID + "/"
+	var total int64
+	for _, key := range keys {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return 0, fmt.Errorf("kv get %s: %w", key, err)
+		}
+		var rec ProvisionedModelRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			continue
+		}
+		if rec.ModelID == modelID {
+			total += rec.ModelUnits
+		}
+	}
+	return total, nil
+}
+
 // deriveStatus reports the AWS-shaped status for (accountID, modelID)'s
 // pinned endpoint. Anything other than STARTING/READY — including an absent
 // endpoint, DRAINING (only ever transient during this package's own Delete),

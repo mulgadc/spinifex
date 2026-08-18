@@ -133,10 +133,19 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	var a InvokeAdapter
 	switch {
 	case entry.Provider == tierSelfHost:
+		// Family validation first: a model this platform cannot serve at
+		// all must fail ValidationException outright, not consume (or be
+		// refused for) admission capacity it was never going to use.
 		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
 		if err != nil {
 			return nil, "", err
 		}
+		var release func()
+		release, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
+		if err != nil {
+			return nil, "", err
+		}
+		defer release()
 	case strings.HasPrefix(entry.Provider, providerPrefix):
 		switch strings.TrimPrefix(entry.Provider, providerPrefix) {
 		case vendorAnthropic:
@@ -299,9 +308,21 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 	}
 
 	var a InvokeAdapter
+	// selfHostRelease is non-nil only on the self-host branch below; every
+	// return past this point on that branch must release the slot exactly
+	// once, either explicitly here or via the slot-releasing source wrapper
+	// on the success path.
+	var selfHostRelease func()
 	switch {
 	case entry.Provider == tierSelfHost:
+		// Family validation first: a model this platform cannot serve at
+		// all must fail ValidationException outright, not consume (or be
+		// refused for) admission capacity it was never going to use.
 		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
+		if err != nil {
+			return nil, err
+		}
+		selfHostRelease, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -325,23 +346,40 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 
 	sa, ok := a.(InvokeStreamAdapter)
 	if !ok {
+		if selfHostRelease != nil {
+			selfHostRelease()
+		}
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 
 	if guardrailIdent != "" {
 		texts, extractOK := extractInvokePromptTexts(entry.Provider, body)
 		if !extractOK {
+			if selfHostRelease != nil {
+				selfHostRelease()
+			}
 			return nil, errors.New(awserrors.ErrorValidationException)
 		}
 		blocked, message, _, _, gerr := enforceGuardrail(ctx, rt.guardrails, accountID, guardrailIdent, guardrailVersion,
 			bedrockruntime.GuardrailContentSourceInput, texts)
 		if gerr != nil {
+			if selfHostRelease != nil {
+				selfHostRelease()
+			}
 			return nil, gerr
 		}
 		if blocked {
 			chunks, berr := buildGuardedInvokeStreamChunks(entry.Provider, message, true)
 			if berr != nil {
+				if selfHostRelease != nil {
+					selfHostRelease()
+				}
 				return nil, berr
+			}
+			// A blocked INPUT never opens the backend stream, so the slot
+			// releases immediately rather than living past this return.
+			if selfHostRelease != nil {
+				selfHostRelease()
 			}
 			return &blockedInvokeStreamSource{chunks: chunks}, nil
 		}
@@ -349,7 +387,13 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 
 	src, err := sa.InvokeModelWithResponseStream(ctx, modelID, body)
 	if err != nil {
+		if selfHostRelease != nil {
+			selfHostRelease()
+		}
 		return nil, err
+	}
+	if selfHostRelease != nil {
+		src = newSlotReleasingInvokeSource(src, selfHostRelease)
 	}
 	if guardrailIdent != "" {
 		src = newGuardrailInvokeStreamSource(src, rt.guardrails, accountID, guardrailIdent, guardrailVersion, entry.Provider)

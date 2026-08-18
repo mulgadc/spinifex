@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -268,6 +269,95 @@ func TestReconciler_FallsBackToTheHeartbeatWhenVMStateIsUnwired(t *testing.T) {
 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
+}
+
+// The launch surface the retrofit sweep needs: a system VPC to ensure the group
+// in, and the ENI surface to move the NIC with.
+func withSystemNICPath(enis *fakeENIs) func(*Deps) {
+	return func(d *Deps) {
+		d.Launch = LaunchDeps{
+			Config:    &config.Config{Region: testRegion},
+			SystemVPC: (&fakeSystemVPC{}).deps(),
+			VPC:       enis,
+		}
+	}
+}
+
+func (h *reconcileHarness) systemSGOf(t *testing.T, id string) string {
+	t.Helper()
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var rec DBInstanceRecord
+	found, err := getJSON(t.Context(), kv, DBInstanceKey(id), &rec)
+	require.NoError(t, err)
+	require.True(t, found)
+	return rec.SystemSGID
+}
+
+// A DB VM launched before the RDS system group existed sits in the system VPC's
+// default group, whose sole ingress rule admits every other member of itself.
+func TestReconciler_MovesAnExistingSystemNICOntoTheRDSSystemGroup(t *testing.T) {
+	t.Parallel()
+	enis := &fakeENIs{}
+	h := newReconcileHarness(t, withSystemNICPath(enis))
+	rec := healthyRecord()
+	rec.SystemENIID = "eni-sys01"
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+
+	require.Len(t, enis.modified, 1)
+	assert.Equal(t, "eni-sys01", aws.StringValue(enis.modified[0].NetworkInterfaceId))
+	assert.Equal(t, []string{testSystemSG}, aws.StringValueSlice(enis.modified[0].Groups))
+	assert.Equal(t, testSystemSG, h.systemSGOf(t, testDBID))
+
+	// The remediation yields its pass, so the record it wrote is not transitioned
+	// on a revision the status handler read before the move.
+	status, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusCreating, status)
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	assert.Len(t, enis.modified, 1, "once the group is recorded the sweep is a string compare")
+	status, _ = h.statusOf(t, testDBID)
+	assert.Equal(t, StatusAvailable, status)
+}
+
+// The group is regional, so the sweep must not describe and create one per DB
+// instance per pass.
+func TestReconciler_EnsuresTheSystemGroupOncePerProcess(t *testing.T) {
+	t.Parallel()
+	enis := &fakeENIs{}
+	h := newReconcileHarness(t, withSystemNICPath(enis))
+	rec := healthyRecord()
+	rec.SystemENIID = "eni-sys01"
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+
+	assert.Len(t, enis.sgDescribed, 1)
+	assert.Len(t, enis.sgCreated, 1)
+}
+
+// Recording the move before vpcd accepted it would leave the ENI in the default
+// group with the record claiming otherwise, which no later pass would revisit.
+func TestReconciler_RetriesTheSystemNICMoveAfterAFailure(t *testing.T) {
+	t.Parallel()
+	enis := &fakeENIs{modifyErr: errors.New("vpcd is not answering")}
+	h := newReconcileHarness(t, withSystemNICPath(enis))
+	rec := healthyRecord()
+	rec.SystemENIID = "eni-sys01"
+	seedInstance(t, h.svc, rec)
+
+	err := h.rec.reconcileOnce(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vpcd is not answering")
+	assert.Empty(t, h.systemSGOf(t, testDBID))
+
+	enis.modifyErr = nil
+	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	assert.Len(t, enis.modified, 1)
+	assert.Equal(t, testSystemSG, h.systemSGOf(t, testDBID))
 }
 
 // One node does the control work; the rest keep serving the API. A second

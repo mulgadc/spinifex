@@ -192,7 +192,7 @@ export function CreateDBInstancePage() {
       orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
     ),
   ]
-  const storageBounds = orderableOptions[0]
+  const [storageBounds] = orderableOptions
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
   const groupsForEngine = parameterGroupsForEngine(

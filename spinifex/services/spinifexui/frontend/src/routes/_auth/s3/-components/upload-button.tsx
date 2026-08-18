@@ -23,7 +23,7 @@ export function UploadButton({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = event.target.files
+    const { files } = event.target
     if (!files || files.length === 0) {
       return
     }

@@ -47,7 +47,9 @@ export function SystemImageRequired({
             <button
               aria-label="Copy command"
               className="text-muted-foreground transition-colors hover:text-foreground"
-              onClick={() => void copy(importCommand)}
+              onClick={() => {
+                void copy(importCommand)
+              }}
               type="button"
             >
               {copied ? (

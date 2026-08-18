@@ -239,7 +239,7 @@ export function useRunTask() {
       // RunTask returns HTTP 200 with a failures array when no task is placed
       // (e.g. no instance has capacity); surface it as an error.
       if ((output.tasks?.length ?? 0) === 0 && output.failures?.length) {
-        const f = output.failures[0]
+        const [f] = output.failures
         throw new Error(
           `Task not placed: ${f?.reason ?? "unknown"}${
             f?.detail ? ` (${f.detail})` : ""

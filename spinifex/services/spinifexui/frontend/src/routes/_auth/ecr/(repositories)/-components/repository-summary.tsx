@@ -62,7 +62,9 @@ export function RepositorySummary({
         <Button
           className="mt-3"
           disabled={putMutability.isPending}
-          onClick={() => void handleToggle()}
+          onClick={() => {
+            void handleToggle()
+          }}
           size="sm"
           variant="outline"
         >

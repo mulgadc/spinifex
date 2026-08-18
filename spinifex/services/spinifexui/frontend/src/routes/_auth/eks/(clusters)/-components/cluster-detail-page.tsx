@@ -47,7 +47,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
 
   const deleteCluster = useDeleteCluster()
 
-  const cluster = clusterData.cluster
+  const { cluster } = clusterData
   const healthIssues = cluster?.health?.issues ?? []
 
   const kubeconfigCommands = [

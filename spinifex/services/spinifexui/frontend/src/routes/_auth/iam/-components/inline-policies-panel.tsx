@@ -212,7 +212,9 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
       <DeleteConfirmationDialog
         description={`Are you sure you want to delete the inline policy "${confirmDelete ?? ""}"? This action cannot be undone.`}
         isPending={remove.isPending}
-        onConfirm={() => void handleDelete()}
+        onConfirm={() => {
+          void handleDelete()
+        }}
         onOpenChange={(open) => {
           if (!open) {
             setConfirmDelete(null)
@@ -290,7 +292,9 @@ function AddInlinePolicyForm({ name, put, onClose }: AddInlinePolicyFormProps) {
         </Button>
         <Button
           disabled={!parsed.success || put.isPending}
-          onClick={() => void handleSave()}
+          onClick={() => {
+            void handleSave()
+          }}
           size="sm"
         >
           {put.isPending ? "Saving…" : "Save"}
@@ -367,7 +371,9 @@ function EditInlinePolicyForm({
         </Button>
         <Button
           disabled={put.isPending || trimmed.length === 0 || invalidJson}
-          onClick={() => void handleSave()}
+          onClick={() => {
+            void handleSave()
+          }}
           size="sm"
         >
           {put.isPending ? "Saving…" : "Save"}

@@ -63,7 +63,9 @@ export function RdsDeleteDialog({
         </>
       }
       isPending={mutation.isPending}
-      onConfirm={() => void handleDelete()}
+      onConfirm={() => {
+        void handleDelete()
+      }}
       onOpenChange={handleOpenChange}
       open={open}
       title={title}

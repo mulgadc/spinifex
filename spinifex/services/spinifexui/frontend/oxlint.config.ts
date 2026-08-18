@@ -37,8 +37,6 @@ export default defineConfig({
     "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
-    "eslint/no-void": "off",
-    "eslint/prefer-destructuring": "off",
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
@@ -98,6 +96,7 @@ export default defineConfig({
       ],
       plugins: ["vitest"],
       rules: {
+        "eslint/prefer-destructuring": "off",
         "eslint/require-await": "off",
         "import/first": "off",
         "typescript/consistent-type-imports": "off",

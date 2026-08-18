@@ -209,7 +209,9 @@ export function ParametersEditor({
           </p>
           <Button
             disabled={overLimit || hasBlankValue || modifyGroup.isPending}
-            onClick={() => void handleSave()}
+            onClick={() => {
+              void handleSave()
+            }}
             size="sm"
           >
             {modifyGroup.isPending ? "Saving…" : "Save Changes"}

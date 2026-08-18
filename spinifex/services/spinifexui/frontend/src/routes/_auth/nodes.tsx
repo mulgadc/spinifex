@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
+import { GPUInventoryCard } from "@/components/gpu-inventory-card"
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,8 +14,6 @@ import {
   type NodeInfo,
   type VMInfo,
 } from "@/queries/admin"
-
-import { GPUInventoryCard } from "./-components/gpu-inventory-card"
 
 export const Route = createFileRoute("/_auth/nodes")({
   head: () => ({

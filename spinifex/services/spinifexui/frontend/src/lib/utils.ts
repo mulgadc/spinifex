@@ -42,6 +42,16 @@ export function getNameTag(
   return tags?.find((t) => t.Key === "Name")?.Value
 }
 
+// A security group's name is optional on the wire, so it is appended only when
+// there is one rather than rendered as "sg-0abc123 (undefined)".
+export function securityGroupLabel(group: {
+  GroupId?: string
+  GroupName?: string
+}): string {
+  const id = group.GroupId ?? ""
+  return group.GroupName ? `${id} (${group.GroupName})` : id
+}
+
 const TRAILING_SLASH_REGEX = /\/$/
 
 export function removeTrailingSlash(path: string): string {

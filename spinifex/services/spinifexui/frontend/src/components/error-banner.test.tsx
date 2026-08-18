@@ -15,11 +15,17 @@ describe("ErrorBanner", () => {
     expect(screen.getByText("connection refused")).toBeInTheDocument()
   })
 
-  it("renders error.name when it is a custom error type", () => {
+  it("renders both the name and the message of a custom error type", () => {
     const error = new TypeError("invalid type")
     render(<ErrorBanner error={error} />)
+    expect(screen.getByText("TypeError: invalid type")).toBeInTheDocument()
+  })
+
+  it("falls back to the name when a custom error carries no message", () => {
+    const error = new TypeError("placeholder")
+    error.message = ""
+    render(<ErrorBanner error={error} />)
     expect(screen.getByText("TypeError")).toBeInTheDocument()
-    expect(screen.queryByText("invalid type")).not.toBeInTheDocument()
   })
 
   it("renders both msg and error together", () => {

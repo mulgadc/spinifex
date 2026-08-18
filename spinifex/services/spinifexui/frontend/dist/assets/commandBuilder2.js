@@ -1,1 +1,1 @@
-import{At as e,dt as t}from"./cluster-config.js";import{sn as n}from"./awsClient.js";var r=e(n,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};
+import{At as e,dt as t}from"./cluster-config.js";import{Fn as n}from"./awsClient.js";var r=e(n,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

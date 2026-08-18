@@ -1,7 +1,15 @@
 export function ErrorBanner({ msg, error }: { msg?: string; error?: Error }) {
   let errorText: string | undefined
   if (error) {
-    errorText = error.name === "Error" ? error.message : error.name
+    // A modelled AWS fault carries the reason in the message and only the code
+    // in the name, so dropping either leaves the user without the half that
+    // says which parameter was refused and why.
+    if (error.name === "Error") {
+      errorText = error.message
+    } else {
+      errorText =
+        error.message === "" ? error.name : `${error.name}: ${error.message}`
+    }
   }
 
   return (

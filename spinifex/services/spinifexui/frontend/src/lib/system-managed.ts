@@ -36,3 +36,34 @@ export function isEcsSystemImage(image: Image): boolean {
     ) ?? false
   )
 }
+
+// Tag value identifying an RDS engine image, applied by
+// `spx admin images import --name spinifex-rds-<engine>`.
+export const RDS_SYSTEM_IMAGE_TAG_VALUE = "rds"
+
+// RDS launch resolves images by these tags rather than by image name.
+export const RDS_ENGINE_TAG_KEY = "engine"
+export const RDS_ENGINE_VERSION_TAG_KEY = "engine-version"
+export const RDS_DATA_VOLUME_CONTRACT_TAG_KEY = "rds-data-volume-contract"
+export const RDS_DATA_VOLUME_CONTRACT_TAG_VALUE = "format-auth-v1"
+
+export function isRdsSystemImage(
+  image: Image,
+  engine: string,
+  engineVersion: string,
+): boolean {
+  const tags = image.Tags ?? []
+  const hasTag = (key: string, value: string) =>
+    tags.some((tag) => tag.Key === key && tag.Value === value)
+
+  return (
+    hasTag(SYSTEM_MANAGED_TAG_KEY, RDS_SYSTEM_IMAGE_TAG_VALUE) &&
+    hasTag(RDS_ENGINE_TAG_KEY, engine) &&
+    hasTag(RDS_ENGINE_VERSION_TAG_KEY, engineVersion) &&
+    hasTag(RDS_DATA_VOLUME_CONTRACT_TAG_KEY, RDS_DATA_VOLUME_CONTRACT_TAG_VALUE)
+  )
+}
+
+export function rdsImportCommand(engine: string): string {
+  return `spx admin images import --name spinifex-rds-${engine}`
+}

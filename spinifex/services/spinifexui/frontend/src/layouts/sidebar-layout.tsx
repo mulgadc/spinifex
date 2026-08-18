@@ -7,6 +7,7 @@ import {
   Camera,
   Container,
   Crosshair,
+  Database,
   FileStack,
   Globe,
   HardDrive,
@@ -25,6 +26,7 @@ import {
   Server,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   UserCog,
   Users,
   UsersRound,
@@ -386,6 +388,73 @@ export function SidebarLayout() {
                 >
                   <Container className="size-4" />
                   <span>ECS</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>RDS</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/rds/describe-db-instances">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/rds/describe-db-instances") ||
+                    pathname.startsWith("/rds/create-db-instance")
+                  }
+                  tooltip="Databases"
+                >
+                  <Database className="size-4" />
+                  <span>Databases</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/rds/describe-db-snapshots">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/rds/describe-db-snapshots") ||
+                    pathname.startsWith(
+                      "/rds/restore-db-instance-from-db-snapshot",
+                    )
+                  }
+                  tooltip="DB Snapshots"
+                >
+                  <Camera className="size-4" />
+                  <span>Snapshots</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/rds/describe-db-subnet-groups">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/rds/describe-db-subnet-groups") ||
+                    pathname.startsWith("/rds/create-db-subnet-group")
+                  }
+                  tooltip="DB Subnet Groups"
+                >
+                  <LayoutGrid className="size-4" />
+                  <span>Subnet Groups</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/rds/describe-db-parameter-groups">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/rds/describe-db-parameter-groups") ||
+                    pathname.startsWith("/rds/create-db-parameter-group")
+                  }
+                  tooltip="DB Parameter Groups"
+                >
+                  <SlidersHorizontal className="size-4" />
+                  <span>Parameter Groups</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

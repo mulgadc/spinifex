@@ -6,7 +6,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
@@ -31,6 +33,48 @@ func TestStartOchreVector_DisabledSkipsConstruction(t *testing.T) {
 
 	assert.Nil(t, d.ochreVectorService)
 	assert.Nil(t, d.natsSubscriptions, "disabled path must not touch the subscriptions map")
+}
+
+// TestRetryUntilContext_RetriesPastOldCeilingThenSucceeds proves the connect
+// loop no longer gives up after the old fixed ceiling: it keeps retrying until
+// the appliance is reachable, so RAG heals once a re-adopted appliance returns.
+func TestRetryUntilContext_RetriesPastOldCeilingThenSucceeds(t *testing.T) {
+	const failuresBeforeSuccess = 7 // deliberately > the old 5-attempt ceiling
+
+	calls, logged := 0, 0
+	got, err := retryUntilContext(context.Background(), time.Millisecond, 2*time.Millisecond,
+		func(attempt int, backoff time.Duration, err error) { logged++ },
+		func() (int, error) {
+			calls++
+			if calls <= failuresBeforeSuccess {
+				return 0, errors.New("appliance not reachable")
+			}
+			return 42, nil
+		})
+
+	require.NoError(t, err)
+	assert.Equal(t, 42, got)
+	assert.Equal(t, failuresBeforeSuccess+1, calls, "must retry past the old fixed ceiling")
+	assert.Equal(t, failuresBeforeSuccess, logged, "each failure reported to log once")
+}
+
+// TestRetryUntilContext_StopsOnContextCancel proves daemon shutdown is the
+// loop's exit: a cancel while it is backing off returns context.Canceled
+// promptly rather than sleeping out the backoff or starting another attempt.
+func TestRetryUntilContext_StopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	calls := 0
+	got, err := retryUntilContext(ctx, time.Hour, time.Hour,
+		func(attempt int, backoff time.Duration, err error) { cancel() },
+		func() (int, error) {
+			calls++
+			return 0, errors.New("still down")
+		})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, got)
+	assert.Equal(t, 1, calls, "cancel during backoff stops before the next attempt")
 }
 
 // TestHandleOchreApplianceTeardown_NilApplianceRefuses proves the handler

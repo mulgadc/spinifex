@@ -180,6 +180,16 @@ jobs:
           junit-glob: ${{ runner.temp }}/ddil-results/junit-*.xml
           title: "DDIL scenario results"
 
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # green test run red.
+      - name: Ship test results to Elasticsearch
+        if: always()
+        continue-on-error: true
+        uses: ./spinifex/.github/actions/junit-to-es
+        with:
+          junit-glob: ${{ runner.temp }}/ddil-results/junit-*.xml
+          cell: ddil
+
       - name: Collect Cluster Logs
         if: failure()
         working-directory: mulga/scripts/tofu-cluster

@@ -22,11 +22,13 @@ import (
 // boot plus initdb on the smallest instance class.
 const ochreApplianceLaunchTimeout = 10 * time.Minute
 
-// ochreStartupMaxAttempts bounds how many times startOchreVector retries the
-// Ensure-then-Connect pair. A still-provisioning appliance or a host port
-// not yet routed is transient, but the retry still needs a ceiling so a
-// genuine misconfiguration eventually gives up instead of retrying forever.
-const ochreStartupMaxAttempts = 5
+// ochreStartupLogAttempts and ochreStartupLogEvery throttle the connect-retry
+// log: warn on the first few attempts, then only every Nth, so a persistently
+// unreachable appliance leaves a periodic breadcrumb without flooding the log.
+const (
+	ochreStartupLogAttempts = 3
+	ochreStartupLogEvery    = 20
+)
 
 // ochreStartupInitialBackoff and ochreStartupMaxBackoff bound the wait
 // between attempts: it doubles from the initial value and is capped so a
@@ -104,8 +106,9 @@ func (d *Daemon) startOchreVector() {
 
 	backend, err := d.connectOchreAppliance(appliance)
 	if err != nil {
-		slog.Warn("Ochre vector store disabled: platform appliance not reachable after retrying",
-			"attempts", ochreStartupMaxAttempts, "err", err)
+		// connectOchreAppliance only returns on daemon shutdown now; there is
+		// no give-up path, so an error here is teardown, not a failure to wire.
+		slog.Info("Ochre vector store: appliance connect abandoned on shutdown", "err", err)
 		return
 	}
 
@@ -217,43 +220,49 @@ func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, _ *handlers_o
 	return &handlers_ochrevector.TeardownApplianceResponse{}, nil
 }
 
-// connectOchreAppliance drives Ensure then Connect as one retryable unit, up
-// to ochreStartupMaxAttempts times with exponential backoff between
-// attempts. Previously a single provisioning timeout -- the appliance still
-// booting, or its host port not yet routed -- hard-disabled the feature for
-// the daemon's entire lifetime; this bounds that to a handful of attempts
-// instead of exactly one, while still eventually giving up on a persistent
-// failure rather than retrying forever.
+// connectOchreAppliance drives Ensure-then-Connect until it succeeds or the
+// daemon shuts down, so a torn-down-then-readopted appliance heals on its own
+// rather than disabling the feature permanently after a few early failures.
 func (d *Daemon) connectOchreAppliance(appliance *handlers_ochrevector.Appliance) (handlers_ochrevector.VectorBackend, error) {
-	backoff := ochreStartupInitialBackoff
-	var lastErr error
-	for attempt := 1; attempt <= ochreStartupMaxAttempts; attempt++ {
-		if d.ctx.Err() != nil {
-			return nil, d.ctx.Err()
-		}
+	return retryUntilContext(d.ctx, ochreStartupInitialBackoff, ochreStartupMaxBackoff,
+		func(attempt int, backoff time.Duration, err error) {
+			if attempt <= ochreStartupLogAttempts || attempt%ochreStartupLogEvery == 0 {
+				slog.Warn("Ochre vector store: appliance not reachable, will keep retrying",
+					"attempt", attempt, "backoff", backoff, "err", err)
+			}
+		},
+		func() (handlers_ochrevector.VectorBackend, error) {
+			return d.ensureAndConnectOchreApplianceOnce(appliance)
+		})
+}
 
-		backend, err := d.ensureAndConnectOchreApplianceOnce(appliance)
+// retryUntilContext calls attempt until it succeeds or ctx is cancelled,
+// sleeping a doubling backoff (capped at maxBackoff) between failures and
+// reporting each to log. No attempt ceiling: ctx cancellation is the only exit.
+func retryUntilContext[T any](ctx context.Context, initialBackoff, maxBackoff time.Duration,
+	log func(attempt int, backoff time.Duration, err error), attempt func() (T, error)) (T, error) {
+	backoff := initialBackoff
+	for n := 1; ; n++ {
+		if err := ctx.Err(); err != nil {
+			var zero T
+			return zero, err
+		}
+		v, err := attempt()
 		if err == nil {
-			return backend, nil
+			return v, nil
 		}
-		lastErr = err
-
-		if attempt == ochreStartupMaxAttempts {
-			break
-		}
-		slog.Warn("Ochre vector store: appliance not ready, retrying",
-			"attempt", attempt, "max_attempts", ochreStartupMaxAttempts, "backoff", backoff, "err", lastErr)
+		log(n, backoff, err)
 		select {
-		case <-d.ctx.Done():
-			return nil, d.ctx.Err()
+		case <-ctx.Done():
+			var zero T
+			return zero, ctx.Err()
 		case <-time.After(backoff):
 		}
 		backoff *= 2
-		if backoff > ochreStartupMaxBackoff {
-			backoff = ochreStartupMaxBackoff
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
-	return nil, lastErr
 }
 
 // ensureAndConnectOchreApplianceOnce runs a single Ensure-then-Connect

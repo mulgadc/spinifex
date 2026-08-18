@@ -324,6 +324,14 @@ type OchreVectorConfig struct {
 	// on every index record. Empty takes gateway_bedrock.DefaultEmbeddingModel
 	// ("nomic-embed-text-v1.5").
 	EmbeddingModel string `json:"EmbeddingModel" mapstructure:"embedding_model"`
+	// RerankEndpoint is the base URL of the self-hosted TEI-compatible
+	// cross-encoder rerank endpoint (gateway_bedrock.Reranker). Empty
+	// disables reranking: Query falls back to plain KNN top-k.
+	RerankEndpoint string `json:"RerankEndpoint" mapstructure:"rerank_endpoint"`
+	// RerankModel documents the cross-encoder served at RerankEndpoint (e.g.
+	// "bge-reranker-v2-m3"). Not sent on the wire: a rerank deployment
+	// serves exactly one model per endpoint, selected by RerankEndpoint alone.
+	RerankModel string `json:"RerankModel" mapstructure:"rerank_model"`
 	// PostgresImage names the appliance's Postgres image. Currently
 	// informational only: RDS's CreateDBInstanceInput has no image-selection
 	// field, so this is not yet threaded into the appliance launch.

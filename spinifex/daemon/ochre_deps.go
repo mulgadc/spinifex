@@ -117,6 +117,14 @@ func (d *Daemon) startOchreVector() {
 		embedModel: cfg.EmbeddingsEndpoint,
 	}))
 
+	// reranker is left nil when no endpoint is configured, so Query stays
+	// on plain KNN top-k -- rerank is a feature dependency, never a hard
+	// one, matching how the vector store itself is gated by Enabled alone.
+	var reranker handlers_ochrevector.Reranker
+	if cfg.RerankEndpoint != "" {
+		reranker = gateway_bedrock.NewReranker(cfg.RerankEndpoint)
+	}
+
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host),
 		d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 
@@ -125,7 +133,7 @@ func (d *Daemon) startOchreVector() {
 	service := handlers_ochrevector.NewService(registry, backend)
 	ingest := handlers_ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
 
-	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder)
+	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder, reranker)
 
 	// A shutdown that lands in the gap between Connect succeeding above and
 	// this check does not leave anything to unwind: nothing has been

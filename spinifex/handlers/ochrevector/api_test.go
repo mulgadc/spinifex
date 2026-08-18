@@ -47,8 +47,12 @@ func newAPITestSetup(t *testing.T) *apiTestSetup {
 	embedder := &stubEmbedder{}
 	ingestSvc := NewIngestService(jobs, registry, backend, nil, embedder)
 
+	// reranker is nil by default: every existing Query test exercises the
+	// no-reranker-configured path, so their result order/count is
+	// unaffected. Rerank-specific tests build their own setup with an
+	// explicit reranker (see rerank_test.go).
 	return &apiTestSetup{
-		svc:      NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder),
+		svc:      NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder, nil),
 		registry: registry,
 		backend:  backend,
 		embedder: embedder,
@@ -363,7 +367,7 @@ func TestNATSVectorService_RoundTrip(t *testing.T) {
 	jobs := NewJobStore(js)
 	embedder := &stubEmbedder{}
 	ingestSvc := NewIngestService(jobs, registry, backend, nil, embedder)
-	svc := NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder)
+	svc := NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder, nil)
 
 	subscribeVectorService(t, nc, svc)
 	client := NewNATSVectorService(nc)
@@ -417,7 +421,7 @@ func TestNATSVectorService_AccountIsolation(t *testing.T) {
 	jobs := NewJobStore(js)
 	embedder := &stubEmbedder{}
 	ingestSvc := NewIngestService(jobs, registry, backend, nil, embedder)
-	svc := NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder)
+	svc := NewVectorService(indexSvc, ingestSvc, jobs, registry, backend, embedder, nil)
 
 	subscribeVectorService(t, nc, svc)
 	client := NewNATSVectorService(nc)

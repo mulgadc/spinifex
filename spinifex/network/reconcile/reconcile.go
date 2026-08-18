@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
@@ -127,6 +129,18 @@ type reconciler struct {
 	ipsecEnabled bool
 	underlayMTU  int
 	reloadIntent func(ctx context.Context) (IntentState, error)
+
+	// Guest ports that burned their convergence deadline, so a port whose guest
+	// is gone stops paying the full nudge sequence every cycle.
+	portBackoffMu sync.Mutex
+	portBackoff   map[string]portBackoffState
+}
+
+// portBackoffState is one guest port's consecutive failure count and the instant
+// its backoff expires.
+type portBackoffState struct {
+	failures int
+	until    time.Time
 }
 
 var _ Reconciler = (*reconciler)(nil)

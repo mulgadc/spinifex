@@ -281,7 +281,6 @@ export function TargetGroupForm({
         <FieldTitle>Tags</FieldTitle>
         <div className="space-y-2">
           {tags.map((_, index) => (
-            // oxlint-disable-next-line react/no-array-index-key -- form array with no stable id
             <div className="flex items-center gap-2" key={index}>
               <Input placeholder="Key" {...register(`tags.${index}.key`)} />
               <Input placeholder="Value" {...register(`tags.${index}.value`)} />

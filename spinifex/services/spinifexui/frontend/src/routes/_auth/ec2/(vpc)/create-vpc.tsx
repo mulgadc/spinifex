@@ -104,7 +104,6 @@ function CreateVpc() {
           : data.namePrefix
       const result = await createVpcMutation.mutateAsync({
         cidrBlock: data.cidrBlock,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         name: name || undefined,
       })
       const vpcId = result.Vpc?.VpcId
@@ -158,7 +157,6 @@ function CreateVpc() {
               </p>
               <ul className="mt-1 list-inside list-disc text-xs text-destructive">
                 {wizardResult.created.map((r, i) => (
-                  // oxlint-disable-next-line react/no-array-index-key -- error list with no stable id
                   <li key={i}>
                     {r.type}: {r.id}
                   </li>

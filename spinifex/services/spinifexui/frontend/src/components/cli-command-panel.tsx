@@ -123,7 +123,6 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
                 <pre className="font-mono text-xs/relaxed">
                   <code>
                     {cmd.parts.map((part, j) => (
-                      // oxlint-disable-next-line react/no-array-index-key -- positional inline spans with no stable id
                       <span key={j} className={partStyles[part.type]}>
                         {part.value}
                       </span>

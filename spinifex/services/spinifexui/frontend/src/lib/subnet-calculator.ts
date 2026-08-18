@@ -1,6 +1,4 @@
 // oxlint-disable no-bitwise
-// oxlint-disable unicorn/prefer-math-trunc
-// oxlint-disable no-plusplus
 /**
  * Subnet CIDR auto-calculation from a VPC CIDR block.
  *

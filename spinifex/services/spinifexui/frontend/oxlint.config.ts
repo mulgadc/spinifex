@@ -80,6 +80,10 @@ export default defineConfig({
         ],
       },
     ],
+    "typescript/prefer-nullish-coalescing": [
+      "error",
+      { ignorePrimitives: { string: true }, ignoreBooleanCoercion: true },
+    ],
     "typescript/strict-boolean-expressions": "off",
     "typescript/strict-void-return": "off",
     "unicorn/filename-case": [

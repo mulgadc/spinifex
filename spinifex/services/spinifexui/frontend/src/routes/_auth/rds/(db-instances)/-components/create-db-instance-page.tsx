@@ -209,11 +209,9 @@ export function CreateDBInstancePage() {
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
   const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)
 
-  const handleEngineChange = (engine: string | null) => {
-    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
-    const nextEngine = engine === null ? "" : engine
-    setValue("engine", nextEngine, { shouldValidate: true })
-    setValue("engineVersion", firstBootableVersion(nextEngine))
+  const handleEngineChange = (engine: string) => {
+    setValue("engine", engine, { shouldValidate: true })
+    setValue("engineVersion", firstBootableVersion(engine))
     setValue("dbInstanceClass", "")
     setValue("dbParameterGroupName", "")
   }
@@ -221,13 +219,11 @@ export function CreateDBInstancePage() {
   const setSecurityGroups = (next: string[]) =>
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
 
-  const handleSubnetGroupChange = (name: string | null) => {
-    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
-    const nextName = name === null ? "" : name
+  const handleSubnetGroupChange = (name: string) => {
     const nextVpcId =
-      subnetGroups.find((group) => group.DBSubnetGroupName === nextName)
-        ?.VpcId ?? defaultVpcId
-    setValue("dbSubnetGroupName", nextName, { shouldValidate: true })
+      subnetGroups.find((group) => group.DBSubnetGroupName === name)?.VpcId ??
+      defaultVpcId
+    setValue("dbSubnetGroupName", name, { shouldValidate: true })
     setSecurityGroups(
       securityGroupIdsForVpc(
         allSecurityGroups,
@@ -316,7 +312,10 @@ export function CreateDBInstancePage() {
             control={control}
             name="engine"
             render={({ field }) => (
-              <Select onValueChange={handleEngineChange} value={field.value}>
+              <Select
+                onValueChange={(value) => handleEngineChange(value ?? "")}
+                value={field.value}
+              >
                 <SelectTrigger
                   aria-invalid={!!errors.engine}
                   className="w-full"

@@ -347,7 +347,6 @@ export function CreateLoadBalancerPage() {
               </p>
               <ul className="mt-1 list-inside list-disc text-xs text-destructive">
                 {wizardResult.created.map((r, i) => (
-                  // oxlint-disable-next-line react/no-array-index-key -- error list with no stable id
                   <li key={i}>
                     {r.type}: {r.id ?? "(created)"}
                   </li>
@@ -540,7 +539,6 @@ export function CreateLoadBalancerPage() {
           <FieldTitle>Tags</FieldTitle>
           <div className="space-y-2">
             {tags.map((_, index) => (
-              // oxlint-disable-next-line react/no-array-index-key -- form array with no stable id
               <div className="flex items-center gap-2" key={index}>
                 <Input placeholder="Key" {...register(`tags.${index}.key`)} />
                 <Input
@@ -829,7 +827,6 @@ export function CreateLoadBalancerPage() {
   )
 }
 
-// oxlint-disable-next-line complexity -- CLI preview composition
 function buildCreateLbCommands(
   watch: (name?: string) => unknown,
   tgWatch: (name?: string) => unknown,

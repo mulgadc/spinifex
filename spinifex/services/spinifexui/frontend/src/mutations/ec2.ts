@@ -1,10 +1,8 @@
 import {
   type _InstanceType,
-  type PlacementStrategy,
   type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
-  type Tenancy,
   AllocateAddressCommand,
   AssociateAddressCommand,
   AssociateIamInstanceProfileCommand,
@@ -164,17 +162,14 @@ export function useCreateInstance() {
       const client = getEc2Client()
       const securityGroupIds = await resolveSecurityGroupIds(client, params)
       const command = new RunInstancesCommand({
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         ImageId: params.imageId || undefined,
         InstanceType: params.instanceType
           ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
             (params.instanceType as _InstanceType)
           : undefined,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         KeyName: params.keyName || undefined,
         MinCount: params.count,
         MaxCount: params.count,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         SubnetId: params.subnetId || undefined,
         SecurityGroupIds:
           securityGroupIds.length > 0 ? securityGroupIds : undefined,
@@ -187,7 +182,6 @@ export function useCreateInstance() {
         LaunchTemplate: params.launchTemplateId
           ? {
               LaunchTemplateId: params.launchTemplateId,
-              // oxlint-disable-next-line typescript/prefer-nullish-coalescing
               Version: params.launchTemplateVersion || "$Default",
             }
           : undefined,
@@ -220,7 +214,6 @@ async function resolveSecurityGroupIds(
   const sg = await client.send(
     new CreateSecurityGroupCommand({
       GroupName: params.newSgName,
-      // oxlint-disable-next-line typescript/prefer-nullish-coalescing
       Description: params.newSgDescription || "Created by launch wizard",
       VpcId: params.resolvedVpcId,
     }),
@@ -354,7 +347,6 @@ export function useCreateLaunchTemplate() {
     mutationFn: async (params: CreateLaunchTemplateParams) => {
       const command = new CreateLaunchTemplateCommand({
         LaunchTemplateName: params.launchTemplateName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         VersionDescription: params.versionDescription || undefined,
         LaunchTemplateData: buildLaunchTemplateData(params),
       })
@@ -374,9 +366,7 @@ export function useCreateLaunchTemplateVersion() {
     mutationFn: async (params: CreateLaunchTemplateVersionParams) => {
       const command = new CreateLaunchTemplateVersionCommand({
         LaunchTemplateId: params.launchTemplateId,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         SourceVersion: params.sourceVersion || undefined,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         VersionDescription: params.versionDescription || undefined,
         LaunchTemplateData: buildLaunchTemplateData(params),
       })
@@ -579,7 +569,6 @@ export function useCreateSnapshot() {
     mutationFn: async (params: CreateSnapshotFormData) => {
       const command = new CreateSnapshotCommand({
         VolumeId: params.volumeId,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
       return await getEc2Client().send(command)
@@ -612,7 +601,6 @@ export function useCopySnapshot() {
       const command = new CopySnapshotCommand({
         SourceSnapshotId: params.sourceSnapshotId,
         SourceRegion: params.sourceRegion,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
       return await getEc2Client().send(command)
@@ -630,7 +618,6 @@ export function useAttachVolume() {
       const command = new AttachVolumeCommand({
         VolumeId: params.volumeId,
         InstanceId: params.instanceId,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Device: params.device || undefined,
       })
       return await getEc2Client().send(command)
@@ -648,7 +635,6 @@ export function useDetachVolume() {
     mutationFn: async (params: DetachVolumeFormData) => {
       const command = new DetachVolumeCommand({
         VolumeId: params.volumeId,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         InstanceId: params.instanceId || undefined,
         Force: params.force,
       })
@@ -698,7 +684,6 @@ export function useCreateImage() {
       const command = new CreateImageCommand({
         InstanceId: params.instanceId,
         Name: params.name,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
       return await getEc2Client().send(command)
@@ -719,7 +704,6 @@ export function useRegisterImage() {
     }) => {
       const command = new RegisterImageCommand({
         Name: params.name,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
         BlockDeviceMappings: [
           {
@@ -796,7 +780,6 @@ export function useCreateSubnet() {
         new CreateSubnetCommand({
           VpcId: params.vpcId,
           CidrBlock: params.cidrBlock,
-          // oxlint-disable-next-line typescript/prefer-nullish-coalescing
           AvailabilityZone: params.availabilityZone || undefined,
         }),
       )
@@ -838,8 +821,7 @@ export function useCreatePlacementGroup() {
     mutationFn: async (params: CreatePlacementGroupFormData) => {
       const command = new CreatePlacementGroupCommand({
         GroupName: params.groupName,
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects PlacementStrategy enum
-        Strategy: params.strategy as PlacementStrategy,
+        Strategy: params.strategy,
       })
       return await getEc2Client().send(command)
     },
@@ -1428,12 +1410,10 @@ export function useCreateVpcWizard() {
       try {
         // Step 1: Create VPC
         const vpcName = prefix ? `${prefix}-vpc` : params.namePrefix
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects Tenancy enum
-        const tenancy = params.tenancy as Tenancy
         const vpcResult = await client.send(
           new CreateVpcCommand({
             CidrBlock: params.cidrBlock,
-            InstanceTenancy: tenancy,
+            InstanceTenancy: params.tenancy,
             TagSpecifications: buildTagSpec(
               ResourceType.vpc,
               vpcName,

@@ -50,7 +50,9 @@ export function InputGroupAddon({
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
-    // oxlint-disable-next-line jsx_a11y/click-events-have-key-events, jsx_a11y/no-noninteractive-element-interactions
+    // The click only forwards focus to the input, which keyboard users reach by
+    // tabbing, so it grants no capability the keyboard lacks.
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <div
       className={cn(inputGroupAddonVariants({ align }), className)}
       data-align={align}

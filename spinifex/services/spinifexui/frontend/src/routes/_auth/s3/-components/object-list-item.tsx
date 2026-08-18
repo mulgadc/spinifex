@@ -36,10 +36,11 @@ export function ObjectListItem({
       const response = await getS3Client().send(command)
 
       if (response.Body) {
+        // tsgolint cannot resolve the SDK's conditional streaming-blob type and
+        // reports Body as an error type; tsc types it correctly.
         // oxlint-disable-next-line typescript/no-unsafe-call, typescript/no-unsafe-member-access, typescript/no-unsafe-assignment
-        const blob = await response.Body.transformToByteArray()
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-        const url = URL.createObjectURL(new Blob([blob as BlobPart]))
+        const bytes = await response.Body.transformToByteArray()
+        const url = URL.createObjectURL(new Blob([bytes]))
 
         const link = document.createElement("a")
         link.href = url

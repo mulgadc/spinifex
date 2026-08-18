@@ -61,15 +61,22 @@ function BucketObjectsWithPrefix() {
   ]
 
   // Get parent path for back navigation
-  const parentPath =
-    pathParts.length > 1
-      ? `/s3/ls/${bucket}/${pathParts.slice(0, -1).join("/")}/`
-      : `/s3/ls/${bucket}`
+  const parentSplat = `${pathParts.slice(0, -1).join("/")}/`
 
   return (
     <>
-      {/* oxlint-disable-next-line typescript/no-explicit-any, typescript/no-unsafe-type-assertion, typescript/no-unsafe-assignment -- dynamic route path */}
-      <BackLink to={parentPath as any}>Back</BackLink>
+      {pathParts.length > 1 ? (
+        <BackLink
+          params={{ bucket, _splat: parentSplat }}
+          to="/s3/ls/$bucket/$"
+        >
+          Back
+        </BackLink>
+      ) : (
+        <BackLink params={{ bucket }} to="/s3/ls/$bucket">
+          Back
+        </BackLink>
+      )}
       <div className="mb-6">
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

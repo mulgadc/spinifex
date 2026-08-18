@@ -368,7 +368,6 @@ export function CreateClusterPage() {
                 <span className="font-mono">0.0.0.0/0</span>.
               </p>
               {publicCidrs.map((cidr, index) => (
-                // eslint-disable-next-line react/no-array-index-key
                 <div className="flex items-center gap-2" key={index}>
                   <Input
                     aria-label={`Public access CIDR ${index + 1}`}

@@ -55,7 +55,6 @@ export function useCreateUser() {
     mutationFn: async (params: CreateUserFormData) => {
       const command = new CreateUserCommand({
         UserName: params.userName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Path: params.path || undefined,
       })
       return await getIamClient().send(command)
@@ -135,7 +134,6 @@ export function useCreatePolicy() {
     mutationFn: async (params: CreatePolicyFormData) => {
       const command = new CreatePolicyCommand({
         PolicyName: params.policyName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
         PolicyDocument: params.policyDocument,
       })
@@ -243,9 +241,7 @@ export function useCreateRole() {
     mutationFn: async (params: CreateRoleFormData) => {
       const command = new CreateRoleCommand({
         RoleName: params.roleName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Path: params.path || undefined,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
         AssumeRolePolicyDocument: params.assumeRolePolicyDocument,
       })
@@ -353,7 +349,6 @@ export function useCreateInstanceProfile() {
     mutationFn: async (params: CreateInstanceProfileFormData) => {
       const command = new CreateInstanceProfileCommand({
         InstanceProfileName: params.instanceProfileName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Path: params.path || undefined,
       })
       return await getIamClient().send(command)
@@ -431,7 +426,6 @@ export function useCreateGroup() {
     mutationFn: async (params: CreateGroupFormData) => {
       const command = new CreateGroupCommand({
         GroupName: params.groupName,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Path: params.path || undefined,
       })
       return await getIamClient().send(command)

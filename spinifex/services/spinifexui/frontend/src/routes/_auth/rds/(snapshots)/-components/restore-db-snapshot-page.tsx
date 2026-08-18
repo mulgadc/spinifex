@@ -164,19 +164,17 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
   }
 
-  const handleSubnetGroupChange = (name: string | null) => {
-    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
-    const nextName = name === null ? "" : name
+  const handleSubnetGroupChange = (name: string) => {
     const nextVpcId =
-      subnetGroups.find((group) => group.DBSubnetGroupName === nextName)
-        ?.VpcId ?? snapshot?.VpcId
+      subnetGroups.find((group) => group.DBSubnetGroupName === name)?.VpcId ??
+      snapshot?.VpcId
     let nextSecurityGroups = securityGroupIdsForVpc(
       allSecurityGroups,
       nextVpcId,
       selectedSecurityGroups,
     )
     if (
-      nextName !== "" &&
+      name !== "" &&
       nextVpcId !== snapshot?.VpcId &&
       nextSecurityGroups.length === 0
     ) {
@@ -186,7 +184,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       )
       nextSecurityGroups = defaultGroupId ? [defaultGroupId] : []
     }
-    setValue("dbSubnetGroupName", nextName, { shouldValidate: true })
+    setValue("dbSubnetGroupName", name, { shouldValidate: true })
     setSecurityGroups(nextSecurityGroups)
   }
 

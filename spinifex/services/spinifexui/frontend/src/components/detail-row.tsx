@@ -11,7 +11,6 @@ export function DetailRow({
     <div>
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="mt-1 font-mono text-sm">
-        {/* oxlint-disable-next-line typescript/prefer-nullish-coalescing */}
         {value || <span className="text-muted-foreground">—</span>}
       </dd>
     </div>

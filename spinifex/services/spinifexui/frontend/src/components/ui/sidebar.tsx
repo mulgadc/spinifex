@@ -30,6 +30,10 @@ const SIDEBAR_WIDTH_MOBILE = "16rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
+// Style objects that also carry CSS custom properties, which CSSProperties
+// alone does not admit.
+type CSSVariables = React.CSSProperties & Record<`--${string}`, string | number>
+
 interface SidebarContextProps {
   state: "expanded" | "collapsed"
   open: boolean
@@ -127,6 +131,12 @@ export function SidebarProvider({
     [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar],
   )
 
+  const wrapperStyle: CSSVariables = {
+    "--sidebar-width": SIDEBAR_WIDTH,
+    "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+    ...style,
+  }
+
   return (
     <SidebarContext.Provider value={contextValue}>
       <div
@@ -135,13 +145,7 @@ export function SidebarProvider({
           className,
         )}
         data-slot="sidebar-wrapper"
-        style={
-          {
-            "--sidebar-width": SIDEBAR_WIDTH,
-            "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-            ...style,
-          } as React.CSSProperties
-        }
+        style={wrapperStyle}
         {...props}
       >
         {children}
@@ -180,10 +184,9 @@ export function Sidebar({
   }
 
   if (isMobile) {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    const mobileStyle = {
+    const mobileStyle: CSSVariables = {
       "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
-    } as React.CSSProperties
+    }
     return (
       <Sheet onOpenChange={setOpenMobile} open={openMobile} {...props}>
         <SheetContent
@@ -285,7 +288,6 @@ export function SidebarRail({
   const { toggleSidebar } = useSidebar()
 
   return (
-    // oxlint-disable-next-line react/button-has-type
     <button
       aria-label="Toggle Sidebar"
       className={cn(
@@ -302,6 +304,7 @@ export function SidebarRail({
       onClick={toggleSidebar}
       tabIndex={-1}
       title="Toggle Sidebar"
+      type="button"
       {...props}
     />
   )
@@ -639,6 +642,8 @@ export function SidebarMenuSkeleton({
     () => `${Math.floor(Math.random() * 40) + 50}%`,
   )
 
+  const skeletonStyle: CSSVariables = { "--skeleton-width": width }
+
   return (
     <div
       className={cn("flex h-8 items-center gap-2 rounded-md px-2", className)}
@@ -655,8 +660,7 @@ export function SidebarMenuSkeleton({
       <Skeleton
         className="h-4 max-w-(--skeleton-width) flex-1"
         data-sidebar="menu-skeleton-text"
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-        style={{ "--skeleton-width": width } as React.CSSProperties}
+        style={skeletonStyle}
       />
     </div>
   )

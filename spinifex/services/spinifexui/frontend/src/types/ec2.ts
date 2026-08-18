@@ -408,7 +408,7 @@ export const createPlacementGroupSchema = z.object({
       /^[\w\s._\-:/()#,@[\]+=&;{}!$*]+$/,
       "Group name contains invalid characters",
     ),
-  strategy: z.string().min(1, "Strategy is required"),
+  strategy: z.enum(["spread", "cluster"]),
 })
 
 export type CreatePlacementGroupFormData = z.infer<

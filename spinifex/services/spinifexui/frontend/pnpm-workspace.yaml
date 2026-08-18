@@ -2,3 +2,8 @@ allowBuilds:
   esbuild: true
 minimumReleaseAge: 4320
 trustPolicy: no-downgrade
+# 6.3.1 is a 2023 backport to the 6.x line, published after 7.5.x had already
+# moved to provenance. Trust checks compare by publish date across major lines,
+# so the backport reads as a downgrade. Dev-only, reached via @babel/core.
+trustPolicyExclude:
+  - semver@6.3.1

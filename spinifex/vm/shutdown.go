@@ -484,7 +484,7 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 	}
 
 	if m.deps.VolumeMounter != nil {
-		if err := m.deps.VolumeMounter.Unmount(instance); err != nil {
+		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
 			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
 		}
 	}

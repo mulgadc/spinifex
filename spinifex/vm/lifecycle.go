@@ -152,7 +152,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, mountSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.mount_volumes")
-	mountErr := m.deps.VolumeMounter.Mount(instance)
+	mountErr := m.deps.VolumeMounter.Mount(ctx, instance)
 	endSpanWithError(mountSpan, mountErr)
 	if mountErr != nil {
 		slog.ErrorContext(ctx, "Failed to mount volumes", "err", mountErr)
@@ -169,7 +169,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	// fails, unmounting seals the untouched backend and keeps the launch from
 	// exposing a writer that snapshots would classify as available.
 	if stateErr := m.markAttachedVolumesInUse(instance); stateErr != nil {
-		if unmountErr := m.deps.VolumeMounter.Unmount(instance); unmountErr != nil {
+		if unmountErr := m.deps.VolumeMounter.Unmount(ctx, instance); unmountErr != nil {
 			return errors.Join(
 				fmt.Errorf("persist attached volume state: %w", stateErr),
 				fmt.Errorf("rollback mounted volumes: %w", unmountErr),

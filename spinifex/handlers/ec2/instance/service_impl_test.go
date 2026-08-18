@@ -2319,10 +2319,10 @@ func TestStartStoppedInstance_ClaimConflict(t *testing.T) {
 // fails fast and deterministically without touching a real qemu process.
 type raceVolumeMounter struct{}
 
-func (raceVolumeMounter) Mount(*vm.VM) error                   { return nil }
-func (raceVolumeMounter) Unmount(*vm.VM) error                 { return nil }
-func (raceVolumeMounter) MountOne(*spxtypes.EBSRequest) error  { return nil }
-func (raceVolumeMounter) UnmountOne(spxtypes.EBSRequest) error { return nil }
+func (raceVolumeMounter) Mount(context.Context, *vm.VM) error                           { return nil }
+func (raceVolumeMounter) Unmount(context.Context, *vm.VM) error                         { return nil }
+func (raceVolumeMounter) MountOne(context.Context, string, *spxtypes.EBSRequest) error  { return nil }
+func (raceVolumeMounter) UnmountOne(context.Context, string, spxtypes.EBSRequest) error { return nil }
 
 // TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
 // the double-start bug this claim closes: two nodes (or a forwarded call

@@ -32,6 +32,10 @@ const (
 	// target and its MAC is what the replacement VM's NIC has to come up with.
 	testEndpointIP  = "10.20.30.40"
 	testEndpointMAC = "02:00:00:00:aa:01"
+
+	// The RDS system group the system NIC carries, in place of the system VPC's
+	// mutually-permissive default group.
+	testSystemSG = "sg-rdssystem"
 )
 
 // --- Fakes ---
@@ -193,6 +197,13 @@ type fakeENIs struct {
 	// replace must refuse to mint a replacement address for.
 	describeMissing bool
 	modifyErr       error
+
+	// The region's RDS system group, ensured per launch. Recording both halves of
+	// the lookup-or-create is what makes its idempotence observable.
+	sgCreated   []*ec2.CreateSecurityGroupInput
+	sgDescribed []*ec2.DescribeSecurityGroupsInput
+	sgExisting  string
+	sgCreateErr error
 }
 
 var _ launchVPCProvisioner = (*fakeENIs)(nil)
@@ -252,6 +263,27 @@ func (f *fakeENIs) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.Mo
 	}
 	f.modified = append(f.modified, in)
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
+}
+
+func (f *fakeENIs) DescribeSecurityGroups(_ context.Context, in *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
+	f.sgDescribed = append(f.sgDescribed, in)
+	if f.sgExisting == "" {
+		return &ec2.DescribeSecurityGroupsOutput{}, nil
+	}
+	return &ec2.DescribeSecurityGroupsOutput{
+		SecurityGroups: []*ec2.SecurityGroup{{GroupId: aws.String(f.sgExisting)}},
+	}, nil
+}
+
+// A created group is found by the next describe, as the real API would have it:
+// that is what a second launch's idempotence rests on.
+func (f *fakeENIs) CreateSecurityGroup(_ context.Context, in *ec2.CreateSecurityGroupInput, _ string) (*ec2.CreateSecurityGroupOutput, error) {
+	if f.sgCreateErr != nil {
+		return nil, f.sgCreateErr
+	}
+	f.sgCreated = append(f.sgCreated, in)
+	f.sgExisting = testSystemSG
+	return &ec2.CreateSecurityGroupOutput{GroupId: aws.String(f.sgExisting)}, nil
 }
 
 // fakeLauncher stands in for the system-instance launcher.
@@ -528,7 +560,10 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	assert.Equal(t, utils.GlobalAccountID, h.enis.accts[0])
 	assert.True(t, strings.HasPrefix(aws.StringValue(sysENI.SubnetId), "subnet-rdssys"),
 		"the primary NIC must land in the RDS system VPC, got %s", aws.StringValue(sysENI.SubnetId))
-	assert.Empty(t, sysENI.Groups, "the system NIC is unreachable from any customer VPC and needs no security group")
+	// Its own ingress-free group, not the system VPC's default one — whose sole
+	// rule admits every other member of itself, which is every DB VM there is.
+	assert.Equal(t, []string{testSystemSG}, aws.StringValueSlice(sysENI.Groups))
+	assert.Equal(t, testSystemSG, out.SystemSGID)
 
 	// The customer-facing ENI is created in the customer's account and subnet,
 	// with the customer's security groups: it is the only ingress path.
@@ -564,6 +599,48 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::000000000000:instance-profile/rdsInstanceRole", in.IamInstanceProfileArn)
 
 	assert.Equal(t, "i-rds0001", out.InstanceID)
+}
+
+// The group is per region and shared by every DB VM, so a second launch has to
+// find the first one's rather than accumulate a group per instance.
+func TestLaunchDBInstanceVMReusesTheSystemSecurityGroup(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+
+	first, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.NoError(t, err)
+	second, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.NoError(t, err)
+
+	assert.Equal(t, first.SystemSGID, second.SystemSGID)
+	require.Len(t, h.enis.sgCreated, 1, "the region's system group is shared, not minted per DB instance")
+
+	created := h.enis.sgCreated[0]
+	assert.Equal(t, SystemSecurityGroupName("ap-southeast-2"), aws.StringValue(created.GroupName))
+	assert.Equal(t, tags.ManagedByRDS, tagOf(created.TagSpecifications, tags.ManagedByKey))
+
+	// The name and the VPC together are the lookup key: a group of that name in
+	// some customer VPC must not be adopted for the system NIC.
+	require.NotEmpty(t, h.enis.sgDescribed)
+	filters := map[string]string{}
+	for _, f := range h.enis.sgDescribed[0].Filters {
+		filters[aws.StringValue(f.Name)] = aws.StringValue(f.Values[0])
+	}
+	assert.Equal(t, SystemSecurityGroupName("ap-southeast-2"), filters["group-name"])
+	assert.NotEmpty(t, filters["vpc-id"])
+}
+
+// There is no fallback to nil groups, because that fallback is the bug: an ENI
+// created with none lands in the VPC's default group.
+func TestLaunchDBInstanceVMFailsWhenTheSystemSecurityGroupCannotBeEnsured(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	h.enis.sgCreateErr = errors.New("vpcd unavailable")
+
+	_, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.Error(t, err)
+	assert.Empty(t, h.enis.created, "no NIC may be created before its security group exists")
+	assert.Nil(t, h.launcher.input)
 }
 
 func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {

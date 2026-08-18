@@ -215,6 +215,7 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	rec.InstanceID = launched.InstanceID
 	rec.VMGeneration = firstVMGeneration
 	rec.SystemENIID = launched.SystemENIID
+	rec.SystemSGID = launched.SystemSGID
 	rec.ENIID = launched.CustomerENIID
 	rec.ENIPrivateIP = launched.CustomerENIIP
 	rec.DataVolumeID = launched.DataVolumeID

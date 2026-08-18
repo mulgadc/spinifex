@@ -62,6 +62,10 @@ type launchVPCProvisioner interface {
 	// Re-associates the customer ENI's security groups in place, which is what
 	// makes a VpcSecurityGroupIds modify need no VM replace and no new IP.
 	ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error)
+	// The system NIC's own group, ensured per launch rather than at daemon
+	// start, so a deployment whose system VPC was rebuilt still gets one.
+	CreateSecurityGroup(ctx context.Context, input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
+	DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 }
 
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
@@ -124,7 +128,10 @@ type LaunchOutput struct {
 	InstanceID string
 	// The system ENI is disposable — a replace makes a new one. The customer
 	// ENI is the stable endpoint: its IP is the DNS target and survives.
-	SystemENIID      string
+	SystemENIID string
+	// The region's RDS system group, re-derived on every launch so a record
+	// written before the group existed is corrected by the next replace.
+	SystemSGID       string
 	CustomerENIID    string
 	CustomerENIIP    string
 	DataVolumeID     string
@@ -160,6 +167,11 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	}
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
 
+	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, region, sysRefs.VpcID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Unwind in reverse creation order on any failure below. Each step appends
 	// its own undo as soon as the resource exists.
 	var rollback []func(context.Context)
@@ -187,7 +199,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}()
 
-	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, nil,
+	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, []string{systemSGID},
 		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
 	if err != nil {
 		return nil, err
@@ -294,12 +306,14 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 
 	slog.InfoContext(ctx, "rds: DB VM launched",
 		"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "ami", amiID,
-		"systemEni", systemENI.id, "customerEni", customerENI.id, "customerEniIp", customerENI.ip,
+		"systemEni", systemENI.id, "systemSg", systemSGID,
+		"customerEni", customerENI.id, "customerEniIp", customerENI.ip,
 		"dataVolume", volumeID, "device", device)
 
 	return &LaunchOutput{
 		InstanceID:          instanceID,
 		SystemENIID:         systemENI.id,
+		SystemSGID:          systemSGID,
 		CustomerENIID:       customerENI.id,
 		CustomerENIIP:       customerENI.ip,
 		DataVolumeID:        volumeID,
@@ -332,8 +346,9 @@ type launchENI struct {
 	mac string
 }
 
-// groups is nil for the system NIC, which is unreachable from any customer VPC
-// and so needs no security group of its own.
+// groups must be non-empty for either NIC: an ENI created with none is placed in
+// its VPC's default group, whose sole ingress rule admits every other member of
+// itself — which for the shared system VPC is every DB VM in the deployment.
 func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string, groups []string, description, dbInstanceID string) (*launchENI, error) {
 	var groupIDs []*string
 	if len(groups) > 0 {

@@ -132,6 +132,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.InstanceID = launched.InstanceID
 		stored.SystemENIID = launched.SystemENIID
+		stored.SystemSGID = launched.SystemSGID
 		stored.DataVolumeSerial = launched.DataVolumeSerial
 		stored.VMGeneration++
 		stored.FormatAuthorized = false
@@ -145,6 +146,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, 
 	// VM's identity on top of this one.
 	rec.InstanceID = launched.InstanceID
 	rec.SystemENIID = launched.SystemENIID
+	rec.SystemSGID = launched.SystemSGID
 	rec.DataVolumeSerial = launched.DataVolumeSerial
 	rec.VMGeneration++
 	rec.FormatAuthorized = false

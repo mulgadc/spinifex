@@ -15,6 +15,7 @@ import { Suspense, type ReactNode } from "react"
 
 import { AdminDashboardPanel } from "@/components/admin-dashboard-panel"
 import { PageHeading } from "@/components/page-heading"
+import { SandboxWelcomeDialog } from "@/components/sandbox-welcome-dialog"
 import { StateBadge } from "@/components/state-badge"
 import {
   Card,
@@ -63,6 +64,7 @@ function Dashboard() {
   return (
     <>
       <PageHeading title="Dashboard" />
+      <SandboxWelcomeDialog />
       <AdminDashboardPanel />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Suspense fallback={<CardSkeleton />}>

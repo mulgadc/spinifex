@@ -14,6 +14,7 @@
 #       RDS_MASTER_PASSWORD=<present only when RDS_MODE=initialize>
 #       RDS_DB_NAME=<initial database; optional, as on AWS>
 #       RDS_PORT=<listen port; defaults to 3306>
+#       RDS_LISTEN_ADDRESS=<the customer ENI address the engine binds>
 #       RDS_DATA_VOLUME_ID / RDS_DATA_VOLUME_SERIAL=<expected volume identity>
 #       RDS_VM_GENERATION / RDS_FORMAT_AUTHORIZED=<create-only format grant>
 #       RDS_BOOTSTRAP_PENDING / RDS_PAYLOAD_ID=<the control plane is still
@@ -120,6 +121,11 @@ SECURE_FILE_DIR="${RDS_SECURE_FILE_DIR:-/var/lib/mysql-files}"
 
 MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
 
+# How long the bind address may take to appear on a local interface. The lease
+# is taken in the boot runlevel on a 600s budget and this script runs in the
+# default one, so the wait is a guard rather than an expected delay.
+LISTEN_ADDRESS_TIMEOUT="${RDS_LISTEN_ADDRESS_TIMEOUT:-120}"
+
 # How long the private bootstrap server gets to open its socket, as probes one
 # BOOTSTRAP_POLL apart. InnoDB creates its redo log and system tablespace on this
 # first start, so it is not instant.
@@ -137,6 +143,50 @@ CREATE_DATABASE_PROCEDURE="create_database"
 
 log() { echo "[rds-init] $*"; }
 fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
+
+# A dotted-quad IPv4 literal. bind_address would also take a hostname, but the
+# control plane sends an address, and accepting a name would reintroduce the
+# resolution step the bind exists to remove.
+is_ipv4() {
+    case "$1" in
+        '' | *[!0-9.]*) return 1 ;;
+    esac
+    _rest="$1"
+    _octets=0
+    while [ -n "${_rest}" ]; do
+        _octet="${_rest%%.*}"
+        case "${_rest}" in
+            *.*) _rest="${_rest#*.}" ;;
+            *) _rest="" ;;
+        esac
+        # A leading zero reads as octal to some parsers and decimal to others,
+        # so the two would disagree about which address was bound.
+        case "${_octet}" in
+            0 | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;;
+            *) return 1 ;;
+        esac
+        [ "${_octet}" -le 255 ] || return 1
+        _octets=$((_octets + 1))
+    done
+    [ "${_octets}" = 4 ]
+}
+
+# The engine binds one address and refuses to start if it is not there yet, and
+# an engine that will not start for an unexplained reason is the worst way to
+# learn that DHCP lost its race. Bounded, then fatal with the address named.
+wait_for_listen_address() {
+    _deadline=$(($(date +%s) + LISTEN_ADDRESS_TIMEOUT))
+    while :; do
+        if ip -4 -o addr show 2>/dev/null |
+            awk -v want="${RDS_LISTEN_ADDRESS}" \
+                '{ split($4, addr, "/"); if (addr[1] == want) found = 1 } END { exit !found }'; then
+            return 0
+        fi
+        [ "$(date +%s)" -lt "${_deadline}" ] || break
+        sleep 1
+    done
+    fail "the endpoint address ${RDS_LISTEN_ADDRESS} did not appear on any interface within ${LISTEN_ADDRESS_TIMEOUT}s; the engine binds it and nothing else, so refusing to start"
+}
 
 # Between these two, the datadir carries a mysql system database but no usable
 # master user. _server_pid is the private bootstrap server, if one is running.
@@ -199,6 +249,7 @@ load_handoff() {
     RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD:-}"
     RDS_DB_NAME="${RDS_DB_NAME:-}"
     RDS_PORT="${RDS_PORT:-3306}"
+    RDS_LISTEN_ADDRESS="${RDS_LISTEN_ADDRESS:-}"
     RDS_VM_GENERATION="${RDS_VM_GENERATION:-}"
     # Absent from an agent that predates the receipt protocol, which reads as
     # "nothing is pending" and leaves every path below unchanged.
@@ -251,6 +302,14 @@ load_handoff() {
     case "${RDS_PORT}" in
         '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
     esac
+
+    # No fallback to a wildcard. The engine is reachable over the customer ENI
+    # and nowhere else, and a handoff that cannot say which address that is has
+    # no safe reading — the DB VM's other two NICs carry no security group the
+    # customer can see, let alone set.
+    [ -n "${RDS_LISTEN_ADDRESS}" ] || fail "bootstrap config has no RDS_LISTEN_ADDRESS; refusing to start an engine that would answer on every interface"
+    is_ipv4 "${RDS_LISTEN_ADDRESS}" ||
+        fail "bootstrap config has a non-IPv4 RDS_LISTEN_ADDRESS: ${RDS_LISTEN_ADDRESS}"
 
     # redact_stream is line-oriented, so a password spanning a line boundary
     # would match neither half and reach /dev/console in the clear. The control
@@ -537,7 +596,8 @@ EOF
 
 # The 90- prefix sorts last within the include directory and MariaDB takes the
 # last occurrence of a setting, so a resolved parameter can never move the
-# endpoint's port, redirect the datadir, turn off TLS or lower the protocol floor.
+# endpoint's port, widen the bind, redirect the datadir, turn off TLS or lower
+# the protocol floor.
 #
 # innodb_buffer_pool_chunk_size and innodb_buffer_pool_instances are deliberately
 # absent although they are platform-owned: 11.8 removed the second outright, so
@@ -554,7 +614,14 @@ write_platform_config() {
 port = ${RDS_PORT}
 datadir = ${DATADIR}
 socket = ${SOCKET}
-bind_address = 0.0.0.0
+
+# The customer ENI and nothing else. The DB VM's other two NICs sit on the
+# shared RDS system VPC and the host's management bridge, neither of which any
+# customer security group governs, so a socket bound there is reachable across
+# accounts. MariaDB's analogue of a scoped pg_hba is the host pattern on a
+# grant, which lives in mysql.user on the data volume and would survive a
+# restore into another VPC — so for this engine the bind is the boundary.
+bind_address = ${RDS_LISTEN_ADDRESS}
 
 # InnoDB is the only storage engine the snapshot guarantee holds for: it keeps a
 # redo log and recovers from a crash-consistent snapshot, and Aria and MyISAM do
@@ -963,6 +1030,7 @@ consume_secrets() {
 }
 
 load_handoff
+wait_for_listen_address
 require_data_volume
 require_engine_stamp
 

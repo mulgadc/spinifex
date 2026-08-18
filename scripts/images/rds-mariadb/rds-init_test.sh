@@ -201,6 +201,18 @@ EOF
 # an installed receipt and an armed sweep coexist. Matched on the receipt
 # directory by name: the engine stamp syncs its directory too, long before the
 # traps are armed, and killing there would leave the window untested.
+# ip stub: stands in for `ip -4 -o addr show`, printing one line per address in
+# IP_ADDR_LIST in the format the bind-address wait parses.
+cat > "${STUBBIN}/ip" <<'EOF'
+#!/bin/sh
+n=1
+for cidr in ${IP_ADDR_LIST:-}; do
+    echo "${n}: eth$((n - 1))    inet ${cidr} scope global eth$((n - 1))"
+    n=$((n + 1))
+done
+exit 0
+EOF
+
 cat > "${STUBBIN}/sync" <<'EOF'
 #!/bin/sh
 if [ "${SYNC_KILL_PARENT:-0}" = "1" ]; then
@@ -236,6 +248,9 @@ SECURE_FILE_DIR="${WORK}/mysql-files"
 LOG_DIR="${WORK}/log"
 ENGINE_LOG="${LOG_DIR}/error.log"
 MOUNTS="${WORK}/mounts"
+
+# The customer ENI address the engine binds, as the control plane delivers it.
+LISTEN_ADDRESS_DEFAULT="10.30.1.15"
 KILL_PID_FILE="${WORK}/rds-init.pid"
 MARIADBD_TEST_PID_FILE="${WORK}/mariadbd.pid"
 WORKDIR="${WORK}"
@@ -266,6 +281,13 @@ write_handoff() {
         [ -n "$3" ] && echo "RDS_DB_NAME='$3'"
         [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
         [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
+        # Written unset rather than defaulted when the case is about a handoff
+        # that omits it, which rds-init has to refuse rather than fill in.
+        [ "${OMIT_LISTEN_ADDRESS:-0}" = "1" ] ||
+            echo "RDS_LISTEN_ADDRESS=${LISTEN_ADDRESS:-${LISTEN_ADDRESS_DEFAULT}}"
+        # Delivered but unread here: MariaDB's analogue of a scoped pg_hba is a
+        # grant host pattern on the data volume, which a restore would carry.
+        echo "RDS_CLIENT_CIDR=10.30.0.0/16"
         # Last, and unconditional: an optional line failing its test would make
         # the whole group's status non-zero and `set -e` would end the run here.
         echo "RDS_PORT=6543"
@@ -327,6 +349,10 @@ reset_state() {
     unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE CLIENT_STATUS_CORRUPT STAMP_OVERRIDE || true
     unset MARIADBD_START_FAIL MARIADBD_KILL_PARENT MARIADBD_IGNORE_TERM CLIENT_KILL_PARENT || true
     unset ADMIN_SHUTDOWN_FAIL SYNC_KILL_PARENT || true
+    unset LISTEN_ADDRESS OMIT_LISTEN_ADDRESS || true
+    # The customer ENI carries its address by the time rds-init runs, which is
+    # the ordinary case; the cases about a late lease drop it themselves.
+    IP_ADDR_LIST="${LISTEN_ADDRESS_DEFAULT}/24 10.99.0.7/24"
     rm -f "${MARIADBD_TEST_PID_FILE}"
     write_tls
 }
@@ -346,6 +372,8 @@ run_env() {
         RDS_RECEIPT_DIR="${RECEIPT_DIR_OVERRIDE:-${RECEIPT_DIR}}" \
         RDS_ENGINE_STAMP="${STAMP_OVERRIDE:-${STAMP}}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
+        RDS_LISTEN_ADDRESS_TIMEOUT="${LISTEN_TIMEOUT:-0}" \
+        IP_ADDR_LIST="${IP_ADDR_LIST:-}" \
         RDS_BOOTSTRAP_POLL=0.05 \
         RDS_BOOTSTRAP_PROBES=200 \
         RDS_BOOTSTRAP_STOP_GRACE=0.1 \
@@ -493,9 +521,12 @@ if run_ok "initialize"; then
         && pass "initialize: delivered port applied" || fail "initialize: port not applied"
     grep -q "^datadir = ${DATADIR}" "${PLATFORM_FILE}" \
         && pass "initialize: datadir pinned by the platform" || fail "initialize: no datadir"
-    grep -q "^bind_address = 0.0.0.0" "${PLATFORM_FILE}" \
-        && pass "initialize: the engine listens for the customer ENI" \
-        || fail "initialize: no bind_address"
+    grep -q "^bind_address = ${LISTEN_ADDRESS_DEFAULT}$" "${PLATFORM_FILE}" \
+        && pass "initialize: the engine binds the customer ENI" \
+        || fail "initialize: the engine does not bind the delivered address"
+    grep -qE '^bind_address = (0\.0\.0\.0|\*|::)$' "${PLATFORM_FILE}" \
+        && fail "initialize: the engine still answers on every interface" \
+        || pass "initialize: no wildcard bind"
     grep -q "^default_storage_engine = InnoDB" "${PLATFORM_FILE}" \
         && pass "initialize: tables land in the engine snapshots recover" \
         || fail "initialize: default_storage_engine not pinned"
@@ -1232,6 +1263,38 @@ run_fails "stamp-unwritable"
 grep -q 'engine stamp' "${WORK}/out" \
     && pass "stamp-unwritable: refusal names the stamp" || fail "stamp-unwritable: no refusal message"
 unset STAMP_OVERRIDE
+
+# --- Case 13: a handoff that cannot say what to bind is refused ---
+# The refusal is before the one-shot password is spent, so the create is still
+# retryable. The only reading rds-init could reach on its own is the wildcard
+# the bind exists to remove.
+for _case in omit-listen bad-listen leading-zero short-quad; do
+    reset_state
+    case "${_case}" in
+        omit-listen) OMIT_LISTEN_ADDRESS=1 ;;
+        bad-listen) LISTEN_ADDRESS="db.internal" ;;
+        leading-zero) LISTEN_ADDRESS="010.30.1.15" ;;
+        short-quad) LISTEN_ADDRESS="10.30.1" ;;
+    esac
+    write_handoff initialize 's3cr3t' appdb
+    run_fails "${_case}"
+    [ -s "${INSTALLDB_CALLS}" ] \
+        && fail "${_case}: initialised on a handoff that could not be read" \
+        || pass "${_case}: refused before the datadir was created"
+done
+
+# --- Case 13a: the bind address must be on an interface before the engine starts ---
+# An engine asked to bind an address that is not there refuses to start, which is
+# the worst way to learn that DHCP lost its race.
+reset_state
+IP_ADDR_LIST="10.99.0.7/24"
+write_handoff initialize 's3cr3t' appdb
+run_fails "bind-wait"
+grep -q "${LISTEN_ADDRESS_DEFAULT}" "${WORK}/out" \
+    && pass "bind-wait: the refusal names the address" || fail "bind-wait: the refusal does not name the address"
+[ -s "${INSTALLDB_CALLS}" ] \
+    && fail "bind-wait: initialised before the address existed" \
+    || pass "bind-wait: refused before the datadir was created"
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"

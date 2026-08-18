@@ -439,38 +439,10 @@ func (a *Appliance) resume(ctx context.Context, kv jetstream.KeyValue, rec Appli
 // the moment it takes to compose the DSN and open the pool. The password
 // never leaves this call.
 func (a *Appliance) Connect(ctx context.Context) (*pgxBackend, error) {
-	kv, err := a.bucket(ctx)
+	dsn, err := a.dsn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rec, _, err := a.getRecord(ctx, kv)
-	if err != nil {
-		return nil, err
-	}
-	if rec == nil {
-		return nil, errors.New("ochrevector: appliance not yet provisioned")
-	}
-	if rec.State != ApplianceStateAvailable {
-		return nil, fmt.Errorf("ochrevector: appliance not available (state %q)", rec.State)
-	}
-
-	dialIP, err := a.ensureHostPort(ctx, rec)
-	if err != nil {
-		return nil, err
-	}
-
-	password, err := a.decryptPassword(rec)
-	if err != nil {
-		return nil, err
-	}
-	// dialIP is only ever non-empty when the host-port path actually ran
-	// (WithHostPort configured); otherwise this is the unchanged pre-fix
-	// dial target.
-	dialHost := rec.Endpoint
-	if dialIP != "" {
-		dialHost = dialIP
-	}
-	dsn := buildDSN(dialHost, rec.Port, rec.MasterUsername, password)
 
 	backend, err := NewPgxBackend(ctx, dsn)
 	if err != nil {
@@ -481,6 +453,45 @@ func (a *Appliance) Connect(ctx context.Context) (*pgxBackend, error) {
 		return nil, err
 	}
 	return backend, nil
+}
+
+// dsn resolves the appliance's connection DSN: the same record lookup,
+// host-port routing and password decrypt Connect uses, without opening a
+// pgx pool. Backup/Restore shell out to pg_dump/psql instead of dialing
+// through pgx, but still need this exact dial host/port and password.
+func (a *Appliance) dsn(ctx context.Context) (string, error) {
+	kv, err := a.bucket(ctx)
+	if err != nil {
+		return "", err
+	}
+	rec, _, err := a.getRecord(ctx, kv)
+	if err != nil {
+		return "", err
+	}
+	if rec == nil {
+		return "", errors.New("ochrevector: appliance not yet provisioned")
+	}
+	if rec.State != ApplianceStateAvailable {
+		return "", fmt.Errorf("ochrevector: appliance not available (state %q)", rec.State)
+	}
+
+	dialIP, err := a.ensureHostPort(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+
+	password, err := a.decryptPassword(rec)
+	if err != nil {
+		return "", err
+	}
+	// dialIP is only ever non-empty when the host-port path actually ran
+	// (WithHostPort configured); otherwise this is the unchanged pre-fix
+	// dial target.
+	dialHost := rec.Endpoint
+	if dialIP != "" {
+		dialHost = dialIP
+	}
+	return buildDSN(dialHost, rec.Port, rec.MasterUsername, password), nil
 }
 
 // getRecord reads and decodes the appliance record, returning (nil, nil, nil)

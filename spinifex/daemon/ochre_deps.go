@@ -138,7 +138,7 @@ func (d *Daemon) startOchreVector() {
 		return
 	}
 
-	// Registered here rather than in subscribeAll: these six subjects only
+	// Registered here rather than in subscribeAll: these subjects only
 	// exist once the appliance above is actually connected, which can be
 	// minutes after subscribeAll already ran. registerNatsSubs is the same
 	// table-driven mechanism subscribeAll itself uses, so a queue-group
@@ -152,6 +152,24 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
 		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(vectorService.ListJobs), "spinifex-workers"},
 	}
+
+	// backup/restore need RegrantAccount alongside EnsureAccount, which is
+	// not part of VectorBackend itself; every real backend (pgxBackend)
+	// implements it, so this only ever skips registration for a future
+	// VectorBackend that does not.
+	if granter, ok := backend.(handlers_ochrevector.AccountGranter); ok {
+		backupSvc := handlers_ochrevector.NewBackupService(appliance, granter, store, handlers_ochrevector.ExecPgDumper{})
+		d.mu.Lock()
+		d.ochreBackupService = backupSvc
+		d.mu.Unlock()
+		subs = append(subs,
+			natsSub{handlers_ochrevector.SubjectBackupAccount, handleNATSRequest(backupSvc.Backup), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectRestoreAccount, handleNATSRequest(backupSvc.Restore), "spinifex-workers"},
+		)
+	} else {
+		slog.Warn("Ochre vector store: backend does not support account backup/restore; subjects not registered")
+	}
+
 	if err := d.registerNatsSubs(subs); err != nil {
 		slog.Error("Ochre vector store: failed to register NATS subjects", "err", err)
 		return
@@ -212,6 +230,7 @@ func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, _ *handlers_o
 	d.mu.Lock()
 	d.ochreAppliance = nil
 	d.ochreVectorService = nil
+	d.ochreBackupService = nil
 	d.mu.Unlock()
 
 	return &handlers_ochrevector.TeardownApplianceResponse{}, nil

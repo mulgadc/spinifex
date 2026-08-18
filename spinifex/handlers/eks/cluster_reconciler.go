@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -1009,7 +1010,7 @@ func (r *ClusterReconciler) failIfCreateTimedOut(ctx context.Context, meta *Clus
 		return fmt.Errorf("mark create-timeout failed: %w", err)
 	}
 	slog.Warn("ClusterReconciler: CREATING timed out, marked FAILED",
-		"cluster", r.clusterName, "timeout", r.createTimeout, "reason", reason)
+		"cluster", r.clusterName, "timeout_ms", otelsetup.Millis(r.createTimeout), "reason", reason)
 	return ErrReconcilerClusterFailed
 }
 

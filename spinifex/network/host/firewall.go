@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -88,7 +89,7 @@ func MaintainFirewall(ctx context.Context, configPath string, clusterConfig *con
 	delay := firewallRetryDelay
 	for {
 		if err := ReconcileFirewall(configPath, clusterConfig); err != nil {
-			slog.Warn("Failed to reconcile host firewall, will retry", "err", err, "retry_in", delay)
+			slog.Warn("Failed to reconcile host firewall, will retry", "err", err, "retry_in_ms", otelsetup.Millis(delay))
 			delay = min(delay*2, firewallReconcileInterval)
 		} else {
 			delay = firewallReconcileInterval

@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 
@@ -58,7 +59,7 @@ func AcquireLeader(ctx context.Context, nc *nats.Conn, bucket, holder string) (f
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/lock: JetStream KV unreachable after retry, skipping reconcile",
-				"holder", holder, "bucket", bucket, "waited", leaderRetryFor, "err", err)
+				"holder", holder, "bucket", bucket, "waited_ms", otelsetup.Millis(leaderRetryFor), "err", err)
 			return nil, false
 		}
 		slog.Debug("reconcile/lock: JetStream KV not ready, retrying", "holder", holder, "bucket", bucket, "err", err)

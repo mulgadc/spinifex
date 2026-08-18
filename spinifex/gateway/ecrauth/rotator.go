@@ -2,6 +2,7 @@ package gateway_ecrauth
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"sort"
 	"time"
@@ -102,7 +103,7 @@ func (r *Rotator) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
-	slog.Info("ECR signing-key rotator started", "interval", r.interval, "rotateAfter", r.params.rotateAfter)
+	slog.Info("ECR signing-key rotator started", "interval_ms", otelsetup.Millis(r.interval), "rotate_after_ms", otelsetup.Millis(r.params.rotateAfter))
 	for {
 		select {
 		case <-ctx.Done():

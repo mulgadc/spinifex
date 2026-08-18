@@ -13,6 +13,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 )
 
@@ -176,7 +177,7 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 		nc, err := ConnectNATS(host, token, caCertPath, opts...)
 		if err == nil {
 			if time.Since(start) > time.Second {
-				slog.Info("NATS connection established", "elapsed", time.Since(start).Round(time.Second))
+				slog.Info("NATS connection established", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			}
 			return nc, nil
 		}
@@ -198,11 +199,11 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 		// Past the escalation threshold, promote from Warn to Error (rate-limited to 1/min).
 		if attempt > natsRetryEscalateAttempt {
 			if lastEscalatedLog.IsZero() || time.Since(lastEscalatedLog) >= time.Minute {
-				slog.Error("NATS still disconnected", "error", err, "disconnected_for", elapsed.Round(time.Second), "attempt", attempt)
+				slog.Error("NATS still disconnected", "error", err, "disconnected_for_ms", otelsetup.Millis(elapsed), "attempt", attempt)
 				lastEscalatedLog = time.Now()
 			}
 		} else {
-			slog.Warn("NATS not ready, retrying...", "error", err, "elapsed", elapsed.Round(time.Second), "retryIn", cfg.retryDelay, "attempt", attempt)
+			slog.Warn("NATS not ready, retrying...", "error", err, "elapsed_ms", otelsetup.Millis(elapsed), "retry_in_ms", otelsetup.Millis(cfg.retryDelay), "attempt", attempt)
 		}
 
 		if cfg.ctx != nil {

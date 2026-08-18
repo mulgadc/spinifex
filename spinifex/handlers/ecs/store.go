@@ -9,6 +9,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -237,6 +238,6 @@ func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.Ke
 	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketECSLeader, kv, KVBucketECSLeaderVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketECSLeader, err)
 	}
-	slog.Info("ECS leader bucket initialized", "bucket", KVBucketECSLeader, "ttl", KVBucketECSLeaderTTL)
+	slog.Info("ECS leader bucket initialized", "bucket", KVBucketECSLeader, "ttl_ms", otelsetup.Millis(KVBucketECSLeaderTTL))
 	return kv, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 )
@@ -20,7 +21,7 @@ func (a *Agent) register(ctx context.Context) error {
 		a.hb.setInterval(time.Duration(out.HeartbeatIntervalSeconds) * time.Second)
 
 		slog.Info("rds-agent: registered",
-			"dbInstanceIdentifier", a.id.DBInstanceIdentifier, "heartbeat", a.hb.interval)
+			"dbInstanceIdentifier", a.id.DBInstanceIdentifier, "heartbeat_ms", otelsetup.Millis(a.hb.interval))
 		return nil
 	})
 }

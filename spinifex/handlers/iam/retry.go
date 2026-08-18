@@ -3,6 +3,7 @@ package handlers_iam
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 
@@ -26,7 +27,7 @@ func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey 
 		svc, err := NewIAMServiceImpl(ctx, natsConn, masterKey, clusterSize)
 		if err == nil {
 			if attempt > 1 {
-				slog.Info("IAM service initialized after retry", "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
+				slog.Info("IAM service initialized after retry", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			}
 			return svc, nil
 		}
@@ -36,7 +37,7 @@ func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey 
 			return nil, fmt.Errorf("IAM service unavailable after %s (%d attempts): %w", elapsed.Round(time.Second), attempt, err)
 		}
 
-		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
+		slog.Warn("IAM service not ready (waiting for JetStream cluster quorum)", "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(elapsed), "retry_in_ms", otelsetup.Millis(retryDelay))
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}

@@ -14,6 +14,7 @@ import (
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -228,7 +229,7 @@ func (d *Daemon) connectOchreAppliance(appliance *handlers_ochrevector.Appliance
 		func(attempt int, backoff time.Duration, err error) {
 			if attempt <= ochreStartupLogAttempts || attempt%ochreStartupLogEvery == 0 {
 				slog.Warn("Ochre vector store: appliance not reachable, will keep retrying",
-					"attempt", attempt, "backoff", backoff, "err", err)
+					"attempt", attempt, "backoff_ms", otelsetup.Millis(backoff), "err", err)
 			}
 		},
 		func() (handlers_ochrevector.VectorBackend, error) {

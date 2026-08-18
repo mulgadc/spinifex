@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"math/rand/v2"
 	"strings"
@@ -151,7 +152,7 @@ func (z *zoneLock) Release(ctx context.Context) {
 	defer cancel()
 	if err := z.kv.Delete(releaseCtx, z.key); err != nil {
 		slog.Warn("dns writer: failed to release zone lock (TTL will reap)",
-			"zone", z.zone, "holder", z.locker.holder, "ttl", zoneLockTTL, "error", err)
+			"zone", z.zone, "holder", z.locker.holder, "ttl_ms", otelsetup.Millis(zoneLockTTL), "error", err)
 	}
 }
 

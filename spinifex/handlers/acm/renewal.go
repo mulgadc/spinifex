@@ -19,6 +19,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 const (
@@ -189,7 +190,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// A scan with nothing due logs nothing, so without this an operator cannot
 	// distinguish a running worker from one that never started.
-	slog.InfoContext(ctx, "ACM renewal worker started", "scan_interval", w.scanInterval)
+	slog.InfoContext(ctx, "ACM renewal worker started", "scan_interval_ms", otelsetup.Millis(w.scanInterval))
 
 	w.scanOnce(ctx) // don't wait a full interval before the first pass
 	for {

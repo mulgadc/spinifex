@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 )
@@ -47,7 +48,7 @@ func (m *Manager) scanAndMarkStuckPending(now time.Time) {
 	for _, instance := range stuck {
 		slog.Warn("Instance stuck in pending, marking failed",
 			"instanceId", instance.ID, "status", instance.Status,
-			"elapsed", now.Sub(*instance.Instance.LaunchTime))
+			"elapsed_ms", otelsetup.Millis(now.Sub(*instance.Instance.LaunchTime)))
 		m.MarkFailed(context.Background(), instance, "launch_timeout")
 	}
 }

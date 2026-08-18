@@ -675,7 +675,7 @@ func TestConnectNATSWithRetry_LogEscalatesPastThreshold(t *testing.T) {
 	assert.GreaterOrEqual(t, warnCount, 1, "expect warn logs for first 30 attempts")
 	assert.GreaterOrEqual(t, errCount, 1, "expect at least one escalated error log past the threshold")
 	assert.LessOrEqual(t, errCount, 2, "rate-limited to once per minute, so a sub-second test should see at most one or two")
-	assert.Contains(t, logs, "disconnected_for=", "escalated error should include disconnected_for")
+	assert.Contains(t, logs, "disconnected_for_ms=", "escalated error should include disconnected_for_ms")
 }
 
 // TestConnectNATSWithRetry_NoEscalation_BelowThreshold keeps the attempt count

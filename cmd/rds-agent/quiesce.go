@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"io"
 	"log/slog"
 	"os/exec"
@@ -72,7 +73,7 @@ func (q *quiesceState) beginHoldLocked(label string, session engineSession, hold
 		session: session,
 		expiry:  time.AfterFunc(hold, func() { q.expire(label) }),
 	}
-	slog.Info("rds-agent: engine quiesced for backup", "label", label, "hold", hold)
+	slog.Info("rds-agent: engine quiesced for backup", "label", label, "hold_ms", otelsetup.Millis(hold))
 }
 
 // Takes the hold off the engine, if one is still there, and disarms its

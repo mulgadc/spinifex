@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 const (
@@ -219,7 +220,7 @@ func (a *Agent) tick() {
 		// logs at ERROR so the console telemetry still catches a blackhole.
 		if !a.firstHeartbeatOK && time.Since(a.startedAt) < registrationGrace {
 			slog.Info("Heartbeat pending during startup", "err", err,
-				"gateway", a.gatewayURL, "elapsed", time.Since(a.startedAt).Round(time.Second))
+				"gateway", a.gatewayURL, "elapsed_ms", otelsetup.Millis(time.Since(a.startedAt)))
 			return
 		}
 

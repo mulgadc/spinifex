@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 // DefaultLifecycleSweepInterval is the period between lifecycle expiry cycles.
@@ -48,7 +49,7 @@ func (s *LifecycleSweeper) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	slog.InfoContext(ctx, "ECR lifecycle sweeper started", "interval", s.interval)
+	slog.InfoContext(ctx, "ECR lifecycle sweeper started", "interval_ms", otelsetup.Millis(s.interval))
 	for {
 		select {
 		case <-ctx.Done():

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 )
@@ -34,7 +35,7 @@ func (d *Daemon) startHeartbeat() {
 		}
 	}()
 
-	slog.Info("Heartbeat started", "interval", heartbeatInterval)
+	slog.Info("Heartbeat started", "interval_ms", otelsetup.Millis(heartbeatInterval))
 }
 
 // publishHeartbeat builds and writes a heartbeat entry to KV.

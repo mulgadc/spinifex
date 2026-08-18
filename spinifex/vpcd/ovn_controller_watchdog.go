@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 // Compile-time check: the gateway-claim prober satisfies the watchdog's needs.
@@ -78,7 +79,7 @@ func (w *ovnWatchdog) evaluate(ctx context.Context, now time.Time) bool {
 	}
 
 	slog.Warn("ovn-controller watchdog: SB wedge detected, resetting SB cluster state",
-		"status", status, "stale_for", now.Sub(w.nonConnectedSince).Round(time.Second))
+		"status", status, "stale_for_ms", otelsetup.Millis(now.Sub(w.nonConnectedSince)))
 	if err := w.prober.ResetSBClusterState(ctx); err != nil {
 		slog.Warn("ovn-controller watchdog: sb-cluster-state-reset failed", "err", err)
 		// Still record the attempt so the cooldown throttles retries.
@@ -95,7 +96,7 @@ func runOVNControllerWatchdog(ctx context.Context, w *ovnWatchdog) {
 	ticker := time.NewTicker(ovnWatchdogInterval)
 	defer ticker.Stop()
 	slog.Info("ovn-controller wedge watchdog started",
-		"interval", ovnWatchdogInterval, "stale_after", w.staleAfter, "cooldown", w.cooldown)
+		"interval_ms", otelsetup.Millis(ovnWatchdogInterval), "stale_after_ms", otelsetup.Millis(w.staleAfter), "cooldown_ms", otelsetup.Millis(w.cooldown))
 	for {
 		select {
 		case <-ctx.Done():

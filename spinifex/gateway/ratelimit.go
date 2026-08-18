@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 const (
@@ -128,7 +129,7 @@ func (rl *AuthRateLimiter) RecordFailure(ip, fingerprint string) {
 		slog.Warn("Rate limit: IP locked out",
 			"ip", ip,
 			"distinct_attempts", maxFailures,
-			"lockout_duration", lockout,
+			"lockout_ms", otelsetup.Millis(lockout),
 		)
 	}
 }

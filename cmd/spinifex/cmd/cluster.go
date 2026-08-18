@@ -12,6 +12,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
@@ -333,7 +334,7 @@ func runNodeDrainLocal(cmd *cobra.Command, args []string) {
 			// `systemctl --failed`) without blocking the target's teardown;
 			// exiting 0 would hide guests left running as storage vanishes.
 			slog.Error("drain phase failed: no ACK from local daemon before timeout; guests may be left running while storage is about to be torn down",
-				"phase", phase, "node", node, "timeout", timeout, "error", err)
+				"phase", phase, "node", node, "timeout_ms", otelsetup.Millis(timeout), "error", err)
 			reportGuestsLeftRunning(true, fmt.Sprintf("[%s] drain failed: guests left running with storage about to be torn down", strings.ToUpper(phase)))
 			os.Exit(1)
 		}

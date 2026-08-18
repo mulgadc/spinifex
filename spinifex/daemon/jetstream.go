@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -644,7 +645,7 @@ func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []b
 			m.obs.RecordKVSyncFailure(InstanceStateBucket, err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("KV sync timed out (best-effort)", "key", key, "timeout", timeout)
+			slog.Warn("KV sync timed out (best-effort)", "key", key, "timeout_ms", otelsetup.Millis(timeout))
 			return
 		}
 		slog.Warn("KV sync failed (best-effort)", "key", key, "err", err)

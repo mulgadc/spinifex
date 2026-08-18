@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"strings"
 	"sync"
@@ -89,7 +90,7 @@ func (r *TerminatedTeardownReaper) recordRetry(instanceID, dep string, state Tea
 	}
 	b.next = time.Now().Add(wait)
 	slog.Warn("vm/gc: teardown dependent failed, backing off",
-		"instanceId", instanceID, "dependent", dep, "failures", b.failures, "retry_in", wait)
+		"instanceId", instanceID, "dependent", dep, "failures", b.failures, "retry_in_ms", otelsetup.Millis(wait))
 }
 
 // forgetInstance drops an instance's backoff once its record is gone, so the

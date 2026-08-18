@@ -18,6 +18,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -67,7 +68,7 @@ func retryLoadState(volume string, attempts int, baseDelay time.Duration, sleep 
 			break
 		}
 		slog.Warn("LoadState transient failure, retrying",
-			"volume", volume, "attempt", attempt, "delay", delay, "err", err)
+			"volume", volume, "attempt", attempt, "delay_ms", otelsetup.Millis(delay), "err", err)
 		sleep(delay)
 		delay = delay * 3 / 2
 	}

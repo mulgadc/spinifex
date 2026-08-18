@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 )
@@ -58,7 +59,7 @@ func (r *StuckTerminateReaper) Sweep(context.Context) (int, error) {
 		}
 
 		slog.Warn("vm/gc: force-completing terminate wedged past timeout",
-			"instanceId", v.ID, "shuttingDownFor", time.Since(v.ShuttingDownAt))
+			"instanceId", v.ID, "shutting_down_for_ms", otelsetup.Millis(time.Since(v.ShuttingDownAt)))
 		if err := r.m.forceFinalizeStuckTerminate(v); err != nil {
 			slog.Error("vm/gc: failed to force-complete wedged terminate, will retry next sweep",
 				"instanceId", v.ID, "err", err)

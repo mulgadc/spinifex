@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -181,7 +182,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 		slog.Error("Instance exceeded max restarts in window, leaving in error state",
 			"instance", instance.ID,
 			"crashes", crashCount,
-			"window", RestartWindow,
+			"window_ms", otelsetup.Millis(RestartWindow),
 			"max", MaxRestartsInWindow)
 		m.releaseGPUOnTerminalCrash(instance)
 		return
@@ -209,7 +210,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 
 	slog.Info("Scheduling instance restart",
 		"instance", instance.ID,
-		"delay", delay,
+		"delay_ms", otelsetup.Millis(delay),
 		"restartCount", restartCount+1)
 
 	restartAfterFunc(delay, func() {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -237,12 +238,9 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec E
 	}
 
 	if r.shouldReap(updated, now) {
-		// Seconds as a plain number, not a time.Duration: slog renders a Duration
-		// as int64 nanoseconds in JSON, which no reader parses at a glance and
-		// which reaches the metrics sink in a unit nothing charts.
 		slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"idleSeconds", int64(now.Sub(updated.LastActive()).Seconds()))
+			"idle_ms", otelsetup.Millis(now.Sub(updated.LastActive())))
 		if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, utils.GlobalAccountID); err != nil {
 			return fmt.Errorf("reap idle endpoint: %w", err)
 		}

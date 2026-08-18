@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -405,7 +406,7 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eip
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway datapath did not recover after uplink repair; external connectivity degraded",
-				"vpc_id", vpcID, "target", target, "timeout", gatewayDatapathTimeout)
+				"vpc_id", vpcID, "target", target, "timeout_ms", otelsetup.Millis(gatewayDatapathTimeout))
 			return
 		}
 		select {
@@ -476,7 +477,7 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
-				"port", crPortName, "timeout", gatewayClaimTimeout)
+				"port", crPortName, "timeout_ms", otelsetup.Millis(gatewayClaimTimeout))
 			return
 		}
 		select {
@@ -674,7 +675,7 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: guest port datapath did not converge; EIP ingress may be unreachable",
-				"vpc_id", vpcID, "lsp", lspName, "timeout", guestPortDatapathTimeout)
+				"vpc_id", vpcID, "lsp", lspName, "timeout_ms", otelsetup.Millis(guestPortDatapathTimeout))
 			return
 		}
 		select {

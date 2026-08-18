@@ -1385,7 +1385,7 @@ func (d *Daemon) startLocal() error {
 	d.shutdownWg.Go(d.monitorPeerReachability)
 
 	d.ready.Store(true)
-	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed", time.Since(d.startTime).Round(time.Second))
+	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed_ms", otelsetup.Millis(time.Since(d.startTime)))
 	return nil
 }
 
@@ -1473,7 +1473,7 @@ func (d *Daemon) startCluster() error {
 		// flipping the prod default (which would re-introduce the SPOF that 1d
 		// removed).
 		if err := d.connectNATS(utils.WithMaxWait(d.requireNATSTimeout)); err != nil {
-			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout", d.requireNATSTimeout)
+			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout_ms", otelsetup.Millis(d.requireNATSTimeout))
 			d.exitFunc(1)
 			return fmt.Errorf("connect NATS (strict): %w", err)
 		}
@@ -2018,7 +2018,7 @@ func (d *Daemon) startCluster() error {
 	// No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
-		slog.Info("Started DNS reconcile backstop", "interval", handlers_dns.DefaultReconcileInterval)
+		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(handlers_dns.DefaultReconcileInterval))
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
@@ -2066,7 +2066,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.ready.Store(true)
-	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
+	slog.Info("Daemon fully initialized", "node", d.node, "startup_time_ms", otelsetup.Millis(time.Since(d.startTime)))
 
 	// Return once bootstrap is done. Start already installed the signal handler
 	// and owns the single awaitShutdown; waiting here would block on the wait
@@ -2216,7 +2216,7 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			d.jsManager.SetSyncObserver(d)
-			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
+			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			break
 		}
 
@@ -2225,7 +2225,7 @@ func (d *Daemon) initJetStream() error {
 			return fmt.Errorf("failed to initialize JetStream after %s (%d attempts): %w", elapsed.Round(time.Second), attempt, err)
 		}
 
-		slog.Warn("JetStream not ready (waiting for cluster quorum)", "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
+		slog.Warn("JetStream not ready (waiting for cluster quorum)", "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(elapsed), "retry_in_ms", otelsetup.Millis(retryDelay))
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
@@ -2263,7 +2263,7 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 		result, err := initFn()
 		if err == nil {
 			if attempt > 1 {
-				slog.Info(name+" initialized successfully", "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
+				slog.Info(name+" initialized successfully", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			}
 			return result, nil
 		}
@@ -2274,7 +2274,7 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 			return zero, fmt.Errorf("%s unavailable after %s (%d attempts): %w", name, elapsed.Round(time.Second), attempt, err)
 		}
 
-		slog.Warn("Failed to init "+name, "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second))
+		slog.Warn("Failed to init "+name, "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(elapsed))
 		initRetrySleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
@@ -2305,15 +2305,15 @@ func (d *Daemon) waitForClusterReady() {
 		}
 
 		if ready {
-			slog.Info("Cluster readiness check passed", "elapsed", time.Since(start))
+			slog.Info("Cluster readiness check passed", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			return
 		}
 
-		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed", time.Since(start))
+		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 		time.Sleep(interval)
 	}
 
-	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "maxWait", maxWait)
+	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))
 }
 
 // checkViperblockReady reports whether viperblock is reachable via NATS.

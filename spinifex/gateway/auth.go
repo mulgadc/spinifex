@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -62,7 +63,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 						"sourceIP", clientIP,
 						"requestTime", signingTime(r),
 						"serverTime", time.Now().UTC().Format("20060102T150405Z"),
-						"maxSkew", sigv4.MaxClockSkew)
+						"max_skew_ms", otelsetup.Millis(sigv4.MaxClockSkew))
 					// Anonymous: the request was rejected before its key id was parsed,
 					// so there is no client identity for the lockout to protect.
 					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)

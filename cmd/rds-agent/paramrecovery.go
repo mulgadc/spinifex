@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
 
@@ -66,7 +67,7 @@ func (g *paramGuard) Run(ctx context.Context) {
 	}
 
 	message := handlers_rds.ParameterRollbackMessage
-	slog.Error("rds-agent: "+message, "after", g.after)
+	slog.Error("rds-agent: "+message, "after_ms", otelsetup.Millis(g.after))
 	if g.cp != nil {
 		if _, err := g.cp.SubmitState(ctx, g.id, handlers_rds.EngineHealthUnhealthy, message); err != nil {
 			slog.Error("rds-agent: reporting the parameter rollback failed", "err", err)

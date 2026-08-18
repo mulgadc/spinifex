@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"math/rand/v2"
 	"net"
@@ -493,7 +494,7 @@ func (m *Manager) acquireWithBackoff(ctx context.Context, req AcquireRequest) (*
 		lastErr = err
 		slog.Warn("dhcp manager: acquire attempt failed",
 			"client_id", req.ClientID, "attempt", i+1, "of", len(m.acquireSchedule),
-			"timeout", attempt, "err", err)
+			"timeout_ms", otelsetup.Millis(attempt), "err", err)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("acquire budget exhausted before first attempt")

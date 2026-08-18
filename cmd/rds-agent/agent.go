@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
 // Overridable via -ldflags "-X main.version=...".
@@ -406,10 +407,10 @@ func retryObserved(ctx context.Context, what string, fn func(context.Context) er
 		}
 		if attempt >= retryErrorAttempt {
 			slog.ErrorContext(ctx, "rds-agent: "+what+" still failing, retrying",
-				"attempt", attempt, "retryIn", delay, "err", err)
+				"attempt", attempt, "retry_in_ms", otelsetup.Millis(delay), "err", err)
 		} else {
 			slog.WarnContext(ctx, "rds-agent: "+what+" failed, retrying",
-				"attempt", attempt, "retryIn", delay, "err", err)
+				"attempt", attempt, "retry_in_ms", otelsetup.Millis(delay), "err", err)
 		}
 
 		select {

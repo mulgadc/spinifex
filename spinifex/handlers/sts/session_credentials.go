@@ -13,6 +13,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -141,8 +142,8 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 	defer ticker.Stop()
 
 	slog.Info("STS session credential janitor started",
-		"interval", janitorInterval,
-		"grace_period", janitorGracePeriod)
+		"interval_ms", otelsetup.Millis(janitorInterval),
+		"grace_period_ms", otelsetup.Millis(janitorGracePeriod))
 
 	for {
 		select {

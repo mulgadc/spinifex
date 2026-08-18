@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"regexp"
 	"sync"
@@ -236,7 +237,7 @@ func (l *volumeLeases) release(ctx context.Context, lease *volumeLease) {
 	}
 
 	if err := l.kv.Delete(ctx, lease.key, jetstream.LastRevision(revision)); err != nil {
-		slog.Warn("volume lease: delete failed, entry will expire", "volume", lease.volume, "ttl", volumeLeaseTTL, "err", err)
+		slog.Warn("volume lease: delete failed, entry will expire", "volume", lease.volume, "ttl_ms", otelsetup.Millis(volumeLeaseTTL), "err", err)
 		return
 	}
 	slog.Info("volume lease released", "volume", lease.volume, "generation", lease.generation)

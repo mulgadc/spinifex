@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -64,13 +65,13 @@ var waitForFlowsHV = func(nbAddr string) error {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
-			"elapsed", time.Since(start),
+			"elapsed_ms", otelsetup.Millis(time.Since(start)),
 			"err", err,
 			"output", strings.TrimSpace(string(out)),
 		)
 		return nil
 	}
-	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed", time.Since(start))
+	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 	return nil
 }
 
@@ -377,7 +378,7 @@ func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Durati
 				bridge, timeout, attempt, err)
 		}
 		slog.Warn("vpcd: external CIDR not yet assigned, retrying",
-			"bridge", bridge, "err", err, "attempt", attempt, "retry_in", retryDelay)
+			"bridge", bridge, "err", err, "attempt", attempt, "retry_in_ms", otelsetup.Millis(retryDelay))
 		select {
 		case <-ctx.Done():
 			return netip.Prefix{}, fmt.Errorf("external CIDR resolution cancelled: %w", ctx.Err())

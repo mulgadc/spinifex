@@ -7,6 +7,19 @@ import { getRegion } from "./cluster-config"
 
 const GATEWAY_PORT = 9999
 
+export const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+export const JSON_CONTENT_TYPE = "application/x-amz-json-1.1"
+
+interface SignedProxyFetchOptions {
+  // label prefixes the thrown error, naming the action or JSON-1.1 target.
+  label: string
+  credentials: SessionCredentials
+  service: string
+  contentType: string
+  body: string
+  target?: string
+}
+
 interface SignedFetchOptions {
   action: string
   credentials: SessionCredentials
@@ -42,18 +55,56 @@ function parseXmlTag(body: string, tag: string): string | null {
   return body.slice(start + open.length, end)
 }
 
-export async function signedFetch<T>({
-  action,
-  credentials,
-  service = "spinifex",
-  params,
-}: SignedFetchOptions): Promise<T> {
-  const protocol = window.location.protocol.replace(":", "")
-  const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
-  const body = `Action=${action}${extraParams}`
+// jsonErrorMessage extracts a human-readable message from a JSON-1.1 error
+// body. Returns null when the body is not JSON or carries no message.
+function jsonErrorMessage(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (parsed && typeof parsed === "object") {
+      if ("message" in parsed && typeof parsed.message === "string") {
+        return parsed.message
+      }
+      if ("Message" in parsed && typeof parsed.Message === "string") {
+        return parsed.Message
+      }
+    }
+  } catch {
+    // Non-JSON body.
+  }
+  return null
+}
 
-  // Sign the request against the real backend (localhost:9999) so the
-  // gateway's SigV4 verification sees the host value it expects.
+function errorFromBody(
+  label: string,
+  status: number,
+  detail: string,
+): SignedFetchError {
+  const code = parseXmlTag(detail, "Code")
+  const summary =
+    parseXmlTag(detail, "Message") ?? jsonErrorMessage(detail) ?? detail
+  return new SignedFetchError(
+    `${label} failed: ${status}${summary ? ` - ${summary}` : ""}`,
+    code ?? "SignedFetchError",
+    status,
+  )
+}
+
+// signedProxyFetch SigV4-signs a request against the gateway and POSTs it
+// through the same-origin proxy. Query-form and JSON-1.1 callers differ only in
+// their content type, target header and error body shape.
+export async function signedProxyFetch<T>({
+  label,
+  credentials,
+  service,
+  contentType,
+  body,
+  target,
+}: SignedProxyFetchOptions): Promise<T> {
+  const protocol = window.location.protocol.replace(":", "")
+
+  // Headers are set before signing so they are part of the signature, against
+  // the real backend (localhost:9999) so the gateway's SigV4 verification sees
+  // the host value it expects.
   const request = new HttpRequest({
     method: "POST",
     protocol,
@@ -62,7 +113,8 @@ export async function signedFetch<T>({
     path: "/",
     headers: {
       host: `localhost:${GATEWAY_PORT}`,
-      "content-type": "application/x-www-form-urlencoded",
+      "content-type": contentType,
+      ...(target ? { "x-amz-target": target } : {}),
     },
     body,
   })
@@ -100,16 +152,25 @@ export async function signedFetch<T>({
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "")
-    const code = parseXmlTag(detail, "Code")
-    const xmlMessage = parseXmlTag(detail, "Message")
-    const summary = xmlMessage ?? detail
-    throw new SignedFetchError(
-      `${action} failed: ${response.status}${summary ? ` - ${summary}` : ""}`,
-      code ?? "SignedFetchError",
-      response.status,
-    )
+    throw errorFromBody(label, response.status, detail)
   }
 
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
   return await (response.json() as Promise<T>)
+}
+
+export async function signedFetch<T>({
+  action,
+  credentials,
+  service = "spinifex",
+  params,
+}: SignedFetchOptions): Promise<T> {
+  const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
+  return await signedProxyFetch<T>({
+    label: action,
+    credentials,
+    service,
+    contentType: FORM_CONTENT_TYPE,
+    body: `Action=${action}${extraParams}`,
+  })
 }

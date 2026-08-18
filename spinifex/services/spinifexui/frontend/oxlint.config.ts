@@ -33,7 +33,6 @@ export default defineConfig({
         allowArrowFunctions: true,
       },
     ],
-    "eslint/no-await-in-loop": "off",
     "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
@@ -41,7 +40,10 @@ export default defineConfig({
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
     "jsx-a11y/prefer-tag-over-role": "off",
-    "react/function-component-definition": "off",
+    "react/function-component-definition": [
+      "error",
+      { namedComponents: "function-declaration" },
+    ],
     "react/jsx-handler-names": "off",
     "react-you-might-not-need-an-effect/no-adjust-state-on-prop-change":
       "error",

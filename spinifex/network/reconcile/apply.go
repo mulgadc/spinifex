@@ -43,6 +43,63 @@ var (
 // reset re-syncs that view. Package var so tests can shrink it.
 var sbResetEscalateAfter = 3
 
+// Backoff applied to a guest port that burned its convergence deadline. Doubles
+// per consecutive failure from the base and holds at the cap. Package vars so
+// tests shorten them.
+var (
+	guestPortBackoffBase = time.Minute
+	guestPortBackoffMax  = 30 * time.Minute
+)
+
+// portBackoffUntil reports whether lspName is inside its convergence backoff,
+// and when that expires.
+func (r *reconciler) portBackoffUntil(lspName string) (time.Time, bool) {
+	r.portBackoffMu.Lock()
+	defer r.portBackoffMu.Unlock()
+	state, ok := r.portBackoff[lspName]
+	if !ok || !time.Now().Before(state.until) {
+		return time.Time{}, false
+	}
+	return state.until, true
+}
+
+// recordPortFailure counts another failed convergence for lspName and returns
+// the new consecutive-failure count and the backoff now in force.
+func (r *reconciler) recordPortFailure(lspName string) (int, time.Duration) {
+	r.portBackoffMu.Lock()
+	defer r.portBackoffMu.Unlock()
+	if r.portBackoff == nil {
+		r.portBackoff = map[string]portBackoffState{}
+	}
+	state := r.portBackoff[lspName]
+	state.failures++
+	backoff := guestPortBackoffBase << min(state.failures-1, 16)
+	if backoff > guestPortBackoffMax || backoff <= 0 {
+		backoff = guestPortBackoffMax
+	}
+	state.until = time.Now().Add(backoff)
+	r.portBackoff[lspName] = state
+	return state.failures, backoff
+}
+
+// clearPortBackoff drops any backoff for lspName, reporting whether one was held
+// so the caller can log the recovery rather than a routine convergence.
+func (r *reconciler) clearPortBackoff(lspName string) bool {
+	r.portBackoffMu.Lock()
+	defer r.portBackoffMu.Unlock()
+	if _, ok := r.portBackoff[lspName]; !ok {
+		return false
+	}
+	delete(r.portBackoff, lspName)
+	return true
+}
+
+// eniIDFromPort recovers the ENI a guest port belongs to. Telemetry carried only
+// the LSP name, which no operator can map back to a guest.
+func eniIDFromPort(lspName string) string {
+	return strings.TrimPrefix(lspName, "port-")
+}
+
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
@@ -498,7 +555,7 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 		}
-		r.ensureGuestPortDatapath(ctx, spec.VPCID, spec.PortName)
+		r.ensureGuestPortDatapath(ctx, spec)
 	}
 }
 
@@ -643,8 +700,17 @@ func subnetIDForIP(subnets map[string]topology.SubnetSpec, ip string) string {
 // not once: post-reboot the guest tap is replumbed seconds after this runs, so a
 // single early nudge fires before the port exists and never binds it. No-op when no
 // verifier is wired or the EIP carries no guest port.
-func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName string) {
+func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EIPSpec) {
+	vpcID, lspName := spec.VPCID, spec.PortName
 	if r.gwClaim == nil || lspName == "" {
+		return
+	}
+	// A port with no tap behind it never binds, so without this every cycle pays
+	// the full nudge sequence and files another ERROR for a guest that is gone.
+	if until, held := r.portBackoffUntil(lspName); held {
+		slog.Debug("reconcile/apply: guest port still in convergence backoff; not re-probing",
+			"vpc_id", vpcID, "lsp", lspName, "eni_id", eniIDFromPort(lspName),
+			"retry_in_ms", otelsetup.Millis(time.Until(until)))
 		return
 	}
 	deadline := time.Now().Add(guestPortDatapathTimeout)
@@ -658,7 +724,11 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 			return
 		}
 		if up {
-			if nudged {
+			if r.clearPortBackoff(lspName) {
+				slog.Info("reconcile/apply: guest port datapath recovered after repeated failures",
+					"vpc_id", vpcID, "lsp", lspName, "eni_id", eniIDFromPort(lspName),
+					"external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP)
+			} else if nudged {
 				slog.Info("reconcile/apply: guest port datapath converged after recompute", "vpc_id", vpcID, "lsp", lspName)
 			}
 			return
@@ -674,8 +744,13 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName
 			resetEscalated = r.escalateSBReset(ctx, "vpc_id", vpcID, "lsp", lspName)
 		}
 		if time.Now().After(deadline) {
+			failures, backoff := r.recordPortFailure(lspName)
 			slog.Error("reconcile/apply: guest port datapath did not converge; EIP ingress may be unreachable",
-				"vpc_id", vpcID, "lsp", lspName, "timeout_ms", otelsetup.Millis(guestPortDatapathTimeout))
+				"vpc_id", vpcID, "lsp", lspName, "eni_id", eniIDFromPort(lspName),
+				"external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP,
+				"consecutive_failures", failures,
+				"timeout_ms", otelsetup.Millis(guestPortDatapathTimeout),
+				"retry_in_ms", otelsetup.Millis(backoff))
 			return
 		}
 		select {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 )
 
 // fakeClaimVerifier scripts a sequence of GatewayPortClaimed results and counts
@@ -386,7 +387,7 @@ func TestEnsureGatewayDatapath_EIPUnreachableRepairs(t *testing.T) {
 
 func TestEnsureGuestPortDatapath_NoVerifierIsNoop(t *testing.T) {
 	r := &reconciler{} // gwClaim nil
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 	// Reaching here without panic is the assertion.
 }
 
@@ -394,7 +395,7 @@ func TestEnsureGuestPortDatapath_EmptyLSPIsNoop(t *testing.T) {
 	f := &fakeClaimVerifier{}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "")
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a"})
 
 	if f.guestChecks != 0 {
 		t.Errorf("guestChecks = %d, want 0 (empty lsp must skip the probe)", f.guestChecks)
@@ -406,7 +407,7 @@ func TestEnsureGuestPortDatapath_UpNoNudge(t *testing.T) {
 	f := &fakeClaimVerifier{guestUpAfter: 0}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
 	if f.nudges != 0 {
 		t.Errorf("up guest port nudged %d times, want 0", f.nudges)
@@ -425,7 +426,7 @@ func TestEnsureGuestPortDatapath_NudgeThenConverge(t *testing.T) {
 	f := &fakeClaimVerifier{guestUpAfter: 1}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
 	if f.nudges != 1 {
 		t.Errorf("nudges = %d, want exactly 1 (nudge once, then converge)", f.nudges)
@@ -439,7 +440,7 @@ func TestEnsureGuestPortDatapath_NeverConvergesRecomputesEachMiss(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
+		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 		close(done)
 	}()
 	select {
@@ -463,7 +464,7 @@ func TestEnsureGuestPortDatapath_ProbeErrorBailsOut(t *testing.T) {
 	f := &fakeClaimVerifier{guestErr: errors.New("ovn-sbctl down")}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
 	if f.nudges != 0 {
 		t.Errorf("nudges = %d, want 0 (bail out on probe error, do not nudge blindly)", f.nudges)
@@ -482,7 +483,7 @@ func TestEnsureGuestPortDatapath_ContextCancelStops(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		r.ensureGuestPortDatapath(ctx, "vpc-a", "port-eni-1")
+		r.ensureGuestPortDatapath(ctx, policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 		close(done)
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -551,7 +552,9 @@ func TestEnsureGuestPortDatapath_WedgedSBEscalatesResetOnce(t *testing.T) {
 	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: true}
 	r := &reconciler{gwClaim: f}
 
-	runToDeadline(t, func() { r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1") })
+	runToDeadline(t, func() {
+		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
+	})
 
 	if f.sbResets != 1 {
 		t.Errorf("sbResets = %d, want exactly 1 (escalate once on a wedged SB)", f.sbResets)
@@ -564,7 +567,9 @@ func TestEnsureGuestPortDatapath_ConnectedSBNeverResets(t *testing.T) {
 	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: false}
 	r := &reconciler{gwClaim: f}
 
-	runToDeadline(t, func() { r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1") })
+	runToDeadline(t, func() {
+		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
+	})
 
 	if f.sbResets != 0 {
 		t.Errorf("sbResets = %d, want 0 (connected SB must never be reset)", f.sbResets)

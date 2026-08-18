@@ -1,6 +1,9 @@
 package handlers_ochrevector
 
 import (
+	"context"
+	"log/slog"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -8,15 +11,51 @@ import (
 // approxCharsPerToken is the documented, deliberately simple chars/token
 // ratio behind DefaultChunkSize/DefaultChunkOverlap. There is no true
 // tokenizer here -- sizing is in RUNES, not model tokens -- so both defaults
-// are an approximation; a per-model tokenizer is a later refinement.
+// are an approximation; ChunkTextForModel is the tokenizer-aware entry point
+// that replaces this guess with the served embedder's real budget.
 const approxCharsPerToken = 4
 
 // DefaultChunkSize and DefaultChunkOverlap approximate ~512 tokens and ~64
-// overlap tokens (D10) in runes, via approxCharsPerToken.
+// overlap tokens (D10) in runes, via approxCharsPerToken. They remain
+// ChunkText's own rune-domain fallback for direct callers; ChunkTextForModel
+// never relies on them.
 const (
 	DefaultChunkSize    = 512 * approxCharsPerToken
 	DefaultChunkOverlap = 64 * approxCharsPerToken
 )
+
+// codeCharsPerToken is a conservative, worst-case chars-per-token ratio for
+// source code, used by ChunkTextForModel to size chunks against a real token
+// budget without a live tokenizer. Dense code tokenizes as low as ~2.6-2.8
+// chars/token; this sits below that floor deliberately, so a chunk sized
+// against it undershoots the real token budget rather than risking a 413.
+const codeCharsPerToken = 2.5
+
+// chunkSafetyMargin shrinks the advertised token budget before sizing
+// chunks, absorbing BPE merge variance and any special tokens ([CLS]/[SEP])
+// the embedder prepends/appends that a raw max_input_length doesn't budget
+// for.
+const chunkSafetyMargin = 0.9
+
+// DefaultMaxInputTokens is the token budget ChunkTextForModel falls back to
+// when the caller has no embedder-advertised max_input_length at all --
+// bge-base-en-v1.5's 512-token cap, Ochre's original served embedder.
+const DefaultMaxInputTokens = 512
+
+// DefaultChunkOverlapTokens is the token overlap ChunkTextForModel falls
+// back to absent an operator override.
+const DefaultChunkOverlapTokens = 64
+
+// maxResplitDepth bounds resplitChunk's recursion: verification keeps
+// halving a chunk that still exceeds budget, but a pathological input (or a
+// TokenCounter that never agrees a chunk is small enough) must not recurse
+// forever.
+const maxResplitDepth = 8
+
+// minResplitRunes floors resplitChunk's recursion: below this there is
+// nothing meaningful left to split, so a chunk still measuring over budget
+// here is returned as-is rather than looping.
+const minResplitRunes = 8
 
 // chunkSeparators is the recursive-split hierarchy (D10): paragraph, line,
 // sentence (three terminators), then word. A span still over size after
@@ -183,4 +222,110 @@ func packChunks(pieces []piece, size, overlap int) []Chunk {
 		i = k
 	}
 	return chunks
+}
+
+// TokenCounter counts text's real token count against a specific served
+// model, e.g. via TEI POST /tokenize. ok is false when the endpoint can't or
+// didn't answer, telling the caller to fall back to a conservative estimate
+// instead of trusting a wrong count. gateway_bedrock's TokenLimiter
+// satisfies this structurally, the same way ingest's Embedder mirrors
+// gateway_bedrock.Embedder, so this package never imports gateway_bedrock.
+type TokenCounter interface {
+	CountTokens(ctx context.Context, modelID, text string) (count int, ok bool)
+}
+
+// ChunkTextForModel sizes chunks against maxInputTokens -- the served
+// embedder's real max_input_length (from TEI /info), clamped by any operator
+// override -- rather than a fixed rune guess. It first splits at a rune size
+// derived from a conservative chars/token ratio the same way ChunkText's
+// caller used to, then verifies every resulting chunk's real token count via
+// counter and recursively re-splits any chunk still over budget.
+//
+// This is the guarantee rune sizing alone cannot make: a separator-less
+// dense code span can tokenize denser than any fixed chars/token guess, and
+// only a real per-chunk check catches that before it reaches the embedder.
+// counter may be nil (embedder doesn't support /tokenize) -- every chunk
+// then relies solely on the initial conservative rune sizing, which by
+// construction never exceeds maxInputTokens*chunkSafetyMargin as long as
+// codeCharsPerToken is a true floor on the served tokenizer's density.
+func ChunkTextForModel(ctx context.Context, text, modelID string, maxInputTokens, overlapTokens int, counter TokenCounter) []Chunk {
+	if maxInputTokens <= 0 {
+		maxInputTokens = DefaultMaxInputTokens
+	}
+	if overlapTokens < 0 {
+		overlapTokens = DefaultChunkOverlapTokens
+	}
+
+	budget := max(int(float64(maxInputTokens)*chunkSafetyMargin), 1)
+	size := int(float64(budget) * codeCharsPerToken)
+	overlapRunes := int(float64(overlapTokens) * codeCharsPerToken)
+
+	chunks := ChunkText(text, size, overlapRunes)
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	out := make([]Chunk, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, resplitChunk(ctx, c, modelID, budget, overlapRunes, counter, 0)...)
+	}
+	return out
+}
+
+// resplitChunk verifies c's real token count against budget and, if it still
+// exceeds it, re-splits c.Text at a smaller rune size derived from its
+// measured token density and recurses -- the belt-and-suspenders check for
+// when the initial conservative sizing wasn't conservative enough. depth
+// bounds the recursion (maxResplitDepth); a chunk at or below
+// minResplitRunes is returned as-is regardless of its measured count, since
+// there is nothing left to usefully split.
+func resplitChunk(ctx context.Context, c Chunk, modelID string, budget, overlapRunes int, counter TokenCounter, depth int) []Chunk {
+	count := estimateTokens(ctx, c.Text, modelID, counter)
+	if count <= budget {
+		return []Chunk{c}
+	}
+
+	runes := utf8.RuneCountInString(c.Text)
+	if depth >= maxResplitDepth || runes <= minResplitRunes {
+		slog.WarnContext(ctx, "ochrevector: chunk still exceeds token budget after max re-split depth",
+			"model", modelID, "budget_tokens", budget, "measured_tokens", count, "runes", runes)
+		return []Chunk{c}
+	}
+
+	// Measured density (tokens/rune) sizes the retry directly from what this
+	// chunk actually measured, rather than guessing again -- and halves the
+	// rune target outright if that still wouldn't shrink it, so depth always
+	// makes progress even against a degenerate density estimate.
+	density := float64(count) / float64(runes)
+	newSize := int(float64(budget) / density)
+	if newSize >= runes {
+		newSize = runes / 2
+	}
+	newSize = max(newSize, 1)
+	subOverlap := overlapRunes
+	if subOverlap >= newSize {
+		subOverlap = newSize - 1
+	}
+	subOverlap = max(subOverlap, 0)
+
+	subChunks := ChunkText(c.Text, newSize, subOverlap)
+	out := make([]Chunk, 0, len(subChunks))
+	for _, sc := range subChunks {
+		sc.Offset += c.Offset
+		out = append(out, resplitChunk(ctx, sc, modelID, budget, overlapRunes, counter, depth+1)...)
+	}
+	return out
+}
+
+// estimateTokens counts text's real tokens via counter when available,
+// falling back to the same conservative codeCharsPerToken ratio
+// ChunkTextForModel used to size chunks in the first place when counter is
+// nil or misses.
+func estimateTokens(ctx context.Context, text, modelID string, counter TokenCounter) int {
+	if counter != nil {
+		if n, ok := counter.CountTokens(ctx, modelID, text); ok {
+			return n
+		}
+	}
+	return int(math.Ceil(float64(utf8.RuneCountInString(text)) / codeCharsPerToken))
 }

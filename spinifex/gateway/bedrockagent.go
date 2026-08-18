@@ -549,9 +549,10 @@ func dataSourceRecordToOutput(rec handlers_ochrevector.DataSourceRecord) *bedroc
 // sources are supported (WEB/CONFLUENCE/SALESFORCE/SHAREPOINT are not
 // stubbed -- there is no engine behind them to accept-and-ignore against, so
 // they are rejected rather than silently accepted and never ingested).
-// ChunkSize/ChunkOverlap are left zero when fixedSizeChunkingConfiguration is
-// omitted, so .9's own ingest path applies DefaultChunkSize/
-// DefaultChunkOverlap (D3). Data-source-level Metadata is left empty: AWS's
+// ChunkSize/ChunkOverlap (token counts, not runes) are left zero when
+// fixedSizeChunkingConfiguration is omitted, so .9's own ingest path clamps
+// to the served embedder's advertised max_input_length instead (D3).
+// Data-source-level Metadata is left empty: AWS's
 // CreateDataSourceInput carries no arbitrary metadata map to source it from
 // (real per-document metadata comes from S3 .metadata.json sidecar files at
 // ingest time, out of scope for Pass 1).

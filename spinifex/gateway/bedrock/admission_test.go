@@ -1,3 +1,7 @@
+// slotReleasingSource Close bookkeeping directly, which cannot move to an
+// external test package.
+//
+//test:in-package — drives the unexported concurrencyLimiter and
 package gateway_bedrock
 
 import (

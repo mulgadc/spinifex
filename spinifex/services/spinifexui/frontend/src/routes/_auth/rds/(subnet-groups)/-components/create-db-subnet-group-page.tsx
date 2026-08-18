@@ -14,6 +14,7 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Field,
   FieldDescription,
@@ -29,8 +30,6 @@ import {
   createDBSubnetGroupSchema,
   MAX_SUBNETS_PER_GROUP,
 } from "@/types/rds"
-
-import { TagsFieldArray } from "../../-components/tags-field-array"
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)

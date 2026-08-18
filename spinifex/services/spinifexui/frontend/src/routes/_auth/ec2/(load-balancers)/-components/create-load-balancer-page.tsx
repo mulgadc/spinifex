@@ -2,7 +2,6 @@ import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
@@ -17,6 +16,7 @@ import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -186,7 +186,6 @@ export function CreateLoadBalancerPage() {
   const lbType = useWatch({ control, name: "type" })
   const listenerProtocol = useWatch({ control, name: "listener.protocol" })
   const tgMode = useWatch({ control, name: "listener.targetGroupMode" })
-  const tags = useWatch({ control, name: "tags" })
 
   const isNlb = lbType === "network"
   const isSecure = isSecureProtocol(listenerProtocol)
@@ -535,44 +534,7 @@ export function CreateLoadBalancerPage() {
           </Field>
         )}
 
-        <Field>
-          <FieldTitle>Tags</FieldTitle>
-          <div className="space-y-2">
-            {tags.map((_, index) => (
-              <div className="flex items-center gap-2" key={index}>
-                <Input placeholder="Key" {...register(`tags.${index}.key`)} />
-                <Input
-                  placeholder="Value"
-                  {...register(`tags.${index}.value`)}
-                />
-                <Button
-                  onClick={() =>
-                    setValue(
-                      "tags",
-                      getValues("tags").filter((__, i) => i !== index),
-                    )
-                  }
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </div>
-            ))}
-            <Button
-              onClick={() =>
-                setValue("tags", [...getValues("tags"), { key: "", value: "" }])
-              }
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Plus className="size-3.5" />
-              Add tag
-            </Button>
-          </div>
-        </Field>
+        <TagsFieldArray control={control} name="tags" />
 
         <div className="space-y-4 rounded-md border bg-card p-4">
           <h2 className="text-sm font-semibold">

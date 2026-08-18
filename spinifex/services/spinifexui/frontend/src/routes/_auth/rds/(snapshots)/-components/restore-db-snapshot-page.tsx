@@ -22,6 +22,7 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
 import { SystemImageRequired } from "@/components/system-image-required"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Field,
   FieldDescription,
@@ -61,7 +62,6 @@ import {
   securityGroupIdsForVpc,
   securityGroupsForVpc,
 } from "../../-components/security-group-checkboxes"
-import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface Props {
   dbSnapshotIdentifier: string

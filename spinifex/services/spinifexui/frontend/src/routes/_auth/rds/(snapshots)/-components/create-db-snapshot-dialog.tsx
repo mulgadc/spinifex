@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 
+import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -35,7 +36,6 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
-import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface CreateDBSnapshotDialogProps {
   open: boolean

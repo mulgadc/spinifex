@@ -1,9 +1,8 @@
 import type { Vpc } from "@aws-sdk/client-ec2"
-import { Plus, Trash2 } from "lucide-react"
 import type { UseFormReturn } from "react-hook-form"
 import { Controller, useWatch } from "react-hook-form"
 
-import { Button } from "@/components/ui/button"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Collapsible,
   CollapsibleContent,
@@ -45,10 +44,8 @@ export function TargetGroupForm({
     control,
     register,
     setValue,
-    getValues,
     formState: { errors },
   } = form
-  const tags = useWatch({ control, name: "tags" })
   const protocol = useWatch({ control, name: "protocol" })
   // Path + Matcher only apply to HTTP(S) health checks; L4 target groups (TCP/
   // UDP/TLS) use a TCP health check that has neither.
@@ -277,41 +274,7 @@ export function TargetGroupForm({
         </CollapsibleContent>
       </Collapsible>
 
-      <Field>
-        <FieldTitle>Tags</FieldTitle>
-        <div className="space-y-2">
-          {tags.map((_, index) => (
-            <div className="flex items-center gap-2" key={index}>
-              <Input placeholder="Key" {...register(`tags.${index}.key`)} />
-              <Input placeholder="Value" {...register(`tags.${index}.value`)} />
-              <Button
-                onClick={() =>
-                  setValue(
-                    "tags",
-                    getValues("tags").filter((__, i) => i !== index),
-                  )
-                }
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            </div>
-          ))}
-          <Button
-            onClick={() =>
-              setValue("tags", [...getValues("tags"), { key: "", value: "" }])
-            }
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <Plus className="size-3.5" />
-            Add tag
-          </Button>
-        </div>
-      </Field>
+      <TagsFieldArray control={control} name="tags" />
     </>
   )
 }

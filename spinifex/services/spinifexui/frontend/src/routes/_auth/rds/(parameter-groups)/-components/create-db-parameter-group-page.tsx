@@ -13,6 +13,7 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Field,
   FieldDescription,
@@ -33,8 +34,6 @@ import {
   type CreateDBParameterGroupFormData,
   createDBParameterGroupSchema,
 } from "@/types/rds"
-
-import { TagsFieldArray } from "../../-components/tags-field-array"
 
 export function CreateDBParameterGroupPage() {
   const navigate = useNavigate()

@@ -18,8 +18,8 @@ interface TagsFieldArrayProps<T extends FieldValues> {
   name: ArrayPath<T>
 }
 
-// The key/value rows every RDS create form carries. Keyed by useFieldArray's
-// own id so removing a row does not shuffle the values of the ones below it.
+// The key/value tag rows a create form carries. Keyed by useFieldArray's own
+// id so removing a row does not shuffle the values of the ones below it.
 export function TagsFieldArray<T extends FieldValues>({
   control,
   name,

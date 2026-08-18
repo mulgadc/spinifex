@@ -1,5 +1,5 @@
 import type { Subnet } from "@aws-sdk/client-ec2"
-import { useMemo, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
@@ -38,7 +38,7 @@ export function SubnetsEditor({
   error,
   isSuccess,
 }: SubnetsEditorProps) {
-  const initial = useMemo(() => [...current], [current])
+  const initial = [...current]
   const [selected, setSelected] = useState<string[]>(initial)
 
   const toggle = (id: string) => {

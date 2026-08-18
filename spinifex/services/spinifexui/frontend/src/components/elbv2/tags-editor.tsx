@@ -1,5 +1,5 @@
 import { Plus, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -43,7 +43,7 @@ export function TagsEditor({
   error,
   isSuccess,
 }: TagsEditorProps) {
-  const initialRows = useMemo(() => buildInitialRows(tags), [tags])
+  const initialRows = buildInitialRows(tags)
 
   const [rows, setRows] = useState<TagRow[]>(initialRows)
   const [nextId, setNextId] = useState(initialRows.length)

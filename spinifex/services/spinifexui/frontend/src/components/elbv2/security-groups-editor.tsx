@@ -1,5 +1,5 @@
 import type { SecurityGroup } from "@aws-sdk/client-ec2"
-import { useMemo, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 
@@ -30,7 +30,7 @@ export function SecurityGroupsEditor({
   error,
   isSuccess,
 }: SecurityGroupsEditorProps) {
-  const initial = useMemo(() => [...current], [current])
+  const initial = [...current]
   const [selected, setSelected] = useState<string[]>(initial)
 
   const toggle = (id: string) => {

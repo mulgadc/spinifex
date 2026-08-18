@@ -75,6 +75,8 @@ export function GpuInstanceTypeSelect({
   className,
   "aria-invalid": ariaInvalid,
 }: GpuInstanceTypeSelectProps) {
+  // Pins the dedupe and sort to instanceTypes; without it the compiler widens
+  // the scope to every prop and redoes the work on each selection change.
   const { standardEntries, gpuEntries } = useMemo(() => {
     const entries = dedupeInstanceTypes(instanceTypes)
     return {

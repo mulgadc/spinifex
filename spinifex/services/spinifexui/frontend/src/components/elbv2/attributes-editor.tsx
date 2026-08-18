@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
@@ -99,10 +99,7 @@ export function AttributesEditor({
   error,
   isSuccess,
 }: AttributesEditorProps) {
-  const initial = useMemo(
-    () => buildInitial(specs, attributes),
-    [specs, attributes],
-  )
+  const initial = buildInitial(specs, attributes)
   const [values, setValues] = useState(initial)
 
   const setValue = (key: string, value: string) => {

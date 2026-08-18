@@ -57,7 +57,12 @@ import {
 } from "@/types/rds"
 
 import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
-import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
+import {
+  SecurityGroupCheckboxes,
+  defaultSecurityGroupIdForVpc,
+  securityGroupIdsForVpc,
+  securityGroupsForVpc,
+} from "../../-components/security-group-checkboxes"
 import { TagsFieldArray } from "../../-components/tags-field-array"
 
 interface Props {
@@ -115,10 +120,12 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const orderableQuery = useQuery(rdsOrderableOptionsQueryOptions(engine))
 
   const {
+    clearErrors,
     control,
     formState: { errors, isSubmitting },
     handleSubmit,
     register,
+    setError,
     setValue,
   } = useForm<RestoreDBInstanceFormData>({
     resolver: zodResolver(restoreDBInstanceSchema),
@@ -154,10 +161,48 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     }
   }
 
-  const setSecurityGroups = (next: string[]) =>
+  const setSecurityGroups = (next: string[]) => {
+    clearErrors("vpcSecurityGroupIds")
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
+  }
+
+  const handleSubnetGroupChange = (name: string | null) => {
+    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
+    const nextName = name === null ? "" : name
+    const nextVpcId =
+      subnetGroups.find((group) => group.DBSubnetGroupName === nextName)
+        ?.VpcId ?? snapshot?.VpcId
+    let nextSecurityGroups = securityGroupIdsForVpc(
+      allSecurityGroups,
+      nextVpcId,
+      selectedSecurityGroups,
+    )
+    if (
+      nextName !== "" &&
+      nextVpcId !== snapshot?.VpcId &&
+      nextSecurityGroups.length === 0
+    ) {
+      const defaultGroupId = defaultSecurityGroupIdForVpc(
+        allSecurityGroups,
+        nextVpcId,
+      )
+      nextSecurityGroups = defaultGroupId ? [defaultGroupId] : []
+    }
+    setValue("dbSubnetGroupName", nextName, { shouldValidate: true })
+    setSecurityGroups(nextSecurityGroups)
+  }
 
   const onSubmit = async (data: RestoreDBInstanceFormData) => {
+    if (
+      data.dbSubnetGroupName !== "" &&
+      placementVpcId !== snapshot?.VpcId &&
+      data.vpcSecurityGroupIds.length === 0
+    ) {
+      setError("vpcSecurityGroupIds", {
+        message: "Select a security group in the new placement VPC",
+      })
+      return
+    }
     try {
       await restoreInstance.mutateAsync({ ...data, dbSnapshotIdentifier })
     } catch {
@@ -197,7 +242,11 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const images = imagesData.Images ?? []
   // The engine is the snapshot's and cannot be changed, so a cluster without
   // that engine's image cannot run this restore at all.
-  if (!images.some((image) => isRdsSystemImage(image, engine))) {
+  if (
+    !images.some((image) =>
+      isRdsSystemImage(image, engine, snapshot.EngineVersion ?? ""),
+    )
+  ) {
     return (
       <>
         <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
@@ -240,12 +289,11 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   )
 
   const subnetGroupVpc = subnetGroups.find(
-    (g) => g.DBSubnetGroupName === selectedSubnetGroup,
+    (group) => group.DBSubnetGroupName === selectedSubnetGroup,
   )?.VpcId
+  const placementVpcId = subnetGroupVpc ?? snapshot.VpcId
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
-  const securityGroups = subnetGroupVpc
-    ? allSecurityGroups.filter((g) => g.VpcId === subnetGroupVpc)
-    : allSecurityGroups
+  const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)
 
   return (
     <>
@@ -378,7 +426,10 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
               control={control}
               name="dbSubnetGroupName"
               render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
+                <Select
+                  onValueChange={handleSubnetGroupChange}
+                  value={field.value}
+                >
                   <SelectTrigger className="w-full" id="restore-subnet-group">
                     <SelectValue placeholder="The snapshot's subnet group" />
                   </SelectTrigger>
@@ -405,7 +456,11 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
             <SecurityGroupCheckboxes
-              emptyText={`No security groups available${subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.`}
+              emptyText={
+                placementVpcId
+                  ? `No security groups available in ${placementVpcId}.`
+                  : "The snapshot does not identify a placement VPC."
+              }
               groups={securityGroups}
               onChange={setSecurityGroups}
               selected={selectedSecurityGroups}

@@ -39,6 +39,7 @@ import { useCreateDBInstance } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
+  ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 import {
   rdsEngineVersionsQueryOptions,
@@ -58,7 +59,11 @@ import {
   PickerNoticeText,
   pickerNotice,
 } from "../../-components/picker-notice"
-import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
+import {
+  SecurityGroupCheckboxes,
+  securityGroupIdsForVpc,
+  securityGroupsForVpc,
+} from "../../-components/security-group-checkboxes"
 import { TagsFieldArray } from "../../-components/tags-field-array"
 
 // The retention the backend applies when a create names none.
@@ -103,6 +108,7 @@ export function CreateDBInstancePage() {
   const { data: securityGroupsData } = useSuspenseQuery(
     ec2SecurityGroupsQueryOptions,
   )
+  const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
 
   const images = imagesData.Images ?? []
@@ -110,9 +116,18 @@ export function CreateDBInstancePage() {
   const engines = [
     ...new Set(engineVersions.map((v) => v.Engine ?? "").filter(Boolean)),
   ]
+  const engineVersionHasImage = (engine: string, version: string) =>
+    images.some((image) => isRdsSystemImage(image, engine, version))
+  const firstBootableVersion = (engine: string) =>
+    engineVersions.find(
+      (version) =>
+        version.Engine === engine &&
+        engineVersionHasImage(engine, version.EngineVersion ?? ""),
+    )?.EngineVersion ?? ""
   const engineHasImage = (engine: string) =>
-    images.some((image) => isRdsSystemImage(image, engine))
+    firstBootableVersion(engine).length > 0
   const bootableEngines = engines.filter(engineHasImage)
+  const initialEngine = bootableEngines[0] ?? ""
 
   const handleRecheck = async () => {
     setIsRechecking(true)
@@ -135,8 +150,8 @@ export function CreateDBInstancePage() {
     resolver: zodResolver(createDBInstanceSchema),
     defaultValues: {
       dbInstanceIdentifier: "",
-      engine: bootableEngines[0] ?? "",
-      engineVersion: "",
+      engine: initialEngine,
+      engineVersion: firstBootableVersion(initialEngine),
       dbInstanceClass: "",
       allocatedStorage: MIN_ALLOCATED_STORAGE_GIB,
       masterUsername: "",
@@ -186,26 +201,41 @@ export function CreateDBInstancePage() {
     engineFamilies.has(g.DBParameterGroupFamily),
   )
 
-  // The subnet group pins the VPC, so the security group list narrows to it
-  // once one is chosen. Without a group the account's default VPC is resolved
-  // server-side and every group stays on offer.
   const subnetGroupVpc = subnetGroups.find(
-    (g) => g.DBSubnetGroupName === selectedSubnetGroup,
+    (group) => group.DBSubnetGroupName === selectedSubnetGroup,
   )?.VpcId
+  const defaultVpcId = vpcsData.Vpcs?.find((vpc) => vpc.IsDefault)?.VpcId
+  const placementVpcId = subnetGroupVpc ?? defaultVpcId
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
-  const securityGroups = subnetGroupVpc
-    ? allSecurityGroups.filter((g) => g.VpcId === subnetGroupVpc)
-    : allSecurityGroups
+  const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)
 
   const handleEngineChange = (engine: string | null) => {
-    setValue("engine", engine ?? "", { shouldValidate: true })
-    setValue("engineVersion", "")
+    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
+    const nextEngine = engine === null ? "" : engine
+    setValue("engine", nextEngine, { shouldValidate: true })
+    setValue("engineVersion", firstBootableVersion(nextEngine))
     setValue("dbInstanceClass", "")
     setValue("dbParameterGroupName", "")
   }
 
   const setSecurityGroups = (next: string[]) =>
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
+
+  const handleSubnetGroupChange = (name: string | null) => {
+    // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Select reports an explicit null when cleared
+    const nextName = name === null ? "" : name
+    const nextVpcId =
+      subnetGroups.find((group) => group.DBSubnetGroupName === nextName)
+        ?.VpcId ?? defaultVpcId
+    setValue("dbSubnetGroupName", nextName, { shouldValidate: true })
+    setSecurityGroups(
+      securityGroupIdsForVpc(
+        allSecurityGroups,
+        nextVpcId,
+        selectedSecurityGroups,
+      ),
+    )
+  }
 
   const onSubmit = async (data: CreateDBInstanceFormData) => {
     await createInstance.mutateAsync(data)
@@ -339,6 +369,12 @@ export function CreateDBInstancePage() {
                 <SelectContent>
                   {versionsForEngine.map((version) => (
                     <SelectItem
+                      disabled={
+                        !engineVersionHasImage(
+                          selectedEngine,
+                          version.EngineVersion ?? "",
+                        )
+                      }
                       key={version.EngineVersion}
                       value={version.EngineVersion ?? ""}
                     >
@@ -504,7 +540,10 @@ export function CreateDBInstancePage() {
             control={control}
             name="dbSubnetGroupName"
             render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value}>
+              <Select
+                onValueChange={handleSubnetGroupChange}
+                value={field.value}
+              >
                 <SelectTrigger className="w-full" id="db-subnet-group">
                   <SelectValue placeholder="Default VPC subnet" />
                 </SelectTrigger>
@@ -531,7 +570,11 @@ export function CreateDBInstancePage() {
         <Field>
           <FieldTitle>VPC security groups</FieldTitle>
           <SecurityGroupCheckboxes
-            emptyText={`No security groups available${subnetGroupVpc ? ` in ${subnetGroupVpc}` : ""}.`}
+            emptyText={
+              placementVpcId
+                ? `No security groups available in ${placementVpcId}.`
+                : "No default VPC is available for security groups."
+            }
             groups={securityGroups}
             onChange={setSecurityGroups}
             selected={selectedSecurityGroups}

@@ -49,13 +49,26 @@ const SNAPSHOT = {
   VpcId: "vpc-1",
 }
 
-function image(engine: string) {
+function image(
+  engine: string,
+  version = engine === "postgres" ? "18" : "11.8",
+  withDataContract = true,
+) {
   return {
     ImageId: `ami-${engine}`,
     Name: `spinifex-rds-${engine}`,
     Tags: [
       { Key: "spinifex:managed-by", Value: "rds" },
       { Key: "engine", Value: engine },
+      { Key: "engine-version", Value: version },
+      ...(withDataContract
+        ? [
+            {
+              Key: "rds-data-volume-contract",
+              Value: "format-auth-v1",
+            },
+          ]
+        : []),
     ],
   }
 }
@@ -80,7 +93,10 @@ function seed(options: SeedOptions = {}): QueryClient {
     ],
   })
   qc.setQueryData(["rds", "subnetGroups"], {
-    DBSubnetGroups: [{ DBSubnetGroupName: "db-subnets", VpcId: "vpc-1" }],
+    DBSubnetGroups: [
+      { DBSubnetGroupName: "db-subnets", VpcId: "vpc-1" },
+      { DBSubnetGroupName: "db-subnets-2", VpcId: "vpc-2" },
+    ],
   })
   qc.setQueryData(["rds", "parameterGroups"], {
     DBParameterGroups: [
@@ -91,7 +107,10 @@ function seed(options: SeedOptions = {}): QueryClient {
     ],
   })
   qc.setQueryData(["ec2", "securityGroups"], {
-    SecurityGroups: [{ GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" }],
+    SecurityGroups: [
+      { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" },
+      { GroupId: "sg-2", GroupName: "default", VpcId: "vpc-2" },
+    ],
   })
   qc.setQueryData(["ec2", "images"], {
     Images: options.images ?? [image("postgres")],
@@ -143,6 +162,18 @@ describe("RestoreDBSnapshotPage gating", () => {
     render(seed({ images: [image("mariadb")] }))
     expect(screen.getByText("postgres image not found")).toBeInTheDocument()
     expect(screen.getByText(/spx admin images import/)).toBeInTheDocument()
+    expect(screen.queryByLabelText("New DB instance identifier")).toBeNull()
+  })
+
+  it("rejects an image for a different engine version", () => {
+    render(seed({ images: [image("postgres", "17")] }))
+    expect(screen.getByText("postgres image not found")).toBeInTheDocument()
+    expect(screen.queryByLabelText("New DB instance identifier")).toBeNull()
+  })
+
+  it("rejects an image without the data-volume contract", () => {
+    render(seed({ images: [image("postgres", "18", false)] }))
+    expect(screen.getByText("postgres image not found")).toBeInTheDocument()
     expect(screen.queryByLabelText("New DB instance identifier")).toBeNull()
   })
 })
@@ -205,6 +236,27 @@ describe("RestoreDBSnapshotPage form", () => {
     expect(
       screen.getByText(/A restore may grow the\s+volume but never shrink it/),
     ).toBeInTheDocument()
+  })
+
+  it("offers security groups only from the snapshot VPC", () => {
+    render()
+    expect(
+      screen.getByLabelText("Security group sg-1 (default)"),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText("Security group sg-2 (default)")).toBeNull()
+  })
+
+  it("selects the target VPC default group when placement changes", async () => {
+    const user = userEvent.setup()
+    render()
+
+    await user.click(screen.getByLabelText("DB subnet group"))
+    await user.click(
+      screen.getByRole("option", { name: "db-subnets-2 (vpc-2)" }),
+    )
+
+    expect(screen.getByLabelText("Security group sg-2 (default)")).toBeChecked()
+    expect(screen.queryByLabelText("Security group sg-1 (default)")).toBeNull()
   })
 
   // The floor is the snapshot's own size: a restore may grow the volume but

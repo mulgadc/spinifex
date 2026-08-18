@@ -41,23 +41,26 @@ export function isEcsSystemImage(image: Image): boolean {
 // `spx admin images import --name spinifex-rds-<engine>`.
 export const RDS_SYSTEM_IMAGE_TAG_VALUE = "rds"
 
-// Tag key carrying which engine an RDS image serves. RDS has one image per
-// engine and they are imported independently, so the engine tag is what tells
-// postgres and mariadb apart — the image name is never parsed.
+// RDS launch resolves images by these tags rather than by image name.
 export const RDS_ENGINE_TAG_KEY = "engine"
+export const RDS_ENGINE_VERSION_TAG_KEY = "engine-version"
+export const RDS_DATA_VOLUME_CONTRACT_TAG_KEY = "rds-data-volume-contract"
+export const RDS_DATA_VOLUME_CONTRACT_TAG_VALUE = "format-auth-v1"
 
-export function isRdsSystemImage(image: Image, engine: string): boolean {
+export function isRdsSystemImage(
+  image: Image,
+  engine: string,
+  engineVersion: string,
+): boolean {
   const tags = image.Tags ?? []
-  const managedByRds = tags.some(
-    (tag) =>
-      tag.Key === SYSTEM_MANAGED_TAG_KEY &&
-      tag.Value === RDS_SYSTEM_IMAGE_TAG_VALUE,
-  )
-  if (!managedByRds) {
-    return false
-  }
-  return tags.some(
-    (tag) => tag.Key === RDS_ENGINE_TAG_KEY && tag.Value === engine,
+  const hasTag = (key: string, value: string) =>
+    tags.some((tag) => tag.Key === key && tag.Value === value)
+
+  return (
+    hasTag(SYSTEM_MANAGED_TAG_KEY, RDS_SYSTEM_IMAGE_TAG_VALUE) &&
+    hasTag(RDS_ENGINE_TAG_KEY, engine) &&
+    hasTag(RDS_ENGINE_VERSION_TAG_KEY, engineVersion) &&
+    hasTag(RDS_DATA_VOLUME_CONTRACT_TAG_KEY, RDS_DATA_VOLUME_CONTRACT_TAG_VALUE)
   )
 }
 

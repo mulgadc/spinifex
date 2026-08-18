@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import {
   ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
+  ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 import {
   rdsEngineVersionsQueryOptions,
@@ -21,6 +22,7 @@ export const Route = createFileRoute(
       context.queryClient.ensureQueryData(rdsSubnetGroupsQueryOptions),
       context.queryClient.ensureQueryData(rdsParameterGroupsQueryOptions),
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
+      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
       context.queryClient.ensureQueryData(ec2ImagesQueryOptions),
     ])
   },

@@ -43,13 +43,26 @@ const ENGINE_VERSIONS = [
   },
 ]
 
-function image(engine: string) {
+function image(
+  engine: string,
+  version = engine === "postgres" ? "18" : "11.8",
+  withDataContract = true,
+) {
   return {
     ImageId: `ami-${engine}`,
     Name: `spinifex-rds-${engine}`,
     Tags: [
       { Key: "spinifex:managed-by", Value: "rds" },
       { Key: "engine", Value: engine },
+      { Key: "engine-version", Value: version },
+      ...(withDataContract
+        ? [
+            {
+              Key: "rds-data-volume-contract",
+              Value: "format-auth-v1",
+            },
+          ]
+        : []),
     ],
   }
 }
@@ -60,7 +73,10 @@ function seed(images: unknown[]): QueryClient {
     DBEngineVersions: ENGINE_VERSIONS,
   })
   qc.setQueryData(["rds", "subnetGroups"], {
-    DBSubnetGroups: [{ DBSubnetGroupName: "db-subnets", VpcId: "vpc-1" }],
+    DBSubnetGroups: [
+      { DBSubnetGroupName: "db-subnets", VpcId: "vpc-1" },
+      { DBSubnetGroupName: "db-subnets-2", VpcId: "vpc-2" },
+    ],
   })
   qc.setQueryData(["rds", "parameterGroups"], {
     DBParameterGroups: [
@@ -71,7 +87,16 @@ function seed(images: unknown[]): QueryClient {
     ],
   })
   qc.setQueryData(["ec2", "securityGroups"], {
-    SecurityGroups: [{ GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" }],
+    SecurityGroups: [
+      { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" },
+      { GroupId: "sg-2", GroupName: "default", VpcId: "vpc-2" },
+    ],
+  })
+  qc.setQueryData(["ec2", "vpcs"], {
+    Vpcs: [
+      { VpcId: "vpc-1", IsDefault: true },
+      { VpcId: "vpc-2", IsDefault: false },
+    ],
   })
   qc.setQueryData(["ec2", "images"], { Images: images })
   for (const engine of ["postgres", "mariadb"]) {
@@ -138,6 +163,32 @@ describe("CreateDBInstancePage system image gating", () => {
       screen.getByText(/spx admin images import.*mariadb/),
     ).toBeInTheDocument()
     expect(screen.queryByText("postgres image not found")).toBeNull()
+  })
+
+  it("rejects an image for a different engine version", async () => {
+    const user = userEvent.setup()
+    renderWithClient(
+      <CreateDBInstancePage />,
+      seed([image("postgres", "17"), image("mariadb")]),
+    )
+
+    await user.click(screen.getByLabelText("Engine"))
+    expect(
+      screen.getByRole("option", { name: "postgres — image not imported" }),
+    ).toHaveAttribute("aria-disabled", "true")
+  })
+
+  it("rejects an image without the data-volume contract", async () => {
+    const user = userEvent.setup()
+    renderWithClient(
+      <CreateDBInstancePage />,
+      seed([image("postgres", "18", false), image("mariadb")]),
+    )
+
+    await user.click(screen.getByLabelText("Engine"))
+    expect(
+      screen.getByRole("option", { name: "postgres — image not imported" }),
+    ).toHaveAttribute("aria-disabled", "true")
   })
 
   it("replaces the form when no engine image is imported", () => {
@@ -217,6 +268,34 @@ describe("CreateDBInstancePage fields", () => {
       .getAllByRole("checkbox")
       .filter((box) => !(box as HTMLInputElement).disabled)
     expect(enabled).toHaveLength(2)
+  })
+
+  it("offers security groups only from the default placement VPC", () => {
+    renderForm()
+    expect(
+      screen.getByLabelText("Security group sg-1 (default)"),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText("Security group sg-2 (default)")).toBeNull()
+  })
+
+  it("clears incompatible security groups when placement changes", async () => {
+    const user = userEvent.setup()
+    renderForm()
+    await user.click(screen.getByLabelText("Security group sg-1 (default)"))
+
+    await user.click(screen.getByLabelText("DB subnet group"))
+    await user.click(
+      screen.getByRole("option", { name: "db-subnets-2 (vpc-2)" }),
+    )
+    expect(
+      screen.getByLabelText("Security group sg-2 (default)"),
+    ).not.toBeChecked()
+
+    await user.click(screen.getByLabelText("DB subnet group"))
+    await user.click(screen.getByRole("option", { name: "db-subnets (vpc-1)" }))
+    expect(
+      screen.getByLabelText("Security group sg-1 (default)"),
+    ).not.toBeChecked()
   })
 
   it("offers only the instance classes the orderable catalog lists", () => {

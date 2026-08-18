@@ -9,9 +9,35 @@ interface SecurityGroupCheckboxesProps {
   selected: string[]
 }
 
+export function securityGroupsForVpc(
+  groups: SecurityGroup[],
+  vpcId: string | undefined,
+): SecurityGroup[] {
+  return vpcId ? groups.filter((group) => group.VpcId === vpcId) : []
+}
+
+export function securityGroupIdsForVpc(
+  groups: SecurityGroup[],
+  vpcId: string | undefined,
+  selected: string[],
+): string[] {
+  const available = new Set(
+    securityGroupsForVpc(groups, vpcId).map((group) => group.GroupId),
+  )
+  return selected.filter((id) => available.has(id))
+}
+
+export function defaultSecurityGroupIdForVpc(
+  groups: SecurityGroup[],
+  vpcId: string | undefined,
+): string | undefined {
+  return securityGroupsForVpc(groups, vpcId).find(
+    (group) => group.GroupName === "default",
+  )?.GroupId
+}
+
 // The multi-select every RDS form uses for the instance's ENI. The caller has
-// already narrowed the list to the VPC the subnet group pins, so anything
-// rendered here is attachable.
+// narrowed the list to the placement VPC, so anything rendered is attachable.
 export function SecurityGroupCheckboxes({
   emptyText,
   groups,

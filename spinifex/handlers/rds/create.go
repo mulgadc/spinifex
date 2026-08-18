@@ -166,6 +166,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 		Port:                 req.Port,
 		SubnetID:             placement.SubnetID,
 		VpcID:                placement.VpcID,
+		VpcCIDR:              placement.VpcCIDR,
 		VpcSecurityGroupIDs:  placement.SecurityGroupIDs,
 		DBSubnetGroupName:    req.DBSubnetGroupName,
 		DBParameterGroupName: req.DBParameterGroupName,

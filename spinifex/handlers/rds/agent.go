@@ -78,6 +78,13 @@ type GetDBBootstrapConfigOutput struct {
 	MasterUserPassword   *string `json:"masterUserPassword,omitempty" locationName:"MasterUserPassword"`
 	Port                 int64   `json:"port" locationName:"Port"`
 
+	// The customer ENI address the engine binds, and the range its client
+	// authentication rules admit. Together they make the endpoint the only path
+	// to the engine: the management NICs no customer security group governs are
+	// not bound at all.
+	ListenAddress string `json:"listenAddress" locationName:"ListenAddress"`
+	ClientCIDR    string `json:"clientCidr" locationName:"ClientCIDR"`
+
 	DataVolumeID     string `json:"dataVolumeId,omitempty" locationName:"DataVolumeId" xml:"DataVolumeId"`
 	DataVolumeSerial string `json:"dataVolumeSerial,omitempty" locationName:"DataVolumeSerial" xml:"DataVolumeSerial"`
 	VMGeneration     int64  `json:"vmGeneration,omitempty" locationName:"VMGeneration" xml:"VMGeneration"`
@@ -348,6 +355,18 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
+	// Both fail the fetch rather than falling back to a wildcard. The agent
+	// retries on a backoff, so an unresolvable one presents as a stuck bootstrap
+	// with the reason on the guest console rather than as an engine that came up
+	// reachable from every network it is attached to.
+	if rec.ENIPrivateIP == "" {
+		return nil, errors.New("rds bootstrap: the DB instance record carries no endpoint ENI address for the engine to bind")
+	}
+	clientCIDR, err := s.resolveClientCIDR(ctx, kv, &rec)
+	if err != nil {
+		return nil, err
+	}
+
 	out := &GetDBBootstrapConfigOutput{
 		Mode:                 BootstrapModeAttach,
 		DBInstanceIdentifier: rec.DBInstanceIdentifier,
@@ -356,6 +375,8 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		DBName:               rec.DBName,
 		MasterUsername:       rec.MasterUsername,
 		Port:                 rec.Port,
+		ListenAddress:        rec.ENIPrivateIP,
+		ClientCIDR:           clientCIDR,
 		DataVolumeID:         rec.DataVolumeID,
 		DataVolumeSerial:     serial,
 		VMGeneration:         rec.VMGeneration,
@@ -378,6 +399,37 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 		return nil, err
 	}
 	return out, nil
+}
+
+// The range the guest's client authentication rules admit. A record predating
+// the field is backfilled from its VPC and persisted, so the describe is paid
+// once rather than on every boot of every instance.
+//
+// A failure to persist the backfill is not a failure to serve it: the value is
+// re-derivable and the next fetch records it, whereas failing here would hold a
+// bootable instance down for a bookkeeping write.
+func (s *Service) resolveClientCIDR(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord) (string, error) {
+	if rec.VpcCIDR != "" {
+		return rec.VpcCIDR, nil
+	}
+	if rec.VpcID == "" {
+		return "", fmt.Errorf("rds bootstrap: DB instance %s records no VPC to scope its client authentication to",
+			rec.DBInstanceIdentifier)
+	}
+	if s.deps.Network == nil {
+		return "", errors.New("rds bootstrap: RDS networking is not wired on this node")
+	}
+	cidr, err := s.vpcCIDR(ctx, rec.AccountID, rec.VpcID)
+	if err != nil {
+		return "", err
+	}
+	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		stored.VpcCIDR = cidr
+	}); err != nil {
+		slog.ErrorContext(ctx, "rds bootstrap: the VPC address range could not be recorded; serving it regardless",
+			"dbInstance", rec.DBInstanceIdentifier, "vpcId", rec.VpcID, "err", err)
+	}
+	return cidr, nil
 }
 
 // Fills in the initialize half of the response when a payload is staged for this

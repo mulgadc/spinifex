@@ -72,8 +72,12 @@ type DBInstanceRecord struct {
 
 	// Where the customer ENI was placed, so a replace lands the new VM's ENI in
 	// the same subnet and security groups without re-deriving them.
-	SubnetID             string   `json:"subnetId,omitempty"`
-	VpcID                string   `json:"vpcId,omitempty"`
+	SubnetID string `json:"subnetId,omitempty"`
+	VpcID    string `json:"vpcId,omitempty"`
+	// The customer VPC's address range, which is the scope the guest's client
+	// authentication rules are generated against. Captured at create rather than
+	// resolved per boot, so a bootstrap fetch costs no VPC describe.
+	VpcCIDR              string   `json:"vpcCidr,omitempty"`
 	VpcSecurityGroupIDs  []string `json:"vpcSecurityGroupIds,omitempty"`
 	DBSubnetGroupName    string   `json:"dbSubnetGroupName,omitempty"`
 	DBParameterGroupName string   `json:"dbParameterGroupName,omitempty"`
@@ -92,6 +96,10 @@ type DBInstanceRecord struct {
 	ENIID            string `json:"eniId,omitempty"`
 	// Disposable: a replace mints a new one, unlike the customer ENI.
 	SystemENIID string `json:"systemEniId,omitempty"`
+	// The RDS system security group the system ENI carries. Recorded so the
+	// reconciler's one-time remediation is a string compare per pass rather than
+	// an ENI describe, and re-derived from the launch on every replace.
+	SystemSGID string `json:"systemSgId,omitempty"`
 	// Stable across VM replace, so it serves as both the fallback endpoint and
 	// a durable IP SAN on the serving cert.
 	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`

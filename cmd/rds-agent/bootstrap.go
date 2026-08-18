@@ -96,6 +96,15 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 	if cfg.MasterUsername == "" {
 		return fmt.Errorf("bootstrap config carries no master username")
 	}
+	// Half a handoff would leave rds-init deciding what to bind and who to admit,
+	// and the only answers it could reach on its own are the wildcards this
+	// contract exists to remove.
+	if cfg.ListenAddress == "" {
+		return fmt.Errorf("bootstrap config carries no listen address for the engine to bind")
+	}
+	if cfg.ClientCIDR == "" {
+		return fmt.Errorf("bootstrap config carries no client CIDR to scope client authentication to")
+	}
 	if err := os.MkdirAll(dir, handoffDirMode); err != nil {
 		return fmt.Errorf("create handoff dir %s: %w", dir, err)
 	}
@@ -134,6 +143,8 @@ func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
 	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
 	writeEnvLine(&b, "RDS_DB_INSTANCE_IDENTIFIER", cfg.DBInstanceIdentifier)
 	writeEnvLine(&b, "RDS_MASTER_USERNAME", cfg.MasterUsername)
+	writeEnvLine(&b, "RDS_LISTEN_ADDRESS", cfg.ListenAddress)
+	writeEnvLine(&b, "RDS_CLIENT_CIDR", cfg.ClientCIDR)
 	writeEnvLine(&b, "RDS_DATA_VOLUME_ID", cfg.DataVolumeID)
 	writeEnvLine(&b, "RDS_DATA_VOLUME_SERIAL", cfg.DataVolumeSerial)
 	writeEnvLine(&b, "RDS_VM_GENERATION", strconv.FormatInt(cfg.VMGeneration, 10))

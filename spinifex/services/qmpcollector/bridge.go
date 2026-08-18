@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -15,6 +16,10 @@ import (
 )
 
 const bridgeMeterName = "github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
+
+// cloudwatchAccountDimension is the dimension name guest series carry. It is
+// the AWS-facing contract, so it is read here rather than renamed.
+const cloudwatchAccountDimension = "account_id"
 
 // bridgeQueueGroup makes exactly one node's bridge forward each series: NATS
 // is clustered, so a plain metrics.> subscription on every node would ship
@@ -68,12 +73,18 @@ func (b *bridge) handle(msg *nats.Msg) {
 	expires := time.Now().Add(ttl)
 
 	for _, s := range batch.Series {
-		attrs := make([]attribute.KeyValue, 0, len(s.Labels)+1)
+		attrs := make([]attribute.KeyValue, 0, len(s.Labels)+2)
 		for k, v := range s.Labels {
 			attrs = append(attrs, attribute.String(k, v))
 		}
 		if batch.Node != "" {
 			attrs = append(attrs, attribute.String("node", batch.Node))
+		}
+		// account_id is the CloudWatch dimension and stays as it is. Mirror it
+		// under the name traces use, so one account field spans both and guest
+		// metrics answer to the same filter as every other signal.
+		if account := s.Labels[cloudwatchAccountDimension]; account != "" {
+			attrs = append(attrs, attribute.String(utils.AttrAccountID, account))
 		}
 		b.observe(s.Name, labelKey(s.Name, s.Labels), bridgeEntry{
 			value:   s.Value,

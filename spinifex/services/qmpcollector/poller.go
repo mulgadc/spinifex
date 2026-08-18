@@ -283,7 +283,7 @@ func buildBatch(meta types.GuestTelemetryMeta, node string, prev, cur *sample) (
 		"instance_id": meta.InstanceID,
 	}
 	if meta.AccountID != "" {
-		labels["account_id"] = meta.AccountID
+		labels[cloudwatchAccountDimension] = meta.AccountID
 	}
 
 	vcpus := max(meta.VCPUs, 1)

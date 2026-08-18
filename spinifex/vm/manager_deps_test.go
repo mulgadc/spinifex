@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"sync"
@@ -153,7 +154,7 @@ type fakeVolumeMounter struct {
 	onMount func(*VM)
 }
 
-func (f *fakeVolumeMounter) Mount(v *VM) error {
+func (f *fakeVolumeMounter) Mount(_ context.Context, v *VM) error {
 	f.mu.Lock()
 	f.mounted = append(f.mounted, v.ID)
 	err := f.mountErr
@@ -165,14 +166,14 @@ func (f *fakeVolumeMounter) Mount(v *VM) error {
 	return err
 }
 
-func (f *fakeVolumeMounter) Unmount(v *VM) error {
+func (f *fakeVolumeMounter) Unmount(_ context.Context, v *VM) error {
 	f.mu.Lock()
 	f.unmounted = append(f.unmounted, v.ID)
 	f.mu.Unlock()
 	return nil
 }
 
-func (f *fakeVolumeMounter) MountOne(req *types.EBSRequest) error {
+func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *types.EBSRequest) error {
 	f.mu.Lock()
 	f.mountedOne = append(f.mountedOne, req.Name)
 	mountOneErr := f.mountOneErr
@@ -187,7 +188,7 @@ func (f *fakeVolumeMounter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-func (f *fakeVolumeMounter) UnmountOne(req types.EBSRequest) error {
+func (f *fakeVolumeMounter) UnmountOne(_ context.Context, _ string, req types.EBSRequest) error {
 	f.mu.Lock()
 	f.unmountedOne = append(f.unmountedOne, req.Name)
 	err := f.unmountOneErr

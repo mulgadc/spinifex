@@ -33,11 +33,11 @@ const detachAggregateTimeout = 3 * time.Minute
 // rollbackUnmount unmounts a volume while unwinding a failed AttachVolume.
 // Callers keep the volume non-available when the seal fails so a later attach
 // cannot discard local state that may still be owned by the backend.
-func (m *Manager) rollbackUnmount(req types.EBSRequest) error {
+func (m *Manager) rollbackUnmount(ctx context.Context, accountID string, req types.EBSRequest) error {
 	if m.deps.VolumeMounter == nil {
 		return nil
 	}
-	if err := m.deps.VolumeMounter.UnmountOne(req); err != nil {
+	if err := m.deps.VolumeMounter.UnmountOne(ctx, accountID, req); err != nil {
 		slog.Warn("AttachVolume: rollback unmount failed", "volume", req.Name, "err", err)
 		return err
 	}
@@ -70,7 +70,7 @@ func (m *Manager) rollbackHotAttach(ctx context.Context, instance *VM, req types
 	}
 
 	m.delIothreadBestEffort(ctx, instance, iothreadID, req.Name)
-	return m.rollbackUnmount(req) == nil
+	return m.rollbackUnmount(ctx, instance.AccountID, req) == nil
 }
 
 // AttachVolume hot-plugs a volume via the pipeline mount → blockdev-add →
@@ -110,12 +110,12 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if m.deps.VolumeMounter == nil {
 		return "", fmt.Errorf("VolumeMounter not wired")
 	}
-	if err := m.deps.VolumeMounter.MountOne(&ebsRequest); err != nil {
+	if err := m.deps.VolumeMounter.MountOne(ctx, instance.AccountID, &ebsRequest); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: ebs.mount failed", "volumeId", volumeID, "err", err)
 		// Empty-URI response leaves backend NBD state ambiguous; unmount
 		// defensively to avoid orphaning a half-started mount.
 		if errors.Is(err, ErrMountAmbiguous) {
-			_ = m.rollbackUnmount(ebsRequest)
+			_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		}
 		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
@@ -123,7 +123,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
-		_ = m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		return "", fmt.Errorf("parse NBDURI: %w", err)
 	}
 	serverArg := NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg()
@@ -146,7 +146,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	instance.EBSRequests.Mu.Unlock()
 	if hotplugPort == 0 {
 		slog.ErrorContext(ctx, "AttachVolume: EBS hot-plug port pool exhausted", "volumeId", volumeID)
-		_ = m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		return "", ErrAttachmentLimitExceeded
 	}
 	ebsRequest.HotplugPort = hotplugPort
@@ -159,7 +159,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		},
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP object-add iothread failed", "volumeId", volumeID, "err", err)
-		_ = m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		return "", fmt.Errorf("QMP object-add iothread: %w", err)
 	}
 
@@ -175,7 +175,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
 		m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)
-		_ = m.rollbackUnmount(ebsRequest)
+		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		return "", fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
@@ -409,7 +409,7 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 	// and return the error; an AWS-CLI retry re-drives the seal and same-node
 	// reattach still works meanwhile.
 	if m.deps.VolumeMounter != nil {
-		if err := m.deps.VolumeMounter.UnmountOne(ebsReq); err != nil {
+		if err := m.deps.VolumeMounter.UnmountOne(ctx, instance.AccountID, ebsReq); err != nil {
 			slog.ErrorContext(ctx, "DetachVolume: ebs.unmount seal failed, leaving volume attached",
 				"volumeId", volumeID, "err", err)
 			return "", fmt.Errorf("ebs.unmount seal: %w", err)

@@ -46,7 +46,7 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, adapter.Unmount(inst))
+	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
 	calls := volState.snapshot()
 	assert.NotContains(t, calls, "vol-bios-root:available",

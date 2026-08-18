@@ -112,19 +112,26 @@ func (a *volumeMounterAdapter) topic(action string) string {
 	return fmt.Sprintf("ebs.%s.%s", a.node, action)
 }
 
-// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span and
-// injecting it into the message headers so viperblockd's consumer span
+// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
+// ctx and injecting it into the message headers so viperblockd's consumer span
 // (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
 //
-// VolumeMounter carries no caller context, so each call opens its own trace
-// here rather than threading one through the interface.
-func ebsRequestWithTrace(nc *nats.Conn, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
-	ctx, span := otel.Tracer(daemonTracerName).Start(context.Background(), "NATS "+subject,
+// accountID names the owner on the span and on the header viperblockd reads,
+// so block-storage work is attributable to a tenant. Empty is left off: a
+// sweep or a recovery belongs to nobody, and crediting it to whoever happens
+// to be admin would be worse than leaving it blank.
+func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
+	attrs := []attribute.KeyValue{
+		attribute.String("messaging.system", "nats"),
+		attribute.String("messaging.destination.name", subject),
+	}
+	if accountID != "" {
+		attrs = append(attrs, attribute.String(utils.AttrAccountID, accountID))
+	}
+
+	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination.name", subject),
-		))
+		trace.WithAttributes(attrs...))
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -136,12 +143,15 @@ func ebsRequestWithTrace(nc *nats.Conn, subject string, data []byte, timeout tim
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = data
 	utils.InjectTraceContext(ctx, reqMsg.Header)
+	if accountID != "" {
+		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	}
 
 	msg, err = nc.RequestMsg(reqMsg, timeout)
 	return msg, err
 }
 
-func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
+func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
@@ -150,7 +160,7 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 		var rbErrs []error
 		for _, idx := range mounted {
 			req := instance.EBSRequests.Requests[idx]
-			if err := a.unmountOne(req); err != nil {
+			if err := a.unmountOne(ctx, instance.AccountID, req); err != nil {
 				slog.Error("Mount rollback: unmount failed",
 					"volume", req.Name, "err", err)
 				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
@@ -169,7 +179,7 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 			return rollback(err)
 		}
 
-		reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), ebsMountRequest, 30*time.Second)
+		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("mount"), ebsMountRequest, 30*time.Second)
 
 		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
 
@@ -205,7 +215,7 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 	return nil
 }
 
-func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
+func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
@@ -222,7 +232,7 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 		// local WAL would find no checkpoint (bad superblock). On terminate the
 		// volume is deleted regardless; on stop it stays attached/retryable.
 		sealed := true
-		msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -253,13 +263,13 @@ func (a *volumeMounterAdapter) Unmount(instance *vm.VM) error {
 
 // MountOne sends ebs.mount for a single request and writes the resolved
 // NBDURI back into req.NBDURI. Used by hot-attach (Manager.AttachVolume).
-func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *types.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal ebs.mount request: %w", err)
 	}
 
-	reply, err := ebsRequestWithTrace(a.nc, a.topic("mount"), payload, 30*time.Second)
+	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("mount"), payload, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.mount NATS request: %w", err)
 	}
@@ -282,8 +292,8 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 // UnmountOne sends ebs.unmount and returns any error. The handler seals the
 // volume's block map to predastore, so the caller decides whether a failure
 // blocks the volume's available transition.
-func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) error {
-	if err := a.unmountOne(req); err != nil {
+func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
+	if err := a.unmountOne(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
 	}
@@ -292,12 +302,12 @@ func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) error {
 }
 
 // unmountOne sends ebs.unmount and returns any error.
-func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
+func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := ebsRequestWithTrace(a.nc, a.topic("unmount"), payload, unmountSealTimeout)
+	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("unmount"), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
@@ -670,7 +680,11 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 				firstErr = cmp.Or(firstErr, err)
 				continue
 			}
-			deleteMsg, err := ebsRequestWithTrace(a.d.natsConn, "ebs.delete", ebsDeleteData, 30*time.Second)
+			// Teardown runs from the reaper and from terminate cleanup, neither
+			// of which has a caller to inherit a trace from. The account still
+			// comes off the instance, so the work stays attributable.
+			deleteMsg, err := ebsRequestWithTrace(context.Background(), a.d.natsConn, instance.AccountID,
+				"ebs.delete", ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)

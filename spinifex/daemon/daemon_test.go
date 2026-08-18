@@ -3310,7 +3310,7 @@ func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(types.EBSRequest{
+	adapter.UnmountOne(t.Context(), "", types.EBSRequest{
 		Name:       "vol-rollback-test",
 		DeviceName: "/dev/sdf",
 	})
@@ -3340,7 +3340,7 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-rollback-err"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-rollback-err"}),
 		"an ebs.unmount error response must propagate so DetachVolume can keep the volume attached")
 }
 
@@ -3360,7 +3360,7 @@ func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-still-mounted"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-still-mounted"}),
 		"a still-mounted response must propagate as an error")
 }
 
@@ -3374,7 +3374,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	nc.Close()
 
 	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
-	require.Error(t, adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-timeout"}),
 		"a failed ebs.unmount request must propagate as an error")
 }
 
@@ -3429,7 +3429,7 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
 		},
 	}
-	require.NoError(t, adapter.Unmount(inst),
+	require.NoError(t, adapter.Unmount(t.Context(), inst),
 		"bulk Unmount must tolerate a per-volume seal failure so terminate stays idempotent")
 
 	calls := volState.snapshot()
@@ -3472,7 +3472,7 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, adapter.Unmount(inst))
+	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
 	calls := volState.snapshot()
 	assert.Contains(t, calls, "vol-data-retry:available",
@@ -3582,7 +3582,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 				},
 			}
 
-			err = adapter.Mount(instance)
+			err = adapter.Mount(t.Context(), instance)
 			require.Error(t, err, "Mount should propagate the vol-2 failure")
 			assert.Contains(t, err.Error(), tt.wantErrSub)
 
@@ -3640,7 +3640,7 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 		},
 	}
 
-	err = adapter.Mount(instance)
+	err = adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "primary mount failure",
 		"original mount error must be preserved")

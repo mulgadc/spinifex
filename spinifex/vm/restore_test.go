@@ -556,7 +556,7 @@ type recoveryMounter struct {
 	behavior map[string]func(*VM) error
 }
 
-func (f *recoveryMounter) Mount(v *VM) error {
+func (f *recoveryMounter) Mount(_ context.Context, v *VM) error {
 	f.mu.Lock()
 	f.mounted = append(f.mounted, v.ID)
 	fn := f.behavior[v.ID]
@@ -567,9 +567,9 @@ func (f *recoveryMounter) Mount(v *VM) error {
 	return nil
 }
 
-func (f *recoveryMounter) Unmount(*VM) error                 { return nil }
-func (f *recoveryMounter) MountOne(*types.EBSRequest) error  { return nil }
-func (f *recoveryMounter) UnmountOne(types.EBSRequest) error { return nil }
+func (f *recoveryMounter) Unmount(context.Context, *VM) error                         { return nil }
+func (f *recoveryMounter) MountOne(context.Context, string, *types.EBSRequest) error  { return nil }
+func (f *recoveryMounter) UnmountOne(context.Context, string, types.EBSRequest) error { return nil }
 
 var _ VolumeMounter = (*recoveryMounter)(nil)
 

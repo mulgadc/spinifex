@@ -324,7 +324,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 				NBDURI:     tt.initialURI,
 			}
 
-			err := adapter.MountOne(req)
+			err := adapter.MountOne(t.Context(), "", req)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrSub != "" {
@@ -593,7 +593,7 @@ func TestVolumeMounterAdapter_Mount_WrapsErrMountRetryable(t *testing.T) {
 	instance := &vm.VM{ID: "i-mount-retryable"}
 	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-retryable"}}
 
-	err = adapter.Mount(instance)
+	err = adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vm.ErrMountRetryable,
 		"a Retryable mount response must wrap vm.ErrMountRetryable so relaunchAll can retry it")
@@ -614,7 +614,7 @@ func TestVolumeMounterAdapter_Mount_PermanentErrorNotWrapped(t *testing.T) {
 	instance := &vm.VM{ID: "i-mount-permanent"}
 	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-permanent"}}
 
-	err = adapter.Mount(instance)
+	err = adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, vm.ErrMountRetryable,
 		"a non-Retryable mount response must not be mistaken for a transient failure")
@@ -629,7 +629,7 @@ func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
 	instance := &vm.VM{ID: "i-mount-noresponder"}
 	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-noresponder"}}
 
-	err := adapter.Mount(instance)
+	err := adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vm.ErrMountRetryable,
 		"a mount request with no responder must wrap vm.ErrMountRetryable so relaunchAll can retry it")

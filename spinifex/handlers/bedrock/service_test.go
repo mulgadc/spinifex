@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -183,8 +184,9 @@ func TestDelete_ReadyToAbsent(t *testing.T) {
 	require.Equal(t, StateReady, desc.Endpoint.State)
 	instanceID := desc.Endpoint.InstanceID
 
-	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	del, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
+	assert.True(t, del.Removed, "a real teardown must report Removed")
 
 	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
@@ -199,6 +201,7 @@ func TestDelete_IdempotentOnAbsent(t *testing.T) {
 	out, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, out)
+	assert.False(t, out.Removed, "a delete that found no record must not report Removed")
 	assert.Empty(t, h.launcher.terminated)
 }
 
@@ -331,6 +334,42 @@ func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
 
 	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
 	require.NoError(t, err)
+
+	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+}
+
+// TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM is
+// 6z9vg's core: a bare (Global) delete resolves a key that never held the
+// pinned, account-scoped record, so it is a no-op that must report Removed=false
+// and leave the record; scoped to the owning account it clears the record even
+// when the VM was terminated out of band.
+func TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	bare, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.False(t, bare.Removed, "a bare delete must not claim a teardown it did not do")
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, desc.Endpoint.State, "the pinned record must survive a mis-scoped delete")
+
+	// The instance vanished out of band: the scoped delete must still clear the
+	// record rather than stall on a gone VM.
+	h.launcher.terminateErr = sysinstance.ErrSystemInstanceNotFound
+
+	scoped, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.True(t, scoped.Removed, "a scoped delete of a gone-VM record must clear it")
 
 	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
 	require.NoError(t, err)

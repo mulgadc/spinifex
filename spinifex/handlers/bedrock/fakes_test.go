@@ -298,12 +298,13 @@ func (f *fakeAttacher) AttachVolume(_ context.Context, _, _, _, device string) (
 // fakeInstanceLauncher counts launches, so the concurrency test can assert
 // exactly one VM was launched regardless of how many Ensure calls raced.
 type fakeInstanceLauncher struct {
-	mu          sync.Mutex
-	launchCount atomic.Int32
-	requests    []*sysinstance.SystemInstanceInput
-	terminated  []string
-	nextID      int
-	failLaunch  error
+	mu           sync.Mutex
+	launchCount  atomic.Int32
+	requests     []*sysinstance.SystemInstanceInput
+	terminated   []string
+	nextID       int
+	failLaunch   error
+	terminateErr error
 }
 
 var _ sysinstance.SystemInstanceLauncher = (*fakeInstanceLauncher)(nil)
@@ -350,8 +351,13 @@ func (f *fakeInstanceLauncher) terminations() []string {
 
 func (f *fakeInstanceLauncher) TerminateSystemInstance(instanceID string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.terminateErr != nil {
+		// The VM is already gone: report it without recording a termination,
+		// as the real launcher does on InvalidInstanceID.NotFound.
+		return f.terminateErr
+	}
 	f.terminated = append(f.terminated, instanceID)
-	f.mu.Unlock()
 	return nil
 }
 

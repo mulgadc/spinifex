@@ -468,7 +468,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", in.ModelID, err)
 	}
 	if !found {
-		return &DeleteEndpointOutput{}, nil
+		return &DeleteEndpointOutput{Removed: false}, nil
 	}
 	if rec.State != StateReady && rec.State != StateDraining {
 		return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
@@ -494,7 +494,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if err := deleteJSON(ctx, kv, key); err != nil {
 		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", in.ModelID, err)
 	}
-	return &DeleteEndpointOutput{}, nil
+	return &DeleteEndpointOutput{Removed: true}, nil
 }
 
 // getFullJSON is getJSONRevision with the found flag surfaced alongside the

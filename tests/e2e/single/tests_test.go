@@ -76,12 +76,14 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
-// TestGuestChurnDurability merges the former TestSSHProbe, TestENIHotplug,
-// TestENIHotplugReconcile, TestVolumeDurability, TestModifyInstanceAttribute,
-// and TestRebootInstance around one shared guest and one shared
-// data-integrity sentinel (see runGuestChurnDurability for the stage
-// breakdown and gating rationale). Sequential: it stops/starts and reboots
-// the singleton, leaving it running.
+// TestEarlyRebootLiveness owns a fresh guest so the reset lands as soon as
+// cloud-init.target is observable rather than against the old singleton.
+func TestEarlyRebootLiveness(t *testing.T) {
+	runEarlyRebootLiveness(t, requireSingleNodeFixture(t))
+}
+
+// TestGuestChurnDurability merges guest churn around one shared instance and
+// data-integrity sentinel. Sequential: it leaves the singleton running.
 func TestGuestChurnDurability(t *testing.T) {
 	runGuestChurnDurability(t, requireSingleNodeFixture(t))
 }

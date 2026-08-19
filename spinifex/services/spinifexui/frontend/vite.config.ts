@@ -42,6 +42,7 @@ export default defineConfig(({ mode }) => ({
     environment: "happy-dom",
     setupFiles: "./src/test/setup.ts",
     clearMocks: true,
+    pool: "threads",
     coverage: {
       include: ["src/**/*.{ts,tsx}"],
       exclude: [

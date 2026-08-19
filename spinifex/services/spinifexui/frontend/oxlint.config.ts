@@ -53,6 +53,7 @@ export default defineConfig({
     "react-you-might-not-need-an-effect/no-external-store-subscription":
       "error",
     "react-you-might-not-need-an-effect/no-initialize-state": "error",
+    "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
     "react-you-might-not-need-an-effect/no-reset-all-state-on-prop-change":
       "error",

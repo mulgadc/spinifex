@@ -1,5 +1,6 @@
 ---
-title: "Terraform Nginx Web Server on Spinifex"
+title: "Nginx Web Server"
+seoTitle: "Terraform Nginx Web Server on Spinifex — Spinifex Docs"
 description: "Provision a VPC, public subnet, internet gateway, route table, security group, and an EC2 instance that installs and starts Nginx from cloud-init user-data."
 category: "Terraform Workbooks"
 tags:

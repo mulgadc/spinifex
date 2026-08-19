@@ -1,5 +1,6 @@
 ---
-title: "GitOps on EKS with Argo CD and EBS-CSI"
+title: "GitOps on EKS (Argo CD + EBS-CSI)"
+seoTitle: "GitOps on EKS with Argo CD and EBS-CSI — Spinifex Docs"
 description: "Deliver an app to EKS with GitOps: the Argo CD addon syncs it from git, an EBS-CSI PersistentVolume holds its state, and HTTPS is served via LBC and ACM."
 category: "Terraform Workbooks"
 tags:

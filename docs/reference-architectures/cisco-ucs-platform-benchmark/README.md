@@ -1,5 +1,6 @@
 ---
-title: "Spinifex Benchmark on 3-Node Cisco UCS"
+title: "Spinifex Platform Benchmark on Cisco UCS (3-Node)"
+seoTitle: "Spinifex Benchmark on 3-Node Cisco UCS — Spinifex Docs"
 description: "Measured CPU, disk, network, and S3 performance of Spinifex on a 3-node Cisco Unified Edge cluster, comparing host against guest with Intel AMX confirmed."
 category: "Reference Architectures"
 tags:

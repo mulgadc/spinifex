@@ -1,5 +1,6 @@
 ---
-title: "AWS EKS Managed Kubernetes on Spinifex"
+title: "EKS (Managed Kubernetes)"
+seoTitle: "AWS EKS Managed Kubernetes on Spinifex — Spinifex Docs"
 description: "Provision an AWS-compatible EKS control plane and managed node group on Spinifex, wire up the VPC, IAM, and security groups, then deploy your first workload."
 category: "Containers"
 tags:

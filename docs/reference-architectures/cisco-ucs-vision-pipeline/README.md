@@ -1,5 +1,6 @@
 ---
 title: "Spinifex Vision Pipeline on Cisco UCS"
+seoTitle: "Spinifex Vision Pipeline on Cisco UCS — Spinifex Docs"
 description: "A YOLO11m detection and Qwen2-VL captioning pipeline streaming from a shared Predastore bucket across two EC2 instances, with Intel AMX and NVIDIA L4 compared."
 category: "Reference Architectures"
 tags:

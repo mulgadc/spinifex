@@ -1,5 +1,6 @@
 ---
-title: "Media Sanitization and Disposal Guide"
+title: "Media Sanitization and Disposal"
+seoTitle: "Media Sanitization and Disposal Guide — Spinifex Docs"
 description: "Operator guide to sanitizing and disposing of storage media used by Spinifex nodes, covering system disks, Viperblock and Predastore volumes, and key tokens."
 category: "Security"
 sections:

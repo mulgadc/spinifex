@@ -1,5 +1,6 @@
 ---
-title: "Terraform ECS Quickstart on Spinifex"
+title: "ECS Quickstart"
+seoTitle: "Terraform ECS Quickstart on Spinifex — Spinifex Docs"
 description: "Stand up a full AWS-compatible ECS stack with Terraform: a VPC, IAM roles, a cluster, a task definition, container instances, and a load-balanced service."
 category: "Terraform Workbooks"
 tags:

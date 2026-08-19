@@ -1,5 +1,6 @@
 ---
-title: "EKS AI Platform on Dual RTX Pro 6000"
+title: "Spinifex EKS AI Platform on Dual RTX Pro 6000 Baremetal"
+seoTitle: "EKS AI Platform on Dual RTX Pro 6000 — Spinifex Docs"
 description: "Deploy a GPU-accelerated AI inference platform — an OpenAI-compatible LLM API and a real-time CV stream — on Kubernetes on bare metal with standard AWS tooling."
 category: "Reference Architectures"
 tags:

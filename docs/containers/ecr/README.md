@@ -1,5 +1,6 @@
 ---
-title: "AWS ECR Container Registry on Spinifex"
+title: "ECR (Container Registry)"
+seoTitle: "AWS ECR Container Registry on Spinifex — Spinifex Docs"
 description: "Store and serve container images from Spinifex's AWS-compatible ECR: create a repository, authenticate Docker, push and pull images, and let EKS workers pull."
 category: "Containers"
 tags:

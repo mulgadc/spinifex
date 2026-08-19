@@ -1,5 +1,6 @@
 ---
-title: "Spinifex External Connection Inventory"
+title: "External Connection Inventory"
+seoTitle: "Spinifex External Connection Inventory — Spinifex Docs"
 description: "Operator inventory of every inbound listener and outbound connection on Spinifex nodes, with ports, protocols, and purpose, for documented CMMC Level 1 sites."
 category: "Security"
 sections:

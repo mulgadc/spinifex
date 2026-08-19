@@ -1,5 +1,6 @@
 ---
-title: "VFIO GPU Passthrough for EC2 Instances"
+title: "GPU Passthrough"
+seoTitle: "VFIO GPU Passthrough for EC2 Instances — Spinifex Docs"
 description: "Configure VFIO GPU passthrough on a Spinifex node to bind NVIDIA or AMD GPUs to guest VMs and expose GPU-enabled EC2 instance types to your workloads."
 category: "Compute"
 tags:

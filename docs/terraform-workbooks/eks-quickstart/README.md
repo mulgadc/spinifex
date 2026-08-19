@@ -1,5 +1,6 @@
 ---
-title: "Terraform EKS Quickstart on Spinifex"
+title: "EKS Quickstart"
+seoTitle: "Terraform EKS Quickstart on Spinifex — Spinifex Docs"
 description: "Stand up a minimal managed Kubernetes cluster with Terraform: a VPC, IAM roles, an EKS cluster, a worker node group, an ECR repository, and a demo web app."
 category: "Terraform Workbooks"
 tags:

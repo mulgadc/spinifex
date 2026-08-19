@@ -1,5 +1,6 @@
 ---
-title: "AWS-Compatible VPC Networking with OVN"
+title: "VPC Networking"
+seoTitle: "AWS-Compatible VPC Networking with OVN — Spinifex Docs"
 description: "How Spinifex implements AWS-compatible VPC networking on bare metal with OVN: public and private subnets, security groups, route tables, and Elastic IPs."
 category: "Compute"
 tags:

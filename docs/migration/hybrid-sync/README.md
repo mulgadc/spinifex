@@ -1,5 +1,6 @@
 ---
-title: "Hybrid Sync Between Spinifex and AWS"
+title: "Hybrid Sync"
+seoTitle: "Hybrid Sync Between Spinifex and AWS — Spinifex Docs"
 description: "Synchronise data bidirectionally between Spinifex and AWS when connectivity allows, so local infrastructure stays usable at intermittently connected sites."
 category: "Migration"
 tags:

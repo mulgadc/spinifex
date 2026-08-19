@@ -1,5 +1,6 @@
 ---
-title: "Terraform S3-Backed Flask Web App on EC2"
+title: "S3-Backed Web App"
+seoTitle: "Terraform S3-Backed Flask Web App on EC2 — Spinifex Docs"
 description: "Deploy a Flask file-sharing app on EC2 backed by S3 (Predastore) with Terraform, using an IAM instance profile and short-lived STS credentials from IMDS."
 category: "Terraform Workbooks"
 tags:

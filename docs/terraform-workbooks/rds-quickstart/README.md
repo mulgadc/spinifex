@@ -1,5 +1,6 @@
 ---
-title: "Terraform RDS PostgreSQL Quickstart"
+title: "RDS Quickstart (PostgreSQL)"
+seoTitle: "Terraform RDS PostgreSQL Quickstart — Spinifex Docs"
 description: "Stand up a managed PostgreSQL database on Spinifex with Terraform: a VPC, DB subnet group, parameter group, aws_db_instance, and a client VM that runs psql."
 category: "Terraform Workbooks"
 tags:

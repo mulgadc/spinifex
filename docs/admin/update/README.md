@@ -1,5 +1,6 @@
 ---
-title: "Update Spinifex to the Latest Release"
+title: "Updating Spinifex"
+seoTitle: "Update Spinifex to the Latest Release — Spinifex Docs"
 description: "Upgrade an existing Spinifex install with the same installer used to deploy it, or take the manual path to review configuration migrations before applying them."
 category: "Admin"
 tags:

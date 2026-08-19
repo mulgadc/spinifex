@@ -1,5 +1,6 @@
 ---
-title: "Multi-Node Spinifex Cluster Install"
+title: "Multi-Node Install"
+seoTitle: "Multi-Node Spinifex Cluster Install — Spinifex Docs"
 description: "Deploy Spinifex across several servers to form an availability zone with automatic cluster formation, high availability, data durability, and fault tolerance."
 category: "Install"
 tags:

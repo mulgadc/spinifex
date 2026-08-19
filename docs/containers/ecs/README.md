@@ -1,5 +1,6 @@
 ---
-title: "AWS ECS Elastic Container Service Guide"
+title: "ECS (Elastic Container Service)"
+seoTitle: "AWS ECS Elastic Container Service Guide — Spinifex Docs"
 description: "Create an ECS cluster on Spinifex, register a task definition, boot container instances, run tasks, and front a service with an Application Load Balancer."
 category: "Containers"
 tags:

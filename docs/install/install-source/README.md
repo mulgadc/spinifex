@@ -1,5 +1,6 @@
 ---
-title: "Build and Install Spinifex from Source"
+title: "Source Install"
+seoTitle: "Build and Install Spinifex from Source — Spinifex Docs"
 description: "Build Spinifex from source on Ubuntu or Debian for development, custom builds, or contributing changes, then install and run the resulting binaries locally."
 category: "Install"
 tags:

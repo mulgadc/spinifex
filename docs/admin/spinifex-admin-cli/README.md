@@ -1,5 +1,6 @@
 ---
-title: "spx: The Spinifex Administration CLI"
+title: "Spinifex Admin CLI"
+seoTitle: "spx: The Spinifex Administration CLI — Spinifex Docs"
 description: "Complete reference for spx, the Spinifex admin CLI: initialise a cluster, manage accounts and nodes, drive the VM lifecycle, and start or stop services."
 category: "Admin"
 tags:

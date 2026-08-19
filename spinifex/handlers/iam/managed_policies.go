@@ -282,18 +282,20 @@ var awsManagedPolicyDocs = map[string]string{
 }
 
 // builtinManagedPolicyParsed is the parsed form of awsManagedPolicyDocs, built
-// once at init. A malformed builtin document is a programming error and panics.
-var builtinManagedPolicyParsed = func() map[string]PolicyDocument {
-	parsed := make(map[string]PolicyDocument, len(awsManagedPolicyDocs))
-	for arn, raw := range awsManagedPolicyDocs {
+// once at init. NewIAMServiceImpl propagates any parsing failure.
+var builtinManagedPolicyParsed, builtinManagedPolicyParseErr = parseBuiltinManagedPolicies(awsManagedPolicyDocs)
+
+func parseBuiltinManagedPolicies(rawPolicies map[string]string) (map[string]PolicyDocument, error) {
+	parsed := make(map[string]PolicyDocument, len(rawPolicies))
+	for arn, raw := range rawPolicies {
 		var doc PolicyDocument
 		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-			panic(fmt.Sprintf("iam: malformed builtin managed policy %s: %v", arn, err))
+			return nil, fmt.Errorf("parse managed policy %s: %w", arn, err)
 		}
 		parsed[arn] = doc
 	}
-	return parsed
-}()
+	return parsed, nil
+}
 
 // builtinManagedPolicyDoc returns the modeled grant document for an AWS-managed
 // policy ARN. ok is false for managed ARNs Spinifex does not model.
